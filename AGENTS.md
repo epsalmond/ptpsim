@@ -111,6 +111,10 @@ Before writing registration or GPS data:
 3. Execute only that state's workflow.
 4. If evidence conflicts, stop and collect more evidence.
 
+Statefile evidence writes use `rce/state/connection_state.json.lock` around
+load/modify/save. Still prefer sequential evidence collection in live workflows
+unless parallel collection is explicitly needed.
+
 Camera screen text is useful context, but it is not sufficient by itself. Prefer deterministic host-side evidence first:
 
 ```sh

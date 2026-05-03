@@ -258,13 +258,20 @@ Summary:
 
 ### STATE-002: Add statefile locking or merge semantics
 
-Status: open
+Status: implemented; monitor
 
 Summary:
 
-As more scripts collect evidence, concurrent writes to `rce/state/connection_state.json`
-can race. Add deterministic locking or merge behavior before parallel evidence
-collection becomes normal.
+Evidence writers now take an advisory lock on `rce/state/connection_state.json.lock`
+around load/modify/save. This was added after parallel evidence collection lost
+a fresh `camera_ap_wifi_association` update while another collector wrote a
+newer `camera_ap_ptpip_probe` record.
+
+Remaining work:
+
+- Prefer sequential evidence collection in live workflows unless there is a
+  clear need for parallelism.
+- Revisit the lock strategy for Windows support, where `fcntl` is unavailable.
 
 ### STATE-003: Use screen classification when camera-side state is unknown
 
