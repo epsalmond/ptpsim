@@ -264,7 +264,13 @@ When Ethernet is unavailable, use explicit temporary Wi-Fi takeover mode:
 scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 --temporary-wifi-internet
 ```
 
-This allows Wi-Fi to leave the internet network for the camera AP, runs the local PTP/IP probe, and then reconnects the previous Wi-Fi SSID before the script returns. Pass `--restore-wifi-ssid SSID` if macOS cannot detect the current SSID before switching. The restore step is verified with internet ping reachability and exits `9` if the SSID cannot be restored within the timeout. The lower-level `scripts/connect_camera_ap_wifi.sh --allow-wifi-internet-loss` is only the association step; prefer the combined flow when internet must be restored automatically after PTP.
+This allows Wi-Fi to leave the internet network for the camera AP, runs the local PTP/IP probe, and then reconnects the previous Wi-Fi SSID before the script returns. Pass `--restore-wifi-ssid SSID` if macOS cannot detect the current SSID before switching. The restore step delegates to `scripts/restore_wifi_internet.sh`, verifies internet ping reachability, and exits `9` if the SSID cannot be restored within the timeout. The lower-level `scripts/connect_camera_ap_wifi.sh --allow-wifi-internet-loss` is only the association step; prefer the combined flow when internet must be restored automatically after PTP.
+
+To recover Wi-Fi explicitly after a failed or interrupted AP run:
+
+```sh
+scripts/restore_wifi_internet.sh --ssid EthicalDeviancy
+```
 
 If the BLE AP-launch step exits before Wi-Fi association, record BLE-side launch evidence from its laptop session:
 

@@ -251,32 +251,17 @@ restore_wifi_if_needed() {
   local rc=$?
   if [[ "${temporary_wifi_internet:-0}" == "1" && "${restore_wifi_needed:-0}" == "1" ]]; then
     log "+ restoring Wi-Fi internet network on $restore_wifi_iface to SSID '$restore_wifi_ssid'"
-    networksetup -setairportpower "$restore_wifi_iface" on >>"$flow_dir/04_restore_wifi.log" 2>&1 || true
-    local restore_verified=0
-    for attempt in $(seq 1 "$restore_wifi_timeout"); do
-      if [[ "$attempt" == "1" || $((attempt % 5)) == "0" ]]; then
-        {
-          printf 'restore_attempt=%s\n' "$attempt"
-          networksetup -setairportnetwork "$restore_wifi_iface" "$restore_wifi_ssid"
-        } >>"$flow_dir/04_restore_wifi.log" 2>&1 || true
-      fi
-      local restored_ip
-      restored_ip="$(ipconfig getifaddr "$restore_wifi_iface" 2>/dev/null || true)"
-      if [[ -n "$restored_ip" ]]; then
-        printf 'restore_attempt=%s restored_wifi_ip=%s\n' "$attempt" "$restored_ip" >>"$flow_dir/04_restore_wifi.log"
-      fi
-      if ping -c 1 -W 1000 1.1.1.1 >>"$flow_dir/ping_internet_after_restore.txt" 2>&1; then
-        log "restored_wifi_ip=${restored_ip:-unknown}"
-        log "internet_after_restore=present"
-        restore_verified=1
-        break
-      fi
-      sleep 1
-    done
-    capture_flow route_default_after_restore /sbin/route -n get default
-    capture_flow route_internet_after_restore /sbin/route -n get 1.1.1.1
-    capture_flow networksetup_wifi_after_restore networksetup -getairportnetwork "$restore_wifi_iface"
-    if [[ "$restore_verified" != "1" ]]; then
+    set +e
+    scripts/restore_wifi_internet.sh \
+      --iface "$restore_wifi_iface" \
+      --ssid "$restore_wifi_ssid" \
+      --timeout "$restore_wifi_timeout" \
+      --session-dir "$flow_dir/04_restore_wifi" 2>&1 | tee "$flow_dir/04_restore_wifi.log"
+    local restore_rc=${PIPESTATUS[0]}
+    set -e
+    if [[ "$restore_rc" == "0" ]]; then
+      log "internet_after_restore=present"
+    else
       log "internet_after_restore=absent"
       log "restore_wifi_log=$flow_dir/04_restore_wifi.log"
       rc=9
