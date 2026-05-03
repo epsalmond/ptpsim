@@ -405,6 +405,17 @@ def test_classify_state_all_labels(entries, label) -> None:
     assert evidence.classify_state(state) == label
 
 
+def test_classify_ap_ble_launch_staleness() -> None:
+    stale = "2026-05-02T00:00:00Z"
+
+    state = evidence.default_state()
+    state["evidence"] = {"camera_ap_ble_launch": {"value": "not_launched", "observed_at": stale}}
+    assert evidence.classify_state(state) == "camera_ap_ble_launch_not_launched"
+
+    state["evidence"] = {"camera_ap_ble_launch": {"value": "launched", "observed_at": stale}}
+    assert evidence.classify_state(state) == "unclassified"
+
+
 def test_parse_system_profiler_device_state() -> None:
     text = """
 Bluetooth:
