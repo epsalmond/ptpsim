@@ -820,8 +820,8 @@ def test_camera_ap_wifi_summary_helpers(tmp_path) -> None:
     assert evidence.evaluate_camera_ap_wifi_summary(
         {
             **summary,
-            "default_route": "en0",
-            "internet_route": "en0",
+            "default_route": "",
+            "internet_route": "",
             "wifi_internet_loss_allowed": "present",
         }
     ) == (

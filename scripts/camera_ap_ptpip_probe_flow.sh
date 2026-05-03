@@ -247,6 +247,11 @@ restore_wifi_if_needed() {
     capture_flow route_default_after_restore /sbin/route -n get default
     capture_flow route_internet_after_restore /sbin/route -n get 1.1.1.1
     capture_flow networksetup_wifi_after_restore networksetup -getairportnetwork "$restore_wifi_iface"
+    if ping -c 1 -W 1000 1.1.1.1 >"$flow_dir/ping_internet_after_restore.txt" 2>&1; then
+      log "internet_after_restore=present"
+    else
+      log "internet_after_restore=absent"
+    fi
   fi
   exit "$rc"
 }
