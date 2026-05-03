@@ -626,8 +626,8 @@ The camera is in its app-search window and is waiting for the laptop/app to comp
 Workflow:
 
 1. Run `scripts/connect_camera_ap_wifi.sh --credentials rce/sessions/laptop_ble_gps_<timestamp>/wifi_credentials.json` if Wi-Fi is not already associated.
-2. Run `scripts/ptpip_probe.sh --friendly-name mbp-7274 --tail-profile liveview` while the screen remains in this state.
-3. Prefer `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --hold-ble 0` for repeat attempts so AP launch, Wi-Fi association, and PTP/IP probe run in one window.
+2. Run `scripts/ptpip_probe.sh --friendly-name mbp-7274 --tail-profile liveview --guid f2e4538fada5485d87b27f0bd3d5ded0` while the screen remains in this state.
+3. Prefer `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 --hold-ble 0` for repeat attempts so AP launch, Wi-Fi association, and PTP/IP probe run in one window.
 4. To replay an exact reference app init request, use `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin`.
 5. To attempt raw PTP OpenSession after a successful init ack, add `--ptpip-open-session`.
 6. To probe the next observed reference app PTP property read, add `--ptpip-get-prop 0xd212`.
@@ -650,7 +650,7 @@ The laptop reached the camera's PTP/IP TCP listener, but the camera did not acce
 Workflow:
 
 1. Preserve the PTP/IP probe session directory.
-2. Compare the init request bytes against the reference app reference payloads in `rce/reference/ptp_decoded/`. Generated liveview/get tails must be 28 bytes and the generated packet should be 82 bytes.
+2. Compare the init request bytes against the reference app reference payloads with `scripts/ptpip_compare_init.sh`. Generated liveview/get tails must be 28 bytes and the generated packet should be 82 bytes.
 3. Verify the BLE AP-prepare session includes `UTC_AND_TIMEZONE` and `IMAGE_TRANSFER_SETTING_EX=01` when those characteristics are present.
 4. Do not infer the camera screen state from the timeout. If the next step depends on the Fuji UI, ask the user for exact screen text.
 5. Test the next missing reference app prerequisite, likely the camera-registration-bound initiator GUID/name block, before changing Wi-Fi behavior.
@@ -712,7 +712,7 @@ Normal PTP command/data/response exchange works over the camera AP socket.
 Workflow:
 
 1. Preserve the probe session directory.
-2. Promote this scripted probe into a tested PTP/IP client module.
+2. Use the tested PTP/IP client and init comparator to choose the next generated-identity candidate.
 3. Continue implementing the next reference app PTP sequence from `rce/reference/ptp_decoded/`.
 
 ### `camera_ap_launched_app_function_not_found`
@@ -729,9 +729,9 @@ The camera AP/search workflow launched, but the camera did not observe the expec
 Workflow:
 
 1. Record the screen with `scripts/evidence/camera_screen_manual.sh --value app_function_not_found_retry --note "NOT FOUND / PLEASE CHECK THE APP AND SELECT THE FUNCTION AGAIN"`.
-2. Probe `192.168.0.1:55740` with `scripts/ptpip_probe.sh --friendly-name mbp-7274 --tail-profile liveview`.
+2. Probe `192.168.0.1:55740` with `scripts/ptpip_probe.sh --friendly-name mbp-7274 --tail-profile liveview --guid f2e4538fada5485d87b27f0bd3d5ded0`.
 3. If the camera has already returned to the normal shooting screen, relaunch AP/search and run the PTP/IP probe during the retry window.
-4. Prefer `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274` so AP launch, Wi-Fi association, and PTP/IP probe run back-to-back.
+4. Prefer `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0` so AP launch, Wi-Fi association, and PTP/IP probe run back-to-back.
 
 ### `camera_ap_wifi_associated_internet_route_changed`
 

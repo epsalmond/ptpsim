@@ -86,7 +86,7 @@ Working as of 2026-05-02:
 - Before AP launch, the BLE flow writes observed reference app setup values when available: `UTC_AND_TIMEZONE` and `IMAGE_TRANSFER_SETTING_EX=01`.
 - Live AP launch evidence: `launch_ap=get` wrote `0300` but stayed at `ap_state=0080`; `launch_ap=take` wrote `0400` and reached `ap_state=0180`.
 - Live Wi-Fi evidence: macOS associated with local IP `192.168.0.136`, camera endpoint `192.168.0.1` was reachable, camera route used Wi-Fi `en0`, and default/internet routes stayed on Ethernet `en7`.
-- PTP/IP probing is implemented. TCP connect to `192.168.0.1:55740` succeeds when the camera route uses Wi-Fi, but generated reference app-shaped init packets and exact captured reference app init payloads have not yet produced an init response.
+- PTP/IP probing is implemented. TCP connect to `192.168.0.1:55740` succeeds when the camera route uses Wi-Fi. Generated laptop-identity init packets still time out, but exact captured reference app init payload replay has produced `InitCommandAck`; exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
 Useful successful sessions:
@@ -338,9 +338,10 @@ AP Wi-Fi handoff is split into deterministic steps:
 scripts/camera_ap_prepare.sh --device-name mbp-7274 --timeout 45
 scripts/connect_camera_ap_wifi.sh --credentials rce/sessions/laptop_ble_gps_<timestamp>/wifi_credentials.json
 scripts/evidence/camera_ap_wifi_session.sh --session-dir rce/sessions/camera_ap_wifi_<timestamp>
-scripts/ptpip_probe.sh --friendly-name mbp-7274
+scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0
 scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>
-scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274
+scripts/ptpip_compare_init.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0
+scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0
 ```
 
 The Wi-Fi script must preserve the laptop's Ethernet internet route. It records default/internet route evidence before and after association, refuses to proceed if those routes move to Wi-Fi, and requires the camera endpoint route to use Wi-Fi.
@@ -348,8 +349,9 @@ The AP Wi-Fi evidence command parses the association `summary.txt` and records `
 On the current macOS setup, `networksetup -getairportnetwork` can incorrectly report "not associated" even when `en0` has a camera-subnet IP and `192.168.0.1` routes and pings over Wi-Fi. Prefer IP, route, and endpoint reachability evidence.
 When the camera screen shows a dim Bluetooth icon on the ready-to-shoot screen, BLE name scan can be absent while direct CoreBluetooth reconnect still succeeds. Probe that state with `scripts/evidence/ble_direct_connect_probe.sh --address 2B403BE3-8075-4865-D0F8-827BA4076BFF`. If present, run the combined AP/PTP flow with `--address`.
 The combined AP/PTP flow defaults to `--hold-ble 0`. Holding the BLE connection open after AP launch is diagnostic only; live testing showed it could keep macOS from finding the camera AP.
-`scripts/ptpip_probe.sh` sends an reference app-shaped 82-byte Init_Command_Request by default: 16-byte GUID, four zero bytes, a fixed 26-byte UTF-16LE friendly-name field, and a 28-byte reference app tail. It keeps macOS route checks in shell and delegates packet construction, socket exchange, artifacts, and `summary.json` to `rce.tools.fuji_ble_gps.ptpip`. It validates generated tail lengths and supports `--init-payload PATH` for replaying exact captured init payloads. It also supports `--open-session`, which sends raw PTP OpenSession transaction 1 after an init ack, and `--get-prop HEX`, which sends PTP GetDevicePropValue after OpenSession. `scripts/camera_ap_ptpip_probe_flow.sh` passes through `--ptpip-tail-profile`, `--ptpip-init-payload`, `--ptpip-open-session`, and `--ptpip-get-prop`.
+`scripts/ptpip_probe.sh` sends an reference app-shaped 82-byte Init_Command_Request by default: 16-byte GUID, four zero bytes, a fixed 26-byte UTF-16LE friendly-name field, and a 28-byte reference app tail. It keeps macOS route checks in shell and delegates packet construction, socket exchange, artifacts, and `summary.json` to `rce.tools.fuji_ble_gps.ptpip`. It validates generated tail lengths and supports `--guid HEX` for deterministic generated-identity tests and `--init-payload PATH` for replaying exact captured init payloads. It also supports `--open-session`, which sends raw PTP OpenSession transaction 1 after an init ack, and `--get-prop HEX`, which sends PTP GetDevicePropValue after OpenSession. `scripts/camera_ap_ptpip_probe_flow.sh` passes through `--ptpip-tail-profile`, `--ptpip-guid`, `--ptpip-init-payload`, `--ptpip-open-session`, and `--ptpip-get-prop`.
 `scripts/evidence/ptpip_probe_session.sh` parses `summary.json` and records `camera_ap_ptpip_probe` as the highest reached milestone. The state machine classifies values including `tcp_connected_init_timeout`, `init_ack_present`, `open_session_ok`, and `get_prop_d212_ok`.
+`scripts/ptpip_compare_init.sh` is offline packet evidence. It decodes and compares Fuji-shaped 82-byte Init_Command_Request packets field by field: packet header, initiator GUID, post-GUID bytes, fixed UTF-16LE friendly-name field, and 28-byte reference app tail. Use it before changing live PTP/IP init identity assumptions.
 If the camera shows "NOT FOUND / PLEASE CHECK THE APP AND SELECT THE FUNCTION AGAIN", record `camera_screen_state=app_function_not_found_retry`. That means AP launch and Wi-Fi association were not enough; the app-side PTP/IP/FFIR follow-up did not happen inside the camera's search window.
 Continuity Camera capture defaults to a two-second warmup. macOS AVFoundation exposes the iPhone as a Continuity Camera device here, not as separate 2x/3x lens devices; use `scripts/capture_continuity_camera_frame.sh --list-devices` to inspect exposed devices and pass `--zoom 2` or `--zoom 3` for deterministic output center-crop zoom when it gives a better screen crop.
 
@@ -366,7 +368,7 @@ Short term:
 - Improve recovery from partial pairing/registration.
 - Expand AP/Wi-Fi/PTP evidence scripts for AP state, Wi-Fi association, route preservation, camera endpoint reachability, and PTP/IP init response shape.
 - Determine why the camera accepts the exact captured reference app initiator identity but not the generated laptop identity. Likely candidates are the initiator GUID/name block and camera-side registration binding.
-- Promote the successful exact-init/OpenSession/GetDevicePropValue path into a small PTP/IP client module with tests.
+- Expose the PTP/IP client and init comparator through the TUI.
 - Determine whether Linux/BlueZ adapter alias fixes the camera-side display name.
 - Investigate whether macOS can expose peer-readable GAP `0x2A00` through private APIs or an external BLE adapter.
 
@@ -376,7 +378,7 @@ Medium term:
 - Add deterministic statefile locking or merge semantics if evidence collection becomes parallel.
 - Expand screen OCR/vision support for camera UI evidence and keep classifier regression checks based on preserved `capture.json` artifacts.
 - Add USB probing where the Fuji camera exposes useful state over USB.
-- Promote PTP/IP probing into a real client once the camera accepts init and returns a session id.
+- Promote more of the observed reference app PTP sequence into tested client actions after the init identity rules are understood.
 
 Long term:
 

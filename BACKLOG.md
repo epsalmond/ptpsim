@@ -78,9 +78,9 @@ Current facts:
 
 Next investigation:
 
-- Compare generated init bytes against the accepted captured payload field by field.
+- Use `scripts/ptpip_compare_init.sh` to compare generated init bytes against the accepted captured payload field by field before live tests.
 - Determine whether the accepted GUID/name block is bound to camera registration state.
-- Add parser tests that decode and explain every byte of accepted and generated init packets.
+- Test generated candidates that preserve the accepted reference app GUID with different friendly-name fields, then preserve the accepted reference app friendly-name field with different GUIDs.
 - Keep route/AP behavior fixed while investigating packet identity.
 
 ### BUG-003: Camera-screen classifier does not yet recognize GPS-set or active-Bluetooth icons
@@ -101,26 +101,11 @@ Next investigation:
 - Reclassify saved captures with `scripts/reclassify_camera_screen_state.sh --write`.
 - Add tests for the new metadata mapping.
 
-### BUG-004: Documentation has stale PTP/IP status in some sections
-
-Status: open
-
-Summary:
-
-Some docs still say PTP/IP has not answered generated or replayed init packets.
-Later live evidence showed the exact captured reference app init payload succeeds, and
-OpenSession/GetDevicePropValue probing works.
-
-Next step:
-
-- Audit `README.md`, `AGENTS.md`, and `CONNECTION_STATES.md` for stale PTP/IP status.
-- Keep "generated laptop init times out" distinct from "exact captured reference app init succeeds."
-
 ## Protocol And Camera Work
 
 ### PROTO-001: Promote successful PTP/IP probe path into a Python client
 
-Status: open
+Status: in progress
 
 Summary:
 
@@ -137,7 +122,7 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Decode accepted and generated init identity fields by name.
+- Use the init comparator output to choose the next live generated-identity candidates.
 
 ### PROTO-002: Implement the next observed reference app PTP sequence
 

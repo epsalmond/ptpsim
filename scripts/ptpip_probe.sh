@@ -15,6 +15,8 @@ Options:
                         Default: detected from networksetup.
   --tail-profile NAME   Init tail profile: liveview, get, or zeros.
                         Default: liveview.
+  --guid HEX            16-byte GUID for generated InitCommandRequest packets.
+                        Ignored when --init-payload is used.
   --init-payload PATH   Send an exact captured InitCommandRequest packet
                         instead of generating one.
   --open-session        After InitCommandAck, send raw PTP OpenSession
@@ -41,6 +43,7 @@ port="${FUJI_CAMERA_PTPIP_PORT:-55740}"
 friendly_name="${FUJI_DEVICE_NAME:-}"
 wifi_iface="${FUJI_WIFI_INTERFACE:-}"
 tail_profile="${FUJI_PTPIP_TAIL_PROFILE:-liveview}"
+ptpip_guid="${FUJI_PTPIP_GUID:-}"
 init_payload="${FUJI_PTPIP_INIT_PAYLOAD:-}"
 timeout="${FUJI_PTPIP_TIMEOUT:-5}"
 connect_only=0
@@ -67,6 +70,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --tail-profile)
       tail_profile="$2"
+      shift 2
+      ;;
+    --guid)
+      ptpip_guid="$2"
       shift 2
       ;;
     --init-payload)
@@ -198,6 +205,9 @@ if [[ "$connect_only" == "1" ]]; then
 fi
 if [[ -n "$init_payload" ]]; then
   ptpip_args+=(--init-payload "$init_payload")
+fi
+if [[ -n "$ptpip_guid" ]]; then
+  ptpip_args+=(--guid "$ptpip_guid")
 fi
 if [[ "$open_session" == "1" ]]; then
   ptpip_args+=(--open-session)

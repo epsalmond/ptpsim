@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import socket
 import struct
@@ -58,8 +59,8 @@ def test_build_init_command_request_deterministic(monkeypatch) -> None:
     guid = bytes(range(16))
     request = ptpip.build_init_command_request("mbp-7274", guid=guid)
 
-    assert len(request) == 82
-    assert struct.unpack("<II", request[:8]) == (82, 1)
+    assert len(request) == ptpip.INIT_FIXED_LENGTH
+    assert struct.unpack("<II", request[:8]) == (ptpip.INIT_FIXED_LENGTH, 1)
     assert request[8:24] == guid
     assert request[24:28] == b"\x00\x00\x00\x00"
     assert request[28:44].startswith("mbp-7274".encode("utf-16le"))
@@ -73,6 +74,97 @@ def test_build_init_command_request_deterministic(monkeypatch) -> None:
     monkeypatch.setitem(ptpip.TAIL_PROFILES, "bad", b"\x00")
     with pytest.raises(ValueError, match="expected 28"):
         ptpip.build_init_command_request("mbp", "bad", guid=guid)
+
+
+def test_decode_captured_init_command_requests() -> None:
+    liveview = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin").read_bytes()
+    get = Path("rce/reference/ptp_decoded/payload_00000059.bin").read_bytes()
+
+    liveview_decoded = ptpip.decode_init_command_request(liveview)
+    get_decoded = ptpip.decode_init_command_request(get)
+
+    assert liveview_decoded["declared_length"] == 82
+    assert liveview_decoded["packet_type_name"] == "InitCommandRequest"
+    assert liveview_decoded["payload_length"] == 74
+    assert liveview_decoded["initiator_guid_hex"] == "f2e4538fada5485d87b27f0bd3d5ded0"
+    assert liveview_decoded["post_guid_unknown_u32"] == 0
+    assert liveview_decoded["friendly_name"] == "Pixel-6-9405"
+    assert liveview_decoded["friendly_name_terminator_unit"] == 12
+    assert liveview_decoded["friendly_name_padding_hex"] == ""
+    assert liveview_decoded["tail_profile"] == "liveview"
+    assert liveview_decoded["tail_u16_le"] == [
+        "0x008d",
+        "0x002c",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+        "0x00fa",
+        "0x0005",
+        "0x003d",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+    ]
+    assert get_decoded["friendly_name"] == "Pixel-6-9405"
+    assert get_decoded["tail_profile"] == "get"
+
+
+def test_decode_generated_init_command_request_short_name_padding() -> None:
+    request = ptpip.build_init_command_request("mbp-7274", guid=bytes(range(16)))
+    decoded = ptpip.decode_init_command_request(request)
+
+    assert decoded["friendly_name"] == "mbp-7274"
+    assert decoded["friendly_name_terminator_unit"] == 8
+    assert decoded["friendly_name_padding_hex"] == "0000000000000000"
+    assert decoded["tail_profile"] == "liveview"
+
+
+def test_init_decoder_and_guid_parser_edge_cases() -> None:
+    valid = ptpip.build_init_command_request("mbp", guid=bytes(range(16)))
+
+    assert ptpip.tail_profile_name(b"not-a-known-tail") == "unknown"
+    assert ptpip.parse_guid_hex("00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f") == bytes(range(16))
+    assert ptpip.parse_guid_hex("00010203-04050607-08090a0b-0c0d0e0f") == bytes(range(16))
+
+    with pytest.raises(ValueError, match="too short"):
+        ptpip.decode_init_command_request(b"\x00")
+    with pytest.raises(ValueError, match="declared length"):
+        ptpip.decode_init_command_request(struct.pack("<II", 82, 1) + valid[8:-1])
+    with pytest.raises(ValueError, match="packet type"):
+        ptpip.decode_init_command_request(struct.pack("<II", 82, 2) + valid[8:])
+    with pytest.raises(ValueError, match="Fuji Init_Command_Request shape"):
+        ptpip.decode_init_command_request(struct.pack("<II", 84, 1) + valid[8:] + b"\x00\x00")
+    with pytest.raises(ValueError, match="UTF-16LE field"):
+        ptpip.decode_utf16le_nul_field(b"\x00")
+    with pytest.raises(ValueError, match="tail must have even"):
+        ptpip.tail_u16_le(b"\x00")
+    with pytest.raises(ValueError, match="GUID must be 16 bytes"):
+        ptpip.parse_guid_hex("not-hex")
+    with pytest.raises(ValueError, match="got 1 bytes"):
+        ptpip.parse_guid_hex("00")
+
+
+def test_compare_init_command_requests_field_by_field() -> None:
+    reference = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin").read_bytes()
+    same = ptpip.compare_init_command_requests(reference, reference)
+    candidate = ptpip.build_init_command_request(
+        "mbp-7274",
+        guid=bytes.fromhex("f2e4538fada5485d87b27f0bd3d5ded0"),
+    )
+    comparison = ptpip.compare_init_command_requests(reference, candidate)
+
+    assert same["same"] is True
+    assert comparison["same"] is False
+    fields = {field["field"]: field for field in comparison["fields"]}
+    assert fields["initiator_guid_hex"]["same"] is True
+    assert fields["tail_hex"]["same"] is True
+    assert fields["friendly_name"]["reference"] == "Pixel-6-9405"
+    assert fields["friendly_name"]["candidate"] == "mbp-7274"
+    assert fields["friendly_name_field_hex"]["same"] is False
+    assert fields["friendly_name_padding_hex"]["candidate"] == "0000000000000000"
 
 
 def test_headers_and_packet_reading() -> None:
@@ -164,13 +256,17 @@ def test_probe_full_success_with_captured_init_payload(tmp_path) -> None:
 
 
 def test_probe_init_only_and_open_without_get_prop(tmp_path) -> None:
+    guid = "000102030405060708090a0b0c0d0e0f"
+    init_socket = FakeSocket([packet(2)])
     init_only = ptpip.probe_ptpip(
-        ptpip.ProbeConfig(session_dir=tmp_path / "init-only", friendly_name="mbp"),
-        connector=lambda _target, _timeout: FakeSocket([packet(2)]),
+        ptpip.ProbeConfig(session_dir=tmp_path / "init-only", friendly_name="mbp", guid=guid),
+        connector=lambda _target, _timeout: init_socket,
         clock=lambda: 0.0,
     )
     assert init_only["response_present"] is True
     assert init_only["open_session_sent"] is False
+    assert init_only["guid"] == guid
+    assert init_socket.sent[0][8:24] == bytes(range(16))
 
     open_only = ptpip.probe_ptpip(
         ptpip.ProbeConfig(session_dir=tmp_path / "open-only", friendly_name="mbp", open_session=True),
@@ -264,6 +360,8 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
             "12",
             "--tail-profile",
             "get",
+            "--guid",
+            "000102030405060708090a0b0c0d0e0f",
             "--get-prop",
             "0xd212",
         ]
@@ -273,4 +371,47 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
     assert calls[0].session_dir == tmp_path
     assert calls[0].open_session is True
     assert calls[0].tail_profile == "get"
+    assert calls[0].guid == "000102030405060708090a0b0c0d0e0f"
     assert '"tcp_connect": "present"' in capsys.readouterr().out
+
+
+def test_cli_decode_and_compare_init(tmp_path, capsys) -> None:
+    reference = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin")
+    same_candidate = tmp_path / "same.bin"
+    same_candidate.write_bytes(reference.read_bytes())
+
+    assert ptpip.main(["decode-init", "--payload", str(reference)]) == 0
+    decoded = json.loads(capsys.readouterr().out)
+    assert decoded["friendly_name"] == "Pixel-6-9405"
+
+    assert (
+        ptpip.main(
+            [
+                "compare-init",
+                "--reference",
+                str(reference),
+                "--candidate",
+                str(same_candidate),
+            ]
+        )
+        == 0
+    )
+    same = json.loads(capsys.readouterr().out)
+    assert same["same"] is True
+
+    assert (
+        ptpip.main(
+            [
+                "compare-init",
+                "--reference",
+                str(reference),
+                "--friendly-name",
+                "mbp-7274",
+                "--guid",
+                "f2e4538fada5485d87b27f0bd3d5ded0",
+            ]
+        )
+        == 1
+    )
+    different = json.loads(capsys.readouterr().out)
+    assert different["candidate"]["friendly_name"] == "mbp-7274"

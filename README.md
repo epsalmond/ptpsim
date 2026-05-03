@@ -222,24 +222,32 @@ The AP Wi-Fi evidence command parses `summary.txt` and records `camera_ap_wifi_a
 Probe the camera PTP/IP socket during the camera's search window:
 
 ```sh
-scripts/ptpip_probe.sh --friendly-name mbp-7274
+scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0
 scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>
 scripts/evaluate_connection_state.sh --verbose
 ```
 
-This records route evidence and sends an reference app-shaped 82-byte PTP/IP `Init_Command_Request` to `192.168.0.1:55740`. It uses a fixed 26-byte UTF-16LE friendly-name field plus an observed 28-byte reference app tail. If the camera screen has already timed out to normal shooting, rerun the AP prepare step or press the camera's retry control before probing.
+This records route evidence and sends an reference app-shaped 82-byte PTP/IP `Init_Command_Request` to `192.168.0.1:55740`. It uses a fixed 26-byte UTF-16LE friendly-name field plus an observed 28-byte reference app tail. Use `--guid` for deterministic generated identity tests; omit it only when a fresh random initiator GUID is intentional. If the camera screen has already timed out to normal shooting, rerun the AP prepare step or press the camera's retry control before probing.
 The script keeps macOS route checks in shell and delegates PTP/IP packet construction, socket exchange, binary artifacts, and `summary.json` generation to the tested Python module `rce.tools.fuji_ble_gps.ptpip`.
 The PTP/IP evidence command parses `summary.json` and records `camera_ap_ptpip_probe` as the highest reached milestone, such as `tcp_connected_init_timeout`, `init_ack_present`, `open_session_ok`, or `get_prop_d212_ok`.
+
+Compare a generated init packet against the accepted reference app capture without touching the camera:
+
+```sh
+scripts/ptpip_compare_init.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0
+```
+
+The compare command decodes the Fuji 82-byte init shape field by field: packet header, initiator GUID, post-GUID bytes, fixed UTF-16LE friendly-name field, and the 28-byte reference app tail. It exits `0` only when every decoded field matches.
 
 For live testing, prefer the combined flow so AP launch, Wi-Fi association, and PTP/IP probing happen inside one camera search window:
 
 ```sh
-scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274
+scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0
 ```
 
 The combined flow does not keep the BLE connection open after AP launch by default. `--hold-ble SEC` is diagnostic only; live testing showed that keeping BLE open could prevent macOS from finding the camera AP.
 
-Current PTP/IP status: TCP connect to `192.168.0.1:55740` succeeds when the camera route is on Wi-Fi. A generated 82-byte init packet with this laptop's name still timed out. Replaying exact captured reference app init payload `rce/reference/ptp_decoded/liveview_payload_00000061.bin` produced a 68-byte `InitCommandAck` once, which proves the socket can enter PTP/IP. Later exact-init retries timed out while TCP still accepted connections; do not infer camera UI state from that timeout. Ask the user for current camera-screen text or record manual evidence.
+Current PTP/IP status: TCP connect to `192.168.0.1:55740` succeeds when the camera route is on Wi-Fi. A generated 82-byte init packet with this laptop's name still timed out. Replaying exact captured reference app init payload `rce/reference/ptp_decoded/liveview_payload_00000061.bin` produced a 68-byte `InitCommandAck`, and exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded. The remaining PTP/IP init blocker is the generated laptop identity, not AP routing or the socket path. Do not infer camera UI state from a timeout; ask the user for current camera-screen text or record manual evidence.
 
 When scan evidence is absent but the camera screen shows a dim Bluetooth icon on the ready-to-shoot screen, probe the last known CoreBluetooth identifier directly:
 
@@ -289,4 +297,4 @@ python3 -m rce.tools.fuji_ble_gps.cli tui
 
 ## Not Yet Implemented
 
-PTP/IP probing is implemented, but the camera has not yet answered our init packet. The project can read camera AP credentials over BLE, write the observed UTC/timezone and image-transfer setup values, launch the camera AP with the `take` launch value, associate macOS Wi-Fi with the AP while preserving the Ethernet internet route, and open TCP to the camera's PTP/IP port.
+The project can read camera AP credentials over BLE, write the observed UTC/timezone and image-transfer setup values, launch the camera AP with the `take` launch value, associate macOS Wi-Fi with the AP while preserving the Ethernet internet route, and run PTP/IP init/session/property probes. The generated laptop-identity init packet still needs to be made acceptable to the camera; exact captured reference app init replay is the current known-good PTP/IP identity path.

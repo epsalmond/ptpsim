@@ -15,6 +15,8 @@ Options:
   --ptpip-timeout SEC     PTP/IP socket timeout. Default: 5.
   --ptpip-tail-profile N  PTP/IP generated init tail profile: liveview, get,
                           or zeros. Default: liveview.
+  --ptpip-guid HEX        16-byte GUID for generated InitCommandRequest
+                          packets. Ignored when --ptpip-init-payload is used.
   --ptpip-init-payload P  Send an exact captured InitCommandRequest packet
                           instead of generating one.
   --ptpip-open-session    After PTP/IP init ack, send raw PTP OpenSession.
@@ -44,6 +46,7 @@ ap_state_timeout="${FUJI_CAMERA_AP_STATE_TIMEOUT:-15}"
 wifi_timeout="${FUJI_WIFI_TIMEOUT:-20}"
 ptpip_timeout="${FUJI_PTPIP_TIMEOUT:-5}"
 ptpip_tail_profile="${FUJI_PTPIP_TAIL_PROFILE:-liveview}"
+ptpip_guid="${FUJI_PTPIP_GUID:-}"
 ptpip_init_payload="${FUJI_PTPIP_INIT_PAYLOAD:-}"
 ptpip_open_session="${FUJI_PTPIP_OPEN_SESSION:-0}"
 ptpip_get_prop="${FUJI_PTPIP_GET_PROP:-}"
@@ -77,6 +80,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ptpip-tail-profile)
       ptpip_tail_profile="$2"
+      shift 2
+      ;;
+    --ptpip-guid)
+      ptpip_guid="$2"
       shift 2
       ;;
     --ptpip-init-payload)
@@ -187,6 +194,10 @@ fi
 ptpip_log="$flow_dir/03_ptpip_probe.log"
 ptpip_args=(--friendly-name "$device_name" --tail-profile "$ptpip_tail_profile" --timeout "$ptpip_timeout")
 ptpip_log_args="--friendly-name $device_name --tail-profile $ptpip_tail_profile --timeout $ptpip_timeout"
+if [[ -n "$ptpip_guid" ]]; then
+  ptpip_args+=(--guid "$ptpip_guid")
+  ptpip_log_args="$ptpip_log_args --guid $ptpip_guid"
+fi
 if [[ -n "$ptpip_init_payload" ]]; then
   ptpip_args+=(--init-payload "$ptpip_init_payload")
   ptpip_log_args="$ptpip_log_args --init-payload $ptpip_init_payload"
