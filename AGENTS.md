@@ -337,11 +337,13 @@ AP Wi-Fi handoff is split into deterministic steps:
 ```sh
 scripts/camera_ap_prepare.sh --device-name mbp-7274 --timeout 45
 scripts/connect_camera_ap_wifi.sh --credentials rce/sessions/laptop_ble_gps_<timestamp>/wifi_credentials.json
+scripts/evidence/camera_ap_wifi_session.sh --session-dir rce/sessions/camera_ap_wifi_<timestamp>
 scripts/ptpip_probe.sh --friendly-name mbp-7274
 scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274
 ```
 
 The Wi-Fi script must preserve the laptop's Ethernet internet route. It records default/internet route evidence before and after association, refuses to proceed if those routes move to Wi-Fi, and requires the camera endpoint route to use Wi-Fi.
+The AP Wi-Fi evidence command parses the association `summary.txt` and records `camera_ap_wifi_association=present`; the state machine classifies that as `camera_ap_wifi_associated_ethernet_default`.
 On the current macOS setup, `networksetup -getairportnetwork` can incorrectly report "not associated" even when `en0` has a camera-subnet IP and `192.168.0.1` routes and pings over Wi-Fi. Prefer IP, route, and endpoint reachability evidence.
 When the camera screen shows a dim Bluetooth icon on the ready-to-shoot screen, BLE name scan can be absent while direct CoreBluetooth reconnect still succeeds. Probe that state with `scripts/evidence/ble_direct_connect_probe.sh --address 2B403BE3-8075-4865-D0F8-827BA4076BFF`. If present, run the combined AP/PTP flow with `--address`.
 The combined AP/PTP flow defaults to `--hold-ble 0`. Holding the BLE connection open after AP launch is diagnostic only; live testing showed it could keep macOS from finding the camera AP.

@@ -186,6 +186,10 @@ def test_print_evidence_summary_empty_invalid_and_populated(capsys) -> None:
             "camera_ap_waiting_for_ptpip_connection",
         ),
         (
+            {"camera_ap_wifi_association": "present"},
+            "camera_ap_wifi_associated_ethernet_default",
+        ),
+        (
             {"camera_screen_state": "registration_mode"},
             "camera_pairing_registration_screen",
         ),
@@ -705,6 +709,94 @@ def test_refresh_camera_screen_evidence_builds_screen_args(monkeypatch, tmp_path
     assert calls[0].zoom == 2.0
     assert calls[0].no_evidence is False
     assert calls[0].lcd_box_file == screen_vision.DEFAULT_LCD_BOX_FILE
+
+
+def make_camera_ap_wifi_session(tmp_path: Path, **overrides: str) -> Path:
+    session = tmp_path / "camera_ap_wifi_20260502T000000Z"
+    session.mkdir()
+    values = {
+        "session": str(session),
+        "associated": "present",
+        "wifi_interface": "en0",
+        "ssid": "FUJIFILM-AP",
+        "bssid": "00:11:22:33:44:55",
+        "local_ip": "192.168.0.136",
+        "target_ip": "192.168.0.1",
+        "default_route": "en7",
+        "internet_route": "en7",
+        "camera_route": "en0",
+    }
+    values.update(overrides)
+    (session / "summary.txt").write_text(
+        "# camera AP Wi-Fi summary\n" + "\n".join(f"{key}={value}" for key, value in values.items()) + "\n",
+        encoding="utf-8",
+    )
+    return session
+
+
+def test_camera_ap_wifi_summary_helpers(tmp_path) -> None:
+    session = make_camera_ap_wifi_session(tmp_path)
+    summary = evidence.parse_key_value_file(session / "summary.txt")
+
+    assert summary["local_ip"] == "192.168.0.136"
+    assert evidence.evaluate_camera_ap_wifi_summary(summary) == (
+        "present",
+        "Wi-Fi associated to camera AP with Ethernet default/internet route preserved",
+    )
+
+    assert evidence.evaluate_camera_ap_wifi_summary({})[0] == "absent"
+    assert evidence.evaluate_camera_ap_wifi_summary({**summary, "associated": "absent"}) == (
+        "absent",
+        "associated is not present",
+    )
+    assert evidence.evaluate_camera_ap_wifi_summary({**summary, "camera_route": "en7"}) == (
+        "absent",
+        "camera endpoint route is not on Wi-Fi",
+    )
+    assert evidence.evaluate_camera_ap_wifi_summary({**summary, "default_route": "en0"}) == (
+        "absent",
+        "default route moved to Wi-Fi",
+    )
+    assert evidence.evaluate_camera_ap_wifi_summary({**summary, "internet_route": "en0"}) == (
+        "absent",
+        "internet route moved to Wi-Fi",
+    )
+
+
+def test_camera_ap_wifi_session_collector(monkeypatch, tmp_path) -> None:
+    session = make_camera_ap_wifi_session(tmp_path)
+    state_file = tmp_path / "state.json"
+
+    assert evidence.collect_camera_ap_wifi_session(
+        args(tmp_path, state_file=state_file, session_dir=str(session))
+    ) == 0
+    state = evidence.load_state(state_file)
+    assert state["evidence"]["camera_ap_wifi_association"]["value"] == "present"
+    assert state["evidence"]["camera_ap_wifi_association"]["details"]["internet_route"] == "en7"
+    assert state["state_label"] == "camera_ap_wifi_associated_ethernet_default"
+
+    missing_summary = tmp_path / "camera_ap_wifi_missing"
+    missing_summary.mkdir()
+    evidence.collect_camera_ap_wifi_session(
+        args(tmp_path, state_file=tmp_path / "missing-state.json", session_dir=str(missing_summary))
+    )
+    missing_state = evidence.load_state(tmp_path / "missing-state.json")
+    assert missing_state["evidence"]["camera_ap_wifi_association"]["value"] == "unavailable"
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    assert evidence.latest_camera_ap_wifi_session(root) is None
+    (root / "camera_ap_wifi_a").mkdir()
+    (root / "camera_ap_wifi_b").mkdir()
+    assert evidence.latest_camera_ap_wifi_session(root).name == "camera_ap_wifi_b"
+
+    monkeypatch.setattr(evidence, "latest_camera_ap_wifi_session", lambda: session)
+    assert evidence.resolve_camera_ap_wifi_session_dir(args(tmp_path, session_dir=None)) == session
+
+    monkeypatch.setattr(evidence, "latest_camera_ap_wifi_session", lambda: None)
+    evidence.collect_camera_ap_wifi_session(args(tmp_path, state_file=tmp_path / "none-state.json"))
+    none_state = evidence.load_state(tmp_path / "none-state.json")
+    assert none_state["evidence"]["camera_ap_wifi_association"]["value"] == "unavailable"
 
 
 def make_session(tmp_path: Path) -> Path:

@@ -57,7 +57,7 @@ Next investigation:
 
 ### BUG-002: Generated laptop PTP/IP init does not match accepted reference app init
 
-Status: open
+Status: in progress
 
 Observed: 2026-05-02
 
@@ -181,6 +181,7 @@ Next work:
 
 - Make route preservation failures more actionable.
 - Record AP state and camera endpoint reachability in a single structured artifact.
+- Continue promoting `camera_ap_wifi_association` evidence into the TUI workflow.
 - Keep all AP scripts deterministic and evidence-driven.
 
 ## BLE And Pairing

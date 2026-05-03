@@ -598,6 +598,7 @@ Evidence:
 - `default_route` and `internet_route` match the pre-association Ethernet interface.
 - `camera_route` is the Wi-Fi interface.
 - If `networksetup -getairportnetwork` says "not associated" but IP/route/endpoint evidence is present, prefer IP/route/endpoint evidence.
+- `scripts/evidence/camera_ap_wifi_session.sh --session-dir rce/sessions/camera_ap_wifi_<timestamp>` records `camera_ap_wifi_association=present`.
 
 Meaning:
 
@@ -606,8 +607,9 @@ macOS is associated with the camera AP while the laptop's internet route remains
 Workflow:
 
 1. Preserve the Wi-Fi association session directory.
-2. Open PTP/IP against the camera endpoint, expected initially at `192.168.0.1`.
-3. If PTP/IP fails, collect endpoint route evidence before changing Wi-Fi state.
+2. Record it into the statefile with `scripts/evidence/camera_ap_wifi_session.sh --session-dir rce/sessions/camera_ap_wifi_<timestamp>`.
+3. Open PTP/IP against the camera endpoint, expected initially at `192.168.0.1`.
+4. If PTP/IP fails, collect endpoint route evidence before changing Wi-Fi state.
 
 ### `camera_ap_waiting_for_ptpip_connection`
 

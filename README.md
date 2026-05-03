@@ -212,9 +212,12 @@ Then connect macOS Wi-Fi to the camera AP using the generated credentials file:
 
 ```sh
 scripts/connect_camera_ap_wifi.sh --credentials rce/sessions/laptop_ble_gps_<timestamp>/wifi_credentials.json
+scripts/evidence/camera_ap_wifi_session.sh --session-dir rce/sessions/camera_ap_wifi_<timestamp>
+scripts/evaluate_connection_state.sh --verbose
 ```
 
 The Wi-Fi script assumes this laptop's internet route is already on Ethernet. It records route evidence before and after association, refuses to continue if the default or internet route moves onto Wi-Fi, and requires the camera route to `192.168.0.1` to use the Wi-Fi interface. On the current macOS setup, `networksetup -getairportnetwork` can still report "not associated" while IP, route, and ping evidence prove the camera AP is reachable; treat route/IP evidence as authoritative. The passphrase is not printed or written to the Wi-Fi script logs.
+The AP Wi-Fi evidence command parses `summary.txt` and records `camera_ap_wifi_association=present` only when association is present, the camera endpoint route is on Wi-Fi, and default/internet routes remain off Wi-Fi.
 
 Probe the camera PTP/IP socket during the camera's search window:
 
