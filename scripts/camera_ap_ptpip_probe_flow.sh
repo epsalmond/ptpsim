@@ -333,6 +333,23 @@ fi
 read_screen_state "00_initial"
 
 prepare_log="$flow_dir/01_camera_ap_prepare.log"
+ap_ble_evidence_log="$flow_dir/01_camera_ap_ble_evidence.log"
+record_ap_ble_evidence() {
+  local session_dir=""
+  session_dir="$(awk -F= '/^session=/{print $2; exit}' "$prepare_log" 2>/dev/null || true)"
+  if [[ -z "$session_dir" ]]; then
+    log "camera_ap_ble_evidence=skipped_no_session"
+    return
+  fi
+  log "+ scripts/evidence/camera_ap_ble_session.sh --session-dir $session_dir"
+  set +e
+  scripts/evidence/camera_ap_ble_session.sh --session-dir "$session_dir" 2>&1 | tee "$ap_ble_evidence_log"
+  local evidence_rc=${PIPESTATUS[0]}
+  set -e
+  if [[ "$evidence_rc" != "0" ]]; then
+    log "camera_ap_ble_evidence_rc=$evidence_rc"
+  fi
+}
 prepare_args=(
   --device-name "$device_name"
   --timeout "$ble_timeout"
@@ -365,6 +382,7 @@ for _ in $(seq 1 "$ready_deadline"); do
     prepare_rc=$?
     set -e
     read_screen_state "01_after_ap_prepare_exit"
+    record_ap_ble_evidence
     echo "BLE AP prepare exited before credentials and AP launch were ready" >&2
     if [[ "$prepare_rc" == "0" ]]; then
       exit 1
@@ -378,6 +396,7 @@ if [[ -z "$credentials" || ! -r "$credentials" ]]; then
   echo "could not find readable credentials path in $prepare_log" >&2
   read_screen_state "01_after_ap_prepare_timeout"
   wait "$prepare_pid" || true
+  record_ap_ble_evidence
   exit 1
 fi
 
@@ -445,6 +464,7 @@ set +e
 wait "$prepare_pid"
 prepare_rc=$?
 set -e
+record_ap_ble_evidence
 
 log "prepare_log=$prepare_log"
 log "wifi_log=$wifi_log"

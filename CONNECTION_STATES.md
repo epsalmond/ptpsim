@@ -590,6 +590,27 @@ Workflow:
 3. Verify the laptop's default/internet route remains on Ethernet.
 4. Verify the route to `192.168.0.1` uses Wi-Fi.
 
+### `camera_ap_ble_launch_not_launched`
+
+Evidence:
+
+- `scripts/evidence/camera_ap_ble_session.sh --session-dir rce/sessions/laptop_ble_gps_<timestamp>` records `camera_ap_ble_launch=not_launched`.
+- The BLE session log contains a successful `FUNCTION_LAUNCH=0400` write.
+- `AP_STATE` samples remain `0080/not_launched` until the AP launch timeout.
+- A current screen read still returns a named state, usually `ready_to_take_photo`.
+
+Meaning:
+
+The laptop could reconnect over BLE and read camera AP credentials, but the camera did not enter AP/search mode after the Fuji function-launch write. This is not Wi-Fi or PTP/IP evidence because Wi-Fi association has not started yet.
+
+Workflow:
+
+1. Preserve the failed BLE session and record it with `scripts/evidence/camera_ap_ble_session.sh --session-dir rce/sessions/laptop_ble_gps_<timestamp>` if the combined flow did not already do so.
+2. Read the camera screen and stop if it returns `unknown`.
+3. Compare the failed session's `identity.json`, `writes.jsonl`, and `session.log` against the latest successful AP-launch session before changing launch values.
+4. If the screen is still `ready_to_take_photo` and direct BLE connect remains present, retry `scripts/camera_ap_ptpip_probe_flow.sh --address <CoreBluetooth UUID> --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 ...` once with the normal timeout.
+5. If it fails twice in this state, do not keep retrying. Capture fresh screen evidence and investigate prerequisites such as camera-side function state, stale connected-device state, or missing setup writes.
+
 ### `camera_ap_wifi_associated_ethernet_default`
 
 Evidence:
