@@ -258,6 +258,14 @@ scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e453
 The combined flow reads the camera LCD at transition points by default: initial state, after AP launch, after Wi-Fi association, and after the PTP/IP probe. If classification returns `camera_screen_state=unknown`, the flow stops so the classifier or iPhone/LCD alignment can be fixed. Use `--no-screen-read` only for a targeted diagnostic where camera-side screen context is deliberately unavailable.
 The combined flow does not keep the BLE connection open after AP launch by default. `--hold-ble SEC` is diagnostic only; live testing showed that keeping BLE open could prevent macOS from finding the camera AP.
 
+When Ethernet is unavailable, use explicit temporary Wi-Fi takeover mode:
+
+```sh
+scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 --temporary-wifi-internet
+```
+
+This allows Wi-Fi to leave the internet network for the camera AP, runs the local PTP/IP probe, and then reconnects the previous Wi-Fi SSID before the script returns. Pass `--restore-wifi-ssid SSID` if macOS cannot detect the current SSID before switching. The lower-level `scripts/connect_camera_ap_wifi.sh --allow-wifi-internet-loss` is only the association step; prefer the combined flow when internet must be restored automatically after PTP.
+
 If the BLE AP-launch step exits before Wi-Fi association, record BLE-side launch evidence from its laptop session:
 
 ```sh

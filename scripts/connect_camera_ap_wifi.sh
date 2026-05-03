@@ -15,14 +15,18 @@ Options:
   --wifi-iface IFACE    Wi-Fi device. Default: detected from networksetup.
   --target-ip IP        Camera AP endpoint. Default: 192.168.0.1.
   --timeout SEC         Seconds to wait for association/IP. Default: 20.
+  --allow-wifi-internet-loss
+                        Allow the camera AP to temporarily take over Wi-Fi
+                        when no Ethernet internet route is available.
   --skip-ping           Do not attempt non-fatal ping evidence.
   -h, --help            Show this help.
 
 This script connects macOS Wi-Fi to the camera AP while preserving the active
 internet route. It records route evidence before and after association and
-fails if the default/internet route moves onto Wi-Fi. The passphrase is never
-printed or written to the script's logs. Success is based on Wi-Fi IP plus
-camera route evidence because networksetup can misreport camera AP association.
+fails if the default/internet route moves onto Wi-Fi unless
+--allow-wifi-internet-loss is explicit. The passphrase is never printed or
+written to the script's logs. Success is based on Wi-Fi IP plus camera route
+evidence because networksetup can misreport camera AP association.
 USAGE
 }
 
@@ -37,6 +41,7 @@ bssid="${FUJI_CAMERA_AP_BSSID:-}"
 wifi_iface="${FUJI_WIFI_INTERFACE:-}"
 target_ip="${FUJI_CAMERA_AP_TARGET_IP:-192.168.0.1}"
 timeout="${FUJI_WIFI_TIMEOUT:-20}"
+allow_wifi_internet_loss="${FUJI_ALLOW_WIFI_INTERNET_LOSS:-0}"
 skip_ping=0
 
 while [[ $# -gt 0 ]]; do
@@ -68,6 +73,10 @@ while [[ $# -gt 0 ]]; do
     --timeout)
       timeout="$2"
       shift 2
+      ;;
+    --allow-wifi-internet-loss)
+      allow_wifi_internet_loss=1
+      shift
       ;;
     --skip-ping)
       skip_ping=1
@@ -169,7 +178,8 @@ if [[ -z "$before_default_iface" || -z "$before_internet_iface" ]]; then
   exit 1
 fi
 
-if [[ "$before_default_iface" == "$wifi_iface" || "$before_internet_iface" == "$wifi_iface" ]]; then
+if [[ "$before_default_iface" == "$wifi_iface" || "$before_internet_iface" == "$wifi_iface" ]] &&
+  [[ "$allow_wifi_internet_loss" != "1" ]]; then
   echo "internet route is already on Wi-Fi ($wifi_iface); connect/prioritize Ethernet before camera AP association" >&2
   echo "session=$session_dir" >&2
   exit 1
@@ -183,6 +193,9 @@ if [[ -n "$bssid" ]]; then
 fi
 log "default_route_before=$before_default_iface"
 log "internet_route_before=$before_internet_iface"
+if [[ "$allow_wifi_internet_loss" == "1" ]]; then
+  log "temporary_wifi_internet_loss=allowed"
+fi
 log "+ networksetup -setairportpower $wifi_iface on"
 networksetup -setairportpower "$wifi_iface" on >>"$connect_log" 2>&1
 
@@ -220,13 +233,14 @@ if [[ "$associated" != "1" ]]; then
   exit 1
 fi
 
-if [[ "$after_default_iface" != "$before_default_iface" ]]; then
+if [[ "$allow_wifi_internet_loss" != "1" && "$after_default_iface" != "$before_default_iface" ]]; then
   echo "default route changed from $before_default_iface to $after_default_iface; refusing to continue" >&2
   echo "session=$session_dir" >&2
   exit 1
 fi
 
-if [[ "$after_internet_iface" != "$before_internet_iface" || "$after_internet_iface" == "$wifi_iface" ]]; then
+if [[ "$allow_wifi_internet_loss" != "1" ]] &&
+  [[ "$after_internet_iface" != "$before_internet_iface" || "$after_internet_iface" == "$wifi_iface" ]]; then
   echo "internet route changed from $before_internet_iface to $after_internet_iface; refusing to continue" >&2
   echo "session=$session_dir" >&2
   exit 1
@@ -253,6 +267,13 @@ fi
   printf 'default_route=%s\n' "$after_default_iface"
   printf 'internet_route=%s\n' "$after_internet_iface"
   printf 'camera_route=%s\n' "$camera_route_iface"
+  if [[ "$allow_wifi_internet_loss" == "1" ]]; then
+    printf 'internet_mode=temporary_wifi_takeover\n'
+    printf 'wifi_internet_loss_allowed=present\n'
+  else
+    printf 'internet_mode=ethernet_preserved\n'
+    printf 'wifi_internet_loss_allowed=absent\n'
+  fi
 } >"$session_dir/summary.txt"
 
 log "associated=present"

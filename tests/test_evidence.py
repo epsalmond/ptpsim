@@ -191,6 +191,10 @@ def test_print_evidence_summary_empty_invalid_and_populated(capsys) -> None:
             "camera_ap_wifi_associated_ethernet_default",
         ),
         (
+            {"camera_ap_wifi_association": "present_temporary_wifi_takeover"},
+            "camera_ap_wifi_associated_temporary_wifi_takeover",
+        ),
+        (
             {"camera_ap_ble_launch": "not_launched"},
             "camera_ap_ble_launch_not_launched",
         ),
@@ -812,6 +816,17 @@ def test_camera_ap_wifi_summary_helpers(tmp_path) -> None:
     assert evidence.evaluate_camera_ap_wifi_summary({**summary, "internet_route": "en0"}) == (
         "absent",
         "internet route moved to Wi-Fi",
+    )
+    assert evidence.evaluate_camera_ap_wifi_summary(
+        {
+            **summary,
+            "default_route": "en0",
+            "internet_route": "en0",
+            "wifi_internet_loss_allowed": "present",
+        }
+    ) == (
+        "present_temporary_wifi_takeover",
+        "Wi-Fi associated to camera AP with temporary internet Wi-Fi takeover",
     )
 
 

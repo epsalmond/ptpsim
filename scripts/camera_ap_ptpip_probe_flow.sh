@@ -27,6 +27,12 @@ Options:
                           sequence. Current: sdcard-browse-bootstrap,
                           sdcard-current-object-info,
                           sdcard-current-object-thumbnail.
+  --temporary-wifi-internet
+                          Allow Wi-Fi to temporarily leave the internet network
+                          for the camera AP, then restore the previous Wi-Fi
+                          SSID before this script returns.
+  --restore-wifi-ssid S   SSID to restore after --temporary-wifi-internet.
+                          Default: detected current Wi-Fi SSID.
   --hold-ble SEC          Diagnostic only: keep the BLE AP-launch connection
                           open after AP launch. Default: 0.
   --no-screen-read        Do not run camera LCD classification at flow
@@ -38,7 +44,8 @@ Options:
 
 Runs the AP handoff critical path in sequence:
   1. BLE read credentials and launch camera AP with function value take/0400.
-  2. Connect macOS Wi-Fi to the camera AP while preserving Ethernet internet.
+  2. Connect macOS Wi-Fi to the camera AP while preserving Ethernet internet,
+     or temporarily taking over Wi-Fi when --temporary-wifi-internet is set.
   3. Probe 192.168.0.1:55740 with PTP/IP Init_Command_Request.
 
 Use this when the camera is about to enter, or has just entered, its app search
@@ -64,6 +71,9 @@ ptpip_open_session="${FUJI_PTPIP_OPEN_SESSION:-0}"
 ptpip_get_prop="${FUJI_PTPIP_GET_PROP:-}"
 ptpip_app_sequence="${FUJI_PTPIP_APP_SEQUENCE:-}"
 hold_ble="${FUJI_CAMERA_AP_HOLD_AFTER_LAUNCH:-0}"
+temporary_wifi_internet="${FUJI_TEMPORARY_WIFI_INTERNET:-0}"
+restore_wifi_ssid="${FUJI_RESTORE_WIFI_SSID:-}"
+restore_wifi_timeout="${FUJI_RESTORE_WIFI_TIMEOUT:-30}"
 screen_read_enabled="${FUJI_SCREEN_READ:-1}"
 screen_device="${FUJI_SCREEN_DEVICE_NAME:-iPhone}"
 screen_warmup="${FUJI_SCREEN_WARMUP:-2}"
@@ -125,6 +135,14 @@ while [[ $# -gt 0 ]]; do
       ptpip_open_session=1
       shift 2
       ;;
+    --temporary-wifi-internet)
+      temporary_wifi_internet=1
+      shift
+      ;;
+    --restore-wifi-ssid)
+      restore_wifi_ssid="$2"
+      shift 2
+      ;;
     --hold-ble)
       hold_ble="$2"
       shift 2
@@ -179,6 +197,60 @@ log() {
   printf '%s\n' "$*" | tee -a "$summary" >&2
 }
 
+capture_flow() {
+  local label="$1"
+  shift
+  "$@" >"$flow_dir/$label.txt" 2>&1 || true
+}
+
+detect_wifi_iface() {
+  networksetup -listallhardwareports |
+    awk '
+      /^Hardware Port: (Wi-Fi|AirPort)$/ {want=1; next}
+      want && /^Device: / {print $2; exit}
+    '
+}
+
+current_wifi_ssid() {
+  local iface="$1"
+  local networksetup_output
+  networksetup_output="$(networksetup -getairportnetwork "$iface" 2>/dev/null || true)"
+  case "$networksetup_output" in
+    "Current Wi-Fi Network: "*)
+      printf '%s\n' "${networksetup_output#Current Wi-Fi Network: }"
+      return 0
+      ;;
+  esac
+
+  local airport_tool="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+  if [[ -x "$airport_tool" ]]; then
+    "$airport_tool" -I 2>/dev/null |
+      awk -F': ' '/^[[:space:]]*SSID: / && $2 != "" {print $2; exit}'
+  fi
+}
+
+restore_wifi_if_needed() {
+  local rc=$?
+  if [[ "${temporary_wifi_internet:-0}" == "1" && "${restore_wifi_needed:-0}" == "1" ]]; then
+    log "+ restoring Wi-Fi internet network on $restore_wifi_iface to SSID '$restore_wifi_ssid'"
+    networksetup -setairportpower "$restore_wifi_iface" on >>"$flow_dir/04_restore_wifi.log" 2>&1 || true
+    networksetup -setairportnetwork "$restore_wifi_iface" "$restore_wifi_ssid" >>"$flow_dir/04_restore_wifi.log" 2>&1 || true
+    for _ in $(seq 1 "$restore_wifi_timeout"); do
+      local restored_ip
+      restored_ip="$(ipconfig getifaddr "$restore_wifi_iface" 2>/dev/null || true)"
+      if [[ -n "$restored_ip" && "$restored_ip" != 192.168.0.* ]]; then
+        log "restored_wifi_ip=$restored_ip"
+        break
+      fi
+      sleep 1
+    done
+    capture_flow route_default_after_restore /sbin/route -n get default
+    capture_flow route_internet_after_restore /sbin/route -n get 1.1.1.1
+    capture_flow networksetup_wifi_after_restore networksetup -getairportnetwork "$restore_wifi_iface"
+  fi
+  exit "$rc"
+}
+
 read_screen_state() {
   local label="$1"
   if [[ "$screen_read_enabled" != "1" ]]; then
@@ -216,6 +288,28 @@ read_screen_state() {
 log "flow=$flow_dir"
 log "device_name=$device_name"
 log "ptpip_friendly_name=$ptpip_friendly_name"
+
+restore_wifi_needed=0
+restore_wifi_iface=""
+if [[ "$temporary_wifi_internet" == "1" ]]; then
+  restore_wifi_iface="$(detect_wifi_iface)"
+  if [[ -z "$restore_wifi_iface" ]]; then
+    echo "could not detect Wi-Fi interface for temporary Wi-Fi restore" >&2
+    exit 1
+  fi
+  if [[ -z "$restore_wifi_ssid" ]]; then
+    restore_wifi_ssid="$(current_wifi_ssid "$restore_wifi_iface")"
+  fi
+  if [[ -z "$restore_wifi_ssid" ]]; then
+    echo "could not detect current Wi-Fi SSID; pass --restore-wifi-ssid with --temporary-wifi-internet" >&2
+    exit 1
+  fi
+  log "temporary_wifi_internet=enabled"
+  log "restore_wifi_iface=$restore_wifi_iface"
+  log "restore_wifi_ssid=$restore_wifi_ssid"
+  trap restore_wifi_if_needed EXIT
+fi
+
 read_screen_state "00_initial"
 
 prepare_log="$flow_dir/01_camera_ap_prepare.log"
@@ -271,9 +365,16 @@ log "credentials=$credentials"
 read_screen_state "01_after_ap_launch"
 
 wifi_log="$flow_dir/02_connect_camera_ap_wifi.log"
-log "+ scripts/connect_camera_ap_wifi.sh --credentials <redacted path> --timeout $wifi_timeout"
+wifi_args=(--credentials "$credentials" --timeout "$wifi_timeout")
+wifi_log_args="--credentials <redacted path> --timeout $wifi_timeout"
+if [[ "$temporary_wifi_internet" == "1" ]]; then
+  wifi_args+=(--allow-wifi-internet-loss)
+  wifi_log_args="$wifi_log_args --allow-wifi-internet-loss"
+  restore_wifi_needed=1
+fi
+log "+ scripts/connect_camera_ap_wifi.sh $wifi_log_args"
 set +e
-scripts/connect_camera_ap_wifi.sh --credentials "$credentials" --timeout "$wifi_timeout" 2>&1 | tee "$wifi_log"
+scripts/connect_camera_ap_wifi.sh "${wifi_args[@]}" 2>&1 | tee "$wifi_log"
 wifi_rc=${PIPESTATUS[0]}
 set -e
 if [[ "$wifi_rc" != "0" ]]; then
