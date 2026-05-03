@@ -25,6 +25,11 @@ Options:
   --ptpip-get-prop HEX    After OpenSession, send PTP GetDevicePropValue.
   --hold-ble SEC          Diagnostic only: keep the BLE AP-launch connection
                           open after AP launch. Default: 0.
+  --no-screen-read        Do not run camera LCD classification at flow
+                          transition points. Default: screen reads enabled.
+  --screen-device NAME    Camera capture device. Default: iPhone.
+  --screen-warmup SEC     Camera capture warmup. Default: 2.
+  --screen-zoom VALUE     Camera capture center-crop zoom. Default: 2.
   -h, --help              Show this help.
 
 Runs the AP handoff critical path in sequence:
@@ -54,6 +59,10 @@ ptpip_init_payload="${FUJI_PTPIP_INIT_PAYLOAD:-}"
 ptpip_open_session="${FUJI_PTPIP_OPEN_SESSION:-0}"
 ptpip_get_prop="${FUJI_PTPIP_GET_PROP:-}"
 hold_ble="${FUJI_CAMERA_AP_HOLD_AFTER_LAUNCH:-0}"
+screen_read_enabled="${FUJI_SCREEN_READ:-1}"
+screen_device="${FUJI_SCREEN_DEVICE_NAME:-iPhone}"
+screen_warmup="${FUJI_SCREEN_WARMUP:-2}"
+screen_zoom="${FUJI_SCREEN_ZOOM:-2}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,6 +119,22 @@ while [[ $# -gt 0 ]]; do
       hold_ble="$2"
       shift 2
       ;;
+    --no-screen-read)
+      screen_read_enabled=0
+      shift
+      ;;
+    --screen-device)
+      screen_device="$2"
+      shift 2
+      ;;
+    --screen-warmup)
+      screen_warmup="$2"
+      shift 2
+      ;;
+    --screen-zoom)
+      screen_zoom="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -144,9 +169,44 @@ log() {
   printf '%s\n' "$*" | tee -a "$summary" >&2
 }
 
+read_screen_state() {
+  local label="$1"
+  if [[ "$screen_read_enabled" != "1" ]]; then
+    return 0
+  fi
+
+  local screen_log="$flow_dir/${label}_screen_state.log"
+  local screen_args=(--device-name "$screen_device" --warmup "$screen_warmup")
+  local screen_log_args="--device-name $screen_device --warmup $screen_warmup"
+  if [[ -n "$screen_zoom" ]]; then
+    screen_args+=(--zoom "$screen_zoom")
+    screen_log_args="$screen_log_args --zoom $screen_zoom"
+  fi
+
+  log "+ scripts/read_camera_screen_state.sh $screen_log_args"
+  set +e
+  scripts/read_camera_screen_state.sh "${screen_args[@]}" 2>&1 | tee "$screen_log"
+  local screen_rc=${PIPESTATUS[0]}
+  set -e
+  if [[ "$screen_rc" != "0" ]]; then
+    echo "screen read failed at $label; log=$screen_log" >&2
+    exit "$screen_rc"
+  fi
+
+  local screen_state
+  screen_state="$(awk -F= '/^camera_screen_state=/{value=$2} END{print value}' "$screen_log")"
+  if [[ -z "$screen_state" || "$screen_state" == "unknown" ]]; then
+    echo "screen read at $label returned camera_screen_state=${screen_state:-missing}; refusing to continue" >&2
+    echo "repair with: scripts/identify_unknown_elements.sh --capture <capture.json from $screen_log>" >&2
+    exit 1
+  fi
+  log "${label}_screen_state=$screen_state"
+}
+
 log "flow=$flow_dir"
 log "device_name=$device_name"
 log "ptpip_friendly_name=$ptpip_friendly_name"
+read_screen_state "00_initial"
 
 prepare_log="$flow_dir/01_camera_ap_prepare.log"
 prepare_args=(
@@ -190,6 +250,7 @@ if [[ -z "$credentials" || ! -r "$credentials" ]]; then
 fi
 
 log "credentials=$credentials"
+read_screen_state "01_after_ap_launch"
 
 wifi_log="$flow_dir/02_connect_camera_ap_wifi.log"
 log "+ scripts/connect_camera_ap_wifi.sh --credentials <redacted path> --timeout $wifi_timeout"
@@ -201,6 +262,7 @@ if [[ "$wifi_rc" != "0" ]]; then
   wait "$prepare_pid" || true
   exit "$wifi_rc"
 fi
+read_screen_state "02_after_wifi_association"
 
 ptpip_log="$flow_dir/03_ptpip_probe.log"
 ptpip_args=(--friendly-name "$ptpip_friendly_name" --tail-profile "$ptpip_tail_profile" --timeout "$ptpip_timeout")
@@ -226,6 +288,7 @@ set +e
 scripts/ptpip_probe.sh "${ptpip_args[@]}" 2>&1 | tee "$ptpip_log"
 ptpip_rc=${PIPESTATUS[0]}
 set -e
+read_screen_state "03_after_ptpip_probe"
 
 set +e
 wait "$prepare_pid"
