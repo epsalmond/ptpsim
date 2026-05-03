@@ -236,15 +236,23 @@ for _ in $(seq 1 "$ready_deadline"); do
     break
   fi
   if ! kill -0 "$prepare_pid" 2>/dev/null; then
+    set +e
     wait "$prepare_pid"
+    prepare_rc=$?
+    set -e
+    read_screen_state "01_after_ap_prepare_exit"
     echo "BLE AP prepare exited before credentials and AP launch were ready" >&2
-    exit 1
+    if [[ "$prepare_rc" == "0" ]]; then
+      exit 1
+    fi
+    exit "$prepare_rc"
   fi
   sleep 1
 done
 
 if [[ -z "$credentials" || ! -r "$credentials" ]]; then
   echo "could not find readable credentials path in $prepare_log" >&2
+  read_screen_state "01_after_ap_prepare_timeout"
   wait "$prepare_pid" || true
   exit 1
 fi
