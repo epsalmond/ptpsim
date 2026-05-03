@@ -956,6 +956,12 @@ def ptpip_summary(**overrides) -> dict:
         "get_prop_data_header": {"length": 50, "container_type": 2, "code": 0x1015, "transaction_id": 2},
         "get_prop_response_present": True,
         "get_prop_response_header": {"length": 12, "container_type": 3, "code": 0x2001, "transaction_id": 2},
+        "get_object_info": "",
+        "get_object_info_sent": False,
+        "get_object_info_response_present": False,
+        "get_thumb": "",
+        "get_thumb_sent": False,
+        "get_thumb_response_present": False,
     }
     values.update(overrides)
     return values
@@ -1013,6 +1019,45 @@ def make_ptpip_probe_session(tmp_path: Path, summary: dict | None = None) -> Pat
         (
             ptpip_summary(app_sequence="sdcard-browse-bootstrap", app_sequence_completed=False),
             "app_sequence_incomplete",
+        ),
+        (
+            ptpip_summary(
+                get_thumb="0x0c",
+                get_thumb_sent=True,
+                get_thumb_data_header={"length": 128, "container_type": 2, "code": 0x100A, "transaction_id": 3},
+                get_thumb_response_present=True,
+                get_thumb_response_header={"length": 12, "container_type": 3, "code": 0x2001, "transaction_id": 3},
+            ),
+            "get_thumb_ok",
+        ),
+        (
+            ptpip_summary(
+                get_object_info="0x0c",
+                get_object_info_sent=True,
+                get_object_info_data_header={"length": 128, "container_type": 2, "code": 0x1008, "transaction_id": 2},
+                get_object_info_response_present=True,
+                get_object_info_response_header={
+                    "length": 12,
+                    "container_type": 3,
+                    "code": 0x2001,
+                    "transaction_id": 2,
+                },
+            ),
+            "get_object_info_ok",
+        ),
+        (
+            ptpip_summary(get_object_info="0x0c", get_object_info_sent=True),
+            "get_object_info_no_response",
+        ),
+        (
+            ptpip_summary(
+                get_thumb="0x0c",
+                get_thumb_sent=True,
+                get_thumb_data_header={"length": 128, "container_type": 2, "code": 0x9999, "transaction_id": 3},
+                get_thumb_response_present=True,
+                get_thumb_response_header={"length": 12, "container_type": 3, "code": 0x2001, "transaction_id": 3},
+            ),
+            "get_thumb_unexpected_response",
         ),
         (ptpip_summary(get_prop_sent=False), "open_session_ok"),
         (
@@ -1131,6 +1176,58 @@ def test_ptpip_probe_session_collector(monkeypatch, tmp_path) -> None:
     )
     object_handles_state = evidence.load_state(tmp_path / "object-handles-state.json")
     assert object_handles_state["state_label"] == "camera_ap_ptpip_sdcard_object_handles_ok"
+
+    object_info_session = tmp_path / "ptpip_probe_get_object_info"
+    object_info_session.mkdir()
+    (object_info_session / "summary.json").write_text(
+        json.dumps(
+            ptpip_summary(
+                get_object_info="0x0c",
+                get_object_info_sent=True,
+                get_object_info_data_header={"length": 128, "container_type": 2, "code": 0x1008, "transaction_id": 2},
+                get_object_info_response_present=True,
+                get_object_info_response_header={
+                    "length": 12,
+                    "container_type": 3,
+                    "code": 0x2001,
+                    "transaction_id": 2,
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence.collect_ptpip_probe_session(
+        args(tmp_path, state_file=tmp_path / "get-object-info-state.json", session_dir=str(object_info_session))
+    )
+    get_object_info_state = evidence.load_state(tmp_path / "get-object-info-state.json")
+    assert get_object_info_state["state_label"] == "camera_ap_ptpip_get_object_info_ok"
+
+    thumb_session = tmp_path / "ptpip_probe_get_thumb"
+    thumb_session.mkdir()
+    (thumb_session / "get_thumb_response.bin").write_bytes(b"ok")
+    (thumb_session / "summary.json").write_text(
+        json.dumps(
+            ptpip_summary(
+                get_thumb="0x0c",
+                get_thumb_sent=True,
+                get_thumb_data_header={"length": 128, "container_type": 2, "code": 0x100A, "transaction_id": 3},
+                get_thumb_response_present=True,
+                get_thumb_response_header={"length": 12, "container_type": 3, "code": 0x2001, "transaction_id": 3},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence.collect_ptpip_probe_session(
+        args(tmp_path, state_file=tmp_path / "get-thumb-state.json", session_dir=str(thumb_session))
+    )
+    get_thumb_state = evidence.load_state(tmp_path / "get-thumb-state.json")
+    assert get_thumb_state["state_label"] == "camera_ap_ptpip_get_thumb_ok"
+    assert any(
+        path.endswith("get_thumb_response.bin")
+        for path in get_thumb_state["evidence"]["camera_ap_ptpip_probe"]["artifacts"]
+    )
 
     missing_summary = tmp_path / "ptpip_probe_missing"
     missing_summary.mkdir()

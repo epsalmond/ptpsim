@@ -23,6 +23,11 @@ Options:
                           instead of generating one.
   --ptpip-open-session    After PTP/IP init ack, send raw PTP OpenSession.
   --ptpip-get-prop HEX    After OpenSession, send PTP GetDevicePropValue.
+  --ptpip-get-object-info H
+                          After OpenSession, send PTP GetObjectInfo for object
+                          handle H.
+  --ptpip-get-thumb H     After OpenSession, send PTP GetThumb for object
+                          handle H.
   --ptpip-app-sequence N After OpenSession, run a named observed reference app PTP
                           sequence. Current: sdcard-browse-bootstrap,
                           sdcard-current-object-info,
@@ -70,6 +75,8 @@ ptpip_guid="${FUJI_PTPIP_GUID:-}"
 ptpip_init_payload="${FUJI_PTPIP_INIT_PAYLOAD:-}"
 ptpip_open_session="${FUJI_PTPIP_OPEN_SESSION:-0}"
 ptpip_get_prop="${FUJI_PTPIP_GET_PROP:-}"
+ptpip_get_object_info="${FUJI_PTPIP_GET_OBJECT_INFO:-}"
+ptpip_get_thumb="${FUJI_PTPIP_GET_THUMB:-}"
 ptpip_app_sequence="${FUJI_PTPIP_APP_SEQUENCE:-}"
 hold_ble="${FUJI_CAMERA_AP_HOLD_AFTER_LAUNCH:-0}"
 temporary_wifi_internet="${FUJI_TEMPORARY_WIFI_INTERNET:-0}"
@@ -128,6 +135,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ptpip-get-prop)
       ptpip_get_prop="$2"
+      ptpip_open_session=1
+      shift 2
+      ;;
+    --ptpip-get-object-info)
+      ptpip_get_object_info="$2"
+      ptpip_open_session=1
+      shift 2
+      ;;
+    --ptpip-get-thumb)
+      ptpip_get_thumb="$2"
       ptpip_open_session=1
       shift 2
       ;;
@@ -407,6 +424,14 @@ fi
 if [[ -n "$ptpip_get_prop" ]]; then
   ptpip_args+=(--get-prop "$ptpip_get_prop")
   ptpip_log_args="$ptpip_log_args --get-prop $ptpip_get_prop"
+fi
+if [[ -n "$ptpip_get_object_info" ]]; then
+  ptpip_args+=(--get-object-info "$ptpip_get_object_info")
+  ptpip_log_args="$ptpip_log_args --get-object-info $ptpip_get_object_info"
+fi
+if [[ -n "$ptpip_get_thumb" ]]; then
+  ptpip_args+=(--get-thumb "$ptpip_get_thumb")
+  ptpip_log_args="$ptpip_log_args --get-thumb $ptpip_get_thumb"
 fi
 if [[ -n "$ptpip_app_sequence" ]]; then
   ptpip_args+=(--app-sequence "$ptpip_app_sequence")

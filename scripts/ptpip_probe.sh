@@ -23,6 +23,10 @@ Options:
                         transaction 1 with session id 1.
   --get-prop HEX        After OpenSession, send PTP GetDevicePropValue for
                         the given property, for example 0xd212.
+  --get-object-info H   After OpenSession, send PTP GetObjectInfo for object
+                        handle H, for example 0x0c.
+  --get-thumb H         After OpenSession, send PTP GetThumb for object handle
+                        H, for example 0x0c.
   --app-sequence NAME  After OpenSession, run a named observed reference app PTP
                         sequence. Current: sdcard-browse-bootstrap,
                         sdcard-current-object-info,
@@ -54,6 +58,8 @@ timeout="${FUJI_PTPIP_TIMEOUT:-5}"
 connect_only=0
 open_session=0
 get_prop=""
+get_object_info=""
+get_thumb=""
 app_sequence=""
 
 while [[ $# -gt 0 ]]; do
@@ -100,6 +106,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --get-prop)
       get_prop="$2"
+      open_session=1
+      shift 2
+      ;;
+    --get-object-info)
+      get_object_info="$2"
+      open_session=1
+      shift 2
+      ;;
+    --get-thumb)
+      get_thumb="$2"
       open_session=1
       shift 2
       ;;
@@ -226,6 +242,12 @@ fi
 if [[ -n "$get_prop" ]]; then
   ptpip_args+=(--get-prop "$get_prop")
 fi
+if [[ -n "$get_object_info" ]]; then
+  ptpip_args+=(--get-object-info "$get_object_info")
+fi
+if [[ -n "$get_thumb" ]]; then
+  ptpip_args+=(--get-thumb "$get_thumb")
+fi
 if [[ -n "$app_sequence" ]]; then
   ptpip_args+=(--app-sequence "$app_sequence")
 fi
@@ -254,6 +276,18 @@ if data.get("get_prop_data_header"):
     print("get_prop_data_header=" + json.dumps(data["get_prop_data_header"], sort_keys=True))
 if data.get("get_prop_response_header"):
     print("get_prop_response_header=" + json.dumps(data["get_prop_response_header"], sort_keys=True))
+print("get_object_info_sent=" + str(data.get("get_object_info_sent", "")))
+print("get_object_info_response_present=" + str(data.get("get_object_info_response_present", "")))
+if data.get("get_object_info_data_header"):
+    print("get_object_info_data_header=" + json.dumps(data["get_object_info_data_header"], sort_keys=True))
+if data.get("get_object_info_response_header"):
+    print("get_object_info_response_header=" + json.dumps(data["get_object_info_response_header"], sort_keys=True))
+print("get_thumb_sent=" + str(data.get("get_thumb_sent", "")))
+print("get_thumb_response_present=" + str(data.get("get_thumb_response_present", "")))
+if data.get("get_thumb_data_header"):
+    print("get_thumb_data_header=" + json.dumps(data["get_thumb_data_header"], sort_keys=True))
+if data.get("get_thumb_response_header"):
+    print("get_thumb_response_header=" + json.dumps(data["get_thumb_response_header"], sort_keys=True))
 if data.get("app_sequence"):
     print("app_sequence=" + str(data.get("app_sequence", "")))
     print("app_sequence_completed=" + str(data.get("app_sequence_completed", "")))

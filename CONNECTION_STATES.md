@@ -783,8 +783,46 @@ The camera completed the observed listing sequence through `FujiVendor_9050`, `F
 Workflow:
 
 1. Preserve the probe session directory and record evidence into the statefile.
-2. Decode the `FujiVendor_D621` response into candidate handles.
-3. Implement standard PTP `GetObjectInfo` and `GetThumb` probes against selected handles before attempting full media transfer.
+2. Use the decoded `object_handles` in `summary.json` when present; otherwise decode the preserved `FujiVendor_D621` data artifact before selecting handles.
+3. Run standard PTP `GetObjectInfo` and `GetThumb` probes against selected handles before attempting full media transfer.
+
+### `camera_ap_ptpip_get_object_info_ok`
+
+Evidence:
+
+- OpenSession was OK or already open.
+- `get_object_info_sent=true`.
+- `get_object_info_data_header.code=4104` (`0x1008`, GetObjectInfo data).
+- `get_object_info_response_header.code=8193` (`0x2001`, OK).
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=get_object_info_ok`.
+
+Meaning:
+
+The camera returned PTP object metadata for the requested handle.
+
+Workflow:
+
+1. Preserve the probe session directory and `get_object_info_data.bin`.
+2. Probe the same handle with `--ptpip-get-thumb <handle>` unless the handle format indicates no thumbnail is expected.
+
+### `camera_ap_ptpip_get_thumb_ok`
+
+Evidence:
+
+- OpenSession was OK or already open.
+- `get_thumb_sent=true`.
+- `get_thumb_data_header.code=4106` (`0x100a`, GetThumb data).
+- `get_thumb_response_header.code=8193` (`0x2001`, OK).
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=get_thumb_ok`.
+
+Meaning:
+
+The camera returned a standard PTP thumbnail payload for the requested handle.
+
+Workflow:
+
+1. Preserve the probe session directory and `get_thumb_data.bin`.
+2. Use object metadata and thumbnail evidence to choose a still/JPEG handle before attempting full object or partial-object transfer.
 
 ### `camera_ap_launched_app_function_not_found`
 

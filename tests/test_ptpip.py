@@ -278,10 +278,15 @@ def test_ptp_request_builders_and_property_parser() -> None:
     assert ptpip.parse_u16_or_hex("123") == 123
     assert ptpip.build_get_device_prop_value(0xD212).hex() == "10000000010015100200000012d20000"
     assert ptpip.build_set_device_prop_value(0xDF01, 2).hex() == "10000000010016100200000001df0000"
+    assert ptpip.build_get_object_info(0x0C, 2).hex() == "1000000001000810020000000c000000"
+    assert ptpip.build_get_thumb(0x0C, 3).hex() == "1000000001000a10030000000c000000"
     assert ptpip.build_ptp_command(0x9054, 9, 0x10000001).hex() == "10000000010054900900000001000010"
     assert ptpip.build_ptp_data_container(0x1016, 2, bytes.fromhex("1400")).hex() == "0e00000002001610020000001400"
+    assert ptpip.parse_u32_or_hex("0xffffffff") == 0xFFFFFFFF
     with pytest.raises(ValueError, match="out of uint16 range"):
         ptpip.parse_u16_or_hex("0x10000")
+    with pytest.raises(ValueError, match="out of uint32 range"):
+        ptpip.parse_u32_or_hex("0x100000000")
 
 
 def test_ptp_data_payload_decoders() -> None:
@@ -374,6 +379,41 @@ def test_probe_full_success_with_captured_init_payload(tmp_path) -> None:
     assert fake.sent[1] == ptpip.build_open_session()
     assert fake.sent[2] == ptpip.build_get_device_prop_value(0xD212)
     assert (tmp_path / "get_prop_response.bin").exists()
+    assert ptpip.exit_code_for_summary(summary, config) == 0
+
+
+def test_probe_get_object_info_and_thumb(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptpip.build_ptp_data_container(0x1008, 2, b"object-info"),
+            ptp_container(code=0x2001, transaction=2),
+            ptpip.build_ptp_data_container(0x100A, 3, b"\xff\xd8thumbnail"),
+            ptp_container(code=0x2001, transaction=3),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        get_object_info="0x0c",
+        get_thumb="12",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["open_session_sent"] is True
+    assert summary["get_object_info_sent"] is True
+    assert summary["get_object_info_data_header"]["code"] == 0x1008
+    assert summary["get_object_info_response_header"]["code"] == 0x2001
+    assert summary["get_thumb_sent"] is True
+    assert summary["get_thumb_data_header"]["code"] == 0x100A
+    assert summary["get_thumb_response_header"]["code"] == 0x2001
+    assert fake.sent[2] == ptpip.build_get_object_info(0x0C, 2)
+    assert fake.sent[3] == ptpip.build_get_thumb(12, 3)
+    assert (tmp_path / "get_object_info_data.bin").exists()
+    assert (tmp_path / "get_thumb_data.bin").exists()
     assert ptpip.exit_code_for_summary(summary, config) == 0
 
 
@@ -638,6 +678,34 @@ def test_probe_timeout_and_missing_response_branches(tmp_path) -> None:
     assert get_timeout["get_prop_response_error"] == "timeout"
     assert ptpip.exit_code_for_summary(get_timeout, get_timeout_config) == 5
 
+    object_info_timeout_config = ptpip.ProbeConfig(
+        session_dir=tmp_path / "object-info-timeout",
+        friendly_name="mbp",
+        open_session=True,
+        get_object_info="0x0c",
+    )
+    object_info_timeout = ptpip.probe_ptpip(
+        object_info_timeout_config,
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container(), b"", socket.timeout("slow")]),
+        clock=lambda: 0.0,
+    )
+    assert object_info_timeout["get_object_info_response_error"] == "timeout"
+    assert ptpip.exit_code_for_summary(object_info_timeout, object_info_timeout_config) == 7
+
+    thumb_timeout_config = ptpip.ProbeConfig(
+        session_dir=tmp_path / "thumb-timeout",
+        friendly_name="mbp",
+        open_session=True,
+        get_thumb="0x0c",
+    )
+    thumb_timeout = ptpip.probe_ptpip(
+        thumb_timeout_config,
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container(), b"", b""]),
+        clock=lambda: 0.0,
+    )
+    assert thumb_timeout["get_thumb_response_present"] is False
+    assert ptpip.exit_code_for_summary(thumb_timeout, thumb_timeout_config) == 8
+
     sequence_timeout_config = ptpip.ProbeConfig(
         session_dir=tmp_path / "sequence-timeout",
         friendly_name="mbp",
@@ -689,6 +757,8 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
             "response_present": True,
             "open_session_response_present": True,
             "get_prop_response_present": True,
+            "get_object_info_response_present": True,
+            "get_thumb_response_present": True,
             "app_sequence_completed": bool(config.app_sequence),
         }
 
@@ -713,6 +783,10 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
             "000102030405060708090a0b0c0d0e0f",
             "--get-prop",
             "0xd212",
+            "--get-object-info",
+            "0x0c",
+            "--get-thumb",
+            "0x0c",
             "--app-sequence",
             "sdcard-browse-bootstrap",
         ]
@@ -724,6 +798,8 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
     assert calls[0].tail_profile == "get"
     assert calls[0].guid == "000102030405060708090a0b0c0d0e0f"
     assert calls[0].app_sequence == "sdcard-browse-bootstrap"
+    assert calls[0].get_object_info == "0x0c"
+    assert calls[0].get_thumb == "0x0c"
     assert '"tcp_connect": "present"' in capsys.readouterr().out
 
 
