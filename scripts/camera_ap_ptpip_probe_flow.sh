@@ -7,12 +7,14 @@ Usage:
   scripts/camera_ap_ptpip_probe_flow.sh [options]
 
 Options:
-  --device-name NAME      Laptop/app name for BLE registration and PTP/IP.
+  --device-name NAME      Laptop/app name for BLE registration. Also used as
+                          PTP/IP friendly name unless --ptpip-friendly-name is set.
   --address ADDRESS       Explicit CoreBluetooth UUID/address for BLE AP prep.
   --timeout SEC           BLE scan/connect timeout. Default: 45.
   --ap-state-timeout SEC  Seconds to wait for AP launched state. Default: 15.
   --wifi-timeout SEC      Seconds to wait for Wi-Fi IP. Default: 20.
   --ptpip-timeout SEC     PTP/IP socket timeout. Default: 5.
+  --ptpip-friendly-name N PTP/IP InitiatorFriendlyName. Default: --device-name.
   --ptpip-tail-profile N  PTP/IP generated init tail profile: liveview, get,
                           or zeros. Default: liveview.
   --ptpip-guid HEX        16-byte GUID for generated InitCommandRequest
@@ -45,6 +47,7 @@ ble_timeout="${FUJI_BLE_TIMEOUT:-45}"
 ap_state_timeout="${FUJI_CAMERA_AP_STATE_TIMEOUT:-15}"
 wifi_timeout="${FUJI_WIFI_TIMEOUT:-20}"
 ptpip_timeout="${FUJI_PTPIP_TIMEOUT:-5}"
+ptpip_friendly_name="${FUJI_PTPIP_FRIENDLY_NAME:-}"
 ptpip_tail_profile="${FUJI_PTPIP_TAIL_PROFILE:-liveview}"
 ptpip_guid="${FUJI_PTPIP_GUID:-}"
 ptpip_init_payload="${FUJI_PTPIP_INIT_PAYLOAD:-}"
@@ -76,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ptpip-timeout)
       ptpip_timeout="$2"
+      shift 2
+      ;;
+    --ptpip-friendly-name)
+      ptpip_friendly_name="$2"
       shift 2
       ;;
     --ptpip-tail-profile)
@@ -124,6 +131,9 @@ fi
 if [[ -z "$device_name" ]]; then
   device_name="$("$python_bin" -c 'from rce.tools.fuji_ble_gps.device_identity import default_device_name; print(default_device_name())')"
 fi
+if [[ -z "$ptpip_friendly_name" ]]; then
+  ptpip_friendly_name="$device_name"
+fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 
@@ -136,6 +146,7 @@ log() {
 
 log "flow=$flow_dir"
 log "device_name=$device_name"
+log "ptpip_friendly_name=$ptpip_friendly_name"
 
 prepare_log="$flow_dir/01_camera_ap_prepare.log"
 prepare_args=(
@@ -192,8 +203,8 @@ if [[ "$wifi_rc" != "0" ]]; then
 fi
 
 ptpip_log="$flow_dir/03_ptpip_probe.log"
-ptpip_args=(--friendly-name "$device_name" --tail-profile "$ptpip_tail_profile" --timeout "$ptpip_timeout")
-ptpip_log_args="--friendly-name $device_name --tail-profile $ptpip_tail_profile --timeout $ptpip_timeout"
+ptpip_args=(--friendly-name "$ptpip_friendly_name" --tail-profile "$ptpip_tail_profile" --timeout "$ptpip_timeout")
+ptpip_log_args="--friendly-name $ptpip_friendly_name --tail-profile $ptpip_tail_profile --timeout $ptpip_timeout"
 if [[ -n "$ptpip_guid" ]]; then
   ptpip_args+=(--guid "$ptpip_guid")
   ptpip_log_args="$ptpip_log_args --guid $ptpip_guid"

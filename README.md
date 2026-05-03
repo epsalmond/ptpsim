@@ -249,6 +249,12 @@ The combined flow does not keep the BLE connection open after AP launch by defau
 
 Current PTP/IP status: TCP connect to `192.168.0.1:55740` succeeds when the camera route is on Wi-Fi. Replaying exact captured reference app init payload `rce/reference/ptp_decoded/liveview_payload_00000061.bin` produced a 68-byte `InitCommandAck`, and exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded. A generated 82-byte init using the accepted reference app GUID, laptop friendly name `mbp-7274`, and the liveview tail also succeeded through `GetDevicePropValue 0xD212` in session `rce/sessions/ptpip_probe_20260503T064901Z`. A fresh random generated GUID previously timed out, so the next identity blocker is likely GUID/registration binding rather than the friendly-name field. Do not infer camera UI state from a timeout; ask the user for current camera-screen text or record screen evidence.
 
+To isolate GUID behavior, keep BLE/app identity as `mbp-7274` while changing only the PTP/IP friendly name and GUID:
+
+```sh
+scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-friendly-name Pixel-6-9405 --ptpip-guid 00112233445566778899aabbccddeeff --ptpip-open-session --ptpip-get-prop 0xd212
+```
+
 When scan evidence is absent but the camera screen shows a dim Bluetooth icon on the ready-to-shoot screen, probe the last known CoreBluetooth identifier directly:
 
 ```sh

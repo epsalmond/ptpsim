@@ -84,7 +84,7 @@ Current facts:
 Next investigation:
 
 - Determine where the accepted GUID comes from and whether it is persisted in camera registration state.
-- Test a generated packet with the accepted reference app friendly-name field and a fresh GUID to isolate GUID-only behavior.
+- Test a generated packet with the accepted reference app friendly-name field and a fresh GUID to isolate GUID-only behavior. Use `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-friendly-name Pixel-6-9405 --ptpip-guid 00112233445566778899aabbccddeeff --ptpip-open-session --ptpip-get-prop 0xd212`.
 - Find or create the laptop's own accepted initiator GUID instead of replaying the captured phone GUID.
 - Keep route/AP behavior fixed while investigating packet identity.
 
