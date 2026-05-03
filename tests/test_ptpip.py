@@ -423,6 +423,45 @@ def test_probe_app_current_object_info_sequence(tmp_path) -> None:
     assert (tmp_path / "app_sequence_08_vendor_get_9054_data.bin").exists()
 
 
+def test_probe_app_current_object_thumbnail_sequence(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+            ptp_container(container_type=2, code=0x9055, transaction=10),
+            ptp_container(code=0x2001, transaction=10),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-current-object-thumbnail",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    thumbnail_step = summary["app_sequence_steps"][-1]
+    assert thumbnail_step["code"] == "0x9055"
+    assert thumbnail_step["params"] == ["0x10000001"]
+    assert thumbnail_step["data_header"]["code"] == 0x9055
+    assert fake.sent[-1] == ptpip.build_ptp_command(0x9055, 10, 0x10000001)
+    assert (tmp_path / "app_sequence_09_vendor_get_9055_data.bin").exists()
+
+
 def test_probe_app_sequence_rejects_unknown_step_action(monkeypatch, tmp_path) -> None:
     monkeypatch.setitem(ptpip.APP_SEQUENCES, "bad-step", (ptpip.AppSequenceStep("missing", 0x1234),))
 

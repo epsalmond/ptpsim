@@ -25,7 +25,8 @@ Options:
                         the given property, for example 0xd212.
   --app-sequence NAME  After OpenSession, run a named observed reference app PTP
                         sequence. Current: sdcard-browse-bootstrap,
-                        sdcard-current-object-info.
+                        sdcard-current-object-info,
+                        sdcard-current-object-thumbnail.
   --timeout SEC         Socket timeout. Default: 5.
   --connect-only        Only test TCP connect; do not send Init_Command_Request.
   -h, --help            Show this help.

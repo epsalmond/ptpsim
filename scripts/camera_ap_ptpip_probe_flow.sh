@@ -25,7 +25,8 @@ Options:
   --ptpip-get-prop HEX    After OpenSession, send PTP GetDevicePropValue.
   --ptpip-app-sequence N After OpenSession, run a named observed reference app PTP
                           sequence. Current: sdcard-browse-bootstrap,
-                          sdcard-current-object-info.
+                          sdcard-current-object-info,
+                          sdcard-current-object-thumbnail.
   --hold-ble SEC          Diagnostic only: keep the BLE AP-launch connection
                           open after AP launch. Default: 0.
   --no-screen-read        Do not run camera LCD classification at flow
