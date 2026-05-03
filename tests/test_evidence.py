@@ -247,6 +247,10 @@ def test_print_evidence_summary_empty_invalid_and_populated(capsys) -> None:
             "camera_connection_lost_screen",
         ),
         (
+            {"camera_screen_state": "lcd_blank_or_sleep"},
+            "camera_lcd_blank_or_sleep",
+        ),
+        (
             {
                 "session_gps_payload_written": "present",
                 "camera_gps_icon": "absent",

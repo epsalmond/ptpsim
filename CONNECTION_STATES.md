@@ -73,7 +73,7 @@ If the screen classifier returns `camera_screen_state=unknown`, stop the workflo
 `read_camera_screen_state.sh` performs local capture, uses the saved LCD box calibration for screen normalization, then runs OCR/symbol detection and conservative state classification. It writes local-time artifacts under `rce/screen_captures/<timestamp>/`: lossless `raw.png`, normalized `screen.png`, and parsable `capture.json`. It only records actionable `camera_screen_state` evidence when confidence is high enough. Continuity Camera capture defaults to a two-second warmup; use `--warmup 5 --zoom 2` when the camera screen is dark or autofocus needs more time, then verify the capture artifact.
 `reclassify_camera_screen_state.sh` reads an existing `capture.json`, loads its saved `screen.png`, and reruns classification without a live camera round trip. Use it while refining OCR/classification rules and for regression checks against preserved artifacts. Add `--write` to update the existing capture JSON after rule or label changes.
 `identify_unknown_elements.sh` records labels in `rce/screen_captures/screen_element_labels.json` and copies accepted template crops to `rce/screen_captures/screen_element_templates/`, so future reclassification does not depend on mutable `unknown/` crops.
-Known camera-screen state labels include `registration_mode` for the Fuji pairing/ready-to-pair screen, `device_not_found_continue_search`, `waiting_for_connected`, `connection_lost`, `app_function_not_found_retry`, `ready_to_take_photo`, and `ready_to_shoot_video`.
+Known camera-screen state labels include `registration_mode` for the Fuji pairing/ready-to-pair screen, `device_not_found_continue_search`, `waiting_for_connected`, `connection_lost`, `app_function_not_found_retry`, `ready_to_take_photo`, `ready_to_shoot_video`, and `lcd_blank_or_sleep`.
 
 Manual camera-menu evidence, used only when host-side probes cannot determine camera-side state:
 
@@ -862,6 +862,24 @@ Workflow:
 
 1. Preserve the probe session directory and `get_thumb_data.bin`.
 2. Use object metadata and thumbnail evidence to choose a still/JPEG handle before attempting full object or partial-object transfer.
+
+### `camera_lcd_blank_or_sleep`
+
+Evidence:
+
+- `scripts/read_camera_screen_state.sh` records `camera_screen_state=lcd_blank_or_sleep`.
+- The LCD geometry is detected, but image metrics show a dark, low-contrast screen with no readable UI text.
+
+Meaning:
+
+The camera screen is currently not providing menu/status text. This can happen after a PTP/IP interaction or when the LCD sleeps. Treat it as camera-side context only; it is not proof that BLE, Wi-Fi, or PTP/IP failed.
+
+Workflow:
+
+1. Preserve the capture artifact.
+2. If protocol evidence from the same attempt reached a later state, prefer the protocol evidence and do not downgrade it because the LCD went blank afterward.
+3. If the next workflow needs visible camera-screen context, wake or refresh the camera LCD and rerun `scripts/read_camera_screen_state.sh`.
+4. If the screen should have been showing a named prompt, inspect focus/framing with `scripts/detect_camera_lcd_box.sh --device-name iPhone --warmup 5 --zoom 2` before changing protocol behavior.
 
 ### `camera_ap_launched_app_function_not_found`
 

@@ -183,6 +183,16 @@ def test_region_metadata_helpers() -> None:
     }
 
 
+def test_blank_lcd_metrics_helper() -> None:
+    assert screen_vision.is_blank_lcd_metrics(
+        {"gray_mean": 27.0, "gray_stddev": 19.0, "bright_ratio": 0.0, "edge_ratio": 0.0}
+    )
+    assert not screen_vision.is_blank_lcd_metrics(
+        {"gray_mean": 28.0, "gray_stddev": 36.0, "bright_ratio": 0.017, "edge_ratio": 0.02}
+    )
+    assert not screen_vision.is_blank_lcd_metrics({"gray_mean": "bad"})
+
+
 @pytest.mark.parametrize(
     ("ocr", "label", "confidence"),
     [
@@ -208,6 +218,19 @@ def test_classify_camera_state_rules(ocr, label, confidence) -> None:
     assert state["label"] == label
     assert state["confidence"] == confidence
     assert state["reasons"]
+
+
+def test_classify_camera_state_blank_lcd_metrics() -> None:
+    state = screen_vision.classify_camera_state(
+        [],
+        [],
+        [],
+        {"gray_mean": 27.0, "gray_stddev": 19.0, "bright_ratio": 0.0, "edge_ratio": 0.0},
+    )
+
+    assert state["label"] == "lcd_blank_or_sleep"
+    assert state["confidence"] == 0.9
+    assert state["reasons"] == ["screen metrics match blank LCD"]
 
 
 def test_base_analysis_and_label_catalog_round_trip(tmp_path) -> None:
@@ -761,6 +784,7 @@ def test_detect_lcd_box_handles_glare_capture_fixture(tmp_path) -> None:
     [
         ("app_function_not_found_retry_screen.png", "app_function_not_found_retry"),
         ("device_not_found_continue_search_screen.png", "device_not_found_continue_search"),
+        ("lcd_blank_or_sleep_screen.png", "lcd_blank_or_sleep"),
         ("ready_to_take_photo_screen.png", "ready_to_take_photo"),
         ("registration_mode_screen.png", "registration_mode"),
         ("waiting_for_connected_screen.png", "waiting_for_connected"),

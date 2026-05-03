@@ -154,7 +154,7 @@ scripts/reclassify_camera_screen_state.sh --capture rce/screen_captures/<timesta
 
 Classifier artifacts are local-time directories under `rce/screen_captures/<timestamp>/`. `raw.png` is the captured frame, `screen.png` is the normalized LCD, and `capture.json` is the parsable result. The reusable LCD calibration is `rce/state/camera_lcd_box.json`. The symbol label catalog is `rce/screen_captures/screen_element_labels.json`; stable template crops live under `rce/screen_captures/screen_element_templates/`. Curated regression fixtures copied from captures live under `tests/fixtures/screen_vision/`; add representative images there when a classifier or LCD-detection bug is fixed.
 
-Known camera-screen state labels include `registration_mode` for the Fuji pairing/ready-to-pair screen, `device_not_found_continue_search`, `waiting_for_connected`, `connection_lost`, `app_function_not_found_retry`, `ready_to_take_photo`, and `ready_to_shoot_video`.
+Known camera-screen state labels include `registration_mode` for the Fuji pairing/ready-to-pair screen, `device_not_found_continue_search`, `waiting_for_connected`, `connection_lost`, `app_function_not_found_retry`, `ready_to_take_photo`, `ready_to_shoot_video`, and `lcd_blank_or_sleep`.
 The classifier can also record `camera_bluetooth_status=ready_not_connected` for the dim trusted-Bluetooth icon. The GPS-set icon and bright active-Bluetooth icon are not yet labeled templates; do not infer those states from screenshots until labels exist.
 
 Use manual evidence scripts only as a last resort when the state cannot be observed programmatically:
