@@ -278,6 +278,7 @@ read_screen_state() {
   fi
 
   local screen_log="$flow_dir/${label}_screen_state.log"
+  local retry_screen_log="$flow_dir/${label}_screen_state_retry_warmup5.log"
   local screen_args=(--device-name "$screen_device" --warmup "$screen_warmup")
   local screen_log_args="--device-name $screen_device --warmup $screen_warmup"
   if [[ -n "$screen_zoom" ]]; then
@@ -298,6 +299,27 @@ read_screen_state() {
   local screen_state
   screen_state="$(awk -F= '/^camera_screen_state=/{value=$2} END{print value}' "$screen_log")"
   if [[ -z "$screen_state" || "$screen_state" == "unknown" ]]; then
+    if [[ "$screen_warmup" != "5" && "$screen_warmup" != "5.0" ]]; then
+      local retry_args=(--device-name "$screen_device" --warmup 5)
+      local retry_log_args="--device-name $screen_device --warmup 5"
+      if [[ -n "$screen_zoom" ]]; then
+        retry_args+=(--zoom "$screen_zoom")
+        retry_log_args="$retry_log_args --zoom $screen_zoom"
+      fi
+      log "screen read at $label returned camera_screen_state=${screen_state:-missing}; retrying with warmup 5"
+      log "+ scripts/read_camera_screen_state.sh $retry_log_args"
+      set +e
+      scripts/read_camera_screen_state.sh "${retry_args[@]}" 2>&1 | tee "$retry_screen_log"
+      local retry_rc=${PIPESTATUS[0]}
+      set -e
+      if [[ "$retry_rc" == "0" ]]; then
+        screen_state="$(awk -F= '/^camera_screen_state=/{value=$2} END{print value}' "$retry_screen_log")"
+        if [[ -n "$screen_state" && "$screen_state" != "unknown" ]]; then
+          log "${label}_screen_state=$screen_state"
+          return 0
+        fi
+      fi
+    fi
     echo "screen read at $label returned camera_screen_state=${screen_state:-missing}; refusing to continue" >&2
     echo "repair with: scripts/identify_unknown_elements.sh --capture <capture.json from $screen_log>" >&2
     exit 1
@@ -494,7 +516,6 @@ set +e
 scripts/ptpip_probe.sh "${ptpip_args[@]}" 2>&1 | tee "$ptpip_log"
 ptpip_rc=${PIPESTATUS[0]}
 set -e
-read_screen_state "03_after_ptpip_probe"
 
 set +e
 wait "$prepare_pid"
@@ -507,6 +528,7 @@ record_ptpip_evidence
 log "prepare_log=$prepare_log"
 log "wifi_log=$wifi_log"
 log "ptpip_log=$ptpip_log"
+read_screen_state "03_after_ptpip_probe"
 
 if [[ "$ptpip_rc" != "0" ]]; then
   exit "$ptpip_rc"

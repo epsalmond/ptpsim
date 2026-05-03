@@ -1030,6 +1030,35 @@ def make_ptpip_probe_session(tmp_path: Path, summary: dict | None = None) -> Pat
         ),
         (
             ptpip_summary(
+                app_sequence="sdcard-object-handles",
+                app_sequence_completed=True,
+                get_thumb="0x0c",
+                get_thumb_sent=True,
+                get_thumb_data_header={"length": 128, "container_type": 2, "code": 0x100A, "transaction_id": 16},
+                get_thumb_response_present=True,
+                get_thumb_response_header={"length": 12, "container_type": 3, "code": 0x2001, "transaction_id": 16},
+            ),
+            "get_thumb_ok",
+        ),
+        (
+            ptpip_summary(
+                app_sequence="sdcard-object-handles",
+                app_sequence_completed=True,
+                get_object_info="0x0c",
+                get_object_info_sent=True,
+                get_object_info_data_header={"length": 128, "container_type": 2, "code": 0x1008, "transaction_id": 15},
+                get_object_info_response_present=True,
+                get_object_info_response_header={
+                    "length": 12,
+                    "container_type": 3,
+                    "code": 0x2001,
+                    "transaction_id": 15,
+                },
+            ),
+            "get_object_info_ok",
+        ),
+        (
+            ptpip_summary(
                 get_thumb="0x0c",
                 get_thumb_sent=True,
                 get_thumb_data_header={"length": 128, "container_type": 2, "code": 0x100A, "transaction_id": 3},

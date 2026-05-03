@@ -682,6 +682,66 @@ def test_probe_app_sdcard_object_handles_sequence(tmp_path) -> None:
     assert (tmp_path / "app_sequence_13_get_d621_data.bin").exists()
 
 
+def test_probe_runs_direct_object_operations_after_app_sequence(tmp_path) -> None:
+    handles = [0x0C]
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+            ptp_container(container_type=2, code=0x9055, transaction=10),
+            ptp_container(code=0x2001, transaction=10),
+            ptp_container(container_type=2, code=0x9050, transaction=11),
+            ptp_container(code=0x2001, transaction=11),
+            ptp_container(container_type=2, code=0x9053, transaction=12),
+            ptp_container(code=0x2001, transaction=12),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_DEVICE_PROP_VALUE, 13, struct.pack("<I", len(handles))),
+            ptp_container(code=0x2001, transaction=13),
+            ptpip.build_ptp_data_container(
+                ptpip.PTP_GET_DEVICE_PROP_VALUE,
+                14,
+                struct.pack("<I", len(handles)) + b"".join(struct.pack("<I", handle) for handle in handles),
+            ),
+            ptp_container(code=0x2001, transaction=14),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, b"object-info"),
+            ptp_container(code=0x2001, transaction=15),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 16, b"thumb"),
+            ptp_container(code=0x2001, transaction=16),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-object-handles",
+        get_object_info="0x0c",
+        get_thumb="0x0c",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    assert summary["get_object_info_data_present"] is True
+    assert summary["get_object_info_response_present"] is True
+    assert summary["get_thumb_data_present"] is True
+    assert summary["get_thumb_response_present"] is True
+    assert fake.sent[-2] == ptpip.build_get_object_info(0x0C, 15)
+    assert fake.sent[-1] == ptpip.build_get_thumb(0x0C, 16)
+    assert (tmp_path / "get_object_info_data.bin").exists()
+    assert (tmp_path / "get_thumb_data.bin").exists()
+
+
 def test_probe_app_sequence_rejects_unknown_step_action(monkeypatch, tmp_path) -> None:
     monkeypatch.setitem(ptpip.APP_SEQUENCES, "bad-step", (ptpip.AppSequenceStep("missing", 0x1234),))
 

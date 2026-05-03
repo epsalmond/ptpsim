@@ -81,6 +81,7 @@ Current facts:
 - Replaying the exact captured reference app init succeeds.
 - Generated init with accepted reference app GUID plus laptop friendly name succeeds.
 - Generated init with accepted reference app GUID plus laptop friendly name succeeds through the corrected SD-card folder/date and object-handle sequences.
+- Generated init with accepted reference app GUID plus laptop friendly name succeeds through `GetObjectInfo` and `GetThumb` for a handle returned by `GetDevicePropValue 0xd621`.
 - Generated init with a fresh random GUID timed out.
 - Generated init with accepted reference app friendly name plus fresh deterministic GUID timed out.
 - `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` shows accepted reference app reference records use GUID `f2e4538fada5485d87b27f0bd3d5ded0`; successful laptop-name probes also use that GUID.
@@ -133,7 +134,8 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Live-test `GetObjectInfo` and `GetThumb` for handles returned by `GetDevicePropValue 0xd621`; latest successful object-handle run returned `0x0000000c`, `0x0000000a`, `0x00000008`, `0x00000006`, `0x00000005`, `0x00000004`, `0x00000003`, `0x00000002`.
+- Decode `GetObjectInfo` fields and thumbnail artifacts returned by `rce/sessions/ptpip_probe_20260503T235342Z`.
+- Build a media-transfer workflow using handles returned by `GetDevicePropValue 0xd621`; latest successful object-handle run returned `0x0000000c`, `0x0000000a`, `0x00000008`, `0x00000006`, `0x00000005`, `0x00000004`, `0x00000003`, `0x00000002`.
 - Use the init comparator output to choose the next live generated-identity candidates.
 
 ### PROTO-002: Implement the next observed reference app PTP sequence
@@ -148,7 +150,7 @@ successful init/open-session/property-read.
 
 Next candidates:
 
-- Use standard PTP `GetObjectInfo` and `GetThumb` functions for handles returned by `GetDevicePropValue 0xd621`.
+- Decode standard PTP `GetObjectInfo` and `GetThumb` artifacts for handles returned by `GetDevicePropValue 0xd621`.
 - Decode reference app action enumeration usage from `rce/reference/APP_ACTION_ENUMERATION.md`.
 - Add scripts for one command at a time, each with captured packet evidence.
 
