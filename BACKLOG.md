@@ -132,7 +132,7 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Live-test `sdcard-object-handles` from the laptop and record the resulting state/evidence.
+- Determine why live laptop `FujiVendor_9053` returns a large fixed-size folder-shaped payload instead of the reference date-list payload, then why `FujiVendor_D620` times out after that response.
 - Live-test `GetObjectInfo` and `GetThumb` for handles returned by `FujiVendor_D621`.
 - Use the init comparator output to choose the next live generated-identity candidates.
 
@@ -148,7 +148,7 @@ successful init/open-session/property-read.
 
 Next candidates:
 
-- Probe the named `sdcard-object-handles` sequence from the laptop.
+- Probe the named `sdcard-folder-and-dates` sequence from the laptop before retrying `sdcard-object-handles`.
 - Use standard PTP `GetObjectInfo` and `GetThumb` functions for handles returned by `FujiVendor_D621`.
 - Decode reference app action enumeration usage from `rce/reference/APP_ACTION_ENUMERATION.md`.
 - Add scripts for one command at a time, each with captured packet evidence.

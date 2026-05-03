@@ -326,6 +326,32 @@ def test_ptp_data_payload_decoders() -> None:
     assert "decode_error" in malformed_count_result
 
 
+def test_vendor_text_payload_decoders() -> None:
+    payload = (
+        b"\x00" * 41
+        + "140_FUJI".encode("utf-16le")
+        + b"\x00\x00"
+        + b"\x00" * 16
+    )
+    data = ptpip.build_ptp_data_container(0x9050, 11, payload)
+
+    assert ptpip.printable_utf16le_strings(payload) == ["140_FUJI"]
+    assert ptpip.printable_utf16le_strings("TAIL".encode("utf-16le")) == ["TAIL"]
+    assert ptpip.nonzero_payload_stats(payload) == {
+        "payload_bytes": len(payload),
+        "nonzero_bytes": 8,
+        "last_nonzero_offset": 55,
+    }
+    result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(result, 0x9050, data)
+    assert result["text_values"] == ["140_FUJI"]
+    assert result["payload_stats"] == ptpip.nonzero_payload_stats(payload)
+
+    malformed_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_result, 0x9053, ptp_container(code=0x2001))
+    assert "decode_error" in malformed_result
+
+
 def test_probe_connect_only_writes_summary(tmp_path) -> None:
     fake = FakeSocket()
     ticks = iter([10.0, 10.1234])
@@ -537,6 +563,59 @@ def test_probe_app_current_object_thumbnail_sequence(tmp_path) -> None:
     assert thumbnail_step["data_header"]["code"] == 0x9055
     assert fake.sent[-1] == ptpip.build_ptp_command(0x9055, 10, 0x10000001)
     assert (tmp_path / "app_sequence_09_vendor_get_9055_data.bin").exists()
+
+
+def test_probe_app_sdcard_folder_and_dates_sequence(tmp_path) -> None:
+    folder_payload = b"\x00" * 41 + "140_FUJI".encode("utf-16le") + b"\x00\x00"
+    date_payload = (
+        b"\x00" * 4
+        + "20260430".encode("utf-16le")
+        + b"\x00\x00"
+        + "20260425".encode("utf-16le")
+        + b"\x00\x00"
+    )
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+            ptp_container(container_type=2, code=0x9055, transaction=10),
+            ptp_container(code=0x2001, transaction=10),
+            ptpip.build_ptp_data_container(0x9050, 11, folder_payload),
+            ptp_container(code=0x2001, transaction=11),
+            ptpip.build_ptp_data_container(0x9053, 12, date_payload),
+            ptp_container(code=0x2001, transaction=12),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-folder-and-dates",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    assert [step.get("code") or step.get("prop") for step in summary["app_sequence_steps"][-2:]] == [
+        "0x9050",
+        "0x9053",
+    ]
+    assert summary["app_sequence_steps"][-2]["text_values"] == ["140_FUJI"]
+    assert summary["app_sequence_steps"][-1]["text_values"] == ["20260430", "20260425"]
+    assert fake.sent[-1] == ptpip.build_ptp_command(0x9053, 12)
+    assert (tmp_path / "app_sequence_11_vendor_get_9053_data.bin").exists()
 
 
 def test_probe_app_sdcard_object_handles_sequence(tmp_path) -> None:

@@ -766,7 +766,25 @@ The camera returned the current object's JPEG thumbnail through `FujiVendor_9055
 Workflow:
 
 1. Preserve the thumbnail data artifact.
-2. Continue with `--ptpip-app-sequence sdcard-object-handles` to request the folder/date/object-handle listing functions observed in reference app.
+2. Continue with `--ptpip-app-sequence sdcard-folder-and-dates` to request the folder/date listing functions observed in reference app.
+
+### `camera_ap_ptpip_sdcard_folder_and_dates_ok`
+
+Evidence:
+
+- `app_sequence=sdcard-folder-and-dates`.
+- `app_sequence_completed=true`.
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=app_sequence_sdcard_folder_and_dates_ok`.
+
+Meaning:
+
+The camera completed the observed listing sequence through `FujiVendor_9050` and `FujiVendor_9053`. The reference capture labels those responses as active folder and capture-date list.
+
+Workflow:
+
+1. Preserve the probe session directory and record evidence into the statefile.
+2. Inspect `text_values` and `payload_stats` for `FujiVendor_9050` and `FujiVendor_9053` in `summary.json`.
+3. Continue to `sdcard-object-handles` only when the `9053` payload matches the expected date-list shape. Live laptop evidence instead returned a large fixed-size `9053` payload whose only decoded text was `140_FUJI`, then `D620` timed out.
 
 ### `camera_ap_ptpip_sdcard_object_handles_ok`
 

@@ -31,6 +31,7 @@ Options:
                         sequence. Current: sdcard-browse-bootstrap,
                         sdcard-current-object-info,
                         sdcard-current-object-thumbnail,
+                        sdcard-folder-and-dates,
                         sdcard-object-handles.
   --timeout SEC         Socket timeout. Default: 5.
   --connect-only        Only test TCP connect; do not send Init_Command_Request.

@@ -32,6 +32,7 @@ Options:
                           sequence. Current: sdcard-browse-bootstrap,
                           sdcard-current-object-info,
                           sdcard-current-object-thumbnail,
+                          sdcard-folder-and-dates,
                           sdcard-object-handles.
   --temporary-wifi-internet
                           Allow Wi-Fi to temporarily leave the internet network

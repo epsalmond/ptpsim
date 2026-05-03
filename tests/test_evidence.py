@@ -1013,6 +1013,10 @@ def make_ptpip_probe_session(tmp_path: Path, summary: dict | None = None) -> Pat
             "app_sequence_sdcard_current_object_thumbnail_ok",
         ),
         (
+            ptpip_summary(app_sequence="sdcard-folder-and-dates", app_sequence_completed=True),
+            "app_sequence_sdcard_folder_and_dates_ok",
+        ),
+        (
             ptpip_summary(app_sequence="sdcard-object-handles", app_sequence_completed=True),
             "app_sequence_sdcard_object_handles_ok",
         ),
@@ -1157,6 +1161,25 @@ def test_ptpip_probe_session_collector(monkeypatch, tmp_path) -> None:
     )
     thumbnail_state = evidence.load_state(tmp_path / "thumbnail-state.json")
     assert thumbnail_state["state_label"] == "camera_ap_ptpip_sdcard_current_object_thumbnail_ok"
+
+    folder_dates_session = tmp_path / "ptpip_probe_folder_dates"
+    folder_dates_session.mkdir()
+    (folder_dates_session / "summary.json").write_text(
+        json.dumps(
+            ptpip_summary(
+                app_sequence="sdcard-folder-and-dates",
+                app_sequence_completed=True,
+                app_sequence_steps=[{"action": "vendor_get"}],
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence.collect_ptpip_probe_session(
+        args(tmp_path, state_file=tmp_path / "folder-dates-state.json", session_dir=str(folder_dates_session))
+    )
+    folder_dates_state = evidence.load_state(tmp_path / "folder-dates-state.json")
+    assert folder_dates_state["state_label"] == "camera_ap_ptpip_sdcard_folder_and_dates_ok"
 
     object_handles_session = tmp_path / "ptpip_probe_object_handles"
     object_handles_session.mkdir()
