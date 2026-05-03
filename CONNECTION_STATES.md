@@ -716,6 +716,76 @@ Workflow:
 2. Use the tested PTP/IP client and init comparator to choose the next generated-identity candidate.
 3. Continue implementing the next reference app PTP sequence from `rce/reference/ptp_decoded/`.
 
+### `camera_ap_ptpip_sdcard_browse_bootstrap_ok`
+
+Evidence:
+
+- OpenSession was OK or already open.
+- `app_sequence=sdcard-browse-bootstrap`.
+- `app_sequence_completed=true`.
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=app_sequence_sdcard_browse_bootstrap_ok`.
+
+Meaning:
+
+The camera accepted the observed reference app SD-card browse setup writes and reads through `GetDevicePropValue 0xd244`.
+
+Workflow:
+
+1. Preserve the probe session directory and all `app_sequence_*.bin` artifacts.
+2. Continue with `--ptpip-app-sequence sdcard-current-object-info` or a longer named sequence that includes it.
+
+### `camera_ap_ptpip_sdcard_current_object_info_ok`
+
+Evidence:
+
+- `app_sequence=sdcard-current-object-info`.
+- `app_sequence_completed=true`.
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=app_sequence_sdcard_current_object_info_ok`.
+
+Meaning:
+
+The camera returned current-object metadata through `FujiVendor_9054 0x10000001`.
+
+Workflow:
+
+1. Preserve the data artifact for `FujiVendor_9054`.
+2. Continue with `--ptpip-app-sequence sdcard-current-object-thumbnail` or a longer named sequence that includes it.
+
+### `camera_ap_ptpip_sdcard_current_object_thumbnail_ok`
+
+Evidence:
+
+- `app_sequence=sdcard-current-object-thumbnail`.
+- `app_sequence_completed=true`.
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=app_sequence_sdcard_current_object_thumbnail_ok`.
+
+Meaning:
+
+The camera returned the current object's JPEG thumbnail through `FujiVendor_9055 0x10000001`.
+
+Workflow:
+
+1. Preserve the thumbnail data artifact.
+2. Continue with `--ptpip-app-sequence sdcard-object-handles` to request the folder/date/object-handle listing functions observed in reference app.
+
+### `camera_ap_ptpip_sdcard_object_handles_ok`
+
+Evidence:
+
+- `app_sequence=sdcard-object-handles`.
+- `app_sequence_completed=true`.
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=app_sequence_sdcard_object_handles_ok`.
+
+Meaning:
+
+The camera completed the observed listing sequence through `FujiVendor_9050`, `FujiVendor_9053`, `FujiVendor_D620`, and `FujiVendor_D621`. The reference capture labels those responses as active folder, capture-date list, object count, and visible object handles.
+
+Workflow:
+
+1. Preserve the probe session directory and record evidence into the statefile.
+2. Decode the `FujiVendor_D621` response into candidate handles.
+3. Implement standard PTP `GetObjectInfo` and `GetThumb` probes against selected handles before attempting full media transfer.
+
 ### `camera_ap_launched_app_function_not_found`
 
 Evidence:

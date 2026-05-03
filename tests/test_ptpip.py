@@ -284,6 +284,43 @@ def test_ptp_request_builders_and_property_parser() -> None:
         ptpip.parse_u16_or_hex("0x10000")
 
 
+def test_ptp_data_payload_decoders() -> None:
+    count_data = ptpip.build_ptp_data_container(0xD620, 13, struct.pack("<I", 11))
+    handles = [0x0B, 0x0C, 0x09, 0x0A, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02]
+    handles_payload = struct.pack("<I", len(handles)) + b"".join(
+        struct.pack("<I", handle) for handle in handles
+    )
+    handles_data = ptpip.build_ptp_data_container(0xD621, 14, handles_payload)
+
+    assert ptpip.ptp_data_payload(count_data) == struct.pack("<I", 11)
+    assert ptpip.decode_u32_data_container(count_data) == 11
+    assert ptpip.decode_u32_array_data_container(handles_data) == handles
+
+    with pytest.raises(ValueError, match="not a data container"):
+        ptpip.ptp_data_payload(ptp_container(code=0x2001))
+    with pytest.raises(ValueError, match="does not match"):
+        ptpip.ptp_data_payload(struct.pack("<IHHI", 99, 2, 0xD620, 13))
+    with pytest.raises(ValueError, match="one uint32"):
+        ptpip.decode_u32_payload(b"\x00")
+    with pytest.raises(ValueError, match="too short"):
+        ptpip.decode_u32_array_payload(b"\x00")
+    with pytest.raises(ValueError, match="does not match count"):
+        ptpip.decode_u32_array_payload(struct.pack("<II", 2, 1))
+
+    count_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(count_result, 0xD620, count_data)
+    assert count_result == {"object_count": 11}
+    handles_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(handles_result, 0xD621, handles_data)
+    assert handles_result == {"object_handles": [f"0x{handle:08x}" for handle in handles]}
+    malformed_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_result, 0xD621, count_data)
+    assert "decode_error" in malformed_result
+    malformed_count_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_count_result, 0xD620, handles_data)
+    assert "decode_error" in malformed_count_result
+
+
 def test_probe_connect_only_writes_summary(tmp_path) -> None:
     fake = FakeSocket()
     ticks = iter([10.0, 10.1234])
@@ -460,6 +497,68 @@ def test_probe_app_current_object_thumbnail_sequence(tmp_path) -> None:
     assert thumbnail_step["data_header"]["code"] == 0x9055
     assert fake.sent[-1] == ptpip.build_ptp_command(0x9055, 10, 0x10000001)
     assert (tmp_path / "app_sequence_09_vendor_get_9055_data.bin").exists()
+
+
+def test_probe_app_sdcard_object_handles_sequence(tmp_path) -> None:
+    handles = [0x0B, 0x0C, 0x09, 0x0A, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02]
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+            ptp_container(container_type=2, code=0x9055, transaction=10),
+            ptp_container(code=0x2001, transaction=10),
+            ptp_container(container_type=2, code=0x9050, transaction=11),
+            ptp_container(code=0x2001, transaction=11),
+            ptp_container(container_type=2, code=0x9053, transaction=12),
+            ptp_container(code=0x2001, transaction=12),
+            ptpip.build_ptp_data_container(0xD620, 13, struct.pack("<I", len(handles))),
+            ptp_container(code=0x2001, transaction=13),
+            ptpip.build_ptp_data_container(
+                0xD621,
+                14,
+                struct.pack("<I", len(handles))
+                + b"".join(struct.pack("<I", handle) for handle in handles),
+            ),
+            ptp_container(code=0x2001, transaction=14),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-object-handles",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    assert [step.get("code") or step.get("prop") for step in summary["app_sequence_steps"][-4:]] == [
+        "0x9050",
+        "0x9053",
+        "0xd620",
+        "0xd621",
+    ]
+    handles_step = summary["app_sequence_steps"][-1]
+    count_step = summary["app_sequence_steps"][-2]
+    assert count_step["object_count"] == 11
+    assert handles_step["action"] == "vendor_get"
+    assert handles_step["params"] == []
+    assert handles_step["data_header"]["code"] == 0xD621
+    assert handles_step["object_handles"] == [f"0x{handle:08x}" for handle in handles]
+    assert fake.sent[-1] == ptpip.build_ptp_command(0xD621, 14)
+    assert (tmp_path / "app_sequence_13_vendor_get_d621_data.bin").exists()
 
 
 def test_probe_app_sequence_rejects_unknown_step_action(monkeypatch, tmp_path) -> None:

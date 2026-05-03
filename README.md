@@ -323,6 +323,7 @@ scripts/camera_ap_ptpip_probe_flow.sh --address 2B403BE3-8075-4865-D0F8-827BA407
 
 `sdcard-browse-bootstrap` follows the observed reference app sequence: `GetDevicePropValue 0xd212`, `SetDevicePropValue 0xdf01=1400`, `GetDevicePropValue 0xdf28`, `SetDevicePropValue 0xdf28=03000000`, `SetDevicePropValue 0xd226=0000`, `SetDevicePropValue 0xd227=0000`, and `GetDevicePropValue 0xd244`.
 `sdcard-current-object-info` extends that sequence with `FujiVendor_9054` parameter `0x10000001`, which reference app used to read current-object metadata such as `20260425T095812,DSCF8101.MOV`. `sdcard-current-object-thumbnail` extends it again with `FujiVendor_9055` parameter `0x10000001`, which reference app used to read the current object's JPEG thumbnail.
+`sdcard-object-handles` continues with the observed directory/listing calls: `FujiVendor_9050`, `FujiVendor_9053`, `FujiVendor_D620`, and `FujiVendor_D621`. The reference capture labels those as the active folder, capture-date list, object count, and visible object handles.
 When Continuity Camera focus is unstable, use `--screen-warmup 5` on the combined flow; the default remains two seconds.
 
 ### Lower-Level CLI

@@ -1007,6 +1007,10 @@ def make_ptpip_probe_session(tmp_path: Path, summary: dict | None = None) -> Pat
             "app_sequence_sdcard_current_object_thumbnail_ok",
         ),
         (
+            ptpip_summary(app_sequence="sdcard-object-handles", app_sequence_completed=True),
+            "app_sequence_sdcard_object_handles_ok",
+        ),
+        (
             ptpip_summary(app_sequence="sdcard-browse-bootstrap", app_sequence_completed=False),
             "app_sequence_incomplete",
         ),
@@ -1108,6 +1112,25 @@ def test_ptpip_probe_session_collector(monkeypatch, tmp_path) -> None:
     )
     thumbnail_state = evidence.load_state(tmp_path / "thumbnail-state.json")
     assert thumbnail_state["state_label"] == "camera_ap_ptpip_sdcard_current_object_thumbnail_ok"
+
+    object_handles_session = tmp_path / "ptpip_probe_object_handles"
+    object_handles_session.mkdir()
+    (object_handles_session / "summary.json").write_text(
+        json.dumps(
+            ptpip_summary(
+                app_sequence="sdcard-object-handles",
+                app_sequence_completed=True,
+                app_sequence_steps=[{"action": "vendor_get"}],
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence.collect_ptpip_probe_session(
+        args(tmp_path, state_file=tmp_path / "object-handles-state.json", session_dir=str(object_handles_session))
+    )
+    object_handles_state = evidence.load_state(tmp_path / "object-handles-state.json")
+    assert object_handles_state["state_label"] == "camera_ap_ptpip_sdcard_object_handles_ok"
 
     missing_summary = tmp_path / "ptpip_probe_missing"
     missing_summary.mkdir()

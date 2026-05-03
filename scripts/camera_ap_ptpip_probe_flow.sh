@@ -26,7 +26,8 @@ Options:
   --ptpip-app-sequence N After OpenSession, run a named observed reference app PTP
                           sequence. Current: sdcard-browse-bootstrap,
                           sdcard-current-object-info,
-                          sdcard-current-object-thumbnail.
+                          sdcard-current-object-thumbnail,
+                          sdcard-object-handles.
   --temporary-wifi-internet
                           Allow Wi-Fi to temporarily leave the internet network
                           for the camera AP, then restore the previous Wi-Fi
