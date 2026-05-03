@@ -226,6 +226,7 @@ scripts/ptpip_probe.sh --friendly-name mbp-7274
 ```
 
 This records route evidence and sends an reference app-shaped 82-byte PTP/IP `Init_Command_Request` to `192.168.0.1:55740`. It uses a fixed 26-byte UTF-16LE friendly-name field plus an observed 28-byte reference app tail. If the camera screen has already timed out to normal shooting, rerun the AP prepare step or press the camera's retry control before probing.
+The script keeps macOS route checks in shell and delegates PTP/IP packet construction, socket exchange, binary artifacts, and `summary.json` generation to the tested Python module `rce.tools.fuji_ble_gps.ptpip`.
 
 For live testing, prefer the combined flow so AP launch, Wi-Fi association, and PTP/IP probing happen inside one camera search window:
 
@@ -249,7 +250,7 @@ Live evidence showed direct reconnect can succeed even when name-based scan evid
 scripts/camera_ap_ptpip_probe_flow.sh --address 2B403BE3-8075-4865-D0F8-827BA4076BFF --device-name mbp-7274 --ptpip-init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin --ptpip-open-session
 ```
 
-The PTP/IP generator now validates that `liveview`, `get`, and `zeros` tail profiles are 28 bytes, producing an 82-byte packet like the reference app captures. The combined flow can replay exact captured init packets:
+The Python PTP/IP generator validates that `liveview`, `get`, and `zeros` tail profiles are 28 bytes, producing an 82-byte packet like the reference app captures. The combined flow can replay exact captured init packets:
 
 ```sh
 scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin

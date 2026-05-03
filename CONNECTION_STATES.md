@@ -671,7 +671,7 @@ The camera accepted PTP/IP Init_Command_Request and returned InitCommandAck. Liv
 Workflow:
 
 1. Preserve the PTP/IP probe session directory.
-2. Send raw PTP OpenSession in the same socket with `scripts/ptpip_probe.sh --init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin --open-session`.
+2. Send raw PTP OpenSession in the same socket with `scripts/ptpip_probe.sh --init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin --open-session`. The script delegates the PTP/IP socket exchange to `rce.tools.fuji_ble_gps.ptpip`.
 3. If OpenSession is only attempted after the camera window has changed, do not interpret failure as an OpenSession packet error. Repeat through `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin --ptpip-open-session` while the user confirms the camera screen is in the expected state.
 
 ### `camera_ap_ptpip_open_session_ok`

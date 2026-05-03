@@ -85,7 +85,7 @@ Next investigation:
 
 ### BUG-003: Camera-screen classifier does not yet recognize GPS-set or active-Bluetooth icons
 
-Status: open
+Status: in progress
 
 Summary:
 
@@ -131,8 +131,14 @@ Acceptance criteria:
 
 - Python client can send init, open session, and issue property reads.
 - Packet encoder/decoder tests cover accepted captured payloads and generated payloads.
-- Scripts call the Python client instead of hand-rolled shell/Python snippets where practical.
+- `scripts/ptpip_probe.sh` calls the Python client for packet/socket work.
 - Verbose logs include packet type, transaction id, operation code, response code, byte lengths, and artifact paths.
+
+Remaining work:
+
+- Expose the Python PTP/IP client as a TUI action.
+- Add statefile evidence collection for PTP/IP probe summaries.
+- Decode accepted and generated init identity fields by name.
 
 ### PROTO-002: Implement the next observed reference app PTP sequence
 
