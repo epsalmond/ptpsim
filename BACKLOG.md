@@ -328,12 +328,18 @@ Possible evidence:
 
 ### SCREEN-003: Add screen-capture regression fixtures
 
-Status: open
+Status: done
 
 Summary:
 
 Timestamped live captures are ignored by git. Add a small curated fixture set
 for parser/classifier regression tests without committing bulky live artifacts.
+
+Result:
+
+- Added representative fixtures under `tests/fixtures/screen_vision/`.
+- Covered ready, registration, waiting-for-connected, app-not-found retry,
+  device-not-found retry, and a glare-heavy raw LCD capture.
 
 ## Product And TUI
 

@@ -152,7 +152,7 @@ scripts/identify_unknown_elements.sh --capture rce/screen_captures/<timestamp>/c
 scripts/reclassify_camera_screen_state.sh --capture rce/screen_captures/<timestamp>/capture.json --write
 ```
 
-Classifier artifacts are local-time directories under `rce/screen_captures/<timestamp>/`. `raw.png` is the captured frame, `screen.png` is the normalized LCD, and `capture.json` is the parsable result. The reusable LCD calibration is `rce/state/camera_lcd_box.json`. The symbol label catalog is `rce/screen_captures/screen_element_labels.json`; stable template crops live under `rce/screen_captures/screen_element_templates/`.
+Classifier artifacts are local-time directories under `rce/screen_captures/<timestamp>/`. `raw.png` is the captured frame, `screen.png` is the normalized LCD, and `capture.json` is the parsable result. The reusable LCD calibration is `rce/state/camera_lcd_box.json`. The symbol label catalog is `rce/screen_captures/screen_element_labels.json`; stable template crops live under `rce/screen_captures/screen_element_templates/`. Curated regression fixtures copied from captures live under `tests/fixtures/screen_vision/`; add representative images there when a classifier or LCD-detection bug is fixed.
 
 Known camera-screen state labels include `registration_mode` for the Fuji pairing/ready-to-pair screen, `device_not_found_continue_search`, `waiting_for_connected`, `connection_lost`, `app_function_not_found_retry`, `ready_to_take_photo`, and `ready_to_shoot_video`.
 The classifier can also record `camera_bluetooth_status=ready_not_connected` for the dim trusted-Bluetooth icon. The GPS-set icon and bright active-Bluetooth icon are not yet labeled templates; do not infer those states from screenshots until labels exist.
@@ -297,7 +297,7 @@ Aim for full test coverage. Current expectation is:
 .venv/bin/python -m pytest -q
 ```
 
-The suite should remain at 100% coverage for the trusted Python package surface. The TUI module and experimental `screen_vision.py` are intentionally omitted from coverage for now in `pyproject.toml`.
+The suite should remain at 100% coverage for the trusted Python package surface. Only the TUI module is intentionally omitted from coverage in `pyproject.toml`; `screen_vision.py` is covered, including fixture-backed classifier tests when OpenCV/Tesseract dependencies are available.
 
 When adding behavior:
 

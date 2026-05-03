@@ -116,7 +116,7 @@ scripts/read_camera_screen_state.sh --device-name iPhone --warmup 5 --zoom 2
 scripts/reclassify_camera_screen_state.sh --capture rce/screen_captures/<timestamp>/capture.json
 ```
 
-`detect_camera_lcd_box.sh` writes a timestamped `lcd_box.json`, a normalized preview `screen.png`, and updates `rce/state/camera_lcd_box.json`. Use `--image rce/screen_captures/<timestamp>/raw.png` to calibrate from a saved raw frame, and `--no-save` to test detection without replacing the saved calibration. LCD detection currently tries edge geometry, bright LCD color, dark LCD color, and known Fuji glyph geometry from stable UI anchors such as the exposure scale and AF touch glyph.
+`detect_camera_lcd_box.sh` writes a timestamped `lcd_box.json`, a normalized preview `screen.png`, and updates `rce/state/camera_lcd_box.json`. Use `--image rce/screen_captures/<timestamp>/raw.png` to calibrate from a saved raw frame, and `--no-save` to test detection without replacing the saved calibration. LCD detection currently tries edge geometry, bright LCD color, dark LCD color, blue LCD color for glare-heavy ready screens, and known Fuji glyph geometry from stable UI anchors such as the exposure scale and AF touch glyph.
 
 `read_camera_screen_state.sh` reuses `rce/state/camera_lcd_box.json`; if that file is missing or stale, run `detect_camera_lcd_box.sh` first. It writes local-time artifacts under `rce/screen_captures/<timestamp>/`: lossless `raw.png`, normalized `screen.png`, and parsable `capture.json`. The command prints simple key/value output such as `camera_screen_state=registration_mode`, `confidence=0.82`, `capture=...`, and metadata like `iso=1600` when present. Current known states include `registration_mode` for the Fuji pairing/ready-to-pair screen, `device_not_found_continue_search`, `waiting_for_connected`, `connection_lost`, `app_function_not_found_retry`, `ready_to_take_photo`, and `ready_to_shoot_video`.
 
@@ -131,6 +131,8 @@ scripts/identify_unknown_elements.sh --capture rce/screen_captures/<timestamp>/c
 ```
 
 The label catalog lives at `rce/screen_captures/screen_element_labels.json`, and accepted template crops are copied into `rce/screen_captures/screen_element_templates/` so reclassifying a capture does not overwrite template images. Re-run `scripts/reclassify_camera_screen_state.sh --capture ... --write` after adding labels.
+
+Representative classifier fixtures live in `tests/fixtures/screen_vision/`. They are copied from local captures and include ready, pairing registration, AP retry/error, waiting-for-connected, and glare-heavy raw LCD frames so tests can exercise the classifier without the live iPhone camera.
 
 The Continuity Camera capture path waits two seconds by default before saving a frame. macOS AVFoundation exposes Continuity Camera as a camera device, but not as separate iPhone 2x/3x lens devices in this helper. Use `--zoom` for deterministic output center-crop zoom and verify the saved artifact:
 

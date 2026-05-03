@@ -4,10 +4,22 @@ import argparse
 from datetime import datetime, timezone, timedelta
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
 from rce.tools.fuji_ble_gps import screen_vision
+
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "screen_vision"
+
+
+def require_vision_stack() -> None:
+    pytest.importorskip("cv2")
+    pytest.importorskip("numpy")
+    pytest.importorskip("pytesseract")
+    if shutil.which("tesseract") is None:
+        pytest.skip("tesseract executable is not installed")
 
 
 def make_args(tmp_path, **kwargs):
@@ -718,3 +730,60 @@ def test_main_success_and_error(tmp_path, capsys) -> None:
     assert screen_vision.main(["identify-unknown-elements", "--capture", str(capture), "--no-open"]) == 0
     assert screen_vision.main(["identify-unknown-elements", "--capture", str(tmp_path / "missing.json")]) == 1
     assert "error:" in capsys.readouterr().err
+
+
+def test_detect_lcd_box_handles_glare_capture_fixture(tmp_path) -> None:
+    require_vision_stack()
+    raw_image = FIXTURE_DIR / "ready_to_take_photo_glare_raw.png"
+    screen_image = tmp_path / "screen.png"
+
+    lcd_box = screen_vision.detect_lcd_box(raw_image, screen_image)
+
+    assert lcd_box["detected"] is True
+    assert lcd_box["method"] == "blue_lcd_color"
+    assert lcd_box["raw_size"] == [1920, 1080]
+    assert lcd_box["normalized_size"][0] >= 900
+    assert lcd_box["normalized_size"][1] >= 700
+    assert screen_image.exists()
+
+    analysis = screen_vision.analyze_normalized_screen(
+        screen_image,
+        tmp_path,
+        screen_vision.DEFAULT_LABELS_FILE,
+        lcd_box,
+    )
+    assert analysis["state"]["label"] == "ready_to_take_photo"
+    assert analysis["state"]["metadata"]["bluetooth_status"] == "ready_not_connected"
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_label"),
+    [
+        ("app_function_not_found_retry_screen.png", "app_function_not_found_retry"),
+        ("device_not_found_continue_search_screen.png", "device_not_found_continue_search"),
+        ("ready_to_take_photo_screen.png", "ready_to_take_photo"),
+        ("registration_mode_screen.png", "registration_mode"),
+        ("waiting_for_connected_screen.png", "waiting_for_connected"),
+    ],
+)
+def test_classifies_representative_capture_fixtures(tmp_path, fixture_name, expected_label) -> None:
+    require_vision_stack()
+    screen_image = FIXTURE_DIR / fixture_name
+    capture_dir = tmp_path / fixture_name.removesuffix(".png")
+    capture_dir.mkdir()
+
+    analysis = screen_vision.analyze_normalized_screen(
+        screen_image,
+        capture_dir,
+        screen_vision.DEFAULT_LABELS_FILE,
+        {
+            "detected": True,
+            "corners": [],
+            "normalized_size": [1, 1],
+            "raw_size": [1, 1],
+            "transform": [],
+        },
+    )
+
+    assert analysis["state"]["label"] == expected_label
+    assert analysis["state"]["confidence"] >= screen_vision.STATE_CONFIDENCE_THRESHOLD
