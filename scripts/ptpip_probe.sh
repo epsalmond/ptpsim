@@ -23,6 +23,8 @@ Options:
                         transaction 1 with session id 1.
   --get-prop HEX        After OpenSession, send PTP GetDevicePropValue for
                         the given property, for example 0xd212.
+  --app-sequence NAME  After OpenSession, run a named observed reference app PTP
+                        sequence. Current: sdcard-browse-bootstrap.
   --timeout SEC         Socket timeout. Default: 5.
   --connect-only        Only test TCP connect; do not send Init_Command_Request.
   -h, --help            Show this help.
@@ -49,6 +51,7 @@ timeout="${FUJI_PTPIP_TIMEOUT:-5}"
 connect_only=0
 open_session=0
 get_prop=""
+app_sequence=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -94,6 +97,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --get-prop)
       get_prop="$2"
+      open_session=1
+      shift 2
+      ;;
+    --app-sequence)
+      app_sequence="$2"
       open_session=1
       shift 2
       ;;
@@ -215,6 +223,9 @@ fi
 if [[ -n "$get_prop" ]]; then
   ptpip_args+=(--get-prop "$get_prop")
 fi
+if [[ -n "$app_sequence" ]]; then
+  ptpip_args+=(--app-sequence "$app_sequence")
+fi
 
 log "+ $python_bin -m rce.tools.fuji_ble_gps.ptpip ${ptpip_args[*]}"
 set +e
@@ -240,6 +251,10 @@ if data.get("get_prop_data_header"):
     print("get_prop_data_header=" + json.dumps(data["get_prop_data_header"], sort_keys=True))
 if data.get("get_prop_response_header"):
     print("get_prop_response_header=" + json.dumps(data["get_prop_response_header"], sort_keys=True))
+if data.get("app_sequence"):
+    print("app_sequence=" + str(data.get("app_sequence", "")))
+    print("app_sequence_completed=" + str(data.get("app_sequence_completed", "")))
+    print("app_sequence_steps=" + str(len(data.get("app_sequence_steps", []))))
 if data.get("error"):
     print("error=" + str(data["error"]))
 ' "$session_dir/summary.json" | tee -a "$log_file" >&2

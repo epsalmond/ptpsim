@@ -277,6 +277,8 @@ def test_ptp_request_builders_and_property_parser() -> None:
     assert ptpip.parse_u16_or_hex("0xd212") == 0xD212
     assert ptpip.parse_u16_or_hex("123") == 123
     assert ptpip.build_get_device_prop_value(0xD212).hex() == "10000000010015100200000012d20000"
+    assert ptpip.build_set_device_prop_value(0xDF01, 2).hex() == "10000000010016100200000001df0000"
+    assert ptpip.build_ptp_data_container(0x1016, 2, bytes.fromhex("1400")).hex() == "0e00000002001610020000001400"
     with pytest.raises(ValueError, match="out of uint16 range"):
         ptpip.parse_u16_or_hex("0x10000")
 
@@ -334,6 +336,51 @@ def test_probe_full_success_with_captured_init_payload(tmp_path) -> None:
     assert fake.sent[1] == ptpip.build_open_session()
     assert fake.sent[2] == ptpip.build_get_device_prop_value(0xD212)
     assert (tmp_path / "get_prop_response.bin").exists()
+    assert ptpip.exit_code_for_summary(summary, config) == 0
+
+
+def test_probe_app_sdcard_browse_sequence(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-browse-bootstrap",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_sent"] is True
+    assert summary["app_sequence_completed"] is True
+    assert [step["prop"] for step in summary["app_sequence_steps"]] == [
+        "0xd212",
+        "0xdf01",
+        "0xdf28",
+        "0xdf28",
+        "0xd226",
+        "0xd227",
+        "0xd244",
+    ]
+    assert fake.sent[2] == ptpip.build_get_device_prop_value(0xD212, 2)
+    assert fake.sent[3] == ptpip.build_set_device_prop_value(0xDF01, 3)
+    assert fake.sent[4] == ptpip.build_ptp_data_container(0x1016, 3, bytes.fromhex("1400"))
+    assert fake.sent[12] == ptpip.build_get_device_prop_value(0xD244, 8)
+    assert (tmp_path / "app_sequence_07_get_d244_response.bin").exists()
     assert ptpip.exit_code_for_summary(summary, config) == 0
 
 
@@ -398,6 +445,32 @@ def test_probe_timeout_and_missing_response_branches(tmp_path) -> None:
     assert get_timeout["get_prop_response_error"] == "timeout"
     assert ptpip.exit_code_for_summary(get_timeout, get_timeout_config) == 5
 
+    sequence_timeout_config = ptpip.ProbeConfig(
+        session_dir=tmp_path / "sequence-timeout",
+        friendly_name="mbp",
+        open_session=True,
+        app_sequence="sdcard-browse-bootstrap",
+    )
+    sequence_timeout = ptpip.probe_ptpip(
+        sequence_timeout_config,
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container(), b"", b""]),
+        clock=lambda: 0.0,
+    )
+    assert sequence_timeout["app_sequence_completed"] is False
+    assert ptpip.exit_code_for_summary(sequence_timeout, sequence_timeout_config) == 6
+
+    with pytest.raises(ValueError, match="unknown reference app sequence"):
+        ptpip.probe_ptpip(
+            ptpip.ProbeConfig(
+                session_dir=tmp_path / "unknown-sequence",
+                friendly_name="mbp",
+                open_session=True,
+                app_sequence="missing",
+            ),
+            connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container()]),
+            clock=lambda: 0.0,
+        )
+
 
 def test_probe_socket_error_and_default_display_name(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(ptpip, "default_device_name", lambda: "host-default")
@@ -423,6 +496,7 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
             "response_present": True,
             "open_session_response_present": True,
             "get_prop_response_present": True,
+            "app_sequence_completed": bool(config.app_sequence),
         }
 
     monkeypatch.setattr(ptpip, "probe_ptpip", fake_probe)
@@ -446,6 +520,8 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
             "000102030405060708090a0b0c0d0e0f",
             "--get-prop",
             "0xd212",
+            "--app-sequence",
+            "sdcard-browse-bootstrap",
         ]
     )
 
@@ -454,6 +530,7 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
     assert calls[0].open_session is True
     assert calls[0].tail_profile == "get"
     assert calls[0].guid == "000102030405060708090a0b0c0d0e0f"
+    assert calls[0].app_sequence == "sdcard-browse-bootstrap"
     assert '"tcp_connect": "present"' in capsys.readouterr().out
 
 

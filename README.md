@@ -296,6 +296,15 @@ scripts/ptpip_probe.sh --init-payload rce/reference/ptp_decoded/liveview_payload
 
 Live evidence returned a 50-byte data packet for `GetDevicePropValue 0xD212` followed by OK (`0x2001`). One run returned `SessionAlreadyOpen` (`0x201e`) for OpenSession, then still answered the property read.
 
+The next observed SD-card browse/import bootstrap can be run as a named sequence:
+
+```sh
+scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0 --app-sequence sdcard-browse-bootstrap
+scripts/camera_ap_ptpip_probe_flow.sh --address 2B403BE3-8075-4865-D0F8-827BA4076BFF --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 --ptpip-app-sequence sdcard-browse-bootstrap
+```
+
+`sdcard-browse-bootstrap` follows the observed reference app sequence: `GetDevicePropValue 0xd212`, `SetDevicePropValue 0xdf01=1400`, `GetDevicePropValue 0xdf28`, `SetDevicePropValue 0xdf28=03000000`, `SetDevicePropValue 0xd226=0000`, `SetDevicePropValue 0xd227=0000`, and `GetDevicePropValue 0xd244`.
+
 ### Lower-Level CLI
 
 These commands are useful for targeted debugging:

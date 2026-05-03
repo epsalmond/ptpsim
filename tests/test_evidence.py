@@ -861,6 +861,7 @@ def make_ptpip_probe_session(tmp_path: Path, summary: dict | None = None) -> Pat
     (session / "summary.json").write_text(json.dumps(summary or ptpip_summary()) + "\n", encoding="utf-8")
     (session / "init_command_request.bin").write_bytes(b"init")
     (session / "get_prop_response.bin").write_bytes(b"ok")
+    (session / "app_sequence_01_get_d212_response.bin").write_bytes(b"ok")
     return session
 
 
@@ -886,6 +887,14 @@ def make_ptpip_probe_session(tmp_path: Path, summary: dict | None = None) -> Pat
         (
             ptpip_summary(open_session_response_header={"code": 0x2005}),
             "open_session_rejected",
+        ),
+        (
+            ptpip_summary(app_sequence="sdcard-browse-bootstrap", app_sequence_completed=True),
+            "app_sequence_sdcard_browse_bootstrap_ok",
+        ),
+        (
+            ptpip_summary(app_sequence="sdcard-browse-bootstrap", app_sequence_completed=False),
+            "app_sequence_incomplete",
         ),
         (ptpip_summary(get_prop_sent=False), "open_session_ok"),
         (
@@ -924,8 +933,29 @@ def test_ptpip_probe_session_collector(monkeypatch, tmp_path) -> None:
     record = state["evidence"]["camera_ap_ptpip_probe"]
     assert record["value"] == "get_prop_d212_ok"
     assert record["details"]["get_prop_response_header"]["code"] == 0x2001
+    assert any(path.endswith("app_sequence_01_get_d212_response.bin") for path in record["artifacts"])
     assert any(path.endswith("summary.json") for path in record["artifacts"])
     assert state["state_label"] == "camera_ap_ptpip_get_prop_d212_ok"
+
+    sequence_session = tmp_path / "ptpip_probe_sequence"
+    sequence_session.mkdir()
+    (sequence_session / "summary.json").write_text(
+        json.dumps(
+            ptpip_summary(
+                app_sequence="sdcard-browse-bootstrap",
+                app_sequence_completed=True,
+                app_sequence_steps=[{"action": "get"}],
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence.collect_ptpip_probe_session(
+        args(tmp_path, state_file=tmp_path / "sequence-state.json", session_dir=str(sequence_session))
+    )
+    sequence_state = evidence.load_state(tmp_path / "sequence-state.json")
+    assert sequence_state["evidence"]["camera_ap_ptpip_probe"]["details"]["app_sequence_step_count"] == 1
+    assert sequence_state["state_label"] == "camera_ap_ptpip_sdcard_browse_bootstrap_ok"
 
     missing_summary = tmp_path / "ptpip_probe_missing"
     missing_summary.mkdir()
