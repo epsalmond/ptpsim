@@ -258,6 +258,14 @@ scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e453
 The combined flow reads the camera LCD at transition points by default: initial state, after AP launch, after Wi-Fi association, and after the PTP/IP probe. If classification returns `camera_screen_state=unknown`, the flow stops so the classifier or iPhone/LCD alignment can be fixed. Use `--no-screen-read` only for a targeted diagnostic where camera-side screen context is deliberately unavailable.
 The combined flow does not keep the BLE connection open after AP launch by default. `--hold-ble SEC` is diagnostic only; live testing showed that keeping BLE open could prevent macOS from finding the camera AP.
 
+If the BLE AP-launch step exits before Wi-Fi association, record BLE-side launch evidence from its laptop session:
+
+```sh
+scripts/evidence/camera_ap_ble_session.sh --session-dir rce/sessions/laptop_ble_gps_<timestamp>
+```
+
+This records `camera_ap_ble_launch=launched`, `not_launched`, `not_requested`, `unknown`, or `unavailable` from `session.log`. `not_launched` means the launch characteristic was written but AP state never reached `0180/launched` inside the polling window.
+
 Current PTP/IP status: TCP connect to `192.168.0.1:55740` succeeds when the camera route is on Wi-Fi. Replaying exact captured reference app init payload `rce/reference/ptp_decoded/liveview_payload_00000061.bin` produced a 68-byte `InitCommandAck`, and exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded. A generated 82-byte init using the accepted reference app GUID, laptop friendly name `mbp-7274`, and the liveview tail also succeeded through `GetDevicePropValue 0xD212` in session `rce/sessions/ptpip_probe_20260503T064901Z`. A generated init using reference app friendly name `Pixel-6-9405` with fresh deterministic GUID `00112233445566778899aabbccddeeff` timed out at init in `rce/sessions/ptpip_probe_20260503T081432Z`, so the next identity blocker is GUID/registration binding rather than the friendly-name field. Do not infer camera UI state from a timeout; ask the user for current camera-screen text or record screen evidence.
 
 To isolate GUID behavior, keep BLE/app identity as `mbp-7274` while changing only the PTP/IP friendly name and GUID:

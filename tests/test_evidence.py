@@ -191,6 +191,14 @@ def test_print_evidence_summary_empty_invalid_and_populated(capsys) -> None:
             "camera_ap_wifi_associated_ethernet_default",
         ),
         (
+            {"camera_ap_ble_launch": "not_launched"},
+            "camera_ap_ble_launch_not_launched",
+        ),
+        (
+            {"camera_ap_ble_launch": "launched"},
+            "camera_ap_ble_launch_launched",
+        ),
+        (
             {"camera_ap_ptpip_probe": "get_prop_d212_ok"},
             "camera_ap_ptpip_get_prop_d212_ok",
         ),
@@ -830,6 +838,78 @@ def test_camera_ap_wifi_session_collector(monkeypatch, tmp_path) -> None:
     evidence.collect_camera_ap_wifi_session(args(tmp_path, state_file=tmp_path / "none-state.json"))
     none_state = evidence.load_state(tmp_path / "none-state.json")
     assert none_state["evidence"]["camera_ap_wifi_association"]["value"] == "unavailable"
+
+
+def make_camera_ap_ble_session(tmp_path: Path, log_text: str) -> Path:
+    session = tmp_path / "laptop_ble_gps_20260502T000000Z"
+    session.mkdir()
+    (session / "session.log").write_text(log_text, encoding="utf-8")
+    return session
+
+
+@pytest.mark.parametrize(
+    ("log_text", "value", "last_label"),
+    [
+        (
+            "launching camera AP mode=take value=0400\n"
+            "ap_state=0080 label=not_launched\n"
+            "ap_state=0180 label=launched\n",
+            "launched",
+            "launched",
+        ),
+        (
+            "launching camera AP mode=take value=0400\n"
+            "ap_state=0080 label=not_launched\n"
+            "ap_state=0080 label=not_launched\n",
+            "not_launched",
+            "not_launched",
+        ),
+        ("connected camera\n", "not_requested", ""),
+        ("launching camera AP mode=take value=0400\n", "unknown", ""),
+    ],
+)
+def test_camera_ap_ble_log_evaluation(log_text, value, last_label) -> None:
+    evaluated, _reason, details = evidence.evaluate_camera_ap_ble_log(log_text)
+
+    assert evaluated == value
+    assert details["last_ap_state_label"] == last_label
+
+
+def test_camera_ap_ble_session_collector(monkeypatch, tmp_path) -> None:
+    session = make_camera_ap_ble_session(
+        tmp_path,
+        "launching camera AP mode=take value=0400\n"
+        "ap_state=0080 label=not_launched\n"
+        "ap_state=0080 label=not_launched\n",
+    )
+    state_file = tmp_path / "state.json"
+
+    assert evidence.collect_camera_ap_ble_session(
+        args(tmp_path, state_file=state_file, session_dir=str(session))
+    ) == 0
+    state = evidence.load_state(state_file)
+    record = state["evidence"]["camera_ap_ble_launch"]
+    assert record["value"] == "not_launched"
+    assert record["details"]["last_ap_state"] == "0080"
+    assert state["state_label"] == "camera_ap_ble_launch_not_launched"
+
+    missing_log = tmp_path / "laptop_ble_gps_missing_log"
+    missing_log.mkdir()
+    evidence.collect_camera_ap_ble_session(
+        args(tmp_path, state_file=tmp_path / "missing-log-state.json", session_dir=str(missing_log))
+    )
+    missing_state = evidence.load_state(tmp_path / "missing-log-state.json")
+    assert missing_state["evidence"]["camera_ap_ble_launch"]["value"] == "unavailable"
+
+    monkeypatch.setattr(evidence, "latest_laptop_session", lambda: session)
+    evidence.collect_camera_ap_ble_session(args(tmp_path, state_file=tmp_path / "latest-state.json"))
+    latest_state = evidence.load_state(tmp_path / "latest-state.json")
+    assert latest_state["evidence"]["camera_ap_ble_launch"]["value"] == "not_launched"
+
+    monkeypatch.setattr(evidence, "latest_laptop_session", lambda: None)
+    evidence.collect_camera_ap_ble_session(args(tmp_path, state_file=tmp_path / "none-state.json"))
+    none_state = evidence.load_state(tmp_path / "none-state.json")
+    assert none_state["evidence"]["camera_ap_ble_launch"]["value"] == "unavailable"
 
 
 def ptpip_summary(**overrides) -> dict:

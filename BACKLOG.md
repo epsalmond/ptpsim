@@ -180,14 +180,17 @@ Status: in progress
 Current facts:
 
 - BLE AP launch works.
+- AP launch can also fail while BLE direct connect and credential reads succeed; session `rce/sessions/laptop_ble_gps_20260503T201641Z` wrote function launch `0400` but AP state stayed `0080/not_launched`.
 - Camera AP credentials are read over BLE.
 - macOS can associate to the camera AP while Ethernet remains the internet route.
 - `networksetup -getairportnetwork` can be misleading; route/IP/ping evidence is more reliable.
+- `scripts/evidence/camera_ap_ble_session.sh` records BLE AP launch evidence from `session.log`.
 
 Next work:
 
 - Make route preservation failures more actionable.
 - Record AP state and camera endpoint reachability in a single structured artifact.
+- Determine whether `0080/not_launched` after function launch means wrong camera screen/function state, stale connected-device state, a missed prerequisite write, or a transient camera refusal.
 - Continue promoting `camera_ap_wifi_association` evidence into the TUI workflow.
 - Keep all AP scripts deterministic and evidence-driven.
 
