@@ -247,7 +247,7 @@ scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e453
 
 The combined flow does not keep the BLE connection open after AP launch by default. `--hold-ble SEC` is diagnostic only; live testing showed that keeping BLE open could prevent macOS from finding the camera AP.
 
-Current PTP/IP status: TCP connect to `192.168.0.1:55740` succeeds when the camera route is on Wi-Fi. A generated 82-byte init packet with this laptop's name still timed out. Replaying exact captured reference app init payload `rce/reference/ptp_decoded/liveview_payload_00000061.bin` produced a 68-byte `InitCommandAck`, and exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded. The remaining PTP/IP init blocker is the generated laptop identity, not AP routing or the socket path. Do not infer camera UI state from a timeout; ask the user for current camera-screen text or record manual evidence.
+Current PTP/IP status: TCP connect to `192.168.0.1:55740` succeeds when the camera route is on Wi-Fi. Replaying exact captured reference app init payload `rce/reference/ptp_decoded/liveview_payload_00000061.bin` produced a 68-byte `InitCommandAck`, and exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded. A generated 82-byte init using the accepted reference app GUID, laptop friendly name `mbp-7274`, and the liveview tail also succeeded through `GetDevicePropValue 0xD212` in session `rce/sessions/ptpip_probe_20260503T064901Z`. A fresh random generated GUID previously timed out, so the next identity blocker is likely GUID/registration binding rather than the friendly-name field. Do not infer camera UI state from a timeout; ask the user for current camera-screen text or record screen evidence.
 
 When scan evidence is absent but the camera screen shows a dim Bluetooth icon on the ready-to-shoot screen, probe the last known CoreBluetooth identifier directly:
 
@@ -297,4 +297,4 @@ python3 -m rce.tools.fuji_ble_gps.cli tui
 
 ## Not Yet Implemented
 
-The project can read camera AP credentials over BLE, write the observed UTC/timezone and image-transfer setup values, launch the camera AP with the `take` launch value, associate macOS Wi-Fi with the AP while preserving the Ethernet internet route, and run PTP/IP init/session/property probes. The generated laptop-identity init packet still needs to be made acceptable to the camera; exact captured reference app init replay is the current known-good PTP/IP identity path.
+The project can read camera AP credentials over BLE, write the observed UTC/timezone and image-transfer setup values, launch the camera AP with the `take` launch value, associate macOS Wi-Fi with the AP while preserving the Ethernet internet route, and run PTP/IP init/session/property probes. The accepted reference app GUID currently works with the laptop friendly name; the remaining PTP/IP identity work is to obtain or register a laptop-owned accepted initiator GUID.

@@ -86,7 +86,7 @@ Working as of 2026-05-02:
 - Before AP launch, the BLE flow writes observed reference app setup values when available: `UTC_AND_TIMEZONE` and `IMAGE_TRANSFER_SETTING_EX=01`.
 - Live AP launch evidence: `launch_ap=get` wrote `0300` but stayed at `ap_state=0080`; `launch_ap=take` wrote `0400` and reached `ap_state=0180`.
 - Live Wi-Fi evidence: macOS associated with local IP `192.168.0.136`, camera endpoint `192.168.0.1` was reachable, camera route used Wi-Fi `en0`, and default/internet routes stayed on Ethernet `en7`.
-- PTP/IP probing is implemented. TCP connect to `192.168.0.1:55740` succeeds when the camera route uses Wi-Fi. Generated laptop-identity init packets still time out, but exact captured reference app init payload replay has produced `InitCommandAck`; exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded.
+- PTP/IP probing is implemented. TCP connect to `192.168.0.1:55740` succeeds when the camera route uses Wi-Fi. Exact captured reference app init payload replay has produced `InitCommandAck`; exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded. A generated init using accepted reference app GUID `f2e4538fada5485d87b27f0bd3d5ded0`, laptop friendly name `mbp-7274`, and liveview tail also succeeded through `GetDevicePropValue 0xD212`.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
 Useful successful sessions:
@@ -356,7 +356,7 @@ The combined AP/PTP flow defaults to `--hold-ble 0`. Holding the BLE connection 
 If the camera shows "NOT FOUND / PLEASE CHECK THE APP AND SELECT THE FUNCTION AGAIN", record `camera_screen_state=app_function_not_found_retry`. That means AP launch and Wi-Fi association were not enough; the app-side PTP/IP/FFIR follow-up did not happen inside the camera's search window.
 Continuity Camera capture defaults to a two-second warmup. macOS AVFoundation exposes the iPhone as a Continuity Camera device here, not as separate 2x/3x lens devices; use `scripts/capture_continuity_camera_frame.sh --list-devices` to inspect exposed devices and pass `--zoom 2` or `--zoom 3` for deterministic output center-crop zoom when it gives a better screen crop.
 
-Latest live caveat: the generated init packet is now 82 bytes, but the generated laptop-identity init still timed out. Replaying exact captured reference app init payload `rce/reference/ptp_decoded/liveview_payload_00000061.bin` produced a 68-byte `InitCommandAck`, proving the camera can enter PTP/IP over this laptop's AP route. Exact init plus OpenSession succeeded; a later probe of `GetDevicePropValue 0xD212` returned a 50-byte data packet and OK. Do not infer camera UI state from timeouts; ask the user for current screen text when needed.
+Latest identity result: generated init with the accepted reference app GUID, laptop friendly name `mbp-7274`, and liveview tail succeeded end-to-end in `rce/sessions/ptpip_probe_20260503T064901Z`. Treat the friendly-name field as provisionally cleared; the remaining identity question is how to obtain or register a laptop-owned accepted initiator GUID. Do not infer camera UI state from timeouts; use the screen classifier and stop if it returns `unknown`.
 
 Preserve session artifacts after every live attempt. They are evidence.
 

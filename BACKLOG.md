@@ -55,7 +55,7 @@ Next investigation:
 - Determine whether macOS can expose a peer-readable GAP `0x2A00` Device Name while our client performs the central-side camera registration flow.
 - For Linux support, add a pre-pairing alias check around `bluetoothctl show` / `bluetoothctl system-alias`.
 
-### BUG-002: Generated laptop PTP/IP init does not match accepted reference app init
+### BUG-002: PTP/IP init GUID appears registration-bound
 
 Status: in progress
 
@@ -66,7 +66,10 @@ Summary:
 The camera accepts the exact captured reference app PTP/IP init payload at
 `rce/reference/ptp_decoded/liveview_payload_00000061.bin`, returns
 `InitCommandAck`, accepts `OpenSession`, and responds to
-`GetDevicePropValue 0xD212`. The generated laptop-identity init still times out.
+`GetDevicePropValue 0xD212`. A generated packet using the accepted reference app GUID,
+the laptop friendly name `mbp-7274`, and the liveview tail also succeeds through
+`GetDevicePropValue 0xD212`. The default generated packet with a fresh random
+GUID timed out.
 
 Current facts:
 
@@ -74,13 +77,15 @@ Current facts:
 - Ethernet remains the internet route while the camera endpoint routes over Wi-Fi.
 - TCP to `192.168.0.1:55740` succeeds when the camera is in the AP/PTP window.
 - Replaying the exact captured reference app init succeeds.
-- Generated init packet shape is 82 bytes, but some identity or tail field still differs in a way the camera rejects.
+- Generated init with accepted reference app GUID plus laptop friendly name succeeds.
+- Generated init with a fresh random GUID timed out.
+- The friendly-name field is not the blocker for this camera state; GUID or registration-bound identity is the remaining likely gate.
 
 Next investigation:
 
-- Use `scripts/ptpip_compare_init.sh` to compare generated init bytes against the accepted captured payload field by field before live tests.
-- Determine whether the accepted GUID/name block is bound to camera registration state.
-- Test generated candidates that preserve the accepted reference app GUID with different friendly-name fields, then preserve the accepted reference app friendly-name field with different GUIDs.
+- Determine where the accepted GUID comes from and whether it is persisted in camera registration state.
+- Test a generated packet with the accepted reference app friendly-name field and a fresh GUID to isolate GUID-only behavior.
+- Find or create the laptop's own accepted initiator GUID instead of replaying the captured phone GUID.
 - Keep route/AP behavior fixed while investigating packet identity.
 
 ### BUG-003: Camera-screen classifier does not yet recognize GPS-set or active-Bluetooth icons
