@@ -278,6 +278,7 @@ def test_ptp_request_builders_and_property_parser() -> None:
     assert ptpip.parse_u16_or_hex("123") == 123
     assert ptpip.build_get_device_prop_value(0xD212).hex() == "10000000010015100200000012d20000"
     assert ptpip.build_set_device_prop_value(0xDF01, 2).hex() == "10000000010016100200000001df0000"
+    assert ptpip.build_ptp_command(0x9054, 9, 0x10000001).hex() == "10000000010054900900000001000010"
     assert ptpip.build_ptp_data_container(0x1016, 2, bytes.fromhex("1400")).hex() == "0e00000002001610020000001400"
     with pytest.raises(ValueError, match="out of uint16 range"):
         ptpip.parse_u16_or_hex("0x10000")
@@ -382,6 +383,60 @@ def test_probe_app_sdcard_browse_sequence(tmp_path) -> None:
     assert fake.sent[12] == ptpip.build_get_device_prop_value(0xD244, 8)
     assert (tmp_path / "app_sequence_07_get_d244_response.bin").exists()
     assert ptpip.exit_code_for_summary(summary, config) == 0
+
+
+def test_probe_app_current_object_info_sequence(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-current-object-info",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    vendor_step = summary["app_sequence_steps"][-1]
+    assert vendor_step["action"] == "vendor_get"
+    assert vendor_step["code"] == "0x9054"
+    assert vendor_step["params"] == ["0x10000001"]
+    assert vendor_step["data_header"]["code"] == 0x9054
+    assert fake.sent[-1] == ptpip.build_ptp_command(0x9054, 9, 0x10000001)
+    assert (tmp_path / "app_sequence_08_vendor_get_9054_data.bin").exists()
+
+
+def test_probe_app_sequence_rejects_unknown_step_action(monkeypatch, tmp_path) -> None:
+    monkeypatch.setitem(ptpip.APP_SEQUENCES, "bad-step", (ptpip.AppSequenceStep("missing", 0x1234),))
+
+    with pytest.raises(ValueError, match="unknown reference app sequence step action"):
+        ptpip.probe_ptpip(
+            ptpip.ProbeConfig(
+                session_dir=tmp_path,
+                friendly_name="mbp",
+                open_session=True,
+                app_sequence="bad-step",
+            ),
+            connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container()]),
+            clock=lambda: 0.0,
+        )
 
 
 def test_probe_init_only_and_open_without_get_prop(tmp_path) -> None:

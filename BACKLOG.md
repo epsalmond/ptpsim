@@ -132,7 +132,7 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Live-test `sdcard-browse-bootstrap` from the laptop and record the resulting state/evidence.
+- Live-test `sdcard-current-object-info` from the laptop and record the resulting state/evidence.
 - Use the init comparator output to choose the next live generated-identity candidates.
 
 ### PROTO-002: Implement the next observed reference app PTP sequence
@@ -147,7 +147,7 @@ successful init/open-session/property-read.
 
 Next candidates:
 
-- Probe the named `sdcard-browse-bootstrap` sequence from the laptop.
+- Probe the named `sdcard-current-object-info` sequence from the laptop.
 - Decode reference app action enumeration usage from `rce/reference/APP_ACTION_ENUMERATION.md`.
 - Add scripts for one command at a time, each with captured packet evidence.
 

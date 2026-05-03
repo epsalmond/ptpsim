@@ -893,6 +893,10 @@ def make_ptpip_probe_session(tmp_path: Path, summary: dict | None = None) -> Pat
             "app_sequence_sdcard_browse_bootstrap_ok",
         ),
         (
+            ptpip_summary(app_sequence="sdcard-current-object-info", app_sequence_completed=True),
+            "app_sequence_sdcard_current_object_info_ok",
+        ),
+        (
             ptpip_summary(app_sequence="sdcard-browse-bootstrap", app_sequence_completed=False),
             "app_sequence_incomplete",
         ),
@@ -956,6 +960,25 @@ def test_ptpip_probe_session_collector(monkeypatch, tmp_path) -> None:
     sequence_state = evidence.load_state(tmp_path / "sequence-state.json")
     assert sequence_state["evidence"]["camera_ap_ptpip_probe"]["details"]["app_sequence_step_count"] == 1
     assert sequence_state["state_label"] == "camera_ap_ptpip_sdcard_browse_bootstrap_ok"
+
+    object_info_session = tmp_path / "ptpip_probe_object_info"
+    object_info_session.mkdir()
+    (object_info_session / "summary.json").write_text(
+        json.dumps(
+            ptpip_summary(
+                app_sequence="sdcard-current-object-info",
+                app_sequence_completed=True,
+                app_sequence_steps=[{"action": "vendor_get"}],
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence.collect_ptpip_probe_session(
+        args(tmp_path, state_file=tmp_path / "object-info-state.json", session_dir=str(object_info_session))
+    )
+    object_info_state = evidence.load_state(tmp_path / "object-info-state.json")
+    assert object_info_state["state_label"] == "camera_ap_ptpip_sdcard_current_object_info_ok"
 
     missing_summary = tmp_path / "ptpip_probe_missing"
     missing_summary.mkdir()
