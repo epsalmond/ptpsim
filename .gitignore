@@ -1,0 +1,35 @@
+# macOS/editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+*.egg-info/
+
+# Build products
+/.build/
+/build/
+/dist/
+
+# Local binaries produced by helper builds
+bluetooth-wrapper/bluetooth-wrapper
+
+# Runtime state and live hardware artifacts
+rce/sessions/
+rce/state/
+rce/screen_captures/*
+!rce/screen_captures/screen_element_labels.json
+!rce/screen_captures/screen_element_templates/
+!rce/screen_captures/screen_element_templates/**
+
+# Logs and local environment files
+*.log
+.env
+.env.*
