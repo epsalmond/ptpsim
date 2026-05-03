@@ -796,6 +796,7 @@ Evidence:
 - `app_sequence=sdcard-folder-and-dates`.
 - `app_sequence_completed=true`.
 - `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=app_sequence_sdcard_folder_and_dates_ok`.
+- The `FujiVendor_9053` request includes parameters `0x00000000,0x00007530`.
 
 Meaning:
 
@@ -804,8 +805,8 @@ The camera completed the observed listing sequence through `FujiVendor_9050` and
 Workflow:
 
 1. Preserve the probe session directory and record evidence into the statefile.
-2. Inspect `text_values` and `payload_stats` for `FujiVendor_9050` and `FujiVendor_9053` in `summary.json`.
-3. Continue to `sdcard-object-handles` only when the `9053` payload matches the expected date-list shape. Live laptop evidence instead returned a large fixed-size `9053` payload whose only decoded text was `140_FUJI`, then `D620` timed out.
+2. Inspect `text_values`, `params`, and `payload_stats` for `FujiVendor_9050` and `FujiVendor_9053` in `summary.json`.
+3. Continue to `sdcard-object-handles` only when the `9053` payload matches the expected date-list shape. Earlier live laptop evidence used a parameterless `9053` request and returned a large fixed-size folder-shaped payload whose only decoded text was `140_FUJI`.
 
 ### `camera_ap_ptpip_sdcard_object_handles_ok`
 
@@ -814,10 +815,11 @@ Evidence:
 - `app_sequence=sdcard-object-handles`.
 - `app_sequence_completed=true`.
 - `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=app_sequence_sdcard_object_handles_ok`.
+- The object count and handle list are read with standard `GetDevicePropValue 0xd620` and `GetDevicePropValue 0xd621`.
 
 Meaning:
 
-The camera completed the observed listing sequence through `FujiVendor_9050`, `FujiVendor_9053`, `FujiVendor_D620`, and `FujiVendor_D621`. The reference capture labels those responses as active folder, capture-date list, object count, and visible object handles.
+The camera completed the observed listing sequence through `FujiVendor_9050`, `FujiVendor_9053`, `GetDevicePropValue 0xd620`, and `GetDevicePropValue 0xd621`. The reference capture labels those responses as active folder, capture-date list, object count, and visible object handles.
 
 Workflow:
 

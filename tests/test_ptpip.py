@@ -614,7 +614,8 @@ def test_probe_app_sdcard_folder_and_dates_sequence(tmp_path) -> None:
     ]
     assert summary["app_sequence_steps"][-2]["text_values"] == ["140_FUJI"]
     assert summary["app_sequence_steps"][-1]["text_values"] == ["20260430", "20260425"]
-    assert fake.sent[-1] == ptpip.build_ptp_command(0x9053, 12)
+    assert summary["app_sequence_steps"][-1]["params"] == ["0x00000000", "0x00007530"]
+    assert fake.sent[-1] == ptpip.build_ptp_command(0x9053, 12, 0, 0x7530)
     assert (tmp_path / "app_sequence_11_vendor_get_9053_data.bin").exists()
 
 
@@ -642,10 +643,10 @@ def test_probe_app_sdcard_object_handles_sequence(tmp_path) -> None:
             ptp_container(code=0x2001, transaction=11),
             ptp_container(container_type=2, code=0x9053, transaction=12),
             ptp_container(code=0x2001, transaction=12),
-            ptpip.build_ptp_data_container(0xD620, 13, struct.pack("<I", len(handles))),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_DEVICE_PROP_VALUE, 13, struct.pack("<I", len(handles))),
             ptp_container(code=0x2001, transaction=13),
             ptpip.build_ptp_data_container(
-                0xD621,
+                ptpip.PTP_GET_DEVICE_PROP_VALUE,
                 14,
                 struct.pack("<I", len(handles))
                 + b"".join(struct.pack("<I", handle) for handle in handles),
@@ -672,12 +673,13 @@ def test_probe_app_sdcard_object_handles_sequence(tmp_path) -> None:
     handles_step = summary["app_sequence_steps"][-1]
     count_step = summary["app_sequence_steps"][-2]
     assert count_step["object_count"] == 11
-    assert handles_step["action"] == "vendor_get"
-    assert handles_step["params"] == []
-    assert handles_step["data_header"]["code"] == 0xD621
+    assert count_step["action"] == "get"
+    assert count_step["data_header"]["code"] == ptpip.PTP_GET_DEVICE_PROP_VALUE
+    assert handles_step["action"] == "get"
+    assert handles_step["data_header"]["code"] == ptpip.PTP_GET_DEVICE_PROP_VALUE
     assert handles_step["object_handles"] == [f"0x{handle:08x}" for handle in handles]
-    assert fake.sent[-1] == ptpip.build_ptp_command(0xD621, 14)
-    assert (tmp_path / "app_sequence_13_vendor_get_d621_data.bin").exists()
+    assert fake.sent[-1] == ptpip.build_get_device_prop_value(0xD621, 14)
+    assert (tmp_path / "app_sequence_13_get_d621_data.bin").exists()
 
 
 def test_probe_app_sequence_rejects_unknown_step_action(monkeypatch, tmp_path) -> None:
