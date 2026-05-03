@@ -137,7 +137,6 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Add statefile evidence collection for PTP/IP probe summaries.
 - Decode accepted and generated init identity fields by name.
 
 ### PROTO-002: Implement the next observed reference app PTP sequence

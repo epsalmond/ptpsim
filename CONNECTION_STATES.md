@@ -641,6 +641,7 @@ Evidence:
 - `tcp_connect=present`.
 - `init_sent=true`.
 - `response_present=false` with `response_error=timeout`.
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=tcp_connected_init_timeout`.
 
 Meaning:
 
@@ -663,6 +664,7 @@ Evidence:
 - `init_sent=true`.
 - `response_present=true`.
 - `response_header.packet_type=2`.
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=init_ack_present`.
 
 Meaning:
 
@@ -682,6 +684,7 @@ Evidence:
 - `open_session_sent=true`.
 - `open_session_response_present=true`.
 - `open_session_response_header.code=8193` (`0x2001`, OK) or `8222` (`0x201e`, SessionAlreadyOpen).
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=open_session_ok`.
 
 Meaning:
 
@@ -700,6 +703,7 @@ Evidence:
 - `get_prop_sent=true`.
 - `get_prop_data_header.code=4117` (`0x1015`, GetDevicePropValue data).
 - `get_prop_response_header.code=8193` (`0x2001`, OK).
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=get_prop_d212_ok`.
 
 Meaning:
 

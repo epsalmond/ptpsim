@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import UTC, datetime
+import json
 from pathlib import Path
 import subprocess
 import types
@@ -188,6 +189,38 @@ def test_print_evidence_summary_empty_invalid_and_populated(capsys) -> None:
         (
             {"camera_ap_wifi_association": "present"},
             "camera_ap_wifi_associated_ethernet_default",
+        ),
+        (
+            {"camera_ap_ptpip_probe": "get_prop_d212_ok"},
+            "camera_ap_ptpip_get_prop_d212_ok",
+        ),
+        (
+            {"camera_ap_ptpip_probe": "get_prop_ok"},
+            "camera_ap_ptpip_get_prop_ok",
+        ),
+        (
+            {"camera_ap_ptpip_probe": "open_session_ok"},
+            "camera_ap_ptpip_open_session_ok",
+        ),
+        (
+            {"camera_ap_ptpip_probe": "init_ack_present"},
+            "camera_ap_ptpip_init_ack_present",
+        ),
+        (
+            {"camera_ap_ptpip_probe": "tcp_connected_init_timeout"},
+            "camera_ap_ptpip_tcp_connected_init_timeout",
+        ),
+        (
+            {"camera_ap_ptpip_probe": "tcp_connected_init_no_response"},
+            "camera_ap_ptpip_tcp_connected_init_timeout",
+        ),
+        (
+            {"camera_ap_ptpip_probe": "tcp_connect_absent"},
+            "camera_ap_ptpip_tcp_connect_absent",
+        ),
+        (
+            {"camera_ap_ptpip_probe": "route_failed"},
+            "camera_ap_ptpip_route_failed",
         ),
         (
             {"camera_screen_state": "registration_mode"},
@@ -797,6 +830,125 @@ def test_camera_ap_wifi_session_collector(monkeypatch, tmp_path) -> None:
     evidence.collect_camera_ap_wifi_session(args(tmp_path, state_file=tmp_path / "none-state.json"))
     none_state = evidence.load_state(tmp_path / "none-state.json")
     assert none_state["evidence"]["camera_ap_wifi_association"]["value"] == "unavailable"
+
+
+def ptpip_summary(**overrides) -> dict:
+    values = {
+        "host": "192.168.0.1",
+        "port": 55740,
+        "friendly_name": "mbp-7274",
+        "route_check": "passed",
+        "tcp_connect": "present",
+        "init_sent": True,
+        "response_present": True,
+        "response_header": {"length": 68, "packet_type": 2},
+        "open_session_sent": True,
+        "open_session_response_present": True,
+        "open_session_response_header": {"length": 12, "container_type": 3, "code": 0x201E, "transaction_id": 1},
+        "get_prop": "0xd212",
+        "get_prop_sent": True,
+        "get_prop_data_header": {"length": 50, "container_type": 2, "code": 0x1015, "transaction_id": 2},
+        "get_prop_response_present": True,
+        "get_prop_response_header": {"length": 12, "container_type": 3, "code": 0x2001, "transaction_id": 2},
+    }
+    values.update(overrides)
+    return values
+
+
+def make_ptpip_probe_session(tmp_path: Path, summary: dict | None = None) -> Path:
+    session = tmp_path / "ptpip_probe_20260502T000000Z"
+    session.mkdir()
+    (session / "summary.json").write_text(json.dumps(summary or ptpip_summary()) + "\n", encoding="utf-8")
+    (session / "init_command_request.bin").write_bytes(b"init")
+    (session / "get_prop_response.bin").write_bytes(b"ok")
+    return session
+
+
+@pytest.mark.parametrize(
+    ("summary", "value"),
+    [
+        (ptpip_summary(route_check="failed"), "route_failed"),
+        (ptpip_summary(tcp_connect="absent"), "tcp_connect_absent"),
+        (ptpip_summary(init_sent=False), "tcp_connected"),
+        (
+            ptpip_summary(response_present=False, response_error="timeout"),
+            "tcp_connected_init_timeout",
+        ),
+        (
+            ptpip_summary(response_present=False, response_error=""),
+            "tcp_connected_init_no_response",
+        ),
+        (ptpip_summary(open_session_sent=False), "init_ack_present"),
+        (
+            ptpip_summary(open_session_response_present=False),
+            "open_session_no_response",
+        ),
+        (
+            ptpip_summary(open_session_response_header={"code": 0x2005}),
+            "open_session_rejected",
+        ),
+        (ptpip_summary(get_prop_sent=False), "open_session_ok"),
+        (
+            ptpip_summary(get_prop_response_present=False),
+            "get_prop_no_response",
+        ),
+        (ptpip_summary(get_prop="0xd212"), "get_prop_d212_ok"),
+        (ptpip_summary(get_prop="4660"), "get_prop_ok"),
+        (
+            ptpip_summary(get_prop_data_header={"code": 0x9999}),
+            "get_prop_unexpected_response",
+        ),
+        (
+            ptpip_summary(get_prop="not-a-prop"),
+            "get_prop_ok",
+        ),
+    ],
+)
+def test_evaluate_ptpip_summary(summary, value) -> None:
+    assert evidence.evaluate_ptpip_summary(summary)[0] == value
+
+
+def test_ptpip_summary_helper_edge_cases() -> None:
+    assert evidence.nested_header_code({"header": []}, "header") is None
+    assert evidence.parse_optional_u16(None) is None
+
+
+def test_ptpip_probe_session_collector(monkeypatch, tmp_path) -> None:
+    session = make_ptpip_probe_session(tmp_path)
+    state_file = tmp_path / "state.json"
+
+    assert evidence.collect_ptpip_probe_session(
+        args(tmp_path, state_file=state_file, session_dir=str(session))
+    ) == 0
+    state = evidence.load_state(state_file)
+    record = state["evidence"]["camera_ap_ptpip_probe"]
+    assert record["value"] == "get_prop_d212_ok"
+    assert record["details"]["get_prop_response_header"]["code"] == 0x2001
+    assert any(path.endswith("summary.json") for path in record["artifacts"])
+    assert state["state_label"] == "camera_ap_ptpip_get_prop_d212_ok"
+
+    missing_summary = tmp_path / "ptpip_probe_missing"
+    missing_summary.mkdir()
+    evidence.collect_ptpip_probe_session(
+        args(tmp_path, state_file=tmp_path / "missing-state.json", session_dir=str(missing_summary))
+    )
+    missing_state = evidence.load_state(tmp_path / "missing-state.json")
+    assert missing_state["evidence"]["camera_ap_ptpip_probe"]["value"] == "unavailable"
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    assert evidence.latest_ptpip_probe_session(root) is None
+    (root / "ptpip_probe_a").mkdir()
+    (root / "ptpip_probe_b").mkdir()
+    assert evidence.latest_ptpip_probe_session(root).name == "ptpip_probe_b"
+
+    monkeypatch.setattr(evidence, "latest_ptpip_probe_session", lambda: session)
+    assert evidence.resolve_ptpip_probe_session_dir(args(tmp_path, session_dir=None)) == session
+
+    monkeypatch.setattr(evidence, "latest_ptpip_probe_session", lambda: None)
+    evidence.collect_ptpip_probe_session(args(tmp_path, state_file=tmp_path / "none-state.json"))
+    none_state = evidence.load_state(tmp_path / "none-state.json")
+    assert none_state["evidence"]["camera_ap_ptpip_probe"]["value"] == "unavailable"
 
 
 def make_session(tmp_path: Path) -> Path:

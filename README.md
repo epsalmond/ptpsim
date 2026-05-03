@@ -223,10 +223,13 @@ Probe the camera PTP/IP socket during the camera's search window:
 
 ```sh
 scripts/ptpip_probe.sh --friendly-name mbp-7274
+scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>
+scripts/evaluate_connection_state.sh --verbose
 ```
 
 This records route evidence and sends an reference app-shaped 82-byte PTP/IP `Init_Command_Request` to `192.168.0.1:55740`. It uses a fixed 26-byte UTF-16LE friendly-name field plus an observed 28-byte reference app tail. If the camera screen has already timed out to normal shooting, rerun the AP prepare step or press the camera's retry control before probing.
 The script keeps macOS route checks in shell and delegates PTP/IP packet construction, socket exchange, binary artifacts, and `summary.json` generation to the tested Python module `rce.tools.fuji_ble_gps.ptpip`.
+The PTP/IP evidence command parses `summary.json` and records `camera_ap_ptpip_probe` as the highest reached milestone, such as `tcp_connected_init_timeout`, `init_ack_present`, `open_session_ok`, or `get_prop_d212_ok`.
 
 For live testing, prefer the combined flow so AP launch, Wi-Fi association, and PTP/IP probing happen inside one camera search window:
 
