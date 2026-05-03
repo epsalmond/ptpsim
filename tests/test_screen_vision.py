@@ -789,6 +789,7 @@ def test_detect_lcd_box_handles_glare_capture_fixture(tmp_path) -> None:
         ("registration_mode_screen.png", "registration_mode"),
         ("waiting_for_connected_screen.png", "waiting_for_connected"),
         ("waiting_for_connected_ssid_screen.png", "waiting_for_connected"),
+        ("waiting_for_connected_ssid_split_screen.png", "waiting_for_connected"),
     ],
 )
 def test_classifies_representative_capture_fixtures(tmp_path, fixture_name, expected_label) -> None:
