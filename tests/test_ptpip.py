@@ -167,6 +167,88 @@ def test_compare_init_command_requests_field_by_field() -> None:
     assert fields["friendly_name_padding_hex"]["candidate"] == "0000000000000000"
 
 
+def test_inventory_init_command_requests(tmp_path, capsys) -> None:
+    valid = tmp_path / "nested" / "init_command_request.bin"
+    valid.parent.mkdir()
+    valid.write_bytes(ptpip.build_init_command_request("Pixel-6-9405", "get", guid=bytes(range(16))))
+    jsonl = tmp_path / "decoded.jsonl"
+    jsonl.write_text(
+        "\n".join(
+            [
+                "",
+                "{not json",
+                json.dumps({"code_name": "Other"}),
+                json.dumps(
+                    {
+                        "code_name": "InitCommandRequest",
+                        "container": "InitCommandRequest",
+                        "data_preview": (
+                            "000102030405060708090a0b0c0d0e0f00000000"
+                            "50006900780065006c002d0036002d0039003400300035000000"
+                            "92004700000000000000000000002f00"
+                        ),
+                        "guid": "000102030405060708090a0b0c0d0e0f",
+                        "hint": "Pixel-6-9405",
+                        "len": 82,
+                        "source_payloads": "missing_payload.bin",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "code_name": "InitCommandRequest",
+                        "data_preview": "00" * 50,
+                        "guid": "feed",
+                        "name": "BadPayload",
+                        "source_payloads": "not_init.bin, nested/init_command_request.bin",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "not_init.bin").write_bytes(b"not an init packet")
+    ignored = tmp_path / "ignored.txt"
+    ignored.write_text("ignored", encoding="utf-8")
+
+    records = ptpip.inventory_init_command_requests([tmp_path, ignored, tmp_path / "missing"])
+
+    assert records[0] == {
+        "source": str(jsonl) + ":4",
+        "guid": "000102030405060708090a0b0c0d0e0f",
+        "friendly_name": "Pixel-6-9405",
+        "tail_profile": "get",
+        "tail_hex": ptpip.TAIL_PROFILES["get"].hex(),
+        "packet_length": 82,
+        "post_guid_unknown_hex": "00000000",
+    }
+    assert records[1] == {
+        "source": str(jsonl) + ":5",
+        "guid": "feed",
+        "friendly_name": "BadPayload",
+        "tail_profile": "get",
+        "tail_hex": ptpip.TAIL_PROFILES["get"].hex(),
+        "packet_length": 0,
+        "post_guid_unknown_hex": "00000000",
+    }
+    assert records[2] == {
+        "source": str(valid),
+        "guid": "000102030405060708090a0b0c0d0e0f",
+        "friendly_name": "Pixel-6-9405",
+        "tail_profile": "get",
+        "tail_hex": ptpip.TAIL_PROFILES["get"].hex(),
+        "packet_length": 82,
+        "post_guid_unknown_hex": "00000000",
+    }
+    ptpip.print_init_inventory(records)
+    out = capsys.readouterr().out
+    assert f"source={valid}" in out
+    assert "friendly_name=Pixel-6-9405" in out
+    assert "tail_profile=get" in out
+    assert ptpip.tail_profile_from_preview("not hex") == ("unknown", "")
+    assert ptpip.tail_profile_from_preview(("00" * 46) + "1234") == ("unknown", "1234")
+
+
 def test_headers_and_packet_reading() -> None:
     assert ptpip.packet_header(b"\x00") == {"length": 1, "packet_type": "short"}
     assert ptpip.packet_header(packet(7)) == {"length": 8, "packet_type": 7}
@@ -415,3 +497,12 @@ def test_cli_decode_and_compare_init(tmp_path, capsys) -> None:
     )
     different = json.loads(capsys.readouterr().out)
     assert different["candidate"]["friendly_name"] == "mbp-7274"
+
+    valid = tmp_path / "init.bin"
+    valid.write_bytes(reference.read_bytes())
+    assert ptpip.main(["inventory-init", "--json", str(tmp_path)]) == 0
+    inventory = json.loads(capsys.readouterr().out)
+    assert inventory[0]["friendly_name"] == "Pixel-6-9405"
+
+    assert ptpip.main(["inventory-init", str(tmp_path)]) == 0
+    assert "friendly_name=Pixel-6-9405" in capsys.readouterr().out

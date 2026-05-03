@@ -239,6 +239,14 @@ scripts/ptpip_compare_init.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87
 
 The compare command decodes the Fuji 82-byte init shape field by field: packet header, initiator GUID, post-GUID bytes, fixed UTF-16LE friendly-name field, and the 28-byte reference app tail. It exits `0` only when every decoded field matches.
 
+Inventory captured init identities before changing PTP/IP identity assumptions:
+
+```sh
+scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions
+```
+
+The inventory command scans captured `.bin` payloads and decoded `.jsonl` traces for Fuji-shaped 82-byte `Init_Command_Request` records, then prints source, GUID, friendly name, tail profile, and packet length. Current local inventory shows all accepted reference app reference init records use GUID `f2e4538fada5485d87b27f0bd3d5ded0` with friendly name `Pixel-6-9405`; successful laptop-name PTP/IP probes also use that same GUID, while fresh generated GUID probes have timed out at init.
+
 For live testing, prefer the combined flow so AP launch, Wi-Fi association, and PTP/IP probing happen inside one camera search window:
 
 ```sh

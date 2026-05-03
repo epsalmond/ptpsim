@@ -23,6 +23,7 @@ Known source paths:
 ```sh
 scp eric@nas.local:~/fuji/laptop_ble_gps_agent_prompt.md .
 
+
 ```
 
 The user has said all paths listed in those documents are accessible via `scp`. Copy anything needed into the local workspace before using it. Do not assume copied logs are still current if newer source material exists on the NAS.
@@ -51,6 +52,7 @@ scripts/read_camera_screen_state.sh
 scripts/reclassify_camera_screen_state.sh
 scripts/identify_unknown_elements.sh
 scripts/evidence/*.sh
+scripts/ptpip_inventory_init.sh
 ```
 
 Important docs:
@@ -60,6 +62,7 @@ CONNECTION_STATES.md
 rce/notes/laptop_ble_gps.md
 rce/reference/GFX100II_PAIRING_NAME_FIRMWARE_NOTES.md
 rce/reference/APP_ACTION_ENUMERATION.md
+rce/reference/APP_LIVE_HANDOFF.md
 ```
 
 Run artifacts:
@@ -87,6 +90,7 @@ Working as of 2026-05-02:
 - Live AP launch evidence: `launch_ap=get` wrote `0300` but stayed at `ap_state=0080`; `launch_ap=take` wrote `0400` and reached `ap_state=0180`.
 - Live Wi-Fi evidence: macOS associated with local IP `192.168.0.136`, camera endpoint `192.168.0.1` was reachable, camera route used Wi-Fi `en0`, and default/internet routes stayed on Ethernet `en7`.
 - PTP/IP probing is implemented. TCP connect to `192.168.0.1:55740` succeeds when the camera route uses Wi-Fi. Exact captured reference app init payload replay has produced `InitCommandAck`; exact init plus `OpenSession` plus `GetDevicePropValue 0xD212` has succeeded. A generated init using accepted reference app GUID `f2e4538fada5485d87b27f0bd3d5ded0`, laptop friendly name `mbp-7274`, and liveview tail also succeeded through `GetDevicePropValue 0xD212`.
+- PTP/IP init inventory is implemented. `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` scans captured `.bin` payloads and decoded `.jsonl` traces for Fuji-shaped 82-byte `Init_Command_Request` records.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
 Useful successful sessions:
@@ -342,6 +346,7 @@ scripts/evidence/camera_ap_wifi_session.sh --session-dir rce/sessions/camera_ap_
 scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0
 scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>
 scripts/ptpip_compare_init.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0
+scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions
 scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0
 ```
 
@@ -356,7 +361,7 @@ The combined AP/PTP flow defaults to `--hold-ble 0`. Holding the BLE connection 
 If the camera shows "NOT FOUND / PLEASE CHECK THE APP AND SELECT THE FUNCTION AGAIN", record `camera_screen_state=app_function_not_found_retry`. That means AP launch and Wi-Fi association were not enough; the app-side PTP/IP/FFIR follow-up did not happen inside the camera's search window.
 Continuity Camera capture defaults to a two-second warmup. macOS AVFoundation exposes the iPhone as a Continuity Camera device here, not as separate 2x/3x lens devices; use `scripts/capture_continuity_camera_frame.sh --list-devices` to inspect exposed devices and pass `--zoom 2` or `--zoom 3` for deterministic output center-crop zoom when it gives a better screen crop.
 
-Latest identity result: generated init with the accepted reference app GUID, laptop friendly name `mbp-7274`, and liveview tail succeeded end-to-end in `rce/sessions/ptpip_probe_20260503T064901Z`. Generated init with reference app friendly name `Pixel-6-9405` and fresh deterministic GUID `00112233445566778899aabbccddeeff` timed out at init in `rce/sessions/ptpip_probe_20260503T081432Z`. Treat the friendly-name field as cleared; the remaining identity question is how to obtain or register a laptop-owned accepted initiator GUID. Do not infer camera UI state from timeouts; use the screen classifier and stop if it returns `unknown`.
+Latest identity result: generated init with the accepted reference app GUID, laptop friendly name `mbp-7274`, and liveview tail succeeded end-to-end in `rce/sessions/ptpip_probe_20260503T064901Z`. Generated init with reference app friendly name `Pixel-6-9405` and fresh deterministic GUID `00112233445566778899aabbccddeeff` timed out at init in `rce/sessions/ptpip_probe_20260503T081432Z`. Local init inventory shows all accepted reference app reference records use GUID `f2e4538fada5485d87b27f0bd3d5ded0`; successful laptop-name probes also use that GUID. Treat the friendly-name field as cleared; the remaining identity question is how to obtain or register a laptop-owned accepted initiator GUID. Do not infer camera UI state from timeouts; use the screen classifier and stop if it returns `unknown`.
 
 Preserve session artifacts after every live attempt. They are evidence.
 

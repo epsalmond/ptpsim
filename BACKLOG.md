@@ -82,13 +82,15 @@ Current facts:
 - Generated init with accepted reference app GUID plus laptop friendly name succeeds.
 - Generated init with a fresh random GUID timed out.
 - Generated init with accepted reference app friendly name plus fresh deterministic GUID timed out.
+- `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` shows accepted reference app reference records use GUID `f2e4538fada5485d87b27f0bd3d5ded0`; successful laptop-name probes also use that GUID.
 - The friendly-name field is not the blocker for this camera state; GUID or registration-bound identity is the remaining gate.
 
 Next investigation:
 
 - Determine where the accepted GUID comes from and whether it is persisted in camera registration state.
 - Find or create the laptop's own accepted initiator GUID instead of replaying the captured phone GUID.
-- Search reference material and app captures for where reference app stores or derives the initiator GUID.
+- Use `scripts/ptpip_inventory_init.sh` on any newly copied decoded traces before changing identity hypotheses.
+- Search reference material, app persistent storage, and native code for where reference app stores or derives the initiator GUID.
 - Keep route/AP behavior fixed while investigating packet identity.
 
 ### BUG-003: Camera-screen classifier does not yet recognize GPS-set or active-Bluetooth icons
@@ -163,6 +165,12 @@ Questions:
 - Which GUID bytes are stable across reference app sessions?
 - Which friendly-name bytes are displayed or persisted by the camera?
 - Does PTP/IP identity depend on BLE registration id, camera-side slot, or Wi-Fi AP launch context?
+
+Useful command:
+
+```sh
+scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions
+```
 
 ### PROTO-004: Preserve and harden AP Wi-Fi workflow
 
