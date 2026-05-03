@@ -69,7 +69,9 @@ The camera accepts the exact captured reference app PTP/IP init payload at
 `GetDevicePropValue 0xD212`. A generated packet using the accepted reference app GUID,
 the laptop friendly name `mbp-7274`, and the liveview tail also succeeds through
 `GetDevicePropValue 0xD212`. The default generated packet with a fresh random
-GUID timed out.
+GUID timed out. A generated packet using the accepted reference app friendly name
+`Pixel-6-9405` with fresh deterministic GUID `00112233445566778899aabbccddeeff`
+also timed out at init.
 
 Current facts:
 
@@ -79,13 +81,14 @@ Current facts:
 - Replaying the exact captured reference app init succeeds.
 - Generated init with accepted reference app GUID plus laptop friendly name succeeds.
 - Generated init with a fresh random GUID timed out.
-- The friendly-name field is not the blocker for this camera state; GUID or registration-bound identity is the remaining likely gate.
+- Generated init with accepted reference app friendly name plus fresh deterministic GUID timed out.
+- The friendly-name field is not the blocker for this camera state; GUID or registration-bound identity is the remaining gate.
 
 Next investigation:
 
 - Determine where the accepted GUID comes from and whether it is persisted in camera registration state.
-- Test a generated packet with the accepted reference app friendly-name field and a fresh GUID to isolate GUID-only behavior. Use `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-friendly-name Pixel-6-9405 --ptpip-guid 00112233445566778899aabbccddeeff --ptpip-open-session --ptpip-get-prop 0xd212`.
 - Find or create the laptop's own accepted initiator GUID instead of replaying the captured phone GUID.
+- Search reference material and app captures for where reference app stores or derives the initiator GUID.
 - Keep route/AP behavior fixed while investigating packet identity.
 
 ### BUG-003: Camera-screen classifier does not yet recognize GPS-set or active-Bluetooth icons
