@@ -1,5 +1,9 @@
 # Backlog
 
+This backlog tracks known work, open defects, and investigation threads. Commit
+messages should stay short and imperative; detailed context belongs here, in
+`README.md`, `AGENTS.md`, or targeted design docs.
+
 ## Bugs
 
 ### BUG-001: Camera registration completes but camera-side host name is blank
@@ -50,3 +54,374 @@ Next investigation:
 - Compare Android bond metadata and BLE pairing identity against macOS CoreBluetooth behavior.
 - Determine whether macOS can expose a peer-readable GAP `0x2A00` Device Name while our client performs the central-side camera registration flow.
 - For Linux support, add a pre-pairing alias check around `bluetoothctl show` / `bluetoothctl system-alias`.
+
+### BUG-002: Generated laptop PTP/IP init does not match accepted reference app init
+
+Status: open
+
+Observed: 2026-05-02
+
+Summary:
+
+The camera accepts the exact captured reference app PTP/IP init payload at
+`rce/reference/ptp_decoded/liveview_payload_00000061.bin`, returns
+`InitCommandAck`, accepts `OpenSession`, and responds to
+`GetDevicePropValue 0xD212`. The generated laptop-identity init still times out.
+
+Current facts:
+
+- AP launch and Wi-Fi association work.
+- Ethernet remains the internet route while the camera endpoint routes over Wi-Fi.
+- TCP to `192.168.0.1:55740` succeeds when the camera is in the AP/PTP window.
+- Replaying the exact captured reference app init succeeds.
+- Generated init packet shape is 82 bytes, but some identity or tail field still differs in a way the camera rejects.
+
+Next investigation:
+
+- Compare generated init bytes against the accepted captured payload field by field.
+- Determine whether the accepted GUID/name block is bound to camera registration state.
+- Add parser tests that decode and explain every byte of accepted and generated init packets.
+- Keep route/AP behavior fixed while investigating packet identity.
+
+### BUG-003: Camera-screen classifier does not yet recognize GPS-set or active-Bluetooth icons
+
+Status: open
+
+Summary:
+
+The screen classifier can identify the ready screen, the dim trusted-Bluetooth
+ready icon, pairing registration, and pairing timeout. It does not yet have
+trusted templates for the GPS-set icon or the bright active-Bluetooth icon.
+
+Next investigation:
+
+- Capture LCD frames showing the GPS-set icon.
+- Capture LCD frames showing the bright active-Bluetooth icon.
+- Label unknown crops with `scripts/identify_unknown_elements.sh`.
+- Reclassify saved captures with `scripts/reclassify_camera_screen_state.sh --write`.
+- Add tests for the new metadata mapping.
+
+### BUG-004: Documentation has stale PTP/IP status in some sections
+
+Status: open
+
+Summary:
+
+Some docs still say PTP/IP has not answered generated or replayed init packets.
+Later live evidence showed the exact captured reference app init payload succeeds, and
+OpenSession/GetDevicePropValue probing works.
+
+Next step:
+
+- Audit `README.md`, `AGENTS.md`, and `CONNECTION_STATES.md` for stale PTP/IP status.
+- Keep "generated laptop init times out" distinct from "exact captured reference app init succeeds."
+
+## Protocol And Camera Work
+
+### PROTO-001: Promote successful PTP/IP probe path into a Python client
+
+Status: open
+
+Summary:
+
+The current PTP/IP path is mostly shell-script probing. Move the known-good
+init/OpenSession/GetDevicePropValue behavior into a tested Python module.
+
+Acceptance criteria:
+
+- Python client can send init, open session, and issue property reads.
+- Packet encoder/decoder tests cover accepted captured payloads and generated payloads.
+- Scripts call the Python client instead of hand-rolled shell/Python snippets where practical.
+- Verbose logs include packet type, transaction id, operation code, response code, byte lengths, and artifact paths.
+
+### PROTO-002: Implement the next observed reference app PTP sequence
+
+Status: open
+
+Summary:
+
+Reference captures under `rce/reference/ptp_decoded/` include liveview and
+property/action traffic. Continue implementing the observed sequence after
+successful init/open-session/property-read.
+
+Next candidates:
+
+- Probe additional `GetDevicePropValue` operations from the reference traces.
+- Decode reference app action enumeration usage from `rce/reference/APP_ACTION_ENUMERATION.md`.
+- Add scripts for one command at a time, each with captured packet evidence.
+
+### PROTO-003: Determine registration-bound initiator identity rules
+
+Status: open
+
+Summary:
+
+The camera may bind accepted PTP/IP initiator identity to a previously trusted
+mobile-app registration. We need to know which fields are checked and how a
+laptop identity can become accepted without replaying a phone identity.
+
+Questions:
+
+- Which GUID bytes are stable across reference app sessions?
+- Which friendly-name bytes are displayed or persisted by the camera?
+- Does PTP/IP identity depend on BLE registration id, camera-side slot, or Wi-Fi AP launch context?
+
+### PROTO-004: Preserve and harden AP Wi-Fi workflow
+
+Status: in progress
+
+Current facts:
+
+- BLE AP launch works.
+- Camera AP credentials are read over BLE.
+- macOS can associate to the camera AP while Ethernet remains the internet route.
+- `networksetup -getairportnetwork` can be misleading; route/IP/ping evidence is more reliable.
+
+Next work:
+
+- Make route preservation failures more actionable.
+- Record AP state and camera endpoint reachability in a single structured artifact.
+- Keep all AP scripts deterministic and evidence-driven.
+
+## BLE And Pairing
+
+### BLE-001: Add Linux/BlueZ adapter alias preflight
+
+Status: open
+
+Summary:
+
+Firmware analysis suggests the camera reads peer GAP Device Name or advertisement
+Local Name during bond creation. Linux/BlueZ can set adapter alias before pairing.
+
+Acceptance criteria:
+
+- Linux preflight checks `bluetoothctl show`.
+- Script can set `bluetoothctl system-alias <name>` when approved.
+- Pairing flow records alias before and after registration.
+- Tests cover parser behavior for BlueZ alias output.
+
+### BLE-002: Investigate macOS peer-readable GAP Device Name options
+
+Status: open
+
+Summary:
+
+Public CoreBluetooth can advertise Local Name but rejects publishing reserved
+GAP service `0x1800` / Device Name `0x2A00`. That likely explains the blank
+camera-side host name on macOS.
+
+Possible directions:
+
+- Research private macOS Bluetooth APIs.
+- Test an external BLE adapter controlled through BlueZ or another stack.
+- Compare Android/reference app bond metadata against macOS bond metadata.
+
+### BLE-003: Improve host-side forget/delete automation
+
+Status: open
+
+Summary:
+
+`blueutil` is a project requirement for scripted macOS Bluetooth operations, but
+macOS still exposes some paired-device state only through privileged/private UI
+paths.
+
+Next work:
+
+- Keep `blueutil` install/check docs current.
+- Identify which delete paths are scriptable and which require System Settings.
+- Avoid claiming a device is forgotten unless host evidence proves it.
+
+## State Machine And Evidence
+
+### STATE-001: Build workflows for every connection state
+
+Status: open
+
+Summary:
+
+`CONNECTION_STATES.md` names many states. Each state should eventually have:
+
+- Required evidence.
+- Allowed next actions.
+- Recovery actions.
+- Scripts that collect missing evidence.
+- Clear "do not proceed" conditions.
+
+### STATE-002: Add statefile locking or merge semantics
+
+Status: open
+
+Summary:
+
+As more scripts collect evidence, concurrent writes to `rce/state/connection_state.json`
+can race. Add deterministic locking or merge behavior before parallel evidence
+collection becomes normal.
+
+### STATE-003: Use screen classification when camera-side state is unknown
+
+Status: in progress
+
+Current facts:
+
+- `scripts/evaluate_connection_state.sh --refresh-screen --verbose` can capture LCD state before evaluation.
+- Screen evidence is camera-side context, not host-side BLE/Wi-Fi proof.
+- If screen evidence conflicts with host evidence, collect more evidence.
+
+Next work:
+
+- Wire `--refresh-screen` into live workflows only when camera-side context is required.
+- Keep manual camera-screen prompts as fallback, not default.
+- Add tests for each script that depends on screen-state evidence.
+
+## Screen Vision
+
+### SCREEN-001: Label missing camera icons
+
+Status: open
+
+Missing labels:
+
+- GPS-set icon.
+- Bright active-Bluetooth icon.
+
+Current labels:
+
+- Battery percentage indicator.
+- External power indicator.
+- Autofocus area.
+- Roll indicator segment.
+- Autofocus touch indicator.
+- Dim trusted-Bluetooth ready/not-connected icon.
+
+### SCREEN-002: Detect stale LCD calibration
+
+Status: open
+
+Summary:
+
+`rce/state/camera_lcd_box.json` is valid only while the phone/camera framing is
+unchanged. Add a deterministic stale-calibration signal.
+
+Possible evidence:
+
+- Raw capture dimensions mismatch.
+- Warp confidence drops.
+- Known template anchors move or vanish.
+- User explicitly records framing change.
+
+### SCREEN-003: Add screen-capture regression fixtures
+
+Status: open
+
+Summary:
+
+Timestamped live captures are ignored by git. Add a small curated fixture set
+for parser/classifier regression tests without committing bulky live artifacts.
+
+## Product And TUI
+
+### TUI-001: Build the operator TUI
+
+Status: open
+
+Goal:
+
+A TUI that can pair with the camera, diagnose state, run allowed workflows, write
+GPS updates, and show verbose logs/artifacts without making the user guess.
+
+Core views:
+
+- Current state label and freshness.
+- Evidence table.
+- Next allowed actions.
+- Live log stream.
+- GPS write status.
+- Camera-screen capture/classification status.
+- AP/PTP/IP route and session status.
+
+### TUI-002: Keep scripts as stable automation API
+
+Status: in progress
+
+Summary:
+
+The TUI should call the same deterministic scripts/modules used from the
+terminal. Terminal workflows remain first-class so live testing can be
+auto-approved and reproduced.
+
+## Cross Platform
+
+### PLATFORM-001: Define backend boundaries for macOS, Windows, Linux, Android, and iOS
+
+Status: open
+
+Targets:
+
+- macOS first, using Bleak/CoreBluetooth and Swift helpers where needed.
+- Linux with BlueZ and explicit adapter alias control.
+- Windows BLE backend and pairing UX.
+- Android BLE/GPS/AP behavior, likely closest to reference app traces.
+- iOS feasibility assessment, especially BLE central behavior and background/location constraints.
+
+### PLATFORM-002: Decide whether to keep Python or move the long-running core to Rust
+
+Status: open
+
+Summary:
+
+Python is working well for protocol discovery and tests. Rust may be useful for
+cross-platform packaging, long-running TUI behavior, stronger typing, and
+shipping fewer runtime dependencies.
+
+Decision should wait until the BLE/PTP protocol surface is better understood.
+
+## Testing And Quality
+
+### TEST-001: Maintain full Python coverage
+
+Status: ongoing
+
+Current target:
+
+- `pytest` should remain at 100% coverage for trusted package code.
+- New modules need focused unit tests.
+- Hardware scripts need parser/unit coverage plus live artifacts when run against the camera.
+
+### TEST-002: Add integration smoke commands for live workflows
+
+Status: open
+
+Summary:
+
+Create non-destructive smoke checks for:
+
+- BLE scan/direct connect.
+- State evaluation.
+- Screen classification from saved capture.
+- AP route preservation.
+- PTP/IP packet encoding.
+
+## Dependencies And Setup
+
+### DEPS-001: Keep project requirements explicit
+
+Status: ongoing
+
+Known requirements:
+
+- Python virtualenv with project test extras.
+- `blueutil` for macOS Bluetooth scripting.
+- macOS camera and Bluetooth permissions for the relevant helper apps/terminal.
+- Tesseract/OpenCV stack for screen vision.
+- Xcode command line tools for Swift/Objective-C helpers.
+
+### DEPS-002: Add setup verification script
+
+Status: open
+
+Summary:
+
+Create one script that checks host prerequisites and reports exact repair
+commands without making state changes unless explicitly requested.
