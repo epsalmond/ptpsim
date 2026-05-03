@@ -80,6 +80,7 @@ Current facts:
 - TCP to `192.168.0.1:55740` succeeds when the camera is in the AP/PTP window.
 - Replaying the exact captured reference app init succeeds.
 - Generated init with accepted reference app GUID plus laptop friendly name succeeds.
+- Generated init with accepted reference app GUID plus laptop friendly name succeeds through the corrected SD-card folder/date and object-handle sequences.
 - Generated init with a fresh random GUID timed out.
 - Generated init with accepted reference app friendly name plus fresh deterministic GUID timed out.
 - `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` shows accepted reference app reference records use GUID `f2e4538fada5485d87b27f0bd3d5ded0`; successful laptop-name probes also use that GUID.
@@ -132,8 +133,7 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Rerun `sdcard-folder-and-dates` with corrected `FujiVendor_9053` parameters `0x00000000,0x00007530`, then retry `sdcard-object-handles` with standard `GetDevicePropValue 0xd620/0xd621`.
-- Live-test `GetObjectInfo` and `GetThumb` for handles returned by `GetDevicePropValue 0xd621`.
+- Live-test `GetObjectInfo` and `GetThumb` for handles returned by `GetDevicePropValue 0xd621`; latest successful object-handle run returned `0x0000000c`, `0x0000000a`, `0x00000008`, `0x00000006`, `0x00000005`, `0x00000004`, `0x00000003`, `0x00000002`.
 - Use the init comparator output to choose the next live generated-identity candidates.
 
 ### PROTO-002: Implement the next observed reference app PTP sequence
@@ -148,7 +148,6 @@ successful init/open-session/property-read.
 
 Next candidates:
 
-- Probe the corrected `sdcard-folder-and-dates` sequence from the laptop before retrying `sdcard-object-handles`.
 - Use standard PTP `GetObjectInfo` and `GetThumb` functions for handles returned by `GetDevicePropValue 0xd621`.
 - Decode reference app action enumeration usage from `rce/reference/APP_ACTION_ENUMERATION.md`.
 - Add scripts for one command at a time, each with captured packet evidence.

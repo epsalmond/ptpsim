@@ -350,6 +350,38 @@ record_ap_ble_evidence() {
     log "camera_ap_ble_evidence_rc=$evidence_rc"
   fi
 }
+record_camera_ap_wifi_evidence() {
+  local session_dir=""
+  session_dir="$(awk -F= '/^session=/{print $2; exit}' "$wifi_log" 2>/dev/null || true)"
+  if [[ -z "$session_dir" ]]; then
+    log "camera_ap_wifi_evidence=skipped_no_session"
+    return
+  fi
+  log "+ scripts/evidence/camera_ap_wifi_session.sh --session-dir $session_dir"
+  set +e
+  scripts/evidence/camera_ap_wifi_session.sh --session-dir "$session_dir" 2>&1 | tee "$wifi_evidence_log"
+  local evidence_rc=${PIPESTATUS[0]}
+  set -e
+  if [[ "$evidence_rc" != "0" ]]; then
+    log "camera_ap_wifi_evidence_rc=$evidence_rc"
+  fi
+}
+record_ptpip_evidence() {
+  local session_dir=""
+  session_dir="$(awk -F= '/^session=/{print $2; exit}' "$ptpip_log" 2>/dev/null || true)"
+  if [[ -z "$session_dir" ]]; then
+    log "ptpip_evidence=skipped_no_session"
+    return
+  fi
+  log "+ scripts/evidence/ptpip_probe_session.sh --session-dir $session_dir"
+  set +e
+  scripts/evidence/ptpip_probe_session.sh --session-dir "$session_dir" 2>&1 | tee "$ptpip_evidence_log"
+  local evidence_rc=${PIPESTATUS[0]}
+  set -e
+  if [[ "$evidence_rc" != "0" ]]; then
+    log "ptpip_evidence_rc=$evidence_rc"
+  fi
+}
 prepare_args=(
   --device-name "$device_name"
   --timeout "$ble_timeout"
@@ -404,6 +436,7 @@ log "credentials=$credentials"
 read_screen_state "01_after_ap_launch"
 
 wifi_log="$flow_dir/02_connect_camera_ap_wifi.log"
+wifi_evidence_log="$flow_dir/02_camera_ap_wifi_evidence.log"
 wifi_args=(--credentials "$credentials" --timeout "$wifi_timeout")
 wifi_log_args="--credentials <redacted path> --timeout $wifi_timeout"
 if [[ "$temporary_wifi_internet" == "1" ]]; then
@@ -418,11 +451,14 @@ wifi_rc=${PIPESTATUS[0]}
 set -e
 if [[ "$wifi_rc" != "0" ]]; then
   wait "$prepare_pid" || true
+  record_ap_ble_evidence
+  record_camera_ap_wifi_evidence
   exit "$wifi_rc"
 fi
 read_screen_state "02_after_wifi_association"
 
 ptpip_log="$flow_dir/03_ptpip_probe.log"
+ptpip_evidence_log="$flow_dir/03_ptpip_probe_evidence.log"
 ptpip_args=(--friendly-name "$ptpip_friendly_name" --tail-profile "$ptpip_tail_profile" --timeout "$ptpip_timeout")
 ptpip_log_args="--friendly-name $ptpip_friendly_name --tail-profile $ptpip_tail_profile --timeout $ptpip_timeout"
 if [[ -n "$ptpip_guid" ]]; then
@@ -465,6 +501,8 @@ wait "$prepare_pid"
 prepare_rc=$?
 set -e
 record_ap_ble_evidence
+record_camera_ap_wifi_evidence
+record_ptpip_evidence
 
 log "prepare_log=$prepare_log"
 log "wifi_log=$wifi_log"
