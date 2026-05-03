@@ -41,11 +41,19 @@ def test_local_timestamp_uses_local_offset_format() -> None:
 
 def test_repair_commands_and_bbox_helpers(tmp_path) -> None:
     capture = tmp_path / "capture.json"
+    artifact = {
+        "state": {"label": "unknown"},
+        "unknown_elements": [{"id": "unknown_001"}],
+        "repair_command": "",
+    }
 
     assert "pip install" in screen_vision.dependency_repair_command()
     assert screen_vision.capture_repair_command() == "scripts/request_macos_camera_permission.sh"
     assert screen_vision.detect_lcd_repair_command().startswith("scripts/detect_camera_lcd_box.sh")
     assert screen_vision.build_unknown_repair_command(capture).endswith(str(capture))
+    assert screen_vision.screen_state_unknown_return_code(artifact) == 2
+    screen_vision.ensure_unknown_state_repair_command(artifact, capture)
+    assert artifact["repair_command"].endswith(str(capture))
     assert screen_vision.normalize_bbox({"x": 10, "y": 20, "w": 30, "h": 40}, 100, 200) == {
         "x": 0.1,
         "y": 0.1,
@@ -167,6 +175,11 @@ def test_region_metadata_helpers() -> None:
     ("ocr", "label", "confidence"),
     [
         (ocr_words("NOT", "FOUND", "PLEASE", "CHECK", "THE", "APP"), "app_function_not_found_retry", 0.98),
+        (
+            ocr_words("PLEASE", "CHECK", "THE", "APP", "AND", "SELECT", "THE", "FUNCTION", "AGAIN"),
+            "app_function_not_found_retry",
+            0.98,
+        ),
         (ocr_words("WAITING", "FOR", "CONNECTED"), "waiting_for_connected", 0.96),
         (ocr_words("CONNECTION", "LOST"), "connection_lost", 0.95),
         (ocr_words("DEVICE", "NOT", "FOUND", "CONTINUE"), "device_not_found_continue_search", 0.92),
@@ -615,8 +628,11 @@ def test_run_read_state_with_fake_capture_and_capture_error(tmp_path, capsys) ->
         make_args(tmp_path, warmup=3.0, zoom=2.0),
         capture=fake_capture,
         analyzer=fake_analyzer,
-    ) == 0
+    ) == 2
     assert calls == [("iPhone", 0.1, 3.0, 2.0)]
+    out = capsys.readouterr().out
+    assert "camera_screen_state=unknown" in out
+    assert "repair_command=scripts/detect_camera_lcd_box.sh" in out
 
     def broken_capture(_output, _device, _timeout, _warmup, _zoom):
         raise screen_vision.VisionError("camera blocked", repair_command="fix camera")

@@ -125,6 +125,7 @@ scripts/reset_connection_state.sh --reason "starting fresh"
 Transient screen evidence expires after 120 seconds, and `gps_sync_ready` expires after 300 seconds. Do not treat stale manual screen text, old camera-screen vision captures, or old GPS-ready sessions as current connection state.
 
 Camera-screen vision is available for camera-side context, but it is not host-side protocol proof. If host evidence conflicts with screen OCR/classification, stop and collect more evidence before choosing a BLE/Wi-Fi workflow.
+If `scripts/read_camera_screen_state.sh` returns `camera_screen_state=unknown`, treat that as a workflow error and stop. Do not manually interpret `screen.png` as protocol evidence; fix the classifier/templates or LCD/iPhone alignment, then rerun the script until it returns a named state.
 
 Use the camera-screen classifier in distinct steps:
 
