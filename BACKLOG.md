@@ -203,14 +203,14 @@ Next work:
 
 ### PROTO-005: Determine how to enter active FF80 USB transport mode
 
-Status: open
+Status: in progress
 
 Summary:
 
 The FF80 reference project from `eric@nas.local:~/git/fffw/ff80` is copied into
 `rce/reference/ff80` and patched locally so the target USB product can be
-overridden. The current camera USB state enumerates as normal PTP product
-`04cb:02fe`, not FF80 product `04cb:ff80`.
+overridden. Normal camera USB mode enumerates as PTP product `04cb:02fe`; active
+FF80 mode enumerates as `04cb:ff80`.
 
 Current facts:
 
@@ -223,13 +223,23 @@ Current facts:
   device and claims interface 0, then stalls on FF80 `open_session`.
 - FF80 USB request recipients `other`, `interface`, `device`, and `endpoint`
   all fail the same way with `LIBUSB_ERROR_PIPE`.
+- In active FF80 mode, `scripts/poll_fuji_usb_devices.sh --once` sees
+  `04cb:ff80`.
+- `rce/reference/ff80/ff80.py --trace ping` succeeds: `open_session`, `ping`,
+  `nop`, and `close_session` all return expected short replies.
+- `rce/reference/ff80/ff80.py --trace info` returns `FUJIFILM`, `GFX100 II`,
+  firmware `2.55`, serial `593537303632230829053020110C3E`, framework `1.00`.
+- `cfgdata read 0x100 -s 0x60` confirms config fields including USB vendor
+  `0x04cb`, normal PTP product `0x02fe`, jig product `0xff80`, camera name
+  `GFX100 II`, serial, default directory `_FUJI`, and file prefix `DSCF`.
+- `ff80.py dummy` returns 65,536 bytes and passes the expected hash check.
 
 Next investigation:
 
-- Find the button/menu/service sequence that makes the camera enumerate as
-  `04cb:ff80`, or prove this body/firmware no longer exposes that mode.
-- When `04cb:ff80` appears, run the default FF80 target before trying any
-  state-changing commands.
+- Record the exact button/menu/service sequence that makes the camera enumerate
+  as `04cb:ff80`.
+- Add a scripted safe FF80 inventory command that captures poll, ping, info,
+  small config-window read, and dummy bulk-read into `rce/sessions/`.
 - Keep FF80 command testing read-only until the transport and command safety are
   understood.
 
