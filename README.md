@@ -331,7 +331,20 @@ scripts/camera_ap_ptpip_probe_flow.sh --address 2B403BE3-8075-4865-D0F8-827BA407
 `sdcard-current-object-info` extends that sequence with `FujiVendor_9054` parameter `0x10000001`, which reference app used to read current-object metadata such as `20260425T095812,DSCF8101.MOV`. `sdcard-current-object-thumbnail` extends it again with `FujiVendor_9055` parameter `0x10000001`, which reference app used to read the current object's JPEG thumbnail.
 `sdcard-folder-and-dates` continues with `FujiVendor_9050` and `FujiVendor_9053`; the reference capture sends `9053` with parameters `0x00000000,0x00007530` and labels the result as the capture-date list. `sdcard-object-handles` continues again with standard `GetDevicePropValue 0xd620` and `GetDevicePropValue 0xd621`, which the reference labels as object count and visible object handles.
 Live laptop evidence reached `sdcard-folder-and-dates`, but the earlier parameterless `FujiVendor_9053` probe returned a large fixed-size payload whose only decoded UTF-16 text was `140_FUJI`, then the earlier vendor-opcode `D620` probe timed out. Treat this as a corrected sequence-model bug, not as a Wi-Fi failure.
-Once a handle is known, standard PTP metadata and thumbnail probes can be run with `--get-object-info <handle>` and `--get-thumb <handle>`, for example `scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0 --get-object-info 0x0c --get-thumb 0x0c`.
+Once a handle is known, standard PTP metadata, full-object, and thumbnail probes can be run with `--get-object-info <handle>`, `--get-object <handle>`, and `--get-thumb <handle>`, for example:
+
+```sh
+scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0 --app-sequence sdcard-object-handles --get-object-info 0x0c --get-object 0x0c
+scripts/ptpip_export_object.sh --session-dir rce/sessions/ptpip_probe_<timestamp> --output-dir rce/downloads/manual_export
+```
+
+The export command validates JPEG SOI/EOI bytes before writing the file and writes a JSON manifest next to the exported image. A live single-handle download workflow is also available:
+
+```sh
+scripts/camera_ap_download_object.sh --address 2B403BE3-8075-4865-D0F8-827BA4076BFF --device-name mbp-7274 --handle 0x0000000c
+```
+
+This wraps the combined AP/PTP flow, runs `sdcard-object-handles`, requests ObjectInfo and GetObject for the requested handle, then exports the complete JPEG into `rce/downloads/camera_ap_download_<timestamp>/`. If the AP/PTP flow fails, export is skipped and the preserved session artifacts remain the evidence source.
 When Continuity Camera focus is unstable, use `--screen-warmup 5` on the combined flow; the default remains two seconds.
 
 ### Lower-Level CLI
@@ -350,4 +363,4 @@ python3 -m rce.tools.fuji_ble_gps.cli tui
 
 ## Not Yet Implemented
 
-The project can read camera AP credentials over BLE, write the observed UTC/timezone and image-transfer setup values, launch the camera AP with the `take` launch value, associate macOS Wi-Fi with the AP while preserving the Ethernet internet route, and run PTP/IP init/session/property probes. The accepted reference app GUID currently works with the laptop friendly name; the remaining PTP/IP identity work is to obtain or register a laptop-owned accepted initiator GUID.
+The project can read camera AP credentials over BLE, write the observed UTC/timezone and image-transfer setup values, launch the camera AP with the `take` launch value, associate macOS Wi-Fi with the AP while preserving the Ethernet internet route, run PTP/IP init/session/property probes, list observed object handles, and download/export a known object handle as a validated JPEG. The accepted reference app GUID currently works with the laptop friendly name; the remaining PTP/IP identity work is to obtain or register a laptop-owned accepted initiator GUID.

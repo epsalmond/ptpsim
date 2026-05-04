@@ -1204,3 +1204,104 @@ def test_cli_decode_and_compare_init(tmp_path, capsys) -> None:
     assert len(decoded_session["artifacts"]) == 2
     assert (session / "get_object_info_decoded.json").exists()
     assert (session / "get_thumb_payload.jpg").exists()
+
+
+def test_export_object_download_uses_object_info_filename(tmp_path) -> None:
+    session = tmp_path / "session"
+    output = tmp_path / "downloads"
+    session.mkdir()
+    payload = b"\xff\xd8object-data\xff\xd9"
+    (session / "get_object_payload.jpg").write_bytes(payload)
+    (session / "get_object_info_decoded.json").write_text(
+        json.dumps({"filename": "../_DSF8109.JPG", "image_pix_width": 4000}),
+        encoding="utf-8",
+    )
+    (session / "summary.json").write_text(
+        json.dumps({"get_object": "0x0c", "get_object_response_present": False}),
+        encoding="utf-8",
+    )
+
+    manifest = ptpip.export_object_download(session, output)
+
+    exported = output / "_DSF8109.JPG"
+    manifest_path = output / "_DSF8109.JPG.json"
+    assert exported.read_bytes() == payload
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["jpeg_payload"]["ends_with_eoi"] is True
+    assert manifest["output_path"] == str(exported)
+    assert manifest["manifest_path"] == str(manifest_path)
+    assert manifest["get_object"] == "0x0c"
+    assert manifest["object_info"]["image_pix_width"] == 4000
+
+
+def test_export_object_download_validates_payload_and_collisions(tmp_path) -> None:
+    session = tmp_path / "session"
+    output = tmp_path / "downloads"
+    session.mkdir()
+    (session / "get_object_payload.jpg").write_bytes(b"\xff\xd8first\xff\xd9")
+    (session / "summary.json").write_text(
+        json.dumps({"get_object": "12", "get_object_response_present": True}),
+        encoding="utf-8",
+    )
+
+    manifest = ptpip.export_object_download(session, output, filename="bad/name?.jpg")
+    assert Path(manifest["output_path"]).name == "name_.jpg"
+    assert (output / "name_.jpg").exists()
+    with pytest.raises(FileExistsError, match="download already exists"):
+        ptpip.export_object_download(session, output, filename="bad/name?.jpg")
+
+    (session / "get_object_payload.jpg").write_bytes(b"\xff\xd8second\xff\xd9")
+    overwritten = ptpip.export_object_download(session, output, filename="bad/name?.jpg", force=True)
+    assert Path(overwritten["output_path"]).read_bytes() == b"\xff\xd8second\xff\xd9"
+
+    (output / "manifest-only.jpg.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="download manifest already exists"):
+        ptpip.export_object_download(session, output, filename="manifest-only.jpg")
+
+    incomplete = tmp_path / "incomplete"
+    incomplete.mkdir()
+    (incomplete / "get_object_payload.jpg").write_bytes(b"\xff\xd8not-complete")
+    with pytest.raises(ValueError, match="not a complete JPEG"):
+        ptpip.export_object_download(incomplete, output)
+
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    with pytest.raises(FileNotFoundError, match="missing GetObject JPEG payload"):
+        ptpip.export_object_download(missing, output)
+
+
+def test_export_object_filename_fallbacks(tmp_path) -> None:
+    session = tmp_path / "session"
+    session.mkdir()
+    assert ptpip.safe_download_filename("../../bad:name", fallback="fallback.jpg") == "bad_name.jpg"
+    assert ptpip.safe_download_filename("   ", fallback="fallback.jpg") == "fallback.jpg"
+
+    (session / "summary.json").write_text(json.dumps({"get_object": "0x0000000c"}), encoding="utf-8")
+    assert ptpip.suggested_object_download_filename(session) == "fuji_object_0000000c.jpg"
+
+    (session / "summary.json").write_text(json.dumps({"get_object": "not-a-handle"}), encoding="utf-8")
+    assert ptpip.suggested_object_download_filename(session) == "fuji_object.jpg"
+
+
+def test_cli_export_object(tmp_path, capsys) -> None:
+    session = tmp_path / "session"
+    output = tmp_path / "downloads"
+    session.mkdir()
+    (session / "get_object_payload.jpg").write_bytes(b"\xff\xd8object\xff\xd9")
+    (session / "summary.json").write_text(json.dumps({"get_object": "0x0c"}), encoding="utf-8")
+
+    rc = ptpip.main(
+        [
+            "export-object",
+            "--session-dir",
+            str(session),
+            "--output-dir",
+            str(output),
+            "--filename",
+            "exported",
+        ]
+    )
+
+    assert rc == 0
+    exported = json.loads(capsys.readouterr().out)
+    assert exported["filename"] == "exported.jpg"
+    assert (output / "exported.jpg").exists()

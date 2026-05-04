@@ -135,7 +135,6 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Build a media-transfer workflow using standard `GetObject`, accepting `get_object_data_ok_no_response` only when the JPEG payload independently validates as complete.
 - Investigate why the decoded ObjectInfo `object_compressed_size` is `167936` while the full `GetObject` JPEG payload is `2456203` bytes for `_DSF8109.JPG`.
 - Use the init comparator output to choose the next live generated-identity candidates.
 
@@ -149,9 +148,12 @@ Reference captures under `rce/reference/ptp_decoded/` include liveview and
 property/action traffic. Continue implementing the observed sequence after
 successful init/open-session/property-read.
 
+Completed:
+
+- Promoted the live `GetObject` probe into `scripts/ptpip_export_object.sh` and `scripts/camera_ap_download_object.sh`; exports are accepted only when the JPEG payload independently validates as complete.
+
 Next candidates:
 
-- Promote the live `GetObject` probe into a user-facing download command that selects a handle, writes the JPEG payload, validates SOI/EOI and file type, and records evidence.
 - Decode reference app action enumeration usage from `rce/reference/APP_ACTION_ENUMERATION.md`.
 - Add scripts for one command at a time, each with captured packet evidence.
 

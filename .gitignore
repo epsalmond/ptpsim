@@ -23,6 +23,7 @@ bluetooth-wrapper/bluetooth-wrapper
 
 # Runtime state and live hardware artifacts
 rce/sessions/
+rce/downloads/
 rce/state/
 rce/screen_captures/*
 !rce/screen_captures/screen_element_labels.json
