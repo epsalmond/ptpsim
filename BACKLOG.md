@@ -233,6 +233,13 @@ Current facts:
   `0x04cb`, normal PTP product `0x02fe`, jig product `0xff80`, camera name
   `GFX100 II`, serial, default directory `_FUJI`, and file prefix `DSCF`.
 - `ff80.py dummy` returns 65,536 bytes and passes the expected hash check.
+- `ram dump 0` timed out on the first read, left a zero-byte file, and the FF80
+  command transport then timed out on `ping` until camera reboot/re-entry.
+- After reboot/re-entry, `ram read 0x80003ff0 -s 0x10` succeeded and returned 16
+  zero bytes.
+- After reboot/re-entry, `ram dump 0x80000000 -s 0x4000` succeeded, wrote
+  16,384 bytes, ended at `0x80004000`, and produced SHA256
+  `a65ac6e7f228ada4702706181d0dad464d5aaa5e6785a588ba5d8f5ded3a68a0`.
 
 Next investigation:
 
@@ -240,6 +247,9 @@ Next investigation:
   as `04cb:ff80`.
 - Add a scripted safe FF80 inventory command that captures poll, ping, info,
   small config-window read, and dummy bulk-read into `rce/sessions/`.
+- Add a scripted bounded FF80 RAM dump helper that probes a small mapped range
+  first, refuses `0x00000000` unless explicitly forced, records hashes, and
+  verifies the command transport with `ping` before/after.
 - Keep FF80 command testing read-only until the transport and command safety are
   understood.
 
