@@ -201,6 +201,38 @@ Next work:
 - Continue promoting `camera_ap_wifi_association` evidence into the TUI workflow.
 - Keep all AP scripts deterministic and evidence-driven.
 
+### PROTO-005: Determine how to enter active FF80 USB transport mode
+
+Status: open
+
+Summary:
+
+The FF80 reference project from `eric@nas.local:~/git/fffw/ff80` is copied into
+`rce/reference/ff80` and patched locally so the target USB product can be
+overridden. The current camera USB state enumerates as normal PTP product
+`04cb:02fe`, not FF80 product `04cb:ff80`.
+
+Current facts:
+
+- `gphoto2 --auto-detect` sees `Fuji Fujifilm GFX100 II` on `usb:000,001`.
+- `system_profiler SPUSBDataType` reports Fuji vendor `0x04cb`, product
+  `0x02fe`, version `2.40`, and serial `593537303632230829053020110C3E`.
+- `gphoto2 --summary` succeeds only after winning the race with macOS PTP
+  helper processes.
+- `rce/reference/ff80/ff80.py --product-id 0x02fe --trace ping` opens the
+  device and claims interface 0, then stalls on FF80 `open_session`.
+- FF80 USB request recipients `other`, `interface`, `device`, and `endpoint`
+  all fail the same way with `LIBUSB_ERROR_PIPE`.
+
+Next investigation:
+
+- Find the button/menu/service sequence that makes the camera enumerate as
+  `04cb:ff80`, or prove this body/firmware no longer exposes that mode.
+- When `04cb:ff80` appears, run the default FF80 target before trying any
+  state-changing commands.
+- Keep FF80 command testing read-only until the transport and command safety are
+  understood.
+
 ## BLE And Pairing
 
 ### BLE-001: Add Linux/BlueZ adapter alias preflight
