@@ -55,6 +55,39 @@ def ptp_container(container_type: int = 3, code: int = 0x2001, transaction: int 
     return struct.pack("<IHHI", 12, container_type, code, transaction)
 
 
+def ptp_string(value: str) -> bytes:
+    code_units = len(value) + 1
+    return bytes([code_units]) + value.encode("utf-16le") + b"\x00\x00"
+
+
+def object_info_payload(
+    *,
+    filename: str = "_DSF8109.JPG",
+    capture_date: str = "20260501T230655",
+    object_size: int = 0x00029000,
+    thumb_size: int = 24962,
+) -> bytes:
+    fixed = struct.pack(
+        "<IHHIHI6IHII",
+        0x10000001,
+        0x3801,
+        0,
+        object_size,
+        0xB901,
+        thumb_size,
+        640,
+        480,
+        4000,
+        3000,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    return fixed + ptp_string(filename) + ptp_string(capture_date) + ptp_string("") + ptp_string("Orientation:1")
+
+
 def test_build_init_command_request_deterministic(monkeypatch) -> None:
     guid = bytes(range(16))
     request = ptpip.build_init_command_request("mbp-7274", guid=guid)
@@ -324,6 +357,81 @@ def test_ptp_data_payload_decoders() -> None:
     malformed_count_result: dict[str, object] = {}
     ptpip._add_vendor_data_decoding(malformed_count_result, 0xD620, handles_data)
     assert "decode_error" in malformed_count_result
+
+
+def test_object_info_and_thumbnail_payload_decoders(tmp_path) -> None:
+    object_info_data = ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, object_info_payload())
+    decoded = ptpip.decode_object_info_data_container(object_info_data)
+
+    assert decoded["storage_id"] == "0x10000001"
+    assert decoded["object_format"] == "0x3801"
+    assert decoded["object_format_name"] == "EXIF_JPEG"
+    assert decoded["object_compressed_size"] == 0x00029000
+    assert decoded["thumb_format"] == "0xb901"
+    assert decoded["thumb_compressed_size"] == 24962
+    assert decoded["thumb_pix_width"] == 640
+    assert decoded["thumb_pix_height"] == 480
+    assert decoded["image_pix_width"] == 4000
+    assert decoded["image_pix_height"] == 3000
+    assert decoded["filename"] == "_DSF8109.JPG"
+    assert decoded["capture_date"] == "20260501T230655"
+    assert decoded["modification_date"] == ""
+    assert decoded["keywords"] == "Orientation:1"
+    assert decoded["remaining_hex"] == ""
+
+    result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(result, ptpip.PTP_GET_OBJECT_INFO, object_info_data)
+    assert result["object_info"] == decoded
+
+    thumbnail_payload = b"\xff\xd8thumb\xff\xd9"
+    thumbnail_data = ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 16, thumbnail_payload)
+    thumbnail_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(thumbnail_result, ptpip.PTP_GET_THUMB, thumbnail_data)
+    assert thumbnail_result["jpeg_payload"]["payload_bytes"] == len(thumbnail_payload)
+    assert thumbnail_result["jpeg_payload"]["starts_with_soi"] is True
+    assert thumbnail_result["jpeg_payload"]["ends_with_eoi"] is True
+
+    artifact_result: dict[str, object] = {}
+    ptpip._write_decoded_data_artifacts(tmp_path, "get_object_info", ptpip.PTP_GET_OBJECT_INFO, object_info_data, artifact_result)
+    assert (tmp_path / "get_object_info_decoded.json").exists()
+    assert artifact_result["object_info"]["filename"] == "_DSF8109.JPG"
+    ptpip._write_decoded_data_artifacts(tmp_path, "get_thumb", ptpip.PTP_GET_THUMB, thumbnail_data, artifact_result)
+    assert (tmp_path / "get_thumb_payload.jpg").read_bytes() == thumbnail_payload
+
+    with pytest.raises(ValueError, match="not GetObjectInfo"):
+        ptpip.decode_object_info_data_container(thumbnail_data)
+    with pytest.raises(ValueError, match="too short"):
+        ptpip.decode_object_info_payload(b"\x00")
+    with pytest.raises(ValueError, match="missing PTP string"):
+        ptpip.decode_ptp_string(b"", 0)
+    empty_string, next_offset = ptpip.decode_ptp_string(b"\x00tail", 0)
+    assert empty_string == {"text": "", "code_units": 0, "raw_hex": ""}
+    assert next_offset == 1
+    with pytest.raises(ValueError, match="needs 4 bytes"):
+        ptpip.decode_ptp_string(b"\x02a", 0)
+
+    malformed_artifact_result: dict[str, object] = {}
+    ptpip._write_decoded_data_artifacts(
+        tmp_path,
+        "bad_thumb",
+        ptpip.PTP_GET_THUMB,
+        ptp_container(code=0x2001),
+        malformed_artifact_result,
+    )
+    assert "decode_error" in malformed_artifact_result
+    malformed_thumb_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_thumb_result, ptpip.PTP_GET_THUMB, ptp_container(code=0x2001))
+    assert "decode_error" in malformed_thumb_result
+
+    malformed_session = tmp_path / "malformed-session"
+    malformed_session.mkdir()
+    (malformed_session / "short_data.bin").write_bytes(ptp_container(code=0x2001))
+    (malformed_session / "get_object_info_data.bin").write_bytes(
+        ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, b"\x00")
+    )
+    decoded_session = ptpip.decode_session_artifacts(malformed_session)
+    assert "decode_error" in decoded_session["artifacts"][0]
+    assert "decode_error" in decoded_session["artifacts"][1]
 
 
 def test_vendor_text_payload_decoders() -> None:
@@ -714,9 +822,9 @@ def test_probe_runs_direct_object_operations_after_app_sequence(tmp_path) -> Non
                 struct.pack("<I", len(handles)) + b"".join(struct.pack("<I", handle) for handle in handles),
             ),
             ptp_container(code=0x2001, transaction=14),
-            ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, b"object-info"),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, object_info_payload()),
             ptp_container(code=0x2001, transaction=15),
-            ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 16, b"thumb"),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 16, b"\xff\xd8thumb\xff\xd9"),
             ptp_container(code=0x2001, transaction=16),
         ]
     )
@@ -733,13 +841,17 @@ def test_probe_runs_direct_object_operations_after_app_sequence(tmp_path) -> Non
 
     assert summary["app_sequence_completed"] is True
     assert summary["get_object_info_data_present"] is True
+    assert summary["get_object_info_object_info"]["filename"] == "_DSF8109.JPG"
     assert summary["get_object_info_response_present"] is True
     assert summary["get_thumb_data_present"] is True
+    assert summary["get_thumb_jpeg_payload"]["payload_bytes"] == 9
     assert summary["get_thumb_response_present"] is True
     assert fake.sent[-2] == ptpip.build_get_object_info(0x0C, 15)
     assert fake.sent[-1] == ptpip.build_get_thumb(0x0C, 16)
     assert (tmp_path / "get_object_info_data.bin").exists()
+    assert (tmp_path / "get_object_info_decoded.json").exists()
     assert (tmp_path / "get_thumb_data.bin").exists()
+    assert (tmp_path / "get_thumb_payload.jpg").read_bytes() == b"\xff\xd8thumb\xff\xd9"
 
 
 def test_probe_app_sequence_rejects_unknown_step_action(monkeypatch, tmp_path) -> None:
@@ -944,6 +1056,30 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
     assert '"tcp_connect": "present"' in capsys.readouterr().out
 
 
+def test_exit_code_checks_direct_operations_after_app_sequence(tmp_path) -> None:
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-object-handles",
+        get_thumb="0x0c",
+    )
+    summary = {
+        "tcp_connect": "present",
+        "response_present": True,
+        "open_session_response_present": True,
+        "app_sequence_completed": True,
+        "get_prop_response_present": False,
+        "get_object_info_response_present": False,
+        "get_thumb_response_present": False,
+    }
+
+    assert ptpip.exit_code_for_summary(summary, config) == 8
+
+    summary["get_thumb_response_present"] = True
+    assert ptpip.exit_code_for_summary(summary, config) == 0
+
+
 def test_cli_decode_and_compare_init(tmp_path, capsys) -> None:
     reference = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin")
     same_candidate = tmp_path / "same.bin"
@@ -993,3 +1129,17 @@ def test_cli_decode_and_compare_init(tmp_path, capsys) -> None:
 
     assert ptpip.main(["inventory-init", str(tmp_path)]) == 0
     assert "friendly_name=Pixel-6-9405" in capsys.readouterr().out
+
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "get_object_info_data.bin").write_bytes(
+        ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, object_info_payload())
+    )
+    (session / "get_thumb_data.bin").write_bytes(
+        ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 16, b"\xff\xd8thumb\xff\xd9")
+    )
+    assert ptpip.main(["decode-session", "--session-dir", str(session)]) == 0
+    decoded_session = json.loads(capsys.readouterr().out)
+    assert len(decoded_session["artifacts"]) == 2
+    assert (session / "get_object_info_decoded.json").exists()
+    assert (session / "get_thumb_payload.jpg").exists()

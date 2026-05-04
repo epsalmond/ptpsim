@@ -134,7 +134,7 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Decode `GetObjectInfo` fields and thumbnail artifacts returned by `rce/sessions/ptpip_probe_20260503T235342Z`.
+- Decode the full object-transfer operation and decide whether Fuji requires standard `GetObject`, `GetPartialObject`, or an reference app vendor transfer function.
 - Build a media-transfer workflow using handles returned by `GetDevicePropValue 0xd621`; latest successful object-handle run returned `0x0000000c`, `0x0000000a`, `0x00000008`, `0x00000006`, `0x00000005`, `0x00000004`, `0x00000003`, `0x00000002`.
 - Use the init comparator output to choose the next live generated-identity candidates.
 
@@ -150,7 +150,7 @@ successful init/open-session/property-read.
 
 Next candidates:
 
-- Decode standard PTP `GetObjectInfo` and `GetThumb` artifacts for handles returned by `GetDevicePropValue 0xd621`.
+- Live-test or implement a dry-run decoder for standard PTP `GetObject` / `GetPartialObject` candidates, using decoded ObjectInfo size `167936` for `_DSF8109.JPG` as the first target.
 - Decode reference app action enumeration usage from `rce/reference/APP_ACTION_ENUMERATION.md`.
 - Add scripts for one command at a time, each with captured packet evidence.
 
