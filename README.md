@@ -81,6 +81,7 @@ briefly expose Fuji service USB modes:
 ```sh
 scripts/poll_fuji_usb_devices.sh
 scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --exit-on-match
+scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --timeout 3 --exit-on-match
 scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --interval 0
 ```
 
@@ -95,14 +96,21 @@ priority RAM ranges with:
 scripts/ff80_dump_priority_ranges.sh
 scripts/ff80_dump_priority_ranges.sh --only-risky-low
 scripts/ff80_dump_priority_ranges.sh --next-targets
+scripts/ff80_dump_cfgdata.sh
 ```
 
 The dump wrapper writes `rce/sessions/ff80_priority_dumps_<timestamp>/`, probes
 each range before dumping, pings before and after each operation, and records
 SHA256 plus actual byte counts. It skips low ThreadX runtime ranges by default
 because a previous read from `0x00000000` wedged FF80 until camera reboot.
-Use `--next-targets` for the follow-up ThreadX slot/table windows:
-`0x000e1000`, `0x00057000`, `0x000ea000`, and `0x000ed000`.
+Use `--next-targets` for the combined follow-up set. It keeps the earlier
+ThreadX slot/dispatch-table targets and appends backlog code/data/global ranges,
+then executes them in ascending RAM address order:
+`0x00044000`, `0x00057000`, `0x00059000`, `0x0005e000`, `0x000a9000`,
+`0x000e1000`, `0x000ea000`, `0x000ed000`, `0x004c7000`, and `0x004e7000`.
+The cfgdata wrapper is also read-only; it gates on active FF80 `ping`, records
+passive USB polling as advisory evidence, dumps `cfgdata.bin`, and writes JSON
+plus text analysis under `rce/sessions/ff80_cfgdata_<timestamp>/`.
 
 Analyze one or more dump sessions offline with:
 

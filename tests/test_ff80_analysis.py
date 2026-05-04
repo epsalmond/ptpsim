@@ -92,6 +92,41 @@ def test_qword_table_summary():
     assert summary["sample_pointer_like"] == [{"offset": 8, "address": 0xED008, "value": 0x57000}]
 
 
+def test_cfgdata_summary_and_formatting(tmp_path):
+    data = bytearray(0x140)
+    data[0xA2] = 0x02
+    data[0xF7] = 0x01
+    struct.pack_into("<H", data, 0x20, 0x04CB)
+    struct.pack_into("<H", data, 0x24, 0x02FE)
+    struct.pack_into("<H", data, 0x28, 0xFF80)
+    data[0x40:0x48] = b"FUJIFILM"
+    data[0x50:0x59] = b"GFX100 II"
+    data[0x70:0x75] = b"_FUJI"
+    data[0x80:0x84] = b"DSCF"
+    cfgdata = tmp_path / "cfgdata.bin"
+    cfgdata.write_bytes(data)
+
+    summary = ff80_analysis.analyze_dump_file(cfgdata)
+    text = ff80_analysis.format_summary_text({"files": [summary]})
+
+    assert summary["cfgdata"]["service_offsets"] == [
+        {"offset": 0xA2, "value": 0x02},
+        {"offset": 0xF7, "value": 0x01},
+    ]
+    assert summary["cfgdata"]["known_word_hits"] == [
+        {"offset": 0x20, "value": 0x04CB, "label": "fuji_usb_vendor_id"},
+        {"offset": 0x24, "value": 0x02FE, "label": "gfx100ii_normal_ptp_product_id"},
+        {"offset": 0x28, "value": 0xFF80, "label": "ff80_jig_product_id"},
+    ]
+    assert summary["cfgdata"]["ascii_string_count"] == 4
+    assert {"start": 0x40, "end": 0x48, "length": 8} in summary["cfgdata"][
+        "largest_nonzero_ranges"
+    ]
+    assert "cfgdata_service_offsets: +0xa2=0x02, +0xf7=0x01" in text
+    assert "cfgdata_word_hits: +0x20:fuji_usb_vendor_id=0x04cb" in text
+    assert "cfgdata_strings: +0x40:FUJIFILM" in text
+
+
 def test_analyze_file_and_format_summary(tmp_path):
     scheduler = tmp_path / "threadx_scheduler_globals_0009e000_000a1000.bin"
     scheduler_data = bytearray(0x120)

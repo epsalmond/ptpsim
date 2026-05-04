@@ -258,9 +258,19 @@ Current facts:
   transport. `rce/sessions/ff80_priority_dumps_20260504T232251Z` captured
   `0x000e1000..0x000e3fff`, `0x00057000..0x00058fff`,
   `0x000ea000..0x000eafff`, and `0x000ed000..0x000eefff`.
+- `rce/sessions/ff80_cfgdata_20260504T234744Z` captured a full read-only
+  cfgdata dump: 17,956,864 bytes, SHA256
+  `9b91c39b3b35ca2af06348df40bc724dbf37a928bea2ab829eb12745ed48127a`.
+  It contains early camera identity/config strings including `GFX100 II`,
+  `_FUJI`, `DSCF`, `FUJIFILM`, USB vendor `0x04cb`, normal product `0x02fe`,
+  and jig product `0xff80`.
+- `rce/sessions/ff80_priority_dumps_20260504T235319Z` captured the combined
+  `--next-targets` set in ascending RAM address order: the earlier
+  task-slot/dispatch windows plus backlog ranges `0x00044000`, `0x00059000`,
+  `0x0005e000`, `0x000a9000`, `0x004c7000`, and `0x004e7000`.
 - `scripts/ff80_analyze_dumps.sh` writes repeatable offline summaries for dump
   sessions. The current combined analysis is
-  `rce/sessions/ff80_analysis_20260504T232251Z/analysis.json`.
+  `rce/sessions/ff80_priority_dumps_20260504T235319Z/analysis.json`.
 - The analyzer reports two ThreadX byte pools (`uiMPL001` at `0x000a0d60` and
   `uiMPL002` at `0x000a0df8`), `syslog Ver 3.0` in the first three
   message-pool windows, 194 nonempty `0x230` task-record slots out of 300 in
@@ -541,3 +551,34 @@ Summary:
 
 Create one script that checks host prerequisites and reports exact repair
 commands without making state changes unless explicitly requested.
+
+
+
+Status: Done
+
+Summary: These ranges were appended to `scripts/ff80_dump_priority_ranges.sh
+--next-targets` without dropping the existing `--next-targets` ranges, then
+captured in ascending RAM address order in
+`rce/sessions/ff80_priority_dumps_20260504T235319Z`.
+
+Requested backlog ranges:
+
+- 0x4E7000 + 0x1000 — top ADRP target, biggest data globals
+- 0xA9000 + 0x4000 — covers 0xA9000–0xAD000 runtime data
+- 0x44000 + 0x14000 — fills in code at 0x44550–0x57000 (BL targets)
+- 0x59000 + 0x3000 — extends dispatch_table_57000 to 0x5C000
+- 0x4C7000 + 0x1000 — secondary globals
+- 0x5E000 + 0x2000 — adjacent code/data for 0x57000
+
+Execution order:
+
+- 0x00044000 + 0x14000
+- 0x00057000 + 0x2000
+- 0x00059000 + 0x3000
+- 0x0005e000 + 0x2000
+- 0x000a9000 + 0x4000
+- 0x000e1000 + 0x3000
+- 0x000ea000 + 0x1000
+- 0x000ed000 + 0x2000
+- 0x004c7000 + 0x1000
+- 0x004e7000 + 0x1000

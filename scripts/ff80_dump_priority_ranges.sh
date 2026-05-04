@@ -14,8 +14,9 @@ Options:
                         wedged FF80 until reboot. Default: skip them.
   --only-risky-low      Dump only the low ThreadX runtime ranges below
                         0x00100000.
-  --next-targets        Dump the follow-up ThreadX slot/table ranges:
-                        task slot tables plus boot-populated dispatch tables.
+  --next-targets        Dump the follow-up RAM targets in ascending address
+                        order: backlog ADRP/code/data ranges plus the earlier
+                        task slot and boot-populated dispatch-table ranges.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
   --continue-on-fail    Continue after a failed range if FF80 ping still works.
   -h, --help            Show this help.
@@ -168,9 +169,9 @@ run_ff80_logged() {
 confirm_ff80() {
   local label="$1"
   local log_file="$session_dir/logs/$label.poll.log"
-  log "+ scripts/poll_fuji_usb_devices.sh --once --product-id 0xff80 --summary-every 0"
+  log "+ scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --timeout 3 --exit-on-match --summary-every 1"
   set +e
-  scripts/poll_fuji_usb_devices.sh --once --product-id 0xff80 --summary-every 0 >"$log_file" 2>&1
+  scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --timeout 3 --exit-on-match --summary-every 1 >"$log_file" 2>&1
   local rc=$?
   set -e
   cat "$log_file" | tee -a "$manifest" >&2
@@ -237,10 +238,16 @@ ranges=()
 
 if [[ "$next_targets" -eq 1 ]]; then
   ranges+=(
-    "task_slot_tables 0x000e1000 0x3000"
+    "code_bl_targets_44000 0x00044000 0x14000"
     "dispatch_table_57000 0x00057000 0x2000"
+    "dispatch_table_59000_ext 0x00059000 0x3000"
+    "adjacent_code_data_5e000 0x0005e000 0x2000"
+    "runtime_data_a9000 0x000a9000 0x4000"
+    "task_slot_tables 0x000e1000 0x3000"
     "dispatch_table_ea000 0x000ea000 0x1000"
     "dispatch_table_ed000 0x000ed000 0x2000"
+    "secondary_globals_4c7000 0x004c7000 0x1000"
+    "adrp_globals_4e7000 0x004e7000 0x1000"
   )
 elif [[ "$only_risky_low" -eq 0 ]]; then
   ranges+=(
@@ -265,7 +272,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-else
+elif [[ "$next_targets" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 

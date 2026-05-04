@@ -11,6 +11,7 @@ Options:
   --product-id HEX      Optional product id filter, for example 0xff80.
   --interval SEC        Sleep between polls. Default: 0.02. Use 0 for busy poll.
   --summary-every SEC   Print absent heartbeat this often. Default: 2.
+  --timeout SEC         Stop after this many seconds if no earlier exit condition fires.
   --all                 Print every poll, not just state changes and heartbeats.
   --once                Poll once and exit.
   --exit-on-match       Exit 0 as soon as a matching device is present.
@@ -19,6 +20,7 @@ Options:
 Examples:
   scripts/poll_fuji_usb_devices.sh
   scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --exit-on-match
+  scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --timeout 3 --exit-on-match
   scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --interval 0
 
 This uses libusb enumeration directly, which is much faster than
@@ -122,6 +124,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--product-id", type=int_auto)
     parser.add_argument("--interval", type=float, default=0.02)
     parser.add_argument("--summary-every", type=float, default=2.0)
+    parser.add_argument("--timeout", type=float)
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--exit-on-match", action="store_true")
@@ -131,6 +134,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--interval must be >= 0")
     if args.summary_every < 0:
         parser.error("--summary-every must be >= 0")
+    if args.timeout is not None and args.timeout < 0:
+        parser.error("--timeout must be >= 0")
     return args
 
 
@@ -153,6 +158,7 @@ def main(argv: list[str]) -> int:
     last_signature = None
     last_summary = 0.0
     polls = 0
+    deadline = None if args.timeout is None else time.monotonic() + args.timeout
 
     with usb1.USBContext() as context:
         while True:
@@ -193,8 +199,13 @@ def main(argv: list[str]) -> int:
                 return 0
             if args.once:
                 return 0 if devices else 1
+            if deadline is not None and time.monotonic() >= deadline:
+                return 0 if devices else 1
             if args.interval:
-                time.sleep(args.interval)
+                if deadline is None:
+                    time.sleep(args.interval)
+                else:
+                    time.sleep(max(0.0, min(args.interval, deadline - time.monotonic())))
 
 
 if __name__ == "__main__":
