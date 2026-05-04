@@ -240,6 +240,20 @@ Current facts:
 - After reboot/re-entry, `ram dump 0x80000000 -s 0x4000` succeeded, wrote
   16,384 bytes, ended at `0x80004000`, and produced SHA256
   `a65ac6e7f228ada4702706181d0dad464d5aaa5e6785a588ba5d8f5ded3a68a0`.
+- `scripts/ff80_dump_priority_ranges.sh` captures read-only priority ranges
+  with pre/post `ping` checks and a 16-byte probe read before each bounded dump.
+- `rce/sessions/ff80_priority_dumps_20260504T230211Z` captured all default
+  priority ranges successfully: `0x80000000`, the `amp_shared`/`rpmsg_shared`
+  heads, six message-pool windows, and two static-offset probe windows.
+- `rce/sessions/ff80_priority_dumps_20260504T230326Z` captured the low ThreadX
+  runtime windows successfully: scheduler globals, task records, and task
+  record pointers. The task-record dump demonstrated that upstream
+  `ff80.py ram dump` reads in `0x100` chunks, so non-aligned requests can write
+  through the next chunk boundary.
+- Initial dump triage found `syslog Ver 3.0` in the first three message-pool
+  windows, `uiMPL001`/`uiMPL002` near scheduler globals, sparse shared-memory
+  heads, and no obvious `FF80`, `JASM`, `GYRO_GAIN`, or ThreadX strings in the
+  static-offset probes.
 
 Next investigation:
 
@@ -247,9 +261,11 @@ Next investigation:
   as `04cb:ff80`.
 - Add a scripted safe FF80 inventory command that captures poll, ping, info,
   small config-window read, and dummy bulk-read into `rce/sessions/`.
-- Add a scripted bounded FF80 RAM dump helper that probes a small mapped range
-  first, refuses `0x00000000` unless explicitly forced, records hashes, and
-  verifies the command transport with `ping` before/after.
+- Analyze the priority RAM dumps for ThreadX task records, ring buffers, syslog
+  payloads, RPMsg/AMP metadata, and candidate live sensor/state buffers.
+- Either align future requested FF80 dump sizes to `0x100` or keep recording
+  actual byte counts so every dump summary reflects the upstream chunking
+  behavior.
 - Keep FF80 command testing read-only until the transport and command safety are
   understood.
 

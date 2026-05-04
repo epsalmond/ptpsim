@@ -88,6 +88,19 @@ The poller uses libusb enumeration only. It does not claim the device or send
 commands. Normal USB PTP mode for the GFX100 II has been observed as
 `04cb:02fe`; active FF80 is expected as `04cb:ff80`.
 
+Once the camera is confirmed in active FF80 mode, collect the current read-only
+priority RAM ranges with:
+
+```sh
+scripts/ff80_dump_priority_ranges.sh
+scripts/ff80_dump_priority_ranges.sh --only-risky-low
+```
+
+The dump wrapper writes `rce/sessions/ff80_priority_dumps_<timestamp>/`, probes
+each range before dumping, pings before and after each operation, and records
+SHA256 plus actual byte counts. It skips low ThreadX runtime ranges by default
+because a previous read from `0x00000000` wedged FF80 until camera reboot.
+
 ### State And Evidence
 
 Use the statefile before deciding the next live action:

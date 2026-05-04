@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/ff80_dump_priority_ranges.sh [options]
+
+Options:
+  --session-dir DIR     Output directory. Default:
+                        rce/sessions/ff80_priority_dumps_<utc timestamp>.
+  --include-risky-low   Include low ThreadX runtime ranges below 0x00100000.
+                        These are useful, but an earlier 0x00000000 read
+                        wedged FF80 until reboot. Default: skip them.
+  --only-risky-low      Dump only the low ThreadX runtime ranges below
+                        0x00100000.
+  --stop-on-fail        Stop on the first failed probe/dump. Default.
+  --continue-on-fail    Continue after a failed range if FF80 ping still works.
+  -h, --help            Show this help.
+
+This is a read-only FF80 range collector. For each range it:
+
+1. Confirms the device enumerates as 04cb:ff80.
+2. Runs FF80 ping.
+3. Reads 16 bytes from the range start.
+4. Runs FF80 ping again.
+5. Dumps the bounded range.
+6. Runs FF80 ping again.
+7. Records SHA256, requested size, and actual byte count.
+
+If an FF80 command reports USB timeout, USB pipe stall, device-not-found, jig
+error, or traceback, the command is treated as failed even if the upstream
+script exits 0.
+USAGE
+}
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+python_bin="${PYTHON_BIN:-$repo_root/.venv/bin/python}"
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+
+include_risky_low=0
+only_risky_low=0
+stop_on_fail=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --session-dir)
+      session_dir="$2"
+      shift 2
+      ;;
+    --include-risky-low)
+      include_risky_low=1
+      shift
+      ;;
+    --only-risky-low)
+      only_risky_low=1
+      include_risky_low=1
+      shift
+      ;;
+    --stop-on-fail)
+      stop_on_fail=1
+      shift
+      ;;
+    --continue-on-fail)
+      stop_on_fail=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ ! -x "$python_bin" ]]; then
+  echo "missing python executable: $python_bin" >&2
+  exit 1
+fi
+
+if [[ ! -f "$ff80_dir/ff80.py" ]]; then
+  echo "missing FF80 tool: $ff80_dir/ff80.py" >&2
+  exit 1
+fi
+
+mkdir -p "$session_dir/probes" "$session_dir/dumps" "$session_dir/logs"
+summary="$session_dir/summary.tsv"
+manifest="$session_dir/manifest.txt"
+
+printf 'label\taddress\trequested_size\tactual_bytes\tstatus\tpath\tsha256\tnote\n' >"$summary"
+
+log() {
+  printf '%s\n' "$*" | tee -a "$manifest" >&2
+}
+
+addr_token() {
+  local value="$1"
+  printf '%08x' "$(( value ))"
+}
+
+range_end_token() {
+  local addr="$1"
+  local size="$2"
+  printf '%08x' "$(( addr + size ))"
+}
+
+file_size_bytes() {
+  local path="$1"
+  if stat -f '%z' "$path" >/dev/null 2>&1; then
+    stat -f '%z' "$path"
+  else
+    stat -c '%s' "$path"
+  fi
+}
+
+record() {
+  local label="$1"
+  local addr="$2"
+  local size="$3"
+  local actual_bytes="$4"
+  local status="$5"
+  local path="$6"
+  local sha="$7"
+  local note="$8"
+  printf '%s\t0x%08x\t0x%x\t%s\t%s\t%s\t%s\t%s\n' \
+    "$label" "$(( addr ))" "$(( size ))" "$actual_bytes" "$status" "$path" "$sha" "$note" >>"$summary"
+}
+
+output_failed() {
+  local path="$1"
+  grep -Eqi 'USB timeout|USB pipe stalled|device .*not found|jig error|Traceback|AssertionError' "$path"
+}
+
+run_ff80_logged() {
+  local label="$1"
+  shift
+  local log_file="$session_dir/logs/$label.log"
+  log "+ ff80 $*"
+  set +e
+  (
+    cd "$ff80_dir"
+    "$python_bin" ff80.py "$@"
+  ) >"$log_file" 2>&1
+  local rc=$?
+  set -e
+  sed -n '1,120p' "$log_file" | tee -a "$manifest" >&2
+  if [[ "$rc" -ne 0 ]] || output_failed "$log_file"; then
+    log "FAILED: ff80 $*"
+    return 1
+  fi
+  return 0
+}
+
+confirm_ff80() {
+  local label="$1"
+  local log_file="$session_dir/logs/$label.poll.log"
+  log "+ scripts/poll_fuji_usb_devices.sh --once --product-id 0xff80 --summary-every 0"
+  set +e
+  scripts/poll_fuji_usb_devices.sh --once --product-id 0xff80 --summary-every 0 >"$log_file" 2>&1
+  local rc=$?
+  set -e
+  cat "$log_file" | tee -a "$manifest" >&2
+  [[ "$rc" -eq 0 ]]
+}
+
+ping_ff80() {
+  local label="$1"
+  run_ff80_logged "$label" --trace ping
+}
+
+dump_range() {
+  local label="$1"
+  local addr="$2"
+  local size="$3"
+  local addr_name
+  local end_name
+  addr_name="$(addr_token "$addr")"
+  end_name="$(range_end_token "$addr" "$size")"
+  local probe_path="$session_dir/probes/${label}_${addr_name}_probe_10.bin"
+  local dump_path="$session_dir/dumps/${label}_${addr_name}_${end_name}.bin"
+
+  log "=== $label addr=0x$addr_name size=0x$(printf '%x' "$(( size ))") ==="
+
+  if ! ping_ff80 "${label}_pre_ping"; then
+    record "$label" "$addr" "$size" "" "failed" "" "" "pre_ping_failed"
+    return 1
+  fi
+
+  if ! run_ff80_logged "${label}_probe" ram read "0x$addr_name" -s 0x10 -o "$probe_path"; then
+    record "$label" "$addr" "$size" "" "failed" "$probe_path" "" "probe_failed"
+    return 1
+  fi
+
+  if ! ping_ff80 "${label}_post_probe_ping"; then
+    record "$label" "$addr" "$size" "" "failed" "$probe_path" "" "post_probe_ping_failed"
+    return 1
+  fi
+
+  if ! run_ff80_logged "${label}_dump" ram dump "0x$addr_name" -s "0x$(printf '%x' "$(( size ))")" -o "$dump_path"; then
+    record "$label" "$addr" "$size" "" "failed" "$dump_path" "" "dump_failed"
+    return 1
+  fi
+
+  if ! ping_ff80 "${label}_post_dump_ping"; then
+    record "$label" "$addr" "$size" "" "failed" "$dump_path" "" "post_dump_ping_failed"
+    return 1
+  fi
+
+  local sha
+  local actual_bytes
+  local note
+  sha="$(shasum -a 256 "$dump_path" | awk '{print $1}')"
+  actual_bytes="$(file_size_bytes "$dump_path")"
+  note="dumped"
+  if [[ "$actual_bytes" -ne "$(( size ))" ]]; then
+    note="dumped_actual_size_differs_from_requested"
+  fi
+  record "$label" "$addr" "$size" "$actual_bytes" "ok" "$dump_path" "$sha" "$note"
+  ls -l "$probe_path" "$dump_path" | tee -a "$manifest" >&2
+}
+
+ranges=()
+
+if [[ "$only_risky_low" -eq 0 ]]; then
+  ranges+=(
+    "known_80000000 0x80000000 0x10000"
+    "rpmsg_shared_head 0x39a00000 0x100000"
+    "amp_isgc_shared_head 0x39b00000 0x100000"
+    "amp_shared_head 0x29b00000 0x100000"
+    "msg_pool_508000 0x00508000 0x20000"
+    "msg_pool_528000 0x00528000 0x20000"
+    "msg_pool_548000 0x00548000 0x20000"
+    "msg_pool_568000 0x00568000 0x20000"
+    "msg_pool_588000 0x00588000 0x20000"
+    "msg_pool_5a8000 0x005a8000 0x20000"
+    "ff80_descriptor_static_probe 0x0150b000 0x1000"
+    "eis_gyro_strings_static_probe 0x011b8000 0x1000"
+  )
+fi
+
+if [[ "$include_risky_low" -eq 1 ]]; then
+  ranges+=(
+    "threadx_scheduler_globals 0x0009e000 0x3000"
+    "threadx_task_records 0x000b7320 0x29040"
+    "threadx_task_record_ptrs 0x000ee4e0 0x800"
+  )
+else
+  log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
+fi
+
+log "session_dir=$session_dir"
+confirm_ff80 preflight
+ping_ff80 preflight_ping
+
+for spec in "${ranges[@]}"; do
+  read -r label addr size <<<"$spec"
+  if ! dump_range "$label" "$addr" "$size"; then
+    if [[ "$stop_on_fail" -eq 1 ]]; then
+      log "Stopping after failed range: $label"
+      exit 1
+    fi
+    if ! ping_ff80 "${label}_failure_recovery_ping"; then
+      log "FF80 ping failed after failed range; stopping despite --continue-on-fail."
+      exit 1
+    fi
+  fi
+done
+
+confirm_ff80 postflight
+log "Summary: $summary"
+cat "$summary" | tee -a "$manifest" >&2
