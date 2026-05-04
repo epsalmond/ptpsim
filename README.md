@@ -94,12 +94,21 @@ priority RAM ranges with:
 ```sh
 scripts/ff80_dump_priority_ranges.sh
 scripts/ff80_dump_priority_ranges.sh --only-risky-low
+scripts/ff80_dump_priority_ranges.sh --next-targets
 ```
 
 The dump wrapper writes `rce/sessions/ff80_priority_dumps_<timestamp>/`, probes
 each range before dumping, pings before and after each operation, and records
 SHA256 plus actual byte counts. It skips low ThreadX runtime ranges by default
 because a previous read from `0x00000000` wedged FF80 until camera reboot.
+Use `--next-targets` for the follow-up ThreadX slot/table windows:
+`0x000e1000`, `0x00057000`, `0x000ea000`, and `0x000ed000`.
+
+Analyze one or more dump sessions offline with:
+
+```sh
+scripts/ff80_analyze_dumps.sh --session-dir rce/sessions/ff80_priority_dumps_<timestamp> --output-json rce/sessions/ff80_analysis_<timestamp>/analysis.json
+```
 
 ### State And Evidence
 

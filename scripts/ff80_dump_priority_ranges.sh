@@ -14,6 +14,8 @@ Options:
                         wedged FF80 until reboot. Default: skip them.
   --only-risky-low      Dump only the low ThreadX runtime ranges below
                         0x00100000.
+  --next-targets        Dump the follow-up ThreadX slot/table ranges:
+                        task slot tables plus boot-populated dispatch tables.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
   --continue-on-fail    Continue after a failed range if FF80 ping still works.
   -h, --help            Show this help.
@@ -43,6 +45,7 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 
 include_risky_low=0
 only_risky_low=0
+next_targets=0
 stop_on_fail=1
 
 while [[ $# -gt 0 ]]; do
@@ -58,6 +61,10 @@ while [[ $# -gt 0 ]]; do
     --only-risky-low)
       only_risky_low=1
       include_risky_low=1
+      shift
+      ;;
+    --next-targets)
+      next_targets=1
       shift
       ;;
     --stop-on-fail)
@@ -228,7 +235,14 @@ dump_range() {
 
 ranges=()
 
-if [[ "$only_risky_low" -eq 0 ]]; then
+if [[ "$next_targets" -eq 1 ]]; then
+  ranges+=(
+    "task_slot_tables 0x000e1000 0x3000"
+    "dispatch_table_57000 0x00057000 0x2000"
+    "dispatch_table_ea000 0x000ea000 0x1000"
+    "dispatch_table_ed000 0x000ed000 0x2000"
+  )
+elif [[ "$only_risky_low" -eq 0 ]]; then
   ranges+=(
     "known_80000000 0x80000000 0x10000"
     "rpmsg_shared_head 0x39a00000 0x100000"

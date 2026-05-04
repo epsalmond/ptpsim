@@ -254,6 +254,22 @@ Current facts:
   windows, `uiMPL001`/`uiMPL002` near scheduler globals, sparse shared-memory
   heads, and no obvious `FF80`, `JASM`, `GYRO_GAIN`, or ThreadX strings in the
   static-offset probes.
+- After a wedged FF80 `ping` timeout, cold reboot/re-entry restored the
+  transport. `rce/sessions/ff80_priority_dumps_20260504T232251Z` captured
+  `0x000e1000..0x000e3fff`, `0x00057000..0x00058fff`,
+  `0x000ea000..0x000eafff`, and `0x000ed000..0x000eefff`.
+- `scripts/ff80_analyze_dumps.sh` writes repeatable offline summaries for dump
+  sessions. The current combined analysis is
+  `rce/sessions/ff80_analysis_20260504T232251Z/analysis.json`.
+- The analyzer reports two ThreadX byte pools (`uiMPL001` at `0x000a0d60` and
+  `uiMPL002` at `0x000a0df8`), `syslog Ver 3.0` in the first three
+  message-pool windows, 194 nonempty `0x230` task-record slots out of 300 in
+  the captured task-record range, a populated `0x57000` window, and zeroed
+  `0xea000`/`0xed000` windows in this boot.
+- The captured `0x57000` window starts with AArch64-looking instruction bytes
+  and only a few pointer-like qwords near `0x582b8`; do not treat it as a
+  decoded function-pointer table until the table/code mapping is reconciled
+  against static xrefs.
 
 Next investigation:
 
@@ -261,8 +277,9 @@ Next investigation:
   as `04cb:ff80`.
 - Add a scripted safe FF80 inventory command that captures poll, ping, info,
   small config-window read, and dummy bulk-read into `rce/sessions/`.
-- Analyze the priority RAM dumps for ThreadX task records, ring buffers, syslog
-  payloads, RPMsg/AMP metadata, and candidate live sensor/state buffers.
+- Extend FF80 dump analysis beyond summaries: decode Fuji message-pool record
+  fields, reconcile `0x57000` with the static indirect-branch xrefs, and map
+  the dense token-like task slot table at `0x000e1000`.
 - Either align future requested FF80 dump sizes to `0x100` or keep recording
   actual byte counts so every dump summary reflects the upstream chunking
   behavior.
