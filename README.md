@@ -8,7 +8,7 @@ The first backend targets macOS through Bleak/CoreBluetooth. Dry-run payload com
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[test]'
+.venv/bin/python -m pip install -e '.[test,usb]'
 scripts/install_macos_dependencies.sh
 .venv/bin/python -m pytest -q
 ```
@@ -25,7 +25,7 @@ scripts/build/build-bluetooth-wrapper.sh
 
 The coverage run intentionally omits `tui.py`, which is a thin interactive Textual wrapper around the tested command and camera flows.
 
-macOS system dependencies are tracked in `Brewfile`. `blueutil` is required for scripted Bluetooth unpair/forget workflows; without it, macOS requires manual removal through Bluetooth Settings.
+macOS system dependencies are tracked in `Brewfile`. `blueutil` is required for scripted Bluetooth unpair/forget workflows; without it, macOS requires manual removal through Bluetooth Settings. `libusb` and the Python `usb` extra support fast USB/FF80 evidence polling.
 Camera-screen OCR evidence additionally uses the optional Python vision extra:
 
 ```sh
@@ -72,6 +72,21 @@ python3 -m rce.tools.fuji_ble_gps.cli decode-payload 7ed88e16caeffeb621000000000
 python3 -m rce.tools.fuji_ble_gps.cli set-location --lat 37.8460286 --lon -122.4806454 --alt 33 --speed 0 --dry-run
 .venv/bin/python -m pytest -q
 ```
+
+### USB And FF80 Evidence
+
+Use the fast USB poller while trying camera button/menu combinations that may
+briefly expose Fuji service USB modes:
+
+```sh
+scripts/poll_fuji_usb_devices.sh
+scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --exit-on-match
+scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --interval 0
+```
+
+The poller uses libusb enumeration only. It does not claim the device or send
+commands. Normal USB PTP mode for the GFX100 II has been observed as
+`04cb:02fe`; active FF80 is expected as `04cb:ff80`.
 
 ### State And Evidence
 

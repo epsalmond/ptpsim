@@ -22,6 +22,9 @@ vision = [
   "pillow>=10.0",
   "pytesseract>=0.3.10",
 ]
+usb = [
+  "libusb1>=3.1",
+]
 
 [project.scripts]
 fuji-ble-gps = "rce.tools.fuji_ble_gps.cli:main"

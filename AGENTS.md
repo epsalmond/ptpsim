@@ -57,6 +57,7 @@ scripts/ptpip_inventory_init.sh
 scripts/ptpip_decode_session_artifacts.sh
 scripts/ptpip_export_object.sh
 scripts/camera_ap_download_object.sh
+scripts/poll_fuji_usb_devices.sh
 ```
 
 Important docs:
@@ -101,7 +102,7 @@ Working as of 2026-05-03:
 - PTP artifact decoding is implemented. `scripts/ptpip_decode_session_artifacts.sh --session-dir rce/sessions/ptpip_probe_20260503T235342Z` decoded `_DSF8109.JPG`, `EXIF_JPEG`, object size `167936`, image size `4000x3000`, capture date `20260501T230655`, and thumbnail size `640x480`; it wrote `get_object_info_decoded.json`, `get_thumb_payload.jpg`, and `app_sequence_09_vendor_get_9055_payload.jpg`. The standard `GetThumb` JPEG starts with SOI and is recognized by `file` as a 640x480 JPEG, but the captured payload does not end with an EOI marker; preserve that fact in downstream decoders.
 - Standard `GetObject` is live-tested. `rce/sessions/ptpip_probe_20260504T003935Z` downloaded handle `0x0000000c` into `get_object_payload.jpg`; `file` recognizes it as a 4000x3000 Fujifilm GFX100 II Exif JPEG. The camera did not send a final PTP OK response before timeout after the complete JPEG payload, so the state is `camera_ap_ptpip_get_object_data_ok_no_response`.
 - Object export is scripted. `scripts/ptpip_export_object.sh --session-dir rce/sessions/ptpip_probe_<timestamp> --output-dir rce/downloads/manual_export` validates JPEG SOI/EOI, writes a named JPEG, and writes a sidecar JSON manifest. `scripts/camera_ap_download_object.sh --handle 0x0000000c ...` wraps the combined AP/PTP flow, requests ObjectInfo and GetObject, then exports the validated JPEG when the flow succeeds.
-- USB probing is started. In normal USB PTP mode, the GFX100 II enumerates as `04cb:02fe`; `gphoto2 --auto-detect` sees `Fuji Fujifilm GFX100 II` after macOS PTP helper contention is handled. The copied FF80 reference tool now supports `--product-id`, but the FF80 vendor transport stalls at `open_session` with `LIBUSB_ERROR_PIPE` against `04cb:02fe`, including recipients `other`, `interface`, `device`, and `endpoint`. Treat `04cb:02fe` as normal PTP, not active FF80.
+- USB probing is started. In normal USB PTP mode, the GFX100 II enumerates as `04cb:02fe`; `gphoto2 --auto-detect` sees `Fuji Fujifilm GFX100 II` after macOS PTP helper contention is handled. `scripts/poll_fuji_usb_devices.sh` uses fast libusb enumeration to watch for Fuji vendor `04cb` devices without claiming them or sending commands. The copied FF80 reference tool now supports `--product-id`, but the FF80 vendor transport stalls at `open_session` with `LIBUSB_ERROR_PIPE` against `04cb:02fe`, including recipients `other`, `interface`, `device`, and `endpoint`. Treat `04cb:02fe` as normal PTP, not active FF80.
 - PTP/IP init inventory is implemented. `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` scans captured `.bin` payloads and decoded `.jsonl` traces for Fuji-shaped 82-byte `Init_Command_Request` records.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
@@ -289,6 +290,15 @@ scripts/install_macos_dependencies.sh
 ```
 
 These dependencies are also tracked in `Brewfile`. `blueutil` is a project requirement because it lets us script local Bluetooth unpair/forget workflows. Add similar system dependencies when they remove manual state transitions, make evidence collection deterministic, or otherwise advance the project goals.
+`libusb` is a project requirement for fast USB/FF80 evidence polling; install the Python side with `.venv/bin/python -m pip install -e '.[usb]'` or the full developer set.
+
+Poll for Fuji USB modes with:
+
+```sh
+scripts/poll_fuji_usb_devices.sh
+scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --exit-on-match
+scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --interval 0
+```
 
 The terminal app running BLE commands needs macOS Bluetooth permission:
 
