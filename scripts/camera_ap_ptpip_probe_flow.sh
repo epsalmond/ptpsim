@@ -26,6 +26,8 @@ Options:
   --ptpip-get-object-info H
                           After OpenSession, send PTP GetObjectInfo for object
                           handle H.
+  --ptpip-get-object H    After OpenSession, send PTP GetObject for object
+                          handle H.
   --ptpip-get-thumb H     After OpenSession, send PTP GetThumb for object
                           handle H.
   --ptpip-app-sequence N After OpenSession, run a named observed reference app PTP
@@ -77,6 +79,7 @@ ptpip_init_payload="${FUJI_PTPIP_INIT_PAYLOAD:-}"
 ptpip_open_session="${FUJI_PTPIP_OPEN_SESSION:-0}"
 ptpip_get_prop="${FUJI_PTPIP_GET_PROP:-}"
 ptpip_get_object_info="${FUJI_PTPIP_GET_OBJECT_INFO:-}"
+ptpip_get_object="${FUJI_PTPIP_GET_OBJECT:-}"
 ptpip_get_thumb="${FUJI_PTPIP_GET_THUMB:-}"
 ptpip_app_sequence="${FUJI_PTPIP_APP_SEQUENCE:-}"
 hold_ble="${FUJI_CAMERA_AP_HOLD_AFTER_LAUNCH:-0}"
@@ -141,6 +144,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ptpip-get-object-info)
       ptpip_get_object_info="$2"
+      ptpip_open_session=1
+      shift 2
+      ;;
+    --ptpip-get-object)
+      ptpip_get_object="$2"
       ptpip_open_session=1
       shift 2
       ;;
@@ -502,6 +510,10 @@ fi
 if [[ -n "$ptpip_get_object_info" ]]; then
   ptpip_args+=(--get-object-info "$ptpip_get_object_info")
   ptpip_log_args="$ptpip_log_args --get-object-info $ptpip_get_object_info"
+fi
+if [[ -n "$ptpip_get_object" ]]; then
+  ptpip_args+=(--get-object "$ptpip_get_object")
+  ptpip_log_args="$ptpip_log_args --get-object $ptpip_get_object"
 fi
 if [[ -n "$ptpip_get_thumb" ]]; then
   ptpip_args+=(--get-thumb "$ptpip_get_thumb")

@@ -82,6 +82,7 @@ Current facts:
 - Generated init with accepted reference app GUID plus laptop friendly name succeeds.
 - Generated init with accepted reference app GUID plus laptop friendly name succeeds through the corrected SD-card folder/date and object-handle sequences.
 - Generated init with accepted reference app GUID plus laptop friendly name succeeds through `GetObjectInfo` and `GetThumb` for a handle returned by `GetDevicePropValue 0xd621`.
+- Generated init with accepted reference app GUID plus laptop friendly name succeeds through standard `GetObject` for handle `0x0000000c`; the complete JPEG payload is preserved at `rce/sessions/ptpip_probe_20260504T003935Z/get_object_payload.jpg`, but the final PTP OK response timed out after data transfer.
 - Generated init with a fresh random GUID timed out.
 - Generated init with accepted reference app friendly name plus fresh deterministic GUID timed out.
 - `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` shows accepted reference app reference records use GUID `f2e4538fada5485d87b27f0bd3d5ded0`; successful laptop-name probes also use that GUID.
@@ -134,8 +135,8 @@ Acceptance criteria:
 Remaining work:
 
 - Expose the Python PTP/IP client as a TUI action.
-- Decode the full object-transfer operation and decide whether Fuji requires standard `GetObject`, `GetPartialObject`, or an reference app vendor transfer function.
-- Build a media-transfer workflow using handles returned by `GetDevicePropValue 0xd621`; latest successful object-handle run returned `0x0000000c`, `0x0000000a`, `0x00000008`, `0x00000006`, `0x00000005`, `0x00000004`, `0x00000003`, `0x00000002`.
+- Build a media-transfer workflow using standard `GetObject`, accepting `get_object_data_ok_no_response` only when the JPEG payload independently validates as complete.
+- Investigate why the decoded ObjectInfo `object_compressed_size` is `167936` while the full `GetObject` JPEG payload is `2456203` bytes for `_DSF8109.JPG`.
 - Use the init comparator output to choose the next live generated-identity candidates.
 
 ### PROTO-002: Implement the next observed reference app PTP sequence
@@ -150,7 +151,7 @@ successful init/open-session/property-read.
 
 Next candidates:
 
-- Live-test or implement a dry-run decoder for standard PTP `GetObject` / `GetPartialObject` candidates, using decoded ObjectInfo size `167936` for `_DSF8109.JPG` as the first target.
+- Promote the live `GetObject` probe into a user-facing download command that selects a handle, writes the JPEG payload, validates SOI/EOI and file type, and records evidence.
 - Decode reference app action enumeration usage from `rce/reference/APP_ACTION_ENUMERATION.md`.
 - Add scripts for one command at a time, each with captured packet evidence.
 

@@ -312,6 +312,7 @@ def test_ptp_request_builders_and_property_parser() -> None:
     assert ptpip.build_get_device_prop_value(0xD212).hex() == "10000000010015100200000012d20000"
     assert ptpip.build_set_device_prop_value(0xDF01, 2).hex() == "10000000010016100200000001df0000"
     assert ptpip.build_get_object_info(0x0C, 2).hex() == "1000000001000810020000000c000000"
+    assert ptpip.build_get_object(0x0C, 2).hex() == "1000000001000910020000000c000000"
     assert ptpip.build_get_thumb(0x0C, 3).hex() == "1000000001000a10030000000c000000"
     assert ptpip.build_ptp_command(0x9054, 9, 0x10000001).hex() == "10000000010054900900000001000010"
     assert ptpip.build_ptp_data_container(0x1016, 2, bytes.fromhex("1400")).hex() == "0e00000002001610020000001400"
@@ -422,6 +423,9 @@ def test_object_info_and_thumbnail_payload_decoders(tmp_path) -> None:
     malformed_thumb_result: dict[str, object] = {}
     ptpip._add_vendor_data_decoding(malformed_thumb_result, ptpip.PTP_GET_THUMB, ptp_container(code=0x2001))
     assert "decode_error" in malformed_thumb_result
+    malformed_object_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_object_result, ptpip.PTP_GET_OBJECT, ptp_container(code=0x2001))
+    assert "decode_error" in malformed_object_result
 
     malformed_session = tmp_path / "malformed-session"
     malformed_session.mkdir()
@@ -824,8 +828,10 @@ def test_probe_runs_direct_object_operations_after_app_sequence(tmp_path) -> Non
             ptp_container(code=0x2001, transaction=14),
             ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, object_info_payload()),
             ptp_container(code=0x2001, transaction=15),
-            ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 16, b"\xff\xd8thumb\xff\xd9"),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT, 16, b"\xff\xd8object\xff\xd9"),
             ptp_container(code=0x2001, transaction=16),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 17, b"\xff\xd8thumb\xff\xd9"),
+            ptp_container(code=0x2001, transaction=17),
         ]
     )
     config = ptpip.ProbeConfig(
@@ -834,6 +840,7 @@ def test_probe_runs_direct_object_operations_after_app_sequence(tmp_path) -> Non
         open_session=True,
         app_sequence="sdcard-object-handles",
         get_object_info="0x0c",
+        get_object="0x0c",
         get_thumb="0x0c",
     )
 
@@ -843,15 +850,46 @@ def test_probe_runs_direct_object_operations_after_app_sequence(tmp_path) -> Non
     assert summary["get_object_info_data_present"] is True
     assert summary["get_object_info_object_info"]["filename"] == "_DSF8109.JPG"
     assert summary["get_object_info_response_present"] is True
+    assert summary["get_object_data_present"] is True
+    assert summary["get_object_jpeg_payload"]["payload_bytes"] == 10
+    assert summary["get_object_response_present"] is True
     assert summary["get_thumb_data_present"] is True
     assert summary["get_thumb_jpeg_payload"]["payload_bytes"] == 9
     assert summary["get_thumb_response_present"] is True
-    assert fake.sent[-2] == ptpip.build_get_object_info(0x0C, 15)
-    assert fake.sent[-1] == ptpip.build_get_thumb(0x0C, 16)
+    assert fake.sent[-3] == ptpip.build_get_object_info(0x0C, 15)
+    assert fake.sent[-2] == ptpip.build_get_object(0x0C, 16)
+    assert fake.sent[-1] == ptpip.build_get_thumb(0x0C, 17)
     assert (tmp_path / "get_object_info_data.bin").exists()
     assert (tmp_path / "get_object_info_decoded.json").exists()
+    assert (tmp_path / "get_object_data.bin").exists()
+    assert (tmp_path / "get_object_payload.jpg").read_bytes() == b"\xff\xd8object\xff\xd9"
     assert (tmp_path / "get_thumb_data.bin").exists()
     assert (tmp_path / "get_thumb_payload.jpg").read_bytes() == b"\xff\xd8thumb\xff\xd9"
+
+
+def test_probe_stops_direct_operations_when_get_object_fails(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT, 2, b"not-jpeg"),
+            ptp_container(code=0x2005, transaction=2),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        get_object="0x0c",
+        get_thumb="0x0c",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["get_object_sent"] is True
+    assert summary["get_object_response_header"]["code"] == 0x2005
+    assert summary["get_thumb_sent"] is False
+    assert fake.sent[-1] == ptpip.build_get_object(0x0C, 2)
 
 
 def test_probe_app_sequence_rejects_unknown_step_action(monkeypatch, tmp_path) -> None:
@@ -1011,6 +1049,7 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
             "open_session_response_present": True,
             "get_prop_response_present": True,
             "get_object_info_response_present": True,
+            "get_object_response_present": True,
             "get_thumb_response_present": True,
             "app_sequence_completed": bool(config.app_sequence),
         }
@@ -1038,6 +1077,8 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
             "0xd212",
             "--get-object-info",
             "0x0c",
+            "--get-object",
+            "0x0c",
             "--get-thumb",
             "0x0c",
             "--app-sequence",
@@ -1052,6 +1093,7 @@ def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, ca
     assert calls[0].guid == "000102030405060708090a0b0c0d0e0f"
     assert calls[0].app_sequence == "sdcard-browse-bootstrap"
     assert calls[0].get_object_info == "0x0c"
+    assert calls[0].get_object == "0x0c"
     assert calls[0].get_thumb == "0x0c"
     assert '"tcp_connect": "present"' in capsys.readouterr().out
 
@@ -1078,6 +1120,25 @@ def test_exit_code_checks_direct_operations_after_app_sequence(tmp_path) -> None
 
     summary["get_thumb_response_present"] = True
     assert ptpip.exit_code_for_summary(summary, config) == 0
+
+    object_config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-object-handles",
+        get_object="0x0c",
+    )
+    summary["get_object_response_present"] = False
+    assert ptpip.exit_code_for_summary(summary, object_config) == 9
+
+    summary["get_object_jpeg_payload"] = {"starts_with_soi": True, "ends_with_eoi": True}
+    assert ptpip.exit_code_for_summary(summary, object_config) == 0
+
+    summary["get_object_jpeg_payload"] = {"starts_with_soi": True, "ends_with_eoi": False}
+    assert ptpip.exit_code_for_summary(summary, object_config) == 9
+
+    summary["get_object_response_present"] = True
+    assert ptpip.exit_code_for_summary(summary, object_config) == 0
 
 
 def test_cli_decode_and_compare_init(tmp_path, capsys) -> None:

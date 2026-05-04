@@ -25,6 +25,8 @@ Options:
                         the given property, for example 0xd212.
   --get-object-info H   After OpenSession, send PTP GetObjectInfo for object
                         handle H, for example 0x0c.
+  --get-object H        After OpenSession, send PTP GetObject for object
+                        handle H, for example 0x0c.
   --get-thumb H         After OpenSession, send PTP GetThumb for object handle
                         H, for example 0x0c.
   --app-sequence NAME  After OpenSession, run a named observed reference app PTP
@@ -60,6 +62,7 @@ connect_only=0
 open_session=0
 get_prop=""
 get_object_info=""
+get_object=""
 get_thumb=""
 app_sequence=""
 
@@ -112,6 +115,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --get-object-info)
       get_object_info="$2"
+      open_session=1
+      shift 2
+      ;;
+    --get-object)
+      get_object="$2"
       open_session=1
       shift 2
       ;;
@@ -205,6 +213,12 @@ data = {
   "open_session_response_present": False,
   "get_prop_sent": False,
   "get_prop_response_present": False,
+  "get_object_info_sent": False,
+  "get_object_info_response_present": False,
+  "get_object_sent": False,
+  "get_object_response_present": False,
+  "get_thumb_sent": False,
+  "get_thumb_response_present": False,
   "route_check": "failed",
   "wifi_interface": sys.argv[5],
   "camera_route": sys.argv[6],
@@ -246,6 +260,9 @@ fi
 if [[ -n "$get_object_info" ]]; then
   ptpip_args+=(--get-object-info "$get_object_info")
 fi
+if [[ -n "$get_object" ]]; then
+  ptpip_args+=(--get-object "$get_object")
+fi
 if [[ -n "$get_thumb" ]]; then
   ptpip_args+=(--get-thumb "$get_thumb")
 fi
@@ -283,6 +300,14 @@ if data.get("get_object_info_data_header"):
     print("get_object_info_data_header=" + json.dumps(data["get_object_info_data_header"], sort_keys=True))
 if data.get("get_object_info_response_header"):
     print("get_object_info_response_header=" + json.dumps(data["get_object_info_response_header"], sort_keys=True))
+print("get_object_sent=" + str(data.get("get_object_sent", "")))
+print("get_object_response_present=" + str(data.get("get_object_response_present", "")))
+if data.get("get_object_data_header"):
+    print("get_object_data_header=" + json.dumps(data["get_object_data_header"], sort_keys=True))
+if data.get("get_object_jpeg_payload"):
+    print("get_object_jpeg_payload=" + json.dumps(data["get_object_jpeg_payload"], sort_keys=True))
+if data.get("get_object_response_header"):
+    print("get_object_response_header=" + json.dumps(data["get_object_response_header"], sort_keys=True))
 print("get_thumb_sent=" + str(data.get("get_thumb_sent", "")))
 print("get_thumb_response_present=" + str(data.get("get_thumb_response_present", "")))
 if data.get("get_thumb_data_header"):

@@ -865,6 +865,48 @@ Workflow:
 1. Preserve the probe session directory and `get_thumb_data.bin`.
 2. Use object metadata and thumbnail evidence to choose a still/JPEG handle before attempting full object or partial-object transfer.
 
+### `camera_ap_ptpip_get_object_ok`
+
+Evidence:
+
+- OpenSession was OK or already open.
+- `get_object_sent=true`.
+- `get_object_data_header.code=4105` (`0x1009`, GetObject data).
+- `get_object_response_header.code=8193` (`0x2001`, OK).
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=get_object_ok`.
+
+Meaning:
+
+The camera returned a standard PTP object payload for the requested handle.
+
+Workflow:
+
+1. Preserve the probe session directory, `get_object_data.bin`, and any decoded `get_object_payload.jpg`.
+2. Compare the payload byte count to the decoded ObjectInfo `object_compressed_size`.
+3. Promote the command into a media-transfer workflow only after the payload validates as a complete file.
+
+### `camera_ap_ptpip_get_object_data_ok_no_response`
+
+Evidence:
+
+- OpenSession was OK or already open.
+- `get_object_sent=true`.
+- `get_object_data_header.code=4105` (`0x1009`, GetObject data).
+- `get_object_jpeg_payload.starts_with_soi=true`.
+- `get_object_jpeg_payload.ends_with_eoi=true`.
+- `get_object_response_present=false`.
+- `scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>` records `camera_ap_ptpip_probe=get_object_data_ok_no_response`.
+
+Meaning:
+
+The camera returned a complete JPEG object payload for the requested handle, but did not send the final standard PTP OK response before the socket timeout.
+
+Workflow:
+
+1. Preserve `get_object_data.bin`, `get_object_payload.jpg`, and `summary.json`.
+2. Treat the file payload as successfully transferred, while keeping the missing final response as protocol evidence.
+3. Prefer this state over retrying the same full-object transfer unless the payload fails independent JPEG validation.
+
 ### `camera_lcd_blank_or_sleep`
 
 Evidence:
