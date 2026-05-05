@@ -1070,3 +1070,42 @@ Results:
   `0x004c7000` has `0` nonzero records; `0x004e7000`, `0x00507000`,
   `0x00527000`, `0x00547000`, and `0x00567000` each have `201` nonzero
   `0x14`-byte records after the header.
+
+### RAM-015: Live Linux kernel RAM hunt
+
+Status: Complete
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh
+--linux-kernel-hunt` to capture the first 6 MiB of the documented Linux RAM
+window, then added `scripts/ff80_scan_linux_kernel_hunt.sh` to scan the session
+for ARM64/Linux signatures.
+
+Session: `rce/sessions/ff80_priority_dumps_20260505T025033Z`
+
+Results:
+
+- Dumped `0x08000000..0x08600000` as 96 `0x10000` chunks.
+- All 96 rows in `summary.tsv` completed with status `ok`; the concatenated
+  dump is contiguous and has SHA256
+  `2f18ee28f1f49b2ef074794c262d54338d4dd22a47abe9aecf1489c76ca67603`.
+- Saved scan artifacts, produced by
+  `scripts/ff80_scan_linux_kernel_hunt.sh --session-dir rce/sessions/ff80_priority_dumps_20260505T025033Z`:
+  `rce/sessions/ff80_priority_dumps_20260505T025033Z/linux_kernel_hunt_scan.txt`
+  and `.json`.
+- Found a plausible ARM64 Image header at `0x08080000`. Header fields:
+  `magic=0x644d5241` (`ARMd`), `text_offset=0x80000`,
+  `image_size=0x1b1f000`, `flags=0xa`.
+- Found live kernel version string at `0x08500050`:
+  `Linux version 4.9.92 (oe-user@oe-host) (gcc version 7.3.0 (GCC) ) #2 SMP
+  PREEMPT Thu Jun 26 15:51:01 JST 2025`.
+- Found DT/kernel string evidence near the same captured window, including
+  `rpmsg_shared@39A00000`, `amp_isgc_shared@39B00000`, `marble_rpmsg_driver`,
+  `rpmsg_init`, `virtio_rpmsg_send`, `Unpacking initramfs`, and `rootfs`.
+
+Next:
+
+- The header's `image_size` implies a full image span of
+  `0x08080000..0x09b9f000`.
+- The current session only captures through `0x08600000`; dump
+  `0x08600000..0x09ba0000` in 64-KiB chunks if we want the complete live
+  kernel image.
