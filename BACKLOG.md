@@ -873,12 +873,15 @@ Live result:
 
 ### RAM-009: DRHT task entry sweep and entry code dumps
 
-Status: Blocked by strict read-only precondition
+Status: Complete
 
 Summary: Implemented `scripts/ff80_drht_entry_sweep.sh` for the requested
-three-job read-only sweep: read DRHT names, entry functions, and entry args for
+three-job RAM-read sweep: read DRHT names, entry functions, and entry args for
 178 task records, then dump page-aligned `updatedat` and `Linux_loa` entry
-regions if their pointers are in `0x01000000..0x04000000`.
+regions if their pointers are in `0x01000000..0x04000000`. The user approved a
+scoped `cfgdata[0xf7]` setup override: read the original byte, enable USB debug
+for the sweep when needed, and restore the original byte before closing the
+FF80 session.
 
 Live attempt:
 
@@ -893,6 +896,23 @@ Live attempt:
   `jig_exception {'_mem': '0x200001', 'err1': '0x1', 'err2': '0xffff'}`.
 - Post-attempt FF80 ping remained healthy.
 
-Next decision: either allow a scoped cfgdata `0xf7=1` enable/restore around the
-sweep, or find a RAM-read command path that does not require the USB-debug
-cfgdata bit.
+Live approved retry:
+
+- Session: `rce/sessions/ff80_drht_entry_sweep_20260505T015059Z`
+- `cfgdata[0xf7]` original `0x00`, enabled as `0x01` for the sweep, restored
+  to `0x00` before session close.
+- `entry_fn_map.tsv` has 178 DRHT rows plus header.
+- 157 entry pointers were in the expected `0x01000000..0x04000000` range.
+- 21 entry pointers were outside that expected range; all were nonzero
+  high-ish code/data pointers such as `0x05fe7e30` and `0x069b9d10`, not null
+  or all-ones values.
+- No ping failures or read failures were recorded; post-run `scripts/ff80_ping.sh`
+  also succeeded in `rce/sessions/ff80_ping_20260505T015122Z`.
+- `updatedat` DRHT `0x95810` entry `0x032b5a88`, dumped
+  `rce/sessions/ff80_drht_entry_sweep_20260505T015059Z/dumps/updatedat_entry_032b5000.bin`.
+  First 32 bytes:
+  `fd030091e01f00b9e27300918100805260548352defeff97fd7bc2a8c0035fd6`.
+- `Linux_loa` DRHT `0x92e80` entry `0x0325ab48`, dumped
+  `rce/sessions/ff80_drht_entry_sweep_20260505T015059Z/dumps/linux_loa_entry_0325a000.bin`.
+  First 32 bytes:
+  `8103005402208052e19400b021a00591000080522b0b0194f303002ae01c8052`.

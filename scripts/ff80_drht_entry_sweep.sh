@@ -22,9 +22,11 @@ Read-only FF80 DRHT task entry sweep:
   2. Writes entry_fn_map.tsv.
   3. Dumps 64 KiB at page-aligned updatedat and Linux_loa entry functions.
 
-No RAM writes, cfgdata writes, hack load/exec, key injection, or firmware
-operations are used. The script pings after each read and stops if ping fails
-twice.
+The script performs one approved cfgdata setup/restore: it reads
+cfgdata[0xf7], enables USB debug when needed, and restores the original value
+before closing the FF80 session. No RAM writes, hack load/exec, key injection,
+or firmware operations are used. The script pings after each read and stops if
+ping fails twice.
 USAGE
 }
 
@@ -311,19 +313,28 @@ with usb1.USBContext() as context:
     jig = ffjlib.jig(fft)
     sweep = Sweep()
 
+    usb_debug_original: int | None = None
+    usb_debug_enabled_for_run = False
     try:
         with usb_h.claimInterface(0):
             fft.open_session()
             try:
                 sweep.ping_or_stop(jig, "preflight")
-                usb_debug = jig.get_config_usb_debug()
-                log(f"usb_debug_cfg_f7=0x{usb_debug:02x} read_only_check")
-                summary["usb_debug_cfg_f7"] = usb_debug
-                if usb_debug == 0:
-                    raise RuntimeError(
-                        "USB debug cfg byte 0xf7 is 0; strict read-only sweep cannot enable it. "
-                        "Stock ff80.py ram read would cfgdata-write this byte before reading."
-                    )
+                usb_debug_original = jig.get_config_usb_debug()
+                log(f"usb_debug_cfg_f7_original=0x{usb_debug_original:02x}")
+                summary["usb_debug_cfg_f7_original"] = usb_debug_original
+                if usb_debug_original != 1:
+                    log("enabling cfgdata[0xf7]=1 for approved USB debug RAM-read sweep")
+                    jig.set_config_usb_debug(1)
+                    usb_debug_enabled_for_run = True
+                    usb_debug_current = jig.get_config_usb_debug()
+                    log(f"usb_debug_cfg_f7_enabled=0x{usb_debug_current:02x}")
+                    summary["usb_debug_cfg_f7_enabled"] = usb_debug_current
+                    if usb_debug_current != 1:
+                        raise RuntimeError(f"failed to enable cfgdata[0xf7], got 0x{usb_debug_current:02x}")
+                else:
+                    log("cfgdata[0xf7] already enabled")
+                    summary["usb_debug_cfg_f7_enabled"] = usb_debug_original
 
                 rows: list[dict] = []
                 for index, drht_addr in enumerate(DRHT_ADDRS, start=1):
@@ -376,6 +387,17 @@ with usb1.USBContext() as context:
 
                 summary["status"] = "ok"
             finally:
+                if usb_debug_enabled_for_run and usb_debug_original is not None:
+                    try:
+                        log(f"restoring cfgdata[0xf7]=0x{usb_debug_original:02x}")
+                        jig.set_config_usb_debug(usb_debug_original)
+                        restored = jig.get_config_usb_debug()
+                        log(f"usb_debug_cfg_f7_restored=0x{restored:02x}")
+                        summary["usb_debug_cfg_f7_restored"] = restored
+                    except Exception as exc:
+                        detail = f"{type(exc).__name__}: {exc}"
+                        log(f"usb_debug_restore_failed {detail}")
+                        summary["usb_debug_restore_error"] = detail
                 try:
                     fft.close_session()
                 except Exception as exc:

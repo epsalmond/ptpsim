@@ -108,6 +108,12 @@ scripts/ff80_drht_entry_sweep.sh
 scripts/ff80_dump_cfgdata.sh
 ```
 
+`scripts/ff80_drht_entry_sweep.sh` performs a scoped USB-debug setup step
+approved for this workflow: it reads `cfgdata[0xf7]`, enables it only when
+needed for RAM reads, and restores the original byte before closing the FF80
+session. It still avoids RAM writes, hack load/exec, key injection, and firmware
+operations.
+
 Use `scripts/ff80_ping.sh` as the single-purpose active command-service check
 after camera cold boots or suspected wedges. It writes
 `rce/sessions/ff80_ping_<timestamp>/`, records passive USB enumeration as
