@@ -789,6 +789,18 @@ Live update:
 - `rce/sessions/ff80_priority_dumps_20260505T010517Z` then showed
   `0xffe00000` also times out on the 16-byte probe and wedges FF80 ping until
   cold boot.
+- `rce/sessions/ff80_priority_dumps_20260505T011319Z` showed
+  `0xffff0000` times out on the 16-byte probe and wedges FF80 ping until cold
+  boot.
+- `rce/sessions/ff80_priority_dumps_20260505T011538Z` showed
+  `0xf8000000` times out on the 16-byte probe and wedges FF80 ping until cold
+  boot.
+- `rce/sessions/ff80_priority_dumps_20260505T011700Z` produced positive
+  high-zone evidence: `0xfc000000` read as all zero, while `0xfd000000` read
+  `03000100030002000300030003000400`. The follow-up `0x10000` dump from
+  `0xfd000000` timed out after writing 4096 bytes and wedged FF80 ping. The
+  partial dump begins with a small 16-bit table
+  `0003:0001..0003:000a, 0003:0040`, then zero fill; no strings were found.
 
 Probe order:
 
@@ -821,3 +833,20 @@ Safety behavior:
 - The `0xffff0000` candidate uses `0xf000` bytes by default to avoid the known
   wedging `0xfffff000` page. Do not pass `--include-wedging-fffff000` unless a
   cold-boot-wedging test is intentional.
+- Runtime skip state currently carries `0xffff0000`, `0xf8000000`, and
+  `0xfd000000` in `rce/state/ff80_bootrom_skip_addresses.txt` so the current
+  probe run can continue without tracked-doc churn. The next queued bootrom
+  probe address is `0xfe000000`.
+
+### RAM-008: FF80 64-bit RAM-read parameter probe
+
+Status: Queued after the current bootrom probe run completes
+
+Summary: Test whether the FF80 RAM-read handler treats `params[4:8]` as the
+high 32 bits of a 64-bit address. Full task spec is saved in
+`rce/notes/ff80_64bit_ram_read_probe.md`.
+
+Do not run this until RAM-007 is complete or intentionally paused. Keep the
+implementation surgical: add a `--high-addr` flag or a one-off probe wrapper,
+do not refactor `ffjlib.py`, use five 16-byte reads only, ping between probes,
+and stop on a repeated ping failure.
