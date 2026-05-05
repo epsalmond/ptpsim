@@ -103,6 +103,7 @@ scripts/ff80_dump_priority_ranges.sh --low-watermark
 scripts/ff80_dump_priority_ranges.sh --ram-size-probes
 scripts/ff80_dump_priority_ranges.sh --ram-16gb-probes
 scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
+scripts/ff80_dump_priority_ranges.sh --drht-code-pages
 scripts/ff80_probe_64bit_ram_read.sh
 scripts/ff80_drht_entry_sweep.sh
 scripts/ff80_dump_cfgdata.sh
@@ -158,6 +159,10 @@ does not read into known-wedging `0xfffff000`. The `0xfffc0000` candidate is
 also skipped by default after a live 16-byte read there timed out and wedged
 FF80 ping until cold boot. The later `0xfff00000` probe behaved the same way,
 and `0xffe00000` did too, so both are also skipped by default.
+Use `--drht-code-pages` after `scripts/ff80_drht_entry_sweep.sh` to probe and
+dump DRHT-derived code pages. It covers both high-fan-in task entry pages and
+the out-of-expected-range entry pages from the DRHT map, using the same
+16-byte-probe, ping, conditional-64-KiB-dump pattern as the bootrom recon mode.
 For short live probe runs, avoid editing or committing after every wedge. Use
 runtime skips instead, for example:
 

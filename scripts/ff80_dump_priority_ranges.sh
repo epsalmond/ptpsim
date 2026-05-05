@@ -30,6 +30,8 @@ Options:
                         Probe likely bootrom/MMIO high-zone addresses with
                         16-byte reads; dump 64 KiB only for non-zero/non-FF
                         probe bytes.
+  --drht-code-pages     Probe DRHT-derived code pages with 16-byte reads; dump
+                        64 KiB only for non-zero/non-FF probe bytes.
   --include-wedging-fffff000
                         Include 0xfffff000 in --ram-16gb-probes. This boundary
                         timed out live and wedged FF80 ping until cold boot.
@@ -90,6 +92,7 @@ low_watermark=0
 ram_size_probes=0
 ram_16gb_probes=0
 bootrom_recon_probes=0
+drht_code_pages=0
 include_wedging_fffff000=0
 include_wedging_fffc0000=0
 include_wedging_fff00000=0
@@ -136,6 +139,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bootrom-recon-probes)
       bootrom_recon_probes=1
+      shift
+      ;;
+    --drht-code-pages)
+      drht_code_pages=1
       shift
       ;;
     --include-wedging-fffff000)
@@ -570,6 +577,27 @@ elif [[ "$bootrom_recon_probes" -eq 1 ]]; then
     "bootrom_upper_kernel_c0000000 0xc0000000 0x10000"
     "bootrom_mid_dram_40000000 0x40000000 0x10000"
   )
+elif [[ "$drht_code_pages" -eq 1 ]]; then
+  conditional_probes+=(
+    "drht_fanin_011e0000 0x011e0000 0x10000"
+    "drht_fanin_01590000 0x01590000 0x10000"
+    "drht_fanin_015d0000 0x015d0000 0x10000"
+    "drht_fanin_031e0000 0x031e0000 0x10000"
+    "drht_fanin_03210000 0x03210000 0x10000"
+    "drht_fanin_03230000 0x03230000 0x10000"
+    "drht_fanin_03250000 0x03250000 0x10000"
+    "drht_fanin_034f0000 0x034f0000 0x10000"
+    "drht_fanin_03520000 0x03520000 0x10000"
+    "drht_outlier_05fb0000 0x05fb0000 0x10000"
+    "drht_outlier_05fe0000 0x05fe0000 0x10000"
+    "drht_outlier_068b0000 0x068b0000 0x10000"
+    "drht_outlier_068d0000 0x068d0000 0x10000"
+    "drht_outlier_06920000 0x06920000 0x10000"
+    "drht_outlier_06930000 0x06930000 0x10000"
+    "drht_outlier_06940000 0x06940000 0x10000"
+    "drht_outlier_069a0000 0x069a0000 0x10000"
+    "drht_outlier_069b0000 0x069b0000 0x10000"
+  )
 elif [[ "$safe_fill_gaps" -eq 1 ]]; then
   add_chunked_range "fill_64000_9e000" 0x00064000 0x0009e000 0x10000
   ranges+=("fill_b7000_b7400 0x000b7000 0x400")
@@ -599,7 +627,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 
@@ -652,20 +680,25 @@ if [[ "$low_watermark" -eq 1 || "$ram_size_probes" -eq 1 || "$ram_16gb_probes" -
   exit 0
 fi
 
-if [[ "$bootrom_recon_probes" -eq 1 ]]; then
-  log "Bootrom recon mode probes likely high-zone bootrom addresses."
-  log "It only dumps when the 16-byte probe is neither all zero nor all FF."
-  if [[ "$include_wedging_fffc0000" -eq 0 ]]; then
-    log "Skipping known-wedging 0xfffc0000. Use --include-wedging-fffc0000 only intentionally."
-  fi
-  if [[ "$include_wedging_fff00000" -eq 0 ]]; then
-    log "Skipping known-wedging 0xfff00000. Use --include-wedging-fff00000 only intentionally."
-  fi
-  if [[ "$include_wedging_ffe00000" -eq 0 ]]; then
-    log "Skipping known-wedging 0xffe00000. Use --include-wedging-ffe00000 only intentionally."
-  fi
-  if [[ "$include_wedging_fffff000" -eq 0 ]]; then
-    log "The 0xffff0000 conditional dump is limited to 0xf000 bytes to avoid known-wedging 0xfffff000."
+if [[ "$bootrom_recon_probes" -eq 1 || "$drht_code_pages" -eq 1 ]]; then
+  if [[ "$bootrom_recon_probes" -eq 1 ]]; then
+    log "Bootrom recon mode probes likely high-zone bootrom addresses."
+    log "It only dumps when the 16-byte probe is neither all zero nor all FF."
+    if [[ "$include_wedging_fffc0000" -eq 0 ]]; then
+      log "Skipping known-wedging 0xfffc0000. Use --include-wedging-fffc0000 only intentionally."
+    fi
+    if [[ "$include_wedging_fff00000" -eq 0 ]]; then
+      log "Skipping known-wedging 0xfff00000. Use --include-wedging-fff00000 only intentionally."
+    fi
+    if [[ "$include_wedging_ffe00000" -eq 0 ]]; then
+      log "Skipping known-wedging 0xffe00000. Use --include-wedging-ffe00000 only intentionally."
+    fi
+    if [[ "$include_wedging_fffff000" -eq 0 ]]; then
+      log "The 0xffff0000 conditional dump is limited to 0xf000 bytes to avoid known-wedging 0xfffff000."
+    fi
+  else
+    log "DRHT code-page mode probes DRHT-derived entry pages."
+    log "It only dumps when the 16-byte probe is neither all zero nor all FF."
   fi
   for spec in "${conditional_probes[@]}"; do
     read -r label addr dump_size <<<"$spec"
@@ -675,14 +708,14 @@ if [[ "$bootrom_recon_probes" -eq 1 ]]; then
     fi
     if ! probe_then_dump_if_interesting "$label" "$addr" "$dump_size"; then
       if ! ping_ff80 "${label}_failure_recovery_ping"; then
-        log "FF80 ping failed after failed bootrom probe; stopping."
+        log "FF80 ping failed after failed conditional probe; stopping."
         confirm_ff80 postflight || true
         log "Summary: $summary"
         cat "$summary" | tee -a "$manifest" >&2
         exit 1
       fi
       if [[ "$stop_on_fail" -eq 1 ]]; then
-        log "Stopping after failed bootrom probe: $label"
+        log "Stopping after failed conditional probe: $label"
         confirm_ff80 postflight || true
         log "Summary: $summary"
         cat "$summary" | tee -a "$manifest" >&2

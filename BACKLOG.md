@@ -916,3 +916,30 @@ Live approved retry:
   `rce/sessions/ff80_drht_entry_sweep_20260505T015059Z/dumps/linux_loa_entry_0325a000.bin`.
   First 32 bytes:
   `8103005402208052e19400b021a00591000080522b0b0194f303002ae01c8052`.
+
+### RAM-010: DRHT-derived code-page scan
+
+Status: Complete
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh --drht-code-pages`
+to turn the DRHT entry-function map into concrete code-page dumps. The mode
+uses 16-byte probes, pings around each operation, and only dumps 64 KiB when the
+probe is neither all zero nor all `ff`.
+
+Session: `rce/sessions/ff80_priority_dumps_20260505T020018Z`
+
+Results:
+
+- Probed 18 DRHT-derived pages and dumped all 18.
+- No read failures, skipped probes, or ping failures.
+- Post-run FF80 ping succeeded in `rce/sessions/ff80_ping_20260505T020044Z`.
+- Offline analysis is saved at
+  `rce/sessions/ff80_priority_dumps_20260505T020018Z/analysis.json`.
+- All pages have dense AArch64 instruction coverage under Capstone sanity
+  checks.
+- The outlier page `0x068b0000` is especially interesting: it contains
+  `FUJIFILM` strings at offsets `0x5321`, `0x5339`, and `0x5351`, plus `NORMAL`
+  at offset `0x5640`.
+
+  `0x03210000`, `0x031e0000`, `0x068b0000`, `0x06920000`, `0x06930000`,
+  `0x069a0000`, and `0x069b0000`.
