@@ -970,3 +970,77 @@ Results:
 - Capstone sanity check: 256 valid AArch64 instructions in the first 1 KiB,
   including 43 branch-like instructions.
 - Post-dump FF80 ping succeeded.
+
+### RAM-012: updatedat follow-up verifier/code/data extraction
+
+Status: Complete
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh
+--updatedat-followup` and `--updatedat-constants` to capture the next
+`updatedat` verifier-adjacent pages, state globals, callback globals, and
+constant/table pages.
+
+Sessions:
+
+- `rce/sessions/ff80_priority_dumps_20260505T021826Z`
+- `rce/sessions/ff80_priority_dumps_20260505T022325Z`
+
+Results:
+
+- Follow-up pages dumped successfully with no read failures or ping failures:
+  `0x02d20000..0x02d30000`, `0x02d50000..0x02d60000`,
+  `0x032c0000..0x032d0000`, `0x04538000..0x04558000`, and
+  `0x04730000..0x04750000`.
+- Constant/table pages dumped successfully with no read failures or ping
+  failures: `0x0355f000`, `0x03561000`, `0x03563000`, `0x037a8000`, and
+  `0x0381a000`, each `0x10000` bytes.
+- `0x04538f40` state globals contain live firmware-update paths including
+  `A:\UPD\GFX100 II\33E0172100.DAT` and
+  `A/B/C:\FFDB\FF_FIO_GFX100_II_33E01721.DAT`.
+- `0x0381a9f0` contains a 65-byte uncompressed EC public key starting with
+  `04 12 4f 7c ...`; `updatedat` passes this pointer and length `0x41` into
+  the verify path.
+- `0x02d51ff0`, `0x02d52a40`, and `0x02d52a50` behave like hash init/update/
+  final primitives. The hash output handed to the verifier is 32 bytes.
+- `0x02d26140` parses two DER integers from a signature buffer, then calls
+  `0x02d25d48` with the loaded public key, digest pointer, digest length, and
+  signature integers. This is the current ECDSA-verify candidate.
+- No firmware write, cfgdata write, ram write, upload, or execution attempt was
+  performed.
+
+Potential signature-verification bypass candidate:
+
+- `0x032bb4b4` is the verifier wrapper reached from the `updatedat` path.
+- Its first operation reads byte config/tag `0x1c5` via `0x0158bfc8`.
+- If that byte is zero, it returns `0` immediately before argument validation,
+  hashing, public-key load, or ECDSA verification.
+- Existing cfgdata dump `rce/sessions/ff80_cfgdata_20260504T234744Z` has
+  `cfgdata[0x1c5] = 0x01`, so verification appears enabled in the captured
+  state.
+- Treat `cfgdata[0x1c5]` as a high-risk candidate gate. Do not write it without
+  an explicit, separate approval and a rollback plan.
+
+### RAM-013: updatedat bounded subdispatcher extraction
+
+Status: Complete
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh
+--updatedat-subdispatcher` for the requested bounded
+`0x032b72cc + 0x4000` extraction.
+
+Session: `rce/sessions/ff80_priority_dumps_20260505T022450Z`
+
+Results:
+
+- Dumped `0x032b72cc..0x032bb2cc`, exactly `16,384` bytes.
+- SHA256:
+  `242cb07fd539e925cfc3cfb50da0773ee18038274346f8f72393a05dfbbc426a`.
+- Pre/post FF80 pings succeeded and the device remained enumerated as
+  `04cb:ff80`.
+
+  mode `0` opens/reads into a `0x280`-byte buffer, mode `1` uses the live
+  `0x04538f40` path, and mode `2` copies a cached `0x280`-byte buffer from
+  `0x04538f88`.
+- This window prepares and validates firmware update metadata. The actual
+  ECDSA verifier wrapper starts just after the requested window at
+  `0x032bb4b4`, covered by the broader `updatedat` page dumps.

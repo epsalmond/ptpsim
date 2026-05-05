@@ -32,6 +32,14 @@ Options:
                         probe bytes.
   --drht-code-pages     Probe DRHT-derived code pages with 16-byte reads; dump
                         64 KiB only for non-zero/non-FF probe bytes.
+  --updatedat-followup  Dump updatedat follow-up code/data pages needed to
+                        chase verifier callees and update-task globals.
+  --updatedat-constants
+                        Dump updatedat constant/table pages referenced by the
+                        dispatcher and verifier-adjacent routines.
+  --updatedat-subdispatcher
+                        Dump the bounded 0x032b72cc + 0x4000 updatedat
+                        subdispatcher window.
   --include-wedging-fffff000
                         Include 0xfffff000 in --ram-16gb-probes. This boundary
                         timed out live and wedged FF80 ping until cold boot.
@@ -93,6 +101,9 @@ ram_size_probes=0
 ram_16gb_probes=0
 bootrom_recon_probes=0
 drht_code_pages=0
+updatedat_followup=0
+updatedat_constants=0
+updatedat_subdispatcher=0
 include_wedging_fffff000=0
 include_wedging_fffc0000=0
 include_wedging_fff00000=0
@@ -143,6 +154,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --drht-code-pages)
       drht_code_pages=1
+      shift
+      ;;
+    --updatedat-followup)
+      updatedat_followup=1
+      shift
+      ;;
+    --updatedat-constants)
+      updatedat_constants=1
+      shift
+      ;;
+    --updatedat-subdispatcher)
+      updatedat_subdispatcher=1
       shift
       ;;
     --include-wedging-fffff000)
@@ -598,6 +621,26 @@ elif [[ "$drht_code_pages" -eq 1 ]]; then
     "drht_outlier_069a0000 0x069a0000 0x10000"
     "drht_outlier_069b0000 0x069b0000 0x10000"
   )
+elif [[ "$updatedat_followup" -eq 1 ]]; then
+  ranges+=(
+    "updatedat_crypto_callees_02d20000 0x02d20000 0x10000"
+    "updatedat_crypto_callees_02d50000 0x02d50000 0x10000"
+    "updatedat_continuation_032c0000 0x032c0000 0x10000"
+    "updatedat_status_globals_04538000 0x04538000 0x20000"
+    "updatedat_callback_globals_04730000 0x04730000 0x20000"
+  )
+elif [[ "$updatedat_constants" -eq 1 ]]; then
+  ranges+=(
+    "updatedat_constants_0355f000 0x0355f000 0x10000"
+    "updatedat_constants_03561000 0x03561000 0x10000"
+    "updatedat_constants_03563000 0x03563000 0x10000"
+    "updatedat_constants_037a8000 0x037a8000 0x10000"
+    "updatedat_constants_0381a000 0x0381a000 0x10000"
+  )
+elif [[ "$updatedat_subdispatcher" -eq 1 ]]; then
+  ranges+=(
+    "updatedat_subdispatcher_032b72cc 0x032b72cc 0x4000"
+  )
 elif [[ "$safe_fill_gaps" -eq 1 ]]; then
   add_chunked_range "fill_64000_9e000" 0x00064000 0x0009e000 0x10000
   ranges+=("fill_b7000_b7400 0x000b7000 0x400")
@@ -627,7 +670,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 
