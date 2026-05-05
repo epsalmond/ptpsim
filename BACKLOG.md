@@ -786,6 +786,9 @@ Live update:
 - `rce/sessions/ff80_priority_dumps_20260505T010320Z` then showed
   `0xfff00000` also times out on the 16-byte probe and wedges FF80 ping until
   cold boot.
+- `rce/sessions/ff80_priority_dumps_20260505T010517Z` then showed
+  `0xffe00000` also times out on the 16-byte probe and wedges FF80 ping until
+  cold boot.
 
 Probe order:
 
@@ -807,6 +810,9 @@ Safety behavior:
   needed.
 - The known-wedging `0xfff00000` candidate is skipped by default; only pass
   `--include-wedging-fff00000` when a deliberate cold-boot-wedging retest is
+  needed.
+- The known-wedging `0xffe00000` candidate is skipped by default; only pass
+  `--include-wedging-ffe00000` when a deliberate cold-boot-wedging retest is
   needed.
 - If the 16-byte probe is all zero or all `ff`, the script records the probe
   and skips the dump.

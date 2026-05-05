@@ -372,7 +372,9 @@ unless `--include-wedging-fffff000` is deliberately passed. Live testing also
 showed `0xfffc0000` times out on a 16-byte probe and wedges FF80 ping, so it is
 skipped by default unless `--include-wedging-fffc0000` is deliberately passed.
 `0xfff00000` behaved the same way and is skipped unless
-`--include-wedging-fff00000` is deliberately passed.
+`--include-wedging-fff00000` is deliberately passed. `0xffe00000` is also a
+known-wedging probe and is skipped unless `--include-wedging-ffe00000` is
+deliberately passed.
 If the poller sees `04cb:ff80` but FF80 `ping` times out, stop and cold-reboot
 the camera before retrying; that state was observed after a wedged transport.
 The cfgdata wrapper is also read-only. It uses active FF80 `ping` as the gate,

@@ -43,6 +43,10 @@ Options:
                         Include 0xfff00000 in --bootrom-recon-probes. This
                         address timed out live on a 16-byte read and wedged
                         FF80 ping until cold boot, so it is skipped by default.
+  --include-wedging-ffe00000
+                        Include 0xffe00000 in --bootrom-recon-probes. This
+                        address timed out live on a 16-byte read and wedged
+                        FF80 ping until cold boot, so it is skipped by default.
   --safe-fill-gaps      Fill known uncovered low-map gaps while deliberately
                         excluding the hazardous 0x00002000..0x00040000 range.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
@@ -83,6 +87,7 @@ bootrom_recon_probes=0
 include_wedging_fffff000=0
 include_wedging_fffc0000=0
 include_wedging_fff00000=0
+include_wedging_ffe00000=0
 safe_fill_gaps=0
 stop_on_fail=1
 
@@ -135,6 +140,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --include-wedging-fff00000)
       include_wedging_fff00000=1
+      shift
+      ;;
+    --include-wedging-ffe00000)
+      include_wedging_ffe00000=1
       shift
       ;;
     --safe-fill-gaps)
@@ -497,8 +506,10 @@ elif [[ "$bootrom_recon_probes" -eq 1 ]]; then
   if [[ "$include_wedging_fff00000" -eq 1 ]]; then
     conditional_probes+=("known_wedging_bootrom_top_1m_fff00000 0xfff00000 0x10000")
   fi
+  if [[ "$include_wedging_ffe00000" -eq 1 ]]; then
+    conditional_probes+=("known_wedging_bootrom_top_2m_ffe00000 0xffe00000 0x10000")
+  fi
   conditional_probes+=(
-    "bootrom_top_2m_ffe00000 0xffe00000 0x10000"
     "bootrom_final_64k_ffff0000 0xffff0000 $final_64k_dump_size"
     "bootrom_high_zone_start_f8000000 0xf8000000 0x10000"
     "bootrom_high_zone_mid_fc000000 0xfc000000 0x10000"
@@ -593,6 +604,9 @@ if [[ "$bootrom_recon_probes" -eq 1 ]]; then
   fi
   if [[ "$include_wedging_fff00000" -eq 0 ]]; then
     log "Skipping known-wedging 0xfff00000. Use --include-wedging-fff00000 only intentionally."
+  fi
+  if [[ "$include_wedging_ffe00000" -eq 0 ]]; then
+    log "Skipping known-wedging 0xffe00000. Use --include-wedging-ffe00000 only intentionally."
   fi
   if [[ "$include_wedging_fffff000" -eq 0 ]]; then
     log "The 0xffff0000 conditional dump is limited to 0xf000 bytes to avoid known-wedging 0xfffff000."

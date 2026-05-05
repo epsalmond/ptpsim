@@ -149,7 +149,7 @@ pings, and only dumps a bounded chunk when the probe is neither all zero nor all
 does not read into known-wedging `0xfffff000`. The `0xfffc0000` candidate is
 also skipped by default after a live 16-byte read there timed out and wedged
 FF80 ping until cold boot. The later `0xfff00000` probe behaved the same way,
-so it is also skipped by default.
+and `0xffe00000` did too, so both are also skipped by default.
 The cfgdata wrapper is also read-only; it gates on active FF80 `ping`, records
 passive USB polling as advisory evidence, dumps `cfgdata.bin`, and writes JSON
 plus text analysis under `rce/sessions/ff80_cfgdata_<timestamp>/`.
