@@ -103,6 +103,7 @@ scripts/ff80_dump_priority_ranges.sh --low-watermark
 scripts/ff80_dump_priority_ranges.sh --ram-size-probes
 scripts/ff80_dump_priority_ranges.sh --ram-16gb-probes
 scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
+scripts/ff80_probe_64bit_ram_read.sh
 scripts/ff80_dump_cfgdata.sh
 ```
 
@@ -161,6 +162,12 @@ scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes \
 `rce/state/` is ignored, so that file can accumulate crash-only skips until
 there is either a positive finding or a batch of five camera-crashing findings
 worth documenting together.
+Use `scripts/ff80_probe_64bit_ram_read.sh` to rerun the controlled
+`params[4:8]` high-half experiment. The 2026-05-05 live result was
+`verdict: 32-bit hard`: probes with `high32=1` matched their `high32=0`
+baselines and the camera echoed `params[4:8]` back as zero. Probe 5 was skipped
+because `low32=0` would be the known toxic low-RAM read after high-half ignore
+was proven.
 The cfgdata wrapper is also read-only; it gates on active FF80 `ping`, records
 passive USB polling as advisory evidence, dumps `cfgdata.bin`, and writes JSON
 plus text analysis under `rce/sessions/ff80_cfgdata_<timestamp>/`.

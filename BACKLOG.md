@@ -849,13 +849,24 @@ Safety behavior:
 
 ### RAM-008: FF80 64-bit RAM-read parameter probe
 
-Status: Queued after the current bootrom probe run completes
+Status: Complete
 
 Summary: Test whether the FF80 RAM-read handler treats `params[4:8]` as the
 high 32 bits of a 64-bit address. Full task spec is saved in
 `rce/notes/ff80_64bit_ram_read_probe.md`.
 
-Do not run this until RAM-007 is complete or intentionally paused. Keep the
-implementation surgical: add a `--high-addr` flag or a one-off probe wrapper,
-do not refactor `ffjlib.py`, use five 16-byte reads only, ping between probes,
-and stop on a repeated ping failure.
+Implemented `scripts/ff80_probe_64bit_ram_read.sh` as a one-off probe wrapper;
+it does not refactor `ffjlib.py`, uses 16-byte reads only, holds the camera USB
+lock, and pings between probes.
+
+Live result:
+
+- Session: `rce/sessions/ff80_64bit_ram_read_20260505T012833Z`
+- `probe1 baseline 0x40000000`: `00000000000000000000000000000000`
+- `probe2 baseline 0x29B00000`: `00000000040000000000281000000000`
+- `probe3 high=1 + 0x40000000`: `00000000000000000000000000000000`
+- `probe4 high=1 + 0x29B00000`: `00000000040000000000281000000000`
+- The camera echoed `params[4:8]` back as zero on probes 3 and 4.
+- Probe 5 was skipped because probes 3 and 4 proved high32 is ignored; sending
+  `low32=0` would intentionally hit the known toxic low-RAM read.
+- Verdict: `32-bit hard` for this FF80 RAM-read command path.
