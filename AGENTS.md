@@ -123,6 +123,7 @@ Working as of 2026-05-04:
 - The exact `updatedat` page `0x032b0000..0x032c0000` is captured in `rce/sessions/ff80_manual_updatedat_page_20260505T020400Z`. This fills the first `0x5000` bytes missing from the earlier `updatedat_entry_032b5000.bin`; post-dump FF80 ping succeeded.
 - The running Linux kernel has been found in live FF80 RAM. `scripts/ff80_dump_priority_ranges.sh --linux-kernel-hunt` in `rce/sessions/ff80_priority_dumps_20260505T025033Z` captured `0x08000000..0x08600000` as 96 clean 64-KiB chunks. `linux_kernel_hunt_scan.txt/json` found a plausible ARM64 Image header at `0x08080000` with magic `ARMd`, `text_offset=0x80000`, `image_size=0x1b1f000`, and the live string `Linux version 4.9.92 (oe-user@oe-host) (gcc version 7.3.0 (GCC) ) #2 SMP PREEMPT Thu Jun 26 15:51:01 JST 2025` at `0x08500050`. The implied image span is `0x08080000..0x09b9f000`; only the first 6 MiB window has been captured so far.
 - F-0011 verifier-bypass follow-up dumping is complete for the mandatory ranges. `scripts/ff80_dump_priority_ranges.sh --verifier-bypass-followup` in `rce/sessions/ff80_followup_20260505T030604Z` captured `0x01588000..0x01590000`, `0x015dc000..0x015e0000`, `0x047f8000..0x047f9000`, and `0x015c0000..0x015d0000` with no read or ping failures. `f0011_followup_analysis.txt/json` confirms `0x0158bfc8` loads the cfgdata base pointer from `[0x022600a8]` and returns byte `[base + tag]` for ordinary tags, while `0x0158c1ac` is the matching byte writer. The second getter `0x015dc188` is a bitmask gate using `[0x026082ec]`, not a byte-table getter. The requested `0x047f8000` page for the `0x53d1` gate is entirely zero in this live state, including `[0x047f8148]`.
+- F-0011 upstream follow-up Tier 1 is complete. `scripts/ff80_dump_priority_ranges.sh --f0011-upstream-followup` in `rce/sessions/ff80_upstream_20260505T033032Z` captured `0x02608000..0x02609000` with no read or ping failures. `f0011_upstream_analysis.txt/json` shows `[0x026082ec] == 0x00000000`, so Getter B returns false for both observed arguments `0x13` and `0x08`. A local direct-BL scan found cfgdata-writer call sites only in already captured pages (`0x01588000..0x01590000`, `0x015d0000..0x015e0000`, and `0x03230000..0x03240000`), so no Tier 2 upstream code chunk was dumped.
 - PTP/IP init inventory is implemented. `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` scans captured `.bin` payloads and decoded `.jsonl` traces for Fuji-shaped 82-byte `Init_Command_Request` records.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
@@ -157,6 +158,7 @@ rce/sessions/ff80_manual_updatedat_page_20260505T020400Z                exact 0x
 rce/sessions/ff80_priority_dumps_20260505T023847Z                       known syslog RAM dumps plus plain-text render
 rce/sessions/ff80_priority_dumps_20260505T025033Z                       live Linux kernel header/version hunt
 rce/sessions/ff80_followup_20260505T030604Z                             F-0011 verifier-bypass getter/gate follow-up
+rce/sessions/ff80_upstream_20260505T033032Z                             F-0011 upstream Getter B bitmask follow-up
 rce/downloads/                                                          ignored exported JPEG output
 ```
 
@@ -357,6 +359,7 @@ scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
 scripts/ff80_dump_priority_ranges.sh --known-syslogs
 scripts/ff80_dump_priority_ranges.sh --linux-kernel-hunt
 scripts/ff80_dump_priority_ranges.sh --verifier-bypass-followup
+scripts/ff80_dump_priority_ranges.sh --f0011-upstream-followup
 scripts/ff80_decode_syslog_dumps.sh --session-dir rce/sessions/ff80_priority_dumps_<timestamp>
 scripts/ff80_scan_linux_kernel_hunt.sh --session-dir rce/sessions/ff80_priority_dumps_<timestamp>
 scripts/ff80_probe_64bit_ram_read.sh
@@ -409,6 +412,11 @@ scanner with `scripts/ff80_scan_linux_kernel_hunt.sh --session-dir ...`.
 `--include-verifier-bypass-optional` only when the optional `0x02d40000` and
 
 install context.
+`--f0011-upstream-followup` captures the mandatory Getter B bitmask page at
+`0x02608000`. Tier 2 chunks are opt-in with
+`--include-f0011-upstream-03200000`, `--include-f0011-upstream-03240000`,
+`--include-f0011-upstream-03260000`, `--include-f0011-upstream-031c0000`, or
+`--include-f0011-upstream-contingent`.
 `scripts/ff80_decode_syslog_dumps.sh` renders those syslog RAM dumps to
 plain-text record listings under the session's `syslog_text/` directory.
 For quick live FF80 probe loops, reduce git churn: do not update tracked docs or

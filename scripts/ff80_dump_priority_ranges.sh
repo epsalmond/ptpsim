@@ -47,6 +47,18 @@ Options:
                         Include optional F-0011 follow-up ranges at
                         0x02d40000 and 0x023a0000. Implies
                         --verifier-bypass-followup.
+  --f0011-upstream-followup
+                        Dump mandatory F-0011 upstream-caller follow-up state:
+                        0x02608000 + 0x1000 for Getter B bitmask context.
+  --include-f0011-upstream-contingent
+                        Include all Tier 2 F-0011 upstream code extensions.
+                        Implies --f0011-upstream-followup.
+  --include-f0011-upstream-03200000
+  --include-f0011-upstream-03240000
+  --include-f0011-upstream-03260000
+  --include-f0011-upstream-031c0000
+                        Include one Tier 2 F-0011 upstream code extension.
+                        Each implies --f0011-upstream-followup.
   --known-syslogs       Dump the known syslog buffer headers as bounded RAM
                         reads. Includes the five canonical headers plus the
                         later 0x00507000 candidate from safe-fill analysis.
@@ -118,6 +130,11 @@ updatedat_constants=0
 updatedat_subdispatcher=0
 verifier_bypass_followup=0
 include_verifier_bypass_optional=0
+f0011_upstream_followup=0
+include_f0011_upstream_03200000=0
+include_f0011_upstream_03240000=0
+include_f0011_upstream_03260000=0
+include_f0011_upstream_031c0000=0
 known_syslogs=0
 linux_kernel_hunt=0
 include_wedging_fffff000=0
@@ -191,6 +208,38 @@ while [[ $# -gt 0 ]]; do
     --include-verifier-bypass-optional)
       verifier_bypass_followup=1
       include_verifier_bypass_optional=1
+      shift
+      ;;
+    --f0011-upstream-followup)
+      f0011_upstream_followup=1
+      shift
+      ;;
+    --include-f0011-upstream-contingent)
+      f0011_upstream_followup=1
+      include_f0011_upstream_03200000=1
+      include_f0011_upstream_03240000=1
+      include_f0011_upstream_03260000=1
+      include_f0011_upstream_031c0000=1
+      shift
+      ;;
+    --include-f0011-upstream-03200000)
+      f0011_upstream_followup=1
+      include_f0011_upstream_03200000=1
+      shift
+      ;;
+    --include-f0011-upstream-03240000)
+      f0011_upstream_followup=1
+      include_f0011_upstream_03240000=1
+      shift
+      ;;
+    --include-f0011-upstream-03260000)
+      f0011_upstream_followup=1
+      include_f0011_upstream_03260000=1
+      shift
+      ;;
+    --include-f0011-upstream-031c0000)
+      f0011_upstream_followup=1
+      include_f0011_upstream_031c0000=1
       shift
       ;;
     --known-syslogs)
@@ -692,6 +741,22 @@ elif [[ "$verifier_bypass_followup" -eq 1 ]]; then
       "f0011_firmware_source_candidate_023a0000 0x023a0000 0x10000"
     )
   fi
+elif [[ "$f0011_upstream_followup" -eq 1 ]]; then
+  ranges+=(
+    "f0011_getter_b_bitmask_02608000 0x02608000 0x1000"
+  )
+  if [[ "$include_f0011_upstream_031c0000" -eq 1 ]]; then
+    ranges+=("f0011_upstream_code_031c0000 0x031c0000 0x10000")
+  fi
+  if [[ "$include_f0011_upstream_03200000" -eq 1 ]]; then
+    ranges+=("f0011_upstream_code_03200000 0x03200000 0x10000")
+  fi
+  if [[ "$include_f0011_upstream_03240000" -eq 1 ]]; then
+    ranges+=("f0011_upstream_code_03240000 0x03240000 0x10000")
+  fi
+  if [[ "$include_f0011_upstream_03260000" -eq 1 ]]; then
+    ranges+=("f0011_upstream_code_03260000 0x03260000 0x10000")
+  fi
 elif [[ "$known_syslogs" -eq 1 ]]; then
   ranges+=(
     "syslog_secondary_globals_4c7000 0x004c7000 0x1000"
@@ -732,7 +797,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$verifier_bypass_followup" -eq 0 && "$known_syslogs" -eq 0 && "$linux_kernel_hunt" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$verifier_bypass_followup" -eq 0 && "$f0011_upstream_followup" -eq 0 && "$known_syslogs" -eq 0 && "$linux_kernel_hunt" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 

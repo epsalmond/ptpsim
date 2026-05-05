@@ -1180,3 +1180,86 @@ Follow-up:
   capture the bitmask at `0x026082ec`.
 - If `0x53d1` is enabled in a later experiment, redump `0x047f8000 + 0x1000`
   and compare `[0x047f8148]`.
+
+### RAM-017: Finish live Linux kernel image and memory-map evidence
+
+Status: Open
+
+Summary: Follow up on the live Linux kernel dump and the 16 GB RAM question.
+The captured live DTB does not advertise high RAM to Linux in the current boot
+state, but the full live kernel image is not yet captured.
+
+Known evidence:
+
+- Live DTB at `0x08010000` has bootargs including `mem=539M`.
+- `/memory@08000000` covers only `0x08000000..0x29b00000` (`539 MiB`).
+- Shared carved-out regions are:
+  `amp_shared@29B00000 = 0x29b00000..0x39a00000` (`255 MiB`),
+  `rpmsg_shared@39A00000 = 0x39a00000..0x39b00000` (`1 MiB`), and
+  `amp_isgc_shared@39B00000 = 0x39b00000..0x3ac00000` (`17 MiB`).
+- The DTB uses 64-bit address cells, so it can describe high memory, but the
+  current live node does not.
+- The ARM64 Image header at `0x08080000` reports `image_size=0x1b1f000`,
+  implying full image span `0x08080000..0x09b9f000`.
+
+Next:
+
+- Dump `0x08600000..0x09ba0000` in 64-KiB chunks to complete the live kernel
+  image.
+- For 16 GB proof, do not rely on Linux in this boot state; find a DRAM
+  controller register, boot memory map, or read primitive that can address
+  above 32 bits.
+- For Linux/ThreadX shared-state analysis, consider full `amp_isgc_shared`
+  (`0x39b00000..0x3ac00000`) or selective `amp_shared` sampling before trying
+  the full 255 MiB range.
+
+### RAM-018: F-0011 upstream Getter B bitmask and caller-scan follow-up
+
+Status: Complete
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh
+--f0011-upstream-followup` for the mandatory Tier 1 Getter B bitmask page.
+Tier 2 code-extension switches were added but not run because the local
+direct-call scan did not require them.
+
+Session: `rce/sessions/ff80_upstream_20260505T033032Z`
+
+Results:
+
+- `f0011_getter_b_bitmask_02608000` @ `0x02608000 + 0x1000`: status `ok`,
+  `4096` bytes, SHA256
+  `e59498dfa2abd3b87c1ff812d64c9fb6418dada2fc0588f4681217a82ebdffbe`.
+- All pre/post FF80 pings succeeded and postflight USB polling still showed
+  `04cb:ff80`.
+
+Analysis artifacts:
+
+- `rce/sessions/ff80_upstream_20260505T033032Z/f0011_upstream_analysis.txt`
+- `rce/sessions/ff80_upstream_20260505T033032Z/f0011_upstream_analysis.json`
+
+Findings:
+
+- The 32-bit bitmask word read by Getter B at `[0x026082ec]` is
+  `0x00000000`.
+- Getter B therefore returns false for both observed call arguments:
+  `0x13 & mask == 0` and `0x08 & mask == 0`.
+- The captured page is mostly zero: only two nonzero u32 words were observed in
+  the 4 KiB dump, at offsets `0x150 = 0x00000001` and `0x1d8 = 0x0000005f`.
+- Direct `BL 0x0158c1ac` scan across existing dumps found 25 writer-call sites:
+  16 in `0x01588000..0x01590000`, 1 in `0x015d0000..0x015e0000`, and 8 in
+  `0x03230000..0x03240000`.
+- The firmware-install writer sites are already covered by existing dumps:
+  `0x03231484`, `0x032388d0`, `0x032388dc`, `0x032388e8`, `0x032388f4`,
+  `0x03239770`, `0x0323979c`, and `0x03239e64`.
+
+Tier 2 decision:
+
+- No Tier 2 dump was taken. The local upstream-caller scan did not run off the
+  end of `drht_fanin_03230000` (`0x03230000..0x03240000`) or the existing
+  `0x031e0000..0x031f0000` page.
+- Tier 2 switches are available if later RE needs them:
+  `--include-f0011-upstream-03200000`,
+  `--include-f0011-upstream-03240000`,
+  `--include-f0011-upstream-03260000`,
+  `--include-f0011-upstream-031c0000`, or
+  `--include-f0011-upstream-contingent`.
