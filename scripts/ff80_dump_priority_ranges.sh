@@ -22,6 +22,8 @@ Options:
                         continuation.
   --low-watermark       Probe downward from the lowest known-good RAM address
                         with 16-byte reads and ping verification only.
+  --safe-fill-gaps      Fill known uncovered low-map gaps while deliberately
+                        excluding the hazardous 0x00002000..0x00040000 range.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
   --continue-on-fail    Continue after a failed range if FF80 ping still works.
   -h, --help            Show this help.
@@ -54,6 +56,7 @@ only_risky_low=0
 next_targets=0
 gap_targets=0
 low_watermark=0
+safe_fill_gaps=0
 stop_on_fail=1
 
 while [[ $# -gt 0 ]]; do
@@ -81,6 +84,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --low-watermark)
       low_watermark=1
+      shift
+      ;;
+    --safe-fill-gaps)
+      safe_fill_gaps=1
       shift
       ;;
     --stop-on-fail)
@@ -284,6 +291,24 @@ probe_address() {
 ranges=()
 probes=()
 
+add_chunked_range() {
+  local prefix="$1"
+  local start="$2"
+  local end="$3"
+  local chunk_size="$4"
+  local current="$(( start ))"
+  local index=0
+  while [[ "$current" -lt "$(( end ))" ]]; do
+    local size="$(( end - current ))"
+    if [[ "$size" -gt "$(( chunk_size ))" ]]; then
+      size="$(( chunk_size ))"
+    fi
+    ranges+=("$(printf '%s_%02d 0x%08x 0x%x' "$prefix" "$index" "$current" "$size")")
+    current="$(( current + size ))"
+    index="$(( index + 1 ))"
+  done
+}
+
 if [[ "$next_targets" -eq 1 ]]; then
   ranges+=(
     "code_bl_targets_44000 0x00044000 0x14000"
@@ -320,6 +345,12 @@ elif [[ "$low_watermark" -eq 1 ]]; then
     "low_probe_02000 0x00002000"
     "low_probe_01000 0x00001000"
   )
+elif [[ "$safe_fill_gaps" -eq 1 ]]; then
+  add_chunked_range "fill_64000_9e000" 0x00064000 0x0009e000 0x10000
+  ranges+=("fill_b7000_b7400 0x000b7000 0x400")
+  add_chunked_range "fill_ef000_4c0000" 0x000ef000 0x004c0000 0x10000
+  add_chunked_range "fill_4d0000_4e0000" 0x004d0000 0x004e0000 0x10000
+  add_chunked_range "fill_4f0000_508000" 0x004f0000 0x00508000 0x10000
 elif [[ "$only_risky_low" -eq 0 ]]; then
   ranges+=(
     "known_80000000 0x80000000 0x10000"
@@ -343,7 +374,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 
@@ -373,6 +404,10 @@ if [[ "$low_watermark" -eq 1 ]]; then
   log "Summary: $summary"
   cat "$summary" | tee -a "$manifest" >&2
   exit 0
+fi
+
+if [[ "$safe_fill_gaps" -eq 1 ]]; then
+  log "Safe-fill mode deliberately skips hazardous 0x00002000..0x00040000."
 fi
 
 for spec in "${ranges[@]}"; do

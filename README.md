@@ -97,6 +97,7 @@ scripts/ff80_dump_priority_ranges.sh
 scripts/ff80_dump_priority_ranges.sh --only-risky-low
 scripts/ff80_dump_priority_ranges.sh --next-targets
 scripts/ff80_dump_priority_ranges.sh --gap-targets
+scripts/ff80_dump_priority_ranges.sh --safe-fill-gaps
 scripts/ff80_dump_priority_ranges.sh --low-watermark
 scripts/ff80_dump_cfgdata.sh
 ```
@@ -114,6 +115,10 @@ Use `--gap-targets` for the next gap-fill pass around populated code/runtime
 windows, widened globals, and message-pool continuation:
 `0x00040000`, `0x0005c000`, `0x00060000`, `0x000a1000`, `0x000ad000`,
 `0x000e0000`, `0x000e4000`, `0x004c0000`, `0x004e0000`, and `0x005c8000`.
+Use `--safe-fill-gaps` to fill the remaining known uncovered low-map gaps above
+the currently hazardous low window. It deliberately avoids
+`0x00002000..0x00040000` and captures selected chunked safe ranges within
+`0x00064000..0x00508000`.
 Use `--low-watermark` only as a probe-only boundary finder. It reads 16 bytes
 per address, pings before and after every read, skips `0x00000000`, and stops
 on the first failed probe.

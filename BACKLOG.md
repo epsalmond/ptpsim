@@ -647,3 +647,35 @@ Results:
 Follow-up active FF80 `ping` also timed out after the `0x00002000` failure, so
 the camera needs a cold boot before the next FF80 command. Do not probe below
 `0x00004000` unless intentionally testing a known wedge boundary.
+
+### RAM-004: Safe-fill uncovered RAM gaps above the hazardous low window
+
+Status: Done
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh --safe-fill-gaps`.
+The workflow uses the same read-only probe/dump/ping guards as the priority
+dump wrapper, chunks larger gaps into `0x10000` reads, and deliberately skips
+the hazardous `0x00002000..0x00040000` interval.
+
+Session: `rce/sessions/ff80_priority_dumps_20260505T001807Z`
+
+Execution order:
+
+- 0x00064000..0x0009e000
+- 0x000b7000..0x000b7400
+- 0x000ef000..0x004c0000
+- 0x004d0000..0x004e0000
+- 0x004f0000..0x00508000
+
+Results:
+
+- All requested safe-fill ranges completed successfully.
+- Analysis written to
+  `rce/sessions/ff80_priority_dumps_20260505T001807Z/analysis.json`.
+- `0x00064000..0x0009e000` contains sparse non-zero data and should be kept with
+  the adjacent low-runtime/code windows for decoding.
+- `0x000b7000..0x000b7400`, `0x000ef000..0x004c0000`,
+  `0x004d0000..0x004e0000`, and `0x004f0000..0x00500000` were zero-filled in
+  this boot.
+- `0x00500000..0x00508000` is mostly zero but includes `syslog Ver 3.0` near
+  `0x00507000`.
