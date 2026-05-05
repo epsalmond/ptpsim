@@ -22,6 +22,8 @@ Options:
                         continuation.
   --low-watermark       Probe downward from the lowest known-good RAM address
                         with 16-byte reads and ping verification only.
+  --ram-size-probes     Probe sparse high RAM-map addresses with 16-byte reads
+                        to test the 512 MiB DDR-window hypothesis.
   --safe-fill-gaps      Fill known uncovered low-map gaps while deliberately
                         excluding the hazardous 0x00002000..0x00040000 range.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
@@ -56,6 +58,7 @@ only_risky_low=0
 next_targets=0
 gap_targets=0
 low_watermark=0
+ram_size_probes=0
 safe_fill_gaps=0
 stop_on_fail=1
 
@@ -84,6 +87,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --low-watermark)
       low_watermark=1
+      shift
+      ;;
+    --ram-size-probes)
+      ram_size_probes=1
       shift
       ;;
     --safe-fill-gaps)
@@ -345,6 +352,15 @@ elif [[ "$low_watermark" -eq 1 ]]; then
     "low_probe_02000 0x00002000"
     "low_probe_01000 0x00001000"
   )
+elif [[ "$ram_size_probes" -eq 1 ]]; then
+  probes+=(
+    "known_amp_29b00000 0x29b00000"
+    "known_rpmsg_39a00000 0x39a00000"
+    "known_isgc_39b00000 0x39b00000"
+    "candidate_ddr_high_3f000000 0x3f000000"
+    "candidate_ddr_high_3ff00000 0x3ff00000"
+    "candidate_ddr_last_page_3ffff000 0x3ffff000"
+  )
 elif [[ "$safe_fill_gaps" -eq 1 ]]; then
   add_chunked_range "fill_64000_9e000" 0x00064000 0x0009e000 0x10000
   ranges+=("fill_b7000_b7400 0x000b7000 0x400")
@@ -374,7 +390,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 
@@ -382,20 +398,29 @@ log "session_dir=$session_dir"
 confirm_ff80 preflight
 ping_ff80 preflight_ping
 
-if [[ "$low_watermark" -eq 1 ]]; then
-  log "Low-watermark mode uses 16-byte reads only and intentionally skips 0x00000000."
+if [[ "$low_watermark" -eq 1 || "$ram_size_probes" -eq 1 ]]; then
+  if [[ "$low_watermark" -eq 1 ]]; then
+    log "Low-watermark mode uses 16-byte reads only and intentionally skips 0x00000000."
+  fi
+  if [[ "$ram_size_probes" -eq 1 ]]; then
+    log "RAM-size probe mode uses 16-byte reads only and pings after each probe."
+    log "This is sparse map evidence, not a full contiguous RAM dump."
+  fi
   for spec in "${probes[@]}"; do
     read -r label addr <<<"$spec"
     if ! probe_address "$label" "$addr"; then
-      if [[ "$stop_on_fail" -eq 1 ]]; then
-        log "Stopping after failed probe: $label"
+      if ! ping_ff80 "${label}_failure_recovery_ping"; then
+        log "FF80 ping failed after failed probe; stopping."
         confirm_ff80 postflight || true
         log "Summary: $summary"
         cat "$summary" | tee -a "$manifest" >&2
         exit 1
       fi
-      if ! ping_ff80 "${label}_failure_recovery_ping"; then
-        log "FF80 ping failed after failed probe; stopping despite --continue-on-fail."
+      if [[ "$stop_on_fail" -eq 1 ]]; then
+        log "Stopping after failed probe: $label"
+        confirm_ff80 postflight || true
+        log "Summary: $summary"
+        cat "$summary" | tee -a "$manifest" >&2
         exit 1
       fi
     fi

@@ -99,6 +99,7 @@ scripts/ff80_dump_priority_ranges.sh --next-targets
 scripts/ff80_dump_priority_ranges.sh --gap-targets
 scripts/ff80_dump_priority_ranges.sh --safe-fill-gaps
 scripts/ff80_dump_priority_ranges.sh --low-watermark
+scripts/ff80_dump_priority_ranges.sh --ram-size-probes
 scripts/ff80_dump_cfgdata.sh
 ```
 
@@ -122,6 +123,11 @@ the currently hazardous low window. It deliberately avoids
 Use `--low-watermark` only as a probe-only boundary finder. It reads 16 bytes
 per address, pings before and after every read, skips `0x00000000`, and stops
 on the first failed probe.
+Use `--ram-size-probes` for sparse high-address evidence around the likely DDR
+window. It only performs 16-byte reads and currently probes known high mapped
+regions plus `0x3f000000`, `0x3ff00000`, and `0x3ffff000`. A successful probe
+is addressability evidence; it is not a substitute for a full RAM-size register
+or a complete contiguous dump.
 The cfgdata wrapper is also read-only; it gates on active FF80 `ping`, records
 passive USB polling as advisory evidence, dumps `cfgdata.bin`, and writes JSON
 plus text analysis under `rce/sessions/ff80_cfgdata_<timestamp>/`.

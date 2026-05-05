@@ -679,3 +679,32 @@ Results:
   this boot.
 - `0x00500000..0x00508000` is mostly zero but includes `syslog Ver 3.0` near
   `0x00507000`.
+
+### RAM-005: Probe high addresses for likely 512 MiB DDR window
+
+Status: Done
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh
+--ram-size-probes`. The workflow is read-only and probe-only: it pings before
+and after each 16-byte read, then records probe bytes under the session
+directory.
+
+Session: `rce/sessions/ff80_priority_dumps_20260505T003239Z`
+
+Successful probes:
+
+- `0x29b00000`
+- `0x39a00000`
+- `0x39b00000`
+- `0x3f000000`
+- `0x3ff00000`
+- `0x3ffff000`
+
+Notes:
+
+- Post-probe FF80 ping stayed healthy.
+- `0x3ffff000` is in the last page below `0x40000000`, which supports the
+  hypothesis that a `0x20000000..0x40000000` 512 MiB DDR window is addressable.
+- The last two probes returned all `ff` bytes, so this is sparse addressability
+  evidence, not conclusive physical RAM-size proof. A real RAM-size register,
+  boot memory map, or more systematic bounded reads are still needed.
