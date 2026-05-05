@@ -40,6 +40,13 @@ Options:
   --updatedat-subdispatcher
                         Dump the bounded 0x032b72cc + 0x4000 updatedat
                         subdispatcher window.
+  --verifier-bypass-followup
+                        Dump mandatory F-0011 verifier-bypass follow-up
+                        getter, 0x53d1 gate-table, and IPC/helper ranges.
+  --include-verifier-bypass-optional
+                        Include optional F-0011 follow-up ranges at
+                        0x02d40000 and 0x023a0000. Implies
+                        --verifier-bypass-followup.
   --known-syslogs       Dump the known syslog buffer headers as bounded RAM
                         reads. Includes the five canonical headers plus the
                         later 0x00507000 candidate from safe-fill analysis.
@@ -109,6 +116,8 @@ drht_code_pages=0
 updatedat_followup=0
 updatedat_constants=0
 updatedat_subdispatcher=0
+verifier_bypass_followup=0
+include_verifier_bypass_optional=0
 known_syslogs=0
 linux_kernel_hunt=0
 include_wedging_fffff000=0
@@ -173,6 +182,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --updatedat-subdispatcher)
       updatedat_subdispatcher=1
+      shift
+      ;;
+    --verifier-bypass-followup)
+      verifier_bypass_followup=1
+      shift
+      ;;
+    --include-verifier-bypass-optional)
+      verifier_bypass_followup=1
+      include_verifier_bypass_optional=1
       shift
       ;;
     --known-syslogs)
@@ -240,6 +258,11 @@ if [[ ! -f "$ff80_dir/ff80.py" ]]; then
   echo "missing FF80 tool: $ff80_dir/ff80.py" >&2
   exit 1
 fi
+
+case "$session_dir" in
+  /*) ;;
+  *) session_dir="$repo_root/$session_dir" ;;
+esac
 
 for skip_address_file in "${skip_address_files[@]}"; do
   if [[ ! -f "$skip_address_file" ]]; then
@@ -656,6 +679,19 @@ elif [[ "$updatedat_subdispatcher" -eq 1 ]]; then
   ranges+=(
     "updatedat_subdispatcher_032b72cc 0x032b72cc 0x4000"
   )
+elif [[ "$verifier_bypass_followup" -eq 1 ]]; then
+  ranges+=(
+    "f0011_cfgdata_getter_01588000 0x01588000 0x8000"
+    "f0011_second_getter_015dc000 0x015dc000 0x4000"
+    "f0011_gate_53d1_table_047f8000 0x047f8000 0x1000"
+    "f0011_threadx_ipc_primitives_015c0000 0x015c0000 0x10000"
+  )
+  if [[ "$include_verifier_bypass_optional" -eq 1 ]]; then
+    ranges+=(
+      "f0011_crypto_gap_02d40000 0x02d40000 0x10000"
+      "f0011_firmware_source_candidate_023a0000 0x023a0000 0x10000"
+    )
+  fi
 elif [[ "$known_syslogs" -eq 1 ]]; then
   ranges+=(
     "syslog_secondary_globals_4c7000 0x004c7000 0x1000"
@@ -696,7 +732,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$known_syslogs" -eq 0 && "$linux_kernel_hunt" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$verifier_bypass_followup" -eq 0 && "$known_syslogs" -eq 0 && "$linux_kernel_hunt" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 

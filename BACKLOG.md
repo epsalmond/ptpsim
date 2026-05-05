@@ -1109,3 +1109,74 @@ Next:
 - The current session only captures through `0x08600000`; dump
   `0x08600000..0x09ba0000` in 64-KiB chunks if we want the complete live
   kernel image.
+
+### RAM-016: F-0011 verifier-bypass getter/gate follow-up
+
+Status: Complete
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh
+--verifier-bypass-followup` to close the mandatory F-0011 getter, second-gate,
+`0x53d1` table, and IPC/helper dump request. Optional ranges were not run
+because the stated conditions were not met by the offline analysis.
+
+Session: `rce/sessions/ff80_followup_20260505T030604Z`
+
+Results:
+
+- `f0011_cfgdata_getter_01588000` @ `0x01588000 + 0x8000`: status `ok`,
+  `32768` bytes, SHA256
+  `94824e68b8e031f32b0f195627e3570cc7b10ae6bef77dac89b74383717e7ec2`.
+- `f0011_second_getter_015dc000` @ `0x015dc000 + 0x4000`: status `ok`,
+  `16384` bytes, SHA256
+  `ad2520dc9a21475c3b3b03094036683d5ce9afe23d35d292f6699402e3952586`.
+- `f0011_gate_53d1_table_047f8000` @ `0x047f8000 + 0x1000`: status `ok`,
+  `4096` bytes, SHA256
+  `ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7`.
+- `f0011_threadx_ipc_primitives_015c0000` @ `0x015c0000 + 0x10000`: status
+  `ok`, `65536` bytes, SHA256
+  `578ed8b157cf97df10dd7484073a5bcd7be63174832e56a4afe37a27bb661862`.
+- All pre/post FF80 pings succeeded and postflight USB polling still showed
+  `04cb:ff80`.
+
+Analysis artifacts:
+
+- `rce/sessions/ff80_followup_20260505T030604Z/f0011_followup_analysis.txt`
+- `rce/sessions/ff80_followup_20260505T030604Z/f0011_followup_analysis.json`
+
+Findings:
+
+- `0x0158bfc8` is a direct cfgdata byte reader for ordinary tags. It loads the
+  cfgdata base pointer from `[0x022600a8]`, calls range helper `0x0158bf34`,
+  then returns `ldrb [base + tag]`.
+- `0x0158c1ac` is the matching cfgdata byte writer. It masks the value to
+  8 bits, loads the same base pointer, calls `0x0158bf34`, then stores
+  `strb [base + tag]`.
+- `0x0158bf34` returns the original tag unchanged. Its side-call to
+  `0x015d9764` only happens for high ranges `0x01060000..0x010817ff` and
+  `0x010a0000..0x010cffbf`; normal tags including `0x1c5` and `0x53d1` remain
+  direct byte offsets. This confirms local `cfgdata.bin` offsets match runtime
+  tag values for F-0011.
+- `0x015dc188` is not another cfgdata-byte getter. It loads a 32-bit mask from
+  `[0x026082ec]` and returns `(arg & mask) != 0`; tags such as `0x0013` and
+  `0x0008` are bitmasks at this call surface.
+- The requested `0x047f8000` page is entirely zero in the captured live state;
+  `[0x047f8148] == 0`. This does not confirm either a per-task diagnostic
+  table or firmware-update state table for the `0x53d1` real path in the
+  current disabled state.
+- No requested `system`, `/bin/sh`, `printf`-family, firmware-path, `UPD`,
+  `GFX`, or `FFDB` strings were found in the four new dumps.
+
+Optional-target decision:
+
+
+  `0x02d25d48`, `0x02d26140`, and `0x02d26240` found no `BL` targets into
+  `0x02d40000..0x02d50000`.
+- Skipped `0x023a0000 + 0x10000`: no live firmware install/source-buffer
+  context was active in this run.
+
+Follow-up:
+
+- If `0x015dc188` needs a current value, dump/probe `0x02608000 + 0x1000` to
+  capture the bitmask at `0x026082ec`.
+- If `0x53d1` is enabled in a later experiment, redump `0x047f8000 + 0x1000`
+  and compare `[0x047f8148]`.
