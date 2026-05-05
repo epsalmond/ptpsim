@@ -97,6 +97,7 @@ scripts/ff80_dump_priority_ranges.sh
 scripts/ff80_dump_priority_ranges.sh --only-risky-low
 scripts/ff80_dump_priority_ranges.sh --next-targets
 scripts/ff80_dump_priority_ranges.sh --gap-targets
+scripts/ff80_dump_priority_ranges.sh --low-watermark
 scripts/ff80_dump_cfgdata.sh
 ```
 
@@ -113,6 +114,9 @@ Use `--gap-targets` for the next gap-fill pass around populated code/runtime
 windows, widened globals, and message-pool continuation:
 `0x00040000`, `0x0005c000`, `0x00060000`, `0x000a1000`, `0x000ad000`,
 `0x000e0000`, `0x000e4000`, `0x004c0000`, `0x004e0000`, and `0x005c8000`.
+Use `--low-watermark` only as a probe-only boundary finder. It reads 16 bytes
+per address, pings before and after every read, skips `0x00000000`, and stops
+on the first failed probe.
 The cfgdata wrapper is also read-only; it gates on active FF80 `ping`, records
 passive USB polling as advisory evidence, dumps `cfgdata.bin`, and writes JSON
 plus text analysis under `rce/sessions/ff80_cfgdata_<timestamp>/`.

@@ -20,6 +20,8 @@ Options:
   --gap-targets         Dump the next RAM gaps around populated code/runtime
                         windows, widened globals, and the next message-pool
                         continuation.
+  --low-watermark       Probe downward from the lowest known-good RAM address
+                        with 16-byte reads and ping verification only.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
   --continue-on-fail    Continue after a failed range if FF80 ping still works.
   -h, --help            Show this help.
@@ -51,6 +53,7 @@ include_risky_low=0
 only_risky_low=0
 next_targets=0
 gap_targets=0
+low_watermark=0
 stop_on_fail=1
 
 while [[ $# -gt 0 ]]; do
@@ -74,6 +77,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --gap-targets)
       gap_targets=1
+      shift
+      ;;
+    --low-watermark)
+      low_watermark=1
       shift
       ;;
     --stop-on-fail)
@@ -242,7 +249,40 @@ dump_range() {
   ls -l "$probe_path" "$dump_path" | tee -a "$manifest" >&2
 }
 
+probe_address() {
+  local label="$1"
+  local addr="$2"
+  local addr_name
+  addr_name="$(addr_token "$addr")"
+  local probe_path="$session_dir/probes/${label}_${addr_name}_probe_10.bin"
+
+  log "=== $label addr=0x$addr_name probe_size=0x10 ==="
+
+  if ! ping_ff80 "${label}_pre_ping"; then
+    record "$label" "$addr" 0x10 "" "failed" "" "" "pre_ping_failed"
+    return 1
+  fi
+
+  if ! run_ff80_logged "${label}_probe" ram read "0x$addr_name" -s 0x10 -o "$probe_path"; then
+    record "$label" "$addr" 0x10 "" "failed" "$probe_path" "" "probe_failed"
+    return 1
+  fi
+
+  if ! ping_ff80 "${label}_post_probe_ping"; then
+    record "$label" "$addr" 0x10 "" "failed" "$probe_path" "" "post_probe_ping_failed"
+    return 1
+  fi
+
+  local sha
+  local actual_bytes
+  sha="$(shasum -a 256 "$probe_path" | awk '{print $1}')"
+  actual_bytes="$(file_size_bytes "$probe_path")"
+  record "$label" "$addr" 0x10 "$actual_bytes" "ok" "$probe_path" "$sha" "probed"
+  ls -l "$probe_path" | tee -a "$manifest" >&2
+}
+
 ranges=()
+probes=()
 
 if [[ "$next_targets" -eq 1 ]]; then
   ranges+=(
@@ -270,6 +310,16 @@ elif [[ "$gap_targets" -eq 1 ]]; then
     "adrp_globals_wide_4e0000 0x004e0000 0x10000"
     "msg_pool_5c8000_continuation 0x005c8000 0x40000"
   )
+elif [[ "$low_watermark" -eq 1 ]]; then
+  probes+=(
+    "low_probe_30000 0x00030000"
+    "low_probe_20000 0x00020000"
+    "low_probe_10000 0x00010000"
+    "low_probe_08000 0x00008000"
+    "low_probe_04000 0x00004000"
+    "low_probe_02000 0x00002000"
+    "low_probe_01000 0x00001000"
+  )
 elif [[ "$only_risky_low" -eq 0 ]]; then
   ranges+=(
     "known_80000000 0x80000000 0x10000"
@@ -293,13 +343,37 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 
 log "session_dir=$session_dir"
 confirm_ff80 preflight
 ping_ff80 preflight_ping
+
+if [[ "$low_watermark" -eq 1 ]]; then
+  log "Low-watermark mode uses 16-byte reads only and intentionally skips 0x00000000."
+  for spec in "${probes[@]}"; do
+    read -r label addr <<<"$spec"
+    if ! probe_address "$label" "$addr"; then
+      if [[ "$stop_on_fail" -eq 1 ]]; then
+        log "Stopping after failed probe: $label"
+        confirm_ff80 postflight || true
+        log "Summary: $summary"
+        cat "$summary" | tee -a "$manifest" >&2
+        exit 1
+      fi
+      if ! ping_ff80 "${label}_failure_recovery_ping"; then
+        log "FF80 ping failed after failed probe; stopping despite --continue-on-fail."
+        exit 1
+      fi
+    fi
+  done
+  confirm_ff80 postflight
+  log "Summary: $summary"
+  cat "$summary" | tee -a "$manifest" >&2
+  exit 0
+fi
 
 for spec in "${ranges[@]}"; do
   read -r label addr size <<<"$spec"

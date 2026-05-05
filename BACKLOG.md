@@ -273,6 +273,12 @@ Current facts:
   `0x00040000`, `0x0005c000`, `0x00060000`, `0x000a1000`, `0x000ad000`,
   `0x000e0000`, `0x000e4000`, widened globals at `0x004c0000` and
   `0x004e0000`, and continued message-pool capture at `0x005c8000`.
+- `rce/sessions/ff80_priority_dumps_20260505T000917Z` ran the low-watermark
+  probe. `0x00030000`, `0x00020000`, `0x00010000`, `0x00008000`, and
+  `0x00004000` each returned 16 bytes with post-read FF80 ping still healthy.
+  `0x00002000` timed out with `LIBUSB_ERROR_TIMEOUT`, and a follow-up active
+  FF80 `ping` also timed out. Treat `0x00004000` as the lowest verified readable
+  address from this boot, and cold boot before any further FF80 commands.
 - `scripts/ff80_analyze_dumps.sh` writes repeatable offline summaries for dump
   sessions. The current combined analysis is
   `rce/sessions/ff80_priority_dumps_20260505T000131Z/analysis.json`.
@@ -618,3 +624,26 @@ Analysis notes:
 - The scheduler/task/global gap fills are mostly sparse; preserve them as
   context, but prioritize decoding the populated code windows and message-pool
   records next.
+
+### RAM-003: Find low RAM readable boundary
+
+Status: Done
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh --low-watermark`
+as a probe-only workflow. It performs a 16-byte read at each candidate address,
+pings before and after each read, skips `0x00000000`, and stops on the first
+failed probe. Session:
+`rce/sessions/ff80_priority_dumps_20260505T000917Z`.
+
+Results:
+
+- `0x00030000` readable
+- `0x00020000` readable
+- `0x00010000` readable
+- `0x00008000` readable
+- `0x00004000` readable
+- `0x00002000` timed out with `LIBUSB_ERROR_TIMEOUT`
+
+Follow-up active FF80 `ping` also timed out after the `0x00002000` failure, so
+the camera needs a cold boot before the next FF80 command. Do not probe below
+`0x00004000` unless intentionally testing a known wedge boundary.
