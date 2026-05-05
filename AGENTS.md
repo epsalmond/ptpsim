@@ -119,6 +119,7 @@ Working as of 2026-05-04:
 - The FF80 64-bit RAM-read parameter probe is complete. `scripts/ff80_probe_64bit_ram_read.sh` showed in `rce/sessions/ff80_64bit_ram_read_20260505T012833Z` that `params[4:8]` is ignored/zeroed by the handler: probes with `high32=1` matched their `high32=0` baselines, and the camera echoed `params[4:8]` back as zero. Treat FF80 RAM read as hard 32-bit for this command path.
 - The FF80 DRHT entry sweep is complete. `scripts/ff80_drht_entry_sweep.sh` uses a scoped, user-approved `cfgdata[0xf7]` enable/restore around RAM reads. Session `rce/sessions/ff80_drht_entry_sweep_20260505T015059Z` produced a 178-row `entry_fn_map.tsv`, restored `cfgdata[0xf7]` from `0x01` to original `0x00`, recorded no read or ping failures, found 157 entry pointers in `0x01000000..0x04000000`, and dumped 64 KiB at `updatedat` entry `0x032b5a88` plus `Linux_loa` entry `0x0325ab48`.
 - DRHT-derived code-page dumping is complete for the first pass. `scripts/ff80_dump_priority_ranges.sh --drht-code-pages` in `rce/sessions/ff80_priority_dumps_20260505T020018Z` probed and dumped 18 64-KiB pages with no read or ping failures. Capstone sanity checks show dense AArch64 instructions on all pages. The outlier page `0x068b0000` also contains `FUJIFILM` and `NORMAL` strings; post-run FF80 ping succeeded in `rce/sessions/ff80_ping_20260505T020044Z`.
+- The exact `updatedat` page `0x032b0000..0x032c0000` is captured in `rce/sessions/ff80_manual_updatedat_page_20260505T020400Z`. This fills the first `0x5000` bytes missing from the earlier `updatedat_entry_032b5000.bin`; post-dump FF80 ping succeeded.
 - PTP/IP init inventory is implemented. `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` scans captured `.bin` payloads and decoded `.jsonl` traces for Fuji-shaped 82-byte `Init_Command_Request` records.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
@@ -149,6 +150,7 @@ rce/sessions/ff80_priority_dumps_20260505T003935Z                        16 GB h
 rce/sessions/ff80_64bit_ram_read_20260505T012833Z                       FF80 RAM-read high32 parameter test
 rce/sessions/ff80_drht_entry_sweep_20260505T015059Z                     DRHT entry map and updatedat/Linux_loa code dumps
 rce/sessions/ff80_priority_dumps_20260505T020018Z                       DRHT-derived code-page dumps
+rce/sessions/ff80_manual_updatedat_page_20260505T020400Z                exact 0x032b0000 updatedat page
 rce/downloads/                                                          ignored exported JPEG output
 ```
 

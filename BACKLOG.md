@@ -943,3 +943,30 @@ Results:
 
   `0x03210000`, `0x031e0000`, `0x068b0000`, `0x06920000`, `0x06930000`,
   `0x069a0000`, and `0x069b0000`.
+
+### RAM-011: Exact updatedat entry page
+
+Status: Complete
+
+Summary: Captured the exact requested `updatedat` code page
+`0x032b0000..0x032c0000`. This fills the first `0x5000` bytes that were missing
+from the prior `updatedat_entry_032b5000.bin` dump.
+
+Session: `rce/sessions/ff80_manual_updatedat_page_20260505T020400Z`
+
+Results:
+
+- Pre-probe FF80 ping succeeded.
+- 16-byte probe at `0x032b0000` returned
+  `60be06b903af00d063603a9122008052`.
+- The full `0x10000` dump completed successfully:
+  `rce/sessions/ff80_manual_updatedat_page_20260505T020400Z/dumps/updatedat_page_032b0000_032c0000.bin`.
+- SHA256:
+  `5a3ca85658278c5b2f64b67cbd892e5c926271f85bc281c181b7f36aadd26336`.
+- First 32 bytes:
+  `60be06b903af00d063603a912200805261008052c1e4ff97c3fdff17209400d0`.
+- Offline analysis: 65,536 bytes, zero ratio `0.1310`, ff ratio `0.0348`,
+  entropy `6.457`.
+- Capstone sanity check: 256 valid AArch64 instructions in the first 1 KiB,
+  including 43 branch-like instructions.
+- Post-dump FF80 ping succeeded.
