@@ -8,7 +8,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 .pytest_cache/
-.coverage
+.coverage*
 htmlcov/
 .venv/
 *.egg-info/
