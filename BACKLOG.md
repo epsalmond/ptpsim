@@ -708,3 +708,41 @@ Notes:
 - The last two probes returned all `ff` bytes, so this is sparse addressability
   evidence, not conclusive physical RAM-size proof. A real RAM-size register,
   boot memory map, or more systematic bounded reads are still needed.
+
+### RAM-006: Test board-level 16 GB RAM hypothesis
+
+Status: Done
+
+Summary: Board inspection found two Micron MT53E2G32D4DE-046 WT:C LPDDR4
+packages. Each package is 64 Gbit, so two packages imply 128 Gbit total, or
+16 GB nominal RAM. Added and ran `scripts/ff80_dump_priority_ranges.sh
+--ram-16gb-probes`.
+
+Session: `rce/sessions/ff80_priority_dumps_20260505T003935Z`
+
+Important limitation:
+
+- The current FF80 RAM read API encodes the address in a 32-bit field
+  (`params[8:12]` in `debug_read_ram`), so this probe cannot directly address
+  RAM above 4 GB. It tests visible 32-bit aperture boundaries only.
+
+Successful probes:
+
+- `0x3ffff000` returned 16 bytes, all `ff`
+- `0x40000000` returned 16 bytes, all zero
+- `0x7ffff000` returned 16 bytes, all `ff`
+- `0x80000000` returned 16 bytes, all zero
+- `0xbffff000` returned 16 bytes, all `ff`
+
+Failed probe:
+
+- `0xfffff000` timed out with `LIBUSB_ERROR_TIMEOUT`, and follow-up FF80 ping
+  also timed out. USB enumeration still showed `04cb:ff80`, but FF80 command
+  transport needs a cold boot before more commands.
+
+Follow-up:
+
+- `scripts/ff80_dump_priority_ranges.sh --ram-16gb-probes` now skips
+  `0xfffff000` by default.
+- To prove 16 GB through FF80, find a RAM-size register, a boot memory map, or a
+  64-bit/banked debug-read path. Sparse 32-bit aperture probes are not enough.

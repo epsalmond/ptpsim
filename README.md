@@ -100,6 +100,7 @@ scripts/ff80_dump_priority_ranges.sh --gap-targets
 scripts/ff80_dump_priority_ranges.sh --safe-fill-gaps
 scripts/ff80_dump_priority_ranges.sh --low-watermark
 scripts/ff80_dump_priority_ranges.sh --ram-size-probes
+scripts/ff80_dump_priority_ranges.sh --ram-16gb-probes
 scripts/ff80_dump_cfgdata.sh
 ```
 
@@ -128,6 +129,12 @@ window. It only performs 16-byte reads and currently probes known high mapped
 regions plus `0x3f000000`, `0x3ff00000`, and `0x3ffff000`. A successful probe
 is addressability evidence; it is not a substitute for a full RAM-size register
 or a complete contiguous dump.
+Use `--ram-16gb-probes` for the board-level 16 GB hypothesis. Two 64 Gbit
+LPDDR4 parts imply 128 Gbit total, or 16 GB nominal. The current FF80 RAM read
+API only encodes a 32-bit address, so this mode probes visible 32-bit aperture
+boundaries and cannot directly prove RAM above 4 GB. It skips known-wedging
+`0xfffff000` by default; only include that address intentionally with
+`--include-wedging-fffff000` after a cold boot is acceptable.
 The cfgdata wrapper is also read-only; it gates on active FF80 `ping`, records
 passive USB polling as advisory evidence, dumps `cfgdata.bin`, and writes JSON
 plus text analysis under `rce/sessions/ff80_cfgdata_<timestamp>/`.
