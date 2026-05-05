@@ -93,6 +93,7 @@ Once the camera is confirmed in active FF80 mode, collect the current read-only
 priority RAM ranges with:
 
 ```sh
+scripts/ff80_ping.sh
 scripts/ff80_dump_priority_ranges.sh
 scripts/ff80_dump_priority_ranges.sh --only-risky-low
 scripts/ff80_dump_priority_ranges.sh --next-targets
@@ -104,6 +105,11 @@ scripts/ff80_dump_priority_ranges.sh --ram-16gb-probes
 scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
 scripts/ff80_dump_cfgdata.sh
 ```
+
+Use `scripts/ff80_ping.sh` as the single-purpose active command-service check
+after camera cold boots or suspected wedges. It writes
+`rce/sessions/ff80_ping_<timestamp>/`, records passive USB enumeration as
+advisory evidence, and treats timeout/stall text as failure.
 
 The dump wrapper writes `rce/sessions/ff80_priority_dumps_<timestamp>/`, probes
 each range before dumping, pings before and after each operation, and records

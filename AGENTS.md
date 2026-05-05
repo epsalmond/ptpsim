@@ -322,6 +322,7 @@ Poll for Fuji USB modes with:
 scripts/poll_fuji_usb_devices.sh
 scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --exit-on-match
 scripts/poll_fuji_usb_devices.sh --product-id 0xff80 --interval 0
+scripts/ff80_ping.sh
 ```
 
 After the camera is confirmed in active FF80 mode, collect the current priority
