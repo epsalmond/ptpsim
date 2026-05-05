@@ -801,6 +801,14 @@ Live update:
   `0xfd000000` timed out after writing 4096 bytes and wedged FF80 ping. The
   partial dump begins with a small 16-bit table
   `0003:0001..0003:000a, 0003:0040`, then zero fill; no strings were found.
+- `rce/sessions/ff80_priority_dumps_20260505T012041Z` completed the remaining
+  default bootrom recon candidates without wedging. `0xfe000000` and
+  `0x40000000` read as all zero. `0xc0000000` read non-fill and the bounded
+  `0x10000` dump completed with post-dump ping alive. The dump is sparse data,
+  not obvious bootrom: 65536 bytes, SHA256
+  `7978b773ad11a3a9ba488673b03e7b06cfaa7cd4600308df5b9f7a706755b122`,
+  `zero=0.9910`, entropy `0.104`, no strings, and first words include
+  `00001000 00000000 00000000 00000000 00000400 ...`.
 
 Probe order:
 
@@ -835,8 +843,9 @@ Safety behavior:
   cold-boot-wedging test is intentional.
 - Runtime skip state currently carries `0xffff0000`, `0xf8000000`, and
   `0xfd000000` in `rce/state/ff80_bootrom_skip_addresses.txt` so the current
-  probe run can continue without tracked-doc churn. The next queued bootrom
-  probe address is `0xfe000000`.
+  probe run can continue without tracked-doc churn. The default bootrom recon
+  candidate list has now been exhausted except for deliberate retests of known
+  wedging addresses or smaller follow-up slices around `0xfd000000`.
 
 ### RAM-008: FF80 64-bit RAM-read parameter probe
 
