@@ -870,3 +870,29 @@ Live result:
 - Probe 5 was skipped because probes 3 and 4 proved high32 is ignored; sending
   `low32=0` would intentionally hit the known toxic low-RAM read.
 - Verdict: `32-bit hard` for this FF80 RAM-read command path.
+
+### RAM-009: DRHT task entry sweep and entry code dumps
+
+Status: Blocked by strict read-only precondition
+
+Summary: Implemented `scripts/ff80_drht_entry_sweep.sh` for the requested
+three-job read-only sweep: read DRHT names, entry functions, and entry args for
+178 task records, then dump page-aligned `updatedat` and `Linux_loa` entry
+regions if their pointers are in `0x01000000..0x04000000`.
+
+Live attempt:
+
+- Session: `rce/sessions/ff80_drht_entry_sweep_20260505T014333Z`
+- Preflight FF80 ping succeeded.
+- `cfgdata[0xf7]` read back `0x00`.
+- Strict read-only mode aborted before RAM reads because stock `ff80.py ram
+  read` would cfgdata-write this byte to enable USB debug.
+- Earlier unpatched attempt in
+  `rce/sessions/ff80_drht_entry_sweep_20260505T014243Z` confirmed the same
+  condition by trying the first read without enabling debug:
+  `jig_exception {'_mem': '0x200001', 'err1': '0x1', 'err2': '0xffff'}`.
+- Post-attempt FF80 ping remained healthy.
+
+Next decision: either allow a scoped cfgdata `0xf7=1` enable/restore around the
+sweep, or find a RAM-read command path that does not require the USB-debug
+cfgdata bit.

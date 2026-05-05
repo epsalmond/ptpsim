@@ -62,6 +62,7 @@ scripts/poll_fuji_usb_devices.sh
 scripts/ff80_dump_cfgdata.sh
 scripts/ff80_dump_priority_ranges.sh
 scripts/ff80_probe_64bit_ram_read.sh
+scripts/ff80_drht_entry_sweep.sh
 scripts/ff80_analyze_dumps.sh
 ```
 

@@ -104,6 +104,7 @@ scripts/ff80_dump_priority_ranges.sh --ram-size-probes
 scripts/ff80_dump_priority_ranges.sh --ram-16gb-probes
 scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
 scripts/ff80_probe_64bit_ram_read.sh
+scripts/ff80_drht_entry_sweep.sh
 scripts/ff80_dump_cfgdata.sh
 ```
 
