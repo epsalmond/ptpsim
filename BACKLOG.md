@@ -1044,3 +1044,29 @@ Results:
 - This window prepares and validates firmware update metadata. The actual
   ECDSA verifier wrapper starts just after the requested window at
   `0x032bb4b4`, covered by the broader `updatedat` page dumps.
+
+### RAM-014: Known syslog buffer dumps
+
+Status: Complete
+
+Summary: Added `scripts/ff80_dump_priority_ranges.sh --known-syslogs` and
+`scripts/ff80_decode_syslog_dumps.sh` to capture the known syslog RAM headers
+and render bounded binary dumps into plain-text record listings.
+
+Session: `rce/sessions/ff80_priority_dumps_20260505T023847Z`
+
+Results:
+
+- The live FF80 workflow dumped six `0x1000` windows with pre/post ping checks:
+  the five canonical syslog headers (`0x004c7000`, `0x004e7000`,
+  `0x00527000`, `0x00547000`, and `0x00567000`) plus the later safe-fill
+  candidate at `0x00507000`.
+- FF80 ping stayed healthy after every read and the device remained enumerated
+  as `04cb:ff80`.
+- Plain-text output is saved under
+  `rce/sessions/ff80_priority_dumps_20260505T023847Z/syslog_text/`, including
+  `all_syslogs.txt` and `index.tsv`.
+- Nonzero record counts from the bounded text render:
+  `0x004c7000` has `0` nonzero records; `0x004e7000`, `0x00507000`,
+  `0x00527000`, `0x00547000`, and `0x00567000` each have `201` nonzero
+  `0x14`-byte records after the header.

@@ -40,6 +40,9 @@ Options:
   --updatedat-subdispatcher
                         Dump the bounded 0x032b72cc + 0x4000 updatedat
                         subdispatcher window.
+  --known-syslogs       Dump the known syslog buffer headers as bounded RAM
+                        reads. Includes the five canonical headers plus the
+                        later 0x00507000 candidate from safe-fill analysis.
   --include-wedging-fffff000
                         Include 0xfffff000 in --ram-16gb-probes. This boundary
                         timed out live and wedged FF80 ping until cold boot.
@@ -104,6 +107,7 @@ drht_code_pages=0
 updatedat_followup=0
 updatedat_constants=0
 updatedat_subdispatcher=0
+known_syslogs=0
 include_wedging_fffff000=0
 include_wedging_fffc0000=0
 include_wedging_fff00000=0
@@ -166,6 +170,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --updatedat-subdispatcher)
       updatedat_subdispatcher=1
+      shift
+      ;;
+    --known-syslogs)
+      known_syslogs=1
       shift
       ;;
     --include-wedging-fffff000)
@@ -641,6 +649,15 @@ elif [[ "$updatedat_subdispatcher" -eq 1 ]]; then
   ranges+=(
     "updatedat_subdispatcher_032b72cc 0x032b72cc 0x4000"
   )
+elif [[ "$known_syslogs" -eq 1 ]]; then
+  ranges+=(
+    "syslog_secondary_globals_4c7000 0x004c7000 0x1000"
+    "syslog_adrp_globals_4e7000 0x004e7000 0x1000"
+    "syslog_safe_fill_candidate_507000 0x00507000 0x1000"
+    "syslog_msg_pool_527000 0x00527000 0x1000"
+    "syslog_msg_pool_547000 0x00547000 0x1000"
+    "syslog_msg_pool_567000 0x00567000 0x1000"
+  )
 elif [[ "$safe_fill_gaps" -eq 1 ]]; then
   add_chunked_range "fill_64000_9e000" 0x00064000 0x0009e000 0x10000
   ranges+=("fill_b7000_b7400 0x000b7000 0x400")
@@ -670,7 +687,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$known_syslogs" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 

@@ -64,6 +64,7 @@ scripts/ff80_dump_priority_ranges.sh
 scripts/ff80_probe_64bit_ram_read.sh
 scripts/ff80_drht_entry_sweep.sh
 scripts/ff80_analyze_dumps.sh
+scripts/ff80_decode_syslog_dumps.sh
 ```
 
 Important docs:
@@ -151,6 +152,7 @@ rce/sessions/ff80_64bit_ram_read_20260505T012833Z                       FF80 RAM
 rce/sessions/ff80_drht_entry_sweep_20260505T015059Z                     DRHT entry map and updatedat/Linux_loa code dumps
 rce/sessions/ff80_priority_dumps_20260505T020018Z                       DRHT-derived code-page dumps
 rce/sessions/ff80_manual_updatedat_page_20260505T020400Z                exact 0x032b0000 updatedat page
+rce/sessions/ff80_priority_dumps_20260505T023847Z                       known syslog RAM dumps plus plain-text render
 rce/downloads/                                                          ignored exported JPEG output
 ```
 
@@ -348,6 +350,8 @@ scripts/ff80_dump_priority_ranges.sh --low-watermark
 scripts/ff80_dump_priority_ranges.sh --ram-size-probes
 scripts/ff80_dump_priority_ranges.sh --ram-16gb-probes
 scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
+scripts/ff80_dump_priority_ranges.sh --known-syslogs
+scripts/ff80_decode_syslog_dumps.sh --session-dir rce/sessions/ff80_priority_dumps_<timestamp>
 scripts/ff80_probe_64bit_ram_read.sh
 scripts/ff80_dump_cfgdata.sh
 ```
@@ -386,6 +390,10 @@ skipped by default unless `--include-wedging-fffc0000` is deliberately passed.
 `--include-wedging-fff00000` is deliberately passed. `0xffe00000` is also a
 known-wedging probe and is skipped unless `--include-wedging-ffe00000` is
 deliberately passed.
+`--known-syslogs` captures the five canonical syslog headers plus the later
+`0x00507000` safe-fill candidate as bounded `0x1000` RAM reads.
+`scripts/ff80_decode_syslog_dumps.sh` renders those syslog RAM dumps to
+plain-text record listings under the session's `syslog_text/` directory.
 For quick live FF80 probe loops, reduce git churn: do not update tracked docs or
 commit after every single camera-wedging address. Use `--skip-address` or an
 ignored `rce/state/ff80_bootrom_skip_addresses.txt` file through
