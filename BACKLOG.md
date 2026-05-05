@@ -749,7 +749,7 @@ Follow-up:
 
 ### RAM-007: Bootrom high-zone recon probes
 
-Status: Ready, blocked on camera cold boot
+Status: In progress
 
 
 to `rce/reference/BOOTROM_RECON.md`, verified the MMU mapper sequence with
@@ -775,9 +775,20 @@ Planned command after cold boot:
 scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
 ```
 
+Live update:
+
+- `rce/sessions/ff80_priority_dumps_20260505T005518Z` showed
+  `0xfffc0000` times out on the 16-byte probe with `LIBUSB_ERROR_TIMEOUT`.
+- The immediate recovery ping also timed out, so `0xfffc0000` is now treated as
+  known-wedging and skipped by default.
+- After camera reboot, `rce/sessions/ff80_ping_20260505T010131Z` confirmed
+  active FF80 ping is present again.
+- `rce/sessions/ff80_priority_dumps_20260505T010320Z` then showed
+  `0xfff00000` also times out on the 16-byte probe and wedges FF80 ping until
+  cold boot.
+
 Probe order:
 
-- `0xfffc0000`
 - `0xfff00000`
 - `0xffe00000`
 - `0xffff0000`
@@ -791,6 +802,12 @@ Probe order:
 Safety behavior:
 
 - Each target gets a 16-byte read and FF80 ping first.
+- The known-wedging `0xfffc0000` candidate is skipped by default; only pass
+  `--include-wedging-fffc0000` when a deliberate cold-boot-wedging retest is
+  needed.
+- The known-wedging `0xfff00000` candidate is skipped by default; only pass
+  `--include-wedging-fff00000` when a deliberate cold-boot-wedging retest is
+  needed.
 - If the 16-byte probe is all zero or all `ff`, the script records the probe
   and skips the dump.
 - If the probe is mixed/non-fill, the script dumps the bounded chunk.
