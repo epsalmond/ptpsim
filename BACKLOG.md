@@ -746,3 +746,55 @@ Follow-up:
   `0xfffff000` by default.
 - To prove 16 GB through FF80, find a RAM-size register, a boot memory map, or a
   64-bit/banked debug-read path. Sparse 32-bit aperture probes are not enough.
+
+### RAM-007: Bootrom high-zone recon probes
+
+Status: Ready, blocked on camera cold boot
+
+
+to `rce/reference/BOOTROM_RECON.md`, verified the MMU mapper sequence with
+Capstone against local dump
+`rce/sessions/ff80_priority_dumps_20260504T235319Z/dumps/dispatch_table_59000_ext_00059000_0005c000.bin`,
+and added `scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes`.
+
+Verification notes:
+
+- The BL calls at `0x59124..0x59248` target `0x58f6c`.
+- The `(base, size)` mapping interpretation is correct, but the copied note's
+  second low range should be read as `0x40000000 + 0x80000000`, ending at
+  `0xc0000000`, not `0x80000000`.
+- The high candidate region `0xf8000000..0xffff0000` is verified from the local
+
+- A simple local MOVK scan found many `0xff900000` construction sites in the
+  dumped code windows, confirming that `0xff900000` is a hot MMIO cluster to
+  avoid for bootrom reads.
+
+Planned command after cold boot:
+
+```sh
+scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
+```
+
+Probe order:
+
+- `0xfffc0000`
+- `0xfff00000`
+- `0xffe00000`
+- `0xffff0000`
+- `0xf8000000`
+- `0xfc000000`
+- `0xfd000000`
+- `0xfe000000`
+- `0xc0000000`
+- `0x40000000`
+
+Safety behavior:
+
+- Each target gets a 16-byte read and FF80 ping first.
+- If the 16-byte probe is all zero or all `ff`, the script records the probe
+  and skips the dump.
+- If the probe is mixed/non-fill, the script dumps the bounded chunk.
+- Most candidates use `0x10000` bytes.
+- The `0xffff0000` candidate uses `0xf000` bytes by default to avoid the known
+  wedging `0xfffff000` page. Do not pass `--include-wedging-fffff000` unless a
+  cold-boot-wedging test is intentional.

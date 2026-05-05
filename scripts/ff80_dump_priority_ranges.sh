@@ -26,9 +26,15 @@ Options:
                         to test the 512 MiB DDR-window hypothesis.
   --ram-16gb-probes     Probe sparse 32-bit aperture boundaries with 16-byte
                         reads to test the 16 GB hardware hypothesis limits.
+  --bootrom-recon-probes
+                        Probe likely bootrom/MMIO high-zone addresses with
+                        16-byte reads; dump 64 KiB only for non-zero/non-FF
+                        probe bytes.
   --include-wedging-fffff000
                         Include 0xfffff000 in --ram-16gb-probes. This boundary
                         timed out live and wedged FF80 ping until cold boot.
+                        Also allows --bootrom-recon-probes to dump through the
+                        final 0xfffff000 page.
   --safe-fill-gaps      Fill known uncovered low-map gaps while deliberately
                         excluding the hazardous 0x00002000..0x00040000 range.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
@@ -65,6 +71,7 @@ gap_targets=0
 low_watermark=0
 ram_size_probes=0
 ram_16gb_probes=0
+bootrom_recon_probes=0
 include_wedging_fffff000=0
 safe_fill_gaps=0
 stop_on_fail=1
@@ -102,6 +109,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ram-16gb-probes)
       ram_16gb_probes=1
+      shift
+      ;;
+    --bootrom-recon-probes)
+      bootrom_recon_probes=1
       shift
       ;;
     --include-wedging-fffff000)
@@ -310,8 +321,78 @@ probe_address() {
   ls -l "$probe_path" | tee -a "$manifest" >&2
 }
 
+probe_then_dump_if_interesting() {
+  local label="$1"
+  local addr="$2"
+  local dump_size="$3"
+  local addr_name
+  local end_name
+  addr_name="$(addr_token "$addr")"
+  end_name="$(range_end_token "$addr" "$dump_size")"
+  local probe_path="$session_dir/probes/${label}_${addr_name}_probe_10.bin"
+  local dump_path="$session_dir/dumps/${label}_${addr_name}_${end_name}.bin"
+
+  log "=== $label addr=0x$addr_name probe_size=0x10 conditional_dump=0x$(printf '%x' "$(( dump_size ))") ==="
+
+  if ! ping_ff80 "${label}_pre_ping"; then
+    record "$label" "$addr" 0x10 "" "failed" "" "" "pre_ping_failed"
+    return 1
+  fi
+
+  if ! run_ff80_logged "${label}_probe" ram read "0x$addr_name" -s 0x10 -o "$probe_path"; then
+    record "$label" "$addr" 0x10 "" "failed" "$probe_path" "" "probe_failed"
+    return 1
+  fi
+
+  if ! ping_ff80 "${label}_post_probe_ping"; then
+    record "$label" "$addr" 0x10 "" "failed" "$probe_path" "" "post_probe_ping_failed"
+    return 1
+  fi
+
+  local probe_hex
+  local probe_sha
+  local probe_bytes
+  probe_hex="$(od -An -tx1 -v "$probe_path" | tr -d ' \n')"
+  probe_sha="$(shasum -a 256 "$probe_path" | awk '{print $1}')"
+  probe_bytes="$(file_size_bytes "$probe_path")"
+  if [[ "$probe_hex" == "00000000000000000000000000000000" ]]; then
+    record "$label" "$addr" 0x10 "$probe_bytes" "ok" "$probe_path" "$probe_sha" "probe_all_zero_skip_dump"
+    ls -l "$probe_path" | tee -a "$manifest" >&2
+    return 0
+  fi
+  if [[ "$probe_hex" == "ffffffffffffffffffffffffffffffff" ]]; then
+    record "$label" "$addr" 0x10 "$probe_bytes" "ok" "$probe_path" "$probe_sha" "probe_all_ff_skip_dump"
+    ls -l "$probe_path" | tee -a "$manifest" >&2
+    return 0
+  fi
+
+  log "Probe was non-zero/non-FF; dumping 0x$(printf '%x' "$(( dump_size ))") bytes."
+  if ! run_ff80_logged "${label}_dump" ram dump "0x$addr_name" -s "0x$(printf '%x' "$(( dump_size ))")" -o "$dump_path"; then
+    record "$label" "$addr" "$dump_size" "" "failed" "$dump_path" "" "dump_failed"
+    return 1
+  fi
+
+  if ! ping_ff80 "${label}_post_dump_ping"; then
+    record "$label" "$addr" "$dump_size" "" "failed" "$dump_path" "" "post_dump_ping_failed"
+    return 1
+  fi
+
+  local dump_sha
+  local actual_bytes
+  local note
+  dump_sha="$(shasum -a 256 "$dump_path" | awk '{print $1}')"
+  actual_bytes="$(file_size_bytes "$dump_path")"
+  note="dumped_after_interesting_probe"
+  if [[ "$actual_bytes" -ne "$(( dump_size ))" ]]; then
+    note="dumped_after_interesting_probe_actual_size_differs_from_requested"
+  fi
+  record "$label" "$addr" "$dump_size" "$actual_bytes" "ok" "$dump_path" "$dump_sha" "$note"
+  ls -l "$probe_path" "$dump_path" | tee -a "$manifest" >&2
+}
+
 ranges=()
 probes=()
+conditional_probes=()
 
 add_chunked_range() {
   local prefix="$1"
@@ -387,6 +468,23 @@ elif [[ "$ram_16gb_probes" -eq 1 ]]; then
   if [[ "$include_wedging_fffff000" -eq 1 ]]; then
     probes+=("known_wedging_4g_minus_page_fffff000 0xfffff000")
   fi
+elif [[ "$bootrom_recon_probes" -eq 1 ]]; then
+  final_64k_dump_size=0xf000
+  if [[ "$include_wedging_fffff000" -eq 1 ]]; then
+    final_64k_dump_size=0x10000
+  fi
+  conditional_probes+=(
+    "bootrom_top_256k_fffc0000 0xfffc0000 0x10000"
+    "bootrom_top_1m_fff00000 0xfff00000 0x10000"
+    "bootrom_top_2m_ffe00000 0xffe00000 0x10000"
+    "bootrom_final_64k_ffff0000 0xffff0000 $final_64k_dump_size"
+    "bootrom_high_zone_start_f8000000 0xf8000000 0x10000"
+    "bootrom_high_zone_mid_fc000000 0xfc000000 0x10000"
+    "bootrom_high_zone_mid_fd000000 0xfd000000 0x10000"
+    "bootrom_high_zone_mid_fe000000 0xfe000000 0x10000"
+    "bootrom_upper_kernel_c0000000 0xc0000000 0x10000"
+    "bootrom_mid_dram_40000000 0x40000000 0x10000"
+  )
 elif [[ "$safe_fill_gaps" -eq 1 ]]; then
   add_chunked_range "fill_64000_9e000" 0x00064000 0x0009e000 0x10000
   ranges+=("fill_b7000_b7400 0x000b7000 0x400")
@@ -416,7 +514,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 
@@ -452,6 +550,37 @@ if [[ "$low_watermark" -eq 1 || "$ram_size_probes" -eq 1 || "$ram_16gb_probes" -
       fi
       if [[ "$stop_on_fail" -eq 1 ]]; then
         log "Stopping after failed probe: $label"
+        confirm_ff80 postflight || true
+        log "Summary: $summary"
+        cat "$summary" | tee -a "$manifest" >&2
+        exit 1
+      fi
+    fi
+  done
+  confirm_ff80 postflight
+  log "Summary: $summary"
+  cat "$summary" | tee -a "$manifest" >&2
+  exit 0
+fi
+
+if [[ "$bootrom_recon_probes" -eq 1 ]]; then
+  log "Bootrom recon mode probes likely high-zone bootrom addresses."
+  log "It only dumps when the 16-byte probe is neither all zero nor all FF."
+  if [[ "$include_wedging_fffff000" -eq 0 ]]; then
+    log "The 0xffff0000 conditional dump is limited to 0xf000 bytes to avoid known-wedging 0xfffff000."
+  fi
+  for spec in "${conditional_probes[@]}"; do
+    read -r label addr dump_size <<<"$spec"
+    if ! probe_then_dump_if_interesting "$label" "$addr" "$dump_size"; then
+      if ! ping_ff80 "${label}_failure_recovery_ping"; then
+        log "FF80 ping failed after failed bootrom probe; stopping."
+        confirm_ff80 postflight || true
+        log "Summary: $summary"
+        cat "$summary" | tee -a "$manifest" >&2
+        exit 1
+      fi
+      if [[ "$stop_on_fail" -eq 1 ]]; then
+        log "Stopping after failed bootrom probe: $label"
         confirm_ff80 postflight || true
         log "Summary: $summary"
         cat "$summary" | tee -a "$manifest" >&2
