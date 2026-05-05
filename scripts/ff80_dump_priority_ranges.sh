@@ -9,6 +9,8 @@ Usage:
 Options:
   --session-dir DIR     Output directory. Default:
                         rce/sessions/ff80_priority_dumps_<utc timestamp>.
+  --lock-path PATH      Camera USB lock path. Default:
+                        $HOME/fuji/locks/camera-usb.lock.
   --include-risky-low   Include low ThreadX runtime ranges below 0x00100000.
                         These are useful, but an earlier 0x00000000 read
                         wedged FF80 until reboot. Default: skip them.
@@ -30,6 +32,15 @@ Options:
                         Probe likely bootrom/MMIO high-zone addresses with
                         16-byte reads; dump 64 KiB only for non-zero/non-FF
                         probe bytes.
+  --high-zone-4k-probes
+                        Read the requested 4 KiB high-zone pages at
+                        0xf8000000, 0xf9000000, 0xfa000000, 0xfb000000,
+                        and 0xfc000000. Known-wedging 0xf8000000 is skipped
+                        unless --include-wedging-f8000000 is supplied. Does
+                        not touch 0xfa200000 or 0xfe000000.
+  --rawdebug-cluster    Dump the 4 KiB page at 0x011ab000 containing the
+                        static RawDebug Mode / "Master of Puppets" string
+                        cluster candidate at 0x011abe64.
   --drht-code-pages     Probe DRHT-derived code pages with 16-byte reads; dump
                         64 KiB only for non-zero/non-FF probe bytes.
   --updatedat-followup  Dump updatedat follow-up code/data pages needed to
@@ -50,6 +61,26 @@ Options:
   --f0011-upstream-followup
                         Dump mandatory F-0011 upstream-caller follow-up state:
                         0x02608000 + 0x1000 for Getter B bitmask context.
+  --persona-selector    Dump FF80 USB-persona selector candidates, including
+                        low normal-PID code, ICE BOOT check, runtime identity
+                        block, cfgdata-init gap, and sibling PID-immediate
+                        sites.
+  --persona-selector-neighbor-probe
+                        Probe 0x047f9000 with a 16-byte read only, as the
+                        optional neighboring page check for the persona-selector
+                        investigation.
+  --usb-task-followup   Dump USB task entry/global candidates found by the
+                        persona evidence scan: DRHT usb entry page plus
+                        usb/usbcont descriptor-context and runtime globals.
+  --usb-task-globals-followup
+                        Dump the second-stage USB task globals/callback tables
+                        referenced by the usb task entry code.
+  --usb-core-callback-followup
+                        Dump USB-core callback code and constant/data pages
+                        referenced by the USB task/global follow-up.
+  --usb-core-continuation-followup
+                        Dump the next USB-core callback code page and runtime
+                        state page reached from the first callback follow-up.
   --include-f0011-upstream-contingent
                         Include all Tier 2 F-0011 upstream code extensions.
                         Implies --f0011-upstream-followup.
@@ -84,6 +115,11 @@ Options:
                         Include 0xffe00000 in --bootrom-recon-probes. This
                         address timed out live on a 16-byte read and wedged
                         FF80 ping until cold boot, so it is skipped by default.
+  --include-wedging-f8000000
+                        Include 0xf8000000 in --bootrom-recon-probes or
+                        --high-zone-4k-probes. This address timed out live on
+                        a 16-byte read and wedged FF80 ping until cold boot, so
+                        it is skipped by default.
   --skip-address HEX    Skip any queued probe/range with this start address.
                         May be repeated. Useful for batching crash findings
                         without editing this script after every wedge.
@@ -119,6 +155,7 @@ python_bin="${PYTHON_BIN:-$repo_root/.venv/bin/python}"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 
+lock_path="${CAMERA_USB_LOCK_PATH:-$HOME/fuji/locks/camera-usb.lock}"
 include_risky_low=0
 only_risky_low=0
 next_targets=0
@@ -127,6 +164,8 @@ low_watermark=0
 ram_size_probes=0
 ram_16gb_probes=0
 bootrom_recon_probes=0
+high_zone_4k_probes=0
+rawdebug_cluster=0
 drht_code_pages=0
 updatedat_followup=0
 updatedat_constants=0
@@ -134,6 +173,12 @@ updatedat_subdispatcher=0
 verifier_bypass_followup=0
 include_verifier_bypass_optional=0
 f0011_upstream_followup=0
+persona_selector=0
+persona_selector_neighbor_probe=0
+usb_task_followup=0
+usb_task_globals_followup=0
+usb_core_callback_followup=0
+usb_core_continuation_followup=0
 include_f0011_upstream_03200000=0
 include_f0011_upstream_03240000=0
 include_f0011_upstream_03260000=0
@@ -145,6 +190,7 @@ include_wedging_fffff000=0
 include_wedging_fffc0000=0
 include_wedging_fff00000=0
 include_wedging_ffe00000=0
+include_wedging_f8000000=0
 safe_fill_gaps=0
 stop_on_fail=1
 skip_addresses=()
@@ -154,6 +200,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --session-dir)
       session_dir="$2"
+      shift 2
+      ;;
+    --lock-path)
+      lock_path="$2"
       shift 2
       ;;
     --include-risky-low)
@@ -189,6 +239,14 @@ while [[ $# -gt 0 ]]; do
       bootrom_recon_probes=1
       shift
       ;;
+    --high-zone-4k-probes)
+      high_zone_4k_probes=1
+      shift
+      ;;
+    --rawdebug-cluster)
+      rawdebug_cluster=1
+      shift
+      ;;
     --drht-code-pages)
       drht_code_pages=1
       shift
@@ -216,6 +274,30 @@ while [[ $# -gt 0 ]]; do
       ;;
     --f0011-upstream-followup)
       f0011_upstream_followup=1
+      shift
+      ;;
+    --persona-selector)
+      persona_selector=1
+      shift
+      ;;
+    --persona-selector-neighbor-probe)
+      persona_selector_neighbor_probe=1
+      shift
+      ;;
+    --usb-task-followup)
+      usb_task_followup=1
+      shift
+      ;;
+    --usb-task-globals-followup)
+      usb_task_globals_followup=1
+      shift
+      ;;
+    --usb-core-callback-followup)
+      usb_core_callback_followup=1
+      shift
+      ;;
+    --usb-core-continuation-followup)
+      usb_core_continuation_followup=1
       shift
       ;;
     --include-f0011-upstream-contingent)
@@ -274,6 +356,10 @@ while [[ $# -gt 0 ]]; do
       include_wedging_ffe00000=1
       shift
       ;;
+    --include-wedging-f8000000)
+      include_wedging_f8000000=1
+      shift
+      ;;
     --skip-address)
       skip_addresses+=("$2")
       shift 2
@@ -306,6 +392,38 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
 if [[ ! -x "$python_bin" ]]; then
   echo "missing python executable: $python_bin" >&2
   exit 1
@@ -335,7 +453,7 @@ for skip_address_file in "${skip_address_files[@]}"; do
   done <"$skip_address_file"
 done
 
-mkdir -p "$session_dir/probes" "$session_dir/dumps" "$session_dir/logs"
+mkdir -p "$session_dir/probes" "$session_dir/dumps" "$session_dir/logs" "$(dirname "$lock_path")"
 summary="$session_dir/summary.tsv"
 manifest="$session_dir/manifest.txt"
 
@@ -686,14 +804,30 @@ elif [[ "$bootrom_recon_probes" -eq 1 ]]; then
   if [[ "$include_wedging_ffe00000" -eq 1 ]]; then
     conditional_probes+=("known_wedging_bootrom_top_2m_ffe00000 0xffe00000 0x10000")
   fi
+  if [[ "$include_wedging_f8000000" -eq 1 ]]; then
+    conditional_probes+=("known_wedging_high_zone_start_f8000000 0xf8000000 0x10000")
+  fi
   conditional_probes+=(
     "bootrom_final_64k_ffff0000 0xffff0000 $final_64k_dump_size"
-    "bootrom_high_zone_start_f8000000 0xf8000000 0x10000"
     "bootrom_high_zone_mid_fc000000 0xfc000000 0x10000"
     "bootrom_high_zone_mid_fd000000 0xfd000000 0x10000"
     "bootrom_high_zone_mid_fe000000 0xfe000000 0x10000"
     "bootrom_upper_kernel_c0000000 0xc0000000 0x10000"
     "bootrom_mid_dram_40000000 0x40000000 0x10000"
+  )
+elif [[ "$high_zone_4k_probes" -eq 1 ]]; then
+  if [[ "$include_wedging_f8000000" -eq 1 ]]; then
+    ranges+=("known_wedging_high_zone_page_f8000000 0xf8000000 0x1000")
+  fi
+  ranges+=(
+    "high_zone_page_f9000000 0xf9000000 0x1000"
+    "high_zone_page_fa000000 0xfa000000 0x1000"
+    "high_zone_page_fb000000 0xfb000000 0x1000"
+    "high_zone_page_fc000000 0xfc000000 0x1000"
+  )
+elif [[ "$rawdebug_cluster" -eq 1 ]]; then
+  ranges+=(
+    "rawdebug_string_cluster_011ab000 0x011ab000 0x1000"
   )
 elif [[ "$drht_code_pages" -eq 1 ]]; then
   conditional_probes+=(
@@ -765,6 +899,43 @@ elif [[ "$f0011_upstream_followup" -eq 1 ]]; then
   if [[ "$include_f0011_upstream_03260000" -eq 1 ]]; then
     ranges+=("f0011_upstream_code_03260000 0x03260000 0x10000")
   fi
+elif [[ "$persona_selector" -eq 1 ]]; then
+  ranges+=(
+    "persona_normal_pid_low_00009000 0x00009000 0x2000"
+    "persona_ice_boot_0000b000 0x0000b000 0x1000"
+    "persona_identity_block_000e0000 0x000e0000 0x4000"
+    "persona_cfgdata_init_gap_021dc000 0x021dc000 0x4000"
+    "persona_normal_pid_high_02949000 0x02949000 0x2000"
+    "persona_ff80_static_00073000 0x00073000 0x2000"
+  )
+elif [[ "$persona_selector_neighbor_probe" -eq 1 ]]; then
+  probes+=(
+    "persona_53d1_neighbor_047f9000 0x047f9000"
+  )
+elif [[ "$usb_task_followup" -eq 1 ]]; then
+  ranges+=(
+    "usb_task_entry_0304d000 0x0304d000 0x4000"
+    "usb_descriptor_context_024c0000 0x024c0000 0x10000"
+    "usbcont_descriptor_context_0254b000 0x0254b000 0x3000"
+    "usbcont_counter_023d7000 0x023d7000 0x1000"
+    "usbcont_runtime_globals_04865000 0x04865000 0x1000"
+  )
+elif [[ "$usb_task_globals_followup" -eq 1 ]]; then
+  ranges+=(
+    "usb_task_runtime_table_0477b000 0x0477b000 0x2000"
+    "usb_task_runtime_flags_0485f000 0x0485f000 0x1000"
+  )
+elif [[ "$usb_core_callback_followup" -eq 1 ]]; then
+  ranges+=(
+    "usb_core_callbacks_030ef000 0x030ef000 0x3000"
+    "usb_task_constants_0378e000 0x0378e000 0x1000"
+    "usb_task_buffer_04299000 0x04299000 0x1000"
+  )
+elif [[ "$usb_core_continuation_followup" -eq 1 ]]; then
+  ranges+=(
+    "usb_core_callbacks_cont_030f2000 0x030f2000 0x2000"
+    "usb_core_runtime_state_0477e000 0x0477e000 0x1000"
+  )
 elif [[ "$known_syslogs" -eq 1 ]]; then
   ranges+=(
     "syslog_secondary_globals_4c7000 0x004c7000 0x1000"
@@ -807,15 +978,21 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$verifier_bypass_followup" -eq 0 && "$f0011_upstream_followup" -eq 0 && "$known_syslogs" -eq 0 && "$linux_kernel_hunt" -eq 0 && "$linux_kernel_complete" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$high_zone_4k_probes" -eq 0 && "$rawdebug_cluster" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$verifier_bypass_followup" -eq 0 && "$f0011_upstream_followup" -eq 0 && "$persona_selector" -eq 0 && "$persona_selector_neighbor_probe" -eq 0 && "$usb_task_followup" -eq 0 && "$usb_task_globals_followup" -eq 0 && "$usb_core_callback_followup" -eq 0 && "$usb_core_continuation_followup" -eq 0 && "$known_syslogs" -eq 0 && "$linux_kernel_hunt" -eq 0 && "$linux_kernel_complete" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 
 log "session_dir=$session_dir"
+if ! mkdir "$lock_path" 2>/dev/null; then
+  log "camera USB lock is held or unavailable: $lock_path"
+  exit 1
+fi
+trap 'rmdir "$lock_path" 2>/dev/null || true' EXIT
+
 confirm_ff80 preflight
 ping_ff80 preflight_ping
 
-if [[ "$low_watermark" -eq 1 || "$ram_size_probes" -eq 1 || "$ram_16gb_probes" -eq 1 ]]; then
+if [[ "$low_watermark" -eq 1 || "$ram_size_probes" -eq 1 || "$ram_16gb_probes" -eq 1 || "$persona_selector_neighbor_probe" -eq 1 ]]; then
   if [[ "$low_watermark" -eq 1 ]]; then
     log "Low-watermark mode uses 16-byte reads only and intentionally skips 0x00000000."
   fi
@@ -830,6 +1007,9 @@ if [[ "$low_watermark" -eq 1 || "$ram_size_probes" -eq 1 || "$ram_16gb_probes" -
     if [[ "$include_wedging_fffff000" -eq 0 ]]; then
       log "Skipping known-wedging 0xfffff000. Use --include-wedging-fffff000 only intentionally."
     fi
+  fi
+  if [[ "$persona_selector_neighbor_probe" -eq 1 ]]; then
+    log "Persona-selector neighboring-page mode uses a 16-byte read only."
   fi
   for spec in "${probes[@]}"; do
     read -r label addr <<<"$spec"

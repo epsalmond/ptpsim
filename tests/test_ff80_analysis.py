@@ -92,6 +92,206 @@ def test_qword_table_summary():
     assert summary["sample_pointer_like"] == [{"offset": 8, "address": 0xED008, "value": 0x57000}]
 
 
+def test_persona_selector_pattern_scan_and_formatting(tmp_path):
+    def movz_w(imm: int, register: int = 0) -> int:
+        return 0x52800000 | (imm << 5) | register
+
+    def movn_w(imm: int, register: int = 0, shift: int = 0) -> int:
+        return 0x12800000 | ((shift // 16) << 21) | (imm << 5) | register
+
+    def bl_from_to(address: int, target: int) -> int:
+        return 0x94000000 | (((target - address) >> 2) & 0x03FFFFFF)
+
+    base = 0x00100000
+    data = bytearray(0x60)
+    struct.pack_into("<I", data, 0x00, movz_w(0xFF80, 3))
+    struct.pack_into("<I", data, 0x04, movz_w(0x02FE, 4))
+    struct.pack_into("<I", data, 0x08, movz_w(0x1234, 5))
+    struct.pack_into("<I", data, 0x0C, movn_w(0xFF80, 2, shift=16))
+    struct.pack_into("<I", data, 0x10, movz_w(0x00D8, 0))
+    struct.pack_into("<I", data, 0x18, bl_from_to(base + 0x18, 0x0158BFC8))
+    struct.pack_into("<I", data, 0x30, movz_w(0x00D8, 1))
+    struct.pack_into("<I", data, 0x34, bl_from_to(base + 0x34, 0x0158C000))
+    struct.pack_into("<I", data, 0x38, movz_w(0x00D8, 2))
+    struct.pack_into("<I", data, 0x3C, bl_from_to(base + 0x3C, 0x015C5FC0))
+    dump = tmp_path / "persona_test_00100000_00100060.bin"
+    dump.write_bytes(data)
+
+    summary = ff80_analysis.analyze_dump_file(dump)
+    text = ff80_analysis.format_summary_text({"files": [summary]})
+
+    assert ff80_analysis.decode_move_wide_w(0x32800000) is None
+    assert summary["persona_selector_patterns"] == [
+        {
+            "offset": 0,
+            "address": base,
+            "kind": "ff80_pid_ff80_load",
+            "instruction": "movz_w_imm",
+            "register": 3,
+            "immediate": 0xFF80,
+            "shift": 0,
+            "word": movz_w(0xFF80, 3),
+        },
+        {
+            "offset": 4,
+            "address": base + 4,
+            "kind": "normal_pid_02fe_load",
+            "instruction": "movz_w_imm",
+            "register": 4,
+            "immediate": 0x02FE,
+            "shift": 0,
+            "word": movz_w(0x02FE, 4),
+        },
+        {
+            "offset": 0x0C,
+            "address": base + 0x0C,
+            "kind": "ff80_pid_ff80_load",
+            "instruction": "movn_w_imm",
+            "register": 2,
+            "immediate": 0xFF80,
+            "shift": 16,
+            "word": movn_w(0xFF80, 2, shift=16),
+        },
+        {
+            "offset": 0x10,
+            "address": base + 0x10,
+            "kind": "cfgdata_0d8_getter_candidate",
+            "instruction": "movz_w_imm",
+            "register": 0,
+            "immediate": 0x00D8,
+            "shift": 0,
+            "word": movz_w(0x00D8, 0),
+            "following_bl_calls": [
+                {
+                    "offset": 0x18,
+                    "address": base + 0x18,
+                    "target": 0x0158BFC8,
+                    "match": "cfgdata_getter_0158bfc8",
+                }
+            ],
+        },
+        {
+            "offset": 0x30,
+            "address": base + 0x30,
+            "kind": "cfgdata_0d8_getter_candidate",
+            "instruction": "movz_w_imm",
+            "register": 1,
+            "immediate": 0x00D8,
+            "shift": 0,
+            "word": movz_w(0x00D8, 1),
+            "following_bl_calls": [
+                {
+                    "offset": 0x34,
+                    "address": base + 0x34,
+                    "target": 0x0158C000,
+                    "match": "cfgdata_getter_range_0158xxxx",
+                }
+            ],
+        },
+    ]
+    assert "persona_patterns:" in text
+    assert "0x00100010:cfgdata_0d8_getter_candidate:w0->[0x0158bfc8:cfgdata_getter_0158bfc8]" in text
+
+
+def test_cfgdata_getter_caller_and_usb_evidence_scan(tmp_path):
+    def movz_w(imm: int, register: int = 0) -> int:
+        return 0x52800000 | (imm << 5) | register
+
+    def bl_from_to(address: int, target: int) -> int:
+        return 0x94000000 | (((target - address) >> 2) & 0x03FFFFFF)
+
+    base = 0x00200000
+    data = bytearray(0x100)
+    struct.pack_into("<I", data, 0x20, movz_w(0x00D8, 0))
+    struct.pack_into("<I", data, 0x28, bl_from_to(base + 0x28, 0x0158BFC8))
+    data[0x50 : 0x58] = b"USB_TSK\x00"
+    data[0x70 : 0x70 + 14] = bytes.fromhex("1201000280730740cb0480ff0001")
+    dump = tmp_path / "persona_scan_00200000_00200100.bin"
+    dump.write_bytes(data)
+
+    evidence = ff80_analysis.build_persona_evidence([dump])
+    text = ff80_analysis.format_persona_evidence_text(evidence)
+
+    assert evidence["cfgdata_getter"]["direct_call_count"] == 1
+    assert evidence["cfgdata_getter"]["tag_0d8_candidate_count"] == 1
+    caller = evidence["cfgdata_getter"]["tag_0d8_candidates"][0]
+    assert caller["address"] == base + 0x28
+    assert caller["nearest_arg_tag_load"]["tag"] == "persona_selector_candidate_00d8"
+    assert evidence["usb_runtime"]["text_hit_count"] == 1
+    assert evidence["usb_runtime"]["raw_hit_count"] == 3
+    assert "tag_0d8_candidates=1" in text
+    assert "USB_TSK" in text
+    assert "ff80_device_descriptor" in text
+
+
+def test_persona_evidence_edge_branches(tmp_path):
+    def movz_w(imm: int, register: int = 0) -> int:
+        return 0x52800000 | (imm << 5) | register
+
+    def bl_from_to(address: int, target: int) -> int:
+        return 0x94000000 | (((target - address) >> 2) & 0x03FFFFFF)
+
+    assert ff80_analysis.decode_interesting_move_wide(movz_w(0x1234)) is None
+    assert ff80_analysis.scan_usb_runtime_evidence(b"plain ascii\x00", 0)["text_hits"] == []
+    assert ff80_analysis.scan_pointer_references([], []) == []
+
+    unknown = tmp_path / "unknown.bin"
+    unknown.write_bytes(struct.pack("<Q", 0x1000))
+    assert ff80_analysis.scan_pointer_references([unknown], [0x1000]) == []
+
+    many_refs = tmp_path / "many_refs_00002000_00003000.bin"
+    many_targets = [0x12345000 + index for index in range(16)]
+    many_refs.write_bytes(b"".join(struct.pack("<Q", target) * 20 for target in many_targets))
+    assert len(ff80_analysis.scan_pointer_references([many_refs], many_targets)) == 256
+
+    base = 0x00300000
+    no_arg = bytearray(0x40)
+    struct.pack_into("<I", no_arg, 0x20, bl_from_to(base + 0x20, 0x0158BFC8))
+    no_arg_dump = tmp_path / "no_arg_00300000_00300040.bin"
+    no_arg_dump.write_bytes(no_arg)
+
+    long_usb = tmp_path / "long_usb_00400000_00400100.bin"
+    long_usb.write_bytes((b"USB_" + (b"A" * 100) + b"\x00").ljust(0x100, b"\x00"))
+
+    pointer = tmp_path / "pointer_00500000_00500020.bin"
+    pointer.write_bytes(struct.pack("<Q", 0x00400000))
+
+    evidence = ff80_analysis.build_persona_evidence([no_arg_dump, long_usb, pointer, unknown])
+    text = ff80_analysis.format_persona_evidence_text(evidence)
+
+    assert evidence["files_scanned"] == 3
+    assert evidence["cfgdata_getter"]["direct_call_count"] == 1
+    assert "no_nearby_known_tag_load" in text
+    assert "USB_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA..." in text
+    assert "u64 -> 0x00400000" in text
+
+
+def test_session_root_persona_evidence_main(tmp_path, capsys):
+    session = tmp_path / "sessions" / "ff80_test" / "dumps"
+    session.mkdir(parents=True)
+    dump = session / "usb_00001000_00001020.bin"
+    dump.write_bytes(b"USB_PC\x00" + bytes(0x19))
+    output = tmp_path / "evidence.json"
+
+    assert (
+        ff80_analysis.main(
+            [
+                "--persona-evidence",
+                "--session-root",
+                str(tmp_path / "sessions"),
+                "--output-json",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert "FF80 persona-selector evidence scan" in captured.out
+    assert "usb_runtime=text_hits=1" in captured.out
+    assert json.loads(output.read_text())["files_scanned"] == 1
+
+
 def test_cfgdata_summary_and_formatting(tmp_path):
     data = bytearray(0x140)
     data[0xA2] = 0x02

@@ -1277,3 +1277,292 @@ Tier 2 decision:
   `--include-f0011-upstream-03260000`,
   `--include-f0011-upstream-031c0000`, or
   `--include-f0011-upstream-contingent`.
+
+### RAM-019: FF80 USB-persona selector candidate dump
+
+Status: Complete for requested first pass
+
+Summary: Added and ran `scripts/ff80_dump_priority_ranges.sh
+--persona-selector` for the requested USB-persona selector and
+`cfgdata[0x0d8]` read-site candidate ranges. The script now also holds the
+standard camera USB lock for priority-range jobs, and
+`rce.tools.fuji_ble_gps.ff80_analysis` scans dump files for AArch64
+move-wide immediates related to `0x02fe`, `0xff80`, and `0x00d8`, including
+`0x00d8` loads followed by calls into the known cfgdata getter range.
+
+Sessions:
+
+- `rce/sessions/ff80_persona_selector_20260505T042401Z`
+- `rce/sessions/ff80_persona_selector_probe_20260505T042615Z`
+
+Results:
+
+- All six candidate dumps completed with status `ok` and all pre/post FF80
+  pings succeeded:
+  - `persona_normal_pid_low_00009000` @ `0x00009000 + 0x2000`, SHA256
+    `87e8d535bc4bfc73c5c897c84e8a32fb066cbd1a9973ef8f2302d3ba892a62b0`.
+  - `persona_ice_boot_0000b000` @ `0x0000b000 + 0x1000`, SHA256
+    `71e73c60dd2618dd919a91e25ca8200f2a84305740348dc5ad243a22bb31fa8d`.
+  - `persona_identity_block_000e0000` @ `0x000e0000 + 0x4000`, SHA256
+    `c76e5693c9178014c5d07286d48c0863cbc13e03d4ee42b967b8fe57cea1152f`.
+  - `persona_cfgdata_init_gap_021dc000` @ `0x021dc000 + 0x4000`, SHA256
+    `d6e44ebb6015d7af87069f39b5481fad828589300760d7fd2e98090fe033a7e2`.
+  - `persona_normal_pid_high_02949000` @ `0x02949000 + 0x2000`, SHA256
+    `55c7eee02e599f89b4438148580f26382588f9105075e8a0f452195b1321110a`.
+  - `persona_ff80_static_00073000` @ `0x00073000 + 0x2000`, SHA256
+    `9915a428f7b9130acb782e2e47b7cbad4fb9712996c5a55b8b5b176ea8085ed4`.
+- Offline persona-pattern scan found no `0x02fe`, `0xff80`, or `0x00d8`
+  move-wide immediate hits in the six dumps.
+- Raw byte/string sweep found no literal `04cb`, `02fe`, `ff80`,
+  `GFX100 II`, `FUJIFILM`, `FF80`, `ICE BOOT`, or `ICEBOOT` hits in the
+  six dumps.
+- The optional neighboring-page probe at `0x047f9000` returned 16 zero bytes,
+  SHA256 `374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb`,
+  so no follow-up dump is warranted for that page in this live state.
+
+Analysis artifacts:
+
+- `rce/sessions/ff80_persona_selector_20260505T042401Z/persona_selector_analysis.json`
+- `rce/notes/ff80_usb_persona_selector.md`
+
+Next investigation:
+
+- The requested static-offset-to-runtime guesses did not hit the selector. The
+  next pass pivoted to callers of the cfgdata getter `0x0158bfc8` and runtime
+  USB task/descriptor globals; see RAM-020.
+
+### RAM-020: FF80 USB task and cfgdata[0x0d8] selector follow-up
+
+Status: Complete for this pass
+
+Summary: Added and ran repeatable follow-up modes for the USB task path that
+the persona evidence scanner found. The live reads followed DRHT `usbcont  `
+and `usb      ` task entries into runtime globals, callback tables, constants,
+and continuation pages. The selector was not found.
+
+Sessions:
+
+- `rce/sessions/ff80_persona_selector_scan_20260505T043705Z`
+- `rce/sessions/ff80_usb_task_followup_20260505T043928Z`
+- `rce/sessions/ff80_usb_task_globals_followup_20260505T044316Z`
+- `rce/sessions/ff80_usb_core_callback_followup_20260505T044445Z`
+- `rce/sessions/ff80_usb_core_continuation_followup_20260505T044755Z`
+- `rce/sessions/ff80_persona_selector_scan_20260505T044846Z`
+
+Script additions:
+
+- `scripts/ff80_scan_persona_selector_evidence.sh`
+- `scripts/ff80_dump_priority_ranges.sh --usb-task-followup`
+- `scripts/ff80_dump_priority_ranges.sh --usb-task-globals-followup`
+- `scripts/ff80_dump_priority_ranges.sh --usb-core-callback-followup`
+- `scripts/ff80_dump_priority_ranges.sh --usb-core-continuation-followup`
+
+Results:
+
+- Full corpus scan `ff80_persona_selector_scan_20260505T044846Z` scanned 612
+  dump files and found 922 direct calls to cfgdata getter `0x0158bfc8`, with
+  `tag_0d8_candidates=0`.
+- The same scan found known cfgdata sites including `0x01c5`, `0x53d1`,
+  `0x00f7`, `0x0238`, `0x0080`, and `0x4065`, so the negative `0x0d8` result
+  is meaningful for the current corpus.
+- Follow-up dumps completed with no read failures and no post-read FF80 ping
+  failures:
+  - `usb_task_entry_0304d000` @ `0x0304d000 + 0x4000`, SHA256
+    `a7b699b08349a6681cb3becc5527d15c2df855b719eda0a9e014271cf888acd9`.
+  - `usb_descriptor_context_024c0000` @ `0x024c0000 + 0x10000`, SHA256
+    `bf6aad71d498d15939527ec822b1a1355784e24cc2473346ce2a02c082f9f092`.
+  - `usbcont_descriptor_context_0254b000` @ `0x0254b000 + 0x3000`, SHA256
+    `1af929243114dced837dda2d83515c5fd2d4149218cb5b313ce27e9a36b3d37e`.
+  - `usbcont_counter_023d7000` @ `0x023d7000 + 0x1000`, SHA256
+    `ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7`.
+  - `usbcont_runtime_globals_04865000` @ `0x04865000 + 0x1000`, SHA256
+    `4bf5791530a0b7f1f7faeb07bef56846f24e525e00c94d15a8482ef804a8b379`.
+  - `usb_task_runtime_table_0477b000` @ `0x0477b000 + 0x2000`, SHA256
+    `df0d3de8f65686cb1a8c5c1d0cf845b28da1f90502c39c13fb52b6c2857d4c8c`.
+  - `usb_task_runtime_flags_0485f000` @ `0x0485f000 + 0x1000`, SHA256
+    `6ff48a959c8b122db11471fa6aadbb1630364174fc8c746ba43a158ef9b76512`.
+  - `usb_core_callbacks_030ef000` @ `0x030ef000 + 0x3000`, SHA256
+    `a4fe991845994948d7a3860d574dfce20bc7d7236285431df1c699d4d78b43a5`.
+  - `usb_task_constants_0378e000` @ `0x0378e000 + 0x1000`, SHA256
+    `653a2cae9147126a40d3bbaeee5289a3ef04d30b2c14c743b0c3220ae2ca9b3d`.
+  - `usb_task_buffer_04299000` @ `0x04299000 + 0x1000`, SHA256
+    `62f05f18787e581385f3857fe43e6650f2b831186cc495503ecad2f6dd0f63cf`.
+  - `usb_core_callbacks_cont_030f2000` @ `0x030f2000 + 0x2000`, SHA256
+    `9c82d16e69ddfdff3785717fbd0e1ce381fa331c63dc99ae432b530c3a2c5073`.
+  - `usb_core_runtime_state_0477e000` @ `0x0477e000 + 0x1000`, SHA256
+    `dd6f4e92cf0390d31eac2b2b28124df3a1046cc5dc6d6eaf2a2a79c508dbf6ac`.
+- The raw `ff80` hit at `0x0304f6f4` is instruction bytes for
+  `cbnz w0, 0x0304f6e4`, not a PID literal.
+- The apparent `0x00d8` hits at `0x030f1450` and `0x030f16e0` are
+
+  `0x015c5fc0` confirms byte-fill/memset behavior.
+- The USB-core path is active USB command/runtime handling. It has cfgdata
+  gates and state reads, but no evidence that it selects the USB persona.
+
+Next investigation:
+
+- Use `rce/notes/ff80_usb_persona_selector.md` as the current handoff.
+- Add reconstructed `movz`/`movk` constant tracking before cfgdata getter calls
+  so tags such as `0x01060028..0x0106002b` are labeled instead of reported as
+  unknown.
+- Pivot back to static/runtime matching for PID descriptor-builder code. Do not
+  take more broad USB task dumps without a concrete cross-reference.
+
+### RAM-021: High-zone 4 KiB FF80 probes
+
+Status: Complete for safe default set; `0xf8000000` remains known-wedging
+
+Summary: Added `scripts/ff80_dump_priority_ranges.sh --high-zone-4k-probes`
+for the requested 4 KiB high-zone reads at `0xf8000000`, `0xf9000000`,
+`0xfa000000`, `0xfb000000`, and `0xfc000000`, while deliberately avoiding
+`0xfa200000` and `0xfe000000`. The first run proved `0xf8000000` is
+known-wedging, so the script now skips it unless
+`--include-wedging-f8000000` is supplied. After cold boot, the default run
+captured the remaining four pages successfully.
+
+Sessions:
+
+- `rce/sessions/ff80_high_zone_4k_20260505T045601Z`
+- Post-failure ping session: `rce/sessions/ff80_ping_20260505T045616Z`
+- Resume session after cold boot: `rce/sessions/ff80_high_zone_4k_20260505T045837Z`
+
+Results:
+
+- The first 16-byte safety read at `0xf8000000` timed out with
+  `USB timeout: LIBUSB_ERROR_TIMEOUT [-7]`.
+- The script stopped immediately before touching `0xf9000000`, `0xfa000000`,
+  `0xfb000000`, or `0xfc000000`.
+- USB enumeration still showed `04cb:ff80`, but post-failure FF80 ping also
+  timed out. Treat this as a command-transport wedge requiring cold boot.
+- `0xf8000000` is now gated behind `--include-wedging-f8000000` for
+  `--high-zone-4k-probes` and `--bootrom-recon-probes`.
+- After reboot, `scripts/ff80_dump_priority_ranges.sh --high-zone-4k-probes`
+  skipped `0xf8000000` and captured:
+  - `high_zone_page_f9000000` @ `0xf9000000 + 0x1000`, SHA256
+    `86e6c1eea20c4b9ba03949e6535e3b19ac770d5cb7f4487973efbfc8514caca8`.
+    Sparse/nonzero: zero ratio `0.9724`, entropy `0.317`. First words:
+    `87192150 06041000 01020801 00000000`.
+  - `high_zone_page_fa000000` @ `0xfa000000 + 0x1000`, SHA256
+    `6d2037878b64ab2dde06c3d339e08090848e11f9dd05de3f913216bf82a7229e`.
+    Sparse/nonzero: zero ratio `0.9607`, `0xff` ratio `0.0142`, entropy
+    `0.392`. First words: `37000000 70047900 3b140100 00000000`.
+  - `high_zone_page_fb000000` @ `0xfb000000 + 0x1000`, SHA256
+    `ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7`.
+    All zero.
+  - `high_zone_page_fc000000` @ `0xfc000000 + 0x1000`, SHA256
+    `ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7`.
+    All zero.
+- The resume run had successful FF80 pings after every read and dump.
+
+Next investigation:
+
+- Preserve `0xf8000000` on the known-wedging list. Only use
+  `--include-wedging-f8000000` if intentionally reproducing the wedge.
+- Treat `0xf9000000` and `0xfa000000` as the only positive high-zone 4 KiB
+  findings from this pass; analyze or cross-reference them before attempting
+  wider high-zone reads.
+
+### RAM-022: RawDebug / Master of Puppets static-vs-live check
+
+Status: Complete for first live check
+
+Summary: Added `scripts/ff80_dump_priority_ranges.sh --rawdebug-cluster` and
+dumped the 4 KiB live page at `0x011ab000..0x011ac000`, which covers the static
+`Master of Puppets` string offset `0x011abe64` from the NAS
+`BOOT_MODE_HUNT.md` note.
+
+Sessions/artifacts:
+
+- Live FF80 session: `rce/sessions/ff80_rawdebug_cluster_20260505T050623Z`
+- Live dump:
+  `rce/sessions/ff80_rawdebug_cluster_20260505T050623Z/dumps/rawdebug_string_cluster_011ab000_011ab000_011ac000.bin`
+- Static NAS slice:
+  `rce/sessions/ff80_rawdebug_cluster_20260505T050623Z/static_threadx_011ab000_011ac000.bin`
+- Handoff note: `rce/notes/rawdebug_master_of_puppets.md`
+
+Results:
+
+- Live dump completed successfully, SHA256
+  `d68fd5bd095c0740c84740f42a959ddf87c44cd8135d84a4e58063870189b62b`.
+- Post-read FF80 ping succeeded in `rce/sessions/ff80_ping_20260505T050702Z`.
+- Static slice from `/home/eric/fuji/threadx_main.bin` has SHA256
+  `7b9d5155992a9e7104ea604c17bd0ee8d2a9903d8e05dbccf943b8d88fa4bfe9`.
+- The static slice contains the expected RawDebug string cluster:
+  - `0x011abd81`: `address`
+  - `0x011abd89`: `write OK key`
+  - `0x011abd98`: `RawDebug Mode`
+  - `0x011abdb4`: `EEPROM...`
+  - `0x011abdc5`: `UI:playback_yc`
+  - `0x011abdd5`: `WBManual`
+  - `0x011abe47`: `REC_INPUT`
+  - `0x011abe5b`: `BAT`
+  - `0x011abe64`: ` Master of Puppets. `
+- The live page at the same address contains none of those printable strings.
+- Static and live pages differ substantially: 4031 differing bytes across
+  57 runs.
+
+Interpretation:
+
+- `0x011abe64` is confirmed as a static decoded ThreadX image offset, but not
+  as the live RAM address for that string cluster in the current FF80 state.
+- `Master of Puppets` still appears to be a developer easter egg/signature
+  adjacent to the RawDebug service UI strings, not a command or gate itself.
+
+Next investigation:
+
+- Find the live runtime mapping for the static fragment-interpreter pages
+  before taking more single-address dumps in the `0x011xxxxx` string region.
+
+  than normal string-xref assumptions.
+
+### RAM-023: FF80 RAM-write / cafebabe execution proof
+
+Status: Planned, not run
+
+Summary: Plan the next non-read-only FF80 milestone: write a magic u32
+`0xcafebabe` to RAM, place a minimal payload into a controlled execution path,
+and verify execution through a separate FF80 RAM read. Handoff note:
+`rce/notes/ff80_magic_execution_probe.md`.
+
+Important current facts:
+
+- The local FF80 client exposes `ff80.py ram write ADDRESS DATA`, implemented
+  by `debug_write_ram()` using command `0x200001`, subcommand `3`.
+- The parser advertises `hack load/exec`, but neither the local copy nor the
+  NAS upstream copy has a `cmd_hack` implementation. Treat direct dynamic-call
+  support as missing until recovered or reimplemented.
+- Use little-endian u32-only magic: bytes `bebafeca`.
+- Use `0x004f1000` as the scratch-address candidate because the safe-fill
+  session showed `0x004f0000..0x00500000` as zero-filled. A live script must
+  still read it fresh and abort if the target bytes are nonzero.
+- Verification must be external: run FF80 RAM read/dump after the trigger and
+  inspect the scratch bytes. Do not count payload stdout or host assumptions as
+  proof.
+
+Required safety:
+
+- Acquire the standard camera USB lock.
+- Ping before every state-changing operation.
+- Back up all original bytes/pointers before writes.
+- Restore on exit for any reversible hook stage.
+- Stop on timeout or ping failure.
+- Do not run cfgdata save, firmware write, flash write, upload, or persistent
+  changes.
+
+Preferred stage order:
+
+1. RAM write/read/restore proof at `0x004f1000`.
+2. Direct execution proof only after a real FF80 dynamic-call primitive is
+   recovered or implemented; do not guess missing `hack` opcodes.
+3. One-shot reversible USB callback hook before any scheduler hook. Scheduler
+   insertion is deferred until a simpler callback proof restores cleanly.
+
+Next implementation:
+
+- Add `scripts/ff80_magic_exec_probe.sh` with `--dry-run`,
+  `--stage ram-write`, `--stage direct-exec`, and `--stage hook-once`.
+- Save artifacts in `rce/sessions/ff80_magic_exec_<timestamp>/`: before/after
+  scratch reads, payload bytes/source, original patch bytes, `summary.tsv`, and
+  `manifest.txt`.
+- Add tests around command ordering, backup/restore behavior, abort-on-ping
+  failure, and magic-byte generation.

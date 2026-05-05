@@ -65,6 +65,7 @@ scripts/ff80_probe_64bit_ram_read.sh
 scripts/ff80_drht_entry_sweep.sh
 scripts/ff80_analyze_dumps.sh
 scripts/ff80_decode_syslog_dumps.sh
+scripts/ff80_scan_persona_selector_evidence.sh
 ```
 
 Important docs:
@@ -74,6 +75,9 @@ CONNECTION_STATES.md
 rce/notes/laptop_ble_gps.md
 rce/reference/GFX100II_PAIRING_NAME_FIRMWARE_NOTES.md
 rce/reference/BOOTROM_RECON.md
+rce/notes/ff80_magic_execution_probe.md
+rce/notes/ff80_usb_persona_selector.md
+rce/notes/rawdebug_master_of_puppets.md
 rce/reference/APP_ACTION_ENUMERATION.md
 rce/reference/APP_LIVE_HANDOFF.md
 rce/reference/ff80/README.local.md
@@ -124,6 +128,10 @@ Working as of 2026-05-04:
 - The running Linux kernel has been found and the live ARM64 Image span has been captured from FF80 RAM. `scripts/ff80_dump_priority_ranges.sh --linux-kernel-hunt` in `rce/sessions/ff80_priority_dumps_20260505T025033Z` captured `0x08000000..0x08600000` as 96 clean 64-KiB chunks. `linux_kernel_hunt_scan.txt/json` found a plausible ARM64 Image header at `0x08080000` with magic `ARMd`, `text_offset=0x80000`, `image_size=0x1b1f000`, and the live string `Linux version 4.9.92 (oe-user@oe-host) (gcc version 7.3.0 (GCC) ) #2 SMP PREEMPT Thu Jun 26 15:51:01 JST 2025` at `0x08500050`. `scripts/ff80_dump_priority_ranges.sh --linux-kernel-complete` in `rce/sessions/ff80_kernel_complete_20260505T034826Z` captured the remaining `0x08600000..0x09ba0000` tail as 346 clean chunks. The assembled image artifact is `rce/sessions/ff80_kernel_complete_20260505T034826Z/live_kernel_image_08080000_09b9f000.bin`, `28,438,528` bytes, SHA256 `28081f3be102e344dda7c21e07203d6a7afeac423083723952ad9bdb9dc6e764`.
 - F-0011 verifier-bypass follow-up dumping is complete for the mandatory ranges. `scripts/ff80_dump_priority_ranges.sh --verifier-bypass-followup` in `rce/sessions/ff80_followup_20260505T030604Z` captured `0x01588000..0x01590000`, `0x015dc000..0x015e0000`, `0x047f8000..0x047f9000`, and `0x015c0000..0x015d0000` with no read or ping failures. `f0011_followup_analysis.txt/json` confirms `0x0158bfc8` loads the cfgdata base pointer from `[0x022600a8]` and returns byte `[base + tag]` for ordinary tags, while `0x0158c1ac` is the matching byte writer. The second getter `0x015dc188` is a bitmask gate using `[0x026082ec]`, not a byte-table getter. The requested `0x047f8000` page for the `0x53d1` gate is entirely zero in this live state, including `[0x047f8148]`.
 - F-0011 upstream follow-up Tier 1 is complete. `scripts/ff80_dump_priority_ranges.sh --f0011-upstream-followup` in `rce/sessions/ff80_upstream_20260505T033032Z` captured `0x02608000..0x02609000` with no read or ping failures. `f0011_upstream_analysis.txt/json` shows `[0x026082ec] == 0x00000000`, so Getter B returns false for both observed arguments `0x13` and `0x08`. A local direct-BL scan found cfgdata-writer call sites only in already captured pages (`0x01588000..0x01590000`, `0x015d0000..0x015e0000`, and `0x03230000..0x03240000`), so no Tier 2 upstream code chunk was dumped.
+- FF80 USB-persona selector candidate dumping and the first runtime USB follow-up are complete; see `rce/notes/ff80_usb_persona_selector.md`. `scripts/ff80_dump_priority_ranges.sh --persona-selector` in `rce/sessions/ff80_persona_selector_20260505T042401Z` captured the requested static-offset candidate ranges with no read or ping failures, but did not find the selector. Runtime follow-up modes now exist for the traced USB task path: `--usb-task-followup`, `--usb-task-globals-followup`, `--usb-core-callback-followup`, and `--usb-core-continuation-followup`. The full scan in `rce/sessions/ff80_persona_selector_scan_20260505T044846Z` scanned 612 dumps and found 922 direct calls to cfgdata getter `0x0158bfc8`, with `tag_0d8_candidates=0`. The apparent `0x00d8` hits in the USB-core callback page are byte-fill lengths for `0x015c5fc0`, not cfgdata tags. Treat `cfgdata[0x0d8] = 0x80` as still plausible but unconfirmed.
+- FF80 high-zone 4 KiB probing is complete for the safe default set; `0xf8000000` remains known-wedging. `scripts/ff80_dump_priority_ranges.sh --high-zone-4k-probes` in `rce/sessions/ff80_high_zone_4k_20260505T045601Z` timed out on the first 16-byte safety read at `0xf8000000`; post-failure ping also timed out while USB still enumerated as `04cb:ff80`, so the script now skips that address unless `--include-wedging-f8000000` is supplied. After cold boot, `rce/sessions/ff80_high_zone_4k_20260505T045837Z` captured `0xf9000000`, `0xfa000000`, `0xfb000000`, and `0xfc000000` as 4 KiB pages with successful pings after every read/dump. `0xf9000000` and `0xfa000000` were sparse/nonzero; `0xfb000000` and `0xfc000000` were all zero.
+- RawDebug / `Master of Puppets` is documented in `rce/notes/rawdebug_master_of_puppets.md`. Static NAS slice `/home/eric/fuji/threadx_main.bin[0x011ab000..0x011ac000]` confirms `RawDebug Mode` at static offset `0x011abd98` and ` Master of Puppets. ` at `0x011abe64`. Live FF80 dump `scripts/ff80_dump_priority_ranges.sh --rawdebug-cluster` in `rce/sessions/ff80_rawdebug_cluster_20260505T050623Z` captured `0x011ab000..0x011ac000` successfully and post-read ping succeeded, but the live page contains none of those strings and differs from the static slice in 4031 bytes. Treat `0x011abe64` as a static decoded-image offset, not a proven live RAM address; continue via fragment-interpreter/runtime-mapping work.
+- The next FF80 milestone is planned but not run: a reversible RAM-write / code-execution proof that writes little-endian u32 magic `0xcafebabe` (`bebafeca`) to a scratch address and verifies it with a separate FF80 RAM read. See `rce/notes/ff80_magic_execution_probe.md`. The candidate scratch address is `0x004f1000` because prior safe-fill evidence showed `0x004f0000..0x00500000` as zero-filled, but any live script must still read it fresh and abort if it is nonzero. The local and NAS `ff80.py` parser advertises `hack load/exec`, but no `cmd_hack` implementation exists in the copied tool, so do not assume direct dynamic-call support until that path is recovered or reimplemented. Prefer a reversible USB callback hook before any scheduler hook; scheduler insertion is deferred until a one-shot callback proof restores cleanly.
 - PTP/IP init inventory is implemented. `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` scans captured `.bin` payloads and decoded `.jsonl` traces for Fuji-shaped 82-byte `Init_Command_Request` records.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
@@ -361,8 +369,17 @@ scripts/ff80_dump_priority_ranges.sh --linux-kernel-hunt
 scripts/ff80_dump_priority_ranges.sh --linux-kernel-complete
 scripts/ff80_dump_priority_ranges.sh --verifier-bypass-followup
 scripts/ff80_dump_priority_ranges.sh --f0011-upstream-followup
+scripts/ff80_dump_priority_ranges.sh --persona-selector
+scripts/ff80_dump_priority_ranges.sh --persona-selector-neighbor-probe
+scripts/ff80_dump_priority_ranges.sh --usb-task-followup
+scripts/ff80_dump_priority_ranges.sh --usb-task-globals-followup
+scripts/ff80_dump_priority_ranges.sh --usb-core-callback-followup
+scripts/ff80_dump_priority_ranges.sh --usb-core-continuation-followup
+scripts/ff80_dump_priority_ranges.sh --high-zone-4k-probes
+scripts/ff80_dump_priority_ranges.sh --rawdebug-cluster
 scripts/ff80_decode_syslog_dumps.sh --session-dir rce/sessions/ff80_priority_dumps_<timestamp>
 scripts/ff80_scan_linux_kernel_hunt.sh --session-dir rce/sessions/ff80_priority_dumps_<timestamp>
+scripts/ff80_scan_persona_selector_evidence.sh
 scripts/ff80_probe_64bit_ram_read.sh
 scripts/ff80_dump_cfgdata.sh
 ```
@@ -421,8 +438,22 @@ install context.
 `--include-f0011-upstream-03200000`, `--include-f0011-upstream-03240000`,
 `--include-f0011-upstream-03260000`, `--include-f0011-upstream-031c0000`, or
 `--include-f0011-upstream-contingent`.
+`--persona-selector` and the USB follow-up modes capture the current
+USB-persona selector investigation; the latest evidence is summarized in
+`rce/notes/ff80_usb_persona_selector.md`. `scripts/ff80_scan_persona_selector_evidence.sh`
+is offline and scans existing dumps for cfgdata getter calls, `0x0d8` tag
+loads, USB strings, and VID/PID descriptor byte patterns.
+`--high-zone-4k-probes` captures the safe high-zone 4 KiB default set and
+skips known-wedging `0xf8000000` unless `--include-wedging-f8000000` is passed.
+`--rawdebug-cluster` captures the live page corresponding to the static
+RawDebug / `Master of Puppets` candidate offset; see
+`rce/notes/rawdebug_master_of_puppets.md`.
 `scripts/ff80_decode_syslog_dumps.sh` renders those syslog RAM dumps to
 plain-text record listings under the session's `syslog_text/` directory.
+FF80 RAM-write/code-execution work is not part of the read-only priority dump
+wrapper. Treat it as a separate explicit live milestone with fresh approval,
+backup/restore, external RAM-read verification, and no cfgdata save, firmware
+write, flash write, or persistent change.
 For quick live FF80 probe loops, reduce git churn: do not update tracked docs or
 commit after every single camera-wedging address. Use `--skip-address` or an
 ignored `rce/state/ff80_bootrom_skip_addresses.txt` file through
