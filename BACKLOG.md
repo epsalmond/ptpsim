@@ -268,9 +268,14 @@ Current facts:
   `--next-targets` set in ascending RAM address order: the earlier
   task-slot/dispatch windows plus backlog ranges `0x00044000`, `0x00059000`,
   `0x0005e000`, `0x000a9000`, `0x004c7000`, and `0x004e7000`.
+- `rce/sessions/ff80_priority_dumps_20260505T000131Z` captured the `--gap-targets`
+  set in ascending RAM address order. It filled code/runtime gaps at
+  `0x00040000`, `0x0005c000`, `0x00060000`, `0x000a1000`, `0x000ad000`,
+  `0x000e0000`, `0x000e4000`, widened globals at `0x004c0000` and
+  `0x004e0000`, and continued message-pool capture at `0x005c8000`.
 - `scripts/ff80_analyze_dumps.sh` writes repeatable offline summaries for dump
   sessions. The current combined analysis is
-  `rce/sessions/ff80_priority_dumps_20260504T235319Z/analysis.json`.
+  `rce/sessions/ff80_priority_dumps_20260505T000131Z/analysis.json`.
 - The analyzer reports two ThreadX byte pools (`uiMPL001` at `0x000a0d60` and
   `uiMPL002` at `0x000a0df8`), `syslog Ver 3.0` in the first three
   message-pool windows, 194 nonempty `0x230` task-record slots out of 300 in
@@ -582,3 +587,34 @@ Execution order:
 - 0x000ed000 + 0x2000
 - 0x004c7000 + 0x1000
 - 0x004e7000 + 0x1000
+
+### RAM-002: Fill next low-memory and global gaps
+
+Status: Done
+
+Summary: Captured in ascending RAM address order with
+`scripts/ff80_dump_priority_ranges.sh --gap-targets` in
+`rce/sessions/ff80_priority_dumps_20260505T000131Z`.
+
+Execution order:
+
+- 0x00040000 + 0x4000
+- 0x0005c000 + 0x2000
+- 0x00060000 + 0x4000
+- 0x000a1000 + 0x8000
+- 0x000ad000 + 0xa000
+- 0x000e0000 + 0x1000
+- 0x000e4000 + 0xa000
+- 0x004c0000 + 0x10000
+- 0x004e0000 + 0x10000
+- 0x005c8000 + 0x40000
+
+Analysis notes:
+
+- `0x00040000..0x00044000` and `0x0005c000..0x0005e000` are populated and look
+  worth decoding with the adjacent `0x00044000..0x0005c000` code/data region.
+- `0x005c8000..0x00608000` is mostly zero but has 2324 nonempty message-pool
+  stride records.
+- The scheduler/task/global gap fills are mostly sparse; preserve them as
+  context, but prioritize decoding the populated code windows and message-pool
+  records next.

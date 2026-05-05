@@ -17,6 +17,9 @@ Options:
   --next-targets        Dump the follow-up RAM targets in ascending address
                         order: backlog ADRP/code/data ranges plus the earlier
                         task slot and boot-populated dispatch-table ranges.
+  --gap-targets         Dump the next RAM gaps around populated code/runtime
+                        windows, widened globals, and the next message-pool
+                        continuation.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
   --continue-on-fail    Continue after a failed range if FF80 ping still works.
   -h, --help            Show this help.
@@ -47,6 +50,7 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 include_risky_low=0
 only_risky_low=0
 next_targets=0
+gap_targets=0
 stop_on_fail=1
 
 while [[ $# -gt 0 ]]; do
@@ -66,6 +70,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --next-targets)
       next_targets=1
+      shift
+      ;;
+    --gap-targets)
+      gap_targets=1
       shift
       ;;
     --stop-on-fail)
@@ -249,6 +257,19 @@ if [[ "$next_targets" -eq 1 ]]; then
     "secondary_globals_4c7000 0x004c7000 0x1000"
     "adrp_globals_4e7000 0x004e7000 0x1000"
   )
+elif [[ "$gap_targets" -eq 1 ]]; then
+  ranges+=(
+    "pre_code_context_40000 0x00040000 0x4000"
+    "bridge_5c000_5e000 0x0005c000 0x2000"
+    "post_threadx_strings_60000 0x00060000 0x4000"
+    "scheduler_to_a9000_gap_a1000 0x000a1000 0x8000"
+    "a9000_to_task_records_gap_ad000 0x000ad000 0xa000"
+    "task_tail_to_slots_bridge_e0000 0x000e0000 0x1000"
+    "post_task_slots_gap_e4000 0x000e4000 0xa000"
+    "secondary_globals_wide_4c0000 0x004c0000 0x10000"
+    "adrp_globals_wide_4e0000 0x004e0000 0x10000"
+    "msg_pool_5c8000_continuation 0x005c8000 0x40000"
+  )
 elif [[ "$only_risky_low" -eq 0 ]]; then
   ranges+=(
     "known_80000000 0x80000000 0x10000"
@@ -272,7 +293,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 

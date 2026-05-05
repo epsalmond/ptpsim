@@ -111,7 +111,7 @@ Working as of 2026-05-04:
 - Standard `GetObject` is live-tested. `rce/sessions/ptpip_probe_20260504T003935Z` downloaded handle `0x0000000c` into `get_object_payload.jpg`; `file` recognizes it as a 4000x3000 Fujifilm GFX100 II Exif JPEG. The camera did not send a final PTP OK response before timeout after the complete JPEG payload, so the state is `camera_ap_ptpip_get_object_data_ok_no_response`.
 - Object export is scripted. `scripts/ptpip_export_object.sh --session-dir rce/sessions/ptpip_probe_<timestamp> --output-dir rce/downloads/manual_export` validates JPEG SOI/EOI, writes a named JPEG, and writes a sidecar JSON manifest. `scripts/camera_ap_download_object.sh --handle 0x0000000c ...` wraps the combined AP/PTP flow, requests ObjectInfo and GetObject, then exports the validated JPEG when the flow succeeds.
 - USB probing is started. In normal USB PTP mode, the GFX100 II enumerates as `04cb:02fe`; `gphoto2 --auto-detect` sees `Fuji Fujifilm GFX100 II` after macOS PTP helper contention is handled. `scripts/poll_fuji_usb_devices.sh` uses fast libusb enumeration to watch for Fuji vendor `04cb` devices without claiming them or sending commands. The copied FF80 reference tool now supports `--product-id`. Against normal `04cb:02fe`, the FF80 vendor transport stalls at `open_session` with `LIBUSB_ERROR_PIPE`, including recipients `other`, `interface`, `device`, and `endpoint`. In active FF80 mode, the camera enumerated as `04cb:ff80`; FF80 `ping`, `nop`, `info`, `cfgdata read 0x100 -s 0x60`, full `cfgdata dump`, and `dummy` bulk-read test all succeeded read-only. A bounded RAM dump from `0x80000000` through `0x80003fff` also succeeded after reboot; a prior read from `0x00000000` timed out and left the FF80 command transport unresponsive until reboot/re-entry. `scripts/ff80_dump_priority_ranges.sh` now captures priority read-only RAM ranges with per-range probe reads and FF80 ping checks before and after each dump. Safe priority ranges, low ThreadX runtime ranges, task slot tables, selected dispatch-table windows, and the backlog RAM targets completed successfully in active FF80 mode. The wrapper records both requested size and actual bytes because upstream `ff80.py ram dump` reads in `0x100` chunks; a non-aligned task-record request wrote through the next chunk boundary.
-- FF80 dump analysis is scripted. `scripts/ff80_analyze_dumps.sh --session-dir ... --output-json ...` summarizes byte ratios, known strings, message-pool records, ThreadX byte pools, task-record runs, qword-table samples, and cfgdata summaries. Current analysis found two ThreadX byte pools (`uiMPL001` and `uiMPL002`), `syslog Ver 3.0` in the first three message-pool windows, 194 nonempty `0x230` task-record slots out of 300 in the captured range, a populated `0x57000` window that currently looks code/literal-like rather than a simple qword pointer table, and zeroed `0xea000`/`0xed000` windows in this boot. The combined next-target dump in `rce/sessions/ff80_priority_dumps_20260504T235319Z` added populated `0x44000..0x5c000` windows, `uiMPL`/`syslog Ver 3.0`/`ThreadX` strings near `0x5e000`, sparse `0xa9000` and `0x4c7000` data, and zeroed `0xea000`/`0xed000` windows.
+- FF80 dump analysis is scripted. `scripts/ff80_analyze_dumps.sh --session-dir ... --output-json ...` summarizes byte ratios, known strings, message-pool records, ThreadX byte pools, task-record runs, qword-table samples, and cfgdata summaries. Current analysis found two ThreadX byte pools (`uiMPL001` and `uiMPL002`), `syslog Ver 3.0` in the first three message-pool windows, 194 nonempty `0x230` task-record slots out of 300 in the captured range, a populated `0x57000` window that currently looks code/literal-like rather than a simple qword pointer table, and zeroed `0xea000`/`0xed000` windows in this boot. The combined next-target dump in `rce/sessions/ff80_priority_dumps_20260504T235319Z` added populated `0x44000..0x5c000` windows, `uiMPL`/`syslog Ver 3.0`/`ThreadX` strings near `0x5e000`, sparse `0xa9000` and `0x4c7000` data, and zeroed `0xea000`/`0xed000` windows. The gap-target dump in `rce/sessions/ff80_priority_dumps_20260505T000131Z` filled ten adjacent/widened ranges; analysis found populated `0x40000..0x44000` and `0x5c000..0x5e000`, mostly sparse scheduler/task/global gaps, and a mostly-zero `0x5c8000..0x608000` message-pool continuation with 2324 nonempty stride records.
 - PTP/IP init inventory is implemented. `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` scans captured `.bin` payloads and decoded `.jsonl` traces for Fuji-shaped 82-byte `Init_Command_Request` records.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
@@ -134,6 +134,7 @@ rce/sessions/ff80_priority_dumps_20260504T232251Z                        task sl
 rce/sessions/ff80_analysis_20260504T232251Z/analysis.json                parsed FF80 dump summary
 rce/sessions/ff80_cfgdata_20260504T234744Z                               full FF80 cfgdata dump and analysis
 rce/sessions/ff80_priority_dumps_20260504T235319Z                        combined next-target FF80 RAM dumps
+rce/sessions/ff80_priority_dumps_20260505T000131Z                        gap-target FF80 RAM dumps
 rce/downloads/                                                          ignored exported JPEG output
 ```
 
@@ -324,6 +325,7 @@ RAM ranges with:
 scripts/ff80_dump_priority_ranges.sh
 scripts/ff80_dump_priority_ranges.sh --only-risky-low
 scripts/ff80_dump_priority_ranges.sh --next-targets
+scripts/ff80_dump_priority_ranges.sh --gap-targets
 scripts/ff80_dump_cfgdata.sh
 ```
 
@@ -333,6 +335,9 @@ session summaries under `rce/sessions/ff80_priority_dumps_<timestamp>/`.
 `--next-targets` executes the combined follow-up set in ascending RAM address
 order: `0x00044000`, `0x00057000`, `0x00059000`, `0x0005e000`, `0x000a9000`,
 `0x000e1000`, `0x000ea000`, `0x000ed000`, `0x004c7000`, and `0x004e7000`.
+`--gap-targets` executes the next gap-fill set in ascending RAM address order:
+`0x00040000`, `0x0005c000`, `0x00060000`, `0x000a1000`, `0x000ad000`,
+`0x000e0000`, `0x000e4000`, `0x004c0000`, `0x004e0000`, and `0x005c8000`.
 If the poller sees `04cb:ff80` but FF80 `ping` times out, stop and cold-reboot
 the camera before retrying; that state was observed after a wedged transport.
 The cfgdata wrapper is also read-only. It uses active FF80 `ping` as the gate,
