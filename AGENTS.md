@@ -121,7 +121,7 @@ Working as of 2026-05-04:
 - The FF80 DRHT entry sweep is complete. `scripts/ff80_drht_entry_sweep.sh` uses a scoped, user-approved `cfgdata[0xf7]` enable/restore around RAM reads. Session `rce/sessions/ff80_drht_entry_sweep_20260505T015059Z` produced a 178-row `entry_fn_map.tsv`, restored `cfgdata[0xf7]` from `0x01` to original `0x00`, recorded no read or ping failures, found 157 entry pointers in `0x01000000..0x04000000`, and dumped 64 KiB at `updatedat` entry `0x032b5a88` plus `Linux_loa` entry `0x0325ab48`.
 - DRHT-derived code-page dumping is complete for the first pass. `scripts/ff80_dump_priority_ranges.sh --drht-code-pages` in `rce/sessions/ff80_priority_dumps_20260505T020018Z` probed and dumped 18 64-KiB pages with no read or ping failures. Capstone sanity checks show dense AArch64 instructions on all pages. The outlier page `0x068b0000` also contains `FUJIFILM` and `NORMAL` strings; post-run FF80 ping succeeded in `rce/sessions/ff80_ping_20260505T020044Z`.
 - The exact `updatedat` page `0x032b0000..0x032c0000` is captured in `rce/sessions/ff80_manual_updatedat_page_20260505T020400Z`. This fills the first `0x5000` bytes missing from the earlier `updatedat_entry_032b5000.bin`; post-dump FF80 ping succeeded.
-- The running Linux kernel has been found in live FF80 RAM. `scripts/ff80_dump_priority_ranges.sh --linux-kernel-hunt` in `rce/sessions/ff80_priority_dumps_20260505T025033Z` captured `0x08000000..0x08600000` as 96 clean 64-KiB chunks. `linux_kernel_hunt_scan.txt/json` found a plausible ARM64 Image header at `0x08080000` with magic `ARMd`, `text_offset=0x80000`, `image_size=0x1b1f000`, and the live string `Linux version 4.9.92 (oe-user@oe-host) (gcc version 7.3.0 (GCC) ) #2 SMP PREEMPT Thu Jun 26 15:51:01 JST 2025` at `0x08500050`. The implied image span is `0x08080000..0x09b9f000`; only the first 6 MiB window has been captured so far.
+- The running Linux kernel has been found and the live ARM64 Image span has been captured from FF80 RAM. `scripts/ff80_dump_priority_ranges.sh --linux-kernel-hunt` in `rce/sessions/ff80_priority_dumps_20260505T025033Z` captured `0x08000000..0x08600000` as 96 clean 64-KiB chunks. `linux_kernel_hunt_scan.txt/json` found a plausible ARM64 Image header at `0x08080000` with magic `ARMd`, `text_offset=0x80000`, `image_size=0x1b1f000`, and the live string `Linux version 4.9.92 (oe-user@oe-host) (gcc version 7.3.0 (GCC) ) #2 SMP PREEMPT Thu Jun 26 15:51:01 JST 2025` at `0x08500050`. `scripts/ff80_dump_priority_ranges.sh --linux-kernel-complete` in `rce/sessions/ff80_kernel_complete_20260505T034826Z` captured the remaining `0x08600000..0x09ba0000` tail as 346 clean chunks. The assembled image artifact is `rce/sessions/ff80_kernel_complete_20260505T034826Z/live_kernel_image_08080000_09b9f000.bin`, `28,438,528` bytes, SHA256 `28081f3be102e344dda7c21e07203d6a7afeac423083723952ad9bdb9dc6e764`.
 - F-0011 verifier-bypass follow-up dumping is complete for the mandatory ranges. `scripts/ff80_dump_priority_ranges.sh --verifier-bypass-followup` in `rce/sessions/ff80_followup_20260505T030604Z` captured `0x01588000..0x01590000`, `0x015dc000..0x015e0000`, `0x047f8000..0x047f9000`, and `0x015c0000..0x015d0000` with no read or ping failures. `f0011_followup_analysis.txt/json` confirms `0x0158bfc8` loads the cfgdata base pointer from `[0x022600a8]` and returns byte `[base + tag]` for ordinary tags, while `0x0158c1ac` is the matching byte writer. The second getter `0x015dc188` is a bitmask gate using `[0x026082ec]`, not a byte-table getter. The requested `0x047f8000` page for the `0x53d1` gate is entirely zero in this live state, including `[0x047f8148]`.
 - F-0011 upstream follow-up Tier 1 is complete. `scripts/ff80_dump_priority_ranges.sh --f0011-upstream-followup` in `rce/sessions/ff80_upstream_20260505T033032Z` captured `0x02608000..0x02609000` with no read or ping failures. `f0011_upstream_analysis.txt/json` shows `[0x026082ec] == 0x00000000`, so Getter B returns false for both observed arguments `0x13` and `0x08`. A local direct-BL scan found cfgdata-writer call sites only in already captured pages (`0x01588000..0x01590000`, `0x015d0000..0x015e0000`, and `0x03230000..0x03240000`), so no Tier 2 upstream code chunk was dumped.
 - PTP/IP init inventory is implemented. `scripts/ptpip_inventory_init.sh rce/reference/ptp_decoded rce/sessions` scans captured `.bin` payloads and decoded `.jsonl` traces for Fuji-shaped 82-byte `Init_Command_Request` records.
@@ -358,6 +358,7 @@ scripts/ff80_dump_priority_ranges.sh --ram-16gb-probes
 scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes
 scripts/ff80_dump_priority_ranges.sh --known-syslogs
 scripts/ff80_dump_priority_ranges.sh --linux-kernel-hunt
+scripts/ff80_dump_priority_ranges.sh --linux-kernel-complete
 scripts/ff80_dump_priority_ranges.sh --verifier-bypass-followup
 scripts/ff80_dump_priority_ranges.sh --f0011-upstream-followup
 scripts/ff80_decode_syslog_dumps.sh --session-dir rce/sessions/ff80_priority_dumps_<timestamp>
@@ -404,9 +405,12 @@ deliberately passed.
 `0x00507000` safe-fill candidate as bounded `0x1000` RAM reads.
 `--linux-kernel-hunt` captures `0x08000000..0x08600000` in 64-KiB chunks. The
 first successful live run found the ARM64 kernel Image header at `0x08080000`
-and the Linux `4.9.92` version string at `0x08500050`; use the saved scan files
-before deciding whether to dump the rest of the implied image range. Rerun the
-scanner with `scripts/ff80_scan_linux_kernel_hunt.sh --session-dir ...`.
+and the Linux `4.9.92` version string at `0x08500050`. `--linux-kernel-complete`
+captures the remaining `0x08600000..0x09ba0000` tail needed to assemble the
+header-implied `0x08080000..0x09b9f000` live Image. Rerun the scanner with
+`scripts/ff80_scan_linux_kernel_hunt.sh --session-dir ...` for hunt sessions;
+use the completion session's `linux_kernel_complete_analysis.txt/json` for the
+assembled image SHA and string hits.
 `--verifier-bypass-followup` captures the mandatory F-0011 getter, setter,
 `0x53d1` table, and IPC/helper ranges. Add
 `--include-verifier-bypass-optional` only when the optional `0x02d40000` and

@@ -1183,11 +1183,16 @@ Follow-up:
 
 ### RAM-017: Finish live Linux kernel image and memory-map evidence
 
-Status: Open
+Status: Complete
 
 Summary: Follow up on the live Linux kernel dump and the 16 GB RAM question.
 The captured live DTB does not advertise high RAM to Linux in the current boot
-state, but the full live kernel image is not yet captured.
+state. The full live kernel Image span is now captured and assembled.
+
+Sessions:
+
+- `rce/sessions/ff80_priority_dumps_20260505T025033Z`
+- `rce/sessions/ff80_kernel_complete_20260505T034826Z`
 
 Known evidence:
 
@@ -1201,11 +1206,20 @@ Known evidence:
   current live node does not.
 - The ARM64 Image header at `0x08080000` reports `image_size=0x1b1f000`,
   implying full image span `0x08080000..0x09b9f000`.
+- `scripts/ff80_dump_priority_ranges.sh --linux-kernel-complete` captured
+  `0x08600000..0x09ba0000` as 346 clean `0x10000` chunks.
+- All 346 rows in `rce/sessions/ff80_kernel_complete_20260505T034826Z/summary.tsv`
+  completed with status `ok`, totaling `22,675,456` bytes.
+- The assembled Image artifact is
+  `rce/sessions/ff80_kernel_complete_20260505T034826Z/live_kernel_image_08080000_09b9f000.bin`,
+  `28,438,528` bytes, SHA256
+  `28081f3be102e344dda7c21e07203d6a7afeac423083723952ad9bdb9dc6e764`.
+- Assembly/scan artifacts:
+  `rce/sessions/ff80_kernel_complete_20260505T034826Z/linux_kernel_complete_analysis.txt`
+  and `.json`.
 
-Next:
+Remaining follow-up:
 
-- Dump `0x08600000..0x09ba0000` in 64-KiB chunks to complete the live kernel
-  image.
 - For 16 GB proof, do not rely on Linux in this boot state; find a DRAM
   controller register, boot memory map, or read primitive that can address
   above 32 bits.

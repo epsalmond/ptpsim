@@ -64,6 +64,9 @@ Options:
                         later 0x00507000 candidate from safe-fill analysis.
   --linux-kernel-hunt   Dump the first 6 MiB of the documented Linux RAM
                         window, 0x08000000..0x08600000, in 64 KiB chunks.
+  --linux-kernel-complete
+                        Dump the remaining live Linux Image span,
+                        0x08600000..0x09ba0000, in 64 KiB chunks.
   --include-wedging-fffff000
                         Include 0xfffff000 in --ram-16gb-probes. This boundary
                         timed out live and wedged FF80 ping until cold boot.
@@ -137,6 +140,7 @@ include_f0011_upstream_03260000=0
 include_f0011_upstream_031c0000=0
 known_syslogs=0
 linux_kernel_hunt=0
+linux_kernel_complete=0
 include_wedging_fffff000=0
 include_wedging_fffc0000=0
 include_wedging_fff00000=0
@@ -248,6 +252,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --linux-kernel-hunt)
       linux_kernel_hunt=1
+      shift
+      ;;
+    --linux-kernel-complete)
+      linux_kernel_complete=1
       shift
       ;;
     --include-wedging-fffff000)
@@ -768,6 +776,8 @@ elif [[ "$known_syslogs" -eq 1 ]]; then
   )
 elif [[ "$linux_kernel_hunt" -eq 1 ]]; then
   add_chunked_range "linux_kernel_hunt_08000000_08600000" 0x08000000 0x08600000 0x10000
+elif [[ "$linux_kernel_complete" -eq 1 ]]; then
+  add_chunked_range "linux_kernel_complete_08600000_09ba0000" 0x08600000 0x09ba0000 0x10000
 elif [[ "$safe_fill_gaps" -eq 1 ]]; then
   add_chunked_range "fill_64000_9e000" 0x00064000 0x0009e000 0x10000
   ranges+=("fill_b7000_b7400 0x000b7000 0x400")
@@ -797,7 +807,7 @@ if [[ "$include_risky_low" -eq 1 ]]; then
     "threadx_task_records 0x000b7320 0x29040"
     "threadx_task_record_ptrs 0x000ee4e0 0x800"
   )
-elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$verifier_bypass_followup" -eq 0 && "$f0011_upstream_followup" -eq 0 && "$known_syslogs" -eq 0 && "$linux_kernel_hunt" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
+elif [[ "$next_targets" -eq 0 && "$gap_targets" -eq 0 && "$low_watermark" -eq 0 && "$ram_size_probes" -eq 0 && "$ram_16gb_probes" -eq 0 && "$bootrom_recon_probes" -eq 0 && "$drht_code_pages" -eq 0 && "$updatedat_followup" -eq 0 && "$updatedat_constants" -eq 0 && "$updatedat_subdispatcher" -eq 0 && "$verifier_bypass_followup" -eq 0 && "$f0011_upstream_followup" -eq 0 && "$known_syslogs" -eq 0 && "$linux_kernel_hunt" -eq 0 && "$linux_kernel_complete" -eq 0 && "$safe_fill_gaps" -eq 0 ]]; then
   log "Skipping low ThreadX runtime ranges below 0x00100000. Use --include-risky-low to include them."
 fi
 
