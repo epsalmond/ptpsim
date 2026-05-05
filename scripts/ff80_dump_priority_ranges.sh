@@ -47,6 +47,12 @@ Options:
                         Include 0xffe00000 in --bootrom-recon-probes. This
                         address timed out live on a 16-byte read and wedged
                         FF80 ping until cold boot, so it is skipped by default.
+  --skip-address HEX    Skip any queued probe/range with this start address.
+                        May be repeated. Useful for batching crash findings
+                        without editing this script after every wedge.
+  --skip-address-file PATH
+                        Read additional skip addresses from a text file. Blank
+                        lines and # comments are ignored.
   --safe-fill-gaps      Fill known uncovered low-map gaps while deliberately
                         excluding the hazardous 0x00002000..0x00040000 range.
   --stop-on-fail        Stop on the first failed probe/dump. Default.
@@ -90,6 +96,8 @@ include_wedging_fff00000=0
 include_wedging_ffe00000=0
 safe_fill_gaps=0
 stop_on_fail=1
+skip_addresses=()
+skip_address_files=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -146,6 +154,14 @@ while [[ $# -gt 0 ]]; do
       include_wedging_ffe00000=1
       shift
       ;;
+    --skip-address)
+      skip_addresses+=("$2")
+      shift 2
+      ;;
+    --skip-address-file)
+      skip_address_files+=("$2")
+      shift 2
+      ;;
     --safe-fill-gaps)
       safe_fill_gaps=1
       shift
@@ -179,6 +195,20 @@ if [[ ! -f "$ff80_dir/ff80.py" ]]; then
   echo "missing FF80 tool: $ff80_dir/ff80.py" >&2
   exit 1
 fi
+
+for skip_address_file in "${skip_address_files[@]}"; do
+  if [[ ! -f "$skip_address_file" ]]; then
+    echo "missing skip address file: $skip_address_file" >&2
+    exit 1
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="${line//[[:space:]]/}"
+    if [[ -n "$line" ]]; then
+      skip_addresses+=("$line")
+    fi
+  done <"$skip_address_file"
+done
 
 mkdir -p "$session_dir/probes" "$session_dir/dumps" "$session_dir/logs"
 summary="$session_dir/summary.tsv"
@@ -221,6 +251,28 @@ record() {
   local note="$8"
   printf '%s\t0x%08x\t0x%x\t%s\t%s\t%s\t%s\t%s\n' \
     "$label" "$(( addr ))" "$(( size ))" "$actual_bytes" "$status" "$path" "$sha" "$note" >>"$summary"
+}
+
+should_skip_address() {
+  local addr="$1"
+  local addr_value="$(( addr ))"
+  local skip
+  for skip in "${skip_addresses[@]}"; do
+    if [[ "$(( skip ))" -eq "$addr_value" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+record_runtime_skip() {
+  local label="$1"
+  local addr="$2"
+  local size="$3"
+  local addr_name
+  addr_name="$(addr_token "$addr")"
+  log "Skipping $label addr=0x$addr_name due to runtime skip address."
+  record "$label" "$addr" "$size" "" "skipped" "" "" "runtime_skip_address"
 }
 
 output_failed() {
@@ -573,6 +625,10 @@ if [[ "$low_watermark" -eq 1 || "$ram_size_probes" -eq 1 || "$ram_16gb_probes" -
   fi
   for spec in "${probes[@]}"; do
     read -r label addr <<<"$spec"
+    if should_skip_address "$addr"; then
+      record_runtime_skip "$label" "$addr" 0x10
+      continue
+    fi
     if ! probe_address "$label" "$addr"; then
       if ! ping_ff80 "${label}_failure_recovery_ping"; then
         log "FF80 ping failed after failed probe; stopping."
@@ -613,6 +669,10 @@ if [[ "$bootrom_recon_probes" -eq 1 ]]; then
   fi
   for spec in "${conditional_probes[@]}"; do
     read -r label addr dump_size <<<"$spec"
+    if should_skip_address "$addr"; then
+      record_runtime_skip "$label" "$addr" 0x10
+      continue
+    fi
     if ! probe_then_dump_if_interesting "$label" "$addr" "$dump_size"; then
       if ! ping_ff80 "${label}_failure_recovery_ping"; then
         log "FF80 ping failed after failed bootrom probe; stopping."
@@ -642,6 +702,10 @@ fi
 
 for spec in "${ranges[@]}"; do
   read -r label addr size <<<"$spec"
+  if should_skip_address "$addr"; then
+    record_runtime_skip "$label" "$addr" "$size"
+    continue
+  fi
   if ! dump_range "$label" "$addr" "$size"; then
     if [[ "$stop_on_fail" -eq 1 ]]; then
       log "Stopping after failed range: $label"

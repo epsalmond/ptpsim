@@ -150,6 +150,17 @@ does not read into known-wedging `0xfffff000`. The `0xfffc0000` candidate is
 also skipped by default after a live 16-byte read there timed out and wedged
 FF80 ping until cold boot. The later `0xfff00000` probe behaved the same way,
 and `0xffe00000` did too, so both are also skipped by default.
+For short live probe runs, avoid editing or committing after every wedge. Use
+runtime skips instead, for example:
+
+```sh
+scripts/ff80_dump_priority_ranges.sh --bootrom-recon-probes \
+  --skip-address-file rce/state/ff80_bootrom_skip_addresses.txt
+```
+
+`rce/state/` is ignored, so that file can accumulate crash-only skips until
+there is either a positive finding or a batch of five camera-crashing findings
+worth documenting together.
 The cfgdata wrapper is also read-only; it gates on active FF80 `ping`, records
 passive USB polling as advisory evidence, dumps `cfgdata.bin`, and writes JSON
 plus text analysis under `rce/sessions/ff80_cfgdata_<timestamp>/`.

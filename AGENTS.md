@@ -375,6 +375,11 @@ skipped by default unless `--include-wedging-fffc0000` is deliberately passed.
 `--include-wedging-fff00000` is deliberately passed. `0xffe00000` is also a
 known-wedging probe and is skipped unless `--include-wedging-ffe00000` is
 deliberately passed.
+For quick live FF80 probe loops, reduce git churn: do not update tracked docs or
+commit after every single camera-wedging address. Use `--skip-address` or an
+ignored `rce/state/ff80_bootrom_skip_addresses.txt` file through
+`--skip-address-file`, then update tracked notes only after a positive finding
+or after five camera-crashing findings have accumulated.
 If the poller sees `04cb:ff80` but FF80 `ping` times out, stop and cold-reboot
 the camera before retrying; that state was observed after a wedged transport.
 The cfgdata wrapper is also read-only. It uses active FF80 `ping` as the gate,
