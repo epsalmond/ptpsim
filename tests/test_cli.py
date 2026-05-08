@@ -96,6 +96,21 @@ class FakeCamera:
             "passphrase_present": True,
         }
 
+    async def firmware_update_prepare(self, **kwargs):
+        self.calls.append(("firmware_update_prepare", kwargs))
+        return {
+            "ssid": "FUJIFILM-GFX100II-0C3E",
+            "bssid": "38-7C-76-74-73-20",
+            "ap_state": "0180",
+            "ap_state_label": "launched",
+            "launch_ap": "fw_transfer",
+            "firmware_file_info_hex": "00" * 29,
+            "firmware_request_notify_hex": "0100",
+            "firmware_launch_notify_hex": "0100",
+            "credentials_path": "/tmp/session/wifi_credentials.json",
+            "passphrase_present": True,
+        }
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -216,6 +231,27 @@ class FakeCamera:
             ),
             "wifi_info",
         ),
+        (
+            types.SimpleNamespace(
+                command="firmware-prepare",
+                session_root=None,
+                name="GFX",
+                address=None,
+                device_name="Laptop",
+                timeout=1.0,
+                dat=Path("rce/reference/firmware_update_20260508/sendobjectinfo_payload.bin"),
+                claim_version="2.41",
+                product_name="GFX100 II",
+                request_file_name="GXUP0006.DAT",
+                ap_state_timeout=2.0,
+                notify_timeout=3.0,
+                skip_register=False,
+                write_registration_ack=True,
+                pair_trigger_first=True,
+                no_read_passphrase=False,
+            ),
+            "firmware_update_prepare",
+        ),
     ],
 )
 async def test_run_async_dispatches_commands(monkeypatch, args, expected) -> None:
@@ -300,6 +336,33 @@ async def test_run_async_live_test_requires_lat_lon_together(monkeypatch) -> Non
                 write_registration_ack=False,
                 skip_registration_ack=False,
                 pair_trigger_first=False,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_async_firmware_prepare_requires_existing_dat(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cli, "FujiCamera", FakeCamera)
+
+    with pytest.raises(RuntimeError, match="DAT file not found"):
+        await cli.run_async(
+            types.SimpleNamespace(
+                command="firmware-prepare",
+                session_root=None,
+                name="GFX",
+                address=None,
+                device_name="Laptop",
+                timeout=1.0,
+                dat=tmp_path / "missing.DAT",
+                claim_version="2.41",
+                product_name="GFX100 II",
+                request_file_name="GXUP0006.DAT",
+                ap_state_timeout=2.0,
+                notify_timeout=3.0,
+                skip_register=False,
+                write_registration_ack=True,
+                pair_trigger_first=True,
+                no_read_passphrase=False,
             )
         )
 

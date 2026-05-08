@@ -43,6 +43,24 @@ Needed:
 - add parser tests for every response shape
 - make download/export flows restartable and idempotent
 
+## P0: Gate Firmware Update Execution
+
+Current model:
+
+- successful reference app firmware-update capture from 2026-05-08 is copied under `rce/reference/firmware_update_20260508/`
+- `rce.tools.fuji_ble_gps.firmware_update` builds/decodes BLE request and PTP firmware object-info payloads
+- `scripts/firmware_update_prepare.sh` performs BLE request + `FUNCTION_LAUNCH=0500`
+- `scripts/ptpip_firmware_update.sh` builds a dry-run chunk plan by default and requires `--execute` to send DAT bytes
+
+Needed before routine live use:
+
+- add state-machine labels/evidence for firmware receive mode and firmware-transfer AP state
+- require fresh BLE notify evidence before upload
+- require route evidence showing camera endpoint on Wi-Fi and normal internet route preserved where applicable
+- require DAT hash/version summary in the session before `--execute`
+- add post-transfer evidence for camera screen completion/error states
+- decide whether redundant reference app second upload pass is ever needed; current capture analysis says no
+
 ## P0: Build The TUI Skeleton
 
 Target experience:

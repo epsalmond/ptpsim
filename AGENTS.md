@@ -12,6 +12,7 @@ Working areas in this repository:
 - camera-screen classification through Continuity Camera
 - camera AP Wi-Fi launch and macOS association
 - PTP/IP camera-control probes and download workflows
+- firmware-update protocol modeling from successful reference app captures
 - eventual TUI and cross-platform application/library extraction
 
 FF80 service-mode research, RAM dumps, bootloader work, and code-execution experiments have moved to:
@@ -67,6 +68,8 @@ scripts/ptpip_compare_init.sh
 scripts/ptpip_inventory_init.sh
 scripts/ptpip_export_object.sh
 scripts/camera_ap_download_object.sh
+scripts/firmware_update_prepare.sh
+scripts/ptpip_firmware_update.sh
 scripts/evidence/*.sh
 ```
 
@@ -78,6 +81,7 @@ BACKLOG.md
 CONNECTION_STATES.md
 rce/notes/laptop_ble_gps.md
 rce/reference/GFX100II_PAIRING_NAME_FIRMWARE_NOTES.md
+rce/reference/firmware_update_20260508/
 rce/reference/APP_ACTION_ENUMERATION.md
 rce/reference/APP_LIVE_HANDOFF.md
 ```
@@ -88,6 +92,7 @@ Run artifacts:
 rce/sessions/laptop_ble_gps_<timestamp>/
 rce/sessions/camera_ap_wifi_<timestamp>/
 rce/sessions/ptpip_probe_<timestamp>/
+rce/sessions/ptpip_firmware_update_<timestamp>/
 rce/screen_captures/<timestamp>/
 rce/state/connection_state.json
 rce/state/camera_lcd_box.json
@@ -105,6 +110,7 @@ Working as of 2026-05-05:
 - AP/Wi-Fi handoff is scripted. BLE can read SSID/BSSID/AP state, store the AP passphrase in a `0600` credentials file with redacted logs, launch the AP, and ask macOS to associate while preserving the Ethernet internet route.
 - PTP/IP probing is implemented. Generated init using accepted reference app GUID `f2e4538fada5485d87b27f0bd3d5ded0`, laptop friendly name `mbp-7274`, and the liveview tail succeeded through `GetDevicePropValue 0xD212`.
 - SD-card browse and object download flows are live-tested. The scripts can list folders/dates, list object handles, fetch ObjectInfo/thumbnail data, download a complete JPEG, and export it with a sidecar manifest.
+- Firmware-update modeling is implemented from the successful 2026-05-08 reference app capture. The code builds/decodes the BLE `FirmwareUpdateRequestInfo`, builds the 839-byte firmware `SendObjectInfo` payload byte-for-byte against the capture, plans 1 MiB `0x9042` chunks, and has separate BLE-prepare and PTP/IP-upload scripts. The PTP/IP upload script is dry-run by default and requires `--execute` for the destructive DAT transfer.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
 
 ## Determinism Rule
@@ -188,6 +194,17 @@ alt=33
 speed=0
 ```
 
+Firmware update app-side capture findings:
+
+- BLE request characteristic: `b1307521-7ac5-4199-aaee-9d094781ce69`.
+- BLE file-info read characteristic: `20ea1fac-19d8-48a8-a80c-535d34300958`; the successful capture read 29 zero bytes and proceeded.
+- BLE state notify characteristic: `049ec406-ef75-4205-a390-08fe209c51f0`; notify `0100` acknowledges request/launch.
+- Firmware AP launch uses `FUNCTION_LAUNCH=0500`.
+- PTP/IP firmware mode uses `SetDevicePropValue 0xdf01=1300` and `SetDevicePropValue 0xdf27=01000000`.
+- Firmware object info uses vendor op `0x9040` with an 839-byte payload: u32 file size at `+0x00`, PTP UTF-16LE filename `"FUP_FILE.DAT\0"` at `+0x2c/+0x2d`, and zero padding.
+- Firmware data uses vendor op `0x9042` with `(offset, length)` params and one data container per chunk. Successful capture used 1 MiB chunks; the final signed 2.40 DAT chunk was length `0x000a000f` at offset `0x09b00000`.
+- The BLE-claimed version string is not cross-checked against the DAT-internal version. With normal signature verification enabled, the camera still only commits Fuji-signed DAT contents.
+
 ## macOS Notes
 
 Install macOS system dependencies before live work:
@@ -259,6 +276,17 @@ scripts/camera_ap_download_object.sh --handle 0x0000000c
 scripts/ptpip_export_object.sh --session-dir rce/sessions/ptpip_probe_<timestamp> --output-dir rce/downloads/manual_export
 ```
 
+Firmware-update scripting is split into explicit phases:
+
+```sh
+scripts/firmware_update_prepare.sh --dat /path/to/GXUP0006.DAT --claim-version 2.41
+scripts/connect_camera_ap_wifi.sh --credentials rce/sessions/laptop_ble_gps_<timestamp>/wifi_credentials.json
+scripts/ptpip_firmware_update.sh --dat /path/to/GXUP0006.DAT
+scripts/ptpip_firmware_update.sh --dat /path/to/GXUP0006.DAT --execute
+```
+
+The final command is destructive: it sends firmware bytes to the camera. Keep the dry-run output and route evidence, confirm the DAT hash and chunk plan, then use `--execute` only when the camera is intentionally in firmware receive mode. Preserve all generated session artifacts.
+
 Preserve session artifacts after every live attempt. They are evidence.
 
 ## Engineering Direction
@@ -271,6 +299,7 @@ Short term:
 - Determine how to obtain or register a laptop-owned accepted PTP/IP initiator GUID.
 - Expose PTP/IP client actions and init comparison through the TUI.
 - Expand browse/download workflows from PTP/IP probes into tested application actions.
+- Wrap firmware-update prepare/upload into a deterministic state-machine workflow with screen and BLE/PTP evidence gates before allowing `--execute`.
 
 Medium term:
 

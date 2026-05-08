@@ -2,7 +2,7 @@
 
 Laptop-side Fuji camera-control prototype for a Fujifilm GFX100 II.
 
-The current implementation is Python-first on macOS. It can pair/register over BLE, write GPS location updates, launch the camera AP, associate macOS Wi-Fi to that AP while preserving the normal internet route, and probe PTP/IP camera-control flows. The longer-term target is a robust TUI and eventually native app/library support across macOS, Windows, Linux, Android, and iOS.
+The current implementation is Python-first on macOS. It can pair/register over BLE, write GPS location updates, launch the camera AP, associate macOS Wi-Fi to that AP while preserving the normal internet route, probe PTP/IP camera-control flows, and model the observed firmware-update transfer. The longer-term target is a robust TUI and eventually native app/library support across macOS, Windows, Linux, Android, and iOS.
 
 FF80 service-mode research has moved to the sibling project:
 
@@ -161,6 +161,41 @@ friendly-name=mbp-7274
 Generated init with that GUID and laptop friendly name succeeded through `GetDevicePropValue 0xD212`. A generated fresh GUID timed out at init. The remaining identity question is how to obtain or register a laptop-owned accepted initiator GUID.
 
 PTP/IP browse and object transfer have been live-tested. The app has successfully listed SD-card folders/dates, listed object handles, fetched ObjectInfo/thumbnail data, and downloaded a complete 4000x3000 JPEG through `GetObject`. Preserve PTP/IP session artifacts because they are the evidence source for export and parser fixes.
+
+## Firmware Update Model
+
+The successful 2026-05-08 reference app firmware-update capture is stored under:
+
+```text
+rce/reference/firmware_update_20260508/
+```
+
+The modeled flow is:
+
+1. BLE writes a 92-byte `FirmwareUpdateRequestInfo` to `b1307521-7ac5-4199-aaee-9d094781ce69`.
+2. BLE writes `FUNCTION_LAUNCH=0500` to launch firmware transfer mode.
+3. Wi-Fi associates to the camera AP.
+4. PTP/IP opens session, sets FunctionMode `0xdf01=0x0013`, sets firmware transfer version `0xdf27=1`, sends vendor `0x9040` object info for `FUP_FILE.DAT`, then streams the DAT through vendor `0x9042` in 1 MiB chunks.
+
+Build the BLE request/AP handoff:
+
+```sh
+scripts/firmware_update_prepare.sh --dat /path/to/GXUP0006.DAT --claim-version 2.41
+```
+
+Build a dry-run PTP/IP upload plan:
+
+```sh
+scripts/ptpip_firmware_update.sh --dat /path/to/GXUP0006.DAT
+```
+
+Actually uploading firmware bytes is destructive and requires an explicit flag:
+
+```sh
+scripts/ptpip_firmware_update.sh --dat /path/to/GXUP0006.DAT --execute
+```
+
+The PTP upload script records a session, route evidence, SHA-256, chunk plan, the generated 839-byte `SendObjectInfo` payload, and first/last chunk command/response artifacts. `--execute` refuses to proceed unless the camera endpoint route uses Wi-Fi.
 
 ## Screen Classification
 

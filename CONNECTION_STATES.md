@@ -959,6 +959,46 @@ Workflow:
 2. Restore Ethernet priority or disconnect from the camera AP.
 3. Re-run route evidence before retrying AP association.
 
+### `camera_firmware_receive_mode_ble_prepared`
+
+Evidence:
+
+- `scripts/firmware_update_prepare.sh` completed.
+- The session `firmware_update_prepare.json` records `firmware_request_notify_hex=0100`.
+- The same session records `firmware_launch_notify_hex=0100`.
+- The same session records `launch_ap=fw_transfer` and `ap_state_label=launched`.
+- If upload will follow immediately, `wifi_credentials.json` exists with mode `0600` unless the passphrase was deliberately skipped.
+
+Meaning:
+
+The camera accepted the BLE firmware-update request and launched the firmware-transfer AP path. This is necessary evidence for the PTP/IP firmware upload phase, but it is not proof that the laptop is associated to the camera AP yet.
+
+Workflow:
+
+1. Preserve the BLE prepare session.
+2. Associate to the camera AP with `scripts/connect_camera_ap_wifi.sh --credentials <session>/wifi_credentials.json`.
+3. Confirm camera endpoint route evidence before any PTP/IP upload.
+4. Run `scripts/ptpip_firmware_update.sh --dat /path/to/GXUP0006.DAT` first and inspect dry-run hash/chunk plan before using `--execute`.
+
+### `camera_ap_ptpip_firmware_upload_ready`
+
+Evidence:
+
+- State `camera_firmware_receive_mode_ble_prepared` was reached in the immediately preceding BLE session.
+- Wi-Fi evidence shows the camera endpoint route uses the Wi-Fi interface.
+- `scripts/ptpip_firmware_update.sh --dat /path/to/GXUP0006.DAT` dry-run records the expected DAT SHA-256, file size, chunk count, and final chunk length.
+
+Meaning:
+
+The host has the minimum evidence required to intentionally send firmware bytes. This state is destructive if executed; do not enter it from stale BLE, Wi-Fi, or dry-run evidence.
+
+Workflow:
+
+1. Confirm the DAT path and hash against the intended firmware.
+2. Confirm the camera is intentionally in firmware receive mode.
+3. Run `scripts/ptpip_firmware_update.sh --dat /path/to/GXUP0006.DAT --execute`.
+4. Preserve the upload session and collect post-transfer camera-screen evidence.
+
 ## Required Workflow Rule
 
 Before any command that writes registration or GPS data:

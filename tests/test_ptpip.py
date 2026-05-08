@@ -55,6 +55,12 @@ def ptp_container(container_type: int = 3, code: int = 0x2001, transaction: int 
     return struct.pack("<IHHI", 12, container_type, code, transaction)
 
 
+def ptp_response(transaction: int, *params: int, code: int = 0x2001) -> bytes:
+    return struct.pack("<IHHI", 12 + 4 * len(params), 3, code, transaction) + b"".join(
+        struct.pack("<I", param) for param in params
+    )
+
+
 def ptp_string(value: str) -> bytes:
     code_units = len(value) + 1
     return bytes([code_units]) + value.encode("utf-16le") + b"\x00\x00"
@@ -292,6 +298,11 @@ def test_headers_and_packet_reading() -> None:
         "code": 0x201E,
         "transaction_id": 1,
     }
+    assert ptpip.ptp_container_params(ptp_response(7, 0x100000)) == [0x100000]
+    with pytest.raises(ValueError, match="does not match"):
+        ptpip.ptp_container_params(struct.pack("<IHHI", 99, 3, 0x2001, 1))
+    with pytest.raises(ValueError, match="not 32-bit aligned"):
+        ptpip.ptp_container_params(struct.pack("<IHHIB", 13, 3, 0x2001, 1, 0))
 
     assert ptpip.read_exact(FakeSocket([b"ab", b"cd"]), 4) == b"abcd"
     assert ptpip.read_exact(FakeSocket([b"ab", b""]), 4) == b"ab"
@@ -314,6 +325,7 @@ def test_ptp_request_builders_and_property_parser() -> None:
     assert ptpip.build_get_object_info(0x0C, 2).hex() == "1000000001000810020000000c000000"
     assert ptpip.build_get_object(0x0C, 2).hex() == "1000000001000910020000000c000000"
     assert ptpip.build_get_thumb(0x0C, 3).hex() == "1000000001000a10030000000c000000"
+    assert ptpip.build_close_session(4).hex() == "0c0000000100031004000000"
     assert ptpip.build_ptp_command(0x9054, 9, 0x10000001).hex() == "10000000010054900900000001000010"
     assert ptpip.build_ptp_data_container(0x1016, 2, bytes.fromhex("1400")).hex() == "0e00000002001610020000001400"
     assert ptpip.parse_u32_or_hex("0xffffffff") == 0xFFFFFFFF
@@ -518,6 +530,245 @@ def test_probe_full_success_with_captured_init_payload(tmp_path) -> None:
     assert fake.sent[2] == ptpip.build_get_device_prop_value(0xD212)
     assert (tmp_path / "get_prop_response.bin").exists()
     assert ptpip.exit_code_for_summary(summary, config) == 0
+
+
+def test_firmware_upload_dry_run_writes_plan(tmp_path) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abcdef")
+    config = ptpip.FirmwareUploadConfig(
+        session_dir=tmp_path / "session",
+        dat_path=dat,
+        friendly_name="mbp-7274",
+        chunk_size=4,
+        dry_run=True,
+    )
+
+    summary = ptpip.firmware_upload_ptpip(config, connector=lambda _target, _timeout: (_ for _ in ()).throw(AssertionError))
+
+    assert summary["dry_run"] is True
+    assert summary["dat_size"] == 6
+    assert summary["chunk_count"] == 2
+    assert summary["last_chunk_length"] == 2
+    assert summary["tcp_connect"] == "absent"
+    assert (config.session_dir / "firmware_send_object_info_payload.bin").exists()
+    assert "0x00000004" in (config.session_dir / "firmware_chunks.tsv").read_text(encoding="utf-8")
+
+
+def test_firmware_upload_success_streams_chunks(tmp_path) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abcde")
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_response(1),
+            ptpip.build_ptp_data_container(0x1015, 2, bytes.fromhex("010000df13000000")),
+            ptp_response(2),
+            ptp_response(3),
+            ptpip.build_ptp_data_container(0x1015, 4, bytes.fromhex("01000000")),
+            ptp_response(4),
+            ptp_response(5),
+            ptp_response(6, 0xFFFFFFFF, 0xFFFFFFFF, 0x10000001),
+            ptp_response(7, 3),
+            ptp_response(8, 2),
+            ptp_response(9),
+        ]
+    )
+    config = ptpip.FirmwareUploadConfig(
+        session_dir=tmp_path / "session",
+        dat_path=dat,
+        friendly_name="mbp-7274",
+        guid="000102030405060708090a0b0c0d0e0f",
+        chunk_size=3,
+    )
+
+    summary = ptpip.firmware_upload_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["tcp_connect"] == "present"
+    assert summary["firmware_setup_completed"] is True
+    assert summary["firmware_object_info_sent"] is True
+    assert summary["firmware_object_handle"] == "0x10000001"
+    assert summary["firmware_chunks_sent"] == 2
+    assert summary["firmware_bytes_sent"] == 5
+    assert summary["firmware_upload_completed"] is True
+    assert summary["close_session_response_present"] is True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 0
+
+    assert fake.sent[1] == ptpip.build_open_session()
+    assert fake.sent[2] == ptpip.build_get_device_prop_value(0xD212, 2)
+    assert fake.sent[3] == ptpip.build_set_device_prop_value(ptpip.FUJI_PROP_FUNCTION_MODE, 3)
+    assert fake.sent[4] == ptpip.build_ptp_data_container(ptpip.PTP_SET_DEVICE_PROP_VALUE, 3, bytes.fromhex("1300"))
+    assert ptpip.ptp_data_payload(fake.sent[-4]) == b"abc"
+    assert ptpip.ptp_data_payload(fake.sent[-2]) == b"de"
+    assert fake.sent[-1] == ptpip.build_close_session(9)
+    assert (config.session_dir / "firmware_chunk_0001_response.bin").exists()
+    assert (config.session_dir / "firmware_chunk_0002_response.bin").exists()
+
+
+def test_firmware_upload_failure_exit_codes(tmp_path) -> None:
+    summary = {
+        "tcp_connect": "absent",
+        "response_present": False,
+        "open_session_response_present": False,
+        "firmware_setup_completed": False,
+        "firmware_object_info_sent": False,
+        "firmware_upload_completed": False,
+        "close_session_response_present": False,
+    }
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 1
+    summary["tcp_connect"] = "present"
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 2
+    summary["response_present"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 4
+    summary["open_session_response_present"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 10
+    summary["firmware_setup_completed"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 11
+    summary["firmware_object_info_sent"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 12
+    summary["firmware_upload_completed"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 13
+
+
+def test_firmware_upload_uses_captured_init_payload(tmp_path) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+    init_payload = tmp_path / "init.bin"
+    init_payload.write_bytes(b"captured-init")
+    fake = FakeSocket([packet(2), b""])
+    config = ptpip.FirmwareUploadConfig(
+        session_dir=tmp_path / "session",
+        dat_path=dat,
+        init_payload=init_payload,
+    )
+
+    summary = ptpip.firmware_upload_ptpip(config, connector=lambda _target, _timeout: fake)
+
+    assert fake.sent[0] == b"captured-init"
+    assert summary["open_session_response_present"] is False
+
+
+def test_firmware_upload_error_paths(tmp_path) -> None:
+    missing = ptpip.FirmwareUploadConfig(session_dir=tmp_path / "missing-session", dat_path=tmp_path / "missing.DAT")
+    with pytest.raises(FileNotFoundError):
+        ptpip.firmware_upload_ptpip(missing)
+
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+
+    no_init = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "no-init", dat_path=dat),
+        connector=lambda _target, _timeout: FakeSocket([b""]),
+    )
+    assert no_init["response_present"] is False
+
+    no_open = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "no-open", dat_path=dat),
+        connector=lambda _target, _timeout: FakeSocket([packet(2), b""]),
+    )
+    assert no_open["open_session_response_present"] is False
+
+    setup_fail = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "setup-fail", dat_path=dat),
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_response(1), b""]),
+    )
+    assert setup_fail["firmware_setup_completed"] is False
+
+    object_fail = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "object-fail", dat_path=dat),
+        connector=lambda _target, _timeout: FakeSocket(
+            [
+                packet(2),
+                ptp_response(1),
+                ptpip.build_ptp_data_container(0x1015, 2, b"\x00"),
+                ptp_response(2),
+                ptp_response(3),
+                ptpip.build_ptp_data_container(0x1015, 4, b"\x00"),
+                ptp_response(4),
+                ptp_response(5),
+                b"",
+            ]
+        ),
+    )
+    assert object_fail["firmware_object_info_sent"] is False
+
+    os_error = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "os-error", dat_path=dat),
+        connector=lambda _target, _timeout: (_ for _ in ()).throw(OSError("offline")),
+    )
+    assert "offline" in os_error["error"]
+
+
+def test_firmware_chunk_error_paths(tmp_path) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+    bad_chunk = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "bad-chunk", dat_path=dat, chunk_size=3),
+        connector=lambda _target, _timeout: FakeSocket(
+            [
+                packet(2),
+                ptp_response(1),
+                ptpip.build_ptp_data_container(0x1015, 2, b"\x00"),
+                ptp_response(2),
+                ptp_response(3),
+                ptpip.build_ptp_data_container(0x1015, 4, b"\x00"),
+                ptp_response(4),
+                ptp_response(5),
+                ptp_response(6, 0xFFFFFFFF, 0xFFFFFFFF, 0x10000001),
+                ptp_response(7, code=0x2002),
+            ]
+        ),
+    )
+    assert bad_chunk["error"] == "firmware chunk 1 failed"
+    assert bad_chunk["firmware_upload_completed"] is False
+
+    short_dat = tmp_path / "short.DAT"
+    short_dat.write_bytes(b"ab")
+    summary = {"firmware_chunks_sent": 0, "firmware_bytes_sent": 0, "dat_size": 3}
+    ptpip._firmware_send_chunks(
+        FakeSocket(),
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "short-session", dat_path=short_dat),
+        summary,
+        {"chunks": [{"index": 1, "offset": 0, "length": 3}], "dat_size": 3},
+        7,
+    )
+    assert "short DAT read" in summary["error"]
+
+
+def test_ptpip_main_firmware_upload_dry_run(tmp_path, capsys) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+    session = tmp_path / "session"
+
+    rc = ptpip.main(["firmware-upload", "--session-dir", str(session), "--dat", str(dat), "--dry-run"])
+
+    assert rc == 0
+    assert '"dry_run": true' in capsys.readouterr().out
+    assert (session / "summary.json").exists()
+
+
+def test_ptpip_main_firmware_upload_execute_uses_exit_code(monkeypatch, tmp_path, capsys) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+    session = tmp_path / "session"
+
+    monkeypatch.setattr(
+        ptpip,
+        "firmware_upload_ptpip",
+        lambda _config: {
+            "tcp_connect": "present",
+            "response_present": True,
+            "open_session_response_present": True,
+            "firmware_setup_completed": True,
+            "firmware_object_info_sent": True,
+            "firmware_upload_completed": True,
+            "close_session_response_present": False,
+        },
+    )
+
+    rc = ptpip.main(["firmware-upload", "--session-dir", str(session), "--dat", str(dat)])
+
+    assert rc == 13
+    assert '"close_session_response_present": false' in capsys.readouterr().out
 
 
 def test_probe_get_object_info_and_thumb(tmp_path) -> None:

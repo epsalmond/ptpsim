@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import json
 import stat
@@ -167,6 +168,38 @@ class EmptyPassphraseConn(WifiConn):
                 self.sensitive_reads.append(uuid.lower())
             return b"\x00"
         return await super().read(uuid, sensitive=sensitive)
+
+
+class FirmwarePrepareConn(WifiConn):
+    def __init__(self) -> None:
+        super().__init__()
+        self.firmware_callback = None
+        self.characteristics.update(
+            {
+                uuids.CHAR_FIRMWARE_UPDATE_REQUEST,
+                uuids.CHAR_FIRMWARE_UPDATE_FILE_INFO,
+                uuids.CHAR_FIRMWARE_UPDATE_STATE_NOTIFY,
+            }
+        )
+
+    async def read(self, uuid: str, *, sensitive: bool = False) -> bytes:
+        if uuid == uuids.CHAR_FIRMWARE_UPDATE_FILE_INFO:
+            self.events.append(("read", uuid.lower()))
+            self.reads.append(uuid)
+            return b"\x00" * 29
+        return await super().read(uuid, sensitive=sensitive)
+
+    async def write(self, uuid: str, data: bytes, response: bool = True) -> None:
+        await super().write(uuid, data, response=response)
+        if uuid in {uuids.CHAR_FIRMWARE_UPDATE_REQUEST, uuids.CHAR_FUNCTION_LAUNCH} and self.firmware_callback:
+            self.firmware_callback(uuids.CHAR_FIRMWARE_UPDATE_STATE_NOTIFY, b"\x01\x00")
+
+    async def start_notify(self, uuid: str, callback) -> None:
+        if uuid == uuids.CHAR_FIRMWARE_UPDATE_STATE_NOTIFY:
+            self.notifications.append(uuid.lower())
+            self.firmware_callback = callback
+            return
+        await super().start_notify(uuid, callback)
 
 
 @pytest.mark.asyncio
@@ -497,6 +530,60 @@ async def test_wifi_info_reads_sensitive_credentials_and_launches_ap(tmp_path, m
     assert "CQAggA8AEEAVADjgIQA0" not in redacted
     assert "CQAggA8AEEAVADjgIQA0" not in log
     assert "credentials_path" in redacted
+
+
+@pytest.mark.asyncio
+async def test_firmware_update_prepare_writes_request_and_launches_fw_ap(tmp_path, monkeypatch) -> None:
+    conn = FirmwarePrepareConn()
+    conn.characteristics.add(uuids.CHAR_IMAGE_TRANSFER_SETTING_EX)
+    session = Session(root=tmp_path)
+    camera = FujiCamera(FakeBackend(conn), session)
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("rce.tools.fuji_ble_gps.camera.asyncio.sleep", fake_sleep)
+
+    info = await camera.firmware_update_prepare(
+        product_name="GFX100 II",
+        request_file_name="GXUP0006.DAT",
+        file_size=163_184_655,
+        version="2.41",
+        device_name="Fuji-Laptop",
+        do_register=True,
+        ack_registration=True,
+        pair_trigger_first=True,
+        read_passphrase=True,
+    )
+
+    assert info["ssid"] == "FUJIFILM-GFX100II-0C3E"
+    assert info["ap_state"] == "0180"
+    assert info["launch_ap"] == "fw_transfer"
+    assert info["firmware_file_info_hex"] == "00" * 29
+    assert info["firmware_request_notify_hex"] == "0100"
+    assert info["firmware_launch_notify_hex"] == "0100"
+    assert "passphrase" not in info
+    assert uuids.CHAR_FIRMWARE_UPDATE_STATE_NOTIFY in conn.notifications
+    assert conn.events[0] == ("read", uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER)
+    assert (uuids.CHAR_CONNECTED_DEVICE_NAME, b"Fuji-Laptop\x00", True) in conn.writes
+    assert any(write[0] == uuids.CHAR_FIRMWARE_UPDATE_REQUEST and len(write[1]) == 92 for write in conn.writes)
+    assert (uuids.CHAR_FUNCTION_LAUNCH, b"\x05\x00", True) in conn.writes
+    assert (session.path / "firmware_update_prepare.json").exists()
+    assert (session.path / "payloads" / "firmware_update_request.bin").exists()
+    assert sleeps == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_firmware_helpers_report_missing_characteristics_and_timeout(tmp_path) -> None:
+    camera = FujiCamera(FakeBackend(FakeConn()), Session(root=tmp_path))
+    conn = FakeConn()
+
+    assert await camera._read_firmware_file_info(conn) is None
+    with pytest.raises(RuntimeError, match="state notify characteristic"):
+        await camera._start_firmware_notify_queue(conn)
+    with pytest.raises(RuntimeError, match="timed out"):
+        await camera._wait_for_firmware_notify(asyncio.Queue(), timeout=0.0, label="test")
 
 
 @pytest.mark.asyncio
