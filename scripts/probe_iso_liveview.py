@@ -229,6 +229,19 @@ class Session:
             result["value"] = decode_prop_value(payload)
         return result
 
+    def close_session(self) -> dict:
+        """CloseSession(0x1003) so the camera releases — esp. auto-transfer mode, which
+        otherwise stays connected (battery-draining) until the camera dies."""
+        result: dict = {"action": "close_session"}
+        try:
+            self.sock.sendall(ptpip.build_close_session(self.tid))
+            resp, err = self._recv()
+            result["response_code"] = f"0x{ptpip.ptp_container_header(resp).get('code'):04x}" if resp else None
+            result["recv_error"] = err or None
+        except OSError as exc:
+            result["send_error"] = repr(exc)
+        return result
+
     def set_prop_value(self, prop: int, value: bytes, tag: str) -> dict:
         tid = self.tid
         self.tid += 1
@@ -524,6 +537,65 @@ def map_liveview(session: Session, host: str, tp_port: int, secs: float, timeout
     return out
 
 
+def _u32(rec: dict) -> int | None:
+    v = rec.get("value", {})
+    return v.get("uint_le") if v else None
+
+
+def image_receive_handshake(session: Session, mode: int = 20) -> dict:
+    """Enter image-import/receive mode (NOT live-view): DF01=mode (20=RemotePhotoViewEx /
+    21=ReservedPhotoReceive) + feature-version DF28/DF29. No DF00, no InitiateOpenCapture —
+    the camera is NOT taken over, so the photographer keeps shooting."""
+    out: dict = {"mode": mode}
+    out["df01_set"] = session.set_prop_value(0xDF01, struct.pack("<H", mode), "recv")
+    verprop = 0xDF29 if mode == 21 else 0xDF28
+    out["ver_prop"] = f"0x{verprop:04x}"
+    gv = session.get_prop_value(verprop)
+    raw = bytes.fromhex(gv.get("value", {}).get("raw_hex", "")) if gv.get("value") else b""
+    if raw:
+        target = min(int.from_bytes(raw, "little"), 3)
+        out["ver_set"] = session.set_prop_value(verprop, target.to_bytes(len(raw), "little"), "recv")
+    return out
+
+
+def auto_receive_watch(session: Session, session_dir: Path, secs: float) -> dict:
+    """Watch the camera's object count (0xD620) for new shots while the photographer shoots;
+    when it increases, pull the newest object's handles (0xD621), info (0x1008) + thumb (0x100A)."""
+    out: dict = {"count_series": [], "new_objects": [], "thumbs_saved": 0}
+    base = _u32(session.get_prop_value(0xD620))
+    out["baseline_count"] = base
+    start = time.monotonic()
+    last = base
+    saved = 0
+    while session.alive and (time.monotonic() - start) < secs:
+        time.sleep(2.0)
+        cnt = _u32(session.get_prop_value(0xD620))
+        out["count_series"].append({"t": round(time.monotonic() - start, 1), "count": cnt})
+        if cnt is not None and last is not None and cnt > last:
+            harr = session._txn_get(0xD621, (), "handles")
+            hpayload = bytes.fromhex(harr.get("payload_hex", "")) if harr.get("payload_hex") else b""
+            handles = []
+            if len(hpayload) >= 4:
+                n = int.from_bytes(hpayload[:4], "little")
+                handles = [int.from_bytes(hpayload[4 + 4 * i:8 + 4 * i], "little") for i in range(min(n, (len(hpayload) - 4) // 4))]
+            newest = handles[0] if handles else None
+            rec = {"t": round(time.monotonic() - start, 1), "count": cnt, "newest_handle": newest}
+            if newest is not None:
+                info = session._txn_get(0x1008, (newest,), f"objinfo_{newest:08x}")
+                rec["objinfo_resp"] = info.get("response_code")
+                thumb = session._txn_get(0x100A, (newest,), f"thumb_{newest:08x}")
+                tp = bytes.fromhex(thumb.get("payload_hex", "")) if thumb.get("payload_hex") else b""
+                soi = tp.find(b"\xff\xd8")
+                if soi >= 0 and saved < 5:
+                    (session_dir / f"received_thumb_{saved:02d}_h{newest:08x}.jpg").write_bytes(tp[soi:])
+                    saved += 1
+                    rec["thumb_saved"] = True
+            out["new_objects"].append(rec)
+            last = cnt
+    out["thumbs_saved"] = saved
+    return out
+
+
 def pull_liveview(session: Session, count: int) -> dict:
     """Pull live-view frames on demand via vendor 0x9018 (SDK_GetLiveViewData) and test
     whether 0xD174 (size) / 0xD173 (quality) shape the pulled image — the controllable
@@ -657,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lv-quality", type=int, default=0, help="set 0xD173 quality (1=FINE/2=NORMAL/3=BASIC) before start")
     parser.add_argument("--stream-secs", type=float, default=10.0, help="max seconds to stream")
     parser.add_argument("--camera-priority", action="store_true", help="set 0xD207=1 (Camera Priority) before streaming")
+    parser.add_argument("--auto-receive", type=float, default=0, help="enter image-receive mode and watch N secs for new shots")
+    parser.add_argument("--recv-mode", type=int, default=20, help="receive function mode (20=import / 21=auto-receive)")
     parser.add_argument("--sweep-props", default="", help="comma list of DPCs to read desc+value (full property sweep)")
     parser.add_argument("--step-op", default="", help="vendor relative-step opcode, e.g. 0x902c (shutter) / 0x902d (aperture)")
     parser.add_argument("--step-dir", type=int, default=1, help="step direction (1=up/0=down)")
@@ -680,6 +754,13 @@ def main(argv: list[str] | None = None) -> int:
             out["aborted"] = "open session not OK"
         else:
             session = Session(sock, session_dir, out)
+            if args.auto_receive:
+                out["image_receive_handshake"] = image_receive_handshake(session, args.recv_mode)
+                out["auto_receive"] = auto_receive_watch(session, session_dir, args.auto_receive)
+                out["close_session"] = session.close_session()  # release the camera (auto-transfer holds it)
+                (session_dir / "summary.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+                print(json.dumps(out.get("auto_receive", {}), indent=2, sort_keys=True))
+                return 0
             if args.camera_priority:
                 out["set_camera_priority"] = session.set_prop_value(0xD207, struct.pack("<H", 1), "campri")
             out["live_view_handshake"] = live_view_handshake(session, args.lv_size, args.lv_quality)
@@ -709,6 +790,8 @@ def main(argv: list[str] | None = None) -> int:
                 out["vendor_step"] = vendor_step(session, int(args.step_op, 16), args.step_dir)
                 out["session_alive_after_step"] = session.alive
             out["steps"] = session.steps
+            if session.alive:
+                out["close_session"] = session.close_session()  # release the camera before drop
     (session_dir / "summary.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
     (session_dir / "phase1_table.md").write_text(out.get("phase1_table", "") + "\n")
     print(out.get("phase1_table", "(no phase1 table)"))
