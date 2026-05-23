@@ -28,6 +28,7 @@ class FakeConn:
         self.sensitive_reads: list[str] = []
         self.notifications: list[str] = []
         self.characteristics = set(uuids.IDENTITY_READ_CHARS.values()) | {
+            uuids.CHAR_PAIRING_KEY,
             uuids.CHAR_CONNECTED_DEVICE_NAME,
             uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER,
             uuids.CHAR_LOCATION_SYNC_CYCLE,
@@ -214,7 +215,11 @@ async def test_camera_register_runs_observed_sequence(tmp_path, monkeypatch) -> 
 
     identity = await camera.register(device_name="Fuji-Laptop", ack_registration=True)
 
-    assert conn.notifications == [uuids.CHAR_LOCATION_SYNC_STATE, uuids.CHAR_DATE_SYNC_STATE]
+    assert conn.notifications == [
+        uuids.CHAR_LOCATION_SYNC_STATE,
+        uuids.CHAR_DATE_SYNC_STATE,
+        uuids.CHAR_AP_STATE,
+    ]
     assert conn.writes[0] == (uuids.CHAR_CONNECTED_DEVICE_NAME, b"Fuji-Laptop\x00", True)
     assert (uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER, bytes.fromhex("70df0520"), True) in conn.writes
     assert (
@@ -225,6 +230,29 @@ async def test_camera_register_runs_observed_sequence(tmp_path, monkeypatch) -> 
     assert (uuids.CHAR_LOCATION_SYNC_CYCLE, b"\x0a\x00", True) in conn.writes
     assert identity["gap_device_name"] == "GFX100 II"
     assert identity["firmware_revision"] == "02.40"
+
+
+@pytest.mark.asyncio
+async def test_camera_register_writes_advertisement_pairing_identity_before_name(tmp_path) -> None:
+    conn = FakeConn()
+    backend = FakeBackend(conn)
+    backend.device = DeviceInfo(
+        address="corebluetooth-uuid",
+        name="GFX100 II",
+        rssi=-50,
+        details={
+            "fuji_manufacturer_identity": {
+                "kind": "legacy_pairing_key",
+                "payload_hex": "28720a00",
+            }
+        },
+    )
+    camera = FujiCamera(backend, Session(root=tmp_path))
+
+    await camera.register(device_name="Fuji-Laptop")
+
+    assert conn.writes[0] == (uuids.CHAR_PAIRING_KEY, bytes.fromhex("28720a00"), True)
+    assert conn.writes[1] == (uuids.CHAR_CONNECTED_DEVICE_NAME, b"Fuji-Laptop\x00", True)
 
 
 @pytest.mark.asyncio

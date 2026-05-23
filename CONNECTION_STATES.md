@@ -234,13 +234,21 @@ Evidence:
 
 Meaning:
 
-The camera may not be discoverable by name/service scan, but macOS/CoreBluetooth can still reconnect directly by the known CoreBluetooth identifier. Live evidence showed this when the camera was on the ready-to-shoot screen with a dim Bluetooth icon.
+The camera may not be discoverable by name/service scan, but
+macOS/CoreBluetooth can still reconnect directly by the known CoreBluetooth
+identifier. Live evidence showed this when the camera was on the ready-to-shoot
+screen with a dim Bluetooth icon. Treat this as a warm reconnect, not
+first-pair: it should not require a fresh registration advertisement or PIN
+prompt.
 
 Workflow:
 
 1. Use explicit-address BLE commands instead of scan-first commands.
-2. For AP handoff, run `scripts/camera_ap_ptpip_probe_flow.sh --address <CoreBluetooth UUID> --device-name mbp-7274 ...`.
-3. Preserve the direct-connect probe session because it proves the identifier is currently usable.
+2. If a saved reference app `PAIRING_KEY` identity payload is available, replay it before
+   `CONNECTED_DEVICE_NAME_STRING`; if not, record the gap and continue only with
+   evidence that the camera accepts operational post-registration sync.
+3. For AP handoff, run `scripts/camera_ap_ptpip_probe_flow.sh --address <CoreBluetooth UUID> --device-name mbp-7274 ...`.
+4. Preserve the direct-connect probe session because it proves the identifier is currently usable.
 
 ### `camera_registered_host_unlisted_advertising`
 
@@ -259,8 +267,10 @@ The camera says this host is registered and CoreBluetooth can currently see the 
 Workflow:
 
 1. Reconnect with a no-pairing live command.
-2. Confirm notifications or a GPS-ready evidence key before writing GPS.
-3. Preserve the session artifacts and camera-side observation.
+2. Treat the advertisement as an availability signal for this registered host;
+   do not force a new pairing/PIN flow unless operational sync fails.
+3. Confirm notifications or a GPS-ready evidence key before writing GPS.
+4. Preserve the session artifacts and camera-side observation.
 
 ### `host_remembers_camera_camera_unknown_not_advertising`
 
@@ -301,20 +311,31 @@ Workflow:
 Evidence:
 
 - `ble_advertisement_scan=present`
+- For first-pair readiness, the advertisement includes one of the known reference app
+  connectable service UUIDs plus Fujifilm manufacturer identity:
+  `0x02 + 4-byte key` for legacy, or `0x01 + 5-byte short serial` for RED.
 - No prior successful pair-only run in the current attempt.
 - Camera is not known to be trusted by macOS.
 
 Meaning:
 
-The camera is discoverable and the app can attempt a first connection. Pairing may be required when protected GATT reads/writes occur.
+The camera is discoverable and the app can attempt a first connection. Pairing
+may be required when protected GATT reads/writes occur. A model-name-only row is
+evidence/display only when current advertisement metadata is available; standby
+services such as `731893F9...` and `804DAA8E...` are not Add Camera pairing
+signals.
 
 Workflow:
 
 1. Prefer `scripts/live_ble_camera_test.sh --device-name mbp-7274 --skip-location --write-registration-ack --timeout 45` so Fuji registration and ack happen in one BLE connection.
-2. Use `scripts/live_ble_camera_test.sh --pair-only --timeout 30` only when isolating the OS-level pairing prompt as evidence.
-3. If macOS shows a numeric comparison prompt, accept it on macOS and on the camera.
-4. Run the diagnostic again.
-5. Continue to GPS only after camera-side registration is confirmed.
+2. If the advertisement exposes Fuji manufacturer identity, the tool writes the
+   derived reference app `PAIRING_KEY` payload before `CONNECTED_DEVICE_NAME_STRING`.
+3. Use `scripts/live_ble_camera_test.sh --pair-only --timeout 30` only when
+   isolating the OS-level pairing prompt as evidence.
+4. If macOS shows a numeric comparison prompt, accept it on macOS and on the
+   camera.
+5. Run the diagnostic again.
+6. Continue to GPS only after camera-side registration is confirmed.
 
 ### `host_pair_prompt_pending`
 
@@ -409,14 +430,22 @@ Evidence:
 
 Meaning:
 
-The app reached the application-level ack step, but the camera rejected or closed the connection. This may be expected if the camera is not in the right mode, or it may mean the ack sequence is incomplete/wrong.
+The app reached the application-level ack step and the camera closed the BLE
+link. Current client application hardware behavior treats a disconnect while the
+registration ACK write is in flight as an accepted path when the camera is in
+registration mode and the write order matched reference app. It is still suspicious if
+the camera was not in registration mode or if earlier pairing identity/name
+writes failed.
 
 Workflow:
 
 1. Record whether the camera was actively in registration mode at the moment of ack.
 2. If not in registration mode, return to `camera_advertising_host_unknown` or `host_pair_only_complete_camera_not_registered` and retry cleanly.
-3. If in registration mode, compare the write order and payloads against the known-good phone trace.
-4. Do not proceed to GPS writes until camera-side registration is persisted.
+3. If in registration mode, preserve the session as possible acceptance,
+   re-evaluate state, and reconnect for GPS/AP work rather than requiring more
+   writes on the same closed BLE link.
+4. If camera-side registration is still absent, compare the write order and
+   payloads against the known-good phone trace before retrying.
 
 ### `host_trusted_camera_unknown_not_pairing`
 
@@ -589,6 +618,10 @@ Workflow:
 2. Do not print the passphrase in chat, shell traces, or log files.
 3. Verify the laptop's default/internet route remains on Ethernet.
 4. Verify the route to `192.168.0.1` uses Wi-Fi.
+5. Do not skip a future function-launch write just because this session saw
+   `AP_STATE=0180`; AP state does not encode which function mode was launched.
+6. Leave BLE hold-open disabled for normal attempts. Use `--hold-ble` only to
+   reproduce a suspected BLE/Wi-Fi coexistence problem.
 
 ### `camera_ap_ble_launch_not_launched`
 
@@ -607,7 +640,7 @@ Workflow:
 
 1. Preserve the failed BLE session and record it with `scripts/evidence/camera_ap_ble_session.sh --session-dir rce/sessions/laptop_ble_gps_<timestamp>` if the combined flow did not already do so.
 2. Read the camera screen and stop if it returns `unknown`.
-3. Compare the failed session's `identity.json`, `writes.jsonl`, and `session.log` against the latest successful AP-launch session before changing launch values.
+3. Compare the failed session's `identity.json`, `writes.jsonl`, and `session.log` against the latest successful AP-launch session before changing launch values. Confirm `IMAGE_TRANSFER_SETTING_EX=01` was rewritten when present.
 4. If the screen is still `ready_to_take_photo` and direct BLE connect remains present, retry `scripts/camera_ap_ptpip_probe_flow.sh --address <CoreBluetooth UUID> --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 ...` once with the normal timeout.
 5. If it fails twice in this state, do not keep retrying. Capture fresh screen evidence and investigate prerequisites such as camera-side function state, stale connected-device state, or missing setup writes.
 
@@ -632,6 +665,8 @@ Workflow:
 2. Record it into the statefile with `scripts/evidence/camera_ap_wifi_session.sh --session-dir rce/sessions/camera_ap_wifi_<timestamp>`.
 3. Open PTP/IP against the camera endpoint, expected initially at `192.168.0.1`.
 4. If PTP/IP fails, collect endpoint route evidence before changing Wi-Fi state.
+5. Treat a later PTP/IP connect or init timeout as camera API evidence, not as a
+   Wi-Fi association failure, once route evidence has passed.
 
 ### `camera_ap_waiting_for_ptpip_connection`
 

@@ -102,6 +102,8 @@ Known issue: macOS can retain a Bluetooth Settings `My Devices` row even when `b
 
 Needed:
 
+- persist the reference app advertisement-derived `PAIRING_KEY` payload from first pair
+  and replay it on saved reconnect before `CONNECTED_DEVICE_NAME_STRING`
 - keep `scripts/delete_local_ble_pairing.sh --ui-automate` reliable
 - document Accessibility permission failure modes
 - add evidence for Settings-only rows where possible

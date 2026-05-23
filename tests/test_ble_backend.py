@@ -6,7 +6,13 @@ import builtins
 
 import pytest
 
-from rce.tools.fuji_ble_gps.ble_backend import BleBackend, BleConnection, BleakBackend, DeviceInfo
+from rce.tools.fuji_ble_gps.ble_backend import (
+    BleBackend,
+    BleConnection,
+    BleakBackend,
+    DeviceInfo,
+    fuji_manufacturer_identity,
+)
 from rce.tools.fuji_ble_gps.session import Session
 from rce.tools.fuji_ble_gps import uuids
 
@@ -151,7 +157,7 @@ async def test_base_backend_selects_strongest_rssi_match(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_base_backend_can_match_fuji_service_uuid_without_name(tmp_path) -> None:
+async def test_base_backend_matches_connectable_fuji_advertisement_without_name(tmp_path) -> None:
     class ServiceBackend(BleBackend):
         async def scan(self, timeout: float = 8.0):
             return [
@@ -160,7 +166,15 @@ async def test_base_backend_can_match_fuji_service_uuid_without_name(tmp_path) -
                     address="camera",
                     name=None,
                     rssi=-70,
-                    details={"service_uuids": [uuids.SERVICE_FUJI_CAMERA.upper()]},
+                    details={
+                        "service_uuids": [uuids.SERVICE_FF_FILE_TRANSFER.upper()],
+                        "manufacturer_data_keys": [uuids.FUJIFILM_COMPANY_ID],
+                        "fuji_manufacturer_identity": {
+                            "kind": "legacy_pairing_key",
+                            "payload_hex": "28720a00",
+                        },
+                        "advertisement_metadata_present": True,
+                    },
                 ),
             ]
 
@@ -170,12 +184,73 @@ async def test_base_backend_can_match_fuji_service_uuid_without_name(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_base_backend_rejects_service_uuid_without_fuji_identity(tmp_path) -> None:
+    class ServiceBackend(BleBackend):
+        async def scan(self, timeout: float = 8.0):
+            return [
+                DeviceInfo(
+                    address="camera",
+                    name="GFX100 II",
+                    rssi=-70,
+                    details={
+                        "service_uuids": [uuids.SERVICE_FF_FILE_TRANSFER.upper()],
+                        "manufacturer_data_keys": [],
+                        "advertisement_metadata_present": True,
+                    },
+                ),
+            ]
+
+    with pytest.raises(RuntimeError, match="no BLE device matching"):
+        await ServiceBackend(Session(root=tmp_path)).find_device("GFX")
+
+
+@pytest.mark.asyncio
+async def test_base_backend_rejects_unknown_fuji_identity_payload(tmp_path) -> None:
+    class ServiceBackend(BleBackend):
+        async def scan(self, timeout: float = 8.0):
+            return [
+                DeviceInfo(
+                    address="camera",
+                    name="GFX100 II",
+                    rssi=-70,
+                    details={
+                        "service_uuids": [uuids.SERVICE_FF_FILE_TRANSFER.upper()],
+                        "manufacturer_data_keys": [uuids.FUJIFILM_COMPANY_ID],
+                        "fuji_manufacturer_identity": {
+                            "kind": "unknown",
+                            "payload_hex": "03626164",
+                        },
+                        "advertisement_metadata_present": True,
+                    },
+                ),
+            ]
+
+    with pytest.raises(RuntimeError, match="no BLE device matching"):
+        await ServiceBackend(Session(root=tmp_path)).find_device("GFX")
+
+
+def test_fuji_manufacturer_identity_decodes_legacy_and_red() -> None:
+    assert fuji_manufacturer_identity({uuids.FUJIFILM_COMPANY_ID: bytes.fromhex("0228720a00")}) == {
+        "kind": "legacy_pairing_key",
+        "payload_hex": "28720a00",
+    }
+    assert fuji_manufacturer_identity({uuids.FUJIFILM_COMPANY_ID: b"\x010C3E9"}) == {
+        "kind": "red_short_serial",
+        "payload_hex": "3043334539",
+    }
+    assert fuji_manufacturer_identity({uuids.FUJIFILM_COMPANY_ID: b"\x03bad"}) == {
+        "kind": "unknown",
+        "payload_hex": "03626164",
+    }
+
+
+@pytest.mark.asyncio
 async def test_bleak_backend_find_device_and_connect_with_mocked_bleak(tmp_path, monkeypatch) -> None:
     class FakeAdv:
         local_name = "GFX100 II"
         rssi = -41
-        service_uuids = ["svc"]
-        manufacturer_data = {1240: b"fuji"}
+        service_uuids = [uuids.SERVICE_FF_FILE_TRANSFER.upper()]
+        manufacturer_data = {uuids.FUJIFILM_COMPANY_ID: bytes.fromhex("0228720a00")}
 
     class FakeDevice:
         address = "corebluetooth-uuid"
@@ -213,8 +288,13 @@ async def test_bleak_backend_find_device_and_connect_with_mocked_bleak(tmp_path,
             rssi=-41,
             details={
                 "metadata": {"platform": "mac"},
-                "service_uuids": ["svc"],
-                "manufacturer_data_keys": [1240],
+                "service_uuids": [uuids.SERVICE_FF_FILE_TRANSFER],
+                "manufacturer_data_keys": [uuids.FUJIFILM_COMPANY_ID],
+                "advertisement_metadata_present": True,
+                "fuji_manufacturer_identity": {
+                    "kind": "legacy_pairing_key",
+                    "payload_hex": "28720a00",
+                },
             },
         )
     ]
@@ -232,7 +312,7 @@ async def test_bleak_backend_connects_first_live_detection_with_native_device(
         local_name = None
         rssi = -47
         service_uuids = [uuids.SERVICE_FUJI_CAMERA.upper()]
-        manufacturer_data = {1240: b"fuji"}
+        manufacturer_data = {uuids.FUJIFILM_COMPANY_ID: b"\x010C3E9"}
 
     class FakeDevice:
         address = "live-corebluetooth-uuid"
@@ -272,7 +352,7 @@ async def test_bleak_backend_connects_first_live_detection_with_native_device(
     conn = backend.connect(found)
 
     assert found.address == "live-corebluetooth-uuid"
-    assert found.details["match_reason"] == "fuji_service_uuid"
+    assert found.details["match_reason"] == "fuji_connectable_advertisement"
     assert found.details["connect_strategy"] == "connect_on_detection"
     assert conn.client.address is live_device
     assert made_clients[0].timeout == 60.0

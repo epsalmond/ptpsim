@@ -105,6 +105,29 @@ scripts/live_ble_camera_test.sh \
 Confirmed behavior:
 
 - Pairing/registration can complete from the terminal on macOS.
+- Current reference app/client application pairing treats advertisement identity as protocol data.
+  A first-pair connection candidate needs a known connectable Fuji service UUID
+  plus Fujifilm manufacturer data: legacy `0x02 + 4-byte key` or RED
+  `0x01 + 5-byte short serial`. Name-only advertisements are display/evidence
+  candidates, not enough to open a first-pair BLE link when advertisement
+  metadata is available.
+- When the pairing identity is available, write `PAIRING_KEY`
+  (`ABA356EB-9633-4E60-B73F-F52516DBD671`) before
+  `CONNECTED_DEVICE_NAME_STRING`. If `CONNECTED_DEVICE_IDENTIFICATION_NUMBER`
+  is present, read the camera-returned 4 bytes and acknowledge those bytes with
+  the little-endian `0x20000000` bit set; do not write a fixed constant.
+- A fast protected read is not automatically stale trust. It can be the normal
+  signature of an already trusted BLE link, so continue Fuji registration and
+  post-registration sync unless the follow-on path fails.
+- A disconnect while the registration ACK write is in flight can be the accepted
+  path on current firmware. Preserve the session, re-evaluate state, and
+  reconnect for operational work instead of treating the ACK write completion as
+  the only proof of acceptance.
+- Saved reconnect is not first-pair. The product app persists the exact
+  `PAIRING_KEY` payload from first pair and replays it on saved reconnect before
+  connected-device name and operational post-registration sync. This Python
+  prototype can use an explicit CoreBluetooth address for warm reconnects, but
+  it does not yet maintain a saved-camera registry.
 - GPS sync works; two GPS writes five seconds apart showed the camera GPS icon after restart.
 - The camera-side registered host display name can remain empty on macOS. Treat that as a non-blocking display-name bug while GPS and control flows continue.
 
@@ -149,7 +172,27 @@ scripts/camera_ap_download_object.sh --handle 0x0000000c
 scripts/ptpip_export_object.sh --session-dir rce/sessions/ptpip_probe_<timestamp> --output-dir rce/downloads/manual_export
 ```
 
-The Wi-Fi scripts preserve the laptop's normal internet route. When Ethernet is present, default/internet routes must stay on Ethernet while the camera endpoint route uses Wi-Fi.
+The Wi-Fi scripts preserve the laptop's normal internet route. When Ethernet is
+present, default/internet routes must stay on Ethernet while the camera endpoint
+route uses Wi-Fi.
+
+Current AP handoff assumptions, matching client application's hardware path:
+
+- Normal handoff reads the camera-provided SSID/passphrase and does not rewrite
+  the SSID/rename characteristic by default.
+- AP launch rewrites `IMAGE_TRANSFER_SETTING_EX = 01` when available, writes the
+  mode-specific `FUNCTION_LAUNCH_REQUEST`, then waits for `AP_STATE = 0180`.
+  A previous `0180` observation does not let a later workflow skip the function
+  launch write because AP state does not encode the requested function mode.
+- Write completion is not AP readiness. A BLE disconnect after the launch write
+  is a failed AP launch unless `AP_STATE = 0180` was already observed.
+- Keep `--hold-ble` / `--hold-after-launch` at `0` for normal attempts. Holding
+  BLE open after AP launch is diagnostic only; prior live evidence showed it can
+  interfere with finding the camera AP.
+- Route evidence owns Wi-Fi success. On macOS that means local Wi-Fi IP plus a
+  camera route over Wi-Fi while internet/default routes stay where expected. On
+  iOS/client application, hidden SSID status is not enough; the first real PTP/IP command
+  socket is the route proof.
 
 Known-good PTP/IP identity:
 
