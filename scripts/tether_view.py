@@ -78,12 +78,19 @@ CMD_Q: "queue.Queue[Command]" = queue.Queue()
 STOP = threading.Event()
 
 
-def driver(sock, tid: int) -> None:
-    """Owns the PTP socket: start live view, then loop frames + interleave queued commands."""
+def _start_live_view(sock, tid: int) -> int:
     _, code = cwt.ptp_op(sock, ptpip.build_ptp_command(OP_INITIATE_OPEN_CAPTURE, tid, 0, 0))
-    tid += 1
     print(f"[lv] InitiateOpenCapture(0x101C) -> 0x{(code or 0):04x}")
+    return tid + 1
+
+
+def driver(sock, tid: int) -> None:
+    """Owns the PTP socket: start live view, then loop frames + interleave queued commands.
+    Publishes only complete JPEGs (FFD8..FFD9) and re-arms live view when frames stall (the camera
+    drops the live-view object during AF/capture)."""
+    tid = _start_live_view(sock, tid)
     frames = 0
+    bad = 0
     t0 = time.time()
     while not STOP.is_set():
         try:
@@ -100,16 +107,30 @@ def driver(sock, tid: int) -> None:
             tid += 1
             cwt.ptp_op(sock, ptpip.build_ptp_command(OP_DELETE_OBJECT, tid, LV_HANDLE))
             tid += 1
-        except OSError as exc:
-            print(f"[lv] socket error: {exc}")
-            break
-        if data[:2] == b"\xff\xd8":
+        except (OSError, RuntimeError) as exc:
+            print(f"[lv] frame op error ({exc}) — re-arming live view")
+            time.sleep(0.3)
+            try:
+                tid = _start_live_view(sock, tid)
+            except (OSError, RuntimeError):
+                break
+            continue
+        if data[:2] == b"\xff\xd8" and data[-2:] == b"\xff\xd9":
             frames += 1
+            bad = 0
             dt = time.time() - t0
             fps = frames / dt if dt > 0 else 0.0
             HUB.publish(data, fps)
             if frames % 30 == 0:
                 print(f"[lv] {frames} frames, {fps:.1f} fps, last={len(data)}B")
+        else:
+            bad += 1
+            if bad % 8 == 0:  # ~0.5s of stalled/torn frames -> AF or capture interrupted live view
+                print(f"[lv] {bad} stalled frames (AF/capture?) — re-arming live view")
+                try:
+                    tid = _start_live_view(sock, tid)
+                except (OSError, RuntimeError):
+                    break
     STOP.set()
     print("[lv] driver stopped")
 

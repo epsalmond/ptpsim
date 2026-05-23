@@ -214,11 +214,13 @@ def build_desktop_init(name: str, my_ip: str, guid_hex: str) -> bytes:
 
 
 def ptp_op(sock: socket.socket, request: bytes):
-    """Send a PTP-IP operation; gather any DATA container(s) then the RESPONSE code."""
-    sock.sendall(request)
+    """Send a PTP-IP operation; gather any DATA container(s) then the RESPONSE code.
+    Unknown packet types (e.g. async events) are skipped; bounded so an event storm can't hang us."""
+    if request:
+        sock.sendall(request)
     data = bytearray()
     code = None
-    while True:
+    for _ in range(512):
         pkt = ptpip.recv_packet(sock)
         if not pkt:
             break
