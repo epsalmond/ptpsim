@@ -376,15 +376,18 @@ def vendor_step(session: Session, opcode: int, direction: int) -> dict:
 
 
 def stream_liveview(host: str, tp_port: int, session_dir: Path, max_frames: int,
-                    max_secs: float, timeout: float) -> dict:
+                    max_secs: float, timeout: float, save_frames: int = 3) -> dict:
     """After InitiateOpenCapture(0x101C) on the command channel, the camera PUSHES the
     through-picture JPEG stream on a separate channel (55742). Frame protocol:
     <u32 LE total-length incl. the 4-byte prefix><14-byte header (seq# at +4)><JPEG…>.
     A frame's body can span several TCP reads, so read exactly `length` bytes per frame.
     Pure read path — does not take control from the photographer (works in Camera Priority)."""
-    out: dict = {"tp_port": tp_port, "frames": 0, "jpegs_saved": 0, "sizes": [], "errors": []}
+    out: dict = {"tp_port": tp_port, "frames": 0, "jpegs_saved": 0, "sizes": [],
+                 "size_min": None, "size_max": None, "errors": []}
     start = time.monotonic()
     saved = 0
+    last_save = 0.0
+    save_interval = (max_secs / save_frames) if save_frames else 1e9  # spread saves across the run
     try:
         tp = socket.create_connection((host, tp_port), timeout)
     except OSError as exc:
@@ -411,14 +414,107 @@ def stream_liveview(host: str, tp_port: int, session_dir: Path, max_frames: int,
             eoi = body.find(b"\xff\xd9", soi)
             jpeg = body[soi:eoi + 2] if eoi > 0 else body[soi:]
             out["frames"] += 1
-            out["sizes"].append(len(jpeg))
-            if saved < 3 and eoi > 0:
-                (session_dir / f"liveview_frame_{saved:02d}.jpg").write_bytes(jpeg)
+            sz = len(jpeg)
+            if len(out["sizes"]) < 120:
+                out["sizes"].append(sz)
+            out["size_min"] = sz if out["size_min"] is None else min(out["size_min"], sz)
+            out["size_max"] = sz if out["size_max"] is None else max(out["size_max"], sz)
+            now = time.monotonic()
+            if eoi > 0 and saved < save_frames and (saved == 0 or now - last_save >= save_interval):
+                secs = int(now - start)
+                (session_dir / f"liveview_frame_{saved:03d}_{secs:02d}s.jpg").write_bytes(jpeg)
                 saved += 1
+                last_save = now
     out["jpegs_saved"] = saved
     elapsed = time.monotonic() - start
     out["elapsed_s"] = round(elapsed, 2)
     out["fps"] = round(out["frames"] / elapsed, 2) if elapsed > 0 else 0
+    return out
+
+
+def jpeg_dims(jpeg: bytes) -> tuple:
+    """(width, height) from the first SOF marker (0xFFC0-0xFFCF except DHT/DAC/RST)."""
+    i = 2
+    while i + 9 < len(jpeg):
+        if jpeg[i] != 0xFF:
+            i += 1
+            continue
+        marker = jpeg[i + 1]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            h = int.from_bytes(jpeg[i + 5:i + 7], "big")
+            w = int.from_bytes(jpeg[i + 7:i + 9], "big")
+            return (w, h)
+        seg = int.from_bytes(jpeg[i + 2:i + 4], "big")
+        i += 2 + seg
+    return (0, 0)
+
+
+SIZE_NAMES = {1: "L", 2: "M", 3: "S"}
+QUAL_NAMES = {1: "FINE", 2: "NORMAL", 3: "BASIC"}
+
+
+def _read_frames(tp, secs: float) -> dict:
+    """Read frames from an already-open through-picture socket for `secs`."""
+    rec = {"frames": 0, "bytes": [], "dims": None}
+    start = time.monotonic()
+    while (time.monotonic() - start) < secs:
+        hdr = ptpip.read_exact(tp, 4)
+        if len(hdr) != 4:
+            break
+        total = int.from_bytes(hdr, "little")
+        if total < 4 or total > 64 * 1024 * 1024:
+            break
+        body = ptpip.read_exact(tp, total - 4)
+        soi = body.find(b"\xff\xd8")
+        if soi < 0:
+            continue
+        eoi = body.find(b"\xff\xd9", soi)
+        jpeg = body[soi:eoi + 2] if eoi > 0 else body[soi:]
+        rec["frames"] += 1
+        rec["bytes"].append(len(jpeg))
+        if eoi > 0:
+            rec["dims"] = jpeg_dims(jpeg)  # track latest (catches size change)
+    el = time.monotonic() - start
+    b = rec.pop("bytes")
+    rec["fps"] = round(rec["frames"] / el, 1) if el > 0 else 0
+    rec["bytes_avg"] = round(sum(b) / len(b)) if b else 0
+    rec["bytes_min"], rec["bytes_max"] = (min(b), max(b)) if b else (0, 0)
+    rec["kbps"] = round(sum(b) / 1024 / el, 1) if el > 0 and b else 0
+    return rec
+
+
+def map_liveview(session: Session, host: str, tp_port: int, secs: float, timeout: float) -> dict:
+    """Sweep live-view size (0xD174) × quality (0xD173) on ONE held-open through-picture
+    socket (the camera refuses a 2nd TP connect per 0x101C). Set props on the command
+    channel, drain the transition, then measure dims/fps/bytes/bandwidth per config."""
+    out: dict = {"configs": []}
+    try:
+        tp = socket.create_connection((host, tp_port), timeout)
+    except OSError as exc:
+        out["error"] = repr(exc)
+        return out
+    tp.settimeout(timeout)
+    with tp:
+        for size in (1, 2, 3):
+            for qual in (1, 2, 3):
+                if not session.alive:
+                    break
+                sw = session.set_prop_value(0xD174, struct.pack("<H", size), f"lvsize{size}")
+                qw = session.set_prop_value(0xD173, struct.pack("<H", qual), f"lvqual{qual}")
+                try:
+                    _read_frames(tp, 0.8)          # drain the transition
+                    m = _read_frames(tp, secs)     # measure
+                except OSError as exc:
+                    out["configs"].append({"size": SIZE_NAMES[size], "quality": QUAL_NAMES[qual],
+                                           "error": repr(exc)})
+                    break
+                out["configs"].append({
+                    "size": f"{size}({SIZE_NAMES[size]})", "quality": f"{qual}({QUAL_NAMES[qual]})",
+                    "set_size_ok": sw.get("response_ok"), "set_qual_ok": qw.get("response_ok"),
+                    "dims": m.get("dims"), "fps": m.get("fps"), "bytes_avg": m.get("bytes_avg"),
+                    "bytes_min": m.get("bytes_min"), "bytes_max": m.get("bytes_max"),
+                    "kbps": m.get("kbps"), "frames": m.get("frames"),
+                })
     return out
 
 
@@ -511,6 +607,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pc-priority", action="store_true", help="phase-3: set PC Priority (0xD207=2) before the ISO write")
     parser.add_argument("--stream-frames", type=int, default=0, help="capture N live-view JPEG frames after 0x101C")
     parser.add_argument("--tp-port", type=int, default=55742, help="through-picture (JPEG stream) TCP port")
+    parser.add_argument("--save-frames", type=int, default=3, help="how many JPEG frames to save (spread across the run)")
+    parser.add_argument("--map-liveview", action="store_true", help="sweep size(0xD174)×quality(0xD173), measure dims/fps/bytes/bandwidth")
+    parser.add_argument("--map-secs", type=float, default=2.5, help="seconds to measure per size×quality config")
     parser.add_argument("--stream-secs", type=float, default=10.0, help="max seconds to stream")
     parser.add_argument("--camera-priority", action="store_true", help="set 0xD207=1 (Camera Priority) before streaming")
     parser.add_argument("--sweep-props", default="", help="comma list of DPCs to read desc+value (full property sweep)")
@@ -539,9 +638,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.camera_priority:
                 out["set_camera_priority"] = session.set_prop_value(0xD207, struct.pack("<H", 1), "campri")
             out["live_view_handshake"] = live_view_handshake(session)
+            if args.map_liveview:
+                out["liveview_map"] = map_liveview(session, args.host, args.tp_port, args.map_secs, args.timeout)
             if args.stream_frames:
                 out["liveview_stream"] = stream_liveview(args.host, args.tp_port, session_dir,
-                                                         args.stream_frames, args.stream_secs, args.timeout)
+                                                         args.stream_frames, args.stream_secs, args.timeout,
+                                                         save_frames=args.save_frames)
             if args.sweep_props:
                 props = [int(x, 16) for x in args.sweep_props.split(",") if x.strip()]
                 out["sweep"] = sweep_props(session, props)

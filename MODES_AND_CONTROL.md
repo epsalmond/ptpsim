@@ -56,8 +56,39 @@ Mechanism (through-picture channel):
 3. **Confirmed:** 40 frames captured, valid **640×480** baseline JPEGs (~15.5 KB each), camera
    in Camera Priority. Tool: `probe_iso_liveview.py --camera-priority --stream-frames N --stream-secs T`.
 
-Notes: live-view JPEG size is `0xD174` (L1024/M640/S320) and quality `0xD173`; observed 640×480
-here. The `SDK_GetThroughPicture` API = "read next pushed frame" from 55742 (not a command op).
+Notes: `SDK_GetThroughPicture` = "read next pushed frame" from 55742 (not a command op).
+
+### 1b. Live-view feed: frame-rate & quality — measured `[live-confirmed 2026-05-23]`
+
+**The through-picture feed is a FIXED 640×480 @ ~60 fps preview, ~14.3 KB/frame, ~840 kbps
+(~0.1 MB/s).** Measured a full size×quality sweep on one held-open 55742 socket (camera
+**refuses a 2nd TP connect per `0x101C`** → hold one socket):
+
+| `0xD174` size | `0xD173` quality | dims | fps | KB/frame | kbps |
+|---|---|---|---|---|---|
+| 1=L, 2=M, 3=S | 1=FINE, 2=NORMAL, 3=BASIC | **640×480 (all 9)** | **~60 (all)** | **~14.3 (all)** | **~840 (all)** |
+
+**Key finding:** changing `0xD174` (size) or `0xD173` (quality) **mid-stream has NO effect** —
+all 9 combinations streamed identical 640×480/60 fps/840 kbps (writes returned `0x2001` OK but
+didn't change the feed). So on this fw the through-picture stream is a fixed-format preview;
+`0xD173`/`0xD174`/`0xD1BC`(mode)/`0xD23C`(ratio) likely apply **only if set before live-view
+start** (SDK `StartLiveView 0x3301` / `StopLiveView 0x3302`, distinct from our `0x101C`), or
+they govern a **separate on-demand higher-res live-view image** (`0x9018 GetLiveViewData`),
+not the 60 fps push. **[open: pre-start size/quality test + 0x9018 path]**
+
+**Frame rate:** no live-view frame-rate DPC exists (the `0xD247`/`0xD24C`/`0xD253` rates are
+for *movie recording*). The 60 fps push rate is fixed. **For constrained Wi-Fi:**
+- `~840 kbps` is already light (HDMI/UVC would be ~tens of Mbps) — 640×480/60 fps streams fine
+  over modest Wi-Fi.
+- To cut the *display* update rate: **client-side frame decimation** (consume every Nth frame).
+  This does NOT reduce camera→host bandwidth (camera still pushes 60 fps).
+- To cut *bandwidth*: needs smaller per-frame size, which requires the pre-start size/quality
+  path (untested) — if confirmed, S/BASIC set before `StartLiveView` should drop KB/frame.
+
+**Bottom line for the model's posing feed:** the 640×480/60 fps/~840 kbps through-picture
+stream is a viable network alternative to the HDMI cable / XLV — real-time, Wi-Fi-friendly,
+camera-agnostic on our PTP-IP path. Caveat (per §1a): it takes over the camera, so the shot
+must be triggered remotely.
 
 ## 2. Shooting / function modes
 
