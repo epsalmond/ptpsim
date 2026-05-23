@@ -49,6 +49,39 @@ are the same logic):
   `GetIntervalWifiReadImageForPreview`, `SleepForWifiGetCommand`. So **wireless infra tether DOES
   serve liveview over the LAN IP** (polled GetObject loop, Wi-Fi-tuned intervals per LV size).
 
+## WIRE-CONFIRMED (2026-05-23, real predecessor-app capture) — supersedes the speculation below
+
+real desktop predecessor app; camera `192.168.4.27`, hosts `192.168.4.44` / `192.168.7.49`=mbp).
+
+**The "knock" = PCSS `DISCOVERY` over UDP to camera port `51562`** (NOT 1900 — my HOST-header guess
+was wrong). Exact 69-byte payload:
+```
+DISCOVERY * HTTP/1.1\r\n
+HOST: <PC's OWN IP>\r\n        ← e.g. 192.168.4.44; tells the camera who/where to connect back
+MX: 5\r\n
+SERVICE: PCSS/1.0\r\n
+\r\n\x00                        ← trailing NUL
+```
+**Flow:** PC → camera `UDP:51562` DISCOVERY → camera sends **NO UDP reply**; if ready it silently
+arms and the **PTP-IP session comes up on camera TCP `15740`** (standard PTP-IP port — the camera
+also SYNs *back* to the PC on an ephemeral port, which is why the HOST header carries the PC IP).
+Multiple TCP channels (command on `15740` + event/data on ephemeral 59193/58596).
+
+**`15740`, not `55740`:** the desktop predecessor uses **standard PTP-IP `15740`**. The `55740/41/42`
+
+port bases for the two apps; the wire capture is ground truth for the desktop tether = `15740`.
+
+**"Works once per boot" — CONFIRMED + explains all earlier failures:** when the camera is "spent"
+(already connected once since power-on) the knock to `51562` gets **ICMP type 3 / code 3
+(port-unreachable)** — the PCSS daemon stops listening until reboot. The capture shows 52 knocks vs
+102 ICMP-unreachables; only fresh-boot knocks were accepted. This is why every probe I ran earlier
+failed: the camera was already spent **and** I was hitting port 1900. **Operational rule: power-cycle
+the camera before each connection attempt.**
+
+Tool (corrected): `scripts/pcss_discover.py <camera_ip>` — sends the `51562` knock with HOST=our IP,
+then checks whether camera `15740` opened.
+
+## (SUPERSEDED speculation) discovery protocol guess from the binary — see WIRE-CONFIRMED above
 ## The discovery protocol: Fuji "PCSS/1.0" (PC Shoot Service), SSDP-style over UDP:1900
 
 It is **HTTP-over-UDP modeled on SSDP**, but with Fuji-custom verbs/service and on the **broadcast**
