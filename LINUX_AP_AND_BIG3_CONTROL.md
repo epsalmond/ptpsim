@@ -85,3 +85,8 @@ wire-write of ISO 400 to `0xD02A` returned zero-length and killed the command so
 precondition). The `0xD02A` descriptor enumerates no values (count=0), so there's no
 wire legal-list guard. Cap host-side at ≤320 **as a precaution** until the ≥400 path
 is confirmed — it is not a ceiling. See the wire doc for the resolution plan.
+
+## Full property catalog
+
+All 159 camera properties (code, name, datatype, get/set, control method, encoding):
+see [`PROPERTY_CATALOG.md`](PROPERTY_CATALOG.md) (+ live read-sweep `property-sweep-live.tsv`).
