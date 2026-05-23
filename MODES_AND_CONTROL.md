@@ -27,6 +27,25 @@ sets ISO (`0xD02A`), steps shutter/aperture, and pulls images remotely — the r
   available **only** in Camera Priority (SDK §1.8). Don't switch to PC Priority unless a
   specific legacy API (e.g. `XSDK_Release` shutter) requires it.
 
+### 1a. Remote live-view VIDEO stream in Camera Priority `[live-confirmed]`
+
+**Yes — you can pull the live-view video remotely while the camera stays in Camera Priority
+and the photographer keeps shooting.** It's a pure *read* path; it doesn't take control.
+
+Mechanism (through-picture channel):
+1. Command channel (55740): bring-up `OpenSession → 0xDF00=6 → 0xDF01=22 → 0xDF2A → InitiateOpenCapture(0x101C)`.
+   (Optionally `SetDevicePropValue(0xD207, 1)` to assert Camera Priority — writes `0x2001`.)
+2. Open a **second TCP socket to `192.168.0.1:55742`** (through-picture). The camera **pushes**
+   JPEG frames there — no per-frame request. Frame framing: **`<u32 LE total-length (incl. the
+   4-byte prefix)> <14-byte header (frame seq# at body+4)> <JPEG FFD8…FFD9>`**; a frame's body
+   can span several TCP segments, so read exactly `length` bytes. Some bodies are non-JPEG
+   through-picture telemetry (skip if no `FFD8`).
+3. **Confirmed:** 40 frames captured, valid **640×480** baseline JPEGs (~15.5 KB each), camera
+   in Camera Priority. Tool: `probe_iso_liveview.py --camera-priority --stream-frames N --stream-secs T`.
+
+Notes: live-view JPEG size is `0xD174` (L1024/M640/S320) and quality `0xD173`; observed 640×480
+here. The `SDK_GetThroughPicture` API = "read next pushed frame" from 55742 (not a command op).
+
 ## 2. Shooting / function modes
 
 Two independent layers:

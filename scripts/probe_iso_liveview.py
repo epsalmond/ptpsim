@@ -375,6 +375,53 @@ def vendor_step(session: Session, opcode: int, direction: int) -> dict:
     return result
 
 
+def stream_liveview(host: str, tp_port: int, session_dir: Path, max_frames: int,
+                    max_secs: float, timeout: float) -> dict:
+    """After InitiateOpenCapture(0x101C) on the command channel, the camera PUSHES the
+    through-picture JPEG stream on a separate channel (55742). Frame protocol:
+    <u32 LE total-length incl. the 4-byte prefix><14-byte header (seq# at +4)><JPEG…>.
+    A frame's body can span several TCP reads, so read exactly `length` bytes per frame.
+    Pure read path — does not take control from the photographer (works in Camera Priority)."""
+    out: dict = {"tp_port": tp_port, "frames": 0, "jpegs_saved": 0, "sizes": [], "errors": []}
+    start = time.monotonic()
+    saved = 0
+    try:
+        tp = socket.create_connection((host, tp_port), timeout)
+    except OSError as exc:
+        out["errors"].append(f"connect {tp_port}: {exc!r}")
+        return out
+    tp.settimeout(timeout)
+    with tp:
+        while out["frames"] < max_frames and (time.monotonic() - start) < max_secs:
+            hdr = ptpip.read_exact(tp, 4)
+            if len(hdr) != 4:
+                out["errors"].append("tp closed / short length")
+                break
+            total = int.from_bytes(hdr, "little")
+            if total < 4 or total > 64 * 1024 * 1024:
+                out["errors"].append(f"bad frame length {total}")
+                break
+            body = ptpip.read_exact(tp, total - 4)
+            if len(body) != total - 4:
+                out["errors"].append("short frame body")
+                break
+            soi = body.find(b"\xff\xd8")
+            if soi < 0:
+                continue  # non-JPEG through-picture payload (telemetry)
+            eoi = body.find(b"\xff\xd9", soi)
+            jpeg = body[soi:eoi + 2] if eoi > 0 else body[soi:]
+            out["frames"] += 1
+            out["sizes"].append(len(jpeg))
+            if saved < 3 and eoi > 0:
+                (session_dir / f"liveview_frame_{saved:02d}.jpg").write_bytes(jpeg)
+                saved += 1
+    out["jpegs_saved"] = saved
+    elapsed = time.monotonic() - start
+    out["elapsed_s"] = round(elapsed, 2)
+    out["fps"] = round(out["frames"] / elapsed, 2) if elapsed > 0 else 0
+    return out
+
+
 def sweep_props(session: Session, props: list[int]) -> dict:
     """Read GetDevicePropValue then GetDevicePropDesc for each prop (value first =
     more robust; a desc timeout that kills the session leaves the rest 'aborted')."""
@@ -462,6 +509,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", type=int, default=0, help="phase-3 ISO: manual literal (e.g. 400) or AUTO sentinel (-1)")
     parser.add_argument("--force", action="store_true", help="phase-3: write even if not in the current Cap list (risks socket drop)")
     parser.add_argument("--pc-priority", action="store_true", help="phase-3: set PC Priority (0xD207=2) before the ISO write")
+    parser.add_argument("--stream-frames", type=int, default=0, help="capture N live-view JPEG frames after 0x101C")
+    parser.add_argument("--tp-port", type=int, default=55742, help="through-picture (JPEG stream) TCP port")
+    parser.add_argument("--stream-secs", type=float, default=10.0, help="max seconds to stream")
+    parser.add_argument("--camera-priority", action="store_true", help="set 0xD207=1 (Camera Priority) before streaming")
     parser.add_argument("--sweep-props", default="", help="comma list of DPCs to read desc+value (full property sweep)")
     parser.add_argument("--step-op", default="", help="vendor relative-step opcode, e.g. 0x902c (shutter) / 0x902d (aperture)")
     parser.add_argument("--step-dir", type=int, default=1, help="step direction (1=up/0=down)")
@@ -485,7 +536,12 @@ def main(argv: list[str] | None = None) -> int:
             out["aborted"] = "open session not OK"
         else:
             session = Session(sock, session_dir, out)
+            if args.camera_priority:
+                out["set_camera_priority"] = session.set_prop_value(0xD207, struct.pack("<H", 1), "campri")
             out["live_view_handshake"] = live_view_handshake(session)
+            if args.stream_frames:
+                out["liveview_stream"] = stream_liveview(args.host, args.tp_port, session_dir,
+                                                         args.stream_frames, args.stream_secs, args.timeout)
             if args.sweep_props:
                 props = [int(x, 16) for x in args.sweep_props.split(",") if x.strip()]
                 out["sweep"] = sweep_props(session, props)
