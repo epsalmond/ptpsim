@@ -53,19 +53,27 @@ are the same logic):
 
 real desktop predecessor app; camera `192.168.4.27`, hosts `192.168.4.44` / `192.168.7.49`=mbp).
 
-**The "knock" = PCSS `DISCOVERY` over UDP to camera port `51562`** (NOT 1900 — my HOST-header guess
-was wrong). Exact 69-byte payload:
+**Full handshake (rendezvous/announce — the camera DIALS BACK to the PC):**
 ```
-DISCOVERY * HTTP/1.1\r\n
-HOST: <PC's OWN IP>\r\n        ← e.g. 192.168.4.44; tells the camera who/where to connect back
-MX: 5\r\n
-SERVICE: PCSS/1.0\r\n
-\r\n\x00                        ← trailing NUL
+
+1. PC --> camera  UDP:51562   "knock", every 10s until accepted, fresh ephemeral src port each time:
+       DISCOVERY * HTTP/1.1\r\n  HOST: <PC IP>\r\n  MX: 5\r\n  SERVICE: PCSS/1.0\r\n\x00   (69 B)
+   - camera NOT ready -> ICMP type3/code3 (port-unreachable); PC re-knocks next tick.
+   - camera ready -> no ICMP; it ARPs for the PC's IP, then:
+2. camera --> PC  TCP connect to PC:51560, sends PCSS NOTIFY (103 B):
+       NOTIFY * HTTP/1.1\r\n  DSC: <camera IP>\r\n  CAMERANAME: GFX100 II\r\n
+       DSCPORT: 15740\r\n  MX: 7\r\n  SERVICE: PCSS/1.0\r\n        <-- DSCPORT = the PTP-IP port to use
+3. PC --> camera  on the same :51560 socket:  "HTTP/1.1 200 OK\r\n\x00"  (18 B; 403 would reject)
+   camera then closes the 51560 channel (~56 ms total).
+4. PC --> camera  TCP connect to camera:<DSCPORT>  -> standard PTP-IP:
+       Init_Command_Request (GUID + PC-IP + name + zeros tail) -> Init_Command_Ack -> OpenSession.
 ```
-**Flow:** PC → camera `UDP:51562` DISCOVERY → camera sends **NO UDP reply**; if ready it silently
-arms and the **PTP-IP session comes up on camera TCP `15740`** (standard PTP-IP port — the camera
-also SYNs *back* to the PC on an ephemeral port, which is why the HOST header carries the PC IP).
-Multiple TCP channels (command on `15740` + event/data on ephemeral 59193/58596).
+**Key points:** the **PTP-IP port is ANNOUNCED dynamically** in the NOTIFY's `DSCPORT` (15740 here,
+parse it — don't hardcode). The PC **must** answer the NOTIFY with `HTTP/1.1 200 OK` or the camera
+aborts (this is the `200 OK`/`403 Forbidden` pair seen in the binary strings). The whole thing is a
+NAT-traversal-style rendezvous: the knock advertises the PC, the camera dials back and announces its
+endpoint — designed to work even when the camera is behind a router (on the flat LAN it's direct).
+The earlier `41641`-to-`.228` "knock" was unrelated Tailscale disco (magic `TS💬`).
 
 **`15740`, not `55740`:** the desktop predecessor uses **standard PTP-IP `15740`**. The `55740/41/42`
 
