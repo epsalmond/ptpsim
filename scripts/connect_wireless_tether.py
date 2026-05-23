@@ -195,6 +195,76 @@ def build_desktop_init(name: str, my_ip: str, guid_hex: str) -> bytes:
     return init[:24] + ip_field + init[28:]
 
 
+def ptp_op(sock: socket.socket, request: bytes):
+    """Send a PTP-IP operation; gather any DATA container(s) then the RESPONSE code."""
+    sock.sendall(request)
+    data = bytearray()
+    code = None
+    while True:
+        pkt = ptpip.recv_packet(sock)
+        if not pkt:
+            break
+        hdr = ptpip.ptp_container_header(pkt)
+        ct = hdr.get("container_type")
+        if ct == ptpip.PTP_CONTAINER_DATA:
+            data += ptpip.ptp_data_payload(pkt)
+        elif ct == ptpip.PTP_CONTAINER_RESPONSE:
+            code = hdr.get("code")
+            break
+    return bytes(data), code
+
+
+def pull_images(sock: socket.socket, out_dir: str, max_images: int, list_only: bool, tid: int) -> int:
+    """Enumerate the card (StorageIDs -> ObjectHandles) and download the newest images."""
+    import os
+
+    data, code = ptp_op(sock, ptpip.build_ptp_command(0x1004, tid))  # GetStorageIDs
+    tid += 1
+    storages = ptpip.decode_u32_array_payload(data) if data else []
+    print(f"[work] StorageIDs {[hex(s) for s in storages]} (resp 0x{(code or 0):04x})")
+
+    handles: list[int] = []
+    for st in (storages or [0xFFFFFFFF]):
+        data, code = ptp_op(sock, ptpip.build_ptp_command(0x1007, tid, st, 0, 0))  # GetObjectHandles
+        tid += 1
+        found = ptpip.decode_u32_array_payload(data) if data else []
+        print(f"[work] storage 0x{st:08x}: {len(found)} objects (resp 0x{(code or 0):04x})")
+        handles += found
+    if not handles:
+        print("[work] no objects on card")
+        return tid
+
+    targets = handles[-max_images:] if max_images else handles
+    print(f"[work] {len(handles)} objects total; {'listing' if list_only else 'downloading'} {len(targets)}")
+    if not list_only:
+        os.makedirs(out_dir, exist_ok=True)
+    for h in targets:
+        data, code = ptp_op(sock, ptpip.build_get_object_info(h, tid))
+        tid += 1
+        try:
+            info = ptpip.decode_object_info_payload(data)
+        except ValueError as exc:
+            print(f"[work] 0x{h:08x}: ObjectInfo decode failed ({exc})")
+            continue
+        name = info["filename"]
+        print(f"[work] 0x{h:08x}  {name}  {info['object_format_name']}  "
+              f"{info['image_pix_width']}x{info['image_pix_height']}  {info['object_compressed_size']}B")
+        if list_only:
+            continue
+        data, code = ptp_op(sock, ptpip.build_get_object(h, tid))
+        tid += 1
+        fn = ptpip.safe_download_filename(name, f"obj_{h:08x}.bin")
+        with open(os.path.join(out_dir, fn), "wb") as fh:
+            fh.write(data)
+        extra = ""
+        if data[:2] == b"\xff\xd8":
+            ji = ptpip.jpeg_payload_info(data)
+            extra = f"  jpeg soi={ji['starts_with_soi']} eoi={ji['ends_with_eoi']}"
+        print(f"[work]   saved {fn} ({len(data)}B, resp 0x{(code or 0):04x}){extra}")
+    print(f"[work] saved to {out_dir}")
+    return tid
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="connect-wireless-tether")
     p.add_argument("camera_ip")
@@ -208,6 +278,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--knock-only", action="store_true", help="send one knock and exit")
     p.add_argument("--no-knock", action="store_true", help="don't knock, just wait for a callback")
     p.add_argument("--keep-open", action="store_true", help="leave the session open (default: CloseSession)")
+    p.add_argument("--list", action="store_true", help="enumerate the card (no download)")
+    p.add_argument("--pull-images", type=int, metavar="N",
+                   help="download the N newest images (0 = all)")
+    p.add_argument("--out", default=None, help="download dir (default: rce/sessions/tether_pull_<ts>)")
     args = p.parse_args(argv)
 
     my_ip = args.my_ip or my_ip_for(args.camera_ip)
@@ -238,6 +312,14 @@ def main(argv: list[str] | None = None) -> int:
 
     sock = result
     print("[ok] wireless tether session established — no BLE, no AP")
+
+    if args.list or args.pull_images is not None:
+        out = args.out or f"rce/sessions/tether_pull_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
+        try:
+            pull_images(sock, out, args.pull_images or 0, args.list, tid=3)
+        except OSError as exc:
+            print(f"[work] aborted ({exc})")
+
     if not args.keep_open:
         try:
             sock.sendall(ptpip.build_close_session(transaction_id=3))
