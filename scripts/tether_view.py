@@ -84,10 +84,60 @@ def _start_live_view(sock, tid: int) -> int:
     return tid + 1
 
 
-def driver(sock, tid: int) -> None:
+SEEN_HANDLES: set[int] = set()
+OP_GET_OBJECT_HANDLES = 0x1007
+
+
+def list_handles(sock, tid: int):
+    """GetObjectHandles(0xFFFFFFFF, 0x0) — same call the desktop tether polls."""
+    data, _ = cwt.ptp_op(sock, ptpip.build_ptp_command(OP_GET_OBJECT_HANDLES, tid, 0xFFFFFFFF, 0))
+    try:
+        return ptpip.decode_u32_array_payload(data) if data else [], tid + 1
+    except ValueError:
+        return [], tid + 1
+
+
+def drain_captures(sock, tid: int, out_dir: str, max_dl_mb: int) -> int:
+    """Download (and delete from camera) any object handles not seen before — the desktop's
+    capture flow: GetObjectInfo -> GetObject -> DeleteObject. DeleteObject clears the camera's
+    pending-transfer state (the 'transferring to PC' nag)."""
+    handles, tid = list_handles(sock, tid)
+    new = [h for h in handles if h not in SEEN_HANDLES]
+    for h in new:
+        SEEN_HANDLES.add(h)
+        info_data, _ = cwt.ptp_op(sock, ptpip.build_get_object_info(h, tid))
+        tid += 1
+        try:
+            info = ptpip.decode_object_info_payload(info_data)
+        except ValueError:
+            continue
+        name = info["filename"]
+        size = info["object_compressed_size"]
+        fmt = info["object_format_name"]
+        print(f"[capture] new 0x{h:08x} {name} {fmt} {size}B")
+        if size > 0 and (max_dl_mb <= 0 or size <= max_dl_mb * 1024 * 1024):
+            obj, _ = cwt.ptp_op(sock, ptpip.build_get_object(h, tid))
+            tid += 1
+            os.makedirs(out_dir, exist_ok=True)
+            fn = ptpip.safe_download_filename(name, f"obj_{h:08x}.bin")
+            with open(os.path.join(out_dir, fn), "wb") as fh:
+                fh.write(obj)
+            print(f"[capture]   saved {fn} ({len(obj)}B) -> {out_dir}")
+        else:
+            print(f"[capture]   skipped download ({size}B > {max_dl_mb}MB cap); deleting from camera")
+        cwt.ptp_op(sock, ptpip.build_ptp_command(OP_DELETE_OBJECT, tid, h))  # frees the camera
+        tid += 1
+    return tid
+
+
+def driver(sock, tid: int, capture_dir: str, max_dl_mb: int) -> None:
     """Owns the PTP socket: start live view, then loop frames + interleave queued commands.
-    Publishes only complete JPEGs (FFD8..FFD9) and re-arms live view when frames stall (the camera
-    drops the live-view object during AF/capture)."""
+    Publishes only complete JPEGs (FFD8..FFD9). When frames stall (camera drops the live-view object
+    during AF/capture), drains any newly captured images to disk (the desktop capture flow) then
+    re-arms live view."""
+    handles, tid = list_handles(sock, tid)  # baseline: don't treat pre-existing card images as new
+    SEEN_HANDLES.update(handles)
+    print(f"[capture] baseline {len(handles)} existing objects on card (won't re-download)")
     tid = _start_live_view(sock, tid)
     frames = 0
     bad = 0
@@ -125,8 +175,12 @@ def driver(sock, tid: int) -> None:
                 print(f"[lv] {frames} frames, {fps:.1f} fps, last={len(data)}B")
         else:
             bad += 1
-            if bad % 8 == 0:  # ~0.5s of stalled/torn frames -> AF or capture interrupted live view
-                print(f"[lv] {bad} stalled frames (AF/capture?) — re-arming live view")
+            if bad % 8 == 0:  # ~0.5s of stalled/torn frames -> AF or capture dropped the LV object
+                print(f"[lv] {bad} stalled frames (AF/capture?) — draining captures + re-arming")
+                try:
+                    tid = drain_captures(sock, tid, capture_dir, max_dl_mb)
+                except (OSError, RuntimeError) as exc:
+                    print(f"[capture] drain error ({exc})")
                 try:
                     tid = _start_live_view(sock, tid)
                 except (OSError, RuntimeError):
@@ -228,6 +282,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--http-port", type=int, default=8080)
     p.add_argument("--retries", type=int, default=12)
     p.add_argument("--interval", type=float, default=10.0)
+    p.add_argument("--capture-dir", default=None,
+                   help="where to save shots pulled after a body capture (default: rce/sessions/tether_caps_<ts>)")
+    p.add_argument("--max-download-mb", type=int, default=0,
+                   help="skip downloading (just delete from camera) objects larger than this; 0 = no cap")
     args = p.parse_args(argv)
 
     my_ip = args.my_ip or cwt.my_ip_for(args.camera_ip)
@@ -245,7 +303,8 @@ def main(argv: list[str] | None = None) -> int:
         return sock
     print("[ok] session up — starting live view + HTTP")
 
-    drv = threading.Thread(target=driver, args=(sock, 3), daemon=True)
+    capture_dir = args.capture_dir or f"rce/sessions/tether_caps_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
+    drv = threading.Thread(target=driver, args=(sock, 3, capture_dir, args.max_download_mb), daemon=True)
     drv.start()
 
     httpd = ThreadingHTTPServer(("0.0.0.0", args.http_port), Handler)
