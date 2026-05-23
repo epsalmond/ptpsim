@@ -11,6 +11,52 @@ view) than the reference app BLE→AP→PTP-IP remote-control path.
   not a standalone remote-control app. The plugin (Lua) + Fuji SDK DLLs are inside the
   InstallShield `[0]` payload (needs i6comp/isdcab or a Windows/wine install to extract — TODO).
 
+
+Extraction chain (reproducible): `7z x` the outer EXE → inner `_tetherapp_embedded_ins_1340.exe`
+→ `wine _tetherapp_embedded_ins_1340.exe /extract_all:C:\out` (gives InstallShield `data1.hdr`/
+`data1.cab`/`data2.cab`) → `unshield -g App_Executables x data1.cab` (built unshield 1.6.2 from
+source; apt blocked). Payload: **`FUJIFILM_TetherApp.exe`** (12.8 MB native C++ app),
+
+SDK — Windows twin of the `FF0018API.so` we already RE'd), `FujiLR.dll` + `FUJIFILM_TetherApp.lrplugin`
+(LR glue: a PE wrapping **compiled Lua 5.1** `LuaQ` chunks `FujiFilmTetherServiceProvider.lua` /
+`FujiFilmTetherTask.lua`).
+
+### App architecture (top→bottom)
+Lightroom Lua plugin → `launchAndConnectToImageCaptureTetherServer` **spawns the local
+`FUJIFILM_TetherApp.exe`** (an image-capture tether *server*) and talks to it over a local
+`_serverConnection` → the app drives the **SDK (`SDK_*` exports in `FF0018API.dll`,
+
+
+
+### How it connects over Wi-Fi by IP (answers "I gave it the IP and it got right in")
+
+are the same logic):
+- **`MngTCPIP::Connect(u16 port, u32 ip)`** builds a textbook `sockaddr_in` — `family=AF_INET(2)`,
+  `htons(port)`, `htonl(ip)` — and the port is validated against a 3-entry table keyed by
+  `port-55740` (`movw #0xd9bc`=55740). **i.e. the desktop tether connects plain PTP-IP TCP to the
+  camera's LAN IP on the SAME `55740 / 55741 / 55742` ports as our AP path** — NOT a different port,
+  NOT 15740 for the data channel.
+- **`FTL_EnumDevice(dev*)`** = register-a-camera. It reads the IP from the device struct and logs
+  the octets; a **`0x80000000` sentinel** in the IP field means "no IP → auto-discover". **Given an
+  explicit IP it skips broadcast entirely** — exactly the predecessor's "type the camera's IP, it
+  connects" path. No BLE, no AP launch, no 60 s window.
+- A **UDP broadcast discovery** path also exists (`sendto`/`recvfrom` imported + a
+  `255.255.255.255` literal + port-`15740` refs) — used only when *no* IP is supplied (to find the
+  camera on the LAN). The 15740 references are this discovery/SSDP-style probe, not the data channel.
+- `FUJIFILM_TetherApp.exe` has an explicit **Wi-Fi transport with liveview** tuned separately from
+  USB: `CFFCamera.IsWifiConnected`, `GetIntervalWifiReadImageForLiveview{L,M,S}`,
+  `GetIntervalWifiReadImageForPreview`, `SleepForWifiGetCommand`. So **wireless infra tether DOES
+  serve liveview over the LAN IP** (polled GetObject loop, Wi-Fi-tuned intervals per LV size).
+
+### Reconciling with the earlier scan (only port 22 open at 192.168.5.192)
+The full scan found 55740 **closed** while the predecessor app connects to 55740 by IP. So in plain
+"Wireless Tethering / connected-to-network-idle" the camera does **not** keep 55740 listening — it
+must arm the PTP-IP listener only when tethering is actively **armed/standby** in the camera menu
+(or the SDK sends a UDP unicast hello to the IP first). **This is the one remaining unknown and the
+decisive live test** (below): in the armed wireless-tether state, point our PTP-IP probe straight at
+`camera_ip:55740` and run `InitCommandRequest` — if it answers, we've eliminated BLE/AP for ALL work.
+
+
 ## Transport taxonomy (libfuji `dev.md`)
 - `USB_TETHER_SHOOT`: **Liveview + live image download + settings** over USB.
 - `WIRELESS_TETHER`: *identical functionality, different transport* (Wi-Fi). This is "Wireless
