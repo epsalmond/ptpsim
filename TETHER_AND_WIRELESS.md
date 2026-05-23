@@ -49,6 +49,14 @@ are the same logic):
   `GetIntervalWifiReadImageForPreview`, `SleepForWifiGetCommand`. So **wireless infra tether DOES
   serve liveview over the LAN IP** (polled GetObject loop, Wi-Fi-tuned intervals per LV size).
 
+## ✅ VALIDATED LIVE 2026-05-23 — `scripts/connect_wireless_tether.py` works end to end
+Ran from a host with no BLE and no AP launch: knock → camera callback → NOTIFY/`200 OK` → PTP-IP
+(`Init_Fail 0x2019 Device_Busy` → retry → `Init_Command_Ack camera='GFX100 II'
+guid=0870b0610a8b4593b2e79357dd36e050`) → **`OpenSession -> 0x2001 OK`** → `GetDeviceInfo` 843 B.
+**This replaces the BLE→AP→PTP-IP path for all wireless work.** One full step:
+`PYTHONPATH=. python3 scripts/connect_wireless_tether.py <camera_ip>` (power-cycle camera first;
+once per boot). The flow below is the wire detail behind it.
+
 ## WIRE-CONFIRMED (2026-05-23, real predecessor-app capture) — supersedes the speculation below
 
 real desktop predecessor app; camera `192.168.4.27`, hosts `192.168.4.44` / `192.168.7.49`=mbp).
