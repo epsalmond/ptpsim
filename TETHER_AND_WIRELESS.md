@@ -41,20 +41,68 @@ are the same logic):
   explicit IP it skips broadcast entirely** — exactly the predecessor's "type the camera's IP, it
   connects" path. No BLE, no AP launch, no 60 s window.
 - A **UDP broadcast discovery** path also exists (`sendto`/`recvfrom` imported + a
-  `255.255.255.255` literal + port-`15740` refs) — used only when *no* IP is supplied (to find the
-  camera on the LAN). The 15740 references are this discovery/SSDP-style probe, not the data channel.
+  `255.255.255.255` literal) — used only when *no* IP is supplied (to find the camera on the LAN).
+  *(Correction: earlier "port 15740" refs were a FALSE POSITIVE — `0x7c3d` is the bytes of `|=`
+  inside C++ `operator|=` strings, not a port. The discovery port is **1900**; see below.)*
 - `FUJIFILM_TetherApp.exe` has an explicit **Wi-Fi transport with liveview** tuned separately from
   USB: `CFFCamera.IsWifiConnected`, `GetIntervalWifiReadImageForLiveview{L,M,S}`,
   `GetIntervalWifiReadImageForPreview`, `SleepForWifiGetCommand`. So **wireless infra tether DOES
   serve liveview over the LAN IP** (polled GetObject loop, Wi-Fi-tuned intervals per LV size).
 
-### Reconciling with the earlier scan (only port 22 open at 192.168.5.192)
-The full scan found 55740 **closed** while the predecessor app connects to 55740 by IP. So in plain
-"Wireless Tethering / connected-to-network-idle" the camera does **not** keep 55740 listening — it
-must arm the PTP-IP listener only when tethering is actively **armed/standby** in the camera menu
-(or the SDK sends a UDP unicast hello to the IP first). **This is the one remaining unknown and the
-decisive live test** (below): in the armed wireless-tether state, point our PTP-IP probe straight at
-`camera_ip:55740` and run `InitCommandRequest` — if it answers, we've eliminated BLE/AP for ALL work.
+## The discovery protocol: Fuji "PCSS/1.0" (PC Shoot Service), SSDP-style over UDP:1900
+
+It is **HTTP-over-UDP modeled on SSDP**, but with Fuji-custom verbs/service and on the **broadcast**
+address `255.255.255.255:1900` (NOT the standard SSDP multicast `239.255.255.250` — that string is
+absent; port 1900 LE is present once).
+
+**Verbs / templates (exact tokens from the binary):**
+- **Active search (host → LAN):**
+  ```
+  DISCOVERY * HTTP/1.1\r\n
+  HOST: <addr>:1900\r\n
+  MX: 5\r\n
+  SERVICE: PCSS/1.0\r\n
+  \r\n
+  ```
+- **Announce (camera → LAN, "here I am"):**
+  ```
+  NOTIFY * HTTP/1.1\r\n
+  ...
+  DSC: <...>\r\n
+  CAMERANAME: FUJIFILM <model>\r\n
+  SERVICE: PCSS\r\n
+  \r\n
+  ```
+- **Responses:** `HTTP/1.1 200 OK\r\n` (accepted) / `HTTP/1.1 403 Forbidden\r\n` (rejected — implies
+  a **host-registration / pairing gate**; an un-registered PC gets 403).
+
+**Flow (inferred):** host broadcasts `DISCOVERY … SERVICE: PCSS/1.0` (or listens for the camera's
+`NOTIFY`); camera answers `200 OK` carrying `CAMERANAME`/`DSC`; the camera then **arms its PTP-IP
+listener (55740/55741/55742)** and the host connects TCP per `MngTCPIP::Connect`. The by-IP path
+(`FTL_EnumDevice(ip)`) sends the `DISCOVERY` as a **unicast to the camera IP** instead of broadcast.
+
+**LIVE PROBE RESULT (2026-05-23, camera at 192.168.5.192 in wireless-tether):** sending the
+`DISCOVERY * HTTP/1.1 … SERVICE: PCSS/1.0` packet unicast to `cam:1900` AND broadcast — and passively
+listening 22 s on `:1900` for the camera's `NOTIFY` — produced **no camera reply**, and 55740 stayed
+closed. So the camera does NOT answer PCSS while merely connected-to-network-idle. It emits/answers
+PCSS only when actively put into a **"connect to PC"** state on the body **and/or** to a
+**registered** host (consistent with the `403 Forbidden` template). Tool: `~/.bin/tmp/pcss_discover.py`.
+NOTE: `tcpdump` capture needs root (sudoers here only grants `nmcli`), so L2 broadcast sniffing of a
+real predecessor-app session wasn't possible from this host (also not the subnet gateway → can't see
+unicast). To capture the genuine handshake: run the predecessor app while sniffing on the camera's
+gateway, or grant tcpdump.
+
+### Reconciling with the earlier scan (only port 22 open at 192.168.5.192) — RESOLVED
+The full scan found 55740 **closed**, and the live PCSS probe above confirms why: the camera keeps
+**no** PTP-IP listener (and does not answer PCSS) until the **PCSS `DISCOVERY`/`NOTIFY` handshake
+completes from a registered host with the body actively in "connect to PC" state**. The "UDP unicast
+hello" hypothesis is now concrete = the **`DISCOVERY * HTTP/1.1 … SERVICE: PCSS/1.0` packet on
+UDP:1900**. Only after the camera returns `200 OK` (not `403`) does it arm 55740 for the TCP connect.
+**Open item / decisive test:** capture a real predecessor-app PCSS exchange (needs gateway-side
+tcpdump or root here) to learn (a) the exact `DISCOVERY`/`NOTIFY` header set incl. how a host
+registers/authenticates past the `403` gate, and (b) confirm 55740 opens immediately post-`200 OK`.
+Once we can pass the PCSS gate, point the PTP-IP probe at `camera_ip:55740` — eliminating BLE/AP for
+ALL future work.
 
 
 ## Transport taxonomy (libfuji `dev.md`)
