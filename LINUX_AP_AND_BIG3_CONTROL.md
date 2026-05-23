@@ -79,12 +79,11 @@ Read back by polling the `0xD212` live-view bundle (no `DevicePropChanged` push 
 fw 2.30): it carries `0x5007` (aperture), `0xD02A`/`0xD02B` (ISO), `0xD240` (shutter)
 in one round-trip.
 
-**ISO ≥ 400:** 400/640/800… are valid ISOs; the camera shoots them. A specific iOS
-wire-write of ISO 400 to `0xD02A` returned zero-length and killed the command socket
-(cause unconfirmed — likely the `0x80000000`-flag encoding or an exposure-mode
-precondition). The `0xD02A` descriptor enumerates no values (count=0), so there's no
-wire legal-list guard. Cap host-side at ≤320 **as a precaution** until the ≥400 path
-is confirmed — it is not a ceiling. See the wire doc for the resolution plan.
+**ISO ≥ 400 (resolved):** 400/640/… set fine — the earlier "socket-kill at 400 / cap ≤320"
+was the **missing `0x101C` live-view gate**, not the value or encoding. With live view
+running, `SetDevicePropValue(0xD02A, 0x190)` set ISO 400 cleanly (live-confirmed 80→400).
+The `0xD02A` descriptor enumerates no values (`count=0` on this fw); use the SDK canonical
+ISO list (50…102400 + AUTO sentinels) — see `PROPERTY_CATALOG.md`.
 
 ## Full property catalog
 
