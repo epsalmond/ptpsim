@@ -27,10 +27,23 @@ sets ISO (`0xD02A`), steps shutter/aperture, and pulls images remotely — the r
   available **only** in Camera Priority (SDK §1.8). Don't switch to PC Priority unless a
   specific legacy API (e.g. `XSDK_Release` shutter) requires it.
 
-### 1a. Remote live-view VIDEO stream in Camera Priority `[live-confirmed]`
+### 1a. Remote live-view VIDEO stream — but it TAKES OVER the camera `[live-confirmed]`
 
-**Yes — you can pull the live-view video remotely while the camera stays in Camera Priority
-and the photographer keeps shooting.** It's a pure *read* path; it doesn't take control.
+**CORRECTION (2026-05-23, user-observed):** entering live view (`0x101C` / `DF01=22`) puts the
+camera into **remote-shooting mode** — the **LCD goes black and the on-body controls are
+disabled**, exactly like a normal reference app remote session. The remote becomes the shooter; the
+photographer **cannot** shoot on-camera during this. Camera Priority (`0xD207=1`) does **not**
+change this — it's the live-view/remote-shooting mode itself (one sensor→display→stream
+pipeline). So this stream is for a **remote operator**, NOT a passive spectator alongside an
+on-camera photographer.
+
+**For "photographer shoots on-camera + someone views remotely"**, use the **auto-image-receive
+/ image-transfer** function instead (`DF01=20`/`21`, `0xDF28`/`0xDF29`): the camera stays normal
+and usable, the photographer shoots, and each captured frame transfers to the host. That is a
+view of *captured shots* (not a 60 fps live feed), but it leaves the camera in the photographer's
+hands. **[to validate]**
+
+The mechanics below remain accurate for the *remote-operator* live-view stream:
 
 Mechanism (through-picture channel):
 1. Command channel (55740): bring-up `OpenSession → 0xDF00=6 → 0xDF01=22 → 0xDF2A → InitiateOpenCapture(0x101C)`.
