@@ -79,10 +79,21 @@ preview** — not configurable. Therefore `0xD173`/`0xD174`/`0xD1BC`/`0xD23C` go
 - **Push stream (55742):** fixed 640×480/60 fps/~840 kbps. Lowest latency, real-time. Only
   bandwidth knob is the fixed format itself; client-side decimation cuts *display* rate, not
   bytes. Best for the **model's posing feed** when Wi-Fi is OK.
-- **Pull image (`0x9018 GetLiveViewData`):** you request frames at *your own* rate, and
-  `0xD173`(quality)/`0xD174`(size)/`0xD23C`(ratio) DO shape these. → a **controllable
-  rate + size/quality** feed for poor Wi-Fi (e.g. pull 5–15 fps at chosen size/quality).
-  **[to validate: confirm 0x9018 returns a frame whose dims/bytes follow 0xD174/0xD173]**
+- **Pull image (`0x9018 GetLiveViewData`):** **NOT validated on this fw/path.** A bare
+  `0x9018` op (no params) **times out** and drops the session, and the reference app wire capture shows
+  **no native `0x9018` calls** — the app's live-view feed is the through-picture push, not an
+  on-demand pull. `SDK_GetLiveViewData` maps to SDK feature `0x3335` and issues `0x9018` via
+  `VendorExtensionOperation` with a data-IN direction + output buffers and (likely) params we
+  haven't recovered. So there is **no confirmed controllable-size/rate live-view feed** over
+  our PTP-IP path; `0xD173`/`0xD174` appear inert for the wire live-view here.
+
+**CONCLUSION — Wi-Fi feed options on this fw/path:** the only working live-view feed is the
+**fixed 640×480/60 fps/~840 kbps through-picture push**. There is **no per-frame size/quality
+reduction** available over PTP-IP (size/quality DPCs don't affect it; `0x9018` pull isn't
+working). `~840 kbps` is already light, so for constrained Wi-Fi the practical lever is
+**client-side frame decimation** (drop frames → lower *display* rate; camera bandwidth
+unchanged at ~840 kbps). A genuine variable-bitrate feed would require either recovering the
+`0x9018` params (deeper FF0018API.so RE) or transcoding host-side. **[open if needed]**
 
 **Frame rate:** no live-view frame-rate DPC exists (the `0xD247`/`0xD24C`/`0xD253` rates are
 for *movie recording*). The 60 fps push rate is fixed. **For constrained Wi-Fi:**

@@ -524,6 +524,42 @@ def map_liveview(session: Session, host: str, tp_port: int, secs: float, timeout
     return out
 
 
+def pull_liveview(session: Session, count: int) -> dict:
+    """Pull live-view frames on demand via vendor 0x9018 (SDK_GetLiveViewData) and test
+    whether 0xD174 (size) / 0xD173 (quality) shape the pulled image — the controllable
+    rate+size feed for poor Wi-Fi. Iterates a few size×quality configs."""
+    out: dict = {"configs": []}
+    for size, qual in [(1, 1), (1, 3), (3, 1), (3, 3)]:
+        if not session.alive:
+            break
+        session.set_prop_value(0xD174, struct.pack("<H", size), f"sz{size}")
+        session.set_prop_value(0xD173, struct.pack("<H", qual), f"q{qual}")
+        time.sleep(0.3)
+        sizes, dims, codes = [], None, set()
+        t0 = time.monotonic()
+        for i in range(count):
+            if not session.alive:
+                break
+            r = session._txn_get(0x9018, (), f"lvd_{size}{qual}_{i}")
+            codes.add(r.get("response_code"))
+            ph = bytes.fromhex(r.get("payload_hex", "")) if r.get("payload_hex") else b""
+            soi = ph.find(b"\xff\xd8")
+            if soi >= 0:
+                eoi = ph.find(b"\xff\xd9", soi)
+                jpeg = ph[soi:eoi + 2] if eoi > 0 else ph[soi:]
+                sizes.append(len(jpeg))
+                if eoi > 0:
+                    dims = jpeg_dims(jpeg)
+        el = time.monotonic() - t0
+        out["configs"].append({
+            "size": f"{size}({SIZE_NAMES[size]})", "quality": f"{qual}({QUAL_NAMES[qual]})",
+            "pulls": count, "resp_codes": sorted(codes), "dims": dims,
+            "bytes_avg": round(sum(sizes) / len(sizes)) if sizes else 0,
+            "got_jpeg": len(sizes), "pull_fps": round(count / el, 1) if el > 0 else 0,
+        })
+    return out
+
+
 def sweep_props(session: Session, props: list[int]) -> dict:
     """Read GetDevicePropValue then GetDevicePropDesc for each prop (value first =
     more robust; a desc timeout that kills the session leaves the rest 'aborted')."""
@@ -614,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stream-frames", type=int, default=0, help="capture N live-view JPEG frames after 0x101C")
     parser.add_argument("--tp-port", type=int, default=55742, help="through-picture (JPEG stream) TCP port")
     parser.add_argument("--save-frames", type=int, default=3, help="how many JPEG frames to save (spread across the run)")
+    parser.add_argument("--pull-liveview", type=int, default=0, help="pull N frames via 0x9018 per size×quality config (controllable feed test)")
     parser.add_argument("--map-liveview", action="store_true", help="sweep size(0xD174)×quality(0xD173), measure dims/fps/bytes/bandwidth")
     parser.add_argument("--map-secs", type=float, default=2.5, help="seconds to measure per size×quality config")
     parser.add_argument("--lv-size", type=int, default=0, help="set 0xD174 size (1=L/2=M/3=S) BEFORE live-view start")
@@ -646,6 +683,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.camera_priority:
                 out["set_camera_priority"] = session.set_prop_value(0xD207, struct.pack("<H", 1), "campri")
             out["live_view_handshake"] = live_view_handshake(session, args.lv_size, args.lv_quality)
+            if args.pull_liveview:
+                out["liveview_pull"] = pull_liveview(session, args.pull_liveview)
             if args.map_liveview:
                 out["liveview_map"] = map_liveview(session, args.host, args.tp_port, args.map_secs, args.timeout)
             if args.stream_frames:
