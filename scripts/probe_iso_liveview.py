@@ -275,9 +275,11 @@ READ_DESC_PROPS = [0x500D, 0x5007, 0x500F, 0xD02A, 0xD02B, 0x500E, 0xD246]
 READ_VALUE_PROPS = [0x500D, 0x5007, 0x500F, 0xD02A, 0xD02B, 0xD212, 0x500E, 0xD246]
 
 
-def live_view_handshake(session: Session) -> dict:
+def live_view_handshake(session: Session, lv_size: int = 0, lv_quality: int = 0) -> dict:
     """Enter RemoteShooting/live-view mode (PTP_PROPERTIES_REFERENCE §4.1) so the
-    camera answers property queries: DF00=6, DF01=22, negotiate DF2A version."""
+    camera answers property queries: DF00=6, DF01=22, negotiate DF2A version.
+    If lv_size/lv_quality given, set 0xD174/0xD173 BEFORE InitiateOpenCapture (pre-start)
+    to test whether they configure the through-picture stream."""
     out: dict = {}
     out["df00_set6"] = session.set_prop_value(0xDF00, struct.pack("<H", 6), "lv")
     out["df01_set22"] = session.set_prop_value(0xDF01, struct.pack("<H", 22), "lv")
@@ -287,6 +289,10 @@ def live_view_handshake(session: Session) -> dict:
     if raw:
         target = min(int.from_bytes(raw, "little"), 4)
         out["df2a_set"] = session.set_prop_value(0xDF2A, target.to_bytes(len(raw), "little"), "lv")
+    if lv_size:
+        out["pre_set_size"] = session.set_prop_value(0xD174, struct.pack("<H", lv_size), "lvsize")
+    if lv_quality:
+        out["pre_set_quality"] = session.set_prop_value(0xD173, struct.pack("<H", lv_quality), "lvqual")
     # InitiateOpenCapture(0,0) — start live view. The reference app does this BEFORE exposure
     # writes; without a running live-view capture the camera ACKs prop writes but
     # ignores them. This is the control-grant the earlier probes were missing.
@@ -610,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--save-frames", type=int, default=3, help="how many JPEG frames to save (spread across the run)")
     parser.add_argument("--map-liveview", action="store_true", help="sweep size(0xD174)×quality(0xD173), measure dims/fps/bytes/bandwidth")
     parser.add_argument("--map-secs", type=float, default=2.5, help="seconds to measure per size×quality config")
+    parser.add_argument("--lv-size", type=int, default=0, help="set 0xD174 size (1=L/2=M/3=S) BEFORE live-view start")
+    parser.add_argument("--lv-quality", type=int, default=0, help="set 0xD173 quality (1=FINE/2=NORMAL/3=BASIC) before start")
     parser.add_argument("--stream-secs", type=float, default=10.0, help="max seconds to stream")
     parser.add_argument("--camera-priority", action="store_true", help="set 0xD207=1 (Camera Priority) before streaming")
     parser.add_argument("--sweep-props", default="", help="comma list of DPCs to read desc+value (full property sweep)")
@@ -637,7 +645,7 @@ def main(argv: list[str] | None = None) -> int:
             session = Session(sock, session_dir, out)
             if args.camera_priority:
                 out["set_camera_priority"] = session.set_prop_value(0xD207, struct.pack("<H", 1), "campri")
-            out["live_view_handshake"] = live_view_handshake(session)
+            out["live_view_handshake"] = live_view_handshake(session, args.lv_size, args.lv_quality)
             if args.map_liveview:
                 out["liveview_map"] = map_liveview(session, args.host, args.tp_port, args.map_secs, args.timeout)
             if args.stream_frames:

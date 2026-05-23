@@ -68,13 +68,21 @@ Notes: `SDK_GetThroughPicture` = "read next pushed frame" from 55742 (not a comm
 |---|---|---|---|---|---|
 | 1=L, 2=M, 3=S | 1=FINE, 2=NORMAL, 3=BASIC | **640×480 (all 9)** | **~60 (all)** | **~14.3 (all)** | **~840 (all)** |
 
-**Key finding:** changing `0xD174` (size) or `0xD173` (quality) **mid-stream has NO effect** —
-all 9 combinations streamed identical 640×480/60 fps/840 kbps (writes returned `0x2001` OK but
-didn't change the feed). So on this fw the through-picture stream is a fixed-format preview;
-`0xD173`/`0xD174`/`0xD1BC`(mode)/`0xD23C`(ratio) likely apply **only if set before live-view
-start** (SDK `StartLiveView 0x3301` / `StopLiveView 0x3302`, distinct from our `0x101C`), or
-they govern a **separate on-demand higher-res live-view image** (`0x9018 GetLiveViewData`),
-not the 60 fps push. **[open: pre-start size/quality test + 0x9018 path]**
+**Key finding (CONFIRMED both ways):** changing `0xD174` (size) or `0xD173` (quality) has **NO
+effect on the through-picture stream — neither mid-stream nor set BEFORE `0x101C`**. All 9
+mid-stream combos AND a pre-start `S/BASIC` run streamed identical **640×480/60 fps/~840 kbps**
+(writes returned `0x2001` OK). **The 55742 through-picture feed is a hard-fixed 640×480/60 fps
+preview** — not configurable. Therefore `0xD173`/`0xD174`/`0xD1BC`/`0xD23C` govern the
+**separate on-demand live-view image pulled via `0x9018 GetLiveViewData`**, NOT the push stream.
+
+**Implication for constrained Wi-Fi (two distinct feeds):**
+- **Push stream (55742):** fixed 640×480/60 fps/~840 kbps. Lowest latency, real-time. Only
+  bandwidth knob is the fixed format itself; client-side decimation cuts *display* rate, not
+  bytes. Best for the **model's posing feed** when Wi-Fi is OK.
+- **Pull image (`0x9018 GetLiveViewData`):** you request frames at *your own* rate, and
+  `0xD173`(quality)/`0xD174`(size)/`0xD23C`(ratio) DO shape these. → a **controllable
+  rate + size/quality** feed for poor Wi-Fi (e.g. pull 5–15 fps at chosen size/quality).
+  **[to validate: confirm 0x9018 returns a frame whose dims/bytes follow 0xD174/0xD173]**
 
 **Frame rate:** no live-view frame-rate DPC exists (the `0xD247`/`0xD24C`/`0xD253` rates are
 for *movie recording*). The 60 fps push rate is fixed. **For constrained Wi-Fi:**
