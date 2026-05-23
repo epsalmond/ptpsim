@@ -130,11 +130,27 @@ def drain_captures(sock, tid: int, out_dir: str, max_dl_mb: int) -> int:
     return tid
 
 
+CAP_DIR = "."
+MAX_DL_MB = 0
+
+
+def shoot(sock, tid: int):
+    """Trigger a still capture (InitiateCapture 0x100E) then download the resulting image(s)."""
+    _, rc = cwt.ptp_op(sock, ptpip.build_ptp_command(0x100E, tid, 0, 0))
+    tid += 1
+    before = len(SEEN_HANDLES)
+    tid = drain_captures(sock, tid, CAP_DIR, MAX_DL_MB)
+    got = len(SEEN_HANDLES) - before
+    return {"InitiateCapture": f"0x{(rc or 0):04x}", "new_images": got, "dir": CAP_DIR}, tid
+
+
 def driver(sock, tid: int, capture_dir: str, max_dl_mb: int) -> None:
     """Owns the PTP socket: start live view, then loop frames + interleave queued commands.
     Publishes only complete JPEGs (FFD8..FFD9). When frames stall (camera drops the live-view object
     during AF/capture), drains any newly captured images to disk (the desktop capture flow) then
     re-arms live view."""
+    global CAP_DIR, MAX_DL_MB
+    CAP_DIR, MAX_DL_MB = capture_dir, max_dl_mb
     handles, tid = list_handles(sock, tid)  # baseline: don't treat pre-existing card images as new
     SEEN_HANDLES.update(handles)
     print(f"[capture] baseline {len(handles)} existing objects on card (won't re-download)")
@@ -215,8 +231,10 @@ def set_prop(code: int, value: int, nbytes: int):
 
 
 PAGE = b"""<!doctype html><html><head><title>GFX100 II live</title>
-<style>body{margin:0;background:#111}img{width:100vw;height:100vh;object-fit:contain}</style>
-</head><body><img src="/stream"></body></html>"""
+<style>body{margin:0;background:#111}img{width:100vw;height:100vh;object-fit:contain}
+button{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);font-size:20px;padding:12px 28px}
+#s{position:fixed;top:8px;left:8px;color:#0f0;font:14px monospace}</style>
+</head><body><img src="/stream"><button onclick="fetch('/shoot').then(r=>r.json()).then(j=>document.getElementById('s').textContent=JSON.stringify(j))">Shoot</button><div id=s></div></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -235,6 +253,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(503, "no frame yet")
         elif u.path == "/stream":
             self._stream()
+        elif u.path == "/shoot":
+            res = submit(shoot, timeout=20.0)
+            self._bytes(json.dumps(res).encode(), "application/json")
         elif u.path == "/prop":
             q = parse_qs(u.query)
             code = int(q["code"][0], 0)
