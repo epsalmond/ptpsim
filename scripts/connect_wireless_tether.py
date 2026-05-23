@@ -144,32 +144,49 @@ def handle_notify(conn: socket.socket) -> dict:
 
 
 def connect_ptpip(cam_ip: str, my_ip: str, guid_hex: str, name: str, timeout: float, port: int):
-    print(f"[ptpip] TCP connect {cam_ip}:{port}")
-    try:
-        sock = socket.create_connection((cam_ip, port), timeout)
-    except OSError as exc:
-        print(f"[ptpip] connect FAILED ({exc})")
-        return 3
-    sock.settimeout(timeout)
-
+    """Open the PTP-IP command channel + OpenSession. The camera signals 'busy' two ways while it
+    finishes coming up: an Init_Fail(0x2019) packet (resend on the same socket) OR a TCP RST
+    (reconnect). Retry through both."""
     init = build_desktop_init(name, my_ip, guid_hex)
     info: dict = {}
-    for attempt in range(8):  # camera Init_Fails the first few requests with Device_Busy (0x2019)
-        sock.sendall(init)
-        info = parse_init_ack(ptpip.recv_packet(sock))
+    sock = None
+    for attempt in range(12):
+        if sock is None:
+            try:
+                sock = socket.create_connection((cam_ip, port), timeout)
+                sock.settimeout(timeout)
+                print(f"[ptpip] TCP connect {cam_ip}:{port}")
+            except OSError as exc:
+                print(f"[ptpip] connect failed ({exc}) — retry {attempt + 1}/12")
+                time.sleep(0.3)
+                continue
+        try:
+            sock.sendall(init)
+            info = parse_init_ack(ptpip.recv_packet(sock))
+        except OSError as exc:  # camera RST the socket = busy; reconnect and retry
+            print(f"[ptpip] init reset ({exc}) — reconnect {attempt + 1}/12")
+            try:
+                sock.close()
+            except OSError:
+                pass
+            sock = None
+            time.sleep(0.3)
+            continue
         if info["raw_type"] == 2:
             break
         if info["raw_type"] == 5:
-            print(f"[ptpip] Init_Fail reason 0x{info['fail_reason']:04x}"
-                  f"{' (Device_Busy)' if info['fail_reason'] == 0x2019 else ''} — retry {attempt + 1}/8")
+            print(f"[ptpip] Init_Fail 0x{info['fail_reason']:04x}"
+                  f"{' (Device_Busy)' if info['fail_reason'] == 0x2019 else ''} — retry {attempt + 1}/12")
             time.sleep(0.2)
-            continue
-        print(f"[ptpip] unexpected init response (type {info['raw_type']}, {info['len']}B) — abort")
+            continue  # resend on the same socket (matches the capture)
+        print(f"[ptpip] unexpected init response (type {info['raw_type']}, {info['len']}B) — reconnect")
         sock.close()
-        return 3
+        sock = None
+        time.sleep(0.3)
     if info.get("raw_type") != 2:
-        print("[ptpip] camera never acked Init_Command_Request after retries")
-        sock.close()
+        if sock is not None:
+            sock.close()
+        print("[ptpip] camera never acked Init_Command_Request after retries — power-cycle it")
         return 3
     print(f"[ptpip] Init_Command_Ack: camera='{info['name']}' guid={info['guid']} conn#={info['conn_no']}")
 
