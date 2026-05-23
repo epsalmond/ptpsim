@@ -139,18 +139,37 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--knock-only", action="store_true", help="send the PCSS knock and exit")
     p.add_argument("--no-knock", action="store_true", help="skip the knock (camera already armed)")
     p.add_argument("--keep-open", action="store_true", help="leave the session open (default: CloseSession)")
+    p.add_argument("--retries", type=int, default=6,
+                   help="knock+connect attempts (the app polls until the camera is ready); 0=single shot")
+    p.add_argument("--interval", type=float, default=10.0,
+                   help="seconds between knocks, matching the desktop app's 10s poll")
     args = p.parse_args(argv)
 
     my_ip = args.my_ip or my_ip_for(args.camera_ip)
 
-    if not args.no_knock:
-        send_knock(args.camera_ip, my_ip)
-        time.sleep(0.4)  # let the camera arm its listener
     if args.knock_only:
+        send_knock(args.camera_ip, my_ip)
         return 0
 
-    result = connect_ptpip(args.camera_ip, my_ip, args.guid, args.name, args.timeout)
+    # Match the app: knock (fresh ephemeral src port each time) -> try connect; if the camera
+    # isn't ready (ICMP-unreachable -> connect fails) wait out the interval and re-knock.
+    attempts = max(1, args.retries + 1) if args.retries else 1
+    result: int | socket.socket = 2
+    for i in range(attempts):
+        if not args.no_knock:
+            send_knock(args.camera_ip, my_ip)
+            time.sleep(0.4)  # let the camera arm its listener (observed ~120ms knock->SYN)
+        result = connect_ptpip(args.camera_ip, my_ip, args.guid, args.name, args.timeout)
+        if not isinstance(result, int):
+            break
+        if result == 2 and i < attempts - 1:  # 2 = TCP connect failed = camera not ready
+            wait = max(0.0, args.interval - 0.4)
+            print(f"[poll] camera not ready (attempt {i + 1}/{attempts}); re-knock in {wait:.0f}s")
+            time.sleep(wait)
+            continue
+        return result  # non-retryable failure (init/opensession), or out of attempts
     if isinstance(result, int):
+        print(f"[fail] camera never accepted after {attempts} knocks — power-cycle it (once per boot)")
         return result
 
     sock = result
