@@ -17,6 +17,14 @@ view) than the reference app BLE→AP→PTP-IP remote-control path.
   tethering" = camera joins an **infrastructure** Wi-Fi network (gets an IP), reachable directly.
 - `AUTOSAVE` (PC Auto Save, 2014–2022, removed): auto-push shots to a host.
 
+## CORRECTION (2026-05-23, live scan): plain "Wireless Tethering" exposes NO network service
+Camera in Wireless Tethering on the LAN (`192.168.5.192`): full 1–65535 scan → **only port 22**
+open (a user-added SSH backdoor; dead end). **No PTP-IP (55740 closed), no XLV.** So plain
+wireless-tether does NOT expose PTP-IP-by-IP. PTP-IP (55740) is only opened in **AP mode** after
+the BLE `FUNCTION_LAUNCH`. **XLV is a *separate* infra-Wi-Fi mode** that starts a Python web
+server (the browser live-view; "works but bad" per user). So the camera has ≥3 distinct network
+faces — AP-mode PTP-IP, XLV web, and plain wireless-tether (nothing) — selected by camera UI mode.
+
 ## Two robustness/architecture wins from wireless tethering
 1. **Infrastructure mode eliminates the BLE/AP juggling.** Today we BLE-launch the camera AP
    (flaky, ~60 s window, re-pair churn). In wireless-tether the camera joins our LAN and is a
