@@ -39,6 +39,16 @@ PROBE = [
     (0xd1b8, "(desktop-desc)"),
 ]
 
+# Full control surface (union of set/desc/get from the desktop walkthrough) for --all
+ALL_PROPS = [0x5003, 0x5005, 0x5007, 0x500a, 0x500b, 0x500d, 0x500e, 0x500f, 0x5010, 0x5011, 0x5015,
+    0xd001, 0xd007, 0xd008, 0xd00a, 0xd00b, 0xd00c, 0xd017, 0xd018, 0xd01b, 0xd01c, 0xd020, 0xd023,
+    0xd024, 0xd025, 0xd026, 0xd029, 0xd02e, 0xd031, 0xd037, 0xd039, 0xd100, 0xd104, 0xd136, 0xd16f,
+    0xd170, 0xd171, 0xd174, 0xd180, 0xd189, 0xd1b8, 0xd1bc, 0xd1bd, 0xd1bf, 0xd201, 0xd207, 0xd208,
+    0xd209, 0xd20c, 0xd20d, 0xd20e, 0xd211, 0xd212, 0xd215, 0xd216, 0xd228, 0xd230, 0xd235, 0xd23c,
+    0xd23f, 0xd247, 0xd24c, 0xd253, 0xd304, 0xd320, 0xd321, 0xd322, 0xd33f, 0xd347, 0xd34b, 0xd351,
+    0xd359, 0xd365, 0xd366, 0xd36a, 0xd36b, 0xd36d, 0xd372, 0xd374, 0xd375, 0xd376, 0xd38a, 0xd38b,
+    0xd38c, 0xd38d, 0xd38e, 0xd395]
+
 
 def supported_ops(sock, tid):
     """Fetch DeviceInfo and return the SupportedOperations list (vendor 0x9xxx ops included)."""
@@ -106,6 +116,7 @@ def main(argv=None) -> int:
     p.add_argument("--set", default=None, help="0xPROP=0xVAL[/N]  write before dumping")
     p.add_argument("--desc", action="append", default=[], help="extra prop code to dump")
     p.add_argument("--retries", type=int, default=12)
+    p.add_argument("--all", action="store_true", help="dump the full control-surface property list")
     p.add_argument("--record", type=float, default=None,
                    help="movie record test: InitiateMovieCapture(0x9020), hold N seconds, stop")
     args = p.parse_args(argv)
@@ -160,7 +171,8 @@ def main(argv=None) -> int:
                 break
 
     print("[dump] PASM + movie/live-view property landscape:")
-    probe = PROBE + [(int(c, 0), "(adhoc)") for c in args.desc]
+    base = [(c, "") for c in ALL_PROPS] if args.all else PROBE
+    probe = base + [(int(c, 0), "(adhoc)") for c in args.desc]
     for prop, label in probe:
         try:
             tid = dump(sock, prop, label, tid)
