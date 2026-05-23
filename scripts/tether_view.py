@@ -135,13 +135,19 @@ MAX_DL_MB = 0
 
 
 def shoot(sock, tid: int):
-    """Trigger a still capture (InitiateCapture 0x100E) then download the resulting image(s)."""
+    """Trigger a still capture (InitiateCapture 0x100E) then download the resulting image(s).
+    Polls for the new object for a few seconds (a RAW takes a beat to write to the card)."""
     _, rc = cwt.ptp_op(sock, ptpip.build_ptp_command(0x100E, tid, 0, 0))
     tid += 1
     before = len(SEEN_HANDLES)
-    tid = drain_captures(sock, tid, CAP_DIR, MAX_DL_MB)
+    for _ in range(12):
+        tid = drain_captures(sock, tid, CAP_DIR, MAX_DL_MB)
+        if len(SEEN_HANDLES) > before:
+            break
+        time.sleep(0.5)
     got = len(SEEN_HANDLES) - before
-    return {"InitiateCapture": f"0x{(rc or 0):04x}", "new_images": got, "dir": CAP_DIR}, tid
+    note = "" if got else " (none — is the camera in STILLS mode? movie mode acks but takes no photo)"
+    return {"InitiateCapture": f"0x{(rc or 0):04x}", "new_images": got, "dir": CAP_DIR, "note": note}, tid
 
 
 def driver(sock, tid: int, capture_dir: str, max_dl_mb: int) -> None:
