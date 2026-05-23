@@ -355,11 +355,24 @@ def phase3(session: Session, write_prop: int, target: int, phase1_result: dict,
         if target not in valid:
             out["refused"] = f"ISO {target} not in current Cap list {valid} (use a listed value or --force)"
             return out
-    value = encode_iso(target)
+    # Encode at the prop's datatype width (0x5007 aperture=UINT16 → 2 bytes;
+    # 0xD02A ISO=UINT32 → 4 bytes). signed two's-complement covers AUTO sentinels.
+    dt = int(desc.get("data_type", "0x0006"), 16) if desc.get("data_type") else 0x0006
+    width = DATATYPE.get(dt, ("", 4, False))[1]
+    value = (target & ((1 << (width * 8)) - 1)).to_bytes(width, "little")
     out["value_hex"] = value.hex()
-    out["write"] = session.set_prop_value(write_prop, value, f"iso{target}")
-    out["readback"] = {f"0x{p:04x}": session.get_prop_value(p) for p in (0xD02A, 0xD212) if session.alive}
+    out["write"] = session.set_prop_value(write_prop, value, f"set{target}")
+    out["readback"] = {f"0x{p:04x}": session.get_prop_value(p)
+                       for p in (write_prop, 0xD02A, 0xD212) if session.alive}
     return out
+
+
+def vendor_step(session: Session, opcode: int, direction: int) -> dict:
+    """Camera-managed relative step (shutter 0x902C / aperture 0x902D); param = direction
+    (1=up/0=down per reference app). Read result from the 0xD212 bundle."""
+    result = session._txn_get(opcode, (direction & 0xFFFFFFFF,), f"step_{opcode:04x}_{direction}")
+    result["readback_d212"] = session.get_prop_value(0xD212) if session.alive else None
+    return result
 
 
 def render_table(phase1_result: dict) -> str:
@@ -428,6 +441,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", type=int, default=0, help="phase-3 ISO: manual literal (e.g. 400) or AUTO sentinel (-1)")
     parser.add_argument("--force", action="store_true", help="phase-3: write even if not in the current Cap list (risks socket drop)")
     parser.add_argument("--pc-priority", action="store_true", help="phase-3: set PC Priority (0xD207=2) before the ISO write")
+    parser.add_argument("--step-op", default="", help="vendor relative-step opcode, e.g. 0x902c (shutter) / 0x902d (aperture)")
+    parser.add_argument("--step-dir", type=int, default=1, help="step direction (1=up/0=down)")
     args = parser.parse_args(argv)
 
     session_dir = args.session_dir
@@ -459,6 +474,9 @@ def main(argv: list[str] | None = None) -> int:
                 out["phase3"] = phase3(session, int(args.write_prop, 16), args.target, out["phase1"],
                                        force=args.force, pc_priority=args.pc_priority)
                 out["session_alive_after_phase3"] = session.alive
+            if args.step_op and session.alive:
+                out["vendor_step"] = vendor_step(session, int(args.step_op, 16), args.step_dir)
+                out["session_alive_after_step"] = session.alive
             out["steps"] = session.steps
     (session_dir / "summary.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
     (session_dir / "phase1_table.md").write_text(out.get("phase1_table", "") + "\n")

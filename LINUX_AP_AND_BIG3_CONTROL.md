@@ -68,8 +68,12 @@ ISO 80→400 only after `0x101C`).
 | Setting | Control | How |
 |---|---|---|
 | **ISO** | `0xD02A` still / `0xD02B` movie (UINT32 RW) | **After `InitiateOpenCapture(0x101C)`**: `SetDevicePropValue(0xD02A, u32_LE)` — manual=literal ISO (`400`=`0x190`), AUTO-ceiling=`0x80000000\|ceiling` (Auto 6400=`0x80001900`). Live-confirmed (80→400). Read back via `0xD212`. |
-| **Aperture** | `0x5007` (UINT16 RW enum) | `SetDevicePropValue(0x5007, u16 F×100)` (e.g. F2.8=280) or step `0x902D StepFnumber(±1)`. |
-| **Shutter** | step op `0x902C StepShutterspeed(±1)` | `0x500D` ExposureTime is UNSUPPORTED as a prop → step-only. |
+| **Aperture** | vendor step **`0x902D StepFnumber(dir)`** | direct `SetDevicePropValue(0x5007,…)` is ACK'd-but-ignored — use the step op (ring-pick). Read back `0x5007` in `0xD212`. |
+| **Shutter** | vendor step **`0x902C StepShutterspeed(dir)`** | LIVE-CONFIRMED (S mode, `0xD240` moved). Read back `0xD240` in `0xD212`. |
+
+**Control model:** *list-pick* (ISO `0xD02A`, WB `0x5005`, film, flash, timer) = absolute
+`SetDevicePropValue`; *ring-pick* (shutter/aperture/exp-comp) = vendor relative-step ops
+`0x902C`-class (param = direction 1=up/0=down). All require `0x101C` live view running first.
 
 Read back by polling the `0xD212` live-view bundle (no `DevicePropChanged` push on
 fw 2.30): it carries `0x5007` (aperture), `0xD02A`/`0xD02B` (ISO), `0xD240` (shutter)
