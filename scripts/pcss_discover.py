@@ -38,7 +38,7 @@ def knock(host_ip):
     return ("DISCOVERY * HTTP/1.1\r\n"
             f"HOST: {host_ip}\r\n"
             "MX: 5\r\n"
-            "SERVICE: PCSS/1.0\r\n\r\n\x00").encode()
+            "SERVICE: PCSS/1.0\r\n\x00").encode()
 
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
