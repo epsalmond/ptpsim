@@ -375,6 +375,27 @@ def vendor_step(session: Session, opcode: int, direction: int) -> dict:
     return result
 
 
+def sweep_props(session: Session, props: list[int]) -> dict:
+    """Read GetDevicePropValue then GetDevicePropDesc for each prop (value first =
+    more robust; a desc timeout that kills the session leaves the rest 'aborted')."""
+    out: dict = {}
+    for p in props:
+        key = f"0x{p:04x}"
+        if not session.alive:
+            out[key] = {"aborted": "session dead"}
+            continue
+        v = session.get_prop_value(p)
+        rec = {"val_resp": v.get("response_code"), "value": v.get("value", {})}
+        if session.alive:
+            d = session.get_prop_desc(p)
+            de = d.get("descriptor", {})
+            rec.update({"desc_resp": d.get("response_code"), "data_type": de.get("data_type_name"),
+                        "writable": de.get("writable"), "form": de.get("form"),
+                        "current": de.get("current_value"), "enum": de.get("enum_values")})
+        out[key] = rec
+    return out
+
+
 def render_table(phase1_result: dict) -> str:
     lines = ["| prop | datatype | get/set | current | form | legal values |", "|---|---|---|---|---|---|"]
     for prop in READ_DESC_PROPS:
@@ -441,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", type=int, default=0, help="phase-3 ISO: manual literal (e.g. 400) or AUTO sentinel (-1)")
     parser.add_argument("--force", action="store_true", help="phase-3: write even if not in the current Cap list (risks socket drop)")
     parser.add_argument("--pc-priority", action="store_true", help="phase-3: set PC Priority (0xD207=2) before the ISO write")
+    parser.add_argument("--sweep-props", default="", help="comma list of DPCs to read desc+value (full property sweep)")
     parser.add_argument("--step-op", default="", help="vendor relative-step opcode, e.g. 0x902c (shutter) / 0x902d (aperture)")
     parser.add_argument("--step-dir", type=int, default=1, help="step direction (1=up/0=down)")
     args = parser.parse_args(argv)
@@ -464,6 +486,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             session = Session(sock, session_dir, out)
             out["live_view_handshake"] = live_view_handshake(session)
+            if args.sweep_props:
+                props = [int(x, 16) for x in args.sweep_props.split(",") if x.strip()]
+                out["sweep"] = sweep_props(session, props)
+                out["sweep_count"] = len(props)
             out["phase1"] = phase1(session)
             out["phase1_table"] = render_table(out["phase1"])
             out["session_alive_after_phase1"] = session.alive
