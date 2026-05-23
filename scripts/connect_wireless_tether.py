@@ -198,9 +198,10 @@ def connect_ptpip(cam_ip: str, my_ip: str, guid_hex: str, name: str, timeout: fl
         sock.close()
         return 4
 
-    sock.sendall(ptpip.build_ptp_command(0x1001, transaction_id=2))  # GetDeviceInfo
-    di = ptpip.recv_packet(sock)
-    print(f"[ptpip] GetDeviceInfo -> {len(di)}B data phase (control confirmed)")
+    # GetDeviceInfo via ptp_op so BOTH the data and response packets are drained (otherwise the
+    # leftover response desyncs every later op by one packet).
+    di, di_code = ptp_op(sock, ptpip.build_ptp_command(0x1001, transaction_id=2))
+    print(f"[ptpip] GetDeviceInfo -> {len(di)}B data (resp 0x{(di_code or 0):04x}) — control confirmed")
     return sock
 
 
