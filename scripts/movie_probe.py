@@ -14,6 +14,7 @@ Once-per-boot: power-cycle the camera if the knock gets no callback.
 """
 import argparse
 import os
+import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +38,22 @@ PROBE = [
     (0xd171, "(desktop-set)"),
     (0xd1b8, "(desktop-desc)"),
 ]
+
+
+def supported_ops(sock, tid):
+    """Fetch DeviceInfo and return the SupportedOperations list (vendor 0x9xxx ops included)."""
+    data, _ = cwt.ptp_op(sock, ptpip.build_ptp_command(0x1001, tid))
+    try:
+        off = 2 + 4 + 2  # StandardVersion, VendorExtensionID, VendorExtensionVersion
+        slen = data[off]
+        off += 1 + slen * 2  # VendorExtensionDesc (UTF-16 string)
+        off += 2             # FunctionalMode
+        nops = struct.unpack_from("<I", data, off)[0]
+        off += 4
+        ops = [struct.unpack_from("<H", data, off + 2 * i)[0] for i in range(nops)]
+        return ops, tid + 1
+    except (struct.error, IndexError):
+        return [], tid + 1
 
 
 def get_desc(sock, prop, tid):
@@ -89,6 +106,8 @@ def main(argv=None) -> int:
     p.add_argument("--set", default=None, help="0xPROP=0xVAL[/N]  write before dumping")
     p.add_argument("--desc", action="append", default=[], help="extra prop code to dump")
     p.add_argument("--retries", type=int, default=12)
+    p.add_argument("--record", type=float, default=None,
+                   help="movie record test: InitiateMovieCapture(0x9020), hold N seconds, stop")
     args = p.parse_args(argv)
 
     my_ip = args.my_ip or cwt.my_ip_for(args.camera_ip)
@@ -116,6 +135,29 @@ def main(argv=None) -> int:
         value = int(val_s, 0)
         rc, tid = set_val(sock, prop, value, nbytes, tid)
         print(f"[set] 0x{prop:04x} = 0x{value:x} ({nbytes}B) -> resp 0x{(rc or 0):04x}")
+
+    ops, tid = supported_ops(sock, tid)
+    vendor = [f"0x{o:04x}" for o in ops if o >= 0x9000]
+    print(f"[info] {len(ops)} ops supported; vendor 0x9xxx: {vendor}")
+    print(f"[info] 0x9020 movie-capture supported: {0x9020 in ops}")
+
+    if args.record is not None:
+        import time
+        _, lvc = cwt.ptp_op(sock, ptpip.build_ptp_command(0x101C, tid, 0, 0))
+        tid += 1
+        print(f"[rec] InitiateOpenCapture(0x101C) -> 0x{(lvc or 0):04x}")
+        # try 0x9020 a few ways: bare, with (0,0), with (0)
+        for label, params in [("(0,0)", (0, 0)), ("(0)", (0,)), ("bare", ())]:
+            _, rc = cwt.ptp_op(sock, ptpip.build_ptp_command(0x9020, tid, *params))
+            tid += 1
+            print(f"[rec] InitiateMovieCapture(0x9020) {label} -> 0x{(rc or 0):04x}")
+            if rc == ptpip.PTP_RESPONSE_OK:
+                print(f"[rec] RECORDING ({label}) — holding {args.record}s")
+                time.sleep(args.record)
+                _, rc2 = cwt.ptp_op(sock, ptpip.build_ptp_command(0x9020, tid, *params))
+                tid += 1
+                print(f"[rec] 0x9020 {label} again (stop) -> 0x{(rc2 or 0):04x}")
+                break
 
     print("[dump] PASM + movie/live-view property landscape:")
     probe = PROBE + [(int(c, 0), "(adhoc)") for c in args.desc]
