@@ -29,6 +29,7 @@ import argparse
 import socket
 import struct
 import sys
+import time
 
 from rce.tools.fuji_ble_gps import ptpip
 
@@ -99,14 +100,16 @@ def wait_for_callback(srv: socket.socket, cam_ip: str, my_ip: str, retries: int,
 
 
 def parse_init_ack(data: bytes) -> dict:
-    out: dict = {"len": len(data), "raw_type": None, "conn_no": None, "guid": None, "name": None}
-    if len(data) < 28:
-        return out
-    _length, ptype = struct.unpack_from("<II", data, 0)
-    out["raw_type"] = ptype
-    out["conn_no"] = struct.unpack_from("<I", data, 8)[0]
-    out["guid"] = data[12:28].hex()
-    out["name"] = data[28:].decode("utf-16le", errors="replace").split("\x00", 1)[0]
+    out: dict = {"len": len(data), "raw_type": None, "conn_no": None, "guid": None,
+                 "name": None, "fail_reason": None}
+    if len(data) >= 8:
+        _length, out["raw_type"] = struct.unpack_from("<II", data, 0)
+    if out["raw_type"] == 5 and len(data) >= 12:  # Init_Fail: reason is a PTP response code
+        out["fail_reason"] = struct.unpack_from("<I", data, 8)[0]
+    if out["raw_type"] == 2 and len(data) >= 28:  # Init_Command_Ack
+        out["conn_no"] = struct.unpack_from("<I", data, 8)[0]
+        out["guid"] = data[12:28].hex()
+        out["name"] = data[28:].decode("utf-16le", errors="replace").split("\x00", 1)[0]
     return out
 
 
@@ -149,10 +152,23 @@ def connect_ptpip(cam_ip: str, my_ip: str, guid_hex: str, name: str, timeout: fl
         return 3
     sock.settimeout(timeout)
 
-    sock.sendall(build_desktop_init(name, my_ip, guid_hex))
-    info = parse_init_ack(ptpip.recv_packet(sock))
-    if info["raw_type"] != 2:
-        print(f"[ptpip] no Init_Command_Ack (got type {info['raw_type']}, {info['len']}B)")
+    init = build_desktop_init(name, my_ip, guid_hex)
+    info: dict = {}
+    for attempt in range(8):  # camera Init_Fails the first few requests with Device_Busy (0x2019)
+        sock.sendall(init)
+        info = parse_init_ack(ptpip.recv_packet(sock))
+        if info["raw_type"] == 2:
+            break
+        if info["raw_type"] == 5:
+            print(f"[ptpip] Init_Fail reason 0x{info['fail_reason']:04x}"
+                  f"{' (Device_Busy)' if info['fail_reason'] == 0x2019 else ''} — retry {attempt + 1}/8")
+            time.sleep(0.2)
+            continue
+        print(f"[ptpip] unexpected init response (type {info['raw_type']}, {info['len']}B) — abort")
+        sock.close()
+        return 3
+    if info.get("raw_type") != 2:
+        print("[ptpip] camera never acked Init_Command_Request after retries")
         sock.close()
         return 3
     print(f"[ptpip] Init_Command_Ack: camera='{info['name']}' guid={info['guid']} conn#={info['conn_no']}")
