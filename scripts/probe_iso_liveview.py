@@ -48,17 +48,20 @@ DATATYPE = {
     0x0008: ("UINT64", 8, False),
 }
 
-# ISO label -> raw uint32, from observed safe iOS telemetry. Capped at 320.
-SAFE_ISO = {
-    80: 0x00000050,
-    100: 0x00000064,
-    125: 0x0000007D,
-    160: 0x000000A0,
-    200: 0x000000C8,
-    250: 0x000000FA,
-    320: 0x00000140,
-}
-ISO_HARD_CAP = 320
+# Fuji XSDK XSDK_SENSITIVITY_ISO* superset (SDK13410 ProgrammingReference §4.1.9):
+# manual ISO is the literal value; AUTO is a negative sentinel. The camera only
+# accepts a value currently in its Cap list (GetDevicePropDesc(0xD02A) enum).
+SDK_ISO_MANUAL = [50, 60, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800,
+                  1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000,
+                  12800, 16000, 20000, 25600, 32000, 40000, 51200, 64000, 80000, 102400]
+SDK_ISO_AUTO = {-1: "AUTO_1", -2: "AUTO_2", -3: "AUTO_3", -4: "AUTO_4", -10: "AUTO",
+                -400: "AUTO≤400", -800: "AUTO≤800", -1600: "AUTO≤1600",
+                -3200: "AUTO≤3200", -6400: "AUTO≤6400"}
+
+
+def encode_iso(value: int) -> bytes:
+    """ISO as signed long → uint32 LE (manual=literal, AUTO=negative sentinel)."""
+    return (value & 0xFFFFFFFF).to_bytes(4, "little")
 
 
 def _read_int(payload: bytes, off: int, size: int, signed: bool) -> tuple[int, int]:
@@ -284,6 +287,10 @@ def live_view_handshake(session: Session) -> dict:
     if raw:
         target = min(int.from_bytes(raw, "little"), 4)
         out["df2a_set"] = session.set_prop_value(0xDF2A, target.to_bytes(len(raw), "little"), "lv")
+    # InitiateOpenCapture(0,0) — start live view. The reference app does this BEFORE exposure
+    # writes; without a running live-view capture the camera ACKs prop writes but
+    # ignores them. This is the control-grant the earlier probes were missing.
+    out["initiate_open_capture"] = session._txn_get(0x101C, (0, 0), "initiateopencapture")
     return out
 
 
@@ -323,25 +330,36 @@ def phase2(session: Session, phase1_result: dict) -> dict:
     return out
 
 
-def phase3(session: Session, write_prop: int, target: int, phase1_result: dict) -> dict:
-    if target >= 400:
-        return {"refused": f"ISO {target} >= 400 is the known command-socket killer; not attempted"}
-    if target > ISO_HARD_CAP:
-        return {"refused": f"ISO {target} exceeds hard cap {ISO_HARD_CAP}"}
-    if target not in SAFE_ISO:
-        return {"refused": f"ISO {target} not in proven-safe set {sorted(SAFE_ISO)}"}
+def phase3(session: Session, write_prop: int, target: int, phase1_result: dict,
+           force: bool = False, pc_priority: bool = False) -> dict:
+    """Set ISO via SetDevicePropValue(0xD02A, signed-long-as-uint32). Only writes a
+    value currently in the camera's Cap list (GetDevicePropDesc enum) unless --force,
+    because writing an out-of-list value is what dropped the socket previously."""
     desc = phase1_result["descriptors"].get(f"0x{write_prop:04x}", {}).get("descriptor", {})
-    size = DATATYPE.get(int(desc.get("data_type", "0x0"), 16), ("", 4, False))[1] if desc.get("data_type") else 4
-    value = SAFE_ISO[target].to_bytes(size, "little")
-    write = session.set_prop_value(write_prop, value, f"iso{target}")
-    readback = {p: session.get_prop_value(p) for p in (0x500F, 0xD02A, 0xD02B, 0xD212) if session.alive}
-    return {
+    valid = desc.get("enum_values", []) if desc.get("form") == "enum" else []
+    out: dict = {
         "write_prop": f"0x{write_prop:04x}",
         "target_iso": target,
-        "value_hex": value.hex(),
-        "write": write,
-        "readback": {f"0x{k:04x}": v for k, v in readback.items()},
+        "label": SDK_ISO_AUTO.get(target, "manual" if target in SDK_ISO_MANUAL else "unknown"),
+        "current_cap_list": valid,
     }
+    if pc_priority:
+        # XSDK_SetPriorityMode(PC) → SetDevicePropValue(0xD207, 2) grants the PC
+        # control of exposure (default is Camera Priority, which ignores remote sets).
+        out["pc_priority_write"] = session.set_prop_value(0xD207, struct.pack("<H", 2), "pcpri")
+    if not force:
+        if not valid:
+            out["refused"] = ("camera Cap list is empty (ISO in AUTO/locked state) — not "
+                              "accepting manual ISO over the wire now; switch ISO mode/dial or --force")
+            return out
+        if target not in valid:
+            out["refused"] = f"ISO {target} not in current Cap list {valid} (use a listed value or --force)"
+            return out
+    value = encode_iso(target)
+    out["value_hex"] = value.hex()
+    out["write"] = session.set_prop_value(write_prop, value, f"iso{target}")
+    out["readback"] = {f"0x{p:04x}": session.get_prop_value(p) for p in (0xD02A, 0xD212) if session.alive}
+    return out
 
 
 def render_table(phase1_result: dict) -> str:
@@ -406,8 +424,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=6.0)
     parser.add_argument("--phase2", action="store_true", help="no-op writeback of current values (mutates)")
     parser.add_argument("--phase3", action="store_true", help="one safe ISO change (mutates)")
-    parser.add_argument("--write-prop", default="0x500f", help="prop to write in phase 3")
-    parser.add_argument("--target", type=int, default=0, help="phase-3 target ISO (80..320)")
+    parser.add_argument("--write-prop", default="0xd02a", help="ISO write prop (Android reference app writes 0xD02A; manual=literal, auto=0x80000000|ceiling)")
+    parser.add_argument("--target", type=int, default=0, help="phase-3 ISO: manual literal (e.g. 400) or AUTO sentinel (-1)")
+    parser.add_argument("--force", action="store_true", help="phase-3: write even if not in the current Cap list (risks socket drop)")
+    parser.add_argument("--pc-priority", action="store_true", help="phase-3: set PC Priority (0xD207=2) before the ISO write")
     args = parser.parse_args(argv)
 
     session_dir = args.session_dir
@@ -436,7 +456,8 @@ def main(argv: list[str] | None = None) -> int:
                 out["phase2"] = phase2(session, out["phase1"])
                 out["session_alive_after_phase2"] = session.alive
             if args.phase3 and session.alive:
-                out["phase3"] = phase3(session, int(args.write_prop, 16), args.target, out["phase1"])
+                out["phase3"] = phase3(session, int(args.write_prop, 16), args.target, out["phase1"],
+                                       force=args.force, pc_priority=args.pc_priority)
                 out["session_alive_after_phase3"] = session.alive
             out["steps"] = session.steps
     (session_dir / "summary.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")

@@ -55,16 +55,19 @@ TCP 192.168.0.1:55740 → InitCommandRequest (GUID f2e4538fada5485d87b27f0bd3d5d
                         friendly name mbp-7274) → InitCommandAck → OpenSession(0x1002)
 SetDevicePropValue(0xDF00, u16 6)    # outer = SDK_MODE_NEUTRAL20
 SetDevicePropValue(0xDF01, u16 22)   # inner = SDK_MODE_IMAGE_LIVE_VIEW
-GetDevicePropValue(0xDF2A) ; SetDevicePropValue(0xDF2A, min(camera_max, 4))
+GetDevicePropValue(0xDF2A) ; SetDevicePropValue(0xDF2A, min(camera_max, 4))   # reference app uses 2
+InitiateOpenCapture(0x101C, 0, 0)    # START LIVE VIEW — required before setting WRITES apply
 ```
-This handshake is REQUIRED before property queries — without it `GetDevicePropDesc`
-times out and drops the session.
+This handshake is REQUIRED before property queries (else `GetDevicePropDesc` times out),
+and **`InitiateOpenCapture(0x101C)` is required before any setting WRITE applies** — the
+camera ACKs prop writes (`0x2001`) but ignores them until live view is running (verified:
+ISO 80→400 only after `0x101C`).
 
 ## Big-3 commands (live-confirmed, fw 2.30)
 
 | Setting | Control | How |
 |---|---|---|
-| **ISO** | `0xD02A` still / `0xD02B` movie (UINT32 RW) | `SetDevicePropValue(0xD02A, u32_LE)`; `0xFFFFFFFF`=AUTO; safe 80=`0x50`…320=`0x140`. **`0x500F` ExposureIndex is UNSUPPORTED** (empty descriptor) → ISO does NOT use 0x500F. |
+| **ISO** | `0xD02A` still / `0xD02B` movie (UINT32 RW) | **After `InitiateOpenCapture(0x101C)`**: `SetDevicePropValue(0xD02A, u32_LE)` — manual=literal ISO (`400`=`0x190`), AUTO-ceiling=`0x80000000\|ceiling` (Auto 6400=`0x80001900`). Live-confirmed (80→400). Read back via `0xD212`. |
 | **Aperture** | `0x5007` (UINT16 RW enum) | `SetDevicePropValue(0x5007, u16 F×100)` (e.g. F2.8=280) or step `0x902D StepFnumber(±1)`. |
 | **Shutter** | step op `0x902C StepShutterspeed(±1)` | `0x500D` ExposureTime is UNSUPPORTED as a prop → step-only. |
 
