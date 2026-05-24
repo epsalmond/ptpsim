@@ -1,9 +1,14 @@
 # camera-probe — script & doc audit (2026-05-24)
 
-Lightweight audit done as part of the fuji-remote → camera-probe promotion. Goal: identify scripts
-superseded by the current Linux BLE→AP→PTP/IP + tether path (especially the steep macOS-BLE bring-up
-era). **Everything is recoverable from `mbp:~/git/fuji-remote.archived`** (full 109-commit history), so
-removals are low-risk. Nothing is deleted until the REMOVE list below is confirmed.
+Lightweight audit done as part of the fuji-remote → camera-probe promotion.
+
+> **Conclusion (revised after scope clarification): KEEP EVERYTHING — nothing is removed.**
+> camera-probe is the **end-user-shipped, cross-platform crowdsourcing probe**: end-users run it on
+> *their own* machines (macOS today, Windows planned) to contribute observation bundles for cameras we
+> don't own. That makes the macOS BLE bring-up, permission-grant, and diagnostic scripts **load-bearing
+> platform support**, not learning-curve cruft — a non-technical end-user needs exactly those
+> permission/diagnostic helpers. The audit below is therefore a categorized inventory + *consolidation*
+> notes only; the original "prune superseded" framing was wrong.
 
 ## A. Keep — active probe plans + core libs
 `connect_wireless_tether.py` (PCSS transport), `pcss_discover.py` (knock), `pull_backup.py`,
@@ -19,10 +24,11 @@ removals are low-risk. Nothing is deleted until the REMOVE list below is confirm
 `connect_camera_ap_wifi.sh`. Several overlap; worth folding into `camera_probe` plans over time, but
 they encode working flows — keep for now.
 
-## C. RECOMMEND REMOVE — macOS BLE bring-up / permission one-shots (superseded by Linux path)
-The BLE launch now runs on Linux (`launch_ap_linux.py` + `register_launch_linux.py`); these macOS-only
-helpers are leftovers from the OSX bring-up learning curve and are not used by the Linux probe. The
-macOS *app's* BLE lives in client application, not here.
+## C. KEEP — macOS platform support (end-user-shipped; Windows planned next)
+**Not superseded — this IS the product surface for end-users on Macs.** The Linux path
+(`launch_ap_linux.py` + `register_launch_linux.py`) is the *operator/dev* path; the macOS scripts are
+the *end-user* path. Permission-grant + diagnostic helpers are essential for non-technical contributors.
+Keep all; a future `windows/` peer is expected.
 
 - `diagnose_macos_bluetooth_state.sh`, `install_macos_dependencies.sh`
 - `request_macos_bluetooth_permission.sh`, `request_macos_camera_permission.sh`
@@ -33,9 +39,9 @@ macOS *app's* BLE lives in client application, not here.
 - dirs: `macos/ble_identity_advertiser/` (Swift), `bluetooth-wrapper/` (Obj-C BLE wrapper + `tools/`),
   `macos/camera_capture/` (Swift AVFoundation capture — superseded by PTP live-view/import)
 
-## D. CONFIRM — camera-LCD vision / screen-state cluster (keep or drop?)
-Reads/classifies the camera's on-screen state via image recognition. Predates host-side PTP control;
-may be dead now that we read state over the wire, or still used for validation. Need a call:
+## D. KEEP — camera-LCD vision / screen-state cluster
+Reads/classifies the camera's on-screen state via image recognition. Useful for validating camera state
+independently of the wire (and for end-user setups where wire-state is ambiguous). Keep:
 
 - `detect_camera_lcd_box.sh`, `read_camera_screen_state.sh`, `reclassify_camera_screen_state.sh`
 - `identify_unknown_elements.sh`, `capture_continuity_camera_frame.sh`
