@@ -14,8 +14,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-KNOWN_NOISE = {  # offsets that change on every save regardless of setting
-    range(0x00E8, 0x00EC): "checksum/save-counter (LSB region)",
+KNOWN_NOISE = {  # offsets that change between saves regardless of any setting change
+    range(0x00CC, 0x00EC): "var_counters + content checksum (drift every save)",
+    range(0x0867, 0x0868): "varying_a — spontaneous state byte (schema-flagged 'varying')",
+    range(0x086E, 0x086F): "varying_b — spontaneous state byte (schema-flagged 'varying')",
+    range(0x08BB, 0x08BC): "spontaneous state byte (seen drifting across unrelated diffs)",
+    range(0xF724, 0xF726): "lens-calibration variance (IS/AF micro-data, drifts on its own)",
 }
 
 

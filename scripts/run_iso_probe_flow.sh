@@ -19,7 +19,7 @@ CON_NAME="fuji-cam-ap"
 mkdir -p "$SESSION_DIR"
 
 echo "== [1/4] BLE register(+BLE_PROTOCOL_VERSION 0x0101) + launch AP (function=take=0x0004) =="
-PYTHONPATH=. "$PY" scripts/register_launch_linux.py --function take --device-name "$NAME" \
+PYTHONPATH=. "$PY" scripts/register_launch_linux.py --function "${LAUNCH_FUNCTION:-take}" --device-name "$NAME" \
   --status-file "$SESSION_DIR/ap_launch.json" || { echo "register/AP-launch FAILED"; exit 10; }
 
 echo "== [2/4] join open AP $SSID on $WIFI_IFACE (never-default) =="
@@ -37,9 +37,11 @@ echo "  default: $(ip route show default | head -1)"
 echo "$ROUTE" | grep -q "$WIFI_IFACE" || { echo "WARN: route to camera not via $WIFI_IFACE"; }
 ip route show default | grep -q "$WIFI_IFACE" && { echo "ABORT: default route moved to Wi-Fi"; exit 22; }
 
-echo "== [4/4] PTP/IP ISO probe (phase 1, read-only) =="
+echo "== [4/4] PTP/IP Big-3 probe (phase 1 read-only; extra args via PROBE_ARGS) =="
+# shellcheck disable=SC2086
 PYTHONPATH=. "$PY" scripts/probe_iso_liveview.py \
-  --session-dir "$SESSION_DIR/ptpip" --host "$CAM_IP" --guid "$GUID" --friendly-name "$NAME"
+  --session-dir "$SESSION_DIR/ptpip" --host "$CAM_IP" --guid "$GUID" --friendly-name "$NAME" \
+  ${PROBE_ARGS:-}
 rc=$?
 echo "== done (probe rc=$rc); session: $SESSION_DIR =="
 exit $rc

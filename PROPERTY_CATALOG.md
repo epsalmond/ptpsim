@@ -338,3 +338,7 @@ exposure props are **ACK'd-but-ignored** unless set via the relative-step path (
 * **STUB enum values are samples**, not the live legal list. `GetDevicePropDesc(0xPPPP)` on the
   connected body returns the authoritative, mode/lens/state-dependent enum/range. Re-validate
   per session — especially ISO (`0xD02A` enum is `count=0` unless the ISO dial is in `C`).
+
+## Supplemental — libgphoto2-confirmed Fuji DPC names (2026-05-23)
+| `0xD106` | Frame guideline mode (Fuji FrameGuideMode) | UINT16 | RW | list-pick | framing guideline overlay | libgphoto2 |
+| `0xD15B` | Frame-number sequence (Fuji FrameNumberSequence) | UINT16 | RW | list-pick | continuous file numbering on/off | libgphoto2 |
