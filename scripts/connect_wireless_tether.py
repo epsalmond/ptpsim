@@ -231,7 +231,25 @@ def ptp_op(sock: socket.socket, request: bytes):
         elif ct == ptpip.PTP_CONTAINER_RESPONSE:
             code = hdr.get("code")
             break
+    _observe(request, bytes(data), code)
     return bytes(data), code
+
+
+def _observe(request: bytes, data: bytes, code) -> None:
+    """Emit an observation-bundle fact if a bundle is open (optional; keeps scripts portable)."""
+    try:
+        from camera_probe import bundle
+    except ImportError:
+        return
+    if not bundle.active() or not request:
+        return
+    try:
+        hdr = ptpip.ptp_container_header(request)
+        if hdr.get("container_type") != ptpip.PTP_CONTAINER_COMMAND:
+            return
+        bundle.observe(hdr.get("code"), ptpip.ptp_container_params(request), data, code)
+    except (ValueError, struct.error, KeyError):
+        return
 
 
 def pull_images(sock: socket.socket, out_dir: str, max_images: int, list_only: bool, tid: int) -> int:
