@@ -19,16 +19,12 @@ impl CameraManifest {
         &self.schema
     }
 
-    fn op_entry(&self, code: u16) -> Option<(&String, &Operation)> {
+    /// Look up an operation by code regardless of workflow.
+    pub fn operation(&self, code: u16) -> Option<&Operation> {
         self.operations
             .iter()
             .find(|(k, _)| parse_hex_code(k) == Some(code))
-            .map(|(k, v)| (k, v))
-    }
-
-    /// Look up an operation by code regardless of workflow.
-    pub fn operation(&self, code: u16) -> Option<&Operation> {
-        self.op_entry(code).map(|(_, v)| v)
+            .map(|(_, v)| v)
     }
 
     /// Is `code` supported, and is it valid in `workflow`?
