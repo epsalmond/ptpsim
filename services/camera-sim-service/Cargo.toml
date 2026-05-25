@@ -6,4 +6,27 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "camera_sim_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "camera-sim-service"
+path = "src/main.rs"
+
 [dependencies]
+ptp-core = { workspace = true }
+camera-manifest = { workspace = true }
+camera-media-store = { workspace = true }
+camera-sim = { workspace = true }
+protocol-primitives = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+ptp-core = { workspace = true }
+protocol-primitives = { workspace = true }
+tokio = { workspace = true }
