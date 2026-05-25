@@ -9,5 +9,6 @@ pub mod error;
 pub mod fuji_framing;
 pub mod liveview;
 pub mod quirk;
+pub mod usb_ptp;
 
 pub use error::FramingError;

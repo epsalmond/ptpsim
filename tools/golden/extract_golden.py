@@ -138,10 +138,40 @@ def first_frame(stream: bytes) -> bytes | None:
     return None
 
 
+# USB-PTP container types (PIMA 15740 USB transport).
+USB_PTP_TYPES = {1: "OperationRequest", 2: "Data", 3: "OperationResponse", 4: "Event"}
+
+
+def usb_control_containers(file: str):
+    """Yield (bytes, info) for each self-contained USB-PTP *control* container
+    (op/response/event) in a usbmon capture. Bulk data containers (type 2) span
+    many URBs and are skipped — they are the file transfer, never a golden."""
+    out = subprocess.run(
+        ["tshark", "-r", file, "-Y", "usb.capdata", "-T", "fields", "-e", "usb.capdata"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    for line in out.splitlines():
+        h = line.strip().replace(":", "")
+        if len(h) < 24:  # need at least the 12-byte header
+            continue
+        try:
+            b = bytes.fromhex(h)
+        except ValueError:
+            continue
+        length, ctype, code, tid = struct.unpack_from("<IHHI", b, 0)
+        # Whole control container present in this one capdata frame.
+        if ctype in (1, 3, 4) and length == len(b) and length >= 12:
+            yield b, {"framing": "usb-ptp", "type": USB_PTP_TYPES[ctype], "code": code, "tid": tid}
+
+
 # --- output -----------------------------------------------------------------
-def emit(args, source_name, kind, address, raw: bytes):
+def emit(args, source_name, kind, address, raw: bytes, info=None):
+    """Write a labeled golden. `info` (framing/type/code/tid) may be supplied by
+    the caller (e.g. usbmon, whose framing can't be auto-detected from bytes);
+    otherwise it is auto-decoded."""
     redacted, applied = redact(raw, args.redact or [])
-    info = decode_header(redacted) or {}
+    if info is None:
+        info = decode_header(redacted) or {}
     label = args.label
     out_dir = args.out
     os.makedirs(out_dir, exist_ok=True)
@@ -229,6 +259,19 @@ def cmd_raw(args):
     emit(args, os.path.basename(args.file), "raw", None, raw)
 
 
+def cmd_usbscan(args):
+    for _b, info in usb_control_containers(args.file):
+        print(f"{info['type']:20s} 0x{info['code']:04x} tid={info['tid']}")
+
+
+def cmd_usbmon(args):
+    for b, info in usb_control_containers(args.file):
+        if matches(info, args.select):
+            emit(args, os.path.basename(args.file), "usbmon", None, b, info=info)
+            return
+    sys.exit(f"no USB-PTP control container matching {args.select!r} in {args.file}")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Cherry-pick redacted, labeled golden packets.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -259,8 +302,18 @@ def main(argv=None):
     sp.add_argument("--file", required=True)
     common(sp)
 
+    sp = sub.add_parser("usbscan")
+    sp.add_argument("--file", required=True)
+
+    sp = sub.add_parser("usbmon")
+    sp.add_argument("--file", required=True)
+    common(sp)
+
     args = p.parse_args(argv)
-    {"scan": cmd_scan, "frida": cmd_frida, "pcap": cmd_pcap, "raw": cmd_raw}[args.cmd](args)
+    {
+        "scan": cmd_scan, "frida": cmd_frida, "pcap": cmd_pcap, "raw": cmd_raw,
+        "usbscan": cmd_usbscan, "usbmon": cmd_usbmon,
+    }[args.cmd](args)
 
 
 if __name__ == "__main__":

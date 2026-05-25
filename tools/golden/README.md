@@ -41,7 +41,19 @@ python3 tools/golden/extract_golden.py pcap --file walk.pcapng --host 192.168.0.
 
 python3 tools/golden/extract_golden.py raw --file request.bin --label some-frame \
     --transport usb
+
+
+# The bulk data transfer (a 100 MB+ RAW) is skipped — only the tiny op/response/
+# event containers are touched.
+python3 tools/golden/extract_golden.py usbscan --file xraw_capture.pcap
+python3 tools/golden/extract_golden.py usbmon --file xraw_capture.pcap --select op:0x1001 \
+    --label usb-get-device-info-request --transport usb
 ```
+
+Framings understood: `ptpip-standard` (PTP/IP), `fuji-compressed` (reference app command
+channel), `usb-ptp` (PIMA 15740 USB containers). The matching decode/encode lives
+in `ptp-core` / `protocol-primitives`, and the golden round-trip test exercises
+each.
 
 ## Golden packet format
 

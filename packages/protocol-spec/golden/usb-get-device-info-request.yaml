@@ -1,0 +1,20 @@
+# Golden packet — labeled fixture doubling as documentation.
+# Minimal, redacted, single frame. Source bytes are NOT the capture.
+label: usb-get-device-info-request
+description: >-
+
+source:
+  capture: xraw_capture.pcap        # name only — not the path, not the file
+  kind: usbmon
+  address: null
+  selector: op:0x1001
+  extracted: "2026-05-25"
+transport: usb
+firmware: null
+framing: usb-ptp
+decoded:
+  type: "OperationRequest"
+  op: "0x1001"
+  tid: 0
+redactions: []
+bytes_hex: "0c0000000100011000000000"

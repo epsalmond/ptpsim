@@ -67,6 +67,12 @@ fn golden_packets_decode_and_round_trip() {
                     .unwrap_or_else(|e| panic!("{}: decode failed: {e}", g.label));
                 (p.clone(), ptp_core::encode(&p).unwrap())
             }
+            "usb-ptp" => {
+                let p = protocol_primitives::usb_ptp::decode(&bytes)
+                    .unwrap_or_else(|e| panic!("{}: decode failed: {e}", g.label));
+                let b = protocol_primitives::usb_ptp::encode(&p).unwrap();
+                (p, b)
+            }
             other => panic!("{}: unknown framing {other}", g.label),
         };
 
