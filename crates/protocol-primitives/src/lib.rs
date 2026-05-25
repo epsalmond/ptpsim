@@ -1,14 +1,13 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! `protocol-primitives` — the small set of code that genuinely is *not* data,
+//! organized **by concern, not by brand**. Each primitive is referenced from a
+//! manifest by id (`framing:`, `quirk:`, …). Adding a camera is a manifest +
+//! captures; a new entry here is needed only for a genuinely new wire format or
+//! computed quirk, and it lands as a shared peer — never a per-manufacturer
+//! crate. This is what keeps ptpsim from becoming "vcam in `crates/`".
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod error;
+pub mod fuji_framing;
+pub mod liveview;
+pub mod quirk;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::FramingError;

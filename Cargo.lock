@@ -82,6 +82,10 @@ dependencies = [
 [[package]]
 name = "protocol-primitives"
 version = "0.0.0"
+dependencies = [
+ "ptp-core",
+ "thiserror",
+]
 
 [[package]]
 name = "ptp-core"
