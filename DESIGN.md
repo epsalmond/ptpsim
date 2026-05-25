@@ -109,7 +109,7 @@ replays app assumptions back to the app.
  app protocol client                simulator service
  initiator role                     responder role
     |                                     |
- shared Rust crates: ptp-core, media model, fuji protocol, manifest types
+ shared Rust crates: ptp-core, media model, protocol primitives, manifest types
 ```
 
 The shared code must not hide the role boundary. For example, `ptp-core` can
@@ -272,10 +272,8 @@ crates/
   ptp-core/                 packet codecs, containers, object/property encoders
   camera-manifest/          schemas, validation, compatibility queries
   camera-media-store/       filesystem/object handle model, thumbnails, RAF/MOV/JPG
-  emulators/                emulator implementations
-    fuji-app/                Fuji operation/property/session behavior ("Code is still allowed for
-state transitions that are genuinely procedural")
-  camera-sim/               simulator engine and scripting runtime
+  camera-sim/               generic responder engine + scripting runtime
+  protocol-primitives/      concern-organized framing/quirk/establishment primitives
   camera-protocol-ffi/      optional Swift/Ruby FFI boundary
 
 services/
@@ -301,9 +299,9 @@ first publish.
 
 Public vs private boundary:
 
-- Public (ptpsim repo): everything that is the simulator — engine crates,
-  manifest schema, probe tooling, service and CLI, manufacturer crates
-  (`fuji-app`, etc.), and the captured camera manifests, captures, and
+- Public (ptpsim repo): everything that is the simulator — engine crates, the
+  generic `camera-sim` + `protocol-primitives`, manifest schema, probe tooling,
+  service and CLI, and the captured camera manifests, captures, and
   redistributable fixtures. Model-specific behavior lives in manifest data, not
   code, so a new camera is a manifest contribution, not a fork.
 - Private (stays in client application): only client application's own app, App Review backend, and
@@ -382,38 +380,49 @@ Responsibilities:
 The store must support synthetic metadata for test cases, including a logical
 `>4 GB` MOV backed by a sparse file or generated stream.
 
-### `fuji-app`
+### `camera-sim` (the generic responder engine)
+
+There is **no per-manufacturer crate** (`fuji-app`, `nikon-*`, `canon-*`). A
+per-brand emulator crate would just move the vcam problem into `crates/`. Instead
+one generic engine runs every camera from manifest data, and the small
+irreducible non-data code lives in `protocol-primitives`, organized by concern.
 
 Responsibilities:
 
-- Fuji reference app PTP/IP session startup and init-ack behavior.
-- Explicit state machines for:
-  - `LiveView`
-  - `ImageImport`
-  - `Firmware`
-  - `CameraControls`
-- Fuji operation handlers for the manifest-selected profile.
-- Dynamic property values such as `0xd212` live status.
-- reference app three-socket model: command, event, and through-picture stream.
-- Event emission for focus, capture, object-added, postview, and teardown.
-- GFX100 II profile as data, not hardwired branches.
+- Runtime engine for responder sessions (reference app session startup/init-ack,
+  three-socket model, image-import, live-view, camera-controls, firmware) — all
+  driven by the manifest, none brand-hardwired.
+- A **manifest state-machine interpreter** that runs the `workflows` transition
+  tables. Workflow states/gates are data; the interpreter is generic.
+- Generic operation handlers (GetDeviceInfo / handles / partial-object /
+  propdesc / set-prop) bound to the manifest + media-store.
+- A property engine including generic vendor-step ("advance within an ordered
+  value set") and manifest-defined readback (e.g. `0xd212`).
+- Generic event emission (focus, capture, object-added, postview, teardown) from
+  manifest `events` triggers.
+- Script execution; deterministic virtual clock; scenario load + reset;
+  per-client isolation; event scheduler + fault injection; structured trace of
+  every packet, state transition, media read, and script action.
 
-Fuji behavior should be table-driven where practical. Code is still allowed for
-state transitions that are genuinely procedural, but the constants, supported
-ops, property forms, and workflow gates must come from manifests.
+Constants, supported ops, property forms, and workflow gates come from manifests.
 
-### `camera-sim`
+### `protocol-primitives` (concern-organized, shared)
 
-Responsibilities:
+The only code that is genuinely not data, kept finite and shared — never a brand
+silo. Each primitive has an id that manifests reference (`framing:`, `quirk:`,
+`handler:`):
 
-- Runtime engine for responder sessions.
-- Script execution against simulator state.
-- Deterministic virtual clock support for tests.
-- Scenario loading and state reset.
-- Per-client session isolation.
-- Event scheduler and fault injection.
-- Structured trace log of every packet, state transition, media read, and script
-  action.
+- Wire framing transforms beyond `ptp-core`'s vanilla codec (e.g. Fuji's
+  compressed framing, later Canon EOS events) — peers in one codec registry.
+- Live-view frame packetization (wrapping a JPEG in a vendor frame header).
+- Connection-establishment strategies (BLE-opened / UDP-knock / direct-bind).
+- Computed quirks where a value is assembled/derived, not looked up (e.g. the
+  `0xd212` status bundle, checksums, one-shot-per-boot knock).
+
+Adding a camera/manufacturer is a manifest + captures; a new entry here is needed
+only for a genuinely new wire format or computed quirk, and it lands as a peer
+available to all, not in a per-brand crate. Do not push procedural quirks into a
+declarative DSL — data selects and parameterizes; these primitives implement.
 
 ### `camera-probe`
 
@@ -609,7 +618,7 @@ operations:
     evidence: [appImageImportCapture]
   "0x902d":
     name: StepFNumber
-    owner: fuji-app
+    owner: fuji-vendor
     dataPhase: none
     params:
       - { name: direction, type: enum, values: { wider: 1, narrower: 0 } }
@@ -1103,8 +1112,11 @@ Phase 3: Other manufacturers.
 
 - Nikon next (and RED, which Nikon now owns) — their app/SDK situation is the
   kind of gap ptpsim exists to close. Then Canon PTP/IP/EOS.
-- Manufacturer-specific property/operation crates.
-- Shared media store and manifest pipeline reused unchanged. (Manufacturers have proprietary RAW formats.)
+- Each manufacturer is a manifest + captures, run by the same generic engine. New
+  code only for a genuinely new wire format (→ `ptp-core`) or computed quirk (→
+  `protocol-primitives`), added as a shared peer — never a per-manufacturer crate.
+- Shared media store and manifest pipeline reused unchanged. (Manufacturers have
+  proprietary RAW formats — handled as media-store format entries, still data.)
 
 Out of scope for now (candidate later transport): a `ble` transport kind for
 discovery/pairing emulation. `camera-probe`'s script-driven BLE plus the TUI's
@@ -1422,7 +1434,7 @@ The tethered-shooting product target is higher:
 |---|---|
 | `ptp-core` packet parsing/serialization and containers | `ptp-core` responsibilities and public `PtpIpPacket`/`PtpCodec` sketch |
 | ObjectInfo and property descriptors | `ptp-core`, `camera-manifest`, property schema, media policy |
-| `fuji-app` explicit state machines | Fuji workflow sections for LiveView, ImageImport, CameraControls, Firmware |
+| Manifest-driven workflow state machines (generic `camera-sim` interpreter) | Fuji workflow sections for LiveView, ImageImport, CameraControls, Firmware |
 | Filesystem-backed media store | `camera-media-store` contract and media policy schema |
 | Symlink-safe traversal | media-store responsibilities and concrete test gate |
 | RAF/MOV/JPG behavior | media-store responsibilities, media policy, test gates |
@@ -1448,9 +1460,12 @@ The tethered-shooting product target is higher:
   crates and deletes its placeholder `camera-protocol-*` crates. Monorepo
   rejected because a generic, community-contributable simulator should not carry
   client application's app/backend.
-- Crate names: ptpsim naming (`ptp-core`, `fuji-app`, `camera-sim`, …) wins over
-  client application's `camera-protocol-*`; client application refactors to match. Published crates
-  carry a `ptpsim-` prefix to avoid crates.io collisions.
+- Crate names: ptpsim naming (`ptp-core`, `camera-sim`, `camera-manifest`, …)
+  wins over client application's `camera-protocol-*`; client application refactors to match.
+  Published crates carry a `ptpsim-` prefix to avoid crates.io collisions.
+- No per-manufacturer crates. One generic `camera-sim` engine + a concern-organized
+  `protocol-primitives` registry; manufacturer differences are manifest data.
+  Adding a camera is a data PR, not a new crate (the anti-vcam test).
 - Control plane: ptpsim is lease-agnostic. It exposes `/healthz`, `/shutdown`,
   and control endpoints, and honors `SIGTERM`. Leasing/pooling/NATS stay in
   client application's management sidecar, which builds pool inventory by polling
