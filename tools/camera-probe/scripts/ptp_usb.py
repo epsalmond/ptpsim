@@ -62,10 +62,25 @@ class PTPUSB:
         cmd += b"".join(struct.pack("<I", p) for p in params)
         self.ep_out.write(cmd, timeout=8000)
         if data_out is not None:
-            self.ep_out.write(struct.pack("<IHHI", 12 + len(data_out), DATA, code, tid) + data_out, timeout=15000)
+            self.ep_out.write(struct.pack("<IHHI", 12 + len(data_out), DATA, code, tid), timeout=15000)
+            CH = 0x100000  # 1 MiB chunks (libusb can't do one giant bulk write)
+            for i in range(0, len(data_out), CH):
+                self.ep_out.write(data_out[i:i + CH], timeout=30000)
         data = b""
         for _ in range(64):
-            pkt = bytes(self.ep_in.read(0x4000, timeout=15000))
+            try:
+                pkt = bytes(self.ep_in.read(0x4000, timeout=15000))
+            except usb.core.USBError as e:
+                # PTP-USB: device STALLed bulk-in to signal status — clear halt + Get Device Status
+                if e.errno in (32, 5):
+                    try:
+                        self.dev.clear_halt(self.ep_in.bEndpointAddress)
+                    except Exception:
+                        pass
+                    st = bytes(self.dev.ctrl_transfer(0xA1, 0x67, 0, 0, 0x40))  # Get Device Status
+                    code = struct.unpack_from("<H", st, 2)[0] if len(st) >= 4 else None
+                    return data, code
+                raise
             if len(pkt) < 12:
                 break
             ln, typ, c, t = struct.unpack("<IHHI", pkt[:12])
