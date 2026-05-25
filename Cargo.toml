@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ptp-core",
+    "crates/camera-manifest",
+    "crates/camera-media-store",
+    "crates/camera-sim",
+    "crates/protocol-primitives",
+    "crates/camera-protocol-ffi",
+    "services/camera-sim-service",
+    "tools/camera-simctl",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/epsalmond/ptpsim"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+ptp-core = { path = "crates/ptp-core" }
+camera-manifest = { path = "crates/camera-manifest" }
+camera-media-store = { path = "crates/camera-media-store" }
+camera-sim = { path = "crates/camera-sim" }
+protocol-primitives = { path = "crates/protocol-primitives" }
+
+# Shared third-party
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+bytes = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[profile.release]
+strip = true
