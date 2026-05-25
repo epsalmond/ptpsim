@@ -318,6 +318,8 @@ name = "protocol-primitives"
 version = "0.0.0"
 dependencies = [
  "ptp-core",
+ "serde",
+ "serde_yaml",
  "thiserror",
 ]
 

@@ -9,6 +9,17 @@ import pytest
 
 from rce.tools.fuji_ble_gps import ptpip
 
+# Some tests assert against private capture evidence that is intentionally not
+# shipped in the public ptpsim repo (scrubbed from history; see DESIGN.md privacy
+# rules). They run in the private dev tree where the blob is present; in the
+# public tree they skip. Redacted, labeled equivalents live as golden packets
+# under packages/protocol-spec/golden/.
+_PRIVATE_EVIDENCE = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin")
+requires_capture_evidence = pytest.mark.skipif(
+    not _PRIVATE_EVIDENCE.exists(),
+    reason="private capture evidence not present in public repo",
+)
+
 
 class FakeSocket:
     def __init__(self, responses=None) -> None:
@@ -115,6 +126,7 @@ def test_build_init_command_request_deterministic(monkeypatch) -> None:
         ptpip.build_init_command_request("mbp", "bad", guid=guid)
 
 
+@requires_capture_evidence
 def test_decode_captured_init_command_requests() -> None:
     liveview = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin").read_bytes()
     get = Path("rce/reference/ptp_decoded/payload_00000059.bin").read_bytes()
@@ -186,6 +198,7 @@ def test_init_decoder_and_guid_parser_edge_cases() -> None:
         ptpip.parse_guid_hex("00")
 
 
+@requires_capture_evidence
 def test_compare_init_command_requests_field_by_field() -> None:
     reference = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin").read_bytes()
     same = ptpip.compare_init_command_requests(reference, reference)
@@ -1392,6 +1405,7 @@ def test_exit_code_checks_direct_operations_after_app_sequence(tmp_path) -> None
     assert ptpip.exit_code_for_summary(summary, object_config) == 0
 
 
+@requires_capture_evidence
 def test_cli_decode_and_compare_init(tmp_path, capsys) -> None:
     reference = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin")
     same_candidate = tmp_path / "same.bin"

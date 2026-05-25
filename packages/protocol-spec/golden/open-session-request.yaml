@@ -1,0 +1,20 @@
+# Golden packet — labeled fixture doubling as documentation.
+# Minimal, redacted, single frame. Source bytes are NOT the capture.
+label: open-session-request
+description: >-
+  PTP/IP OpenSession on the reference app command channel (Fuji compressed framing), fw 2.30.
+source:
+  capture: frida_payload_blobs        # name only — not the path, not the file
+  kind: frida
+  address: null
+  selector: op:0x1002
+  extracted: "2026-05-25"
+transport: app
+firmware: "02.30"
+framing: fuji-compressed
+decoded:
+  type: "OperationRequest"
+  op: "0x1002"
+  tid: 1
+redactions: []
+bytes_hex: "10000000010002100100000001000000"
