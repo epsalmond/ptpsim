@@ -84,21 +84,24 @@ fn read_ok(s: &mut TcpStream) {
 fn service_drives_image_import_over_tcp() {
     let root = tmp_card();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, liveview_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
             manifest_yaml: MANIFEST.into(),
             media_root: root.clone(),
             command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
+        let lv = server.liveview_addr();
         let ctl = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
-        (cmd, ctl, tx, h)
+        (cmd, lv, ctl, tx, h)
     });
 
     // --- PTP/IP client flow ---
@@ -136,6 +139,14 @@ fn service_drives_image_import_over_tcp() {
     let part = read_data_reply(&mut s);
     assert_eq!(&part, b"\xFF\xD8HELLO");
 
+    // --- live-view socket streams length-prefixed JPEG frames ---
+    let mut lv = TcpStream::connect(liveview_addr).unwrap();
+    let frame0 = read_frame_lv(&mut lv);
+    let frame1 = read_frame_lv(&mut lv);
+    assert_eq!(&frame0[0..2], &[0xFF, 0xD8], "frame is JPEG SOI");
+    assert_eq!(frame0, frame1, "static source repeats the frame");
+    drop(lv);
+
     // --- control /healthz ---
     let body = http_get(control_addr, "/healthz");
     assert!(body.contains("\"ok\":true"), "healthz body: {body}");
@@ -148,6 +159,16 @@ fn service_drives_image_import_over_tcp() {
         let _ = handle.await;
     });
     std::fs::remove_dir_all(&root).ok();
+}
+
+/// Read one live-view length-prefixed frame and return the JPEG payload.
+fn read_frame_lv(s: &mut TcpStream) -> Vec<u8> {
+    let mut len = [0u8; 4];
+    s.read_exact(&mut len).unwrap();
+    let n = u32::from_le_bytes(len) as usize;
+    let mut buf = vec![0u8; n];
+    s.read_exact(&mut buf).unwrap();
+    buf
 }
 
 fn http_get(addr: std::net::SocketAddr, path: &str) -> String {

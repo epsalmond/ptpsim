@@ -25,6 +25,12 @@ struct Args {
     /// PTP command socket bind. Default binds all IPv6 (Apple review is IPv6-only).
     #[arg(long, default_value = "[::]:55740")]
     command_bind: SocketAddr,
+    /// Live-view (through-picture) stream socket.
+    #[arg(long, default_value = "[::]:55741")]
+    liveview_bind: SocketAddr,
+    /// Async event socket.
+    #[arg(long, default_value = "[::]:55742")]
+    event_bind: SocketAddr,
     /// Control HTTP bind (loopback by default).
     #[arg(long, default_value = "127.0.0.1:8080")]
     control_bind: SocketAddr,
@@ -45,6 +51,8 @@ async fn main() -> anyhow::Result<()> {
         manifest_yaml,
         media_root: args.media_root,
         command_bind: args.command_bind,
+        liveview_bind: args.liveview_bind,
+        event_bind: args.event_bind,
         control_bind: args.control_bind,
     };
 

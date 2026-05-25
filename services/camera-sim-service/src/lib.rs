@@ -32,14 +32,28 @@ pub struct Config {
     /// Bind address for the PTP command socket. Use port 0 for an OS-assigned
     /// port (tests).
     pub command_bind: SocketAddr,
+    /// Through-picture (live-view) stream socket. Per fw0230 capture this is
+    /// 55741.
+    pub liveview_bind: SocketAddr,
+    /// Async event socket (55742).
+    pub event_bind: SocketAddr,
     pub control_bind: SocketAddr,
 }
+
+/// A minimal valid JPEG-ish test frame (SOI … EOI) for the generated live-view
+/// source. A real source streams MJPEG frames from a directory or transcode.
+const TEST_FRAME: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'p', b't', b'p', b's', b'i', b'm', 0xFF, 0xD9];
+
+/// Live-view frame pacing (~30 fps).
+const FRAME_INTERVAL_MS: u64 = 33;
 
 /// A bound, not-yet-serving instance. Binding first lets callers (tests) learn
 /// the OS-assigned ports before the serve loop starts.
 pub struct Server {
     config: Config,
     command: TcpListener,
+    liveview: TcpListener,
+    event: TcpListener,
     control: TcpListener,
     engine: Arc<Mutex<Engine>>,
 }
@@ -53,12 +67,22 @@ impl Server {
         store.scan().map_err(|e| std::io::Error::other(e.to_string()))?;
         let engine = Arc::new(Mutex::new(Engine::new(manifest, store)));
         let command = TcpListener::bind(config.command_bind).await?;
+        let liveview = TcpListener::bind(config.liveview_bind).await?;
+        let event = TcpListener::bind(config.event_bind).await?;
         let control = TcpListener::bind(config.control_bind).await?;
-        Ok(Server { config, command, control, engine })
+        Ok(Server { config, command, liveview, event, control, engine })
     }
 
     pub fn command_addr(&self) -> SocketAddr {
         self.command.local_addr().unwrap()
+    }
+
+    pub fn liveview_addr(&self) -> SocketAddr {
+        self.liveview.local_addr().unwrap()
+    }
+
+    pub fn event_addr(&self) -> SocketAddr {
+        self.event.local_addr().unwrap()
     }
 
     pub fn control_addr(&self) -> SocketAddr {
@@ -68,7 +92,7 @@ impl Server {
     /// Serve until `shutdown` resolves (the `/shutdown` endpoint or a SIGTERM
     /// handler fires it). In-flight command connections are dropped on exit.
     pub async fn run(self, shutdown: tokio::sync::oneshot::Receiver<()>) {
-        let Server { config, command, control, engine } = self;
+        let Server { config, command, liveview, event, control, engine } = self;
         let health = control::Health {
             instance_id: config.instance_id.clone(),
             profile: config.profile.clone(),
@@ -114,12 +138,59 @@ impl Server {
             }
         };
 
+        // Live-view: stream length-prefixed JPEG frames to any connected client.
+        let liveview_loop = {
+            let mut sub = shutdown_tx.subscribe();
+            async move {
+                loop {
+                    tokio::select! {
+                        accepted = liveview.accept() => {
+                            if let Ok((stream, _)) = accepted {
+                                tokio::spawn(stream_liveview(stream));
+                            }
+                        }
+                        _ = sub.recv() => break,
+                    }
+                }
+            }
+        };
+
+        // Event socket: accept and hold open. Event emission is manifest-driven
+        // and arrives with the CameraControls/capture work; the socket is real
+        // now so clients (and tests) can confirm all three sockets open.
+        let event_loop = {
+            let mut sub = shutdown_tx.subscribe();
+            async move {
+                loop {
+                    tokio::select! {
+                        accepted = event.accept() => { let _ = accepted; }
+                        _ = sub.recv() => break,
+                    }
+                }
+            }
+        };
+
         tokio::select! {
             _ = shutdown => {}
             _ = command_loop => {}
             _ = control_loop => {}
+            _ = liveview_loop => {}
+            _ = event_loop => {}
         }
         let _ = shutdown_tx.send(());
+    }
+}
+
+/// Stream live-view frames to one connected client until it disconnects or the
+/// write fails. Frames are length-prefixed via the shared primitive.
+async fn stream_liveview(mut stream: TcpStream) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_INTERVAL_MS));
+    loop {
+        tick.tick().await;
+        let packet = protocol_primitives::liveview::frame_packet(TEST_FRAME);
+        if stream.write_all(&packet).await.is_err() {
+            break;
+        }
     }
 }
 
