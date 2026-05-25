@@ -4,10 +4,12 @@
 //! come from `protocol-primitives`, referenced by manifest id.
 
 pub mod engine;
+pub mod fault;
 pub mod framesource;
 pub mod state;
 
 pub use engine::{Engine, Reply};
+pub use fault::{Fault, FaultSet};
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
 pub use state::{CameraState, Phase};
 
@@ -204,6 +206,29 @@ properties:
             Reply::Response(r) => assert_eq!(r.code, 0x2005), // OperationNotSupported
             other => panic!("expected unsupported, got {other:?}"),
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn injected_faults_override_dispatch() {
+        let root = tmp_card();
+        let mut e = engine(&root);
+        expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None));
+
+        // Fail GetObjectHandles with DeviceBusy.
+        e.install_fault(Fault::FailOperation { code: 0x1007, response: 0x2019 });
+        match e.on_operation(&op(0x1007, 2, vec![]), None) {
+            Reply::Response(r) => assert_eq!(r.code, 0x2019),
+            other => panic!("expected injected DeviceBusy, got {other:?}"),
+        }
+
+        // Close the connection on GetPartialObject.
+        e.install_fault(Fault::CloseOnOperation { code: 0x101b });
+        assert_eq!(e.on_operation(&op(0x101b, 3, vec![1, 0, 4]), None), Reply::Close);
+
+        // Clearing faults restores normal behavior.
+        e.clear_faults();
+        assert!(matches!(e.on_operation(&op(0x1007, 4, vec![]), None), Reply::Data { .. }));
         std::fs::remove_dir_all(&root).ok();
     }
 

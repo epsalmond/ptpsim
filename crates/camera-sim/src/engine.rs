@@ -9,6 +9,7 @@ use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
 use ptp_core::{DeviceInfo, OperationRequest, OperationResponse, Reader, Writer};
 
+use crate::fault::{Fault, FaultSet};
 use crate::state::{
     build_prop_desc, datatype_of, CameraState, Phase, DF01_IMAGE_IMPORT, DF01_LIVE_VIEW, PROP_DF01,
 };
@@ -28,16 +29,26 @@ pub struct Engine {
     manifest: CameraManifest,
     store: MediaStore,
     state: CameraState,
+    faults: FaultSet,
 }
 
 impl Engine {
     pub fn new(manifest: CameraManifest, store: MediaStore) -> Self {
         let state = CameraState::from_manifest(&manifest);
-        Engine { manifest, store, state }
+        Engine { manifest, store, state, faults: FaultSet::default() }
     }
 
     pub fn state(&self) -> &CameraState {
         &self.state
+    }
+
+    /// Install a fault (control API `/faults`). Checked before normal dispatch.
+    pub fn install_fault(&mut self, fault: Fault) {
+        self.faults.install(fault);
+    }
+
+    pub fn clear_faults(&mut self) {
+        self.faults.clear();
     }
 
     pub fn manifest(&self) -> &CameraManifest {
@@ -68,6 +79,14 @@ impl Engine {
     pub fn on_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) -> Reply {
         let tid = req.transaction_id;
         let p = |i: usize| req.params.get(i).copied().unwrap_or(0);
+
+        // Injected faults take precedence over normal handling.
+        if let Some(fault) = self.faults.match_op(req.code) {
+            return match fault {
+                Fault::FailOperation { response, .. } => Self::err(tid, *response),
+                Fault::CloseOnOperation { .. } => Reply::Close,
+            };
+        }
 
         // OpenSession is the only thing allowed before a session exists.
         if !self.state.session_open && req.code != op::OPEN_SESSION && req.code != op::GET_DEVICE_INFO {
