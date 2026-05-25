@@ -15,6 +15,10 @@ dependencies = [
 [[package]]
 name = "camera-media-store"
 version = "0.0.0"
+dependencies = [
+ "ptp-core",
+ "thiserror",
+]
 
 [[package]]
 name = "camera-protocol-ffi"

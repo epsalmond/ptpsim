@@ -7,3 +7,5 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ptp-core = { workspace = true }
+thiserror = { workspace = true }
