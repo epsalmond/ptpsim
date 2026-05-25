@@ -509,8 +509,8 @@ transports:
     kind: ptpip-app
     bind:
       command: 55740
-      event: 55741
-      liveview: 55742
+      liveview: 55741   # through-picture stream (per fw0230 capture)
+      event: 55742
     init:
       ackDeviceGuid: "0870b061-0a8b-4593-b2e7-9357dd36e050"
       friendlyNameLength: 26
@@ -748,8 +748,8 @@ observation bundle.
 Observation bundle format:
 
 ```json
-{"ts":"...","kind":"ptpip.packet","direction":"out","session":"cmd","tx":7,"op":"0x1014","params":["0xd02a"],"bytes":"..."}
-{"ts":"...","kind":"ptpip.packet","direction":"in","session":"cmd","tx":7,"response":"0x2001","data":"..."}
+{"ts":"...","kind":"ptpip.fact","transport":"app","mode":"import","state":"probing","subject":{"kind":"prop","code":"0xd02a","op":"GetDevicePropValue"},"params":[],"result":{"response":"0x2001","value_hex":"..."}}
+{"ts":"...","kind":"ptpip.fact","transport":"app","mode":"liveview","state":"streaming","subject":{"kind":"op","code":"0x101c"},"params":[],"result":{"response":"0x2001"}}
 {"ts":"...","kind":"state","workflow":"LiveView","from":"Opening","to":"Streaming","evidence":"0x101c ok"}
 {"ts":"...","kind":"media","handle":"0x00000005","name":"DSCF1494.MOV","size":4289912320}
 ```
@@ -791,8 +791,8 @@ that (see "Control Plane Boundary").
 Default ports:
 
 - PTP command: `55740`
-- Fuji event candidate: `55741`
-- Fuji live-view stream: `55742`
+- Fuji live-view (through-picture) stream: `55741`
+- Fuji event socket: `55742`
 - Health/control HTTP: configurable, local by default
 
 Health endpoint:
@@ -834,8 +834,8 @@ instance:
 bind:
   host: "::"
   ptpCommandPort: 55740
-  ptpEventPort: 55741
-  ptpLiveViewPort: 55742
+  ptpLiveViewPort: 55741
+  ptpEventPort: 55742
   controlHost: "127.0.0.1"
   controlPort: 8080
 media:
@@ -1086,8 +1086,8 @@ by polling each instance's `/healthz`. The aggregate snapshot it writes:
 Phase 1: reference app AP PTP/IP.
 
 - Command socket on `55740`.
-- Event socket candidate on `55741`.
-- Through-picture MJPEG live stream on `55742`.
+- Through-picture MJPEG live stream on `55741`.
+- Event socket on `55742`.
 - Fuji image import and live view workflows.
 - IPv6 direct bind for cloud review instances. (Apple review environment is ipv4-free)
 
@@ -1180,8 +1180,8 @@ USB webcam mode" is a probe you run, not an assumption.
 Listener setup:
 
 1. Bind command socket to configured host/port, default `[::]:55740`.
-2. Bind event socket to configured host/port, default `[::]:55741`.
-3. Bind live-view socket to configured host/port, default `[::]:55742`.
+2. Bind live-view (through-picture) socket to configured host/port, default `[::]:55741`.
+3. Bind event socket to configured host/port, default `[::]:55742`.
 4. Accept command socket first. Event/live-view sockets may connect before or
    after workflow startup, but the workflow decides when bytes are sent.
 
@@ -1263,7 +1263,7 @@ Disconnected
   -> FunctionModeSet(df00=6, df01=22)
   -> RemoteExNegotiated(df2a)
   -> CaptureOpen(0x101c)
-  -> Streaming(55742)
+  -> Streaming(55741)
   -> Stopping
   -> Closed
 ```

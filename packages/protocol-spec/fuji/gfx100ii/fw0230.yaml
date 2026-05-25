@@ -1,0 +1,120 @@
+schema: camera-manifest/v1
+
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: "02.30"
+  identities:
+    ptpDeviceName: GFX100 II
+
+# Provenance for the entries below. These ids may reference docs that live in a
+# private consumer repo (client application); they are optional at load time.
+evidence:
+  appWireCaptureFw0230:
+    kind: wire-capture
+    path: client application/apps/apple/docs/parse_v6_ptpip.py
+    date: "2026-05-18"
+  appLiveViewCodeMap:
+    kind: code-map
+    path: client application/apps/apple/docs/APP_LIVEVIEW_CODE_MAP.md
+    date: "2026-05-18"
+
+transports:
+  appAp:
+    kind: ptpip-app
+    # Port roles reconciled from the fw0230 capture (parse_v6_ptpip.py):
+    #   55740 = command, 55741 = through-picture (live-view) stream, 55742 = event.
+    # (DESIGN.md's earlier draft had event/liveview swapped; the capture wins.)
+    bind:
+      command: 55740
+      liveview: 55741
+      event: 55742
+
+operations:
+  "0x1001": { name: GetDeviceInfo, owner: standard-ptp }
+  "0x1002": { name: OpenSession, owner: standard-ptp }
+  "0x1003": { name: CloseSession, owner: standard-ptp }
+  "0x1007": { name: GetObjectHandles, owner: standard-ptp, workflows: [imageImport] }
+  "0x1008": { name: GetObjectInfo, owner: standard-ptp, workflows: [imageImport] }
+  "0x100a": { name: GetThumb, owner: standard-ptp, workflows: [imageImport] }
+  "0x101b": { name: GetPartialObject, owner: standard-ptp, workflows: [imageImport] }
+  "0x1014": { name: GetDevicePropDesc, owner: standard-ptp }
+  "0x1015": { name: GetDevicePropValue, owner: standard-ptp }
+  "0x1016": { name: SetDevicePropValue, owner: standard-ptp }
+  "0x101c": { name: InitiateOpenCapture, owner: standard-ptp, workflows: [liveView] }
+  "0x902d":
+    name: StepFNumber
+    owner: fuji-vendor
+    workflows: [liveView]
+    handler: property.step
+    property: "0x5007"
+    evidence: [appLiveViewCodeMap]
+
+properties:
+  "0xdf00":
+    name: functionModeMajor
+    type: u16
+    access: readWrite
+    evidence: [appWireCaptureFw0230]
+  "0xdf01":
+    name: functionMode
+    type: u16
+    access: readWrite
+    evidence: [appWireCaptureFw0230]
+  "0xd02a":
+    name: stillIso
+    ptpName: ISO
+    type: u32
+    access: readWrite
+    descriptor:
+      form: enum
+      values: [100, 200, 400, 800, 1600, 3200, 6400, 12800]
+    evidence: [appLiveViewCodeMap]
+  "0x5007":
+    name: aperture
+    ptpName: FNumber
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: [280, 350, 400, 560, 800, 1100, 1600, 65535]
+    controls:
+      liveView:
+        setMethod: vendorStep
+        operation: "0x902d"
+        readback: "0xd212"
+    labels:
+      280: "f/2.8"
+      400: "f/4"
+      560: "f/5.6"
+      800: "f/8"
+      65535: "body"
+    evidence: [appLiveViewCodeMap]
+
+workflows:
+  imageImport:
+    transport: appAp
+    states: [sessionOpen, functionModeSet, handlesReady, downloading, closed]
+    evidence: [appWireCaptureFw0230]
+  liveView:
+    transport: appAp
+    states: [sessionOpen, functionModeSet, captureOpen, streaming, closed]
+    sockets:
+      command: appAp.command
+      stream: appAp.liveview
+      event: appAp.event
+    evidence: [appLiveViewCodeMap]
+
+media:
+  rootLayout:
+    dcimFolder: DCIM
+    cameraFolderPattern: "[0-9]{3}_FUJI"
+  transfer:
+    maxWirelessObjectSize: 4294967295
+    oversizeBehavior: report-ceiling-and-reject-download
+
+quirks:
+  - id: fuji-wireless-uint32-object-size-ceiling
+    appliesTo: [imageImport]
+    behavior: objects reported at 0xffffffff are memory-card-only (32-bit ObjectInfo size field)
+    evidence: appWireCaptureFw0230
