@@ -1118,6 +1118,10 @@ Phase 3: Other manufacturers.
 - Shared media store and manifest pipeline reused unchanged. (Manufacturers have
   proprietary RAW formats — handled as media-store format entries, still data.)
 
+Paper designs for the next transports (PTP/USB + modes, XLV HTTP/HTTPS, wireless
+tether) live in [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md) — each lands as an
+adapter + manifest data, with the core crates unchanged.
+
 Out of scope for now (candidate later transport): a `ble` transport kind for
 discovery/pairing emulation. `camera-probe`'s script-driven BLE plus the TUI's
 "already-paired" shortcut cover the current need. If emulation becomes
