@@ -1,0 +1,1558 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import socket
+import struct
+
+import pytest
+
+from rce.tools.fuji_ble_gps import ptpip
+
+
+class FakeSocket:
+    def __init__(self, responses=None) -> None:
+        self.responses = list(responses or [])
+        self.sent: list[bytes] = []
+        self.timeout = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        return None
+
+    def settimeout(self, value: float) -> None:
+        self.timeout = value
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, size: int) -> bytes:
+        if not self.responses:
+            return b""
+        current = self.responses[0]
+        if isinstance(current, BaseException):
+            self.responses.pop(0)
+            raise current
+        if current == b"":
+            self.responses.pop(0)
+            return b""
+        chunk = current[:size]
+        rest = current[size:]
+        if rest:
+            self.responses[0] = rest
+        else:
+            self.responses.pop(0)
+        return chunk
+
+
+def packet(packet_type: int = 2, payload: bytes = b"") -> bytes:
+    return struct.pack("<II", 8 + len(payload), packet_type) + payload
+
+
+def ptp_container(container_type: int = 3, code: int = 0x2001, transaction: int = 1) -> bytes:
+    return struct.pack("<IHHI", 12, container_type, code, transaction)
+
+
+def ptp_response(transaction: int, *params: int, code: int = 0x2001) -> bytes:
+    return struct.pack("<IHHI", 12 + 4 * len(params), 3, code, transaction) + b"".join(
+        struct.pack("<I", param) for param in params
+    )
+
+
+def ptp_string(value: str) -> bytes:
+    code_units = len(value) + 1
+    return bytes([code_units]) + value.encode("utf-16le") + b"\x00\x00"
+
+
+def object_info_payload(
+    *,
+    filename: str = "_DSF8109.JPG",
+    capture_date: str = "20260501T230655",
+    object_size: int = 0x00029000,
+    thumb_size: int = 24962,
+) -> bytes:
+    fixed = struct.pack(
+        "<IHHIHI6IHII",
+        0x10000001,
+        0x3801,
+        0,
+        object_size,
+        0xB901,
+        thumb_size,
+        640,
+        480,
+        4000,
+        3000,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    return fixed + ptp_string(filename) + ptp_string(capture_date) + ptp_string("") + ptp_string("Orientation:1")
+
+
+def test_build_init_command_request_deterministic(monkeypatch) -> None:
+    guid = bytes(range(16))
+    request = ptpip.build_init_command_request("mbp-7274", guid=guid)
+
+    assert len(request) == ptpip.INIT_FIXED_LENGTH
+    assert struct.unpack("<II", request[:8]) == (ptpip.INIT_FIXED_LENGTH, 1)
+    assert request[8:24] == guid
+    assert request[24:28] == b"\x00\x00\x00\x00"
+    assert request[28:44].startswith("mbp-7274".encode("utf-16le"))
+    assert request[-28:] == ptpip.TAIL_PROFILES["liveview"]
+
+    with pytest.raises(ValueError, match="unknown tail profile"):
+        ptpip.build_init_command_request("mbp", "missing", guid=guid)
+    with pytest.raises(ValueError, match="initiator GUID must be 16 bytes"):
+        ptpip.build_init_command_request("mbp", guid=b"short")
+
+    monkeypatch.setitem(ptpip.TAIL_PROFILES, "bad", b"\x00")
+    with pytest.raises(ValueError, match="expected 28"):
+        ptpip.build_init_command_request("mbp", "bad", guid=guid)
+
+
+def test_decode_captured_init_command_requests() -> None:
+    liveview = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin").read_bytes()
+    get = Path("rce/reference/ptp_decoded/payload_00000059.bin").read_bytes()
+
+    liveview_decoded = ptpip.decode_init_command_request(liveview)
+    get_decoded = ptpip.decode_init_command_request(get)
+
+    assert liveview_decoded["declared_length"] == 82
+    assert liveview_decoded["packet_type_name"] == "InitCommandRequest"
+    assert liveview_decoded["payload_length"] == 74
+    assert liveview_decoded["initiator_guid_hex"] == "f2e4538fada5485d87b27f0bd3d5ded0"
+    assert liveview_decoded["post_guid_unknown_u32"] == 0
+    assert liveview_decoded["friendly_name"] == "Pixel-6-9405"
+    assert liveview_decoded["friendly_name_terminator_unit"] == 12
+    assert liveview_decoded["friendly_name_padding_hex"] == ""
+    assert liveview_decoded["tail_profile"] == "liveview"
+    assert liveview_decoded["tail_u16_le"] == [
+        "0x008d",
+        "0x002c",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+        "0x00fa",
+        "0x0005",
+        "0x003d",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+        "0x0000",
+    ]
+    assert get_decoded["friendly_name"] == "Pixel-6-9405"
+    assert get_decoded["tail_profile"] == "get"
+
+
+def test_decode_generated_init_command_request_short_name_padding() -> None:
+    request = ptpip.build_init_command_request("mbp-7274", guid=bytes(range(16)))
+    decoded = ptpip.decode_init_command_request(request)
+
+    assert decoded["friendly_name"] == "mbp-7274"
+    assert decoded["friendly_name_terminator_unit"] == 8
+    assert decoded["friendly_name_padding_hex"] == "0000000000000000"
+    assert decoded["tail_profile"] == "liveview"
+
+
+def test_init_decoder_and_guid_parser_edge_cases() -> None:
+    valid = ptpip.build_init_command_request("mbp", guid=bytes(range(16)))
+
+    assert ptpip.tail_profile_name(b"not-a-known-tail") == "unknown"
+    assert ptpip.parse_guid_hex("00:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f") == bytes(range(16))
+    assert ptpip.parse_guid_hex("00010203-04050607-08090a0b-0c0d0e0f") == bytes(range(16))
+
+    with pytest.raises(ValueError, match="too short"):
+        ptpip.decode_init_command_request(b"\x00")
+    with pytest.raises(ValueError, match="declared length"):
+        ptpip.decode_init_command_request(struct.pack("<II", 82, 1) + valid[8:-1])
+    with pytest.raises(ValueError, match="packet type"):
+        ptpip.decode_init_command_request(struct.pack("<II", 82, 2) + valid[8:])
+    with pytest.raises(ValueError, match="Fuji Init_Command_Request shape"):
+        ptpip.decode_init_command_request(struct.pack("<II", 84, 1) + valid[8:] + b"\x00\x00")
+    with pytest.raises(ValueError, match="UTF-16LE field"):
+        ptpip.decode_utf16le_nul_field(b"\x00")
+    with pytest.raises(ValueError, match="tail must have even"):
+        ptpip.tail_u16_le(b"\x00")
+    with pytest.raises(ValueError, match="GUID must be 16 bytes"):
+        ptpip.parse_guid_hex("not-hex")
+    with pytest.raises(ValueError, match="got 1 bytes"):
+        ptpip.parse_guid_hex("00")
+
+
+def test_compare_init_command_requests_field_by_field() -> None:
+    reference = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin").read_bytes()
+    same = ptpip.compare_init_command_requests(reference, reference)
+    candidate = ptpip.build_init_command_request(
+        "mbp-7274",
+        guid=bytes.fromhex("f2e4538fada5485d87b27f0bd3d5ded0"),
+    )
+    comparison = ptpip.compare_init_command_requests(reference, candidate)
+
+    assert same["same"] is True
+    assert comparison["same"] is False
+    fields = {field["field"]: field for field in comparison["fields"]}
+    assert fields["initiator_guid_hex"]["same"] is True
+    assert fields["tail_hex"]["same"] is True
+    assert fields["friendly_name"]["reference"] == "Pixel-6-9405"
+    assert fields["friendly_name"]["candidate"] == "mbp-7274"
+    assert fields["friendly_name_field_hex"]["same"] is False
+    assert fields["friendly_name_padding_hex"]["candidate"] == "0000000000000000"
+
+
+def test_inventory_init_command_requests(tmp_path, capsys) -> None:
+    valid = tmp_path / "nested" / "init_command_request.bin"
+    valid.parent.mkdir()
+    valid.write_bytes(ptpip.build_init_command_request("Pixel-6-9405", "get", guid=bytes(range(16))))
+    jsonl = tmp_path / "decoded.jsonl"
+    jsonl.write_text(
+        "\n".join(
+            [
+                "",
+                "{not json",
+                json.dumps({"code_name": "Other"}),
+                json.dumps(
+                    {
+                        "code_name": "InitCommandRequest",
+                        "container": "InitCommandRequest",
+                        "data_preview": (
+                            "000102030405060708090a0b0c0d0e0f00000000"
+                            "50006900780065006c002d0036002d0039003400300035000000"
+                            "92004700000000000000000000002f00"
+                        ),
+                        "guid": "000102030405060708090a0b0c0d0e0f",
+                        "hint": "Pixel-6-9405",
+                        "len": 82,
+                        "source_payloads": "missing_payload.bin",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "code_name": "InitCommandRequest",
+                        "data_preview": "00" * 50,
+                        "guid": "feed",
+                        "name": "BadPayload",
+                        "source_payloads": "not_init.bin, nested/init_command_request.bin",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "not_init.bin").write_bytes(b"not an init packet")
+    ignored = tmp_path / "ignored.txt"
+    ignored.write_text("ignored", encoding="utf-8")
+
+    records = ptpip.inventory_init_command_requests([tmp_path, ignored, tmp_path / "missing"])
+
+    assert records[0] == {
+        "source": str(jsonl) + ":4",
+        "guid": "000102030405060708090a0b0c0d0e0f",
+        "friendly_name": "Pixel-6-9405",
+        "tail_profile": "get",
+        "tail_hex": ptpip.TAIL_PROFILES["get"].hex(),
+        "packet_length": 82,
+        "post_guid_unknown_hex": "00000000",
+    }
+    assert records[1] == {
+        "source": str(jsonl) + ":5",
+        "guid": "feed",
+        "friendly_name": "BadPayload",
+        "tail_profile": "get",
+        "tail_hex": ptpip.TAIL_PROFILES["get"].hex(),
+        "packet_length": 0,
+        "post_guid_unknown_hex": "00000000",
+    }
+    assert records[2] == {
+        "source": str(valid),
+        "guid": "000102030405060708090a0b0c0d0e0f",
+        "friendly_name": "Pixel-6-9405",
+        "tail_profile": "get",
+        "tail_hex": ptpip.TAIL_PROFILES["get"].hex(),
+        "packet_length": 82,
+        "post_guid_unknown_hex": "00000000",
+    }
+    ptpip.print_init_inventory(records)
+    out = capsys.readouterr().out
+    assert f"source={valid}" in out
+    assert "friendly_name=Pixel-6-9405" in out
+    assert "tail_profile=get" in out
+    assert ptpip.tail_profile_from_preview("not hex") == ("unknown", "")
+    assert ptpip.tail_profile_from_preview(("00" * 46) + "1234") == ("unknown", "1234")
+
+
+def test_headers_and_packet_reading() -> None:
+    assert ptpip.packet_header(b"\x00") == {"length": 1, "packet_type": "short"}
+    assert ptpip.packet_header(packet(7)) == {"length": 8, "packet_type": 7}
+    assert ptpip.ptp_container_header(b"\x00") == {"length": 1, "container_type": "short"}
+    assert ptpip.ptp_container_header(ptp_container(code=0x201E)) == {
+        "length": 12,
+        "container_type": 3,
+        "code": 0x201E,
+        "transaction_id": 1,
+    }
+    assert ptpip.ptp_container_params(ptp_response(7, 0x100000)) == [0x100000]
+    with pytest.raises(ValueError, match="does not match"):
+        ptpip.ptp_container_params(struct.pack("<IHHI", 99, 3, 0x2001, 1))
+    with pytest.raises(ValueError, match="not 32-bit aligned"):
+        ptpip.ptp_container_params(struct.pack("<IHHIB", 13, 3, 0x2001, 1, 0))
+
+    assert ptpip.read_exact(FakeSocket([b"ab", b"cd"]), 4) == b"abcd"
+    assert ptpip.read_exact(FakeSocket([b"ab", b""]), 4) == b"ab"
+    assert ptpip.recv_packet(FakeSocket([packet(2, b"abc")])) == packet(2, b"abc")
+    assert ptpip.recv_packet(FakeSocket([b""])) == b""
+    with pytest.raises(RuntimeError, match="short packet length header"):
+        ptpip.recv_packet(FakeSocket([b"\x01\x00"]))
+    with pytest.raises(RuntimeError, match="invalid packet length"):
+        ptpip.recv_packet(FakeSocket([struct.pack("<I", 4)]))
+    with pytest.raises(RuntimeError, match="invalid packet length"):
+        ptpip.recv_packet(FakeSocket([struct.pack("<I", ptpip.MAX_PACKET_LENGTH + 1)]))
+
+
+def test_ptp_request_builders_and_property_parser() -> None:
+    assert ptpip.build_open_session().hex() == "10000000010002100100000001000000"
+    assert ptpip.parse_u16_or_hex("0xd212") == 0xD212
+    assert ptpip.parse_u16_or_hex("123") == 123
+    assert ptpip.build_get_device_prop_value(0xD212).hex() == "10000000010015100200000012d20000"
+    assert ptpip.build_set_device_prop_value(0xDF01, 2).hex() == "10000000010016100200000001df0000"
+    assert ptpip.build_get_object_info(0x0C, 2).hex() == "1000000001000810020000000c000000"
+    assert ptpip.build_get_object(0x0C, 2).hex() == "1000000001000910020000000c000000"
+    assert ptpip.build_get_thumb(0x0C, 3).hex() == "1000000001000a10030000000c000000"
+    assert ptpip.build_close_session(4).hex() == "0c0000000100031004000000"
+    assert ptpip.build_ptp_command(0x9054, 9, 0x10000001).hex() == "10000000010054900900000001000010"
+    assert ptpip.build_ptp_data_container(0x1016, 2, bytes.fromhex("1400")).hex() == "0e00000002001610020000001400"
+    assert ptpip.parse_u32_or_hex("0xffffffff") == 0xFFFFFFFF
+    with pytest.raises(ValueError, match="out of uint16 range"):
+        ptpip.parse_u16_or_hex("0x10000")
+    with pytest.raises(ValueError, match="out of uint32 range"):
+        ptpip.parse_u32_or_hex("0x100000000")
+
+
+def test_ptp_data_payload_decoders() -> None:
+    count_data = ptpip.build_ptp_data_container(0xD620, 13, struct.pack("<I", 11))
+    handles = [0x0B, 0x0C, 0x09, 0x0A, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02]
+    handles_payload = struct.pack("<I", len(handles)) + b"".join(
+        struct.pack("<I", handle) for handle in handles
+    )
+    handles_data = ptpip.build_ptp_data_container(0xD621, 14, handles_payload)
+
+    assert ptpip.ptp_data_payload(count_data) == struct.pack("<I", 11)
+    assert ptpip.decode_u32_data_container(count_data) == 11
+    assert ptpip.decode_u32_array_data_container(handles_data) == handles
+
+    with pytest.raises(ValueError, match="not a data container"):
+        ptpip.ptp_data_payload(ptp_container(code=0x2001))
+    with pytest.raises(ValueError, match="does not match"):
+        ptpip.ptp_data_payload(struct.pack("<IHHI", 99, 2, 0xD620, 13))
+    with pytest.raises(ValueError, match="one uint32"):
+        ptpip.decode_u32_payload(b"\x00")
+    with pytest.raises(ValueError, match="too short"):
+        ptpip.decode_u32_array_payload(b"\x00")
+    with pytest.raises(ValueError, match="does not match count"):
+        ptpip.decode_u32_array_payload(struct.pack("<II", 2, 1))
+
+    count_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(count_result, 0xD620, count_data)
+    assert count_result == {"object_count": 11}
+    handles_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(handles_result, 0xD621, handles_data)
+    assert handles_result == {"object_handles": [f"0x{handle:08x}" for handle in handles]}
+    malformed_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_result, 0xD621, count_data)
+    assert "decode_error" in malformed_result
+    malformed_count_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_count_result, 0xD620, handles_data)
+    assert "decode_error" in malformed_count_result
+
+
+def test_object_info_and_thumbnail_payload_decoders(tmp_path) -> None:
+    object_info_data = ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, object_info_payload())
+    decoded = ptpip.decode_object_info_data_container(object_info_data)
+
+    assert decoded["storage_id"] == "0x10000001"
+    assert decoded["object_format"] == "0x3801"
+    assert decoded["object_format_name"] == "EXIF_JPEG"
+    assert decoded["object_compressed_size"] == 0x00029000
+    assert decoded["thumb_format"] == "0xb901"
+    assert decoded["thumb_compressed_size"] == 24962
+    assert decoded["thumb_pix_width"] == 640
+    assert decoded["thumb_pix_height"] == 480
+    assert decoded["image_pix_width"] == 4000
+    assert decoded["image_pix_height"] == 3000
+    assert decoded["filename"] == "_DSF8109.JPG"
+    assert decoded["capture_date"] == "20260501T230655"
+    assert decoded["modification_date"] == ""
+    assert decoded["keywords"] == "Orientation:1"
+    assert decoded["remaining_hex"] == ""
+
+    result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(result, ptpip.PTP_GET_OBJECT_INFO, object_info_data)
+    assert result["object_info"] == decoded
+
+    thumbnail_payload = b"\xff\xd8thumb\xff\xd9"
+    thumbnail_data = ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 16, thumbnail_payload)
+    thumbnail_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(thumbnail_result, ptpip.PTP_GET_THUMB, thumbnail_data)
+    assert thumbnail_result["jpeg_payload"]["payload_bytes"] == len(thumbnail_payload)
+    assert thumbnail_result["jpeg_payload"]["starts_with_soi"] is True
+    assert thumbnail_result["jpeg_payload"]["ends_with_eoi"] is True
+
+    artifact_result: dict[str, object] = {}
+    ptpip._write_decoded_data_artifacts(tmp_path, "get_object_info", ptpip.PTP_GET_OBJECT_INFO, object_info_data, artifact_result)
+    assert (tmp_path / "get_object_info_decoded.json").exists()
+    assert artifact_result["object_info"]["filename"] == "_DSF8109.JPG"
+    ptpip._write_decoded_data_artifacts(tmp_path, "get_thumb", ptpip.PTP_GET_THUMB, thumbnail_data, artifact_result)
+    assert (tmp_path / "get_thumb_payload.jpg").read_bytes() == thumbnail_payload
+
+    with pytest.raises(ValueError, match="not GetObjectInfo"):
+        ptpip.decode_object_info_data_container(thumbnail_data)
+    with pytest.raises(ValueError, match="too short"):
+        ptpip.decode_object_info_payload(b"\x00")
+    with pytest.raises(ValueError, match="missing PTP string"):
+        ptpip.decode_ptp_string(b"", 0)
+    empty_string, next_offset = ptpip.decode_ptp_string(b"\x00tail", 0)
+    assert empty_string == {"text": "", "code_units": 0, "raw_hex": ""}
+    assert next_offset == 1
+    with pytest.raises(ValueError, match="needs 4 bytes"):
+        ptpip.decode_ptp_string(b"\x02a", 0)
+
+    malformed_artifact_result: dict[str, object] = {}
+    ptpip._write_decoded_data_artifacts(
+        tmp_path,
+        "bad_thumb",
+        ptpip.PTP_GET_THUMB,
+        ptp_container(code=0x2001),
+        malformed_artifact_result,
+    )
+    assert "decode_error" in malformed_artifact_result
+    malformed_thumb_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_thumb_result, ptpip.PTP_GET_THUMB, ptp_container(code=0x2001))
+    assert "decode_error" in malformed_thumb_result
+    malformed_object_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_object_result, ptpip.PTP_GET_OBJECT, ptp_container(code=0x2001))
+    assert "decode_error" in malformed_object_result
+
+    malformed_session = tmp_path / "malformed-session"
+    malformed_session.mkdir()
+    (malformed_session / "short_data.bin").write_bytes(ptp_container(code=0x2001))
+    (malformed_session / "get_object_info_data.bin").write_bytes(
+        ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, b"\x00")
+    )
+    decoded_session = ptpip.decode_session_artifacts(malformed_session)
+    assert "decode_error" in decoded_session["artifacts"][0]
+    assert "decode_error" in decoded_session["artifacts"][1]
+
+
+def test_vendor_text_payload_decoders() -> None:
+    payload = (
+        b"\x00" * 41
+        + "140_FUJI".encode("utf-16le")
+        + b"\x00\x00"
+        + b"\x00" * 16
+    )
+    data = ptpip.build_ptp_data_container(0x9050, 11, payload)
+
+    assert ptpip.printable_utf16le_strings(payload) == ["140_FUJI"]
+    assert ptpip.printable_utf16le_strings("TAIL".encode("utf-16le")) == ["TAIL"]
+    assert ptpip.nonzero_payload_stats(payload) == {
+        "payload_bytes": len(payload),
+        "nonzero_bytes": 8,
+        "last_nonzero_offset": 55,
+    }
+    result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(result, 0x9050, data)
+    assert result["text_values"] == ["140_FUJI"]
+    assert result["payload_stats"] == ptpip.nonzero_payload_stats(payload)
+
+    malformed_result: dict[str, object] = {}
+    ptpip._add_vendor_data_decoding(malformed_result, 0x9053, ptp_container(code=0x2001))
+    assert "decode_error" in malformed_result
+
+
+def test_probe_connect_only_writes_summary(tmp_path) -> None:
+    fake = FakeSocket()
+    ticks = iter([10.0, 10.1234])
+
+    summary = ptpip.probe_ptpip(
+        ptpip.ProbeConfig(
+            session_dir=tmp_path,
+            host="192.168.0.1",
+            friendly_name="mbp-7274",
+            connect_only=True,
+        ),
+        connector=lambda _target, _timeout: fake,
+        clock=lambda: next(ticks),
+    )
+
+    assert summary["tcp_connect"] == "present"
+    assert summary["connect_elapsed_ms"] == 123
+    assert summary["init_sent"] is False
+    assert ptpip.exit_code_for_summary(summary, ptpip.ProbeConfig(tmp_path, connect_only=True)) == 0
+    assert (tmp_path / "summary.json").exists()
+    assert not fake.sent
+
+
+def test_probe_full_success_with_captured_init_payload(tmp_path) -> None:
+    init_payload = tmp_path / "captured_init.bin"
+    init_payload.write_bytes(b"captured")
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x201E),
+            ptp_container(container_type=2, code=0xD212, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        init_payload=init_payload,
+        open_session=True,
+        get_prop="0xd212",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["response_present"] is True
+    assert summary["response_header"] == {"length": 8, "packet_type": 2}
+    assert summary["open_session_response_header"]["code"] == 0x201E
+    assert summary["get_prop_data_header"]["code"] == 0xD212
+    assert summary["get_prop_response_header"]["code"] == 0x2001
+    assert fake.sent[0] == b"captured"
+    assert fake.sent[1] == ptpip.build_open_session()
+    assert fake.sent[2] == ptpip.build_get_device_prop_value(0xD212)
+    assert (tmp_path / "get_prop_response.bin").exists()
+    assert ptpip.exit_code_for_summary(summary, config) == 0
+
+
+def test_firmware_upload_dry_run_writes_plan(tmp_path) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abcdef")
+    config = ptpip.FirmwareUploadConfig(
+        session_dir=tmp_path / "session",
+        dat_path=dat,
+        friendly_name="mbp-7274",
+        chunk_size=4,
+        dry_run=True,
+    )
+
+    summary = ptpip.firmware_upload_ptpip(config, connector=lambda _target, _timeout: (_ for _ in ()).throw(AssertionError))
+
+    assert summary["dry_run"] is True
+    assert summary["dat_size"] == 6
+    assert summary["chunk_count"] == 2
+    assert summary["last_chunk_length"] == 2
+    assert summary["tcp_connect"] == "absent"
+    assert (config.session_dir / "firmware_send_object_info_payload.bin").exists()
+    assert "0x00000004" in (config.session_dir / "firmware_chunks.tsv").read_text(encoding="utf-8")
+
+
+def test_firmware_upload_success_streams_chunks(tmp_path) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abcde")
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_response(1),
+            ptpip.build_ptp_data_container(0x1015, 2, bytes.fromhex("010000df13000000")),
+            ptp_response(2),
+            ptp_response(3),
+            ptpip.build_ptp_data_container(0x1015, 4, bytes.fromhex("01000000")),
+            ptp_response(4),
+            ptp_response(5),
+            ptp_response(6, 0xFFFFFFFF, 0xFFFFFFFF, 0x10000001),
+            ptp_response(7, 3),
+            ptp_response(8, 2),
+            ptp_response(9),
+        ]
+    )
+    config = ptpip.FirmwareUploadConfig(
+        session_dir=tmp_path / "session",
+        dat_path=dat,
+        friendly_name="mbp-7274",
+        guid="000102030405060708090a0b0c0d0e0f",
+        chunk_size=3,
+    )
+
+    summary = ptpip.firmware_upload_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["tcp_connect"] == "present"
+    assert summary["firmware_setup_completed"] is True
+    assert summary["firmware_object_info_sent"] is True
+    assert summary["firmware_object_handle"] == "0x10000001"
+    assert summary["firmware_chunks_sent"] == 2
+    assert summary["firmware_bytes_sent"] == 5
+    assert summary["firmware_upload_completed"] is True
+    assert summary["close_session_response_present"] is True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 0
+
+    assert fake.sent[1] == ptpip.build_open_session()
+    assert fake.sent[2] == ptpip.build_get_device_prop_value(0xD212, 2)
+    assert fake.sent[3] == ptpip.build_set_device_prop_value(ptpip.FUJI_PROP_FUNCTION_MODE, 3)
+    assert fake.sent[4] == ptpip.build_ptp_data_container(ptpip.PTP_SET_DEVICE_PROP_VALUE, 3, bytes.fromhex("1300"))
+    assert ptpip.ptp_data_payload(fake.sent[-4]) == b"abc"
+    assert ptpip.ptp_data_payload(fake.sent[-2]) == b"de"
+    assert fake.sent[-1] == ptpip.build_close_session(9)
+    assert (config.session_dir / "firmware_chunk_0001_response.bin").exists()
+    assert (config.session_dir / "firmware_chunk_0002_response.bin").exists()
+
+
+def test_firmware_upload_failure_exit_codes(tmp_path) -> None:
+    summary = {
+        "tcp_connect": "absent",
+        "response_present": False,
+        "open_session_response_present": False,
+        "firmware_setup_completed": False,
+        "firmware_object_info_sent": False,
+        "firmware_upload_completed": False,
+        "close_session_response_present": False,
+    }
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 1
+    summary["tcp_connect"] = "present"
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 2
+    summary["response_present"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 4
+    summary["open_session_response_present"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 10
+    summary["firmware_setup_completed"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 11
+    summary["firmware_object_info_sent"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 12
+    summary["firmware_upload_completed"] = True
+    assert ptpip.exit_code_for_firmware_upload_summary(summary) == 13
+
+
+def test_firmware_upload_uses_captured_init_payload(tmp_path) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+    init_payload = tmp_path / "init.bin"
+    init_payload.write_bytes(b"captured-init")
+    fake = FakeSocket([packet(2), b""])
+    config = ptpip.FirmwareUploadConfig(
+        session_dir=tmp_path / "session",
+        dat_path=dat,
+        init_payload=init_payload,
+    )
+
+    summary = ptpip.firmware_upload_ptpip(config, connector=lambda _target, _timeout: fake)
+
+    assert fake.sent[0] == b"captured-init"
+    assert summary["open_session_response_present"] is False
+
+
+def test_firmware_upload_error_paths(tmp_path) -> None:
+    missing = ptpip.FirmwareUploadConfig(session_dir=tmp_path / "missing-session", dat_path=tmp_path / "missing.DAT")
+    with pytest.raises(FileNotFoundError):
+        ptpip.firmware_upload_ptpip(missing)
+
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+
+    no_init = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "no-init", dat_path=dat),
+        connector=lambda _target, _timeout: FakeSocket([b""]),
+    )
+    assert no_init["response_present"] is False
+
+    no_open = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "no-open", dat_path=dat),
+        connector=lambda _target, _timeout: FakeSocket([packet(2), b""]),
+    )
+    assert no_open["open_session_response_present"] is False
+
+    setup_fail = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "setup-fail", dat_path=dat),
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_response(1), b""]),
+    )
+    assert setup_fail["firmware_setup_completed"] is False
+
+    object_fail = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "object-fail", dat_path=dat),
+        connector=lambda _target, _timeout: FakeSocket(
+            [
+                packet(2),
+                ptp_response(1),
+                ptpip.build_ptp_data_container(0x1015, 2, b"\x00"),
+                ptp_response(2),
+                ptp_response(3),
+                ptpip.build_ptp_data_container(0x1015, 4, b"\x00"),
+                ptp_response(4),
+                ptp_response(5),
+                b"",
+            ]
+        ),
+    )
+    assert object_fail["firmware_object_info_sent"] is False
+
+    os_error = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "os-error", dat_path=dat),
+        connector=lambda _target, _timeout: (_ for _ in ()).throw(OSError("offline")),
+    )
+    assert "offline" in os_error["error"]
+
+
+def test_firmware_chunk_error_paths(tmp_path) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+    bad_chunk = ptpip.firmware_upload_ptpip(
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "bad-chunk", dat_path=dat, chunk_size=3),
+        connector=lambda _target, _timeout: FakeSocket(
+            [
+                packet(2),
+                ptp_response(1),
+                ptpip.build_ptp_data_container(0x1015, 2, b"\x00"),
+                ptp_response(2),
+                ptp_response(3),
+                ptpip.build_ptp_data_container(0x1015, 4, b"\x00"),
+                ptp_response(4),
+                ptp_response(5),
+                ptp_response(6, 0xFFFFFFFF, 0xFFFFFFFF, 0x10000001),
+                ptp_response(7, code=0x2002),
+            ]
+        ),
+    )
+    assert bad_chunk["error"] == "firmware chunk 1 failed"
+    assert bad_chunk["firmware_upload_completed"] is False
+
+    short_dat = tmp_path / "short.DAT"
+    short_dat.write_bytes(b"ab")
+    summary = {"firmware_chunks_sent": 0, "firmware_bytes_sent": 0, "dat_size": 3}
+    ptpip._firmware_send_chunks(
+        FakeSocket(),
+        ptpip.FirmwareUploadConfig(session_dir=tmp_path / "short-session", dat_path=short_dat),
+        summary,
+        {"chunks": [{"index": 1, "offset": 0, "length": 3}], "dat_size": 3},
+        7,
+    )
+    assert "short DAT read" in summary["error"]
+
+
+def test_ptpip_main_firmware_upload_dry_run(tmp_path, capsys) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+    session = tmp_path / "session"
+
+    rc = ptpip.main(["firmware-upload", "--session-dir", str(session), "--dat", str(dat), "--dry-run"])
+
+    assert rc == 0
+    assert '"dry_run": true' in capsys.readouterr().out
+    assert (session / "summary.json").exists()
+
+
+def test_ptpip_main_firmware_upload_execute_uses_exit_code(monkeypatch, tmp_path, capsys) -> None:
+    dat = tmp_path / "GXUP0006.DAT"
+    dat.write_bytes(b"abc")
+    session = tmp_path / "session"
+
+    monkeypatch.setattr(
+        ptpip,
+        "firmware_upload_ptpip",
+        lambda _config: {
+            "tcp_connect": "present",
+            "response_present": True,
+            "open_session_response_present": True,
+            "firmware_setup_completed": True,
+            "firmware_object_info_sent": True,
+            "firmware_upload_completed": True,
+            "close_session_response_present": False,
+        },
+    )
+
+    rc = ptpip.main(["firmware-upload", "--session-dir", str(session), "--dat", str(dat)])
+
+    assert rc == 13
+    assert '"close_session_response_present": false' in capsys.readouterr().out
+
+
+def test_probe_get_object_info_and_thumb(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptpip.build_ptp_data_container(0x1008, 2, b"object-info"),
+            ptp_container(code=0x2001, transaction=2),
+            ptpip.build_ptp_data_container(0x100A, 3, b"\xff\xd8thumbnail"),
+            ptp_container(code=0x2001, transaction=3),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        get_object_info="0x0c",
+        get_thumb="12",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["open_session_sent"] is True
+    assert summary["get_object_info_sent"] is True
+    assert summary["get_object_info_data_header"]["code"] == 0x1008
+    assert summary["get_object_info_response_header"]["code"] == 0x2001
+    assert summary["get_thumb_sent"] is True
+    assert summary["get_thumb_data_header"]["code"] == 0x100A
+    assert summary["get_thumb_response_header"]["code"] == 0x2001
+    assert fake.sent[2] == ptpip.build_get_object_info(0x0C, 2)
+    assert fake.sent[3] == ptpip.build_get_thumb(12, 3)
+    assert (tmp_path / "get_object_info_data.bin").exists()
+    assert (tmp_path / "get_thumb_data.bin").exists()
+    assert ptpip.exit_code_for_summary(summary, config) == 0
+
+
+def test_probe_app_sdcard_browse_sequence(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-browse-bootstrap",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_sent"] is True
+    assert summary["app_sequence_completed"] is True
+    assert [step["prop"] for step in summary["app_sequence_steps"]] == [
+        "0xd212",
+        "0xdf01",
+        "0xdf28",
+        "0xdf28",
+        "0xd226",
+        "0xd227",
+        "0xd244",
+    ]
+    assert fake.sent[2] == ptpip.build_get_device_prop_value(0xD212, 2)
+    assert fake.sent[3] == ptpip.build_set_device_prop_value(0xDF01, 3)
+    assert fake.sent[4] == ptpip.build_ptp_data_container(0x1016, 3, bytes.fromhex("1400"))
+    assert fake.sent[12] == ptpip.build_get_device_prop_value(0xD244, 8)
+    assert (tmp_path / "app_sequence_07_get_d244_response.bin").exists()
+    assert ptpip.exit_code_for_summary(summary, config) == 0
+
+
+def test_probe_app_current_object_info_sequence(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-current-object-info",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    vendor_step = summary["app_sequence_steps"][-1]
+    assert vendor_step["action"] == "vendor_get"
+    assert vendor_step["code"] == "0x9054"
+    assert vendor_step["params"] == ["0x10000001"]
+    assert vendor_step["data_header"]["code"] == 0x9054
+    assert fake.sent[-1] == ptpip.build_ptp_command(0x9054, 9, 0x10000001)
+    assert (tmp_path / "app_sequence_08_vendor_get_9054_data.bin").exists()
+
+
+def test_probe_app_current_object_thumbnail_sequence(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+            ptp_container(container_type=2, code=0x9055, transaction=10),
+            ptp_container(code=0x2001, transaction=10),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-current-object-thumbnail",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    thumbnail_step = summary["app_sequence_steps"][-1]
+    assert thumbnail_step["code"] == "0x9055"
+    assert thumbnail_step["params"] == ["0x10000001"]
+    assert thumbnail_step["data_header"]["code"] == 0x9055
+    assert fake.sent[-1] == ptpip.build_ptp_command(0x9055, 10, 0x10000001)
+    assert (tmp_path / "app_sequence_09_vendor_get_9055_data.bin").exists()
+
+
+def test_probe_app_sdcard_folder_and_dates_sequence(tmp_path) -> None:
+    folder_payload = b"\x00" * 41 + "140_FUJI".encode("utf-16le") + b"\x00\x00"
+    date_payload = (
+        b"\x00" * 4
+        + "20260430".encode("utf-16le")
+        + b"\x00\x00"
+        + "20260425".encode("utf-16le")
+        + b"\x00\x00"
+    )
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+            ptp_container(container_type=2, code=0x9055, transaction=10),
+            ptp_container(code=0x2001, transaction=10),
+            ptpip.build_ptp_data_container(0x9050, 11, folder_payload),
+            ptp_container(code=0x2001, transaction=11),
+            ptpip.build_ptp_data_container(0x9053, 12, date_payload),
+            ptp_container(code=0x2001, transaction=12),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-folder-and-dates",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    assert [step.get("code") or step.get("prop") for step in summary["app_sequence_steps"][-2:]] == [
+        "0x9050",
+        "0x9053",
+    ]
+    assert summary["app_sequence_steps"][-2]["text_values"] == ["140_FUJI"]
+    assert summary["app_sequence_steps"][-1]["text_values"] == ["20260430", "20260425"]
+    assert summary["app_sequence_steps"][-1]["params"] == ["0x00000000", "0x00007530"]
+    assert fake.sent[-1] == ptpip.build_ptp_command(0x9053, 12, 0, 0x7530)
+    assert (tmp_path / "app_sequence_11_vendor_get_9053_data.bin").exists()
+
+
+def test_probe_app_sdcard_object_handles_sequence(tmp_path) -> None:
+    handles = [0x0B, 0x0C, 0x09, 0x0A, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02]
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+            ptp_container(container_type=2, code=0x9055, transaction=10),
+            ptp_container(code=0x2001, transaction=10),
+            ptp_container(container_type=2, code=0x9050, transaction=11),
+            ptp_container(code=0x2001, transaction=11),
+            ptp_container(container_type=2, code=0x9053, transaction=12),
+            ptp_container(code=0x2001, transaction=12),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_DEVICE_PROP_VALUE, 13, struct.pack("<I", len(handles))),
+            ptp_container(code=0x2001, transaction=13),
+            ptpip.build_ptp_data_container(
+                ptpip.PTP_GET_DEVICE_PROP_VALUE,
+                14,
+                struct.pack("<I", len(handles))
+                + b"".join(struct.pack("<I", handle) for handle in handles),
+            ),
+            ptp_container(code=0x2001, transaction=14),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-object-handles",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    assert [step.get("code") or step.get("prop") for step in summary["app_sequence_steps"][-4:]] == [
+        "0x9050",
+        "0x9053",
+        "0xd620",
+        "0xd621",
+    ]
+    handles_step = summary["app_sequence_steps"][-1]
+    count_step = summary["app_sequence_steps"][-2]
+    assert count_step["object_count"] == 11
+    assert count_step["action"] == "get"
+    assert count_step["data_header"]["code"] == ptpip.PTP_GET_DEVICE_PROP_VALUE
+    assert handles_step["action"] == "get"
+    assert handles_step["data_header"]["code"] == ptpip.PTP_GET_DEVICE_PROP_VALUE
+    assert handles_step["object_handles"] == [f"0x{handle:08x}" for handle in handles]
+    assert fake.sent[-1] == ptpip.build_get_device_prop_value(0xD621, 14)
+    assert (tmp_path / "app_sequence_13_get_d621_data.bin").exists()
+
+
+def test_probe_runs_direct_object_operations_after_app_sequence(tmp_path) -> None:
+    handles = [0x0C]
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptp_container(container_type=2, code=0x1015, transaction=2),
+            ptp_container(code=0x2001, transaction=2),
+            ptp_container(code=0x2001, transaction=3),
+            ptp_container(container_type=2, code=0x1015, transaction=4),
+            ptp_container(code=0x2001, transaction=4),
+            ptp_container(code=0x2001, transaction=5),
+            ptp_container(code=0x2001, transaction=6),
+            ptp_container(code=0x2001, transaction=7),
+            ptp_container(container_type=2, code=0x1015, transaction=8),
+            ptp_container(code=0x2001, transaction=8),
+            ptp_container(container_type=2, code=0x9054, transaction=9),
+            ptp_container(code=0x2001, transaction=9),
+            ptp_container(container_type=2, code=0x9055, transaction=10),
+            ptp_container(code=0x2001, transaction=10),
+            ptp_container(container_type=2, code=0x9050, transaction=11),
+            ptp_container(code=0x2001, transaction=11),
+            ptp_container(container_type=2, code=0x9053, transaction=12),
+            ptp_container(code=0x2001, transaction=12),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_DEVICE_PROP_VALUE, 13, struct.pack("<I", len(handles))),
+            ptp_container(code=0x2001, transaction=13),
+            ptpip.build_ptp_data_container(
+                ptpip.PTP_GET_DEVICE_PROP_VALUE,
+                14,
+                struct.pack("<I", len(handles)) + b"".join(struct.pack("<I", handle) for handle in handles),
+            ),
+            ptp_container(code=0x2001, transaction=14),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, object_info_payload()),
+            ptp_container(code=0x2001, transaction=15),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT, 16, b"\xff\xd8object\xff\xd9"),
+            ptp_container(code=0x2001, transaction=16),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 17, b"\xff\xd8thumb\xff\xd9"),
+            ptp_container(code=0x2001, transaction=17),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-object-handles",
+        get_object_info="0x0c",
+        get_object="0x0c",
+        get_thumb="0x0c",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["app_sequence_completed"] is True
+    assert summary["get_object_info_data_present"] is True
+    assert summary["get_object_info_object_info"]["filename"] == "_DSF8109.JPG"
+    assert summary["get_object_info_response_present"] is True
+    assert summary["get_object_data_present"] is True
+    assert summary["get_object_jpeg_payload"]["payload_bytes"] == 10
+    assert summary["get_object_response_present"] is True
+    assert summary["get_thumb_data_present"] is True
+    assert summary["get_thumb_jpeg_payload"]["payload_bytes"] == 9
+    assert summary["get_thumb_response_present"] is True
+    assert fake.sent[-3] == ptpip.build_get_object_info(0x0C, 15)
+    assert fake.sent[-2] == ptpip.build_get_object(0x0C, 16)
+    assert fake.sent[-1] == ptpip.build_get_thumb(0x0C, 17)
+    assert (tmp_path / "get_object_info_data.bin").exists()
+    assert (tmp_path / "get_object_info_decoded.json").exists()
+    assert (tmp_path / "get_object_data.bin").exists()
+    assert (tmp_path / "get_object_payload.jpg").read_bytes() == b"\xff\xd8object\xff\xd9"
+    assert (tmp_path / "get_thumb_data.bin").exists()
+    assert (tmp_path / "get_thumb_payload.jpg").read_bytes() == b"\xff\xd8thumb\xff\xd9"
+
+
+def test_probe_stops_direct_operations_when_get_object_fails(tmp_path) -> None:
+    fake = FakeSocket(
+        [
+            packet(2),
+            ptp_container(code=0x2001, transaction=1),
+            ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT, 2, b"not-jpeg"),
+            ptp_container(code=0x2005, transaction=2),
+        ]
+    )
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        get_object="0x0c",
+        get_thumb="0x0c",
+    )
+
+    summary = ptpip.probe_ptpip(config, connector=lambda _target, _timeout: fake, clock=lambda: 0.0)
+
+    assert summary["get_object_sent"] is True
+    assert summary["get_object_response_header"]["code"] == 0x2005
+    assert summary["get_thumb_sent"] is False
+    assert fake.sent[-1] == ptpip.build_get_object(0x0C, 2)
+
+
+def test_probe_app_sequence_rejects_unknown_step_action(monkeypatch, tmp_path) -> None:
+    monkeypatch.setitem(ptpip.APP_SEQUENCES, "bad-step", (ptpip.AppSequenceStep("missing", 0x1234),))
+
+    with pytest.raises(ValueError, match="unknown reference app sequence step action"):
+        ptpip.probe_ptpip(
+            ptpip.ProbeConfig(
+                session_dir=tmp_path,
+                friendly_name="mbp",
+                open_session=True,
+                app_sequence="bad-step",
+            ),
+            connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container()]),
+            clock=lambda: 0.0,
+        )
+
+
+def test_probe_init_only_and_open_without_get_prop(tmp_path) -> None:
+    guid = "000102030405060708090a0b0c0d0e0f"
+    init_socket = FakeSocket([packet(2)])
+    init_only = ptpip.probe_ptpip(
+        ptpip.ProbeConfig(session_dir=tmp_path / "init-only", friendly_name="mbp", guid=guid),
+        connector=lambda _target, _timeout: init_socket,
+        clock=lambda: 0.0,
+    )
+    assert init_only["response_present"] is True
+    assert init_only["open_session_sent"] is False
+    assert init_only["guid"] == guid
+    assert init_socket.sent[0][8:24] == bytes(range(16))
+
+    open_only = ptpip.probe_ptpip(
+        ptpip.ProbeConfig(session_dir=tmp_path / "open-only", friendly_name="mbp", open_session=True),
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container()]),
+        clock=lambda: 0.0,
+    )
+    assert open_only["open_session_response_present"] is True
+    assert open_only["get_prop_sent"] is False
+
+
+def test_probe_timeout_and_missing_response_branches(tmp_path) -> None:
+    init_timeout = ptpip.probe_ptpip(
+        ptpip.ProbeConfig(session_dir=tmp_path / "init-timeout", friendly_name="mbp"),
+        connector=lambda _target, _timeout: FakeSocket([socket.timeout("slow")]),
+        clock=lambda: 0.0,
+    )
+    assert init_timeout["response_error"] == "timeout"
+    assert ptpip.exit_code_for_summary(
+        init_timeout,
+        ptpip.ProbeConfig(session_dir=tmp_path / "init-timeout"),
+    ) == 2
+
+    open_timeout_config = ptpip.ProbeConfig(
+        session_dir=tmp_path / "open-timeout",
+        friendly_name="mbp",
+        open_session=True,
+    )
+    open_timeout = ptpip.probe_ptpip(
+        open_timeout_config,
+        connector=lambda _target, _timeout: FakeSocket([packet(2), socket.timeout("slow")]),
+        clock=lambda: 0.0,
+    )
+    assert open_timeout["open_session_response_error"] == "timeout"
+    assert ptpip.exit_code_for_summary(open_timeout, open_timeout_config) == 4
+
+    get_timeout_config = ptpip.ProbeConfig(
+        session_dir=tmp_path / "get-timeout",
+        friendly_name="mbp",
+        open_session=True,
+        get_prop="0xd212",
+    )
+    get_timeout = ptpip.probe_ptpip(
+        get_timeout_config,
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container(), b"", socket.timeout("slow")]),
+        clock=lambda: 0.0,
+    )
+    assert get_timeout["get_prop_response_error"] == "timeout"
+    assert ptpip.exit_code_for_summary(get_timeout, get_timeout_config) == 5
+
+    object_info_timeout_config = ptpip.ProbeConfig(
+        session_dir=tmp_path / "object-info-timeout",
+        friendly_name="mbp",
+        open_session=True,
+        get_object_info="0x0c",
+    )
+    object_info_timeout = ptpip.probe_ptpip(
+        object_info_timeout_config,
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container(), b"", socket.timeout("slow")]),
+        clock=lambda: 0.0,
+    )
+    assert object_info_timeout["get_object_info_response_error"] == "timeout"
+    assert ptpip.exit_code_for_summary(object_info_timeout, object_info_timeout_config) == 7
+
+    thumb_timeout_config = ptpip.ProbeConfig(
+        session_dir=tmp_path / "thumb-timeout",
+        friendly_name="mbp",
+        open_session=True,
+        get_thumb="0x0c",
+    )
+    thumb_timeout = ptpip.probe_ptpip(
+        thumb_timeout_config,
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container(), b"", b""]),
+        clock=lambda: 0.0,
+    )
+    assert thumb_timeout["get_thumb_response_present"] is False
+    assert ptpip.exit_code_for_summary(thumb_timeout, thumb_timeout_config) == 8
+
+    sequence_timeout_config = ptpip.ProbeConfig(
+        session_dir=tmp_path / "sequence-timeout",
+        friendly_name="mbp",
+        open_session=True,
+        app_sequence="sdcard-browse-bootstrap",
+    )
+    sequence_timeout = ptpip.probe_ptpip(
+        sequence_timeout_config,
+        connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container(), b"", b""]),
+        clock=lambda: 0.0,
+    )
+    assert sequence_timeout["app_sequence_completed"] is False
+    assert ptpip.exit_code_for_summary(sequence_timeout, sequence_timeout_config) == 6
+
+    with pytest.raises(ValueError, match="unknown reference app sequence"):
+        ptpip.probe_ptpip(
+            ptpip.ProbeConfig(
+                session_dir=tmp_path / "unknown-sequence",
+                friendly_name="mbp",
+                open_session=True,
+                app_sequence="missing",
+            ),
+            connector=lambda _target, _timeout: FakeSocket([packet(2), ptp_container()]),
+            clock=lambda: 0.0,
+        )
+
+
+def test_probe_socket_error_and_default_display_name(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(ptpip, "default_device_name", lambda: "host-default")
+
+    def fail_connect(_target, _timeout):
+        raise OSError("no route")
+
+    config = ptpip.ProbeConfig(session_dir=tmp_path, friendly_name="")
+    summary = ptpip.probe_ptpip(config, connector=fail_connect, clock=lambda: 0.0)
+
+    assert summary["friendly_name"] == "host-default"
+    assert "no route" in summary["error"]
+    assert ptpip.exit_code_for_summary(summary, config) == 1
+
+
+def test_cli_main_builds_config_and_returns_probe_exit(monkeypatch, tmp_path, capsys) -> None:
+    calls = []
+
+    def fake_probe(config):
+        calls.append(config)
+        return {
+            "tcp_connect": "present",
+            "response_present": True,
+            "open_session_response_present": True,
+            "get_prop_response_present": True,
+            "get_object_info_response_present": True,
+            "get_object_response_present": True,
+            "get_thumb_response_present": True,
+            "app_sequence_completed": bool(config.app_sequence),
+        }
+
+    monkeypatch.setattr(ptpip, "probe_ptpip", fake_probe)
+
+    rc = ptpip.main(
+        [
+            "probe",
+            "--session-dir",
+            str(tmp_path),
+            "--host",
+            "192.168.0.1",
+            "--port",
+            "55740",
+            "--friendly-name",
+            "mbp-7274",
+            "--timeout",
+            "12",
+            "--tail-profile",
+            "get",
+            "--guid",
+            "000102030405060708090a0b0c0d0e0f",
+            "--get-prop",
+            "0xd212",
+            "--get-object-info",
+            "0x0c",
+            "--get-object",
+            "0x0c",
+            "--get-thumb",
+            "0x0c",
+            "--app-sequence",
+            "sdcard-browse-bootstrap",
+        ]
+    )
+
+    assert rc == 0
+    assert calls[0].session_dir == tmp_path
+    assert calls[0].open_session is True
+    assert calls[0].tail_profile == "get"
+    assert calls[0].guid == "000102030405060708090a0b0c0d0e0f"
+    assert calls[0].app_sequence == "sdcard-browse-bootstrap"
+    assert calls[0].get_object_info == "0x0c"
+    assert calls[0].get_object == "0x0c"
+    assert calls[0].get_thumb == "0x0c"
+    assert '"tcp_connect": "present"' in capsys.readouterr().out
+
+
+def test_exit_code_checks_direct_operations_after_app_sequence(tmp_path) -> None:
+    config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-object-handles",
+        get_thumb="0x0c",
+    )
+    summary = {
+        "tcp_connect": "present",
+        "response_present": True,
+        "open_session_response_present": True,
+        "app_sequence_completed": True,
+        "get_prop_response_present": False,
+        "get_object_info_response_present": False,
+        "get_thumb_response_present": False,
+    }
+
+    assert ptpip.exit_code_for_summary(summary, config) == 8
+
+    summary["get_thumb_response_present"] = True
+    assert ptpip.exit_code_for_summary(summary, config) == 0
+
+    object_config = ptpip.ProbeConfig(
+        session_dir=tmp_path,
+        friendly_name="mbp-7274",
+        open_session=True,
+        app_sequence="sdcard-object-handles",
+        get_object="0x0c",
+    )
+    summary["get_object_response_present"] = False
+    assert ptpip.exit_code_for_summary(summary, object_config) == 9
+
+    summary["get_object_jpeg_payload"] = {"starts_with_soi": True, "ends_with_eoi": True}
+    assert ptpip.exit_code_for_summary(summary, object_config) == 0
+
+    summary["get_object_jpeg_payload"] = {"starts_with_soi": True, "ends_with_eoi": False}
+    assert ptpip.exit_code_for_summary(summary, object_config) == 9
+
+    summary["get_object_response_present"] = True
+    assert ptpip.exit_code_for_summary(summary, object_config) == 0
+
+
+def test_cli_decode_and_compare_init(tmp_path, capsys) -> None:
+    reference = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin")
+    same_candidate = tmp_path / "same.bin"
+    same_candidate.write_bytes(reference.read_bytes())
+
+    assert ptpip.main(["decode-init", "--payload", str(reference)]) == 0
+    decoded = json.loads(capsys.readouterr().out)
+    assert decoded["friendly_name"] == "Pixel-6-9405"
+
+    assert (
+        ptpip.main(
+            [
+                "compare-init",
+                "--reference",
+                str(reference),
+                "--candidate",
+                str(same_candidate),
+            ]
+        )
+        == 0
+    )
+    same = json.loads(capsys.readouterr().out)
+    assert same["same"] is True
+
+    assert (
+        ptpip.main(
+            [
+                "compare-init",
+                "--reference",
+                str(reference),
+                "--friendly-name",
+                "mbp-7274",
+                "--guid",
+                "f2e4538fada5485d87b27f0bd3d5ded0",
+            ]
+        )
+        == 1
+    )
+    different = json.loads(capsys.readouterr().out)
+    assert different["candidate"]["friendly_name"] == "mbp-7274"
+
+    valid = tmp_path / "init.bin"
+    valid.write_bytes(reference.read_bytes())
+    assert ptpip.main(["inventory-init", "--json", str(tmp_path)]) == 0
+    inventory = json.loads(capsys.readouterr().out)
+    assert inventory[0]["friendly_name"] == "Pixel-6-9405"
+
+    assert ptpip.main(["inventory-init", str(tmp_path)]) == 0
+    assert "friendly_name=Pixel-6-9405" in capsys.readouterr().out
+
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "get_object_info_data.bin").write_bytes(
+        ptpip.build_ptp_data_container(ptpip.PTP_GET_OBJECT_INFO, 15, object_info_payload())
+    )
+    (session / "get_thumb_data.bin").write_bytes(
+        ptpip.build_ptp_data_container(ptpip.PTP_GET_THUMB, 16, b"\xff\xd8thumb\xff\xd9")
+    )
+    assert ptpip.main(["decode-session", "--session-dir", str(session)]) == 0
+    decoded_session = json.loads(capsys.readouterr().out)
+    assert len(decoded_session["artifacts"]) == 2
+    assert (session / "get_object_info_decoded.json").exists()
+    assert (session / "get_thumb_payload.jpg").exists()
+
+
+def test_export_object_download_uses_object_info_filename(tmp_path) -> None:
+    session = tmp_path / "session"
+    output = tmp_path / "downloads"
+    session.mkdir()
+    payload = b"\xff\xd8object-data\xff\xd9"
+    (session / "get_object_payload.jpg").write_bytes(payload)
+    (session / "get_object_info_decoded.json").write_text(
+        json.dumps({"filename": "../_DSF8109.JPG", "image_pix_width": 4000}),
+        encoding="utf-8",
+    )
+    (session / "summary.json").write_text(
+        json.dumps({"get_object": "0x0c", "get_object_response_present": False}),
+        encoding="utf-8",
+    )
+
+    manifest = ptpip.export_object_download(session, output)
+
+    exported = output / "_DSF8109.JPG"
+    manifest_path = output / "_DSF8109.JPG.json"
+    assert exported.read_bytes() == payload
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["jpeg_payload"]["ends_with_eoi"] is True
+    assert manifest["output_path"] == str(exported)
+    assert manifest["manifest_path"] == str(manifest_path)
+    assert manifest["get_object"] == "0x0c"
+    assert manifest["object_info"]["image_pix_width"] == 4000
+
+
+def test_export_object_download_validates_payload_and_collisions(tmp_path) -> None:
+    session = tmp_path / "session"
+    output = tmp_path / "downloads"
+    session.mkdir()
+    (session / "get_object_payload.jpg").write_bytes(b"\xff\xd8first\xff\xd9")
+    (session / "summary.json").write_text(
+        json.dumps({"get_object": "12", "get_object_response_present": True}),
+        encoding="utf-8",
+    )
+
+    manifest = ptpip.export_object_download(session, output, filename="bad/name?.jpg")
+    assert Path(manifest["output_path"]).name == "name_.jpg"
+    assert (output / "name_.jpg").exists()
+    with pytest.raises(FileExistsError, match="download already exists"):
+        ptpip.export_object_download(session, output, filename="bad/name?.jpg")
+
+    (session / "get_object_payload.jpg").write_bytes(b"\xff\xd8second\xff\xd9")
+    overwritten = ptpip.export_object_download(session, output, filename="bad/name?.jpg", force=True)
+    assert Path(overwritten["output_path"]).read_bytes() == b"\xff\xd8second\xff\xd9"
+
+    (output / "manifest-only.jpg.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="download manifest already exists"):
+        ptpip.export_object_download(session, output, filename="manifest-only.jpg")
+
+    incomplete = tmp_path / "incomplete"
+    incomplete.mkdir()
+    (incomplete / "get_object_payload.jpg").write_bytes(b"\xff\xd8not-complete")
+    with pytest.raises(ValueError, match="not a complete JPEG"):
+        ptpip.export_object_download(incomplete, output)
+
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    with pytest.raises(FileNotFoundError, match="missing GetObject JPEG payload"):
+        ptpip.export_object_download(missing, output)
+
+
+def test_export_object_filename_fallbacks(tmp_path) -> None:
+    session = tmp_path / "session"
+    session.mkdir()
+    assert ptpip.safe_download_filename("../../bad:name", fallback="fallback.jpg") == "bad_name.jpg"
+    assert ptpip.safe_download_filename("   ", fallback="fallback.jpg") == "fallback.jpg"
+
+    (session / "summary.json").write_text(json.dumps({"get_object": "0x0000000c"}), encoding="utf-8")
+    assert ptpip.suggested_object_download_filename(session) == "fuji_object_0000000c.jpg"
+
+    (session / "summary.json").write_text(json.dumps({"get_object": "not-a-handle"}), encoding="utf-8")
+    assert ptpip.suggested_object_download_filename(session) == "fuji_object.jpg"
+
+
+def test_cli_export_object(tmp_path, capsys) -> None:
+    session = tmp_path / "session"
+    output = tmp_path / "downloads"
+    session.mkdir()
+    (session / "get_object_payload.jpg").write_bytes(b"\xff\xd8object\xff\xd9")
+    (session / "summary.json").write_text(json.dumps({"get_object": "0x0c"}), encoding="utf-8")
+
+    rc = ptpip.main(
+        [
+            "export-object",
+            "--session-dir",
+            str(session),
+            "--output-dir",
+            str(output),
+            "--filename",
+            "exported",
+        ]
+    )
+
+    assert rc == 0
+    exported = json.loads(capsys.readouterr().out)
+    assert exported["filename"] == "exported.jpg"
+    assert (output / "exported.jpg").exists()
