@@ -1,14 +1,176 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+//! `camera-manifest` — the manifest schema, loader, validation, compatibility
+//! queries, and the canonical bundle→proposal generator.
+//!
+//! Manifests are the reviewed source of truth for camera behavior. `evidence:`
+//! references are provenance only: a manifest loads and runs with them
+//! unresolved (they become lints, never load errors), which is what lets the
+//! public engine run manifests whose evidence lives in a private repo.
+
+pub mod error;
+pub mod generate;
+pub mod model;
+pub mod query;
+
+pub use error::{Lint, ManifestError, Severity};
+pub use generate::generate_proposal;
+pub use model::{
+    parse_hex_code, CameraIdentity, CameraManifest, Control, Descriptor, Operation, Property,
+    Workflow,
+};
+pub use query::Support;
+
+/// The manifest schema version this build understands.
+pub const SCHEMA_VERSION: &str = "camera-manifest/v1";
+
+impl CameraManifest {
+    /// Parse a manifest from YAML text. Does not fail on unresolved evidence —
+    /// call [`CameraManifest::validate`] for those lints.
+    pub fn from_yaml(text: &str) -> Result<Self, ManifestError> {
+        let m: CameraManifest = serde_yaml::from_str(text)?;
+        Ok(m)
+    }
+
+    pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, ManifestError> {
+        Self::from_yaml(&std::fs::read_to_string(path)?)
+    }
+
+    /// Serialize back to YAML (used by the generator to write proposals).
+    pub fn to_yaml(&self) -> Result<String, ManifestError> {
+        Ok(serde_yaml::to_string(self)?)
+    }
+
+    /// Structural lints. Currently: schema mismatch is surfaced as an error via
+    /// [`CameraManifest::require_supported_schema`]; everything here is a
+    /// non-fatal warning, notably evidence ids referenced but not defined.
+    pub fn validate(&self) -> Vec<Lint> {
+        let mut lints = Vec::new();
+        let defined: std::collections::BTreeSet<&str> =
+            self.evidence.keys().map(|s| s.as_str()).collect();
+
+        let check = |ids: &[String], ctx: &str, lints: &mut Vec<Lint>| {
+            for id in ids {
+                if !defined.contains(id.as_str()) {
+                    lints.push(Lint::warn(format!(
+                        "{ctx} references evidence id '{id}' which is not defined in this manifest \
+                         (provenance may live in a private repo)"
+                    )));
+                }
+            }
+        };
+
+        for (code, op) in &self.operations {
+            check(&op.evidence, &format!("operation {code}"), &mut lints);
+        }
+        for (code, prop) in &self.properties {
+            check(&prop.evidence, &format!("property {code}"), &mut lints);
+        }
+        for (id, wf) in &self.workflows {
+            check(&wf.evidence, &format!("workflow {id}"), &mut lints);
+        }
+        lints
+    }
+
+    /// Returns an error if the manifest's schema is not understood by this build.
+    pub fn require_supported_schema(&self) -> Result<(), ManifestError> {
+        if self.schema != SCHEMA_VERSION {
+            return Err(ManifestError::Schema {
+                found: self.schema.clone(),
+                expected: SCHEMA_VERSION.to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const SAMPLE: &str = r#"
+schema: camera-manifest/v1
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: "02.30"
+operations:
+  "0x101c":
+    name: InitiateOpenCapture
+    owner: standard-ptp
+    workflows: [liveView]
+    evidence: [appLiveViewCapture]
+properties:
+  "0x5007":
+    name: aperture
+    ptpName: FNumber
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: [280, 400, 560, 800, 65535]
+    controls:
+      liveView: { setMethod: vendorStep, operation: "0x902d", readback: "0xd212" }
+      tether:   { setMethod: absolute,   operation: "0x1016" }
+    labels:
+      280: "f/2.8"
+      65535: "body"
+    evidence: [appLiveViewCapture]
+workflows:
+  liveView:
+    transport: appAp
+    states: [sessionOpen, streaming]
+evidence:
+  appLiveViewCapture:
+    kind: wire-capture
+    path: docs/APP_LIVEVIEW_CODE_MAP.md
+"#;
+
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn loads_and_queries() {
+        let m = CameraManifest::from_yaml(SAMPLE).unwrap();
+        m.require_supported_schema().unwrap();
+        assert_eq!(m.camera.model, "GFX100 II");
+
+        // Operation support is workflow-aware.
+        assert_eq!(m.supports_operation("liveView", 0x101c), Support::InWorkflow);
+        assert_eq!(m.supports_operation("imageImport", 0x101c), Support::WrongWorkflow);
+        assert_eq!(m.supports_operation("liveView", 0x9999), Support::Unsupported);
+
+        // Intent -> mechanism resolution differs by mode.
+        let lv = m.control_for(0x5007, "liveView").unwrap();
+        assert_eq!(lv.set_method.as_deref(), Some("vendorStep"));
+        assert_eq!(lv.operation.as_deref(), Some("0x902d"));
+        let tether = m.control_for(0x5007, "tether").unwrap();
+        assert_eq!(tether.set_method.as_deref(), Some("absolute"));
+
+        // Value labels.
+        assert_eq!(m.value_label(0x5007, 280), Some("f/2.8"));
+        assert_eq!(m.value_label(0x5007, 65535), Some("body"));
+        assert_eq!(m.value_label(0x5007, 999), None);
+    }
+
+    #[test]
+    fn defined_evidence_produces_no_lint() {
+        let m = CameraManifest::from_yaml(SAMPLE).unwrap();
+        assert!(m.validate().is_empty());
+    }
+
+    #[test]
+    fn unresolved_evidence_is_a_warning_not_an_error() {
+        // Same manifest but drop the evidence definition.
+        let text = SAMPLE.replace(
+            "evidence:\n  appLiveViewCapture:\n    kind: wire-capture\n    path: docs/APP_LIVEVIEW_CODE_MAP.md\n",
+            "",
+        );
+        let m = CameraManifest::from_yaml(&text).expect("still loads");
+        let lints = m.validate();
+        assert!(!lints.is_empty(), "should warn about unresolved evidence");
+        assert!(lints.iter().all(|l| l.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn wrong_schema_is_rejected_explicitly() {
+        let text = SAMPLE.replace("camera-manifest/v1", "camera-manifest/v999");
+        let m = CameraManifest::from_yaml(&text).unwrap();
+        assert!(m.require_supported_schema().is_err());
     }
 }
