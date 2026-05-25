@@ -12,3 +12,18 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Raw captures / evidence MUST NOT enter this (public) repo. Only minimal,
+# redacted golden packets belong here, under packages/protocol-spec. Raw
+
+*.pcap
+*.pcapng
+*.cap
+*.mon
+*.pcapng.gz
+frida_messages.jsonl
+*tcpdump*
+# Probe session artifacts (request/data/response dumps, decoded traces).
+**/captures/
+**/sessions/
+*.raw.bin
