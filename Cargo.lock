@@ -27,6 +27,12 @@ version = "0.0.0"
 [[package]]
 name = "camera-sim"
 version = "0.0.0"
+dependencies = [
+ "camera-manifest",
+ "camera-media-store",
+ "protocol-primitives",
+ "ptp-core",
+]
 
 [[package]]
 name = "camera-sim-service"

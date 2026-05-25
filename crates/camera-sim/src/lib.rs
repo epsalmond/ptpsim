@@ -1,14 +1,220 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! `camera-sim` — the generic responder engine. One engine runs every camera
+//! from manifest data; there are no per-manufacturer branches. The Fuji-specific
+//! bits it needs (compressed framing, live-view packetization, computed quirks)
+//! come from `protocol-primitives`, referenced by manifest id.
+
+pub mod engine;
+pub mod framesource;
+pub mod state;
+
+pub use engine::{Engine, Reply};
+pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
+pub use state::{CameraState, Phase};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camera_manifest::CameraManifest;
+    use camera_media_store::MediaStore;
+    use ptp_core::dataset::PropValue;
+    use ptp_core::{OperationRequest, Reader, Writer};
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    const MANIFEST: &str = r#"
+schema: camera-manifest/v1
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: "02.30"
+operations:
+  "0x1002": { name: OpenSession, owner: standard-ptp }
+  "0x9054": { name: GetCurrentObjectMeta, owner: fuji-vendor, workflows: [imageImport] }
+  "0x101c": { name: InitiateOpenCapture, owner: standard-ptp, workflows: [liveView] }
+  "0x902d":
+    name: StepFNumber
+    owner: fuji-vendor
+    workflows: [liveView]
+    handler: property.step
+    property: "0x5007"
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+  "0xd02a":
+    name: stillIso
+    type: u32
+    access: readWrite
+    descriptor: { form: range, values: [100, 12800, 1] }
+  "0x5007":
+    name: aperture
+    type: u16
+    access: readWrite
+    descriptor: { form: enum, values: [280, 400, 560, 800, 1600] }
+    controls:
+      liveView: { setMethod: vendorStep, operation: "0x902d", readback: "0xd212" }
+"#;
+
+    fn op(code: u16, tid: u32, params: Vec<u32>) -> OperationRequest {
+        OperationRequest { data_phase_info: 1, code, transaction_id: tid, params }
+    }
+
+    fn u16_data(v: u16) -> Vec<u8> {
+        let mut w = Writer::new();
+        PropValue::U16(v).encode(&mut w).unwrap();
+        w.into_vec()
+    }
+    fn u32_data(v: u32) -> Vec<u8> {
+        let mut w = Writer::new();
+        PropValue::U32(v).encode(&mut w).unwrap();
+        w.into_vec()
+    }
+
+    fn tmp_card() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ptpsim-sim-{nanos}"));
+        let dir = root.join("DCIM/100_FUJI");
+        std::fs::create_dir_all(&dir).unwrap();
+        write(&dir.join("DSCF0001.JPG"), b"\xFF\xD8JPEGBODY\xFF\xD9");
+        // RAF with embedded preview.
+        let mut raf = b"FUJIFILMheader".to_vec();
+        raf.extend_from_slice(&[0xFF, 0xD8]);
+        raf.extend_from_slice(b"PREVIEW");
+        raf.extend_from_slice(&[0xFF, 0xD9]);
+        raf.extend_from_slice(b"rawtail");
+        write(&dir.join("DSCF0002.RAF"), &raf);
+        root
+    }
+
+    fn write(p: &Path, b: &[u8]) {
+        File::create(p).unwrap().write_all(b).unwrap();
+    }
+
+    fn engine(root: &Path) -> Engine {
+        let manifest = CameraManifest::from_yaml(MANIFEST).unwrap();
+        let mut store = MediaStore::open(root).unwrap();
+        store.scan().unwrap();
+        Engine::new(manifest, store)
+    }
+
+    fn expect_data(reply: Reply) -> Vec<u8> {
+        match reply {
+            Reply::Data { data, response } => {
+                assert_eq!(response.code, 0x2001, "data reply should carry OK");
+                data
+            }
+            other => panic!("expected data reply, got {other:?}"),
+        }
+    }
+
+    fn expect_ok(reply: Reply) {
+        match reply {
+            Reply::Response(r) => assert_eq!(r.code, 0x2001, "expected OK response"),
+            other => panic!("expected OK response, got {other:?}"),
+        }
+    }
+
+    /// Gate #3: image-import session completes init -> handles -> thumbnail ->
+    /// partial download -> close, driven entirely by the manifest + media store.
+    #[test]
+    fn gate3_image_import_flow() {
+        let root = tmp_card();
+        let mut e = engine(&root);
+
+        expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None)); // OpenSession
+        expect_ok(e.on_operation(&op(0x1016, 2, vec![0xdf01]), Some(&u16_data(20)))); // df01=20 -> ImageImport
+        assert_eq!(e.state().phase, Phase::ImageImport);
+
+        // Enumerate handles.
+        let handles_bytes = expect_data(e.on_operation(&op(0x1007, 3, vec![0x00010001, 0, 0]), None));
+        let mut r = Reader::new(&handles_bytes);
+        let handles = r.ptp_array(|r| r.u32()).unwrap();
+        assert_eq!(handles.len(), 2, "two files on the card");
+
+        // ObjectInfo for the first handle has a filename.
+        let oi_bytes = expect_data(e.on_operation(&op(0x1008, 4, vec![handles[0]]), None));
+        let oi = ptp_core::ObjectInfo::decode(&oi_bytes).unwrap();
+        assert!(oi.filename.ends_with(".JPG") || oi.filename.ends_with(".RAF"));
+
+        // Thumbnail of the RAF -> embedded JPEG (starts with SOI).
+        let raf = *handles.iter().find(|h| {
+            e.store().object_info(**h).unwrap().filename.ends_with(".RAF")
+        }).unwrap();
+        let thumb = expect_data(e.on_operation(&op(0x100a, 5, vec![raf]), None));
+        assert_eq!(&thumb[0..2], &[0xFF, 0xD8]);
+
+        // Partial download of the first 4 bytes of the JPG.
+        let jpg = *handles.iter().find(|h| {
+            e.store().object_info(**h).unwrap().filename.ends_with(".JPG")
+        }).unwrap();
+        let part = expect_data(e.on_operation(&op(0x101b, 6, vec![jpg, 0, 4]), None));
+        assert_eq!(part, b"\xFF\xD8JP");
+
+        expect_ok(e.on_operation(&op(0x1003, 7, vec![]), None)); // CloseSession
+        assert_eq!(e.state().phase, Phase::Closed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Gate #4 (engine level): live view opens, frames keep coming, and ISO /
+    /// vendor-step / readback all work *while streaming*. The literal
+    /// three-socket TCP wiring is exercised at the service level.
+    #[test]
+    fn gate4_liveview_control_while_streaming() {
+        let root = tmp_card();
+        let mut e = engine(&root);
+        let mut frames = StaticFrameSource::new(vec![0xFF, 0xD8, 0x42, 0xFF, 0xD9]);
+
+        expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None)); // OpenSession
+        expect_ok(e.on_operation(&op(0x1016, 2, vec![0xdf01]), Some(&u16_data(22)))); // df01=22 -> LiveView
+        assert_eq!(e.state().phase, Phase::LiveView);
+        expect_ok(e.on_operation(&op(0x101c, 3, vec![]), None)); // InitiateOpenCapture
+        assert_eq!(e.state().phase, Phase::Streaming);
+
+        // Frames flow.
+        assert!(frames.next_frame().is_some());
+
+        // Absolute ISO write while streaming.
+        expect_ok(e.on_operation(&op(0x1016, 4, vec![0xd02a]), Some(&u32_data(800))));
+        assert_eq!(e.state().props.get(&0xd02a), Some(&PropValue::U32(800)));
+
+        // Vendor step aperture wider (direction=1): 280 -> 400.
+        let before = e.state().props.get(&0x5007).cloned();
+        assert_eq!(before, Some(PropValue::U16(280)));
+        expect_ok(e.on_operation(&op(0x902d, 5, vec![1]), None));
+        assert_eq!(e.state().props.get(&0x5007), Some(&PropValue::U16(400)));
+
+        // Readback via GetDevicePropValue reflects the change.
+        let v = expect_data(e.on_operation(&op(0x1015, 6, vec![0x5007]), None));
+        let mut r = Reader::new(&v);
+        assert_eq!(r.u16().unwrap(), 400);
+
+        // Frames still flowing after the control ops.
+        assert!(frames.next_frame().is_some());
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn unsupported_op_is_rejected() {
+        let root = tmp_card();
+        let mut e = engine(&root);
+        expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None));
+        match e.on_operation(&op(0x9fff, 2, vec![]), None) {
+            Reply::Response(r) => assert_eq!(r.code, 0x2005), // OperationNotSupported
+            other => panic!("expected unsupported, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn ops_before_session_are_refused() {
+        let root = tmp_card();
+        let mut e = engine(&root);
+        match e.on_operation(&op(0x1007, 1, vec![]), None) {
+            Reply::Response(r) => assert_eq!(r.code, 0x2003), // SessionNotOpen
+            other => panic!("expected session-not-open, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&root).ok();
     }
 }

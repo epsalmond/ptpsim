@@ -200,7 +200,7 @@ impl PropValue {
         }
     }
 
-    fn decode(r: &mut Reader, datatype: u16) -> Result<Self, DecodeError> {
+    pub fn decode(r: &mut Reader, datatype: u16) -> Result<Self, DecodeError> {
         use crate::codes::datatype_code as dt;
         Ok(match datatype {
             dt::UINT8 => PropValue::U8(r.u8()?),
@@ -212,7 +212,7 @@ impl PropValue {
         })
     }
 
-    fn encode(&self, w: &mut Writer) -> Result<(), EncodeError> {
+    pub fn encode(&self, w: &mut Writer) -> Result<(), EncodeError> {
         match self {
             PropValue::U8(v) => w.u8(*v),
             PropValue::U16(v) => w.u16(*v),
