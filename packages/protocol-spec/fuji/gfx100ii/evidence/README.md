@@ -17,6 +17,7 @@ distilled into `fw0230.yaml` (or a richer manifest schema).
 |---|---|
 | `PTP_PROPERTIES_REFERENCE.md` | Consolidated PTP-IP reference for GFX100 II fw 02.30 — property/DPC codes, F-number/shutter/ISO encodings, the `0xD212` live-view composite bundle, live-view stream-config DPCs (§3.9/§4.1.1), the still-capture sequence (§6), and the image-enumeration sequence (§8/§11). Reconciled 2026-05-26 with the app's latest readings (one-open-capture-session model; aperture direct-set ACK-but-ignored; corrected `0x902C/D/E` step opcodes; `0x9054/0x9055/0x9050/0x9053 → 0xD620/0xD621` enumeration). Mobile Wi-Fi PTP/IP. |
 
+| `IMAGE_TRANSFER_FW0230.md` | Image-import (download) wire protocol for GFX100 II fw 02.30: mode-20 setup, `GetObjectInfo`/`GetThumb` enumeration, `GetPartialObject` 12 MB-chunk download, the `0xD620`/`0xD621` handle-list path, per-format (RAF/JPEG/MOV) ObjectInfo decode (1441-sample tally), and the fresh-session reconnect/sentinel choreography. Mobile Wi-Fi PTP/IP. The app-side reconnect contract is mirrored in the client application repo at `docs/IMAGE_IMPORT_RECONNECT.md`; narrative twin on nas `mobile/docs/captures/`. |
 
 ## Note for the ptpsim agent
 
