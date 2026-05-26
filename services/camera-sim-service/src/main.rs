@@ -25,12 +25,12 @@ struct Args {
     /// PTP command socket bind. Default binds all IPv6 (Apple review is IPv6-only).
     #[arg(long, default_value = "[::]:55740")]
     command_bind: SocketAddr,
-    /// Live-view (through-picture) stream socket.
+    /// Async event socket (command+1 per the shipping app).
     #[arg(long, default_value = "[::]:55741")]
-    liveview_bind: SocketAddr,
-    /// Async event socket.
-    #[arg(long, default_value = "[::]:55742")]
     event_bind: SocketAddr,
+    /// Live-view (through-picture) stream socket (command+2 per the shipping app).
+    #[arg(long, default_value = "[::]:55742")]
+    liveview_bind: SocketAddr,
     /// Control HTTP bind (loopback by default).
     #[arg(long, default_value = "127.0.0.1:8080")]
     control_bind: SocketAddr,

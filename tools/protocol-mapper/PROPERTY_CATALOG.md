@@ -291,7 +291,7 @@ exposure props are **ACK'd-but-ignored** unless set via the relative-step path (
 | `0xDF00` | Camera function mode (outer) | UINT16 | set | **function-mode write** | `SetDevicePropValue(0xDF00, 6)` = SDK_MODE_NEUTRAL20. First handshake step. | Big3, reference app |
 | `0xDF01` | Function mode (inner) | UINT16 | set | **function-mode write** | `SetDevicePropValue(0xDF01, 22)` = SDK_MODE_IMAGE_LIVE_VIEW. Second step. | Big3, reference app |
 | `0xDF2A` | Live-view version (`VersionRemoteEx`=57130) | UINT16 | RW | function-mode negotiate | `GetDevicePropValue(0xDF2A)` then `SetDevicePropValue(0xDF2A, min(max,4))` (reference app uses 2). | Big3, reference app |
-| `0x101C` | InitiateOpenCapture (PTP op, not a prop) | — | op | **session op** `InitiateOpenCapture(0,0)` | Starts live view; opens THROUGH (55741) + EVENT (55742) sockets. **Required before any setting write applies.** | Big3, reference app |
+| `0x101C` | InitiateOpenCapture (PTP op, not a prop) | — | op | **session op** `InitiateOpenCapture(0,0)` | Starts live view; opens EVENT (55741) + THROUGH (55742) sockets (reference app's enum names these backwards). **Required before any setting write applies.** | Big3, reference app |
 | `0xD136` | Function lock | UINT16 | RW | list-pick | enum `{1,2,3}`. | PCD, STUB |
 | `0xD23E` | Camera operation lock | UINT16 | RW | list-pick | enum `{1,2}` (lock body controls during remote). | PCD, STUB |
 | `0xD244` | Browser-remote user ID | string/array | RO | poll | sample `"test"`. | PCD, STUB |

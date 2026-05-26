@@ -32,10 +32,10 @@ pub struct Config {
     /// Bind address for the PTP command socket. Use port 0 for an OS-assigned
     /// port (tests).
     pub command_bind: SocketAddr,
-    /// Through-picture (live-view) stream socket. Per fw0230 capture this is
-    /// 55741.
+    /// Through-picture (live-view) stream socket. Per the shipping app this is
+    /// command+2 = 55742.
     pub liveview_bind: SocketAddr,
-    /// Async event socket (55742).
+    /// Async event socket (command+1 = 55741).
     pub event_bind: SocketAddr,
     pub control_bind: SocketAddr,
 }

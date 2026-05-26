@@ -217,7 +217,7 @@ modes:                               # defined ONCE; hierarchical paths
 connections:                         # the connection axis (a user-selected state)
   App:                               # WiFi-AP path
     establishment: ble-to-wifi-v1    # ← sensitive; private-overlay-able
-    bind: { command: 55740, liveview: 55741, event: 55742 }
+    bind: { command: 55740, event: 55741, liveview: 55742 }   # per shipping app (command+1 event, +2 stream)
     discovery: { mechanism: ble, announces: camera }
     entries:                         # mode-graph edges: wire action OR user-instruction
       - { to: Shooting/Stills, do: { setProp: { "0xdf01": 0x1600 } } }

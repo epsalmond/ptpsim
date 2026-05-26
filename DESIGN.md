@@ -509,8 +509,8 @@ transports:
     kind: ptpip-app
     bind:
       command: 55740
-      liveview: 55741   # through-picture stream (per fw0230 capture)
-      event: 55742
+      event: 55741      # command+1 (per the shipping app)
+      liveview: 55742   # through-picture stream, command+2 (per the shipping app)
     init:
       ackDeviceGuid: "0870b061-0a8b-4593-b2e7-9357dd36e050"
       friendlyNameLength: 26
@@ -791,8 +791,8 @@ that (see "Control Plane Boundary").
 Default ports:
 
 - PTP command: `55740`
-- Fuji live-view (through-picture) stream: `55741`
-- Fuji event socket: `55742`
+- Fuji event socket: `55741` (command+1)
+- Fuji live-view (through-picture) stream: `55742` (command+2)
 - Health/control HTTP: configurable, local by default
 
 Health endpoint:
@@ -834,8 +834,8 @@ instance:
 bind:
   host: "::"
   ptpCommandPort: 55740
-  ptpLiveViewPort: 55741
-  ptpEventPort: 55742
+  ptpEventPort: 55741
+  ptpLiveViewPort: 55742
   controlHost: "127.0.0.1"
   controlPort: 8080
 media:
