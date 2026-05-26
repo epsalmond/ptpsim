@@ -23,6 +23,8 @@ evidence:
   # NOT wire-captured. These USB opcodes are leads pending a golden capture.
   # STRONGEST tier: wire-confirmed over wired-gigabit + Wi-Fi infra PTP-IP tether.
   wireTether:      { kind: wire-capture, path: "tools/protocol-mapper/WIRED_TETHER_CONTROL.md", date: "2026-05-23" }
+  docXlv:          { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
+  captureXlv:      { kind: wire-capture, path: "tools/protocol-mapper/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
 
 connections:
   app:
@@ -116,6 +118,25 @@ connections:
     # PTP/IP form can also push images to the camera; per-connection capability TODO).
     modes: [Shooting/Stills, RemoteTrigger]
     evidence: [wireTether]
+
+  xlv:
+    kind: http-xlv                   # camera HTTP web service — a SECOND protocol family (routes, not opcodes)
+    # fw-divergent transport (belongs in a fw-tier overlay once the merge loader lands):
+    #   fw≤2.30 → plain HTTP:80 ; fw≥2.40 → HTTPS:443, client must trust the per-camera self-signed cert.
+    transport: { scheme: http, port: 80 }
+    tlsFw240: { scheme: https, port: 443, cert: self-signed }   # fw≥2.40 override (documented; overlay-able)
+    discovery: { mechanism: http-probe, announces: none, autoDiscoverable: false }   # needs the camera's LAN address
+    # Wire-confirmed routes (sweep vs 192.168.4.169); base64-JSON bodies.
+    routes:
+      "GET /camera/functions/{code}/get": { handler: property.get }   # → property_code_value_list
+      "GET /camera/functions/{code}/cap": { handler: property.cap }   # capability descriptor
+    responseEncoding: base64-json
+    # ACCESS GATE — sensitive. XLV requires a bearer token in the `XLV_Auth` header. Token
+    # ACQUISITION/forging is access-gate-bypass material → stays in a PRIVATE overlay (operator
+    # tree), NOT this public file. Only the auth *shape* (that a bearer token is required) is public.
+    auth: { scheme: bearer, header: XLV_Auth, tokenSource: private-overlay }
+    modes: [Shooting/Stills]         # property read/write surface; shares engine state
+    evidence: [docXlv, captureXlv]
 
 modes:
   Shooting:

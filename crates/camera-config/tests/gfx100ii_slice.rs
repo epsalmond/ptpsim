@@ -202,6 +202,24 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
 }
 
 #[test]
+fn xlv_models_protocol_shape_with_access_gate_kept_private() {
+    let m = gfx();
+    let xlv = &m.connections["xlv"];
+    assert_eq!(xlv.kind.as_deref(), Some("http-xlv"));
+    // Wire-confirmed routes present.
+    let routes = xlv.extra.get("routes").expect("routes");
+    assert!(routes.get("GET /camera/functions/{code}/get").is_some());
+    // Bearer auth EXISTS (public shape) but the token source is a private overlay —
+    // the JWT forging must never land in the public data repo.
+    let auth = xlv.extra.get("auth").expect("auth");
+    assert_eq!(auth["scheme"].as_str(), Some("bearer"));
+    assert_eq!(auth["tokenSource"].as_str(), Some("private-overlay"));
+    // The public file carries no secret/forging material.
+    let raw = data("fuji/gfx100ii/gfx100ii.yaml").to_lowercase();
+    assert!(!raw.contains("forge") && !raw.contains("jwt") && !raw.contains("secret"));
+}
+
+#[test]
 fn manufacturer_tier_supplies_fixed_initiator_identity() {
     let store = ConfigStore::new(gfx())
         .with_manufacturer(ManufacturerDefaults::from_yaml(&data("fuji/fuji.yaml")).unwrap());
