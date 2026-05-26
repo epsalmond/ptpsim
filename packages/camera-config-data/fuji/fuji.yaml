@@ -1,0 +1,17 @@
+# Manufacturer-tier defaults shared by every FUJIFILM body. NOT a camera (no
+# model/firmware). Holds the version-ordering scheme + the FIXED initiator
+# identity the app presents to every Fuji camera (same GUID/name across models —
+# a manufacturer-tier fixed value-policy, not per-body, not app source code).
+manufacturer: FUJIFILM
+versionOrder: dotted-int
+
+values:
+  # The app's own identity in the PTP-IP InitCommandRequest. Fixed and identical
+  # for every Fuji body (verified: many successful pairings across iOS/mac/linux
+  # with this constant). Evidence: client application FujiPTPIP.swift:1046-1052.
+  initiatorGuid:
+    type: fixed
+    value: "f2e4538fada5485d87b27f0bd3d5ded0"   # 16-byte GUID
+  initFriendlyName:
+    type: fixed
+    value: "Pixel-6-4976"

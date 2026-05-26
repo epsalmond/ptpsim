@@ -22,13 +22,16 @@ evidence:
 transports:
   appAp:
     kind: ptpip-app
-    # Port roles reconciled from the fw0230 capture (parse_v6_ptpip.py):
-    #   55740 = command, 55741 = through-picture (live-view) stream, 55742 = event.
-    # (DESIGN.md's earlier draft had event/liveview swapped; the capture wins.)
+    # Port roles per the SHIPPING iOS app (FujiPTPIP.swift: liveViewEventPortOffset=1,
+    # liveViewThroughPortOffset=2). Working live-view exercises both sockets, so the
+    # app's assignment is authoritative:
+    #   55740 = command, 55741 = event, 55742 = through-picture (live-view) stream.
+    # NOTE: parse_v6_ptpip.py (and this file's earlier note + DESIGN.md) had 55741/55742
+    # SWAPPED — a likely capture-parse mislabel; to verify on the next wire capture.
     bind:
       command: 55740
-      liveview: 55741
-      event: 55742
+      event: 55741
+      liveview: 55742
 
 operations:
   "0x1001": { name: GetDeviceInfo, owner: standard-ptp }

@@ -270,9 +270,82 @@ pub struct Connection {
     pub establishment: Option<String>,
     #[serde(default)]
     pub modes: Vec<String>,
-    /// Free-form bind/discovery/entries detail until those are modeled.
+    /// Mode-graph edges reachable over this connection (decision #6, §3a). An edge
+    /// carries a wire-action `steps` sequence OR a `userInstruction`; optionally
+    /// `from`-qualified (a cheaper Shooting↔ImageTransfer switch vs a cold entry).
+    #[serde(default)]
+    pub entries: Vec<ModeEntry>,
+    /// Free-form bind/discovery detail until those are modeled.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// A mode-graph transition edge: how to get *into* mode `to`. `from` qualifies the
+/// source (None = cold/any entry; a Shooting→ImageTransfer edge can be cheaper than
+/// cold). Carries either a `steps` wire sequence or a `user_instruction` (some
+/// transitions — connection switches — can only be requested, not app-driven).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeEntry {
+    pub to: String,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<Step>,
+    #[serde(default)]
+    pub user_instruction: Option<String>,
+    /// Optional runtime prerequisite for taking this edge.
+    #[serde(default)]
+    pub requires: Option<Predicate>,
+}
+
+/// One wire action in a mode-entry sequence. A **closed step vocabulary** (not a
+/// script): exactly one action field is set; `value` parameterizes `setProp`;
+/// `repeat` (default 1) covers bounded loops like the live-view `902B ×4`. No
+/// runtime branches — the day a transition needs "if response X then Y", add a
+/// named action here, never a scripting hook.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Step {
+    /// `SetDevicePropValue prop = value` (width from the property's `type`).
+    #[serde(default)]
+    pub set_prop: Option<HexCode>,
+    /// `GetDevicePropValue prop` (discard / negotiate).
+    #[serde(default)]
+    pub get_prop: Option<HexCode>,
+    /// Read `prop`, then write the same value back (the live-view `0xdf2a` echo).
+    #[serde(default)]
+    pub read_echo: Option<HexCode>,
+    /// Send operation `op` (e.g. `0x101c` InitiateOpenCapture).
+    #[serde(default)]
+    pub send_op: Option<HexCode>,
+    /// Value for `set_prop`.
+    #[serde(default)]
+    pub value: Option<i64>,
+    /// Bounded repeat count (default 1).
+    #[serde(default = "one")]
+    pub repeat: u32,
+}
+
+fn one() -> u32 {
+    1
+}
+
+impl Step {
+    /// Whether exactly one action field is set (a structural lint, not enforced
+    /// at load — keeps loading total).
+    pub fn is_well_formed(&self) -> bool {
+        let n = [
+            self.set_prop.is_some(),
+            self.get_prop.is_some(),
+            self.read_echo.is_some(),
+            self.send_op.is_some(),
+        ]
+        .into_iter()
+        .filter(|b| *b)
+        .count();
+        n == 1
+    }
 }
 
 /// A condition under which a connection is available on a body.
@@ -431,6 +504,45 @@ values:
         assert!(m.modes["Shooting/Stills"].detect.is_some());
         assert_eq!(m.operations["0x902d"].connections, vec!["xlv-http"]);
         assert!(m.operations["0x101c"].requires.is_some());
+    }
+
+    #[test]
+    fn mode_entry_steps_parse() {
+        // The ground-truth live-view entry from FujiCameraAPISession.
+        let yaml = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    kind: ptpip-app
+    entries:
+      - to: Shooting/Stills
+        steps:
+          - { setProp: "0xdf00", value: 6 }
+          - { setProp: "0xdf01", value: 0x16 }
+          - { readEcho: "0xdf2a" }
+          - { sendOp: "0x902b", repeat: 4 }
+          - { sendOp: "0x101c" }
+      - to: ImageTransfer
+        from: Shooting/Stills
+        steps:
+          - { sendOp: "0x1018" }
+          - { setProp: "0xdf01", value: 0x14 }
+"#;
+        let m = CameraManifest::from_yaml(yaml).unwrap();
+        let entries = &m.connections["app"].entries;
+        assert_eq!(entries.len(), 2);
+        let lv = &entries[0];
+        assert_eq!(lv.to, "Shooting/Stills");
+        assert!(lv.from.is_none(), "cold entry");
+        assert_eq!(lv.steps.len(), 5);
+        assert_eq!(lv.steps[0].set_prop.as_deref(), Some("0xdf00"));
+        assert_eq!(lv.steps[0].value, Some(6));
+        assert_eq!(lv.steps[3].repeat, 4); // 902B ×4
+        assert_eq!(lv.steps[4].send_op.as_deref(), Some("0x101c"));
+        assert!(lv.steps.iter().all(Step::is_well_formed));
+        // from-qualified switch (no full teardown path).
+        assert_eq!(entries[1].from.as_deref(), Some("Shooting/Stills"));
     }
 
     #[test]

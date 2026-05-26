@@ -1,0 +1,90 @@
+schema: camera-config/v1
+
+# GFX100 II body manifest — App/WiFi-AP connection slice. Derived from documentation
+# + the shipping client application iOS source (NOT a live wire capture yet); each fact cites
+# its source via evidence `kind: ios-source | doc`. This is the backtest oracle: a
+# future protocol-mapper run emits `kind: wire-capture` evidence and every mismatch
+# is a source misread or a doc that lied.
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  soc: xprocessor5
+  firmware: "2.30"
+  identities:
+    ptpDeviceName: GFX100 II
+
+evidence:
+  iosFujiPTPIP:    { kind: ios-source, path: "client application/.../client applicationCore/FujiPTPIP.swift", date: "2026-05-26" }
+  iosFeatureMode:  { kind: ios-source, path: "client application/.../client applicationCore/CameraFeatureMode.swift", date: "2026-05-26" }
+  iosStartupSeq:   { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-26" }
+  docImageTransfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW0230.md" }
+
+connections:
+  app:
+    kind: ptpip-app                 # WiFi-AP path (camera hosts the AP; app joins)
+    establishment: ble-to-wifi-ap-v1 # BLE pairing brings up the camera AP, app joins + routes, then PTP-IP
+    discovery: { mechanism: ble, announces: camera }
+    modes: [Shooting/Stills, ImageTransfer]
+    # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
+    # live-view exercises both sockets, so this assignment is authoritative.
+    bind:
+      command: 55740                 # FujiPTPIP.defaultPort
+      event: 55741                   # liveViewEventPortOffset = 1
+      liveview: 55742                # liveViewThroughPortOffset = 2 (through-picture stream)
+    # 82-byte InitCommandRequest = GUID(16) + uint32(0) + nameField(26) + tail(28).
+    # Identity is manufacturer-tier (see fuji.yaml). Exact tail bytes come from the
+    # pinned golden (FujiPTPIP.liveViewInitTail), NOT hand-transcribed here.
+    init:
+      identity: { guid: initiatorGuid, friendlyName: initFriendlyName }
+      nameFieldByteCount: 26
+      tailEvidence: iosFujiPTPIP     # liveViewInitTail, 28 bytes
+    # Mode-graph edges over this connection. Ground truth = FujiCameraAPISession
+    # startup sequence (the CameraPTPMode enum is stale/unused — its launch values
+    # disagree with what the app actually sends).
+    entries:
+      - to: Shooting/Stills          # enter live-view from a cold App connection
+        steps:
+          - { setProp: "0xdf00", value: 6 }      # functionModeMajor
+          - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)
+          - { readEcho: "0xdf2a" }               # read then write back
+          - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
+          - { sendOp: "0x101c" }                 # InitiateOpenCapture
+      - to: ImageTransfer            # cold entry to image-import
+        steps:
+          - { setProp: "0xdf01", value: 0x14 }   # functionMode = 20 (image-import)
+          - { setProp: "0xdf28", value: 3 }      # feature version (uint32)
+      - to: ImageTransfer            # from-qualified: switch out of live-view first
+        from: Shooting/Stills
+        steps:
+          - { sendOp: "0x1018" }                 # TerminateOpenCapture (open-capture teardown)
+          - { setProp: "0xdf01", value: 0x14 }
+        # NOTE: capture suggests a teardown-free switch may exist; needs more wire
+        # analysis. Modeled as the conservative (terminate-first) path for now.
+
+modes:
+  Shooting:
+    capabilities: [exposureControl]
+  Shooting/Stills:                   # live-view: app drives the camera, screen taken over
+    capabilities: [liveView, remoteControl, screenTakeover]
+    detect: { prop: "0xdf01", eq: 0x16 }
+  ImageTransfer:
+    capabilities: [browse, download]
+    detect: { prop: "0xdf01", eq: 0x14 }
+
+# Workflows = app tasks (CameraFeatureMode), gated by required connection/transport.
+# bluetooth-transport features (remoteShutter/gpsPersistence/cameraSettings) belong
+# to the BLE connection slice — added when that connection is modeled.
+workflows:
+  liveView:      { transport: app, evidence: [iosFeatureMode] }
+  imageTransfer: { transport: app, evidence: [iosFeatureMode] }
+
+operations:
+  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
+  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
+  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [Shooting/Stills], evidence: [iosStartupSeq] }
+
+properties:
+  "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [iosStartupSeq] }
+  "0xdf01": { name: functionMode,      type: u16, access: readWrite, evidence: [iosStartupSeq] }
+  "0xdf2a": { name: liveDf2a,          type: u16, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry
+  "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }

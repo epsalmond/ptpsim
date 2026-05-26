@@ -18,8 +18,8 @@ pub use error::{Lint, ManifestError, Severity};
 pub use generate::generate_proposal;
 pub use model::{
     parse_hex_code, AvailableWhen, CameraIdentity, CameraManifest, Connection, Control, Descriptor,
-    ManufacturerDefaults, Mode, Operation, Property, ValuePolicy, ValueSource, VersionCond,
-    Workflow,
+    ManufacturerDefaults, Mode, ModeEntry, Operation, Property, Step, ValuePolicy, ValueSource,
+    VersionCond, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
