@@ -27,6 +27,9 @@ pub enum Severity {
 
 impl Lint {
     pub fn warn(message: impl Into<String>) -> Self {
-        Lint { severity: Severity::Warning, message: message.into() }
+        Lint {
+            severity: Severity::Warning,
+            message: message.into(),
+        }
     }
 }

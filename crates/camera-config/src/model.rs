@@ -12,7 +12,10 @@ pub type HexCode = String;
 /// Parse a `"0x101b"` style key into a `u16`. Returns `None` for malformed keys.
 pub fn parse_hex_code(s: &str) -> Option<u16> {
     let t = s.trim();
-    let hex = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    let hex = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
     u16::from_str_radix(hex, 16).ok()
 }
 

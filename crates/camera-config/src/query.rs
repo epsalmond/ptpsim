@@ -51,7 +51,8 @@ impl CameraManifest {
     /// Resolve the concrete control mechanism for a property in a given mode/
     /// workflow — the "intent → mechanism" lookup the app relies on.
     pub fn control_for(&self, property_code: u16, mode: &str) -> Option<&Control> {
-        self.property(property_code).and_then(|p| p.controls.get(mode))
+        self.property(property_code)
+            .and_then(|p| p.controls.get(mode))
     }
 
     /// Human label for a property value, if the manifest defines one.

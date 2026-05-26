@@ -9,7 +9,9 @@
 pub mod error;
 pub mod generate;
 pub mod model;
+pub mod predicate;
 pub mod query;
+pub mod version;
 
 pub use error::{Lint, ManifestError, Severity};
 pub use generate::generate_proposal;
@@ -17,7 +19,9 @@ pub use model::{
     parse_hex_code, CameraIdentity, CameraManifest, Control, Descriptor, Operation, Property,
     Workflow,
 };
+pub use predicate::{Leaf, Predicate, PropView};
 pub use query::Support;
+pub use version::VersionScheme;
 
 /// The manifest schema version this build understands.
 pub const SCHEMA_VERSION: &str = "camera-config/v1";
@@ -131,9 +135,18 @@ evidence:
         assert_eq!(m.camera.model, "GFX100 II");
 
         // Operation support is workflow-aware.
-        assert_eq!(m.supports_operation("liveView", 0x101c), Support::InWorkflow);
-        assert_eq!(m.supports_operation("imageImport", 0x101c), Support::WrongWorkflow);
-        assert_eq!(m.supports_operation("liveView", 0x9999), Support::Unsupported);
+        assert_eq!(
+            m.supports_operation("liveView", 0x101c),
+            Support::InWorkflow
+        );
+        assert_eq!(
+            m.supports_operation("imageImport", 0x101c),
+            Support::WrongWorkflow
+        );
+        assert_eq!(
+            m.supports_operation("liveView", 0x9999),
+            Support::Unsupported
+        );
 
         // Intent -> mechanism resolution differs by mode.
         let lv = m.control_for(0x5007, "liveView").unwrap();

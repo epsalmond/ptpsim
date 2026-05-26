@@ -55,9 +55,16 @@ pub fn generate_proposal(bundle_jsonl: &str, identity: CameraIdentity) -> Camera
         if fact.kind != "ptpip.fact" {
             continue;
         }
-        let Some(code) = parse_hex_code(&fact.subject.code) else { continue };
+        let Some(code) = parse_hex_code(&fact.subject.code) else {
+            continue;
+        };
         // Only treat OK responses as evidence of support.
-        let ok = fact.result.response.as_deref().map(is_ok_response).unwrap_or(true);
+        let ok = fact
+            .result
+            .response
+            .as_deref()
+            .map(is_ok_response)
+            .unwrap_or(true);
         if !ok {
             continue;
         }
@@ -165,7 +172,10 @@ mod tests {
         assert!(!m.operations.contains_key("0x9999"));
         // Unknown semantics stay raw.
         assert_eq!(m.operations["0x9054"].name, "raw_0x9054");
-        assert_eq!(m.operations["0x9054"].workflows, vec!["app/import".to_string()]);
+        assert_eq!(
+            m.operations["0x9054"].workflows,
+            vec!["app/import".to_string()]
+        );
         // Property discovered.
         assert!(m.properties.contains_key("0xdf28"));
     }
