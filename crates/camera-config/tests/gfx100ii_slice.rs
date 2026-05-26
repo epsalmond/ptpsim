@@ -165,6 +165,43 @@ fn usb_evidence_is_the_lower_confidence_static_tier() {
 }
 
 #[test]
+fn remote_trigger_is_reachable_over_both_ble_and_wireless_tether() {
+    // The transport-independence payoff: ONE mode node, two connections.
+    let m = gfx();
+    assert!(m.connections["ble"]
+        .modes
+        .contains(&"RemoteTrigger".to_string()));
+    assert!(m.connections["wireless-tether"]
+        .modes
+        .contains(&"RemoteTrigger".to_string()));
+    // RemoteTrigger is defined once (not duplicated per connection).
+    assert!(m.modes.contains_key("RemoteTrigger"));
+}
+
+#[test]
+fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
+    let m = gfx();
+    let wt = &m.connections["wireless-tether"];
+    assert_eq!(wt.kind.as_deref(), Some("ptpip-direct"));
+    assert_eq!(wt.establishment.as_deref(), Some("pcss-knock-v1"));
+    assert_eq!(m.evidence["wireTether"].kind, "wire-capture");
+    // Big-3 control mechanism is per-connection: absolute over the tether.
+    let ap = m.control_for(0x5007, "wireless-tether").unwrap();
+    assert_eq!(ap.set_method.as_deref(), Some("absolute"));
+    assert_eq!(ap.operation.as_deref(), Some("0x1016"));
+    // 0x9018 live-view gates to the tether; wrong-connection over app.
+    let any = PropView::new();
+    assert_eq!(
+        m.operation_available("wireless-tether", "Shooting/Stills", 0x9018, &any),
+        camera_config::Availability::Available
+    );
+    assert_eq!(
+        m.operation_available("app", "Shooting/Stills", 0x9018, &any),
+        camera_config::Availability::WrongConnection
+    );
+}
+
+#[test]
 fn manufacturer_tier_supplies_fixed_initiator_identity() {
     let store = ConfigStore::new(gfx())
         .with_manufacturer(ManufacturerDefaults::from_yaml(&data("fuji/fuji.yaml")).unwrap());

@@ -21,6 +21,8 @@ evidence:
   iosBLEReg:       { kind: ios-source, path: "client application/.../client applicationCore/FujiBLERegistration.swift", date: "2026-05-26" }
 
   # NOT wire-captured. These USB opcodes are leads pending a golden capture.
+  # STRONGEST tier: wire-confirmed over wired-gigabit + Wi-Fi infra PTP-IP tether.
+  wireTether:      { kind: wire-capture, path: "tools/protocol-mapper/WIRED_TETHER_CONTROL.md", date: "2026-05-23" }
 
 connections:
   app:
@@ -102,6 +104,19 @@ connections:
         userInstruction: "Set the camera's USB connection mode for settings backup/restore, then connect USB"
     evidence: [staticRawStudio]
 
+  wireless-tether:
+    kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference app family)
+    establishment: pcss-knock-v1     # camera joins LAN (Wi-Fi/Ethernet), then PCSS port-knock
+    # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
+    # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
+    # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference app's 82-byte init).
+    knock: { callbackPort: 51560, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0" }
+    discovery: { mechanism: pcss-knock, announces: none, autoDiscoverable: false }  # app needs the camera's LAN address
+    # RemoteTrigger here is the SAME mode node as over BLE — transport-independent (its
+    # PTP/IP form can also push images to the camera; per-connection capability TODO).
+    modes: [Shooting/Stills, RemoteTrigger]
+    evidence: [wireTether]
+
 modes:
   Shooting:
     capabilities: [exposureControl]
@@ -144,6 +159,8 @@ operations:
   "0x100d": { name: SetBackupSettings,       owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
   "0x1008": { name: GetBackupSettingsInfo,   owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
   "0x1009": { name: GetBackupSettings,       owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
+  # WirelessTether live-view = vendor 0x9018 (vs the App connection's 0x101c+GetObject).
+  "0x9018": { name: SdkGetLiveViewData,      owner: fuji-vendor,  modes: [Shooting/Stills], connections: [wireless-tether], evidence: [wireTether] }
 
 properties:
   "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [iosStartupSeq] }
@@ -151,3 +168,19 @@ properties:
   "0xdf2a": { name: liveDf2a,          type: u16, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry
   "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }
   "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
+  # Big-3 over WirelessTether = ABSOLUTE standard PTP props via SetDevicePropValue 0x1016
+  # (vs the App connection's vendor relative-step 0x902d). Same logical control, mechanism
+  # differs by connection — hence controls keyed by connection id.
+  "0x5007": { name: aperture, ptpName: FNumber, type: u16, access: readWrite,
+              controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # uint16 ×100 (f/2.8=280)
+  "0x500f": { name: iso, ptpName: ExposureIndex, type: u32, access: readWrite,
+              controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # literal ISO; 0xffffffff/-2 = auto
+  "0x500d": { name: shutterSpeed, ptpName: ExposureTime, type: u32, access: readWrite,
+              controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # microseconds
+  "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [wireTether] }   # PASM
+
+quirks:
+  - id: pcss-knock-once-per-boot
+    appliesTo: [wireless-tether]
+    behavior: "The PCSS knock (UDP 51562) is accepted only once per camera boot; after one session the camera ICMP-rejects further knocks until power-cycled."
+    evidence: wireTether
