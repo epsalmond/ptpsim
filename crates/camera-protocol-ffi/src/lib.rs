@@ -4,7 +4,7 @@
 //! resolution).
 //!
 //! Placeholder until the app-integration phase (P2). The Rust side it will wrap
-//! (`camera-manifest` queries) is already in place; this crate adds the
+//! (`camera-config` queries) is already in place; this crate adds the
 //! `uniffi`/cbindgen surface when the app begins consuming it.
 
 #![allow(clippy::missing_safety_doc)]

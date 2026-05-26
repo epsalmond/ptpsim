@@ -152,7 +152,7 @@ Top level = `camera` (What) + four fact-sections + a flat `modes` table + a
 modes/connections/runtime-conditions allow it) — modes and connections are
 *referenced*, never duplicated.
 ```yaml
-schema: camera-config/v2
+schema: camera-config/v1                                               # v1 never shipped under the old name; grows additively, no v2
 camera: { make: fuji, model: gfx100ii, soc: xprocessor5, fw: "2.30" }   # What
 
 identification:                      # PUBLIC: observed signal → this target

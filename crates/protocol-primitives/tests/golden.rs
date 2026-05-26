@@ -1,5 +1,5 @@
 //! Golden-packet round-trip test. Loads the labeled fixtures under
-//! `packages/protocol-spec/golden/` (extracted from real captures by
+//! `packages/camera-config-data/golden/` (extracted from real captures by
 //! `tools/golden/extract_golden.py`) and asserts they decode to the documented
 //! op and re-encode byte-for-byte. This makes the golden packets both
 //! documentation and a regression guard on the framing codecs.
@@ -23,7 +23,7 @@ struct Decoded {
 }
 
 fn golden_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/protocol-spec/golden")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/camera-config-data/golden")
 }
 
 fn hex_to_bytes(s: &str) -> Vec<u8> {

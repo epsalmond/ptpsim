@@ -1,11 +1,11 @@
 """Ingest prior captures into observation-bundle facts (the seam), without re-probing.
 
-DESIGN lists "capture import from traces" as a camera-probe responsibility. v1 ingests the XLV
+DESIGN lists "capture import from traces" as a protocol-mapper responsibility. v1 ingests the XLV
 HTTP cap/get sweep CSVs (code,status,body_len,body_snippet where body_snippet is base64 JSON
 {property_code_value_list:[{property_code,value}], processing_result}) into bundle facts on the
 `http`/xlv transport — so April's ad-hoc XLV sweeps become part of the bundle without touching a camera.
 
-Usage: python3 -m camera_probe.ingest xlv-sweep <sweep.csv> --out bundle.jsonl [--names <catalog.md>]
+Usage: python3 -m protocol_mapper.ingest xlv-sweep <sweep.csv> --out bundle.jsonl [--names <catalog.md>]
 """
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def ingest_xlv_sweep(csv_path: str, out: str, catalog: str) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="camera-probe ingest")
+    ap = argparse.ArgumentParser(prog="protocol-mapper ingest")
     sub = ap.add_subparsers(dest="kind", required=True)
     x = sub.add_parser("xlv-sweep", help="ingest an XLV cap/get sweep CSV")
     x.add_argument("csv")

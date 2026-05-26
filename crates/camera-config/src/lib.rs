@@ -1,4 +1,4 @@
-//! `camera-manifest` — the manifest schema, loader, validation, compatibility
+//! `camera-config` — the manifest schema, loader, validation, compatibility
 //! queries, and the canonical bundle→proposal generator.
 //!
 //! Manifests are the reviewed source of truth for camera behavior. `evidence:`
@@ -20,7 +20,7 @@ pub use model::{
 pub use query::Support;
 
 /// The manifest schema version this build understands.
-pub const SCHEMA_VERSION: &str = "camera-manifest/v1";
+pub const SCHEMA_VERSION: &str = "camera-config/v1";
 
 impl CameraManifest {
     /// Parse a manifest from YAML text. Does not fail on unresolved evidence —
@@ -87,7 +87,7 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = r#"
-schema: camera-manifest/v1
+schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II
@@ -169,7 +169,7 @@ evidence:
 
     #[test]
     fn wrong_schema_is_rejected_explicitly() {
-        let text = SAMPLE.replace("camera-manifest/v1", "camera-manifest/v999");
+        let text = SAMPLE.replace("camera-config/v1", "camera-config/v999");
         let m = CameraManifest::from_yaml(&text).unwrap();
         assert!(m.require_supported_schema().is_err());
     }

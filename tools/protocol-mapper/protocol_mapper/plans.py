@@ -28,7 +28,7 @@ def _load(modname: str):
 
 
 def _sessiondir(name: str) -> str:
-    d = os.path.join("/tmp", "camera-probe", f"{name}_{time.strftime('%Y%m%dT%H%M%S')}")
+    d = os.path.join("/tmp", "protocol-mapper", f"{name}_{time.strftime('%Y%m%dT%H%M%S')}")
     os.makedirs(d, exist_ok=True)
     return d
 

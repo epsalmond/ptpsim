@@ -2,7 +2,7 @@
 **/*.rs.bk
 Cargo.lock.orig
 
-# Python (tools/camera-probe)
+# Python (tools/protocol-mapper)
 __pycache__/
 *.py[cod]
 .venv/
@@ -14,7 +14,7 @@ __pycache__/
 .DS_Store
 
 # Raw captures / evidence MUST NOT enter this (public) repo. Only minimal,
-# redacted golden packets belong here, under packages/protocol-spec. Raw
+# redacted golden packets belong here, under packages/camera-config-data. Raw
 
 *.pcap
 *.pcapng

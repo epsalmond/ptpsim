@@ -1,4 +1,4 @@
-//! The **canonical** manifest generator: it consumes a `camera-probe`
+//! The **canonical** manifest generator: it consumes a `protocol-mapper`
 //! observation bundle (JSONL of `ptpip.fact` records) and emits a reviewable
 //! manifest proposal. This lives next to the schema it must agree with, and it
 //! serves every bundle source (probe, capture import, app-integrated probe) —

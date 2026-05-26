@@ -11,7 +11,7 @@ use ptp_core::{InitCommandRequest, PtpCodec, PtpIpPacket};
 use protocol_primitives::fuji_framing;
 
 const MANIFEST: &str = r#"
-schema: camera-manifest/v1
+schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II

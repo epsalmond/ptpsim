@@ -1,8 +1,8 @@
-"""camera-probe CLI: list plans, run a probe plan, emit an observation bundle.
+"""protocol-mapper CLI: list plans, run a probe plan, emit an observation bundle.
 
-  camera-probe list-plans
-  camera-probe probe --plan fuji/pcss/auto/partial-header --risk safe --out bundle.jsonl
-  camera-probe probe --plan fuji/pcss/auto/settings-sweep --risk settings-write --out sweep.jsonl
+  protocol-mapper list-plans
+  protocol-mapper probe --plan fuji/pcss/auto/partial-header --risk safe --out bundle.jsonl
+  protocol-mapper probe --plan fuji/pcss/auto/settings-sweep --risk settings-write --out sweep.jsonl
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def _cmd_probe(args) -> int:
     try:
         plan = plans.get(args.plan)
     except KeyError:
-        print(f"[err] unknown plan {args.plan!r}; see `camera-probe list-plans`")
+        print(f"[err] unknown plan {args.plan!r}; see `protocol-mapper list-plans`")
         return 2
     try:
         enforce(plan.risk, parse(args.risk))
@@ -38,7 +38,7 @@ def _cmd_probe(args) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="camera-probe")
+    ap = argparse.ArgumentParser(prog="protocol-mapper")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("list-plans", help="list available probe plans").set_defaults(func=_cmd_list)

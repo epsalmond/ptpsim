@@ -213,7 +213,7 @@ class Session:
             result["response_code"] = f"0x{rhdr.get('code'):04x}"
             result["response_ok"] = rhdr.get("code") == PTP_RESPONSE_OK
         try:
-            from camera_probe import bundle
+            from protocol_mapper import bundle
             if bundle.active():
                 pay = bytes.fromhex(result["payload_hex"]) if result.get("data_present") else b""
                 rc = int(result["response_code"], 16) if result.get("response_present") else None
@@ -285,7 +285,7 @@ class Session:
             result["response_code"] = f"0x{rhdr.get('code'):04x}"
             result["response_ok"] = rhdr.get("code") == PTP_RESPONSE_OK
         try:
-            from camera_probe import bundle
+            from protocol_mapper import bundle
             if bundle.active():
                 rc = int(result["response_code"], 16) if result.get("response_present") else None
                 bundle.observe(ptpip.PTP_SET_DEVICE_PROP_VALUE, [prop], value, rc)

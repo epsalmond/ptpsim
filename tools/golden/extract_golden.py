@@ -4,7 +4,7 @@
 A golden packet is the bytes of ONE protocol frame, redacted and **labeled**, so
 it doubles as documentation: instead of keeping a whole pcap to reference during
 analysis, the public repo carries small self-describing fixtures under
-`packages/protocol-spec/golden/`.
+`packages/camera-config-data/golden/`.
 
 This tool only ever emits those minimal, redacted, labeled artifacts — never the
 source capture. The source is read in place (it lives outside the repo) and only
@@ -283,7 +283,7 @@ def main(argv=None):
         sp.add_argument("--firmware", default="")
         sp.add_argument("--select", default=None, help="op:0xXXXX | type:NAME")
         sp.add_argument("--redact", action="append", help="extra hex pattern to redact")
-        sp.add_argument("--out", default="packages/protocol-spec/golden")
+        sp.add_argument("--out", default="packages/camera-config-data/golden")
 
     sp = sub.add_parser("scan")
     sp.add_argument("--blobs", required=True)

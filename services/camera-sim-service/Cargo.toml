@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 ptp-core = { workspace = true }
-camera-manifest = { workspace = true }
+camera-config = { workspace = true }
 camera-media-store = { workspace = true }
 camera-sim = { workspace = true }
 protocol-primitives = { workspace = true }

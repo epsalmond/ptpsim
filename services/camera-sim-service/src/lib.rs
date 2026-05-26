@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use camera_manifest::CameraManifest;
+use camera_config::CameraManifest;
 use camera_media_store::MediaStore;
 use camera_sim::{Engine, Reply};
 use ptp_core::codes::op;

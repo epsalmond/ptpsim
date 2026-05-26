@@ -3,7 +3,7 @@
 //! exist, which properties have which forms, and which workflow they belong to
 //! are all manifest data. The handlers here are generic PTP semantics.
 
-use camera_manifest::{parse_hex_code, CameraManifest};
+use camera_config::{parse_hex_code, CameraManifest};
 use camera_media_store::{MediaStore, ObjectQuery};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;

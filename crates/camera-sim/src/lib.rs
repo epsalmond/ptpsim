@@ -16,7 +16,7 @@ pub use state::{CameraState, Phase};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use camera_manifest::CameraManifest;
+    use camera_config::CameraManifest;
     use camera_media_store::MediaStore;
     use ptp_core::dataset::PropValue;
     use ptp_core::{OperationRequest, Reader, Writer};
@@ -25,7 +25,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const MANIFEST: &str = r#"
-schema: camera-manifest/v1
+schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II

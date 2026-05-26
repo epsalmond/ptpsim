@@ -1,4 +1,4 @@
-schema: camera-manifest/v1
+schema: camera-config/v1
 
 camera:
   manufacturer: FUJIFILM

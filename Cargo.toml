@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/ptp-core",
-    "crates/camera-manifest",
+    "crates/camera-config",
     "crates/camera-media-store",
     "crates/camera-sim",
     "crates/protocol-primitives",
@@ -21,7 +21,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 # Internal crates
 ptp-core = { path = "crates/ptp-core" }
-camera-manifest = { path = "crates/camera-manifest" }
+camera-config = { path = "crates/camera-config" }
 camera-media-store = { path = "crates/camera-media-store" }
 camera-sim = { path = "crates/camera-sim" }
 protocol-primitives = { path = "crates/protocol-primitives" }

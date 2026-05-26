@@ -1,9 +1,9 @@
-# camera-probe — script & doc audit (2026-05-24)
+# protocol-mapper — script & doc audit (2026-05-24)
 
-Lightweight audit done as part of the fuji-remote → camera-probe promotion.
+Lightweight audit done as part of the fuji-remote → protocol-mapper promotion.
 
 > **Conclusion (revised after scope clarification): KEEP EVERYTHING — nothing is removed.**
-> camera-probe is the **end-user-shipped, cross-platform crowdsourcing probe**: end-users run it on
+> protocol-mapper is the **end-user-shipped, cross-platform crowdsourcing probe**: end-users run it on
 > *their own* machines (macOS today, Windows planned) to contribute observation bundles for cameras we
 > don't own. That makes the macOS BLE bring-up, permission-grant, and diagnostic scripts **load-bearing
 > platform support**, not learning-curve cruft — a non-technical end-user needs exactly those
@@ -21,7 +21,7 @@ Lightweight audit done as part of the fuji-remote → camera-probe promotion.
 `ptpip_probe.sh`, `ptpip_export_object.sh`, `ptpip_firmware_update.sh`, `ptpip_compare_init.sh`,
 `ptpip_inventory_init.sh`, `ptpip_decode_session_artifacts.sh`, `camera_ap_download_object.sh`,
 `camera_ap_prepare.sh`, `camera_ap_ptpip_probe_flow.sh`, `firmware_update_prepare.sh`,
-`connect_camera_ap_wifi.sh`. Several overlap; worth folding into `camera_probe` plans over time, but
+`connect_camera_ap_wifi.sh`. Several overlap; worth folding into `protocol_mapper` plans over time, but
 they encode working flows — keep for now.
 
 ## C. KEEP — macOS platform support (end-user-shipped; Windows planned next)
@@ -49,7 +49,7 @@ independently of the wire (and for end-user setups where wire-state is ambiguous
 - (+ the `rce/screen_captures/` template assets these depend on)
 
 ## Docs
-- Refresh `README.md` + `AGENTS.md` to lead with camera-probe (transports / plans / risk / bundle).
+- Refresh `README.md` + `AGENTS.md` to lead with protocol-mapper (transports / plans / risk / bundle).
 - Stale-doc candidates: any BLE-OSX bring-up walkthroughs that no longer reflect the Linux path.
 - Keep the wire-protocol docs (`TETHER_STATE_MACHINE.md`, `MODES_AND_CONTROL.md`,
   `CONNECTION_STATES.md`, `PROPERTY_CATALOG.md`) — these are evidence the bundle/manifest cite.

@@ -2,7 +2,7 @@
 
 `extract_golden.py` is the **canonical** way to turn a capture into a public
 fixture. It cherry-picks one frame, redacts it, and writes a small **labeled**
-artifact under `packages/protocol-spec/golden/`. The label + decoded summary make
+artifact under `packages/camera-config-data/golden/`. The label + decoded summary make
 each golden self-documenting — you reference the golden, not the original pcap.
 
 ## The discipline (why this tool exists)

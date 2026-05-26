@@ -13,7 +13,7 @@ from rce.tools.fuji_ble_gps import ptpip
 # shipped in the public ptpsim repo (scrubbed from history; see DESIGN.md privacy
 # rules). They run in the private dev tree where the blob is present; in the
 # public tree they skip. Redacted, labeled equivalents live as golden packets
-# under packages/protocol-spec/golden/.
+# under packages/camera-config-data/golden/.
 _PRIVATE_EVIDENCE = Path("rce/reference/ptp_decoded/liveview_payload_00000061.bin")
 requires_capture_evidence = pytest.mark.skipif(
     not _PRIVATE_EVIDENCE.exists(),

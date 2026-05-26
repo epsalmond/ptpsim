@@ -238,7 +238,7 @@ def ptp_op(sock: socket.socket, request: bytes):
 def _observe(request: bytes, data: bytes, code) -> None:
     """Emit an observation-bundle fact if a bundle is open (optional; keeps scripts portable)."""
     try:
-        from camera_probe import bundle
+        from protocol_mapper import bundle
     except ImportError:
         return
     if not bundle.active() or not request:
