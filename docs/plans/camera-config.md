@@ -96,6 +96,35 @@ isn't.)
     a signed sha256 index), not per-record.
 13. **The connection/mode matrix is filled empirically** by `protocol-mapper`
     against a real camera; the sketches below are placeholders until that lands.
+14. **Composition is by id-keyed reference, never body→body.** Connections/modes
+    are records with stable ids; a body lists the ones it has by `ref`. The engine
+    loads all id-keyed records into a namespace — *where* the YAML physically lives
+    (body file / manufacturer file / a shared `connections/xlv-http.yaml`) is
+    irrelevant to resolution. So an interface shared across bodies (e.g. the XLV/HTTP
+    surface the GFX100 II has built-in and the X-H2S gets via the FT-XH adapter) is
+    one shared record both bodies reference — *not* one body importing another's
+    manifest (that makes a body a hidden dependency and is the trap).
+15. **Connection availability is conditional.** A body's connection `ref` may carry
+    `availableWhen: { firmware: { lt|gt|... } }` (evaluated via the §4 version
+    comparator — e.g. instax-printer, present ≤fw2.30, removed at fw2.40) and/or
+    `requiresHardware: <id>` (e.g. FT-XH provides XLV on the X-H2S). Deferred as
+    *data*, present as *mechanism*.
+16. **Value-set source = `camera` | `manifest`.** A shared connection carries the
+    *mechanism* (op/prop to set a value); the allowed *value set* is sourced either
+    from the camera at runtime (`source: camera`, via DevicePropDesc — authoritative)
+    or declared per-body (`source: manifest`, values:[…]). **Runtime-discovered beats
+    manifest-declared:** don't hand-maintain what the camera enumerates; the manifest
+    fills only what the camera doesn't report (labels, gating, non-enumerated sets).
+    This is how GFX100 II's 8K vs X-H2S's 6.2K recording modes differ over the *same*
+    XLV mechanism without code. Fits sans-io (client reads the desc, feeds the enum).
+
+**Build the vocabulary now, populate GFX100 II only.** The core invariant is
+"a new body is a data PR, never a code change" — so the engine must be able to
+*express* shared/conditional/runtime-sourced records before a second body lands,
+or we break that invariant the moment we add the X-H2S. This is not speculative:
+**GFX100 II alone exercises every mechanism** — instax (fw-gated connection),
+XLV/HTTP (id-keyed shared connection), recording modes (camera-vs-manifest value
+source) — so all of it is buildable and testable today against the one body we own.
 
 ## How the review reshaped this (so the next reviewer sees the reasoning)
 An external no-context review pushed five points. Outcome: orthogonal
@@ -218,6 +247,51 @@ its `modes`/`connections` sets **and** its `requires` predicate holds over curre
 state. Mode availability per connection is expressed by ops' `connections` (no
 duplication). `Auto` = camera-side determination; declared, app detects which it
 landed in.
+
+## 3a. Composable shared records (the X-H2S / instax / recording-mode cases)
+Three real cases drove decisions #14–#16; the schema must *express* all of them now
+(GFX100 II exercises every one), populated only for the body we have.
+
+**Connections/modes are id-keyed records a body references.** Mechanism (how to
+talk over an interface) lives on the connection record; capability (what *this*
+body can do) lives on the body; the resolved camera is their intersection.
+```yaml
+# gfx100ii.yaml — the body references connections by id, with conditions
+connections:
+  - ref: xlv-http                                    # built-in on this body
+  - ref: instax-printer
+    availableWhen: { firmware: { lt: "2.40" } }      # ≤2.30 only; removed at 2.40 (§4 comparator)
+# x-h2s.yaml (future, DATA-ONLY — no engine change)
+connections:
+  - ref: xlv-http
+    requiresHardware: ft-xh                          # adapter provides the same interface
+  - ref: instax-printer
+```
+```yaml
+# connections/xlv-http.yaml — shared mechanism, referenced by many bodies
+id: xlv-http
+establishment: ...            # how to open it (private-overlay-able)
+modes: [Shooting/Video, ...]  # connection-bound modes
+operations:
+  setRecordingMode: { code: 0x...., property: "0xRRRR", modes: [Shooting/Video] }
+```
+**Value-set source** — shared mechanism, body/camera-specific values:
+```yaml
+properties:
+  "0xRRRR":                    # recordingMode
+    descriptor:
+      form: enum
+      source: camera           # camera returns the enum (DevicePropDesc) → authoritative, zero-maintenance
+      # OR: source: manifest, values: [...]   # only when the camera doesn't enumerate it
+```
+Runtime-discovered (`source: camera`) wins; `manifest` fills gaps + labels + gating.
+8K (GFX100 II) vs 6.2K (X-H2S) over the *same* XLV op becomes a data difference.
+
+**Deferred as data, not mechanism:** the shared `xlv-http`/`instax` extraction and
+`x-h2s.yaml` themselves; SOC-based *fallback resolution* (explicit shared records do
+the sharing, so SOC likely reduces to a pure grouping/discovery tag with no
+resolution behavior — leave that hook unbuilt). `fuji.yaml` is real and kept
+(manufacturer-tier `versionOrder` + initiator identity + fallbacks; never a model).
 
 ## 4. Resolution engine (the finite vocabulary — no procedural DSL)
 New modules in `camera-config`:

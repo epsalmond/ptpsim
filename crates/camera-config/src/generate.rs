@@ -93,6 +93,9 @@ pub fn generate_proposal(bundle_jsonl: &str, identity: CameraIdentity) -> Camera
                     workflows: ctxs.into_iter().collect(),
                     handler: None,
                     property: None,
+                    modes: Vec::new(),
+                    connections: Vec::new(),
+                    requires: None,
                     evidence: Vec::new(),
                 },
             )
@@ -129,6 +132,9 @@ pub fn generate_proposal(bundle_jsonl: &str, identity: CameraIdentity) -> Camera
         media: None,
         events: BTreeMap::new(),
         quirks: Vec::new(),
+        modes: BTreeMap::new(),
+        connections: BTreeMap::new(),
+        values: BTreeMap::new(),
     }
 }
 
