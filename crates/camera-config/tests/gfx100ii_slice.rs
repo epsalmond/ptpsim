@@ -124,6 +124,47 @@ fn remote_trigger_is_screen_on_and_transport_independent() {
 }
 
 #[test]
+fn usb_modes_are_user_instruction_entries_and_ops_gate_to_usb() {
+    let m = gfx();
+    let usb = &m.connections["usb"];
+    assert_eq!(usb.kind.as_deref(), Some("usb-ptp"));
+    // USB sub-modes are camera-menu-selected → userInstruction edges, no PTP steps.
+    let raw = usb
+        .entries
+        .iter()
+        .find(|e| e.to == "RawConversion")
+        .unwrap();
+    assert!(raw.user_instruction.is_some());
+    assert!(raw.steps.is_empty());
+
+    // Vendor ops gate to (RawConversion, usb): available there, wrong-connection over app.
+    let any = PropView::new();
+    assert_eq!(
+        m.operation_available("usb", "RawConversion", 0x900c, &any),
+        camera_config::Availability::Available
+    );
+    assert_eq!(
+        m.operation_available("app", "RawConversion", 0x900c, &any),
+        camera_config::Availability::WrongConnection
+    );
+    // Backup ops gate to BackupRestore, not RawConversion.
+    assert_eq!(
+        m.operation_available("usb", "BackupRestore", 0x100c, &any),
+        camera_config::Availability::Available
+    );
+    assert_eq!(
+        m.operation_available("usb", "RawConversion", 0x100c, &any),
+        camera_config::Availability::WrongMode
+    );
+}
+
+#[test]
+fn usb_evidence_is_the_lower_confidence_static_tier() {
+    let m = gfx();
+    assert_eq!(m.evidence["iosBLEReg"].kind, "ios-source");
+}
+
+#[test]
 fn manufacturer_tier_supplies_fixed_initiator_identity() {
     let store = ConfigStore::new(gfx())
         .with_manufacturer(ManufacturerDefaults::from_yaml(&data("fuji/fuji.yaml")).unwrap());

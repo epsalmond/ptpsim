@@ -20,6 +20,8 @@ evidence:
   docImageTransfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW0230.md" }
   iosBLEReg:       { kind: ios-source, path: "client application/.../client applicationCore/FujiBLERegistration.swift", date: "2026-05-26" }
 
+  # NOT wire-captured. These USB opcodes are leads pending a golden capture.
+
 connections:
   app:
     kind: ptpip-app                 # WiFi-AP path (camera hosts the AP; app joins)
@@ -86,6 +88,20 @@ connections:
         mechanism: ble-to-wifi-ap-v1
     evidence: [iosBLEReg]
 
+  usb:
+    kind: usb-ptp                    # PIMA 15740 over USB (desktop, via ImageCaptureCore)
+    platforms: [macos, android, linux]   # NOT iOS (no USB-host PTP); hidden on iOS
+    discovery: { mechanism: usb, announces: none, vid: 0x04cb }   # Fuji USB vendor id; per-model PID TBD
+    modes: [RawConversion, BackupRestore, Webcam]
+    # USB sub-mode is chosen by an on-camera menu setting, so these are user-instruction
+    # edges (not app-driven). Wording approximate pending confirmation.
+    entries:
+      - to: RawConversion
+        userInstruction: "Set the camera's USB connection mode for RAW conversion / tethering, then connect USB"
+      - to: BackupRestore
+        userInstruction: "Set the camera's USB connection mode for settings backup/restore, then connect USB"
+    evidence: [staticRawStudio]
+
 modes:
   Shooting:
     capabilities: [exposureControl]
@@ -100,6 +116,13 @@ modes:
     # (same camera mode, different connection). No `detect`: over BLE the mode is
     # connection-implied (no PTP functionMode read).
     capabilities: [shutterControl, eepromTransfer, gpsPersistence, cameraSettings, screenOn]
+  # USB sub-modes (availability set by ops' connections: [usb]; selected by camera menu).
+  RawConversion:
+
+  BackupRestore:
+    capabilities: [settingsBackup, settingsRestore]   # eeprom up/download over USB
+  Webcam:
+    capabilities: [webcamStream]     # known to exist; protocol not yet characterized
 
 # Workflows = app tasks (CameraFeatureMode), gated by required connection/transport.
 # bluetooth-transport features (remoteShutter/gpsPersistence/cameraSettings) belong
@@ -115,9 +138,16 @@ operations:
   "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
   "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
   "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [Shooting/Stills], evidence: [iosStartupSeq] }
+  "0x900c": { name: SendRawFromPcObjectInfo, owner: fuji-vendor, modes: [RawConversion], connections: [usb], evidence: [staticRawStudio] }
+  "0x900d": { name: SendRawFromPcObject,     owner: fuji-vendor, modes: [RawConversion], connections: [usb], evidence: [staticRawStudio] }
+  "0x100c": { name: SetBackupSettingsInfo,   owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
+  "0x100d": { name: SetBackupSettings,       owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
+  "0x1008": { name: GetBackupSettingsInfo,   owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
+  "0x1009": { name: GetBackupSettings,       owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
 
 properties:
   "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [iosStartupSeq] }
   "0xdf01": { name: functionMode,      type: u16, access: readWrite, evidence: [iosStartupSeq] }
   "0xdf2a": { name: liveDf2a,          type: u16, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry
   "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }
+  "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
