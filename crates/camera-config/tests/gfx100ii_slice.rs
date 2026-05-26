@@ -96,6 +96,34 @@ fn capabilities_inherit_and_screen_takeover_is_modeled() {
 }
 
 #[test]
+fn ble_connection_enables_app_and_carries_remote_trigger() {
+    let m = gfx();
+    let ble = &m.connections["ble"];
+    assert_eq!(ble.kind.as_deref(), Some("ble"));
+    // BLE is the establishment root: it brings up the App connection (the edge the
+    // App slice's `establishment: ble-to-wifi-ap-v1` dangles on).
+    let edge = ble
+        .enables
+        .iter()
+        .find(|e| e.to == "app")
+        .expect("BLE enables app");
+    assert_eq!(edge.mechanism.as_deref(), Some("ble-to-wifi-ap-v1"));
+    // BLE carries the RemoteTrigger mode.
+    assert!(ble.modes.contains(&"RemoteTrigger".to_string()));
+}
+
+#[test]
+fn remote_trigger_is_screen_on_and_transport_independent() {
+    let m = gfx();
+    let caps = m.capabilities("RemoteTrigger");
+    assert!(caps.contains(&"shutterControl"));
+    assert!(caps.contains(&"eepromTransfer"));
+    assert!(caps.contains(&"screenOn")); // vs Shooting/Stills screenTakeover
+                                         // No detect predicate: over BLE the mode is connection-implied, not PTP-detected.
+    assert!(m.modes["RemoteTrigger"].detect.is_none());
+}
+
+#[test]
 fn manufacturer_tier_supplies_fixed_initiator_identity() {
     let store = ConfigStore::new(gfx())
         .with_manufacturer(ManufacturerDefaults::from_yaml(&data("fuji/fuji.yaml")).unwrap());

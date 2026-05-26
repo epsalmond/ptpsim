@@ -18,6 +18,7 @@ evidence:
   iosFeatureMode:  { kind: ios-source, path: "client application/.../client applicationCore/CameraFeatureMode.swift", date: "2026-05-26" }
   iosStartupSeq:   { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-26" }
   docImageTransfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW0230.md" }
+  iosBLEReg:       { kind: ios-source, path: "client application/.../client applicationCore/FujiBLERegistration.swift", date: "2026-05-26" }
 
 connections:
   app:
@@ -61,6 +62,30 @@ connections:
         # NOTE: capture suggests a teardown-free switch may exist; needs more wire
         # analysis. Modeled as the conservative (terminate-first) path for now.
 
+  ble:
+    kind: ble
+    establishment: ble-pairing-v1    # named mechanism; GATT detail below (overlay-able)
+    discovery: { mechanism: ble, announces: camera }
+    modes: [RemoteTrigger]
+    # GATT service + key characteristics (shipping-app facts; candidate for a private
+    # establishment overlay). FT-XH adapter advertises its own service — concrete
+    # basis for the X-H2S `requiresHardware: ft-xh` model.
+    gatt:
+      service: "A9D2B304-E8D6-4902-8336-352B772D7597"
+      registrationService: "123D8F06-62A1-4935-9322-833C531EE225"
+      deviceIdNumber: "F557D96B-8284-4667-8793-B971C1DECA2A"
+      pairingKey: "ABA356EB-9633-4E60-B73F-F52516DBD671"
+      apState: "A68E3F66-0FCC-4395-8D4C-AA980B5877FA"
+      cameraSSIDName: "BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4"
+      cameraWiFiPassphrase: "E809256A-915C-4967-92E8-53B7D4CAD213"
+      fileTransferXHalfService: "462426E1-D712-4A28-BE62-61A786DAA866"
+    # The BLE→WiFi-AP handover: drive apState to bring the AP up, read SSID +
+    # passphrase over GATT, app joins the AP → the `app` connection becomes available.
+    enables:
+      - to: app
+        mechanism: ble-to-wifi-ap-v1
+    evidence: [iosBLEReg]
+
 modes:
   Shooting:
     capabilities: [exposureControl]
@@ -70,6 +95,11 @@ modes:
   ImageTransfer:
     capabilities: [browse, download]
     detect: { prop: "0xdf01", eq: 0x14 }
+  RemoteTrigger:                     # screen STAYS ON (vs Shooting/Stills screenTakeover).
+    # Transport-independent: reached over BLE now, and over WirelessTether PTP/IP later
+    # (same camera mode, different connection). No `detect`: over BLE the mode is
+    # connection-implied (no PTP functionMode read).
+    capabilities: [shutterControl, eepromTransfer, gpsPersistence, cameraSettings, screenOn]
 
 # Workflows = app tasks (CameraFeatureMode), gated by required connection/transport.
 # bluetooth-transport features (remoteShutter/gpsPersistence/cameraSettings) belong
@@ -77,6 +107,9 @@ modes:
 workflows:
   liveView:      { transport: app, evidence: [iosFeatureMode] }
   imageTransfer: { transport: app, evidence: [iosFeatureMode] }
+  remoteShutter:  { transport: ble, evidence: [iosFeatureMode] }   # CameraFeatureMode bluetooth features
+  gpsPersistence: { transport: ble, evidence: [iosFeatureMode] }
+  cameraSettings: { transport: ble, evidence: [iosFeatureMode] }   # eeprom up/download
 
 operations:
   "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }

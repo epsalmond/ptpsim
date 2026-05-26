@@ -275,9 +275,34 @@ pub struct Connection {
     /// `from`-qualified (a cheaper Shooting↔ImageTransfer switch vs a cold entry).
     #[serde(default)]
     pub entries: Vec<ModeEntry>,
-    /// Free-form bind/discovery detail until those are modeled.
+    /// Connection-bring-up edges: from this connection, activate *another* (the
+    /// BLE→WiFi-AP handover). Distinct from `entries` (mode transitions within a
+    /// connection) — this is the establishment edge in the state graph.
+    #[serde(default)]
+    pub enables: Vec<ConnectionTransition>,
+    /// Free-form bind/discovery/establishment detail (e.g. GATT characteristic
+    /// UUIDs) until those are modeled / split to a private overlay.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// An establishment edge: from one connection, bring up another. Carries a named
+/// `mechanism` (an establishment workflow id, e.g. the GATT credential handover)
+/// and/or a `user_instruction` (some handovers are partly manual). NOT a PTP
+/// `Step` sequence — establishment is GATT/OS-level, a separate concern from the
+/// PTP wire actions in a `ModeEntry`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionTransition {
+    /// Target connection id this edge brings up.
+    pub to: String,
+    /// Named establishment mechanism/workflow (resolved elsewhere).
+    #[serde(default)]
+    pub mechanism: Option<String>,
+    #[serde(default)]
+    pub user_instruction: Option<String>,
+    #[serde(default)]
+    pub requires: Option<Predicate>,
 }
 
 /// A mode-graph transition edge: how to get *into* mode `to`. `from` qualifies the
