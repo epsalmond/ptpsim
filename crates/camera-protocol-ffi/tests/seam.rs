@@ -211,6 +211,14 @@ fn property_value_width_resolves_from_manifest_type() {
         s.property_value_width(0xdf28),
         Some(ValueWidth::U32)
     )); // featureVersion u32
+    assert!(matches!(
+        s.property_value_width(0xd226),
+        Some(ValueWidth::U16)
+    )); // imageImportFilter u16
+    assert!(matches!(
+        s.property_value_width(0xd227),
+        Some(ValueWidth::U16)
+    )); // imageImportSort u16
     assert!(s.property_value_width(0xd185).is_none()); // rawSettings u8a → unsupported
     assert!(s.property_value_width(0x9999).is_none()); // unknown property
 }

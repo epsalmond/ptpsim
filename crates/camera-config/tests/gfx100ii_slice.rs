@@ -233,6 +233,22 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         .steps
         .iter()
         .any(|s| s.get_prop.as_deref() == Some("0xd212") && s.tolerant));
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xdf28") && s.value == Some(3) && s.tolerant }));
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0) && s.tolerant }));
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xd227") && s.value == Some(0) && s.tolerant }));
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| s.get_prop.as_deref() == Some("0xd244") && s.tolerant));
     let prime = cold
         .steps
         .iter()
@@ -255,6 +271,10 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
             runtime: "openCaptureTxId".into()
         }]
     );
+    assert!(from
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0) && s.tolerant }));
 }
 
 #[test]

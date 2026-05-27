@@ -62,15 +62,16 @@ connections:
           - { getProp: "0xd212", tolerant: true }            # live-status preamble (best-effort)
           - { setProp: "0xdf01", value: 0x14 }               # functionMode = 20 (image-import)
           - { getProp: "0xdf28", tolerant: true }            # read-before-write (advisory negotiator)
-          - { setProp: "0xdf28", value: 3 }                  # feature version; uint32 width from the property type
+          - { setProp: "0xdf28", value: 3, tolerant: true }   # feature version; uint32 width from the property type
+          - { setProp: "0xd226", value: 0, tolerant: true }   # image-import filter
+          - { setProp: "0xd227", value: 0, tolerant: true }   # image-import sort
+          - { getProp: "0xd244", tolerant: true }             # image-import preamble
           # Vendor-prime block required before GetObjectHandles (0xd620/0xd621). Advisory:
           # a body/responder may reject these (vcam returns DeviceProp_Not_Supported) — tolerate.
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9050", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
-        # TODO(protocol-mapper): 0xd226/0xd227 (filter + sort) are advisory setProps in
-        # this prelude too — add once their values are captured.
       - to: ImageTransfer            # from live-view: terminate the open-capture first, then enter
         from: Shooting/Stills
         steps:
@@ -80,7 +81,10 @@ connections:
           - { getProp: "0xd212", tolerant: true }
           - { setProp: "0xdf01", value: 0x14 }
           - { getProp: "0xdf28", tolerant: true }
-          - { setProp: "0xdf28", value: 3 }
+          - { setProp: "0xdf28", value: 3, tolerant: true }
+          - { setProp: "0xd226", value: 0, tolerant: true }
+          - { setProp: "0xd227", value: 0, tolerant: true }
+          - { getProp: "0xd244", tolerant: true }
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9050", tolerant: true }
@@ -191,6 +195,10 @@ operations:
   "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
   "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
   "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [Shooting/Stills], evidence: [iosStartupSeq] }
+  "0x9054": { name: FujiImageImportCurrentObjectInfo,  owner: fuji-vendor, modes: [ImageTransfer], evidence: [docImageTransfer] }
+  "0x9055": { name: FujiImageImportCurrentObjectThumb, owner: fuji-vendor, modes: [ImageTransfer], evidence: [docImageTransfer] }
+  "0x9050": { name: FujiImageImportBegin,              owner: fuji-vendor, modes: [ImageTransfer], evidence: [docImageTransfer] }
+  "0x9053": { name: FujiImageImportPage,               owner: fuji-vendor, modes: [ImageTransfer], evidence: [docImageTransfer] }
   "0x900c": { name: SendRawFromPcObjectInfo, owner: fuji-vendor, modes: [RawConversion], connections: [usb], evidence: [staticRawStudio] }
   "0x900d": { name: SendRawFromPcObject,     owner: fuji-vendor, modes: [RawConversion], connections: [usb], evidence: [staticRawStudio] }
   "0x100c": { name: SetBackupSettingsInfo,   owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
@@ -205,6 +213,10 @@ properties:
   "0xdf01": { name: functionMode,      type: u16, access: readWrite, evidence: [iosStartupSeq] }
   "0xdf2a": { name: liveDf2a,          type: u16, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry
   "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }
+  "0xd212": { name: liveStatus,        type: u8a, access: readOnly,  evidence: [docImageTransfer] }
+  "0xd226": { name: imageImportFilter, type: u16, access: readWrite, evidence: [docImageTransfer] }
+  "0xd227": { name: imageImportSort,   type: u16, access: readWrite, evidence: [docImageTransfer] }
+  "0xd244": { name: imageImportD244,   type: u8a, access: readOnly,  evidence: [docImageTransfer] }
   "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
   # Big-3 over WirelessTether = ABSOLUTE standard PTP props via SetDevicePropValue 0x1016
   # (vs the App connection's vendor relative-step 0x902d). Same logical control, mechanism
