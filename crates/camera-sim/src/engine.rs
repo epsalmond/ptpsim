@@ -188,13 +188,25 @@ impl Engine {
                 if code == 0xd212 {
                     return Self::data(tid, self.status_d212());
                 }
+                // A manifest-declared prop always returns a value (current, else a
+                // typed default) — a real camera doesn't reject a supported prop just
+                // because nothing set it yet. Only props absent from the manifest are
+                // unsupported.
                 match self.state.props.get(&code) {
                     Some(v) => {
                         let mut w = Writer::new();
                         let _ = v.encode(&mut w);
                         Self::data(tid, w.into_vec())
                     }
-                    None => Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED),
+                    None => match self.manifest.property(code) {
+                        Some(prop) => {
+                            let v = crate::state::typed(datatype_of(prop.ptype.as_deref()), 0);
+                            let mut w = Writer::new();
+                            let _ = v.encode(&mut w);
+                            Self::data(tid, w.into_vec())
+                        }
+                        None => Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED),
+                    },
                 }
             }
             op::SET_DEVICE_PROP_VALUE => self.set_prop(tid, p(0) as u16, data_in),

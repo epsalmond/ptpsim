@@ -199,6 +199,13 @@ operations:
   "0x1009": { name: GetBackupSettings,       owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }
   # WirelessTether live-view = vendor 0x9018 (vs the App connection's 0x101c+GetObject).
   "0x9018": { name: SdkGetLiveViewData,      owner: fuji-vendor,  modes: [shooting/stills], connections: [wireless-tether], evidence: [wireTether] }
+  # Image-import enumeration-prime "chord" (0x9054/0x9055/0x9050/0x9053 → 0xD620/0xD621).
+  # WIRE-DISCOVERED: the camera does NOT advertise these in DeviceInfo, so the active probe
+  # can't see them — they exist only in the captured image-import sequence.
+  "0x9054": { name: FujiVendor9054, owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
+  "0x9055": { name: FujiVendor9055, owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
+  "0x9050": { name: FujiVendor9050, owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
+  "0x9053": { name: FujiVendor9053, owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
 
 properties:
   "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [iosStartupSeq] }

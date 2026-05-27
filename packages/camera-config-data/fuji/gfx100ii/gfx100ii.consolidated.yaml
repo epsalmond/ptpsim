@@ -1,19 +1,13 @@
-# GENERATED FIRST-PASS — review, do NOT hand-edit. Reproduce with:
+# GENERATED — do NOT hand-edit. The rich GFX100 II manifest the simulator loads
+# (camera-sim-service --manifest …/gfx100ii.consolidated.yaml). Reproduce with:
 #   cargo run -p camera-config --bin camera-config-generate -- \
 #     --enrich packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml \
 #     packages/camera-config-data/fuji/gfx100ii/evidence/probe/*.jsonl
 #
-# Curated gfx100ii.yaml (connections/modes/entries/establishment + curated op/prop
-# names & labels) ENRICHED with the active-probe evidence (props/descriptors/ops).
-# RECONCILE before promoting to gfx100ii.yaml + repointing the simulator:
-#  - mode-name casing: probe 'shooting/stills' vs curated 'Shooting/Stills';
-#    'video' vs 'Shooting/Video'; 'raw-conv/backup-restore' vs RawConversion +
-#    BackupRestore; plus probe-only 'card-reader','tether-auto','.../pc-priority'. Dedupe/map.
-#  - the probe covered usb + wireless-tether ONLY — app/ble/xlv props are NOT enriched
-#    (need a probe over those connections, or shared-property modeling).
-#  - ~312 raw_0x props carry real (camera-sourced) descriptors but need names/labels.
-#  - probe ops (raw_0x) are gated by lowercase mode paths — remap to curated casing.
-schema: camera-config/v1
+# = curated gfx100ii.yaml (connections/modes/entries/establishment + curated names,
+#   labels, gating) ENRICHED with active-probe evidence (props/descriptors/ops).
+# Mode-naming convention applied; standard PTP codes auto-named. Remaining curation:
+# ~306 vendor raw_0x props carry camera-sourced descriptors but still need names/labels
 schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
@@ -548,6 +542,66 @@ operations:
     requires: null
     evidence:
     - iosStartupSeq
+  '0x9050':
+    name: FujiVendor9050
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - image-transfer
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docImageTransfer
+  '0x9053':
+    name: FujiVendor9053
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - image-transfer
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docImageTransfer
+  '0x9054':
+    name: FujiVendor9054
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - image-transfer
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docImageTransfer
+  '0x9055':
+    name: FujiVendor9055
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - image-transfer
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docImageTransfer
   '0x9801':
     name: raw_0x9801
     owner: ''
