@@ -6,4 +6,12 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lib]
+# `lib` for workspace/tests; static/cdylib for the iOS/macOS xcframework.
+crate-type = ["lib", "staticlib", "cdylib"]
+
 [dependencies]
+camera-config = { workspace = true }
+uniffi = "0.28"
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
