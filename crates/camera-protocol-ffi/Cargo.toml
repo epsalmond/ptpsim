@@ -7,11 +7,17 @@ repository.workspace = true
 rust-version.workspace = true
 
 [lib]
-# `lib` for workspace/tests; static/cdylib for the iOS/macOS xcframework.
+# `lib` for workspace/tests; static/cdylib for the iOS/macOS xcframework + Android .so.
 crate-type = ["lib", "staticlib", "cdylib"]
+
+# Binding generator (library mode): `cargo run --bin uniffi-bindgen generate
+# --library <lib> --language swift|kotlin --out-dir <dir>`. See docs/INTEGRATION.md.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
 camera-config = { workspace = true }
-uniffi = "0.28"
+uniffi = { version = "0.28", features = ["cli"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
