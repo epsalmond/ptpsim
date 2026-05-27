@@ -200,6 +200,22 @@ modes: { "Shooting/Stills": {} }
 }
 
 #[test]
+fn property_value_width_resolves_from_manifest_type() {
+    let s = store();
+    // u16 / u32 map to encoder widths; u8a (rawSettings) and unknown props → None.
+    assert!(matches!(
+        s.property_value_width(0x5007),
+        Some(ValueWidth::U16)
+    )); // aperture u16
+    assert!(matches!(
+        s.property_value_width(0xdf28),
+        Some(ValueWidth::U32)
+    )); // featureVersion u32
+    assert!(s.property_value_width(0xd185).is_none()); // rawSettings u8a → unsupported
+    assert!(s.property_value_width(0x9999).is_none()); // unknown property
+}
+
+#[test]
 fn runtime_param_slot_surfaces_through_ffi() {
     let s = store();
     // The from-live-view ImageTransfer entry: 0x1018 carries a runtime slot the app binds.
