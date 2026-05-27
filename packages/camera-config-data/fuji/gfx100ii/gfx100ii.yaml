@@ -17,6 +17,8 @@ evidence:
   iosFujiPTPIP:    { kind: ios-source, path: "client application/.../client applicationCore/FujiPTPIP.swift", date: "2026-05-26" }
   iosFeatureMode:  { kind: ios-source, path: "client application/.../client applicationCore/CameraFeatureMode.swift", date: "2026-05-26" }
   iosStartupSeq:   { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-26" }
+  iosLiveControls: { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-27" }
+  docLiveControls: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
   docImageTransfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW0230.md" }
   iosBLEReg:       { kind: ios-source, path: "client application/.../client applicationCore/FujiBLERegistration.swift", date: "2026-05-26" }
 
@@ -62,15 +64,16 @@ connections:
           - { getProp: "0xd212", tolerant: true }            # live-status preamble (best-effort)
           - { setProp: "0xdf01", value: 0x14 }               # functionMode = 20 (image-import)
           - { getProp: "0xdf28", tolerant: true }            # read-before-write (advisory negotiator)
-          - { setProp: "0xdf28", value: 3 }                  # feature version; uint32 width from the property type
+          - { setProp: "0xdf28", value: 3, tolerant: true }   # feature version; uint32 width from the property type
+          - { setProp: "0xd226", value: 0, tolerant: true }   # image-import filter
+          - { setProp: "0xd227", value: 0, tolerant: true }   # image-import sort
+          - { getProp: "0xd244", tolerant: true }             # image-import preamble
           # Vendor-prime block required before GetObjectHandles (0xd620/0xd621). Advisory:
           # a body/responder may reject these (vcam returns DeviceProp_Not_Supported) — tolerate.
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9050", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
-        # TODO(protocol-mapper): 0xd226/0xd227 (filter + sort) are advisory setProps in
-        # this prelude too — add once their values are captured.
       - to: ImageTransfer            # from live-view: terminate the open-capture first, then enter
         from: Shooting/Stills
         steps:
@@ -80,7 +83,10 @@ connections:
           - { getProp: "0xd212", tolerant: true }
           - { setProp: "0xdf01", value: 0x14 }
           - { getProp: "0xdf28", tolerant: true }
-          - { setProp: "0xdf28", value: 3 }
+          - { setProp: "0xdf28", value: 3, tolerant: true }
+          - { setProp: "0xd226", value: 0, tolerant: true }
+          - { setProp: "0xd227", value: 0, tolerant: true }
+          - { getProp: "0xd244", tolerant: true }
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9050", tolerant: true }
@@ -188,14 +194,32 @@ workflows:
   cameraSettings: { transport: ble, evidence: [iosFeatureMode] }   # eeprom up/download
 
 operations:
-  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
-  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
-  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [Shooting/Stills], evidence: [iosStartupSeq] }
+  "0x1002": { name: OpenSession,          owner: standard-ptp, connections: [app], evidence: [iosStartupSeq] }
+  "0x1003": { name: CloseSession,         owner: standard-ptp, connections: [app], evidence: [iosStartupSeq] }
+  "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [ImageTransfer, BackupRestore], connections: [app, usb], evidence: [docImageTransfer, staticRawStudio] }
+  "0x100a": { name: GetThumb,             owner: standard-ptp, modes: [ImageTransfer], connections: [app], evidence: [docImageTransfer] }
+  "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [Shooting/Stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
+  "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [Shooting], connections: [app], evidence: [iosLiveControls] }
+  "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [Shooting, ImageTransfer], connections: [app], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer] }
+  "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [Shooting, ImageTransfer], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireTether] }
+  "0x101b": { name: GetPartialObject,     owner: standard-ptp, modes: [ImageTransfer], connections: [app], evidence: [docImageTransfer] }
+  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [Shooting], connections: [app], evidence: [iosStartupSeq] }
+  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [Shooting], connections: [app], evidence: [iosStartupSeq] }
+  "0x9022": { name: FujiVendor9022,       owner: fuji-vendor,  modes: [Shooting/Stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
+  "0x9026": { name: LockS1Lock,           owner: fuji-vendor,  modes: [Shooting/Stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
+  "0x9027": { name: UnlockS1Lock,         owner: fuji-vendor,  modes: [Shooting/Stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
+  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [Shooting/Stills], connections: [app], evidence: [iosStartupSeq] }
+  "0x902c": { name: StepShutterspeed,     owner: fuji-vendor,  modes: [Shooting/Stills], connections: [app], handler: property.step, property: "0xd240", evidence: [iosLiveControls, docLiveControls] }
+  "0x902d": { name: StepFnumber,          owner: fuji-vendor,  modes: [Shooting/Stills], connections: [app], handler: property.step, property: "0x5007", evidence: [iosLiveControls, docLiveControls] }
+  "0x902e": { name: StepExposureBias,     owner: fuji-vendor,  modes: [Shooting/Stills], connections: [app], handler: property.step, property: "0x5010", evidence: [iosLiveControls, docLiveControls] }
+  "0x9054": { name: FujiImageImportCurrentObjectInfo,  owner: fuji-vendor, modes: [ImageTransfer], connections: [app], evidence: [docImageTransfer] }
+  "0x9055": { name: FujiImageImportCurrentObjectThumb, owner: fuji-vendor, modes: [ImageTransfer], connections: [app], evidence: [docImageTransfer] }
+  "0x9050": { name: FujiImageImportBegin,              owner: fuji-vendor, modes: [ImageTransfer], connections: [app], evidence: [docImageTransfer] }
+  "0x9053": { name: FujiImageImportPage,               owner: fuji-vendor, modes: [ImageTransfer], connections: [app], evidence: [docImageTransfer] }
   "0x900c": { name: SendRawFromPcObjectInfo, owner: fuji-vendor, modes: [RawConversion], connections: [usb], evidence: [staticRawStudio] }
   "0x900d": { name: SendRawFromPcObject,     owner: fuji-vendor, modes: [RawConversion], connections: [usb], evidence: [staticRawStudio] }
   "0x100c": { name: SetBackupSettingsInfo,   owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
   "0x100d": { name: SetBackupSettings,       owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
-  "0x1008": { name: GetBackupSettingsInfo,   owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
   "0x1009": { name: GetBackupSettings,       owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
   # WirelessTether live-view = vendor 0x9018 (vs the App connection's 0x101c+GetObject).
   "0x9018": { name: SdkGetLiveViewData,      owner: fuji-vendor,  modes: [Shooting/Stills], connections: [wireless-tether], evidence: [wireTether] }
@@ -205,17 +229,42 @@ properties:
   "0xdf01": { name: functionMode,      type: u16, access: readWrite, evidence: [iosStartupSeq] }
   "0xdf2a": { name: liveDf2a,          type: u16, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry
   "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }
+  "0xd212": { name: liveStatus,        type: u8a, access: readOnly,  evidence: [docImageTransfer] }
+  "0xd17c": { name: s1Lock,            type: u32, access: readOnly,  evidence: [iosLiveControls, docLiveControls] }  # sub-property carried in 0xd212
+  "0xd209": { name: s1LockColor,       type: u32, access: readOnly,  evidence: [iosLiveControls, docLiveControls] }  # sub-property carried in 0xd212
+  "0xd226": { name: imageImportFilter, type: u16, access: readWrite, evidence: [docImageTransfer] }
+  "0xd227": { name: imageImportSort,   type: u16, access: readWrite, evidence: [docImageTransfer] }
+  "0xd244": { name: imageImportD244,   type: u8a, access: readOnly,  evidence: [docImageTransfer] }
+  "0xd620": { name: imageImportObjectCount,   type: u32, access: readOnly, evidence: [docImageTransfer] }
+  "0xd621": { name: imageImportObjectHandles, type: u8a, access: readOnly, evidence: [docImageTransfer] }
   "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
-  # Big-3 over WirelessTether = ABSOLUTE standard PTP props via SetDevicePropValue 0x1016
-  # (vs the App connection's vendor relative-step 0x902d). Same logical control, mechanism
-  # differs by connection — hence controls keyed by connection id.
+  # Current App/AP controls. ISO/direct-list controls use SetDevicePropValue; ring/body controls
+  # remain step-only or body-driven. WirelessTether exposes absolute big-three variants on the
+  # 15740 PCSS connection, so controls are keyed by connection id.
+  "0x5005": { name: whiteBalance, ptpName: WhiteBalance, type: u16, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0x5007": { name: aperture, ptpName: FNumber, type: u16, access: readWrite,
-              controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # uint16 ×100 (f/2.8=280)
+              controls: { app: { setMethod: vendorStep, operation: "0x902d", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls, docLiveControls, wireTether] }   # uint16 ×100 (f/2.8=280)
+  "0x500a": { name: focusMode, ptpName: FocusMode, type: u16, access: readOnly, evidence: [iosLiveControls] }
+  "0x500c": { name: flashMode, ptpName: FlashMode, type: u16, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
+  "0x5010": { name: exposureBias, ptpName: ExposureBiasCompensation, type: u16, access: readWrite,
+              controls: { app: { setMethod: vendorStep, operation: "0x902e", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
+  "0x5012": { name: selfTimer, ptpName: SelfTimer, type: u16, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
+  "0xd001": { name: filmSimulation, type: u16, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
+  "0xd02a": { name: stillIso, ptpName: ISO, type: u32, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
+  "0xd02b": { name: movieIso, ptpName: MovieISO, type: u32, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
+  "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u32, access: readWrite,
+              controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
   "0x500f": { name: iso, ptpName: ExposureIndex, type: u32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # literal ISO; 0xffffffff/-2 = auto
   "0x500d": { name: shutterSpeed, ptpName: ExposureTime, type: u32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # microseconds
-  "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [wireTether] }   # PASM
+  "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [iosLiveControls, wireTether] }   # PASM / body dial
 
 quirks:
   - id: pcss-knock-once-per-boot

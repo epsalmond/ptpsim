@@ -203,6 +203,53 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
 }
 
 #[test]
+fn app_current_behavior_ops_and_controls_are_modeled() {
+    let m = gfx();
+    let any = PropView::new();
+
+    // Existing app live-view controls: ISO is direct SetDevicePropValue, the
+    // ring controls are vendor-step ops with 0xd212 readback.
+    let iso = m.control_for(0xd02a, "app").unwrap();
+    assert_eq!(iso.set_method.as_deref(), Some("absolute"));
+    assert_eq!(iso.operation.as_deref(), Some("0x1016"));
+    assert_eq!(iso.readback.as_deref(), Some("0xd212"));
+    let shutter = m.control_for(0xd240, "app").unwrap();
+    assert_eq!(shutter.set_method.as_deref(), Some("vendorStep"));
+    assert_eq!(shutter.operation.as_deref(), Some("0x902c"));
+    let aperture = m.control_for(0x5007, "app").unwrap();
+    assert_eq!(aperture.operation.as_deref(), Some("0x902d"));
+    let ev = m.control_for(0x5010, "app").unwrap();
+    assert_eq!(ev.operation.as_deref(), Some("0x902e"));
+
+    // Existing app operations are available over the app connection in their
+    // current modes, and do not imply the new video/transfer-back flows.
+    assert_eq!(
+        m.operation_available("app", "Shooting/Stills", 0x9026, &any),
+        camera_config::Availability::Available
+    );
+    assert_eq!(
+        m.operation_available("app", "Shooting/Stills", 0x100e, &any),
+        camera_config::Availability::Available
+    );
+    assert_eq!(
+        m.operation_available("app", "ImageTransfer", 0x1008, &any),
+        camera_config::Availability::Available
+    );
+    assert_eq!(
+        m.operation_available("app", "ImageTransfer", 0x101b, &any),
+        camera_config::Availability::Available
+    );
+    assert!(m.connections["app"]
+        .entries
+        .iter()
+        .all(|e| e.to != "Shooting/Video"));
+    assert!(m.connections["app"]
+        .entries
+        .iter()
+        .all(|e| !(e.from.as_deref() == Some("ImageTransfer") && e.to == "Shooting/Stills")));
+}
+
+#[test]
 fn xlv_models_protocol_shape_with_access_gate_kept_private() {
     let m = gfx();
     let xlv = &m.connections["xlv"];
@@ -233,6 +280,22 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         .steps
         .iter()
         .any(|s| s.get_prop.as_deref() == Some("0xd212") && s.tolerant));
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xdf28") && s.value == Some(3) && s.tolerant }));
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0) && s.tolerant }));
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xd227") && s.value == Some(0) && s.tolerant }));
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| s.get_prop.as_deref() == Some("0xd244") && s.tolerant));
     let prime = cold
         .steps
         .iter()
@@ -255,6 +318,10 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
             runtime: "openCaptureTxId".into()
         }]
     );
+    assert!(from
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0) && s.tolerant }));
 }
 
 #[test]
