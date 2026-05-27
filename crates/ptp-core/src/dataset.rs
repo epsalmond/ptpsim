@@ -227,7 +227,11 @@ impl PropValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropForm {
     None,
-    Range { min: PropValue, max: PropValue, step: PropValue },
+    Range {
+        min: PropValue,
+        max: PropValue,
+        step: PropValue,
+    },
     Enum(Vec<PropValue>),
 }
 
@@ -267,7 +271,14 @@ impl DevicePropDesc {
             }
             _ => return Err(DecodeError::InvalidString("unknown prop form flag")),
         };
-        Ok(Self { code, datatype, get_set, factory_default, current, form })
+        Ok(Self {
+            code,
+            datatype,
+            get_set,
+            factory_default,
+            current,
+            form,
+        })
     }
 
     pub fn encode(&self, w: &mut Writer) -> Result<(), EncodeError> {

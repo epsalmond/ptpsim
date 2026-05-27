@@ -204,7 +204,10 @@ mod tests {
         w.u64(0x0102_0304_0506_0708);
         assert_eq!(
             w.as_slice(),
-            &[0x12, 0x56, 0x34, 0xde, 0xbc, 0x9a, 0x78, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
+            &[
+                0x12, 0x56, 0x34, 0xde, 0xbc, 0x9a, 0x78, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02,
+                0x01
+            ]
         );
         let bytes = w.into_vec();
         let mut r = Reader::new(&bytes);
@@ -255,7 +258,10 @@ mod tests {
         assert_eq!(r.u16().unwrap(), 0x0201);
         assert_eq!(
             r.u8(),
-            Err(DecodeError::UnexpectedEof { offset: 2, needed: 1 })
+            Err(DecodeError::UnexpectedEof {
+                offset: 2,
+                needed: 1
+            })
         );
     }
 }

@@ -21,7 +21,10 @@ const STORAGE_ID: u32 = 0x0001_0001;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Response(OperationResponse),
-    Data { data: Vec<u8>, response: OperationResponse },
+    Data {
+        data: Vec<u8>,
+        response: OperationResponse,
+    },
     Close,
 }
 
@@ -35,7 +38,12 @@ pub struct Engine {
 impl Engine {
     pub fn new(manifest: CameraManifest, store: MediaStore) -> Self {
         let state = CameraState::from_manifest(&manifest);
-        Engine { manifest, store, state, faults: FaultSet::default() }
+        Engine {
+            manifest,
+            store,
+            state,
+            faults: FaultSet::default(),
+        }
     }
 
     pub fn state(&self) -> &CameraState {
@@ -60,17 +68,29 @@ impl Engine {
     }
 
     fn ok(tid: u32) -> Reply {
-        Reply::Response(OperationResponse { code: resp::OK, transaction_id: tid, params: vec![] })
+        Reply::Response(OperationResponse {
+            code: resp::OK,
+            transaction_id: tid,
+            params: vec![],
+        })
     }
 
     fn err(tid: u32, code: u16) -> Reply {
-        Reply::Response(OperationResponse { code, transaction_id: tid, params: vec![] })
+        Reply::Response(OperationResponse {
+            code,
+            transaction_id: tid,
+            params: vec![],
+        })
     }
 
     fn data(tid: u32, data: Vec<u8>) -> Reply {
         Reply::Data {
             data,
-            response: OperationResponse { code: resp::OK, transaction_id: tid, params: vec![] },
+            response: OperationResponse {
+                code: resp::OK,
+                transaction_id: tid,
+                params: vec![],
+            },
         }
     }
 
@@ -89,7 +109,10 @@ impl Engine {
         }
 
         // OpenSession is the only thing allowed before a session exists.
-        if !self.state.session_open && req.code != op::OPEN_SESSION && req.code != op::GET_DEVICE_INFO {
+        if !self.state.session_open
+            && req.code != op::OPEN_SESSION
+            && req.code != op::GET_DEVICE_INFO
+        {
             return Self::err(tid, resp::SESSION_NOT_OPEN);
         }
 
@@ -131,7 +154,11 @@ impl Engine {
                 Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
             },
             op::GET_PARTIAL_OBJECT => {
-                match self.store.read_range(p(0), p(1) as u64, p(2)).and_then(|s| s.read()) {
+                match self
+                    .store
+                    .read_range(p(0), p(1) as u64, p(2))
+                    .and_then(|s| s.read())
+                {
                     Ok(bytes) => Self::data(tid, bytes),
                     Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
                 }
@@ -144,14 +171,16 @@ impl Engine {
                     Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
                 }
             }
-            op::GET_DEVICE_PROP_DESC => match build_prop_desc(&self.manifest, &self.state, p(0) as u16) {
-                Some(desc) => {
-                    let mut w = Writer::new();
-                    let _ = desc.encode(&mut w);
-                    Self::data(tid, w.into_vec())
+            op::GET_DEVICE_PROP_DESC => {
+                match build_prop_desc(&self.manifest, &self.state, p(0) as u16) {
+                    Some(desc) => {
+                        let mut w = Writer::new();
+                        let _ = desc.encode(&mut w);
+                        Self::data(tid, w.into_vec())
+                    }
+                    None => Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED),
                 }
-                None => Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED),
-            },
+            }
             op::GET_DEVICE_PROP_VALUE => {
                 let code = p(0) as u16;
                 // 0xd212 is a *computed* live-status bundle, not a stored value:
@@ -205,7 +234,9 @@ impl Engine {
     /// Advance a property's current value within its enum descriptor. `direction`
     /// follows the manifest's convention (non-zero = "wider"/up the list).
     fn vendor_step(&mut self, prop_code: u16, direction: u32) {
-        let Some(prop) = self.manifest.property(prop_code) else { return };
+        let Some(prop) = self.manifest.property(prop_code) else {
+            return;
+        };
         let Some(desc) = &prop.descriptor else { return };
         if desc.values.is_empty() {
             return;
@@ -221,9 +252,10 @@ impl Engine {
         } else {
             cur_idx.saturating_sub(1)
         };
-        self.state
-            .props
-            .insert(prop_code, crate::state::typed(datatype, desc.values[new_idx]));
+        self.state.props.insert(
+            prop_code,
+            crate::state::typed(datatype, desc.values[new_idx]),
+        );
     }
 
     fn set_prop(&mut self, tid: u32, code: u16, data_in: Option<&[u8]>) -> Reply {
@@ -281,8 +313,18 @@ impl Engine {
     }
 
     fn device_info_bytes(&self) -> Vec<u8> {
-        let ops: Vec<u16> = self.manifest.operations.keys().filter_map(|k| parse_hex_code(k)).collect();
-        let props: Vec<u16> = self.manifest.properties.keys().filter_map(|k| parse_hex_code(k)).collect();
+        let ops: Vec<u16> = self
+            .manifest
+            .operations
+            .keys()
+            .filter_map(|k| parse_hex_code(k))
+            .collect();
+        let props: Vec<u16> = self
+            .manifest
+            .properties
+            .keys()
+            .filter_map(|k| parse_hex_code(k))
+            .collect();
         let di = DeviceInfo {
             standard_version: 100,
             vendor_extension_id: 0x0000_00ff,

@@ -47,7 +47,11 @@ pub async fn handle(
 
     let (status, body) = match (method, path) {
         ("GET", "/healthz") => {
-            let sessions = if engine.lock().await.state().session_open { 1 } else { 0 };
+            let sessions = if engine.lock().await.state().session_open {
+                1
+            } else {
+                0
+            };
             ("200 OK", health.json(sessions))
         }
         ("POST", "/shutdown") => {

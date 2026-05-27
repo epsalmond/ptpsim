@@ -3,8 +3,8 @@
 //! comes from the manifest.
 
 use camera_config::CameraManifest;
-use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
 use ptp_core::codes::datatype_code as dt;
+use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
 use std::collections::BTreeMap;
 
 /// Fuji function-mode selector properties.
@@ -36,7 +36,9 @@ impl CameraState {
     pub fn from_manifest(manifest: &CameraManifest) -> Self {
         let mut props = BTreeMap::new();
         for (code_key, prop) in &manifest.properties {
-            let Some(code) = camera_config::parse_hex_code(code_key) else { continue };
+            let Some(code) = camera_config::parse_hex_code(code_key) else {
+                continue;
+            };
             let datatype = datatype_of(prop.ptype.as_deref());
             if let Some(desc) = &prop.descriptor {
                 if let Some(first) = desc.values.first() {
@@ -44,7 +46,11 @@ impl CameraState {
                 }
             }
         }
-        CameraState { session_open: false, phase: Phase::Disconnected, props }
+        CameraState {
+            session_open: false,
+            phase: Phase::Disconnected,
+            props,
+        }
     }
 
     /// The manifest control-mode key matching the current phase, used to resolve
@@ -88,7 +94,11 @@ pub fn build_prop_desc(
 ) -> Option<DevicePropDesc> {
     let prop = manifest.property(code)?;
     let datatype = datatype_of(prop.ptype.as_deref());
-    let current = state.props.get(&code).cloned().unwrap_or(typed(datatype, 0));
+    let current = state
+        .props
+        .get(&code)
+        .cloned()
+        .unwrap_or(typed(datatype, 0));
     let get_set = match prop.access.as_deref() {
         Some("readWrite") => 1,
         _ => 0,

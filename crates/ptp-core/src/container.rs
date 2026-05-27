@@ -76,7 +76,11 @@ impl InitCommandRequest {
         let initiator_guid = guid(r)?;
         let friendly_name = r.ptp_string()?;
         let protocol_version = r.u32()?;
-        Ok(Self { initiator_guid, friendly_name, protocol_version })
+        Ok(Self {
+            initiator_guid,
+            friendly_name,
+            protocol_version,
+        })
     }
     pub(crate) fn encode_body(&self, w: &mut Writer) -> Result<(), EncodeError> {
         w.bytes(&self.initiator_guid);
@@ -92,7 +96,12 @@ impl InitCommandAck {
         let responder_guid = guid(r)?;
         let friendly_name = r.ptp_string()?;
         let protocol_version = r.u32()?;
-        Ok(Self { connection_number, responder_guid, friendly_name, protocol_version })
+        Ok(Self {
+            connection_number,
+            responder_guid,
+            friendly_name,
+            protocol_version,
+        })
     }
     pub(crate) fn encode_body(&self, w: &mut Writer) -> Result<(), EncodeError> {
         w.u32(self.connection_number);
@@ -108,7 +117,12 @@ impl OperationRequest {
         let data_phase_info = r.u32()?;
         let code = r.u16()?;
         let transaction_id = r.u32()?;
-        Ok(Self { data_phase_info, code, transaction_id, params: remaining_params(r)? })
+        Ok(Self {
+            data_phase_info,
+            code,
+            transaction_id,
+            params: remaining_params(r)?,
+        })
     }
     pub(crate) fn encode_body(&self, w: &mut Writer) {
         w.u32(self.data_phase_info);
@@ -124,7 +138,11 @@ impl OperationResponse {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
         let code = r.u16()?;
         let transaction_id = r.u32()?;
-        Ok(Self { code, transaction_id, params: remaining_params(r)? })
+        Ok(Self {
+            code,
+            transaction_id,
+            params: remaining_params(r)?,
+        })
     }
     pub(crate) fn encode_body(&self, w: &mut Writer) {
         w.u16(self.code);
@@ -139,7 +157,11 @@ impl EventPacket {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
         let code = r.u16()?;
         let transaction_id = r.u32()?;
-        Ok(Self { code, transaction_id, params: remaining_params(r)? })
+        Ok(Self {
+            code,
+            transaction_id,
+            params: remaining_params(r)?,
+        })
     }
     pub(crate) fn encode_body(&self, w: &mut Writer) {
         w.u16(self.code);
@@ -152,7 +174,10 @@ impl EventPacket {
 
 impl StartData {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
-        Ok(Self { transaction_id: r.u32()?, total_length: r.u64()? })
+        Ok(Self {
+            transaction_id: r.u32()?,
+            total_length: r.u64()?,
+        })
     }
     pub(crate) fn encode_body(&self, w: &mut Writer) {
         w.u32(self.transaction_id);
@@ -162,7 +187,10 @@ impl StartData {
 
 impl DataBlock {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
-        Ok(Self { transaction_id: r.u32()?, payload: r.rest() })
+        Ok(Self {
+            transaction_id: r.u32()?,
+            payload: r.rest(),
+        })
     }
     pub(crate) fn encode_body(&self, w: &mut Writer) {
         w.u32(self.transaction_id);

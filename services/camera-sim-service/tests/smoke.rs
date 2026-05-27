@@ -7,8 +7,8 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 
 use camera_sim_service::{Config, Server};
-use ptp_core::{InitCommandRequest, PtpCodec, PtpIpPacket};
 use protocol_primitives::fuji_framing;
+use ptp_core::{InitCommandRequest, PtpCodec, PtpIpPacket};
 
 const MANIFEST: &str = r#"
 schema: camera-config/v1
@@ -150,7 +150,10 @@ fn service_drives_image_import_over_tcp() {
     // --- control /healthz ---
     let body = http_get(control_addr, "/healthz");
     assert!(body.contains("\"ok\":true"), "healthz body: {body}");
-    assert!(body.contains("\"sessions\":1"), "session should be open: {body}");
+    assert!(
+        body.contains("\"sessions\":1"),
+        "session should be open: {body}"
+    );
 
     // Shutdown via control plane.
     let _ = http_post(control_addr, "/shutdown");
@@ -173,7 +176,11 @@ fn read_frame_lv(s: &mut TcpStream) -> Vec<u8> {
 
 fn http_get(addr: std::net::SocketAddr, path: &str) -> String {
     let mut s = TcpStream::connect(addr).unwrap();
-    write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+    write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
     let mut out = String::new();
     s.read_to_string(&mut out).unwrap();
     out
@@ -181,7 +188,11 @@ fn http_get(addr: std::net::SocketAddr, path: &str) -> String {
 
 fn http_post(addr: std::net::SocketAddr, path: &str) -> String {
     let mut s = TcpStream::connect(addr).unwrap();
-    write!(s, "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    write!(
+        s,
+        "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
     let mut out = String::new();
     let _ = s.read_to_string(&mut out);
     out

@@ -57,7 +57,12 @@ properties:
 "#;
 
     fn op(code: u16, tid: u32, params: Vec<u32>) -> OperationRequest {
-        OperationRequest { data_phase_info: 1, code, transaction_id: tid, params }
+        OperationRequest {
+            data_phase_info: 1,
+            code,
+            transaction_id: tid,
+            params,
+        }
     }
 
     fn u16_data(v: u16) -> Vec<u8> {
@@ -130,7 +135,8 @@ properties:
         assert_eq!(e.state().phase, Phase::ImageImport);
 
         // Enumerate handles.
-        let handles_bytes = expect_data(e.on_operation(&op(0x1007, 3, vec![0x00010001, 0, 0]), None));
+        let handles_bytes =
+            expect_data(e.on_operation(&op(0x1007, 3, vec![0x00010001, 0, 0]), None));
         let mut r = Reader::new(&handles_bytes);
         let handles = r.ptp_array(|r| r.u32()).unwrap();
         assert_eq!(handles.len(), 2, "two files on the card");
@@ -141,16 +147,30 @@ properties:
         assert!(oi.filename.ends_with(".JPG") || oi.filename.ends_with(".RAF"));
 
         // Thumbnail of the RAF -> embedded JPEG (starts with SOI).
-        let raf = *handles.iter().find(|h| {
-            e.store().object_info(**h).unwrap().filename.ends_with(".RAF")
-        }).unwrap();
+        let raf = *handles
+            .iter()
+            .find(|h| {
+                e.store()
+                    .object_info(**h)
+                    .unwrap()
+                    .filename
+                    .ends_with(".RAF")
+            })
+            .unwrap();
         let thumb = expect_data(e.on_operation(&op(0x100a, 5, vec![raf]), None));
         assert_eq!(&thumb[0..2], &[0xFF, 0xD8]);
 
         // Partial download of the first 4 bytes of the JPG.
-        let jpg = *handles.iter().find(|h| {
-            e.store().object_info(**h).unwrap().filename.ends_with(".JPG")
-        }).unwrap();
+        let jpg = *handles
+            .iter()
+            .find(|h| {
+                e.store()
+                    .object_info(**h)
+                    .unwrap()
+                    .filename
+                    .ends_with(".JPG")
+            })
+            .unwrap();
         let part = expect_data(e.on_operation(&op(0x101b, 6, vec![jpg, 0, 4]), None));
         assert_eq!(part, b"\xFF\xD8JP");
 
@@ -216,7 +236,10 @@ properties:
         expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None));
 
         // Fail GetObjectHandles with DeviceBusy.
-        e.install_fault(Fault::FailOperation { code: 0x1007, response: 0x2019 });
+        e.install_fault(Fault::FailOperation {
+            code: 0x1007,
+            response: 0x2019,
+        });
         match e.on_operation(&op(0x1007, 2, vec![]), None) {
             Reply::Response(r) => assert_eq!(r.code, 0x2019),
             other => panic!("expected injected DeviceBusy, got {other:?}"),
@@ -224,11 +247,17 @@ properties:
 
         // Close the connection on GetPartialObject.
         e.install_fault(Fault::CloseOnOperation { code: 0x101b });
-        assert_eq!(e.on_operation(&op(0x101b, 3, vec![1, 0, 4]), None), Reply::Close);
+        assert_eq!(
+            e.on_operation(&op(0x101b, 3, vec![1, 0, 4]), None),
+            Reply::Close
+        );
 
         // Clearing faults restores normal behavior.
         e.clear_faults();
-        assert!(matches!(e.on_operation(&op(0x1007, 4, vec![]), None), Reply::Data { .. }));
+        assert!(matches!(
+            e.on_operation(&op(0x1007, 4, vec![]), None),
+            Reply::Data { .. }
+        ));
         std::fs::remove_dir_all(&root).ok();
     }
 

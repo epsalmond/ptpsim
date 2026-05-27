@@ -7,11 +7,14 @@ use std::net::TcpStream;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use ptp_core::{DeviceInfo, InitCommandRequest, OperationRequest, PtpCodec, PtpIpPacket, Reader};
 use protocol_primitives::fuji_framing;
+use ptp_core::{DeviceInfo, InitCommandRequest, OperationRequest, PtpCodec, PtpIpPacket, Reader};
 
 #[derive(Parser)]
-#[command(name = "camera-simctl", about = "Control + smoke-test a ptpsim instance")]
+#[command(
+    name = "camera-simctl",
+    about = "Control + smoke-test a ptpsim instance"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -53,8 +56,15 @@ fn main() -> Result<()> {
 
 fn http(addr: &str, method: &str, path: &str) -> Result<String> {
     let mut s = TcpStream::connect(addr).with_context(|| format!("connect {addr}"))?;
-    let extra = if method == "POST" { "Content-Length: 0\r\n" } else { "" };
-    write!(s, "{method} {path} HTTP/1.1\r\nHost: x\r\n{extra}Connection: close\r\n\r\n")?;
+    let extra = if method == "POST" {
+        "Content-Length: 0\r\n"
+    } else {
+        ""
+    };
+    write!(
+        s,
+        "{method} {path} HTTP/1.1\r\nHost: x\r\n{extra}Connection: close\r\n\r\n"
+    )?;
     let mut out = String::new();
     s.read_to_string(&mut out)?;
     Ok(out.rsplit("\r\n\r\n").next().unwrap_or("").to_string())
@@ -126,7 +136,12 @@ fn smoke(host: &str) -> Result<()> {
 
     write_frame(&mut s, &op(0x1001, 2, vec![]))?;
     let di = DeviceInfo::decode(&read_data_reply(&mut s)?)?;
-    println!("device: {} {} ({} ops)", di.manufacturer, di.model, di.operations_supported.len());
+    println!(
+        "device: {} {} ({} ops)",
+        di.manufacturer,
+        di.model,
+        di.operations_supported.len()
+    );
 
     write_frame(&mut s, &op(0x1007, 3, vec![0x00010001, 0, 0]))?;
     let handles_bytes = read_data_reply(&mut s)?;
@@ -140,7 +155,11 @@ fn smoke(host: &str) -> Result<()> {
 
     write_frame(&mut s, &op(0x101b, 4, vec![handles[0], 0, 64]))?;
     let part = read_data_reply(&mut s)?;
-    println!("downloaded {} bytes of object {:#010x}", part.len(), handles[0]);
+    println!(
+        "downloaded {} bytes of object {:#010x}",
+        part.len(),
+        handles[0]
+    );
 
     write_frame(&mut s, &op(0x1003, 5, vec![]))?;
     read_ok(&mut s)?;

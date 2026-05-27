@@ -63,9 +63,13 @@ impl PtpCodec for PtpIpPacket {
         let length = r.u32()? as usize;
         let type_raw = r.u32()?;
         if length != bytes.len() {
-            return Err(DecodeError::LengthMismatch { declared: length, actual: bytes.len() });
+            return Err(DecodeError::LengthMismatch {
+                declared: length,
+                actual: bytes.len(),
+            });
         }
-        let ptype = PacketType::from_u32(type_raw).ok_or(DecodeError::UnknownPacketType(type_raw))?;
+        let ptype =
+            PacketType::from_u32(type_raw).ok_or(DecodeError::UnknownPacketType(type_raw))?;
         Ok(match ptype {
             PacketType::InitCommandRequest => {
                 PtpIpPacket::InitCommandRequest(InitCommandRequest::decode_body(&mut r)?)
@@ -133,7 +137,8 @@ mod tests {
         assert_eq!(
             bytes,
             vec![
-                0x16, 0, 0, 0, // length = 22 (8 header + 4 dataphase + 2 op + 4 tid + 4 param)
+                0x16, 0, 0,
+                0, // length = 22 (8 header + 4 dataphase + 2 op + 4 tid + 4 param)
                 0x06, 0, 0, 0, // type = OperationRequest(6)
                 0x01, 0, 0, 0, // data phase info
                 0x02, 0x10, // op 0x1002
@@ -184,10 +189,23 @@ mod tests {
 
     #[test]
     fn data_phase_and_event_round_trip() {
-        round_trip(PtpIpPacket::StartData(StartData { transaction_id: 9, total_length: 10_485_760 }));
-        round_trip(PtpIpPacket::Data(DataBlock { transaction_id: 9, payload: vec![1, 2, 3, 4, 5] }));
-        round_trip(PtpIpPacket::EndData(DataBlock { transaction_id: 9, payload: vec![0xFF; 16] }));
-        round_trip(PtpIpPacket::Event(EventPacket { code: 0x4002, transaction_id: 0, params: vec![5] }));
+        round_trip(PtpIpPacket::StartData(StartData {
+            transaction_id: 9,
+            total_length: 10_485_760,
+        }));
+        round_trip(PtpIpPacket::Data(DataBlock {
+            transaction_id: 9,
+            payload: vec![1, 2, 3, 4, 5],
+        }));
+        round_trip(PtpIpPacket::EndData(DataBlock {
+            transaction_id: 9,
+            payload: vec![0xFF; 16],
+        }));
+        round_trip(PtpIpPacket::Event(EventPacket {
+            code: 0x4002,
+            transaction_id: 0,
+            params: vec![5],
+        }));
     }
 
     #[test]
@@ -199,6 +217,9 @@ mod tests {
         }))
         .unwrap();
         bytes.push(0); // trailing junk -> declared length no longer matches
-        assert!(matches!(PtpIpPacket::decode(&bytes), Err(DecodeError::LengthMismatch { .. })));
+        assert!(matches!(
+            PtpIpPacket::decode(&bytes),
+            Err(DecodeError::LengthMismatch { .. })
+        ));
     }
 }
