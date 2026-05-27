@@ -11,3 +11,8 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
+
+# `generate` CLI: concatenate camera-config-evidence/v1 files -> reviewable manifest proposal.
+[[bin]]
+name = "camera-config-generate"
+path = "src/bin/generate.rs"
