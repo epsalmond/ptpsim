@@ -145,6 +145,18 @@ App Phase B (optional, after A): replace RealCameraPTPIPSession transaction
 sequencing with the PtpSession feed/poll pump; keep concrete public methods as thin
 wrappers so FixtureDemoViewModel is untouched.
 
+## Dev iteration loop (fast config iteration)
+The app always resolves **locally** (embedded FFI, sans-io) — never remotely — so the
+loop tunes the exact path that ships. Two pieces:
+- **Hot-reload the bundle from the existing TUI** (the terminal state injector for
+  simulator builds) on demand — re-run `from_bundle` on the fetched/edited manifest, no
+  rebuild. Edit config → TUI-reload → retry, in seconds.
+- **Capture the engine's resolution-trace into telemetry** (`camera-config.md` §5b):
+  an error and the manifest's answer that produced it surface together, so you see "what
+  the manifest delivered" and edit accordingly.
+Automated mutate→observe→converge iteration is a protocol-mapper concern (a gRPC resolver
+wrapping the sans-io engine over the simulator), NOT an app path — avoids dev/prod skew.
+
 ## Parity harness
 Single source of truth = `packages/protocol-spec/golden/*.yaml`. Extend with
 Swift test vectors (the pinned 82-byte init hex, OpenSession, GetPartialObject,

@@ -362,6 +362,35 @@ The app scans/enumerates/probes (platform I/O) and feeds observed records into
 `resolve` as facts. Identification signatures are PUBLIC (any app needs them);
 distinct from the sensitive establishment handshake (separate section).
 
+## 5b. Resolution trace + the dev iteration loop
+The legibility primitive that makes fast config iteration possible: every decision
+query (`operation_available`, `detect_mode`, `control_for`, `resolve`) can also emit a
+**`ResolutionTrace`** — a structured, serializable, side-effect-free explanation of
+*why* it answered as it did:
+- which tiers merged (`root→mfr→soc→model→fw`) and which one supplied the winning fact;
+- the `(connection, mode)` evaluated, and the path-prefix match that applied;
+- which predicate decided it (`requires`/`detect`/`availableWhen`) and its truth over the
+  supplied observed values;
+- the value-policy applied; and residual `candidates`/`ambiguity` (the funnel's output).
+
+It is pure — computed from the same data, no I/O. **It is what "see what the manifest
+delivered" means.** Two loops consume it, both legible because of it:
+- **App (human loop):** the FFI returns the trace alongside the answer (a `*_explained`
+  variant or a trace field, opt-in for dev/telemetry builds); the app's telemetry
+  captures it verbatim. Flow: error fires → telemetry shows the error *and* the manifest's
+  answer that produced it → edit the manifest → **hot-reload the bundle** (no rebuild) →
+  retry. The app always resolves **locally** (embedded FFI, sans-io) — never remotely —
+  so the loop tunes exactly the path that ships (no dev/prod skew).
+- **Automation (protocol-mapper):** a thin **gRPC resolver wrapping the sans-io engine**
+  (the wrapper owns I/O; the engine stays pure) hosts resolution for an automated
+  mutate→observe→converge loop against the **simulator** (or a camera) — try a manifest,
+  read the trace + the responder's reaction, adjust, repeat. The app feeds *real-usage*
+  telemetry into this; it does **not** host the resolver. → dev-tool follow-up, not engine
+  scope. Keeps the gRPC/I/O in the tool layer where it belongs.
+
+Open: the exact `ResolutionTrace` shape + the FFI surfacing (trace-on-every-call vs an
+`explain()` sibling) — build-time, low-risk.
+
 ## 6. Manifest-DATA vs RUNTIME line (the crux)
 - **DATA (declared):** which connections/modes exist; gating (`modes`/`connections`/
   `requires` predicates); how to enter (`entries`); `detect` predicates; discovery
