@@ -133,6 +133,72 @@ fn value_policy_resolves_initiator_identity_from_manufacturer_tier() {
 }
 
 #[test]
+fn explained_gate_traces_real_data_decisions() {
+    let s = store();
+    // 0x900c is a (usb, RawConversion) op. Over the app connection → WrongConnection,
+    // and the trace says why (what telemetry captures) — no predicate eval needed.
+    let wc = s.operation_available_explained("app".into(), "RawConversion".into(), 0x900c, vec![]);
+    assert!(matches!(wc.availability, Availability::WrongConnection));
+    assert!(!wc.trace.connection_ok);
+    assert!(wc.trace.requires.is_none()); // this op declares no prerequisite
+    assert!(wc.trace.reason.contains("usb"));
+    // Over its own connection/mode → Available, both axes ok.
+    let ok = s.operation_available_explained("usb".into(), "RawConversion".into(), 0x900c, vec![]);
+    assert!(matches!(ok.availability, Availability::Available));
+    assert!(ok.trace.connection_ok && ok.trace.mode_ok);
+    // Unknown op → Unavailable with an explanatory reason.
+    let un =
+        s.operation_available_explained("app".into(), "Shooting/Stills".into(), 0x9999, vec![]);
+    assert!(matches!(un.availability, Availability::Unavailable));
+    assert!(un.trace.reason.contains("not defined"));
+}
+
+#[test]
+fn explained_gate_carries_predicate_leaf_detail_through_ffi() {
+    // Synthetic manifest (FFI plumbing test, NOT camera facts): an op with a
+    // `requires` prerequisite so the leaf-eval detail flows through the boundary.
+    let yaml = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x101c": { name: OpenCap, modes: [Shooting], connections: [app], requires: { prop: "0xd212", mask: 0x00ff, ne: 0 } }
+connections: { app: { kind: ptpip-app } }
+modes: { "Shooting/Stills": {} }
+"#;
+    let s = ConfigStore::from_bundle(yaml.to_string(), None).expect("loads");
+    // Low byte masks to 0 → `ne 0` fails → Blocked, and the leaf shows exactly why.
+    let g = s.operation_available_explained(
+        "app".into(),
+        "Shooting/Stills".into(),
+        0x101c,
+        vec![PropObservation {
+            code: 0xd212,
+            value: 0xab00,
+        }],
+    );
+    assert!(matches!(g.availability, Availability::Blocked));
+    let req = g.trace.requires.expect("requires evaluated");
+    assert!(!req.passed);
+    let leaf = &req.leaves[0];
+    assert_eq!(leaf.prop, "0xd212");
+    assert_eq!(leaf.observed, Some(0xab00));
+    assert_eq!(leaf.effective, Some(0x00));
+    assert!(!leaf.passed);
+    // Satisfy it → Available.
+    let ok = s.operation_available_explained(
+        "app".into(),
+        "Shooting/Stills".into(),
+        0x101c,
+        vec![PropObservation {
+            code: 0xd212,
+            value: 0xab01,
+        }],
+    );
+    assert!(matches!(ok.availability, Availability::Available));
+    assert!(ok.trace.requires.unwrap().passed);
+}
+
+#[test]
 fn detect_mode_from_observed_function_mode() {
     let s = store();
     let obs = vec![PropObservation {

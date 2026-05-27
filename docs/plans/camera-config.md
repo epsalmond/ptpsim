@@ -388,8 +388,13 @@ delivered" means.** Two loops consume it, both legible because of it:
   telemetry into this; it does **not** host the resolver. → dev-tool follow-up, not engine
   scope. Keeps the gRPC/I/O in the tool layer where it belongs.
 
-Open: the exact `ResolutionTrace` shape + the FFI surfacing (trace-on-every-call vs an
-`explain()` sibling) — build-time, low-risk.
+**Landed 2026-05-26** as an `explain()` sibling (not trace-on-every-call):
+`operation_available_explained(connection, mode, op, observed) -> (Availability,
+ResolutionTrace)` in `camera-config` (`trace.rs`), with `Predicate::explain` recording
+every leaf (prop / observed / masked-effective / comparator / passed — no short-circuit).
+FFI exposes it as `operation_available_explained -> GateExplanation`. Remaining (grows
+with the engine): `detect`/`resolve` explained variants + the multi-tier funnel trace
+when the funnel lands.
 
 ## 6. Manifest-DATA vs RUNTIME line (the crux)
 - **DATA (declared):** which connections/modes exist; gating (`modes`/`connections`/

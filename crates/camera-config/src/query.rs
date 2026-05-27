@@ -155,6 +155,66 @@ impl CameraManifest {
         self.modes.keys().map(|s| s.as_str()).collect()
     }
 
+    /// Like [`Self::operation_available`], but also returns a [`ResolutionTrace`]
+    /// explaining the decision (the gating checks + the `requires` predicate's leaf
+    /// evaluations) — for telemetry / config iteration. Same outcome as the fast path.
+    pub fn operation_available_explained(
+        &self,
+        connection: &str,
+        mode_path: &str,
+        code: u16,
+        observed: &PropView,
+    ) -> (Availability, crate::trace::ResolutionTrace) {
+        use crate::trace::ResolutionTrace;
+        let mut connection_ok = false;
+        let mut mode_ok = false;
+        let mut requires = None;
+
+        let (availability, reason) = match self.operation(code) {
+            None => (
+                Availability::Unavailable,
+                format!("operation 0x{code:04x} is not defined"),
+            ),
+            Some(op) => {
+                connection_ok =
+                    op.connections.is_empty() || op.connections.iter().any(|c| c == connection);
+                mode_ok = mode_matches(&op.modes, mode_path);
+                requires = op.requires.as_ref().map(|p| p.explain(observed));
+                if !connection_ok {
+                    (
+                        Availability::WrongConnection,
+                        format!("op valid over {:?}, not '{connection}'", op.connections),
+                    )
+                } else if !mode_ok {
+                    (
+                        Availability::WrongMode,
+                        format!("op valid in modes {:?}, not '{mode_path}'", op.modes),
+                    )
+                } else if requires.as_ref().is_some_and(|r| !r.passed) {
+                    (
+                        Availability::Blocked,
+                        "requires prerequisite unmet (see trace leaves)".to_string(),
+                    )
+                } else {
+                    (Availability::Available, "available".to_string())
+                }
+            }
+        };
+
+        let trace = ResolutionTrace {
+            query: "operation_available".to_string(),
+            connection: connection.to_string(),
+            mode: mode_path.to_string(),
+            op: code,
+            outcome: format!("{availability:?}"),
+            connection_ok,
+            mode_ok,
+            requires,
+            reason,
+        };
+        (availability, trace)
+    }
+
     /// Capabilities in effect at `mode_path`, inheriting from ancestor paths
     /// (`Shooting` caps apply under `Shooting/Stills`). Order: root→leaf.
     pub fn capabilities(&self, mode_path: &str) -> Vec<&str> {

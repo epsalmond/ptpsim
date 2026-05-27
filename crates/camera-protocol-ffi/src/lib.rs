@@ -57,7 +57,7 @@ impl Platform {
 
 /// Availability of an operation across the orthogonal `(connection, mode)` axes
 /// plus its runtime prerequisite.
-#[derive(uniffi::Enum)]
+#[derive(Debug, uniffi::Enum)]
 pub enum Availability {
     Available,
     WrongMode,
@@ -144,6 +144,82 @@ pub enum ResolvedValue {
     Fixed { value: String },
     Generated { scheme: String, persist: bool },
     FromPairing { source: String },
+}
+
+/// Evaluation of one predicate leaf (telemetry / config iteration).
+#[derive(Debug, uniffi::Record)]
+pub struct LeafEval {
+    pub prop: String,
+    pub observed: Option<i64>,
+    pub effective: Option<i64>,
+    pub test: String,
+    pub passed: bool,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct PredicateOutcome {
+    pub passed: bool,
+    pub leaves: Vec<LeafEval>,
+    pub summary: String,
+}
+
+/// The serializable "why" behind a gating decision — capture into telemetry.
+#[derive(Debug, uniffi::Record)]
+pub struct ResolutionTrace {
+    pub query: String,
+    pub connection: String,
+    pub mode: String,
+    pub op: u16,
+    pub outcome: String,
+    pub connection_ok: bool,
+    pub mode_ok: bool,
+    pub requires: Option<PredicateOutcome>,
+    pub reason: String,
+}
+
+/// An availability decision plus the trace explaining it.
+#[derive(Debug, uniffi::Record)]
+pub struct GateExplanation {
+    pub availability: Availability,
+    pub trace: ResolutionTrace,
+}
+
+impl From<cc::LeafEval> for LeafEval {
+    fn from(l: cc::LeafEval) -> Self {
+        LeafEval {
+            prop: l.prop,
+            observed: l.observed,
+            effective: l.effective,
+            test: l.test,
+            passed: l.passed,
+        }
+    }
+}
+
+impl From<cc::PredicateOutcome> for PredicateOutcome {
+    fn from(p: cc::PredicateOutcome) -> Self {
+        PredicateOutcome {
+            passed: p.passed,
+            leaves: p.leaves.into_iter().map(Into::into).collect(),
+            summary: p.summary,
+        }
+    }
+}
+
+impl From<cc::ResolutionTrace> for ResolutionTrace {
+    fn from(t: cc::ResolutionTrace) -> Self {
+        ResolutionTrace {
+            query: t.query,
+            connection: t.connection,
+            mode: t.mode,
+            op: t.op,
+            outcome: t.outcome,
+            connection_ok: t.connection_ok,
+            mode_ok: t.mode_ok,
+            requires: t.requires.map(Into::into),
+            reason: t.reason,
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -288,6 +364,28 @@ impl ConfigStore {
             .manifest
             .operation_available(&connection, &mode, op, &prop_view(&observed))
             .into()
+    }
+
+    /// Like `operation_available`, but also returns the trace explaining the
+    /// decision (gating checks + the `requires` predicate's leaf evaluations) —
+    /// capture into telemetry for fast config iteration.
+    pub fn operation_available_explained(
+        &self,
+        connection: String,
+        mode: String,
+        op: u16,
+        observed: Vec<PropObservation>,
+    ) -> GateExplanation {
+        let (availability, trace) = self.inner.manifest.operation_available_explained(
+            &connection,
+            &mode,
+            op,
+            &prop_view(&observed),
+        );
+        GateExplanation {
+            availability: availability.into(),
+            trace: trace.into(),
+        }
     }
 
     /// Intent→mechanism: how to set `prop` over this connection/mode (App vendor-step

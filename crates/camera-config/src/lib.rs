@@ -12,6 +12,7 @@ pub mod model;
 pub mod predicate;
 pub mod query;
 pub mod store;
+pub mod trace;
 pub mod version;
 
 pub use error::{Lint, ManifestError, Severity};
@@ -24,6 +25,7 @@ pub use model::{
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
 pub use store::ConfigStore;
+pub use trace::{LeafEval, PredicateOutcome, ResolutionTrace};
 pub use version::VersionScheme;
 
 /// The manifest schema version this build understands.
