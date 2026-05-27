@@ -92,12 +92,17 @@ uniffi is `crate-type = ["staticlib", "cdylib"]`. Standard per-platform packagin
 
 ## 6. Status — what's ready vs pending
 
-- **Ready:** the §A query surface (above), and the GFX100 II manifest across **all five
-  connections** (`app` WiFi-AP, `ble`, `wireless-tether` PCSS, `usb`, `xlv` HTTP).
-- **Partial — byte codecs (§B / G1–G3):** `ptp-core` framing + `fuji_framing` +
-  liveview parse + `usb_ptp` exist; the 82-byte reference app init, Fuji value codecs, and Fuji
-  parse helpers are **not built yet**. You can validate the seam against the simulator
-  before these land; flag what you need.
+- **Ready:** the §A query surface (above) + `operation_available_explained`
+  (`GateExplanation` — the resolution trace for telemetry); the GFX100 II manifest
+  across **all five connections** (`app` WiFi-AP, `ble`, `wireless-tether` PCSS, `usb`,
+  `xlv` HTTP); firmware-tier overlays via `ConfigStore.from_tiers(body, manufacturer,
+  fw_overlays)` (e.g. `fw2.40.yaml` flips XLV to HTTPS).
+- **Codecs (§B):** `build_app_init` (G1, the 82-byte init), `validate_init_ack`, and
+  `encode_value(raw, width)` (G2 — the generic value encoder; per-value semantics live
+  in `descriptor.values`/`labels`) are **landed + in the bindings**. Plus existing
+  `fuji_framing` + liveview parse + `usb_ptp`. **Pending — G3 parse helpers**
+  (`parse_live_status` 0xd212, `parse_object_handle_list` 0xd621, Fuji `parse_object_info`,
+  `parse_event`): not built — they need byte-layout evidence. Flag what you need.
 - **Sync only.** A stateful session driver (feed/poll) is a later phase; today's
   surface is synchronous pure queries.
 
