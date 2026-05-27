@@ -2,10 +2,37 @@
 
 Status: drafted 2026-05-25, iterating. Sibling to the ptpsim core-build plan.
 
+## Intent (what this refactor is FOR)
+This is an **app refactor** that extracts camera quirks and control codes out of
+app source into **configuration** (the `camera-config` manifest). The point is to
+make adding/fixing camera support a **data change** — reviewable, and eventually
+OTA-able — instead of an app-release-gated code change. That is the payoff: faster
+iteration and faster support rollout. The value accrues **incrementally** — every
+quirk/opcode/mode moved into the manifest is one more thing that is, from then on, a
+config change, not a Swift edit. So this is not all-or-nothing; partial extraction
+already pays.
+
 ## Resolved decisions (this revision)
-- **Scope: Phase A fully, Phase B gated.** Plan and ship Phase A (codec swap,
-  parity, delete Swift codec). The A→B boundary is a decision gate decided
-  *after* A ships in the field.
+- **Scope: Phase A fully, Phase B gated.** Plan and ship Phase A (extract the codec
+  + gating into the manifest/FFI, prove parity, delete the Swift codec). The A→B
+  boundary is a decision gate decided *after* A lands.
+- **Iterate by parity UNIT TESTS, not a runtime feature flag.** Stand the
+  manifest/FFI path up *beside* the legacy Swift codec and assert they produce
+  identical bytes/decisions — table-driven over the golden corpus + the full option
+  lists. The dev loop is `cargo test`/`swift test`, not a deploy + field A/B (too
+  coarse, too slow). Delete the legacy path when the table is green. A flag, if it
+  survives at all, is just the final cutover toggle — **not** the iteration mechanism.
+  *Final confidence* is a separate, integration-level check (connect/live-view/
+  download against the simulator + a real camera) — still no coarse runtime flag.
+- **One-time directory reorg, up front.** The tree was organized around protocol
+  living *in* the app; that assumption is now inverted. Reorganize to reflect the new
+  boundary: (a) the generated FFI bindings module, (b) the I/O/transport layer that
+  STAYS Swift (sockets/USB/BLE/Wi-Fi), (c) orchestration, (d) the legacy codec,
+  quarantined so its deletion is clean. The app agent owns the layout; deliberate
+  early step, not a rename-everything detour.
+- **The app agent owns the client application-side FFI tooling.** Generating bindings, building/
+  packaging the xcframework, AND wiring it into the client application build are theirs. ptpsim
+  provides the crate + the `uniffi-bindgen` binary + `docs/INTEGRATION.md`.
 - **Init packet: manifest data.** The Fuji reference app `InitCommandRequest`'s 26-byte
   name field + 28-byte `liveViewInitTail` live in the camera manifest
   (`transports.init`: `friendlyNameLength`, `tailHex`), NOT a hardcoded Rust
@@ -94,23 +121,29 @@ Action = SendOnCommand|FrameReady|PropertyUpdate|DownloadChunk|Done|Error. App's
 - **Runtime FFI:** anything touching bytes (build/parse), value *encoding*
   (kept in Rust to avoid drift), `control_for`/`supports_operation`.
 
-## Migration order (buildable & shippable each step)
-Pre-work (ptpsim, no app change): G1–G6 + golden fixtures for every Swift packet
-test.
-App Phase A (flag default OFF):
-1. Build wiring: cargo→xcframework in `scripts/`+`project.yml`; vendor bindings
-   as `client applicationProtocol` module; add `AppFeatureFlag.ptpsimCodec`.
-2. Parity shim: `PTPCodec` Swift protocol, `LegacyFujiPTPIPCodec` vs
-   `PtpsimCodec`; route `FujiPTPIP.*` call sites through injected codec.
-3. Flip by family in risk order: (a) compressed build/parse, (b) value encoders,
-   (c) dataset parsers, (d) init (G1) behind its own sub-flag until 82-byte
-   parity is green.
-4. Field A/B via flag; compare connect-success + download-integrity telemetry.
-5. Delete Swift codec (FujiPTPIP.swift ~459–1670) once corpus parity green AND
-   field A/B clean. Shrink FujiPTPIPTests to FFI-parity tests. → anti-vcam gate.
+## Migration order (parity-unit-test-driven; buildable each step)
+Pre-work (ptpsim, no app change): G1–G6 + golden fixtures for every Swift packet test.
+App Phase A — the iteration loop is **parity unit tests**, not a runtime flag:
+0. **Directory reorg** (above): carve out the FFI bindings module, the Swift I/O
+   layer that stays, orchestration, and a quarantined legacy-codec target.
+1. **FFI tooling (app side):** generate Swift bindings + build/package the xcframework
+   + wire it into the client application build (XcodeGen `project.yml`, no precedent). Embed the
+   `camera-config-data` bundle. (`docs/INTEGRATION.md` §3–4.)
+2. **Two implementations, side by side:** keep the legacy Swift codec; add the
+   manifest/FFI path behind a `PTPCodec` Swift protocol (`LegacyFujiPTPIPCodec` vs
+   `FfiCodec`). This is the test harness, not a runtime toggle.
+3. **Drive convergence by table-driven parity tests** over the golden corpus + the
+   full option lists: assert legacy and FFI paths produce identical bytes/decisions.
+   Iterate in `swift test`/`cargo test`. Work family by family (compressed build/parse,
+   value encoders, dataset parsers, then init G1) — each "done" = its parity table green.
+4. **Delete the legacy codec** (`FujiPTPIP.swift ~459–1670`) once every parity entry
+   passes; shrink `FujiPTPIPTests` to FFI-parity tests. → anti-vcam gate.
+5. **Integration validation** (final confidence, separate from the loop): full
+   connect/live-view/download against `camera-sim-service` + a real GFX100 II on the
+   FFI path. No coarse runtime A/B flag required — you just run the new path.
 App Phase B (optional, after A): replace RealCameraPTPIPSession transaction
-sequencing (~1919–2129) with the PtpSession feed/poll pump; keep concrete public
-methods as thin wrappers so FixtureDemoViewModel is untouched.
+sequencing with the PtpSession feed/poll pump; keep concrete public methods as thin
+wrappers so FixtureDemoViewModel is untouched.
 
 ## Parity harness
 Single source of truth = `packages/protocol-spec/golden/*.yaml`. Extend with
