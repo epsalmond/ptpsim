@@ -1,0 +1,5979 @@
+# GENERATED FIRST-PASS — review, do NOT hand-edit. Reproduce with:
+#   cargo run -p camera-config --bin camera-config-generate -- \
+#     --enrich packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml \
+#     packages/camera-config-data/fuji/gfx100ii/evidence/probe/*.jsonl
+#
+# Curated gfx100ii.yaml (connections/modes/entries/establishment + curated op/prop
+# names & labels) ENRICHED with the active-probe evidence (props/descriptors/ops).
+# RECONCILE before promoting to gfx100ii.yaml + repointing the simulator:
+#  - mode-name casing: probe 'shooting/stills' vs curated 'Shooting/Stills';
+#    'video' vs 'Shooting/Video'; 'raw-conv/backup-restore' vs RawConversion +
+#    BackupRestore; plus probe-only 'card-reader','tether-auto','.../pc-priority'. Dedupe/map.
+#  - the probe covered usb + wireless-tether ONLY — app/ble/xlv props are NOT enriched
+#    (need a probe over those connections, or shared-property modeling).
+#  - ~312 raw_0x props carry real (camera-sourced) descriptors but need names/labels.
+#  - probe ops (raw_0x) are gated by lowercase mode paths — remap to curated casing.
+schema: camera-config/v1
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: '2.30'
+  identities:
+    ptpDeviceName: GFX100 II
+evidence:
+  activeProbe:
+    kind: wire-capture
+    path: evidence/probe/
+    date: ''
+  captureXlv:
+    kind: wire-capture
+    path: tools/protocol-mapper/scripts/xlv_capsweep.py
+    date: ''
+  docImageTransfer:
+    kind: doc
+    path: evidence/IMAGE_TRANSFER_FW0230.md
+    date: ''
+  docXlv:
+    kind: doc
+    path: docs/TRANSPORTS.md#xlv
+    date: ''
+  iosBLEReg:
+    kind: ios-source
+    path: client application/.../client applicationCore/FujiBLERegistration.swift
+    date: 2026-05-26
+  iosFeatureMode:
+    kind: ios-source
+    path: client application/.../client applicationCore/CameraFeatureMode.swift
+    date: 2026-05-26
+  iosFujiPTPIP:
+    kind: ios-source
+    path: client application/.../client applicationCore/FujiPTPIP.swift
+    date: 2026-05-26
+  iosStartupSeq:
+    kind: ios-source
+    path: client application/.../client applicationApp/FujiCameraAPISession.swift
+    date: 2026-05-26
+  staticRawStudio:
+    path: evidence/RAW_CONVERSION.md
+    date: ''
+  wireTether:
+    kind: wire-capture
+    path: tools/protocol-mapper/WIRED_TETHER_CONTROL.md
+    date: 2026-05-23
+transports: {}
+operations:
+  '0x1001':
+    name: raw_0x1001
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1002':
+    name: raw_0x1002
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1003':
+    name: raw_0x1003
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1004':
+    name: raw_0x1004
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1005':
+    name: raw_0x1005
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1006':
+    name: raw_0x1006
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1007':
+    name: raw_0x1007
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1008':
+    name: GetBackupSettingsInfo
+    owner: standard-ptp
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - BackupRestore
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - staticRawStudio
+  '0x1009':
+    name: GetBackupSettings
+    owner: standard-ptp
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - BackupRestore
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - staticRawStudio
+  '0x100a':
+    name: raw_0x100a
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x100b':
+    name: raw_0x100b
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x100c':
+    name: SetBackupSettingsInfo
+    owner: standard-ptp
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - BackupRestore
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - staticRawStudio
+  '0x100d':
+    name: SetBackupSettings
+    owner: standard-ptp
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - BackupRestore
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - staticRawStudio
+  '0x100e':
+    name: raw_0x100e
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x100f':
+    name: raw_0x100f
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - tether-auto
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1014':
+    name: raw_0x1014
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1015':
+    name: raw_0x1015
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1016':
+    name: raw_0x1016
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1017':
+    name: raw_0x1017
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x1018':
+    name: TerminateOpenCapture
+    owner: standard-ptp
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - Shooting
+    connections: []
+    requires: null
+    evidence:
+    - iosStartupSeq
+  '0x101b':
+    name: raw_0x101b
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - tether-auto
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - activeProbe
+  '0x101c':
+    name: InitiateOpenCapture
+    owner: standard-ptp
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - Shooting
+    connections: []
+    requires: null
+    evidence:
+    - iosStartupSeq
+  '0x900c':
+    name: SendRawFromPcObjectInfo
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - RawConversion
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - staticRawStudio
+  '0x900d':
+    name: SendRawFromPcObject
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - RawConversion
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - staticRawStudio
+  '0x9018':
+    name: SdkGetLiveViewData
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - Shooting/Stills
+    connections:
+    - wireless-tether
+    requires: null
+    evidence:
+    - wireTether
+  '0x901d':
+    name: raw_0x901d
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - raw-conv/backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - tether-auto
+    - video
+    connections:
+    - usb
+    - wireless-tether
+    requires: null
+    evidence:
+    - activeProbe
+  '0x902b':
+    name: FujiVendor902B
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - Shooting/Stills
+    connections: []
+    requires: null
+    evidence:
+    - iosStartupSeq
+  '0x9801':
+    name: raw_0x9801
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - tether-auto
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - activeProbe
+  '0x9802':
+    name: raw_0x9802
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - tether-auto
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - activeProbe
+  '0x9803':
+    name: raw_0x9803
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - tether-auto
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - activeProbe
+  '0x9805':
+    name: raw_0x9805
+    owner: ''
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - card-reader
+    - tether-auto
+    connections:
+    - usb
+    requires: null
+    evidence:
+    - activeProbe
+properties:
+  '0x5001':
+    name: raw_0x5001
+    ptpName: null
+    type: u8
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x5003':
+    name: raw_0x5003
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x5005':
+    name: raw_0x5005
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 2
+      - 4
+      - 6
+      - 8
+      - 32769
+      - 32770
+      - 32771
+      - 32774
+      - 32775
+      - 32776
+      - 32777
+      - 32778
+      - 32800
+      - 32801
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x5007':
+    name: aperture
+    ptpName: FNumber
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 280
+      source: camera
+    controls:
+      wireless-tether:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
+    labels: {}
+    evidence:
+    - wireTether
+  '0x500a':
+    name: raw_0x500a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 32770
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x500b':
+    name: raw_0x500b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x500d':
+    name: shutterSpeed
+    ptpName: ExposureTime
+    type: u32
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 244
+      - 307
+      - 387
+      - 488
+      - 615
+      - 775
+      - 976
+      - 1230
+      - 1550
+      - 1953
+      - 2460
+      - 3100
+      - 3906
+      - 4921
+      - 6200
+      - 7812
+      - 9843
+      - 12401
+      - 15625
+      - 19686
+      - 24803
+      - 31250
+      - 39372
+      - 49606
+      - 62500
+      - 78745
+      - 99212
+      - 125000
+      - 157490
+      - 198425
+      - 250000
+      - 314980
+      - 396850
+      - 500000
+      - 629960
+      - 793700
+      - 1000000
+      - 1259921
+      - 1587401
+      - 2000000
+      - 2519842
+      - 3174802
+      - 4000000
+      - 5039684
+      - 6349604
+      - 8000000
+      - 10079368
+      - 12699208
+      - 16000000
+      - 20158736
+      - 25398416
+      - 32000000
+      - 40317473
+      - 50796833
+      - 64000000
+      - 64000030
+      - 64000060
+      - 64000090
+      - 64000120
+      - 64000150
+      - 64000180
+      source: camera
+    controls:
+      wireless-tether:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
+    labels: {}
+    evidence:
+    - wireTether
+  '0x500e':
+    name: exposureProgram
+    ptpName: ExposureProgram
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - wireTether
+  '0x500f':
+    name: iso
+    ptpName: ExposureIndex
+    type: u32
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 40
+      - 80
+      - 100
+      - 125
+      - 160
+      - 200
+      - 250
+      - 320
+      - 400
+      - 500
+      - 640
+      - 800
+      - 1000
+      - 1250
+      - 1600
+      - 2000
+      - 2500
+      - 3200
+      - 4000
+      - 5000
+      - 6400
+      - 8000
+      - 10000
+      - 12800
+      - 25600
+      - 51200
+      - 102400
+      - -1
+      - -2
+      - -3
+      source: camera
+    controls:
+      wireless-tether:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
+    labels: {}
+    evidence:
+    - wireTether
+  '0x5010':
+    name: raw_0x5010
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - -5000
+      - -4667
+      - -4333
+      - -4000
+      - -3667
+      - -3333
+      - -3000
+      - -2667
+      - -2333
+      - -2000
+      - -1667
+      - -1333
+      - -1000
+      - -667
+      - -333
+      - 0
+      - 333
+      - 667
+      - 1000
+      - 1333
+      - 1667
+      - 2000
+      - 2333
+      - 2667
+      - 3000
+      - 3333
+      - 3667
+      - 4000
+      - 4333
+      - 4667
+      - 5000
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x5011':
+    name: raw_0x5011
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x5012':
+    name: raw_0x5012
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 10000
+      - 2000
+      - 0
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x5015':
+    name: raw_0x5015
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0x501c':
+    name: raw_0x501c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 32769
+      - 32770
+      - 32771
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd001':
+    name: raw_0xd001
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 20
+      - 13
+      - 14
+      - 15
+      - 16
+      - 17
+      - 18
+      - 19
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd007':
+    name: raw_0xd007
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 65535
+      - 100
+      - 200
+      - 400
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd008':
+    name: raw_0xd008
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd00a':
+    name: raw_0xd00a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd00b':
+    name: raw_0xd00b
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd00c':
+    name: raw_0xd00c
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd017':
+    name: raw_0xd017
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd018':
+    name: raw_0xd018
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd01b':
+    name: raw_0xd01b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd01c':
+    name: raw_0xd01c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 0
+      - 4096
+      - 8192
+      - 12288
+      - 16384
+      - 20480
+      - 24576
+      - 28672
+      - 32768
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd020':
+    name: raw_0xd020
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd022':
+    name: raw_0xd022
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd023':
+    name: raw_0xd023
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd024':
+    name: raw_0xd024
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd025':
+    name: raw_0xd025
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd026':
+    name: raw_0xd026
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd027':
+    name: raw_0xd027
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd028':
+    name: raw_0xd028
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd029':
+    name: raw_0xd029
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd02a':
+    name: raw_0xd02a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 32769
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd02b':
+    name: raw_0xd02b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 32769
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd02d':
+    name: raw_0xd02d
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 32769
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd02e':
+    name: raw_0xd02e
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 0
+      - 1
+      - 2
+      - 32768
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd030':
+    name: raw_0xd030
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd031':
+    name: raw_0xd031
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd032':
+    name: raw_0xd032
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd033':
+    name: raw_0xd033
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd034':
+    name: raw_0xd034
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd035':
+    name: raw_0xd035
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd036':
+    name: raw_0xd036
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd037':
+    name: raw_0xd037
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd038':
+    name: raw_0xd038
+    ptpName: null
+    type: u32
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd039':
+    name: raw_0xd039
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 65536
+      - 1
+      - 131072
+      - 2
+      - 524288
+      - 8
+      - 16
+      - 16777216
+      - 256
+      - 33554432
+      - 512
+      - 67108864
+      - 1024
+      - 134217728
+      - 2048
+      - 268435456
+      - 4096
+      - 196611
+      - 131075
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd040':
+    name: raw_0xd040
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd100':
+    name: raw_0xd100
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd104':
+    name: raw_0xd104
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd106':
+    name: raw_0xd106
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd10a':
+    name: raw_0xd10a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd10b':
+    name: raw_0xd10b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd112':
+    name: raw_0xd112
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd136':
+    name: raw_0xd136
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd145':
+    name: raw_0xd145
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd153':
+    name: raw_0xd153
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd154':
+    name: raw_0xd154
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd155':
+    name: raw_0xd155
+    ptpName: null
+    type: u32
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd156':
+    name: raw_0xd156
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd157':
+    name: raw_0xd157
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd158':
+    name: raw_0xd158
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd159':
+    name: raw_0xd159
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 0
+      - 15
+      - 30
+      - 45
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd15a':
+    name: raw_0xd15a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
+      - 14
+      - 15
+      - 16
+      - 17
+      - 18
+      - 19
+      - 20
+      - 21
+      - 22
+      - 23
+      - 24
+      - 25
+      - 26
+      - 27
+      - 28
+      - 29
+      - 30
+      - 31
+      - 32
+      - 33
+      - 34
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd15b':
+    name: raw_0xd15b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd16d':
+    name: raw_0xd16d
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd16e':
+    name: raw_0xd16e
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd16f':
+    name: raw_0xd16f
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 0
+      - 1
+      - 32769
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd170':
+    name: raw_0xd170
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd171':
+    name: raw_0xd171
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      - 0
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd173':
+    name: raw_0xd173
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd174':
+    name: raw_0xd174
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd17b':
+    name: raw_0xd17b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd17e':
+    name: raw_0xd17e
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd17f':
+    name: raw_0xd17f
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 4
+      - 5
+      - 7
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd180':
+    name: raw_0xd180
+    ptpName: null
+    type: undef
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd181':
+    name: raw_0xd181
+    ptpName: null
+    type: undef
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd182':
+    name: raw_0xd182
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd183':
+    name: raw_0xd183
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd184':
+    name: raw_0xd184
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd185':
+    name: rawSettings
+    ptpName: null
+    type: u8a
+    access: readWrite
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - staticRawStudio
+  '0xd186':
+    name: raw_0xd186
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd187':
+    name: raw_0xd187
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd188':
+    name: raw_0xd188
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd189':
+    name: raw_0xd189
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd18a':
+    name: raw_0xd18a
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd18b':
+    name: raw_0xd18b
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd18c':
+    name: raw_0xd18c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd18d':
+    name: raw_0xd18d
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd18e':
+    name: raw_0xd18e
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd18f':
+    name: raw_0xd18f
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd190':
+    name: raw_0xd190
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd191':
+    name: raw_0xd191
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd192':
+    name: raw_0xd192
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd193':
+    name: raw_0xd193
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd194':
+    name: raw_0xd194
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd195':
+    name: raw_0xd195
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd196':
+    name: raw_0xd196
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd197':
+    name: raw_0xd197
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd198':
+    name: raw_0xd198
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd199':
+    name: raw_0xd199
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd19a':
+    name: raw_0xd19a
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd19b':
+    name: raw_0xd19b
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd19c':
+    name: raw_0xd19c
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd19d':
+    name: raw_0xd19d
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd19e':
+    name: raw_0xd19e
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd19f':
+    name: raw_0xd19f
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1a0':
+    name: raw_0xd1a0
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1a1':
+    name: raw_0xd1a1
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1a2':
+    name: raw_0xd1a2
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1a3':
+    name: raw_0xd1a3
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1a4':
+    name: raw_0xd1a4
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1a5':
+    name: raw_0xd1a5
+    ptpName: null
+    type: null
+    access: null
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1b0':
+    name: raw_0xd1b0
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1b1':
+    name: raw_0xd1b1
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1b2':
+    name: raw_0xd1b2
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 7
+      - 18
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1b4':
+    name: raw_0xd1b4
+    ptpName: null
+    type: undef
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1b5':
+    name: raw_0xd1b5
+    ptpName: null
+    type: undef
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1b6':
+    name: raw_0xd1b6
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1b7':
+    name: raw_0xd1b7
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1bc':
+    name: raw_0xd1bc
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1bd':
+    name: raw_0xd1bd
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1be':
+    name: raw_0xd1be
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1c1':
+    name: raw_0xd1c1
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1c2':
+    name: raw_0xd1c2
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1c3':
+    name: raw_0xd1c3
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1c4':
+    name: raw_0xd1c4
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1c5':
+    name: raw_0xd1c5
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd1c6':
+    name: raw_0xd1c6
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd201':
+    name: raw_0xd201
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 4
+      - 2
+      - 3
+      - 11
+      - 13
+      - 5
+      - 18
+      - 16
+      - 10
+      - 12
+      - 14
+      - 15
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd207':
+    name: raw_0xd207
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd208':
+    name: raw_0xd208
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 512
+      - 4
+      - 772
+      - 1280
+      - 12
+      - 32768
+      - 40960
+      - 6
+      - 36864
+      - 2
+      - 37120
+      - 1
+      - 37632
+      - 5
+      - 14
+      - 37376
+      - 64
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd209':
+    name: raw_0xd209
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd20a':
+    name: raw_0xd20a
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd20b':
+    name: raw_0xd20b
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd20c':
+    name: raw_0xd20c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd20d':
+    name: raw_0xd20d
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd20e':
+    name: raw_0xd20e
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd211':
+    name: raw_0xd211
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd212':
+    name: raw_0xd212
+    ptpName: null
+    type: undef
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd215':
+    name: raw_0xd215
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd216':
+    name: raw_0xd216
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd21c':
+    name: raw_0xd21c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 0
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd21d':
+    name: raw_0xd21d
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd222':
+    name: raw_0xd222
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd223':
+    name: raw_0xd223
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd224':
+    name: raw_0xd224
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd225':
+    name: raw_0xd225
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd226':
+    name: raw_0xd226
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd227':
+    name: raw_0xd227
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd228':
+    name: raw_0xd228
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd229':
+    name: raw_0xd229
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd22a':
+    name: raw_0xd22a
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd22b':
+    name: raw_0xd22b
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd22c':
+    name: raw_0xd22c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd22d':
+    name: raw_0xd22d
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd22e':
+    name: raw_0xd22e
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd22f':
+    name: raw_0xd22f
+    ptpName: null
+    type: undef
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd230':
+    name: raw_0xd230
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd231':
+    name: raw_0xd231
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd232':
+    name: raw_0xd232
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd233':
+    name: raw_0xd233
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd234':
+    name: raw_0xd234
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd235':
+    name: raw_0xd235
+    ptpName: null
+    type: undef
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd236':
+    name: raw_0xd236
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd237':
+    name: raw_0xd237
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd238':
+    name: raw_0xd238
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd23a':
+    name: raw_0xd23a
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd23b':
+    name: raw_0xd23b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd23c':
+    name: raw_0xd23c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd23e':
+    name: raw_0xd23e
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd23f':
+    name: raw_0xd23f
+    ptpName: null
+    type: u32
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd240':
+    name: raw_0xd240
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 280
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd241':
+    name: raw_0xd241
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd242':
+    name: raw_0xd242
+    ptpName: null
+    type: i32
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 100
+      - 125
+      - 160
+      - 200
+      - 250
+      - 320
+      - 400
+      - 500
+      - 640
+      - 800
+      - 1000
+      - 1250
+      - 1600
+      - 2000
+      - 2500
+      - 3200
+      - 4000
+      - 5000
+      - 6400
+      - 8000
+      - 10000
+      - 12800
+      - 25600
+      - -10
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd243':
+    name: raw_0xd243
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - -2000
+      - -1667
+      - -1333
+      - -1000
+      - -667
+      - -333
+      - 0
+      - 333
+      - 667
+      - 1000
+      - 1333
+      - 1667
+      - 2000
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd244':
+    name: raw_0xd244
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd245':
+    name: raw_0xd245
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd246':
+    name: raw_0xd246
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 2
+      - 5
+      - 7
+      - 8
+      - 9
+      - 11
+      - 12
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd247':
+    name: raw_0xd247
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd248':
+    name: raw_0xd248
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 3
+      - 4
+      - 5
+      - 6
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd249':
+    name: raw_0xd249
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd24a':
+    name: raw_0xd24a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd24b':
+    name: raw_0xd24b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd24c':
+    name: raw_0xd24c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd24d':
+    name: raw_0xd24d
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd24e':
+    name: raw_0xd24e
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 7
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd24f':
+    name: raw_0xd24f
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd250':
+    name: raw_0xd250
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd251':
+    name: raw_0xd251
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd252':
+    name: raw_0xd252
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd253':
+    name: raw_0xd253
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd254':
+    name: raw_0xd254
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 8
+      - 10
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd255':
+    name: raw_0xd255
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd256':
+    name: raw_0xd256
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd257':
+    name: raw_0xd257
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd258':
+    name: raw_0xd258
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd259':
+    name: raw_0xd259
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd25a':
+    name: raw_0xd25a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd25b':
+    name: raw_0xd25b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd25c':
+    name: raw_0xd25c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 50
+      - 55
+      - 60
+      - 65
+      - 70
+      - 75
+      - 80
+      - 85
+      - 90
+      - 95
+      - 100
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd25d':
+    name: raw_0xd25d
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd25e':
+    name: raw_0xd25e
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd260':
+    name: raw_0xd260
+    ptpName: null
+    type: u16
+    access: gs2
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd261':
+    name: raw_0xd261
+    ptpName: null
+    type: u16
+    access: gs2
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd262':
+    name: raw_0xd262
+    ptpName: null
+    type: u16
+    access: gs2
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd263':
+    name: raw_0xd263
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd264':
+    name: raw_0xd264
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd265':
+    name: raw_0xd265
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd266':
+    name: raw_0xd266
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd267':
+    name: raw_0xd267
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd268':
+    name: raw_0xd268
+    ptpName: null
+    type: u16
+    access: gs2
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd269':
+    name: raw_0xd269
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd26a':
+    name: raw_0xd26a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd26b':
+    name: raw_0xd26b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd26c':
+    name: raw_0xd26c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 2
+      - 4
+      - 6
+      - 8
+      - 32769
+      - 32770
+      - 32771
+      - 32774
+      - 32775
+      - 32776
+      - 32777
+      - 32778
+      - 32800
+      - 32801
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd26d':
+    name: raw_0xd26d
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd26e':
+    name: raw_0xd26e
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd26f':
+    name: raw_0xd26f
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd270':
+    name: raw_0xd270
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
+      - 14
+      - 15
+      - 16
+      - 17
+      - 18
+      - 19
+      - 20
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd271':
+    name: raw_0xd271
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 100
+      - 200
+      - 400
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd272':
+    name: raw_0xd272
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd273':
+    name: raw_0xd273
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd274':
+    name: raw_0xd274
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd275':
+    name: raw_0xd275
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd276':
+    name: raw_0xd276
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd277':
+    name: raw_0xd277
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd278':
+    name: raw_0xd278
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd279':
+    name: raw_0xd279
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd27a':
+    name: raw_0xd27a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 0
+      - 4096
+      - 8192
+      - 12288
+      - 16384
+      - 20480
+      - 24576
+      - 28672
+      - 32768
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd27b':
+    name: raw_0xd27b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd27c':
+    name: raw_0xd27c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd27d':
+    name: raw_0xd27d
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd27e':
+    name: raw_0xd27e
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd27f':
+    name: raw_0xd27f
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd280':
+    name: raw_0xd280
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd281':
+    name: raw_0xd281
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 4096
+      - 4100
+      - 4101
+      - 4102
+      - 4103
+      - 4104
+      - 4105
+      - 4106
+      - 4107
+      - 13
+      - 14
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd282':
+    name: raw_0xd282
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd283':
+    name: raw_0xd283
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd284':
+    name: raw_0xd284
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd285':
+    name: raw_0xd285
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd286':
+    name: raw_0xd286
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd287':
+    name: raw_0xd287
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd288':
+    name: raw_0xd288
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - -300
+      - -285
+      - -270
+      - -255
+      - -240
+      - -225
+      - -210
+      - -195
+      - -180
+      - -165
+      - -150
+      - -135
+      - -120
+      - -105
+      - -90
+      - -75
+      - -60
+      - -45
+      - -30
+      - -15
+      - 0
+      - 15
+      - 30
+      - 45
+      - 60
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd289':
+    name: raw_0xd289
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd28a':
+    name: raw_0xd28a
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - -300
+      - -285
+      - -270
+      - -255
+      - -240
+      - -225
+      - -210
+      - -195
+      - -180
+      - -165
+      - -150
+      - -135
+      - -120
+      - -105
+      - -90
+      - -75
+      - -60
+      - -45
+      - -30
+      - -15
+      - 0
+      - 15
+      - 30
+      - 45
+      - 60
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd28b':
+    name: raw_0xd28b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd28c':
+    name: raw_0xd28c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd28d':
+    name: raw_0xd28d
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd28e':
+    name: raw_0xd28e
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd28f':
+    name: raw_0xd28f
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd290':
+    name: raw_0xd290
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd291':
+    name: raw_0xd291
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd292':
+    name: raw_0xd292
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd293':
+    name: raw_0xd293
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd294':
+    name: raw_0xd294
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd297':
+    name: raw_0xd297
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 4
+      - 3
+      - 2
+      - 1
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd298':
+    name: raw_0xd298
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a0':
+    name: raw_0xd2a0
+    ptpName: null
+    type: undef
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a1':
+    name: raw_0xd2a1
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a2':
+    name: raw_0xd2a2
+    ptpName: null
+    type: undef
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a3':
+    name: raw_0xd2a3
+    ptpName: null
+    type: undef
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a4':
+    name: raw_0xd2a4
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a5':
+    name: raw_0xd2a5
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 10000
+      - 5000
+      - 3000
+      - 0
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a6':
+    name: raw_0xd2a6
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a7':
+    name: raw_0xd2a7
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 100
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a8':
+    name: raw_0xd2a8
+    ptpName: null
+    type: undef
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2a9':
+    name: raw_0xd2a9
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2aa':
+    name: raw_0xd2aa
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2ab':
+    name: raw_0xd2ab
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2ac':
+    name: raw_0xd2ac
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2b1':
+    name: raw_0xd2b1
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2b3':
+    name: raw_0xd2b3
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd2c9':
+    name: raw_0xd2c9
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd303':
+    name: raw_0xd303
+    ptpName: null
+    type: u8
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd304':
+    name: raw_0xd304
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd305':
+    name: raw_0xd305
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd306':
+    name: raw_0xd306
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd307':
+    name: raw_0xd307
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd310':
+    name: raw_0xd310
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd320':
+    name: raw_0xd320
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd321':
+    name: raw_0xd321
+    ptpName: null
+    type: i16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd322':
+    name: raw_0xd322
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd323':
+    name: raw_0xd323
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd33f':
+    name: raw_0xd33f
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd346':
+    name: raw_0xd346
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd347':
+    name: raw_0xd347
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd34a':
+    name: raw_0xd34a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd34b':
+    name: raw_0xd34b
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd34d':
+    name: raw_0xd34d
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd34e':
+    name: raw_0xd34e
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd351':
+    name: raw_0xd351
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd352':
+    name: raw_0xd352
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd359':
+    name: raw_0xd359
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd35e':
+    name: raw_0xd35e
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd35f':
+    name: raw_0xd35f
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd364':
+    name: raw_0xd364
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd365':
+    name: raw_0xd365
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd366':
+    name: raw_0xd366
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd368':
+    name: raw_0xd368
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd369':
+    name: raw_0xd369
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 3
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd36a':
+    name: raw_0xd36a
+    ptpName: null
+    type: u32
+    access: readOnly
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd36b':
+    name: raw_0xd36b
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd36d':
+    name: raw_0xd36d
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd36e':
+    name: raw_0xd36e
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd36f':
+    name: raw_0xd36f
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd370':
+    name: raw_0xd370
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd372':
+    name: raw_0xd372
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd374':
+    name: raw_0xd374
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd375':
+    name: raw_0xd375
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd376':
+    name: raw_0xd376
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd381':
+    name: raw_0xd381
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: enum
+      values:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd38a':
+    name: raw_0xd38a
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd38b':
+    name: raw_0xd38b
+    ptpName: null
+    type: u16
+    access: readOnly
+    descriptor:
+      form: enum
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd38c':
+    name: raw_0xd38c
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd38d':
+    name: raw_0xd38d
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd38e':
+    name: raw_0xd38e
+    ptpName: null
+    type: str
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd395':
+    name: raw_0xd395
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: range
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd406':
+    name: raw_0xd406
+    ptpName: null
+    type: str
+    access: readWrite
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xd407':
+    name: raw_0xd407
+    ptpName: null
+    type: u32
+    access: readOnly
+    descriptor:
+      form: none
+      values: []
+      source: camera
+    controls: {}
+    labels: {}
+    evidence:
+    - activeProbe
+  '0xdf00':
+    name: functionModeMajor
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - iosStartupSeq
+  '0xdf01':
+    name: functionMode
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - iosStartupSeq
+  '0xdf28':
+    name: featureVersion
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - iosStartupSeq
+    - docImageTransfer
+  '0xdf2a':
+    name: liveDf2a
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - iosStartupSeq
+workflows:
+  cameraSettings:
+    transport: ble
+    states: []
+    transitions: []
+    sockets: {}
+    evidence:
+    - iosFeatureMode
+  gpsPersistence:
+    transport: ble
+    states: []
+    transitions: []
+    sockets: {}
+    evidence:
+    - iosFeatureMode
+  imageTransfer:
+    transport: app
+    states: []
+    transitions: []
+    sockets: {}
+    evidence:
+    - iosFeatureMode
+  liveView:
+    transport: app
+    states: []
+    transitions: []
+    sockets: {}
+    evidence:
+    - iosFeatureMode
+  remoteShutter:
+    transport: ble
+    states: []
+    transitions: []
+    sockets: {}
+    evidence:
+    - iosFeatureMode
+media: null
+events: {}
+quirks:
+- id: pcss-knock-once-per-boot
+  appliesTo:
+  - wireless-tether
+  behavior: The PCSS knock (UDP 51562) is accepted only once per camera boot; after one session the camera ICMP-rejects further knocks until power-cycled.
+  evidence: wireTether
+modes:
+  BackupRestore:
+    capabilities:
+    - settingsBackup
+    - settingsRestore
+    detect: null
+  ImageTransfer:
+    capabilities:
+    - browse
+    - download
+    detect:
+      prop: '0xdf01'
+      eq: 20
+  RawConversion:
+    capabilities:
+    - rawDevelop
+    detect: null
+  RemoteTrigger:
+    capabilities:
+    - shutterControl
+    - eepromTransfer
+    - gpsPersistence
+    - cameraSettings
+    - screenOn
+    detect: null
+  Shooting:
+    capabilities:
+    - exposureControl
+    detect: null
+  Shooting/Stills:
+    capabilities:
+    - liveView
+    - remoteControl
+    - screenTakeover
+    detect:
+      prop: '0xdf01'
+      eq: 22
+  Webcam:
+    capabilities:
+    - webcamStream
+    detect: null
+  card-reader:
+    capabilities: []
+    detect: null
+  raw-conv/backup-restore:
+    capabilities: []
+    detect: null
+  shooting/stills:
+    capabilities: []
+    detect: null
+  shooting/stills/pc-priority:
+    capabilities: []
+    detect: null
+  tether-auto:
+    capabilities: []
+    detect: null
+  video:
+    capabilities: []
+    detect: null
+connections:
+  app:
+    ref: null
+    availableWhen: null
+    requiresHardware: null
+    kind: ptpip-app
+    establishment: ble-to-wifi-ap-v1
+    modes:
+    - Shooting/Stills
+    - ImageTransfer
+    entries:
+    - to: Shooting/Stills
+      from: null
+      steps:
+      - setProp: '0xdf00'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 6
+        params: []
+        tolerant: false
+        repeat: 1
+      - setProp: '0xdf01'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 22
+        params: []
+        tolerant: false
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: '0xdf2a'
+        sendOp: null
+        value: null
+        params: []
+        tolerant: false
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x902b'
+        value: null
+        params: []
+        tolerant: false
+        repeat: 4
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x101c'
+        value: null
+        params: []
+        tolerant: false
+        repeat: 1
+      userInstruction: null
+      requires: null
+    - to: ImageTransfer
+      from: null
+      steps:
+      - setProp: null
+        getProp: '0xd212'
+        readEcho: null
+        sendOp: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: '0xdf01'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 20
+        params: []
+        tolerant: false
+        repeat: 1
+      - setProp: null
+        getProp: '0xdf28'
+        readEcho: null
+        sendOp: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: '0xdf28'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 3
+        params: []
+        tolerant: false
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9054'
+        value: null
+        params:
+        - 268435457
+        tolerant: true
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9055'
+        value: null
+        params:
+        - 268435457
+        tolerant: true
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9050'
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9053'
+        value: null
+        params:
+        - 0
+        - 30000
+        tolerant: true
+        repeat: 1
+      userInstruction: null
+      requires: null
+    - to: ImageTransfer
+      from: Shooting/Stills
+      steps:
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x1018'
+        value: null
+        params:
+        - runtime: openCaptureTxId
+        tolerant: false
+        repeat: 1
+      - setProp: null
+        getProp: '0xd212'
+        readEcho: null
+        sendOp: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: '0xdf01'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 20
+        params: []
+        tolerant: false
+        repeat: 1
+      - setProp: null
+        getProp: '0xdf28'
+        readEcho: null
+        sendOp: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: '0xdf28'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 3
+        params: []
+        tolerant: false
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9054'
+        value: null
+        params:
+        - 268435457
+        tolerant: true
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9055'
+        value: null
+        params:
+        - 268435457
+        tolerant: true
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9050'
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9053'
+        value: null
+        params:
+        - 0
+        - 30000
+        tolerant: true
+        repeat: 1
+      userInstruction: null
+      requires: null
+    enables: []
+    bind:
+      command: 55740
+      event: 55741
+      liveview: 55742
+    discovery:
+      mechanism: ble
+      announces: camera
+    init:
+      identity:
+        guid: initiatorGuid
+        friendlyName: initFriendlyName
+      nameFieldByteCount: 26
+      tailEvidence: iosFujiPTPIP
+  ble:
+    ref: null
+    availableWhen: null
+    requiresHardware: null
+    kind: ble
+    establishment: ble-pairing-v1
+    modes:
+    - RemoteTrigger
+    entries: []
+    enables:
+    - to: app
+      mechanism: ble-to-wifi-ap-v1
+      userInstruction: null
+      requires: null
+    discovery:
+      mechanism: ble
+      announces: camera
+    evidence:
+    - iosBLEReg
+    gatt:
+      service: A9D2B304-E8D6-4902-8336-352B772D7597
+      registrationService: 123D8F06-62A1-4935-9322-833C531EE225
+      deviceIdNumber: F557D96B-8284-4667-8793-B971C1DECA2A
+      pairingKey: ABA356EB-9633-4E60-B73F-F52516DBD671
+      apState: A68E3F66-0FCC-4395-8D4C-AA980B5877FA
+      cameraSSIDName: BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4
+      cameraWiFiPassphrase: E809256A-915C-4967-92E8-53B7D4CAD213
+      fileTransferXHalfService: 462426E1-D712-4A28-BE62-61A786DAA866
+  usb:
+    ref: null
+    availableWhen: null
+    requiresHardware: null
+    kind: usb-ptp
+    establishment: null
+    modes:
+    - RawConversion
+    - BackupRestore
+    - Webcam
+    entries:
+    - to: RawConversion
+      from: null
+      steps: []
+      userInstruction: Set the camera's USB connection mode for RAW conversion / tethering, then connect USB
+      requires: null
+    - to: BackupRestore
+      from: null
+      steps: []
+      userInstruction: Set the camera's USB connection mode for settings backup/restore, then connect USB
+      requires: null
+    enables: []
+    discovery:
+      mechanism: usb
+      announces: none
+      vid: 1227
+    evidence:
+    - staticRawStudio
+    platforms:
+    - macos
+    - android
+    - linux
+  wireless-tether:
+    ref: null
+    availableWhen: null
+    requiresHardware: null
+    kind: ptpip-direct
+    establishment: pcss-knock-v1
+    modes:
+    - Shooting/Stills
+    - RemoteTrigger
+    entries: []
+    enables: []
+    discovery:
+      mechanism: pcss-knock
+      announces: none
+      autoDiscoverable: false
+    evidence:
+    - wireTether
+    knock:
+      callbackPort: 51560
+      knockPort: 51562
+      commandPort: 15740
+      protocol: PCSS/1.0
+  xlv:
+    ref: null
+    availableWhen: null
+    requiresHardware: null
+    kind: http-xlv
+    establishment: null
+    modes:
+    - Shooting/Stills
+    entries: []
+    enables: []
+    auth:
+      scheme: bearer
+      header: XLV_Auth
+      tokenSource: private-overlay
+    discovery:
+      mechanism: http-probe
+      announces: none
+      autoDiscoverable: false
+    evidence:
+    - docXlv
+    - captureXlv
+    responseEncoding: base64-json
+    routes:
+      GET /camera/functions/{code}/get:
+        handler: property.get
+      GET /camera/functions/{code}/cap:
+        handler: property.cap
+    transport:
+      scheme: http
+      port: 80
+values: {}

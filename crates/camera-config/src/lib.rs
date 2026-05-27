@@ -16,7 +16,7 @@ pub mod trace;
 pub mod version;
 
 pub use error::{Lint, ManifestError, Severity};
-pub use generate::generate_proposal;
+pub use generate::{enrich, generate_proposal};
 pub use model::{
     parse_hex_code, AvailableWhen, CameraIdentity, CameraManifest, Connection,
     ConnectionTransition, Control, Descriptor, ManufacturerDefaults, Mode, ModeEntry, Operation,

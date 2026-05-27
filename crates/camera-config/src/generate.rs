@@ -215,6 +215,47 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
     }
 }
 
+/// Enrich a curated `base` manifest with a generated `proposal` (from probe evidence).
+/// **Curated structure wins**: entries, establishment, connection/mode definitions,
+/// operation names + gating, and property names + labels are preserved. The proposal
+/// only *adds* — new properties/operations, and it fills a curated property's missing
+/// `type`/`access`/`descriptor`. This is the generator→merge→review step: the output
+/// is a first-pass for human reconciliation (probe mode-name casing vs curated;
+/// connections the probe didn't cover), not a silent overwrite.
+pub fn enrich(mut base: CameraManifest, proposal: CameraManifest) -> CameraManifest {
+    for (code, pp) in proposal.properties {
+        base.properties
+            .entry(code)
+            .and_modify(|bp| {
+                if bp.ptype.is_none() {
+                    bp.ptype = pp.ptype.clone();
+                }
+                if bp.access.is_none() {
+                    bp.access = pp.access.clone();
+                }
+                if bp.descriptor.is_none() {
+                    bp.descriptor = pp.descriptor.clone();
+                }
+            })
+            .or_insert(pp);
+    }
+    // Curated operations win entirely (name + gating); the proposal adds the rest.
+    for (code, po) in proposal.operations {
+        base.operations.entry(code).or_insert(po);
+    }
+    // Proposal-only connection/mode nodes are added (bare) for review; curated win.
+    for (id, c) in proposal.connections {
+        base.connections.entry(id).or_insert(c);
+    }
+    for (path, m) in proposal.modes {
+        base.modes.entry(path).or_insert(m);
+    }
+    for (id, e) in proposal.evidence {
+        base.evidence.entry(id).or_insert(e);
+    }
+    base
+}
+
 /// Extract numeric enum/range values; string value sets (e.g. ImageSize) are left
 /// for curation (the schema's `values` is integer-typed).
 fn numeric_values(v: Option<&serde_json::Value>) -> Vec<i64> {
@@ -273,6 +314,40 @@ mod tests {
         assert_eq!(d.form, "enum");
         assert_eq!(d.values, vec![280, 400, 560]);
         assert_eq!(d.source, Some(ValueSource::Camera));
+    }
+
+    #[test]
+    fn enrich_adds_probe_props_but_curated_structure_wins() {
+        let proposal = generate_proposal(EVIDENCE);
+        let curated = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x1014": { name: GetDevicePropDesc, modes: [Shooting/Stills] }
+properties:
+  "0x5007": { name: aperture, labels: { 280: "f/2.8" } }
+connections:
+  app: { kind: ptpip-app }
+"#,
+        )
+        .unwrap();
+        let m = enrich(curated, proposal);
+        // Curated op keeps its name + gating (proposal's raw_0x1014 does NOT overwrite).
+        assert_eq!(m.operations["0x1014"].name, "GetDevicePropDesc");
+        assert_eq!(
+            m.operations["0x1014"].modes,
+            vec!["Shooting/Stills".to_string()]
+        );
+        // Curated property keeps its name/labels but gains the probe's type/descriptor.
+        let ap = &m.properties["0x5007"];
+        assert_eq!(ap.name, "aperture");
+        assert_eq!(ap.labels.get("280").map(String::as_str), Some("f/2.8"));
+        assert_eq!(ap.ptype.as_deref(), Some("u16")); // filled from the proposal
+        assert!(ap.descriptor.is_some());
+        // Curated connection preserved; probe-only connection added for review.
+        assert_eq!(m.connections["app"].kind.as_deref(), Some("ptpip-app"));
+        assert!(m.connections.contains_key("usb"));
     }
 
     #[test]
