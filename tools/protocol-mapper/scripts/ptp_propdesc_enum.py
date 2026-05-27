@@ -122,6 +122,50 @@ def fmt_tsv(v):
     return str(v)
 
 
+class PTPIP:
+    """PTP-IP transport adapter with the PTPUSB interface, over a session socket from
+    connect_wireless_tether.connect_ptpip (which already did Init + OpenSession + a tid=2 GetDeviceInfo)."""
+
+    def __init__(self, sock, ptp_op, ptpip):
+        self.sock = sock
+        self._op = ptp_op
+        self._ip = ptpip
+        self.tid = 2                       # connect_ptpip consumed up to tid 2
+
+    def open(self):
+        return b"", 0x2001                 # already opened during connect_ptpip
+
+    def _txn(self, code, params=()):
+        self.tid += 1
+        return self._op(self.sock, self._ip.build_ptp_command(code, self.tid, *params))
+
+    def device_info(self):
+        return self._txn(0x1001)
+
+
+def build_ptpip(camera_ip, my_ip, guid, name):
+    import contextlib
+    import os
+    pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .../protocol-mapper (holds rce/)
+    if pkg_root not in sys.path:
+        sys.path.insert(0, pkg_root)
+    import connect_wireless_tether as cwt
+    from rce.tools.fuji_ble_gps import ptpip
+    with contextlib.redirect_stdout(sys.stderr):   # cwt prints the handshake to stdout — keep our JSONL clean
+        my_ip = my_ip or cwt.my_ip_for(camera_ip)
+        srv = cwt.open_callback_listener(cwt.CALLBACK_PORT)
+        cb = cwt.wait_for_callback(srv, camera_ip, my_ip, 12, 10.0, False)
+        srv.close()
+        if cb is None:
+            sys.exit("ptpip: camera never called back — PCSS knock is once-per-boot; power-cycle the camera")
+        notify = cwt.handle_notify(cb)
+        cb.close()
+        sock = cwt.connect_ptpip(camera_ip, my_ip, guid or cwt.DEFAULT_GUID, name, 6.0, notify["dscport"])
+    if isinstance(sock, int):
+        sys.exit("ptpip: session establish failed (code %d)" % sock)
+    return PTPIP(sock, cwt.ptp_op, ptpip)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--format", choices=["jsonl", "tsv", "both"], default="both")
@@ -131,11 +175,18 @@ def main():
     ap.add_argument("--open-capture", action="store_true",
                     help="InitiateOpenCapture (0x101C) before enumerating to unlock capture-gated props; "
                          "TerminateOpenCapture + CloseSession after")
+    ap.add_argument("--transport", choices=["usb", "ptpip"], default="usb")
+    ap.add_argument("--camera-ip", default=None, help="wireless-tether (ptpip) camera IP")
+    ap.add_argument("--my-ip", default=None, help="this host IP (default: auto-route)")
+    ap.add_argument("--guid", default=None, help="initiator GUID hex (default: connect_wireless_tether's)")
+    ap.add_argument("--name", default="mbp")
     args = ap.parse_args()
+    if args.transport == "ptpip" and not args.camera_ip:
+        ap.error("--transport ptpip requires --camera-ip")
     run = args.run or datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    p = PTPUSB()
+    p = build_ptpip(args.camera_ip, args.my_ip, args.guid, args.name) if args.transport == "ptpip" else PTPUSB()
     p.open()
     d, _ = p.device_info()
     info = parse_deviceinfo(d)
