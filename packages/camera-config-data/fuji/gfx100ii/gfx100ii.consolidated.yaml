@@ -14,6 +14,7 @@
 #  - ~312 raw_0x props carry real (camera-sourced) descriptors but need names/labels.
 #  - probe ops (raw_0x) are gated by lowercase mode paths — remap to curated casing.
 schema: camera-config/v1
+schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II
@@ -63,7 +64,7 @@ evidence:
 transports: {}
 operations:
   '0x1001':
-    name: raw_0x1001
+    name: GetDeviceInfo
     owner: ''
     dataPhase: null
     params: []
@@ -84,7 +85,7 @@ operations:
     evidence:
     - activeProbe
   '0x1002':
-    name: raw_0x1002
+    name: OpenSession
     owner: ''
     dataPhase: null
     params: []
@@ -105,7 +106,7 @@ operations:
     evidence:
     - activeProbe
   '0x1003':
-    name: raw_0x1003
+    name: CloseSession
     owner: ''
     dataPhase: null
     params: []
@@ -126,7 +127,7 @@ operations:
     evidence:
     - activeProbe
   '0x1004':
-    name: raw_0x1004
+    name: GetStorageIDs
     owner: ''
     dataPhase: null
     params: []
@@ -147,7 +148,7 @@ operations:
     evidence:
     - activeProbe
   '0x1005':
-    name: raw_0x1005
+    name: GetStorageInfo
     owner: ''
     dataPhase: null
     params: []
@@ -168,7 +169,7 @@ operations:
     evidence:
     - activeProbe
   '0x1006':
-    name: raw_0x1006
+    name: GetNumObjects
     owner: ''
     dataPhase: null
     params: []
@@ -189,7 +190,7 @@ operations:
     evidence:
     - activeProbe
   '0x1007':
-    name: raw_0x1007
+    name: GetObjectHandles
     owner: ''
     dataPhase: null
     params: []
@@ -240,7 +241,7 @@ operations:
     evidence:
     - staticRawStudio
   '0x100a':
-    name: raw_0x100a
+    name: GetThumb
     owner: ''
     dataPhase: null
     params: []
@@ -261,7 +262,7 @@ operations:
     evidence:
     - activeProbe
   '0x100b':
-    name: raw_0x100b
+    name: DeleteObject
     owner: ''
     dataPhase: null
     params: []
@@ -312,7 +313,7 @@ operations:
     evidence:
     - staticRawStudio
   '0x100e':
-    name: raw_0x100e
+    name: InitiateCapture
     owner: ''
     dataPhase: null
     params: []
@@ -330,7 +331,7 @@ operations:
     evidence:
     - activeProbe
   '0x100f':
-    name: raw_0x100f
+    name: FormatStore
     owner: ''
     dataPhase: null
     params: []
@@ -346,7 +347,7 @@ operations:
     evidence:
     - activeProbe
   '0x1014':
-    name: raw_0x1014
+    name: GetDevicePropDesc
     owner: ''
     dataPhase: null
     params: []
@@ -367,7 +368,7 @@ operations:
     evidence:
     - activeProbe
   '0x1015':
-    name: raw_0x1015
+    name: GetDevicePropValue
     owner: ''
     dataPhase: null
     params: []
@@ -388,7 +389,7 @@ operations:
     evidence:
     - activeProbe
   '0x1016':
-    name: raw_0x1016
+    name: SetDevicePropValue
     owner: ''
     dataPhase: null
     params: []
@@ -409,7 +410,7 @@ operations:
     evidence:
     - activeProbe
   '0x1017':
-    name: raw_0x1017
+    name: ResetDevicePropValue
     owner: ''
     dataPhase: null
     params: []
@@ -442,7 +443,7 @@ operations:
     evidence:
     - iosStartupSeq
   '0x101b':
-    name: raw_0x101b
+    name: GetPartialObject
     owner: ''
     dataPhase: null
     params: []
@@ -617,7 +618,7 @@ operations:
     - activeProbe
 properties:
   '0x5001':
-    name: raw_0x5001
+    name: BatteryLevel
     ptpName: null
     type: u8
     access: readOnly
@@ -630,7 +631,7 @@ properties:
     evidence:
     - activeProbe
   '0x5003':
-    name: raw_0x5003
+    name: ImageSize
     ptpName: null
     type: str
     access: readWrite
@@ -643,7 +644,7 @@ properties:
     evidence:
     - activeProbe
   '0x5005':
-    name: raw_0x5005
+    name: WhiteBalance
     ptpName: null
     type: u16
     access: readWrite
@@ -688,7 +689,7 @@ properties:
     evidence:
     - wireTether
   '0x500a':
-    name: raw_0x500a
+    name: FocusMode
     ptpName: null
     type: u16
     access: readWrite
@@ -702,7 +703,7 @@ properties:
     evidence:
     - activeProbe
   '0x500b':
-    name: raw_0x500b
+    name: ExposureMeteringMode
     ptpName: null
     type: u16
     access: readWrite
@@ -855,7 +856,7 @@ properties:
     evidence:
     - wireTether
   '0x5010':
-    name: raw_0x5010
+    name: ExposureBiasCompensation
     ptpName: null
     type: i16
     access: readWrite
@@ -899,7 +900,7 @@ properties:
     evidence:
     - activeProbe
   '0x5011':
-    name: raw_0x5011
+    name: DateTime
     ptpName: null
     type: str
     access: readWrite
@@ -912,7 +913,7 @@ properties:
     evidence:
     - activeProbe
   '0x5012':
-    name: raw_0x5012
+    name: CaptureDelay
     ptpName: null
     type: u16
     access: readWrite
@@ -928,7 +929,7 @@ properties:
     evidence:
     - activeProbe
   '0x5015':
-    name: raw_0x5015
+    name: Sharpness
     ptpName: null
     type: i16
     access: readWrite
@@ -941,7 +942,7 @@ properties:
     evidence:
     - activeProbe
   '0x501c':
-    name: raw_0x501c
+    name: FocusMeteringMode
     ptpName: null
     type: u16
     access: readWrite

@@ -11,6 +11,7 @@ pub mod generate;
 pub mod model;
 pub mod predicate;
 pub mod query;
+pub mod std_names;
 pub mod store;
 pub mod trace;
 pub mod version;

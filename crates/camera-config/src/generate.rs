@@ -142,7 +142,9 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
             (
                 format!("0x{code:04x}"),
                 Operation {
-                    name: format!("raw_0x{code:04x}"),
+                    name: crate::std_names::standard_operation_name(code)
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("raw_0x{code:04x}")),
                     owner: String::new(),
                     data_phase: None,
                     params: Vec::new(),
@@ -170,7 +172,9 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
             (
                 format!("0x{code:04x}"),
                 Property {
-                    name: format!("raw_0x{code:04x}"),
+                    name: crate::std_names::standard_property_name(code)
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("raw_0x{code:04x}")),
                     ptp_name: None,
                     ptype: agg.ptype,
                     access: agg.access,
@@ -308,6 +312,7 @@ mod tests {
     fn property_carries_type_access_and_camera_sourced_descriptor() {
         let m = generate_proposal(EVIDENCE);
         let p = &m.properties["0x5007"];
+        assert_eq!(p.name, "FNumber"); // standard PTP code named from the spec table
         assert_eq!(p.ptype.as_deref(), Some("u16"));
         assert_eq!(p.access.as_deref(), Some("readWrite"));
         let d = p.descriptor.as_ref().unwrap();
