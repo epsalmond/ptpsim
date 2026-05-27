@@ -31,6 +31,26 @@ pub use version::VersionScheme;
 /// The manifest schema version this build understands.
 pub const SCHEMA_VERSION: &str = "camera-config/v1";
 
+/// Deep-merge two YAML values, `overlay` winning. Mappings merge recursively;
+/// everything else (scalars, sequences) is replaced by `overlay`. The basis of
+/// firmware-tier overlays — see [`CameraManifest::from_tiers`].
+fn merge_yaml(base: serde_yaml::Value, overlay: serde_yaml::Value) -> serde_yaml::Value {
+    use serde_yaml::Value::Mapping;
+    match (base, overlay) {
+        (Mapping(mut b), Mapping(o)) => {
+            for (k, ov) in o {
+                let merged = match b.remove(&k) {
+                    Some(bv) => merge_yaml(bv, ov),
+                    None => ov,
+                };
+                b.insert(k, merged);
+            }
+            Mapping(b)
+        }
+        (_, overlay) => overlay,
+    }
+}
+
 impl CameraManifest {
     /// Parse a manifest from YAML text. Does not fail on unresolved evidence —
     /// call [`CameraManifest::validate`] for those lints.
@@ -41,6 +61,20 @@ impl CameraManifest {
 
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, ManifestError> {
         Self::from_yaml(&std::fs::read_to_string(path)?)
+    }
+
+    /// Load a body manifest with firmware-tier overlays deep-merged on top, most-
+    /// specific last (`from_tiers(body, &[fw240])`). The merge is **field-level**
+    /// at the YAML level — an overlay overrides just the keys it names (e.g. only
+    /// `connections.xlv.transport`), so a fw delta need not restate whole records.
+    /// Maps merge recursively; scalars and sequences are replaced by the overlay.
+    pub fn from_tiers(base_yaml: &str, overlays: &[&str]) -> Result<Self, ManifestError> {
+        let mut merged: serde_yaml::Value = serde_yaml::from_str(base_yaml)?;
+        for ov in overlays {
+            let ov: serde_yaml::Value = serde_yaml::from_str(ov)?;
+            merged = merge_yaml(merged, ov);
+        }
+        Ok(serde_yaml::from_value(merged)?)
     }
 
     /// Serialize back to YAML (used by the generator to write proposals).

@@ -294,15 +294,22 @@ impl ConfigStore {
     ) -> Result<Arc<Self>, ConfigError> {
         let m = cc::CameraManifest::from_yaml(&body_yaml)
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
-        m.require_supported_schema()
-            .map_err(|e| ConfigError::Schema(e.to_string()))?;
-        let mut store = cc::ConfigStore::new(m);
-        if let Some(my) = manufacturer_yaml {
-            let d = cc::ManufacturerDefaults::from_yaml(&my)
-                .map_err(|e| ConfigError::Parse(e.to_string()))?;
-            store = store.with_manufacturer(d);
-        }
-        Ok(Arc::new(ConfigStore { inner: store }))
+        build_store(m, manufacturer_yaml)
+    }
+
+    /// Like `from_bundle`, but with firmware-tier overlays deep-merged onto the body
+    /// (most-specific last), e.g. `fw_overlays = [fw2.40.yaml]` flips XLV to HTTPS.
+    /// Field-level merge — an overlay overrides only the keys it names.
+    #[uniffi::constructor]
+    pub fn from_tiers(
+        body_yaml: String,
+        manufacturer_yaml: Option<String>,
+        fw_overlays: Vec<String>,
+    ) -> Result<Arc<Self>, ConfigError> {
+        let refs: Vec<&str> = fw_overlays.iter().map(String::as_str).collect();
+        let m = cc::CameraManifest::from_tiers(&body_yaml, &refs)
+            .map_err(|e| ConfigError::Parse(e.to_string()))?;
+        build_store(m, manufacturer_yaml)
     }
 
     /// Connections valid on `platform` under the camera's firmware (instax filtered
@@ -482,6 +489,21 @@ impl ConfigStore {
 // ----------------------------------------------------------------------------
 // helpers
 // ----------------------------------------------------------------------------
+
+fn build_store(
+    m: cc::CameraManifest,
+    manufacturer_yaml: Option<String>,
+) -> Result<Arc<ConfigStore>, ConfigError> {
+    m.require_supported_schema()
+        .map_err(|e| ConfigError::Schema(e.to_string()))?;
+    let mut store = cc::ConfigStore::new(m);
+    if let Some(my) = manufacturer_yaml {
+        let d = cc::ManufacturerDefaults::from_yaml(&my)
+            .map_err(|e| ConfigError::Parse(e.to_string()))?;
+        store = store.with_manufacturer(d);
+    }
+    Ok(Arc::new(ConfigStore { inner: store }))
+}
 
 fn prop_view(observed: &[PropObservation]) -> cc::PropView {
     observed.iter().map(|p| (p.code, p.value)).collect()

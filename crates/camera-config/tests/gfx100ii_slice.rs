@@ -220,6 +220,37 @@ fn xlv_models_protocol_shape_with_access_gate_kept_private() {
 }
 
 #[test]
+fn fw_overlay_flips_xlv_to_https_field_level() {
+    // Baseline body: XLV over plain HTTP:80.
+    let base = gfx();
+    let xlv = &base.connections["xlv"];
+    let t = xlv.extra.get("transport").unwrap();
+    assert_eq!(t["scheme"].as_str(), Some("http"));
+    assert_eq!(t["port"].as_u64(), Some(80));
+
+    // Merge the fw2.40 overlay → only transport flips; routes/auth/modes inherited.
+    let merged = CameraManifest::from_tiers(
+        &data("fuji/gfx100ii/gfx100ii.yaml"),
+        &[&data("fuji/gfx100ii/fw2.40.yaml")],
+    )
+    .expect("tiers merge");
+    assert_eq!(merged.camera.firmware, "2.40");
+    let xlv2 = &merged.connections["xlv"];
+    let t2 = xlv2.extra.get("transport").unwrap();
+    assert_eq!(t2["scheme"].as_str(), Some("https"), "fw2.40 → HTTPS");
+    assert_eq!(t2["port"].as_u64(), Some(443));
+    assert_eq!(
+        xlv2.extra.get("tls").unwrap()["mode"].as_str(),
+        Some("self-signed")
+    );
+    // Inherited (not restated in the overlay): the routes + bearer auth survive.
+    assert!(xlv2.extra.contains_key("routes"));
+    assert!(xlv2.extra.contains_key("auth"));
+    // Other connections untouched by the fw overlay.
+    assert!(merged.connections.contains_key("app"));
+}
+
+#[test]
 fn manufacturer_tier_supplies_fixed_initiator_identity() {
     let store = ConfigStore::new(gfx())
         .with_manufacturer(ManufacturerDefaults::from_yaml(&data("fuji/fuji.yaml")).unwrap());

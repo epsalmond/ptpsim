@@ -1,0 +1,17 @@
+# Firmware-tier overlay for GFX100 II fw 2.40 — deep-merged OVER gfx100ii.yaml
+# (overlay wins field-level; maps merge, scalars/sequences replace). Only the
+# deltas from the model baseline live here.
+schema: camera-config/v1
+camera: { firmware: "2.40" }
+
+connections:
+  xlv:
+    # fw2.40: XLV moves from plain HTTP to HTTPS, and the client must trust the
+    # camera's per-instance self-signed cert. Field-level override of just the
+    # transport — routes/auth/modes are inherited from gfx100ii.yaml.
+    transport: { scheme: https, port: 443 }
+    tls: { mode: self-signed }
+
+# Also known (not yet modeled — needs the establishment handshake characterized):
+# fw2.40 BLE "pair" requires PIN-confirmation, where fw2.30 just accepts. That will
+# overlay the ble connection's establishment when the PIN flow is captured.

@@ -123,8 +123,7 @@ connections:
     kind: http-xlv                   # camera HTTP web service — a SECOND protocol family (routes, not opcodes)
     # fw-divergent transport (belongs in a fw-tier overlay once the merge loader lands):
     #   fw≤2.30 → plain HTTP:80 ; fw≥2.40 → HTTPS:443, client must trust the per-camera self-signed cert.
-    transport: { scheme: http, port: 80 }
-    tlsFw240: { scheme: https, port: 443, cert: self-signed }   # fw≥2.40 override (documented; overlay-able)
+    transport: { scheme: http, port: 80 }   # fw≤2.30 baseline; fw2.40.yaml overlays HTTPS:443
     discovery: { mechanism: http-probe, announces: none, autoDiscoverable: false }   # needs the camera's LAN address
     # Wire-confirmed routes (sweep vs 192.168.4.169); base64-JSON bodies.
     routes:

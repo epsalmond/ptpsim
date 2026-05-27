@@ -199,6 +199,25 @@ modes: { "Shooting/Stills": {} }
 }
 
 #[test]
+fn from_tiers_applies_fw_overlay_through_ffi() {
+    let s = ConfigStore::from_tiers(
+        data("fuji/gfx100ii/gfx100ii.yaml"),
+        Some(data("fuji/fuji.yaml")),
+        vec![data("fuji/gfx100ii/fw2.40.yaml")],
+    )
+    .expect("tiered bundle loads");
+    // The fw2.40 overlay applied: XLV connection still present (HTTPS is in extra),
+    // and the rest of the seam still answers. Smoke that the merged store works.
+    let xlv = &s.connections(Platform::Macos);
+    assert!(xlv.iter().any(|c| c.id == "xlv"));
+    // Manufacturer tier still resolves through the tiered constructor.
+    assert!(matches!(
+        s.value("initiatorGuid".into()),
+        Some(ResolvedValue::Fixed { .. })
+    ));
+}
+
+#[test]
 fn detect_mode_from_observed_function_mode() {
     let s = store();
     let obs = vec![PropObservation {
