@@ -24,7 +24,7 @@ Examples:
 
   extract_golden.py frida --blobs <dir> --select op:0x1002 \
       --label open-session-request --description "OpenSession on reference app cmd channel" \
-      --transport app --firmware 02.30
+      --transport app --firmware 2.30
   extract_golden.py pcap  --file capture.pcapng --host 192.168.0.1 --port 55740 \
       --select op:0x1001 --label get-device-info-request --transport pcss
 """

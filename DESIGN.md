@@ -499,7 +499,7 @@ schema: camera-manifest/v1
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II
-  firmware: "02.30"
+  firmware: "2.30"
   identities:
     ptpDeviceName: GFX100 II
     serialPattern: "xxxxxxxxxxxxxxxxxxxxxxxx"

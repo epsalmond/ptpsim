@@ -168,7 +168,7 @@ mod tests {
             CameraIdentity {
                 manufacturer: "FUJIFILM".into(),
                 model: "GFX100 II".into(),
-                firmware: "02.30".into(),
+                firmware: "2.30".into(),
                 identities: Default::default(),
             },
         );

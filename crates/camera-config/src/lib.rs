@@ -134,7 +134,7 @@ schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II
-  firmware: "02.30"
+  firmware: "2.30"
 operations:
   "0x101c":
     name: InitiateOpenCapture

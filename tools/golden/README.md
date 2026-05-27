@@ -32,7 +32,7 @@ that carries a serial.
 
 
 python3 tools/golden/extract_golden.py frida --blobs <dir> --select op:0x1002 \
-    --label open-session-request --transport app --firmware 02.30 \
+    --label open-session-request --transport app --firmware 2.30 \
     --description "OpenSession on the reference app command channel."
 
 # tcpdump/pcap — note the mandatory --host (only that address is copied):
@@ -68,7 +68,7 @@ source:
   selector: op:0x1002
   extracted: "2026-05-25"
 transport: app
-firmware: "02.30"
+firmware: "2.30"
 framing: fuji-compressed      # or ptpip-standard
 decoded: { type: "OperationRequest", op: "0x1002", tid: 1 }
 redactions: []

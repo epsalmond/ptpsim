@@ -29,7 +29,7 @@ schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II
-  firmware: "02.30"
+  firmware: "2.30"
 operations:
   "0x1002": { name: OpenSession, owner: standard-ptp }
   "0x9054": { name: GetCurrentObjectMeta, owner: fuji-vendor, workflows: [imageImport] }

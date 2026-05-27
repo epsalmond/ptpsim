@@ -10,7 +10,7 @@ source:
   selector: op:0x9054
   extracted: "2026-05-25"
 transport: app
-firmware: "02.30"
+firmware: "2.30"
 framing: fuji-compressed
 decoded:
   type: "OperationRequest"
