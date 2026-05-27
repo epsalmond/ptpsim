@@ -7,8 +7,12 @@
 
 pub mod error;
 pub mod fuji_framing;
+pub mod fuji_init;
 pub mod liveview;
 pub mod quirk;
 pub mod usb_ptp;
+pub mod value_codec;
 
 pub use error::FramingError;
+pub use fuji_init::{build_app_init, validate_init_ack};
+pub use value_codec::{encode_value, ValueWidth};

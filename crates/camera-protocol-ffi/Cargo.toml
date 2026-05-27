@@ -18,6 +18,7 @@ path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
 camera-config = { workspace = true }
+protocol-primitives = { workspace = true }
 uniffi = { version = "0.28", features = ["cli"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }

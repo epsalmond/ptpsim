@@ -8,4 +8,10 @@ pub enum FramingError {
     UnsupportedPacket,
     #[error(transparent)]
     Encode(#[from] ptp_core::EncodeError),
+    #[error("GUID must be 16 bytes, got {0}")]
+    GuidLength(usize),
+    #[error("value {value:#x} does not fit in a {width}-byte property")]
+    ValueTooWide { value: u32, width: u8 },
+    #[error("InitCommandAck malformed: {0}")]
+    InitAck(String),
 }

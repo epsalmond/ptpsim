@@ -161,6 +161,7 @@ name = "camera-protocol-ffi"
 version = "0.0.0"
 dependencies = [
  "camera-config",
+ "protocol-primitives",
  "serde_yaml",
  "thiserror 2.0.18",
  "uniffi",

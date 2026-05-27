@@ -72,7 +72,10 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
     let mut r = Reader::new(bytes);
     let length = r.u32()? as usize;
     if length != bytes.len() {
-        return Err(DecodeError::LengthMismatch { declared: length, actual: bytes.len() });
+        return Err(DecodeError::LengthMismatch {
+            declared: length,
+            actual: bytes.len(),
+        });
     }
     let ctype = r.u16()?;
     let code = r.u16()?;
@@ -101,7 +104,10 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
             transaction_id: tid,
             params: params(&mut r)?,
         }),
-        ty::DATA => PtpIpPacket::Data(DataBlock { transaction_id: tid, payload: r.rest() }),
+        ty::DATA => PtpIpPacket::Data(DataBlock {
+            transaction_id: tid,
+            payload: r.rest(),
+        }),
         other => return Err(DecodeError::UnknownPacketType(other as u32)),
     })
 }
@@ -131,8 +137,16 @@ mod tests {
     #[test]
     fn response_and_event_round_trip() {
         for pkt in [
-            PtpIpPacket::OperationResponse(OperationResponse { code: 0x2001, transaction_id: 5, params: vec![] }),
-            PtpIpPacket::Event(EventPacket { code: 0x4002, transaction_id: 0, params: vec![3] }),
+            PtpIpPacket::OperationResponse(OperationResponse {
+                code: 0x2001,
+                transaction_id: 5,
+                params: vec![],
+            }),
+            PtpIpPacket::Event(EventPacket {
+                code: 0x4002,
+                transaction_id: 0,
+                params: vec![3],
+            }),
         ] {
             let bytes = encode(&pkt).unwrap();
             assert_eq!(decode(&bytes).unwrap(), pkt);
@@ -142,7 +156,9 @@ mod tests {
     #[test]
     fn data_container_decodes_as_data() {
         // len=16, type=2 (data), code=0x1009, tid=7, 4 payload bytes.
-        let bytes = vec![0x10, 0, 0, 0, 0x02, 0x00, 0x09, 0x10, 0x07, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef];
+        let bytes = vec![
+            0x10, 0, 0, 0, 0x02, 0x00, 0x09, 0x10, 0x07, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,
+        ];
         match decode(&bytes).unwrap() {
             PtpIpPacket::Data(d) => {
                 assert_eq!(d.transaction_id, 7);

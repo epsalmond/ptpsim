@@ -78,12 +78,25 @@ fn golden_packets_decode_and_round_trip() {
 
         // Documented op matches the decoded frame.
         if let Some(expected) = &g.decoded.op {
-            assert_eq!(op_of(&pkt).as_deref(), Some(expected.as_str()), "{}: op mismatch", g.label);
+            assert_eq!(
+                op_of(&pkt).as_deref(),
+                Some(expected.as_str()),
+                "{}: op mismatch",
+                g.label
+            );
         }
         // Re-encode is byte-identical to the captured bytes (the codec is faithful
         // to real wire data).
-        assert_eq!(reencoded, bytes, "{}: re-encode must match captured bytes", g.label);
+        assert_eq!(
+            reencoded, bytes,
+            "{}: re-encode must match captured bytes",
+            g.label
+        );
         checked += 1;
     }
-    assert!(checked >= 1, "expected at least one golden packet in {}", dir.display());
+    assert!(
+        checked >= 1,
+        "expected at least one golden packet in {}",
+        dir.display()
+    );
 }

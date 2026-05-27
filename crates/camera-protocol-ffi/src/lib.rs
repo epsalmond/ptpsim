@@ -24,6 +24,58 @@ pub fn version() -> String {
 }
 
 // ----------------------------------------------------------------------------
+// Codec functions (§B / G1–G2): pure intents↔bytes. Sans-io — the app writes
+// the returned bytes to its own socket/USB.
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum CodecError {
+    #[error("{0}")]
+    Encode(String),
+}
+
+/// Property value width on the wire (mirrors `protocol_primitives::ValueWidth`).
+#[derive(Debug, uniffi::Enum)]
+pub enum ValueWidth {
+    U16,
+    U32,
+}
+
+impl From<ValueWidth> for protocol_primitives::ValueWidth {
+    fn from(w: ValueWidth) -> Self {
+        match w {
+            ValueWidth::U16 => protocol_primitives::ValueWidth::U16,
+            ValueWidth::U32 => protocol_primitives::ValueWidth::U32,
+        }
+    }
+}
+
+/// G1 — build the 82-byte Fuji reference app `InitCommandRequest`. Identity/tail come from
+/// the manifest; this frames them.
+#[uniffi::export]
+pub fn build_app_init(
+    guid: Vec<u8>,
+    friendly_name: String,
+    tail: Vec<u8>,
+) -> Result<Vec<u8>, CodecError> {
+    protocol_primitives::build_app_init(&guid, &friendly_name, &tail)
+        .map_err(|e| CodecError::Encode(e.to_string()))
+}
+
+#[uniffi::export]
+pub fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError> {
+    protocol_primitives::validate_init_ack(&packet).map_err(|e| CodecError::Encode(e.to_string()))
+}
+
+/// G2 — encode a resolved raw value at its property width (the per-value semantics
+/// live in the manifest; this just writes the bytes).
+#[uniffi::export]
+pub fn encode_value(raw: u32, width: ValueWidth) -> Result<Vec<u8>, CodecError> {
+    protocol_primitives::encode_value(raw, width.into())
+        .map_err(|e| CodecError::Encode(e.to_string()))
+}
+
+// ----------------------------------------------------------------------------
 // Errors / enums / records
 // ----------------------------------------------------------------------------
 

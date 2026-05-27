@@ -89,7 +89,10 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
     let mut r = Reader::new(bytes);
     let length = r.u32()? as usize;
     if length != bytes.len() {
-        return Err(DecodeError::LengthMismatch { declared: length, actual: bytes.len() });
+        return Err(DecodeError::LengthMismatch {
+            declared: length,
+            actual: bytes.len(),
+        });
     }
     let ptype = r.u16()?;
     let code = r.u16()?;
@@ -101,18 +104,36 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
                 params.push(r.u32()?);
             }
             // Compressed framing carries no DataPhaseInfo; default to 1.
-            PtpIpPacket::OperationRequest(OperationRequest { data_phase_info: 1, code, transaction_id: tid, params })
+            PtpIpPacket::OperationRequest(OperationRequest {
+                data_phase_info: 1,
+                code,
+                transaction_id: tid,
+                params,
+            })
         }
         ty::OP_RESPONSE => {
             let mut params = Vec::new();
             while r.remaining() >= 4 {
                 params.push(r.u32()?);
             }
-            PtpIpPacket::OperationResponse(OperationResponse { code, transaction_id: tid, params })
+            PtpIpPacket::OperationResponse(OperationResponse {
+                code,
+                transaction_id: tid,
+                params,
+            })
         }
-        ty::START_DATA => PtpIpPacket::StartData(StartData { transaction_id: tid, total_length: r.u64()? }),
-        ty::DATA => PtpIpPacket::Data(DataBlock { transaction_id: tid, payload: r.rest() }),
-        ty::END_DATA => PtpIpPacket::EndData(DataBlock { transaction_id: tid, payload: r.rest() }),
+        ty::START_DATA => PtpIpPacket::StartData(StartData {
+            transaction_id: tid,
+            total_length: r.u64()?,
+        }),
+        ty::DATA => PtpIpPacket::Data(DataBlock {
+            transaction_id: tid,
+            payload: r.rest(),
+        }),
+        ty::END_DATA => PtpIpPacket::EndData(DataBlock {
+            transaction_id: tid,
+            payload: r.rest(),
+        }),
         other => return Err(DecodeError::UnknownPacketType(other as u32)),
     })
 }
@@ -151,10 +172,23 @@ mod tests {
 
     #[test]
     fn response_and_data_phases_round_trip() {
-        rt(PtpIpPacket::OperationResponse(OperationResponse { code: 0x2001, transaction_id: 7, params: vec![] }));
-        rt(PtpIpPacket::StartData(StartData { transaction_id: 7, total_length: 10_485_760 }));
-        rt(PtpIpPacket::Data(DataBlock { transaction_id: 7, payload: vec![1, 2, 3, 4] }));
-        rt(PtpIpPacket::EndData(DataBlock { transaction_id: 7, payload: vec![0xFF; 8] }));
+        rt(PtpIpPacket::OperationResponse(OperationResponse {
+            code: 0x2001,
+            transaction_id: 7,
+            params: vec![],
+        }));
+        rt(PtpIpPacket::StartData(StartData {
+            transaction_id: 7,
+            total_length: 10_485_760,
+        }));
+        rt(PtpIpPacket::Data(DataBlock {
+            transaction_id: 7,
+            payload: vec![1, 2, 3, 4],
+        }));
+        rt(PtpIpPacket::EndData(DataBlock {
+            transaction_id: 7,
+            payload: vec![0xFF; 8],
+        }));
     }
 
     #[test]
