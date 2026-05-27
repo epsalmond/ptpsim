@@ -11,8 +11,11 @@ Usage:
   sudo python3 ptp_usb.py get 0xD185            # GetDevicePropValue -> hex
   sudo python3 ptp_usb.py set 0xD185 <binfile>  # SetDevicePropValue from a file
 """
+import platform
 import struct
+import subprocess
 import sys
+import time
 
 import usb.core
 import usb.util
@@ -21,6 +24,18 @@ FUJI_VID = 0x04cb
 CMD, DATA, RESP = 1, 2, 3
 OPEN_SESSION, GET_DEVICE_INFO = 0x1002, 0x1001
 GET_PROP_VAL, SET_PROP_VAL = 0x1015, 0x1016
+
+# macOS auto-grabs PTP cameras with ptpcamerad (per-user gui launchd domain, runs as the
+# invoking user → killable without sudo). Reap it right before claiming so libusb can seize
+# the interface. Best-effort: missing/not-running is fine.
+_MAC_GRABBERS = ("ptpcamerad", "PTPCamera", "mscamerad")
+
+
+def _kill_macos_grabbers():
+    if platform.system() != "Darwin":
+        return
+    for name in _MAC_GRABBERS:
+        subprocess.run(["killall", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def find_cam():
@@ -39,21 +54,32 @@ def find_cam():
 
 class PTPUSB:
     def __init__(self):
-        self.dev, intf = find_cam()
-        try:
-            if self.dev.is_kernel_driver_active(intf.bInterfaceNumber):
-                self.dev.detach_kernel_driver(intf.bInterfaceNumber)
-        except Exception:
-            pass
-        self.ep_out = usb.util.find_descriptor(
-            intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
-            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
-        self.ep_in = usb.util.find_descriptor(
-            intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
-            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
-        self.tid = 0
-        print(f"[usb] {self.dev.idVendor:04x}:{self.dev.idProduct:04x} "
-              f"out={self.ep_out.bEndpointAddress:#x} in={self.ep_in.bEndpointAddress:#x}")
+        last = None
+        for _ in range(6):
+            _kill_macos_grabbers()  # no-op off Darwin; reaps ptpcamerad before each claim attempt
+            try:
+                self.dev, intf = find_cam()
+                try:
+                    if self.dev.is_kernel_driver_active(intf.bInterfaceNumber):
+                        self.dev.detach_kernel_driver(intf.bInterfaceNumber)
+                except Exception:
+                    pass
+                self.ep_out = usb.util.find_descriptor(
+                    intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
+                    and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
+                self.ep_in = usb.util.find_descriptor(
+                    intf, custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
+                    and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK)
+                usb.util.claim_interface(self.dev, intf)  # commit the claim now so a grab surfaces here, not mid-txn
+                self.tid = 0
+                print(f"[usb] {self.dev.idVendor:04x}:{self.dev.idProduct:04x} "
+                      f"out={self.ep_out.bEndpointAddress:#x} in={self.ep_in.bEndpointAddress:#x}",
+                      file=sys.stderr)  # diagnostic to stderr so stdout stays clean for JSONL consumers
+                return
+            except usb.core.USBError as e:
+                last = e
+                time.sleep(0.3)  # let the killed grabber release / re-enumerate settle, then retry
+        sys.exit(f"could not claim Fuji PTP interface after retries (last: {last})")
 
     def _txn(self, code, params=(), data_out=None):
         self.tid += 1
