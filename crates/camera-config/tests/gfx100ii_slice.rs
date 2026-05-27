@@ -221,6 +221,52 @@ fn xlv_models_protocol_shape_with_access_gate_kept_private() {
 }
 
 #[test]
+fn generator_ingests_real_probe_evidence_into_a_proposal() {
+    // Concatenate the committed camera-config-evidence/v1 probe files and run the generator.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/camera-config-data/fuji/gfx100ii/evidence/probe");
+    let mut jsonl = String::new();
+    let mut files = 0;
+    for entry in std::fs::read_dir(&dir).expect("probe dir") {
+        let p = entry.unwrap().path();
+        if p.extension().is_some_and(|e| e == "jsonl") {
+            jsonl.push_str(&std::fs::read_to_string(&p).unwrap());
+            jsonl.push('\n');
+            files += 1;
+        }
+    }
+    assert!(files >= 8, "expected the 8 probe files, got {files}");
+
+    let m = camera_config::generate_proposal(&jsonl);
+    m.require_supported_schema()
+        .expect("proposal uses the current schema");
+
+    // Identity derived from the evidence.
+    assert_eq!(m.camera.model, "GFX100 II");
+    assert_eq!(m.camera.firmware, "2.30");
+    // Both probed connections + the hierarchical modes show up as bare nodes.
+    assert!(m.connections.contains_key("usb"));
+    assert!(m.connections.contains_key("wireless-tether"));
+    assert!(m.modes.contains_key("shooting/stills"));
+    assert!(m.modes.contains_key("video"));
+    // Substantial op/prop coverage from the enumeration.
+    assert!(m.operations.len() >= 20, "ops: {}", m.operations.len());
+    assert!(m.properties.len() >= 50, "props: {}", m.properties.len());
+    // GetDevicePropDesc (0x1014) was exercised across scopes → multi-connection gating.
+    let dpd = &m.operations["0x1014"];
+    assert!(dpd.connections.contains(&"usb".to_string()));
+    assert!(dpd.connections.contains(&"wireless-tether".to_string()));
+    // The generator emits NO sequences (preludes/chords are curated, not probed).
+    assert!(m.connections.values().all(|c| c.entries.is_empty()));
+    // Properties are camera-sourced (GetDevicePropDesc).
+    assert!(m
+        .properties
+        .values()
+        .filter_map(|p| p.descriptor.as_ref())
+        .all(|d| d.source == Some(camera_config::ValueSource::Camera)));
+}
+
+#[test]
 fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
     let m = gfx();
     let entries = &m.connections["app"].entries;
