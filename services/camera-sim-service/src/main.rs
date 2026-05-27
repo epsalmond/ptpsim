@@ -10,8 +10,9 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(name = "camera-sim-service", about = "ptpsim camera simulator service")]
 struct Args {
-    /// Profile id (e.g. fuji/gfx100ii/fw0230).
-    #[arg(long, default_value = "fuji/gfx100ii/fw0230")]
+    /// Profile id (label only; e.g. fuji/gfx100ii). The rich manifest is passed via
+    /// --manifest (e.g. .../gfx100ii.consolidated.yaml); fw deltas are overlays.
+    #[arg(long, default_value = "fuji/gfx100ii")]
     profile: String,
 
     #[arg(long, default_value = "local")]

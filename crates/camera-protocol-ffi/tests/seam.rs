@@ -47,19 +47,24 @@ fn operation_gating_is_connection_and_mode_keyed() {
     assert!(matches!(
         s.operation_available(
             "wireless-tether".into(),
-            "Shooting/Stills".into(),
+            "shooting/stills".into(),
             0x9018,
             vec![]
         ),
         Availability::Available
     ));
     assert!(matches!(
-        s.operation_available("app".into(), "Shooting/Stills".into(), 0x9018, vec![]),
+        s.operation_available("app".into(), "shooting/stills".into(), 0x9018, vec![]),
         Availability::WrongConnection
     ));
-    // Backup op gates to BackupRestore, not RawConversion.
+    // Backup op (0x100c) is available in ANY mode over usb (modes: []).
     assert!(matches!(
-        s.operation_available("usb".into(), "RawConversion".into(), 0x100c, vec![]),
+        s.operation_available("usb".into(), "shooting/stills".into(), 0x100c, vec![]),
+        Availability::Available
+    ));
+    // A genuine WrongMode: the raw-conv op (0x900c) is mode-specific.
+    assert!(matches!(
+        s.operation_available("usb".into(), "shooting/stills".into(), 0x900c, vec![]),
         Availability::WrongMode
     ));
 }
@@ -68,7 +73,7 @@ fn operation_gating_is_connection_and_mode_keyed() {
 fn control_mechanism_varies_by_connection() {
     let s = store();
     let ctl = s
-        .control_for("wireless-tether".into(), "Shooting/Stills".into(), 0x5007)
+        .control_for("wireless-tether".into(), "shooting/stills".into(), 0x5007)
         .expect("aperture control over tether");
     assert_eq!(ctl.set_method.as_deref(), Some("absolute"));
     assert_eq!(ctl.operation, Some(0x1016));
@@ -78,7 +83,7 @@ fn control_mechanism_varies_by_connection() {
 fn mode_entry_returns_the_ground_truth_wire_steps() {
     let s = store();
     let plan = s
-        .mode_entry("app".into(), None, "Shooting/Stills".into())
+        .mode_entry("app".into(), None, "shooting/stills".into())
         .expect("live-view entry");
     assert!(plan.user_instruction.is_none());
     // First step: SetProp 0xdf00 = 6 (the real live-view startup constant).
@@ -101,7 +106,7 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
 
     // A USB sub-mode entry is a userInstruction (camera menu), no steps.
     let usb = s
-        .mode_entry("usb".into(), None, "RawConversion".into())
+        .mode_entry("usb".into(), None, "raw-conv-backup-restore".into())
         .unwrap();
     assert!(usb.user_instruction.is_some());
     assert!(usb.steps.is_empty());
@@ -136,20 +141,30 @@ fn value_policy_resolves_initiator_identity_from_manufacturer_tier() {
 #[test]
 fn explained_gate_traces_real_data_decisions() {
     let s = store();
-    // 0x900c is a (usb, RawConversion) op. Over the app connection → WrongConnection,
+    // 0x900c is a (usb, raw-conv-backup-restore) op. Over the app connection → WrongConnection,
     // and the trace says why (what telemetry captures) — no predicate eval needed.
-    let wc = s.operation_available_explained("app".into(), "RawConversion".into(), 0x900c, vec![]);
+    let wc = s.operation_available_explained(
+        "app".into(),
+        "raw-conv-backup-restore".into(),
+        0x900c,
+        vec![],
+    );
     assert!(matches!(wc.availability, Availability::WrongConnection));
     assert!(!wc.trace.connection_ok);
     assert!(wc.trace.requires.is_none()); // this op declares no prerequisite
     assert!(wc.trace.reason.contains("usb"));
     // Over its own connection/mode → Available, both axes ok.
-    let ok = s.operation_available_explained("usb".into(), "RawConversion".into(), 0x900c, vec![]);
+    let ok = s.operation_available_explained(
+        "usb".into(),
+        "raw-conv-backup-restore".into(),
+        0x900c,
+        vec![],
+    );
     assert!(matches!(ok.availability, Availability::Available));
     assert!(ok.trace.connection_ok && ok.trace.mode_ok);
     // Unknown op → Unavailable with an explanatory reason.
     let un =
-        s.operation_available_explained("app".into(), "Shooting/Stills".into(), 0x9999, vec![]);
+        s.operation_available_explained("app".into(), "shooting/stills".into(), 0x9999, vec![]);
     assert!(matches!(un.availability, Availability::Unavailable));
     assert!(un.trace.reason.contains("not defined"));
 }
@@ -162,15 +177,15 @@ fn explained_gate_carries_predicate_leaf_detail_through_ffi() {
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
 operations:
-  "0x101c": { name: OpenCap, modes: [Shooting], connections: [app], requires: { prop: "0xd212", mask: 0x00ff, ne: 0 } }
+  "0x101c": { name: OpenCap, modes: [shooting], connections: [app], requires: { prop: "0xd212", mask: 0x00ff, ne: 0 } }
 connections: { app: { kind: ptpip-app } }
-modes: { "Shooting/Stills": {} }
+modes: { "shooting/stills": {} }
 "#;
     let s = ConfigStore::from_bundle(yaml.to_string(), None).expect("loads");
     // Low byte masks to 0 → `ne 0` fails → Blocked, and the leaf shows exactly why.
     let g = s.operation_available_explained(
         "app".into(),
-        "Shooting/Stills".into(),
+        "shooting/stills".into(),
         0x101c,
         vec![PropObservation {
             code: 0xd212,
@@ -188,7 +203,7 @@ modes: { "Shooting/Stills": {} }
     // Satisfy it → Available.
     let ok = s.operation_available_explained(
         "app".into(),
-        "Shooting/Stills".into(),
+        "shooting/stills".into(),
         0x101c,
         vec![PropObservation {
             code: 0xd212,
@@ -218,12 +233,12 @@ fn property_value_width_resolves_from_manifest_type() {
 #[test]
 fn runtime_param_slot_surfaces_through_ffi() {
     let s = store();
-    // The from-live-view ImageTransfer entry: 0x1018 carries a runtime slot the app binds.
+    // The from-live-view image-transfer entry: 0x1018 carries a runtime slot the app binds.
     let plan = s
         .mode_entry(
             "app".into(),
-            Some("Shooting/Stills".into()),
-            "ImageTransfer".into(),
+            Some("shooting/stills".into()),
+            "image-transfer".into(),
         )
         .expect("from-Stills image-import entry");
     match &plan.steps[0] {
@@ -279,6 +294,6 @@ fn detect_mode_from_observed_function_mode() {
     }];
     assert_eq!(
         s.detect_mode("app".into(), obs).as_deref(),
-        Some("Shooting/Stills")
+        Some("shooting/stills")
     );
 }

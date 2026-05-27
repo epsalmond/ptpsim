@@ -30,13 +30,13 @@ evidence:
     kind: wire-capture
     path: tools/protocol-mapper/scripts/xlv_capsweep.py
     date: ''
-  docImageTransfer:
-    kind: doc
-    path: evidence/IMAGE_TRANSFER_FW0230.md
-    date: ''
   docXlv:
     kind: doc
     path: docs/TRANSPORTS.md#xlv
+    date: ''
+  docimage-transfer:
+    kind: doc
+    path: evidence/IMAGE_TRANSFER_FW0230.md
     date: ''
   iosBLEReg:
     kind: ios-source
@@ -73,11 +73,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -94,11 +94,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -115,11 +115,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -136,11 +136,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -157,11 +157,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -178,11 +178,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -199,11 +199,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -218,8 +218,7 @@ operations:
     workflows: []
     handler: null
     property: null
-    modes:
-    - BackupRestore
+    modes: []
     connections:
     - usb
     requires: null
@@ -233,8 +232,7 @@ operations:
     workflows: []
     handler: null
     property: null
-    modes:
-    - BackupRestore
+    modes: []
     connections:
     - usb
     requires: null
@@ -250,11 +248,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -271,11 +269,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -290,8 +288,7 @@ operations:
     workflows: []
     handler: null
     property: null
-    modes:
-    - BackupRestore
+    modes: []
     connections:
     - usb
     requires: null
@@ -305,8 +302,7 @@ operations:
     workflows: []
     handler: null
     property: null
-    modes:
-    - BackupRestore
+    modes: []
     connections:
     - usb
     requires: null
@@ -323,7 +319,7 @@ operations:
     modes:
     - shooting/stills
     - shooting/stills/pc-priority
-    - video
+    - shooting/video
     connections:
     - usb
     - wireless-tether
@@ -356,11 +352,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -377,11 +373,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -398,11 +394,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -418,10 +414,10 @@ operations:
     handler: null
     property: null
     modes:
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
-    - video
+    - shooting/video
     connections:
     - usb
     - wireless-tether
@@ -437,7 +433,7 @@ operations:
     handler: null
     property: null
     modes:
-    - Shooting
+    - shooting
     connections: []
     requires: null
     evidence:
@@ -467,7 +463,7 @@ operations:
     handler: null
     property: null
     modes:
-    - Shooting
+    - shooting
     connections: []
     requires: null
     evidence:
@@ -481,7 +477,7 @@ operations:
     handler: null
     property: null
     modes:
-    - RawConversion
+    - raw-conv-backup-restore
     connections:
     - usb
     requires: null
@@ -496,7 +492,7 @@ operations:
     handler: null
     property: null
     modes:
-    - RawConversion
+    - raw-conv-backup-restore
     connections:
     - usb
     requires: null
@@ -511,7 +507,7 @@ operations:
     handler: null
     property: null
     modes:
-    - Shooting/Stills
+    - shooting/stills
     connections:
     - wireless-tether
     requires: null
@@ -527,11 +523,11 @@ operations:
     property: null
     modes:
     - card-reader
-    - raw-conv/backup-restore
+    - raw-conv-backup-restore
     - shooting/stills
     - shooting/stills/pc-priority
+    - shooting/video
     - tether-auto
-    - video
     connections:
     - usb
     - wireless-tether
@@ -547,7 +543,7 @@ operations:
     handler: null
     property: null
     modes:
-    - Shooting/Stills
+    - shooting/stills
     connections: []
     requires: null
     evidence:
@@ -5526,7 +5522,7 @@ properties:
     labels: {}
     evidence:
     - iosStartupSeq
-    - docImageTransfer
+    - docimage-transfer
   '0xdf2a':
     name: liveDf2a
     ptpName: null
@@ -5582,23 +5578,23 @@ quirks:
   behavior: The PCSS knock (UDP 51562) is accepted only once per camera boot; after one session the camera ICMP-rejects further knocks until power-cycled.
   evidence: wireTether
 modes:
-  BackupRestore:
-    capabilities:
-    - settingsBackup
-    - settingsRestore
+  card-reader:
+    capabilities: []
     detect: null
-  ImageTransfer:
+  image-transfer:
     capabilities:
     - browse
     - download
     detect:
       prop: '0xdf01'
       eq: 20
-  RawConversion:
+  raw-conv-backup-restore:
     capabilities:
     - rawDevelop
+    - settingsBackup
+    - settingsRestore
     detect: null
-  RemoteTrigger:
+  remote-trigger:
     capabilities:
     - shutterControl
     - eepromTransfer
@@ -5606,11 +5602,11 @@ modes:
     - cameraSettings
     - screenOn
     detect: null
-  Shooting:
+  shooting:
     capabilities:
     - exposureControl
     detect: null
-  Shooting/Stills:
+  shooting/stills:
     capabilities:
     - liveView
     - remoteControl
@@ -5618,27 +5614,18 @@ modes:
     detect:
       prop: '0xdf01'
       eq: 22
-  Webcam:
-    capabilities:
-    - webcamStream
-    detect: null
-  card-reader:
-    capabilities: []
-    detect: null
-  raw-conv/backup-restore:
-    capabilities: []
-    detect: null
-  shooting/stills:
-    capabilities: []
-    detect: null
   shooting/stills/pc-priority:
+    capabilities: []
+    detect: null
+  shooting/video:
     capabilities: []
     detect: null
   tether-auto:
     capabilities: []
     detect: null
-  video:
-    capabilities: []
+  webcam:
+    capabilities:
+    - webcamStream
     detect: null
 connections:
   app:
@@ -5648,10 +5635,10 @@ connections:
     kind: ptpip-app
     establishment: ble-to-wifi-ap-v1
     modes:
-    - Shooting/Stills
-    - ImageTransfer
+    - shooting/stills
+    - image-transfer
     entries:
-    - to: Shooting/Stills
+    - to: shooting/stills
       from: null
       steps:
       - setProp: '0xdf00'
@@ -5696,7 +5683,7 @@ connections:
         repeat: 1
       userInstruction: null
       requires: null
-    - to: ImageTransfer
+    - to: image-transfer
       from: null
       steps:
       - setProp: null
@@ -5769,8 +5756,8 @@ connections:
         repeat: 1
       userInstruction: null
       requires: null
-    - to: ImageTransfer
-      from: Shooting/Stills
+    - to: image-transfer
+      from: shooting/stills
       steps:
       - setProp: null
         getProp: null
@@ -5872,7 +5859,7 @@ connections:
     kind: ble
     establishment: ble-pairing-v1
     modes:
-    - RemoteTrigger
+    - remote-trigger
     entries: []
     enables:
     - to: app
@@ -5900,19 +5887,13 @@ connections:
     kind: usb-ptp
     establishment: null
     modes:
-    - RawConversion
-    - BackupRestore
-    - Webcam
+    - raw-conv-backup-restore
+    - webcam
     entries:
-    - to: RawConversion
+    - to: raw-conv-backup-restore
       from: null
       steps: []
-      userInstruction: Set the camera's USB connection mode for RAW conversion / tethering, then connect USB
-      requires: null
-    - to: BackupRestore
-      from: null
-      steps: []
-      userInstruction: Set the camera's USB connection mode for settings backup/restore, then connect USB
+      userInstruction: Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB
       requires: null
     enables: []
     discovery:
@@ -5932,8 +5913,8 @@ connections:
     kind: ptpip-direct
     establishment: pcss-knock-v1
     modes:
-    - Shooting/Stills
-    - RemoteTrigger
+    - shooting/stills
+    - remote-trigger
     entries: []
     enables: []
     discovery:
@@ -5954,7 +5935,7 @@ connections:
     kind: http-xlv
     establishment: null
     modes:
-    - Shooting/Stills
+    - shooting/stills
     entries: []
     enables: []
     auth:

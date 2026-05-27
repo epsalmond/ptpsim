@@ -17,7 +17,7 @@ evidence:
   iosFujiPTPIP:    { kind: ios-source, path: "client application/.../client applicationCore/FujiPTPIP.swift", date: "2026-05-26" }
   iosFeatureMode:  { kind: ios-source, path: "client application/.../client applicationCore/CameraFeatureMode.swift", date: "2026-05-26" }
   iosStartupSeq:   { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-26" }
-  docImageTransfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW0230.md" }
+  docimage-transfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW0230.md" }
   iosBLEReg:       { kind: ios-source, path: "client application/.../client applicationCore/FujiBLERegistration.swift", date: "2026-05-26" }
 
   # NOT wire-captured. These USB opcodes are leads pending a golden capture.
@@ -31,7 +31,7 @@ connections:
     kind: ptpip-app                 # WiFi-AP path (camera hosts the AP; app joins)
     establishment: ble-to-wifi-ap-v1 # BLE pairing brings up the camera AP, app joins + routes, then PTP-IP
     discovery: { mechanism: ble, announces: camera }
-    modes: [Shooting/Stills, ImageTransfer]
+    modes: [shooting/stills, image-transfer]
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
     # live-view exercises both sockets, so this assignment is authoritative.
     bind:
@@ -49,14 +49,14 @@ connections:
     # startup sequence (the CameraPTPMode enum is stale/unused — its launch values
     # disagree with what the app actually sends).
     entries:
-      - to: Shooting/Stills          # enter live-view from a cold App connection
+      - to: shooting/stills          # enter live-view from a cold App connection
         steps:
           - { setProp: "0xdf00", value: 6 }      # functionModeMajor
           - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)
           - { readEcho: "0xdf2a" }               # read then write back
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
           - { sendOp: "0x101c" }                 # InitiateOpenCapture
-      - to: ImageTransfer            # cold entry to image-import (no live-view active)
+      - to: image-transfer            # cold entry to image-import (no live-view active)
         # Ground truth: FujiCameraAPISession.enterImageImportModeUnlocked + IMAGE_TRANSFER_FW0230.
         steps:
           - { getProp: "0xd212", tolerant: true }            # live-status preamble (best-effort)
@@ -71,8 +71,8 @@ connections:
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
         # TODO(protocol-mapper): 0xd226/0xd227 (filter + sort) are advisory setProps in
         # this prelude too — add once their values are captured.
-      - to: ImageTransfer            # from live-view: terminate the open-capture first, then enter
-        from: Shooting/Stills
+      - to: image-transfer            # from live-view: terminate the open-capture first, then enter
+        from: shooting/stills
         steps:
           # 0x1018 needs the live-view InitiateOpenCapture transaction id — RUNTIME state the
           # app binds into the named slot (it owns transaction ids; sans-io).
@@ -90,7 +90,7 @@ connections:
     kind: ble
     establishment: ble-pairing-v1    # named mechanism; GATT detail below (overlay-able)
     discovery: { mechanism: ble, announces: camera }
-    modes: [RemoteTrigger]
+    modes: [remote-trigger]
     # GATT service + key characteristics (shipping-app facts; candidate for a private
     # establishment overlay). FT-XH adapter advertises its own service — concrete
     # basis for the X-H2S `requiresHardware: ft-xh` model.
@@ -114,14 +114,13 @@ connections:
     kind: usb-ptp                    # PIMA 15740 over USB (desktop, via ImageCaptureCore)
     platforms: [macos, android, linux]   # NOT iOS (no USB-host PTP); hidden on iOS
     discovery: { mechanism: usb, announces: none, vid: 0x04cb }   # Fuji USB vendor id; per-model PID TBD
-    modes: [RawConversion, BackupRestore, Webcam]
-    # USB sub-mode is chosen by an on-camera menu setting, so these are user-instruction
-    # edges (not app-driven). Wording approximate pending confirmation.
+    modes: [raw-conv-backup-restore, webcam]
+    # USB sub-mode is chosen by an on-camera menu setting, so this is a user-instruction
+    # edge (not app-driven). raw-conv-backup-restore is ONE on-camera mode enabling two
+    # workflows (raw conversion + settings backup-restore).
     entries:
-      - to: RawConversion
-        userInstruction: "Set the camera's USB connection mode for RAW conversion / tethering, then connect USB"
-      - to: BackupRestore
-        userInstruction: "Set the camera's USB connection mode for settings backup/restore, then connect USB"
+      - to: raw-conv-backup-restore
+        userInstruction: "Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB"
     evidence: [staticRawStudio]
 
   wireless-tether:
@@ -132,9 +131,9 @@ connections:
     # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference app's 82-byte init).
     knock: { callbackPort: 51560, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0" }
     discovery: { mechanism: pcss-knock, announces: none, autoDiscoverable: false }  # app needs the camera's LAN address
-    # RemoteTrigger here is the SAME mode node as over BLE — transport-independent (its
+    # remote-trigger here is the SAME mode node as over BLE — transport-independent (its
     # PTP/IP form can also push images to the camera; per-connection capability TODO).
-    modes: [Shooting/Stills, RemoteTrigger]
+    modes: [shooting/stills, remote-trigger]
     evidence: [wireTether]
 
   xlv:
@@ -152,29 +151,29 @@ connections:
     # ACQUISITION/forging is access-gate-bypass material → stays in a PRIVATE overlay (operator
     # tree), NOT this public file. Only the auth *shape* (that a bearer token is required) is public.
     auth: { scheme: bearer, header: XLV_Auth, tokenSource: private-overlay }
-    modes: [Shooting/Stills]         # property read/write surface; shares engine state
+    modes: [shooting/stills]         # property read/write surface; shares engine state
     evidence: [docXlv, captureXlv]
 
 modes:
-  Shooting:
+  shooting:
     capabilities: [exposureControl]
-  Shooting/Stills:                   # live-view: app drives the camera, screen taken over
+  shooting/stills:                   # live-view: app drives the camera, screen taken over
     capabilities: [liveView, remoteControl, screenTakeover]
     detect: { prop: "0xdf01", eq: 0x16 }
-  ImageTransfer:
+  image-transfer:
     capabilities: [browse, download]
     detect: { prop: "0xdf01", eq: 0x14 }
-  RemoteTrigger:                     # screen STAYS ON (vs Shooting/Stills screenTakeover).
+  remote-trigger:                     # screen STAYS ON (vs shooting/stills screenTakeover).
     # Transport-independent: reached over BLE now, and over WirelessTether PTP/IP later
     # (same camera mode, different connection). No `detect`: over BLE the mode is
     # connection-implied (no PTP functionMode read).
     capabilities: [shutterControl, eepromTransfer, gpsPersistence, cameraSettings, screenOn]
-  # USB sub-modes (availability set by ops' connections: [usb]; selected by camera menu).
-  RawConversion:
-
-  BackupRestore:
-    capabilities: [settingsBackup, settingsRestore]   # eeprom up/download over USB
-  Webcam:
+  # One on-camera USB mode enabling two workflows. NOTE: settings backup-restore is
+  # available in ~every mode, so its ops gate to ALL modes (see operations); only the
+  # raw-conversion ops are specific to this mode.
+  raw-conv-backup-restore:
+    capabilities: [rawDevelop, settingsBackup, settingsRestore]
+  webcam:
     capabilities: [webcamStream]     # known to exist; protocol not yet characterized
 
 # Workflows = app tasks (CameraFeatureMode), gated by required connection/transport.
@@ -188,23 +187,24 @@ workflows:
   cameraSettings: { transport: ble, evidence: [iosFeatureMode] }   # eeprom up/download
 
 operations:
-  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
-  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [Shooting], evidence: [iosStartupSeq] }
-  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [Shooting/Stills], evidence: [iosStartupSeq] }
-  "0x900c": { name: SendRawFromPcObjectInfo, owner: fuji-vendor, modes: [RawConversion], connections: [usb], evidence: [staticRawStudio] }
-  "0x900d": { name: SendRawFromPcObject,     owner: fuji-vendor, modes: [RawConversion], connections: [usb], evidence: [staticRawStudio] }
-  "0x100c": { name: SetBackupSettingsInfo,   owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
-  "0x100d": { name: SetBackupSettings,       owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
-  "0x1008": { name: GetBackupSettingsInfo,   owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
-  "0x1009": { name: GetBackupSettings,       owner: standard-ptp, modes: [BackupRestore], connections: [usb], evidence: [staticRawStudio] }
+  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [shooting], evidence: [iosStartupSeq] }
+  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [shooting], evidence: [iosStartupSeq] }
+  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [shooting/stills], evidence: [iosStartupSeq] }
+  # raw-conv ops are mode-specific; backup ops are available in ~every mode (modes: []).
+  "0x900c": { name: SendRawFromPcObjectInfo, owner: fuji-vendor, modes: [raw-conv-backup-restore], connections: [usb], evidence: [staticRawStudio] }
+  "0x900d": { name: SendRawFromPcObject,     owner: fuji-vendor, modes: [raw-conv-backup-restore], connections: [usb], evidence: [staticRawStudio] }
+  "0x100c": { name: SetBackupSettingsInfo,   owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }   # backup: all modes
+  "0x100d": { name: SetBackupSettings,       owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }
+  "0x1008": { name: GetBackupSettingsInfo,   owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }
+  "0x1009": { name: GetBackupSettings,       owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }
   # WirelessTether live-view = vendor 0x9018 (vs the App connection's 0x101c+GetObject).
-  "0x9018": { name: SdkGetLiveViewData,      owner: fuji-vendor,  modes: [Shooting/Stills], connections: [wireless-tether], evidence: [wireTether] }
+  "0x9018": { name: SdkGetLiveViewData,      owner: fuji-vendor,  modes: [shooting/stills], connections: [wireless-tether], evidence: [wireTether] }
 
 properties:
   "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [iosStartupSeq] }
   "0xdf01": { name: functionMode,      type: u16, access: readWrite, evidence: [iosStartupSeq] }
   "0xdf2a": { name: liveDf2a,          type: u16, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry
-  "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }
+  "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docimage-transfer] }
   "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
   # Big-3 over WirelessTether = ABSOLUTE standard PTP props via SetDevicePropValue 0x1016
   # (vs the App connection's vendor relative-step 0x902d). Same logical control, mechanism

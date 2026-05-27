@@ -56,11 +56,11 @@ fn mode_detect_from_function_mode() {
     let m = gfx();
     assert_eq!(
         m.detect_mode(&PropView::new().with(0xdf01, 0x16)),
-        Some("Shooting/Stills")
+        Some("shooting/stills")
     );
     assert_eq!(
         m.detect_mode(&PropView::new().with(0xdf01, 0x14)),
-        Some("ImageTransfer")
+        Some("image-transfer")
     );
     assert_eq!(m.detect_mode(&PropView::new().with(0xdf01, 0x99)), None);
 }
@@ -71,7 +71,7 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     let entries = &m.connections["app"].entries;
     let lv = entries
         .iter()
-        .find(|e| e.to == "Shooting/Stills" && e.from.is_none())
+        .find(|e| e.to == "shooting/stills" && e.from.is_none())
         .unwrap();
     let steps = &lv.steps;
     assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf00"));
@@ -81,16 +81,16 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     assert_eq!(steps[3].repeat, 4); // 902B ×4
     assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
     assert!(steps.iter().all(camera_config::Step::is_well_formed));
-    // A from-qualified ImageTransfer edge exists (teardown-first switch).
+    // A from-qualified image-transfer edge exists (teardown-first switch).
     assert!(entries
         .iter()
-        .any(|e| e.to == "ImageTransfer" && e.from.as_deref() == Some("Shooting/Stills")));
+        .any(|e| e.to == "image-transfer" && e.from.as_deref() == Some("shooting/stills")));
 }
 
 #[test]
 fn capabilities_inherit_and_screen_takeover_is_modeled() {
     let m = gfx();
-    let caps = m.capabilities("Shooting/Stills");
+    let caps = m.capabilities("shooting/stills");
     assert!(caps.contains(&"exposureControl")); // inherited from Shooting
     assert!(caps.contains(&"liveView"));
     assert!(caps.contains(&"screenTakeover")); // distinguishes from the screen-on remote-trigger mode
@@ -109,53 +109,63 @@ fn ble_connection_enables_app_and_carries_remote_trigger() {
         .find(|e| e.to == "app")
         .expect("BLE enables app");
     assert_eq!(edge.mechanism.as_deref(), Some("ble-to-wifi-ap-v1"));
-    // BLE carries the RemoteTrigger mode.
-    assert!(ble.modes.contains(&"RemoteTrigger".to_string()));
+    // BLE carries the remote-trigger mode.
+    assert!(ble.modes.contains(&"remote-trigger".to_string()));
 }
 
 #[test]
 fn remote_trigger_is_screen_on_and_transport_independent() {
     let m = gfx();
-    let caps = m.capabilities("RemoteTrigger");
+    let caps = m.capabilities("remote-trigger");
     assert!(caps.contains(&"shutterControl"));
     assert!(caps.contains(&"eepromTransfer"));
-    assert!(caps.contains(&"screenOn")); // vs Shooting/Stills screenTakeover
+    assert!(caps.contains(&"screenOn")); // vs shooting/stills screenTakeover
                                          // No detect predicate: over BLE the mode is connection-implied, not PTP-detected.
-    assert!(m.modes["RemoteTrigger"].detect.is_none());
+    assert!(m.modes["remote-trigger"].detect.is_none());
 }
 
 #[test]
-fn usb_modes_are_user_instruction_entries_and_ops_gate_to_usb() {
+fn usb_mode_is_user_instruction_and_ops_gate_appropriately() {
+    use camera_config::Availability::*;
     let m = gfx();
     let usb = &m.connections["usb"];
     assert_eq!(usb.kind.as_deref(), Some("usb-ptp"));
-    // USB sub-modes are camera-menu-selected → userInstruction edges, no PTP steps.
-    let raw = usb
+    // One on-camera USB mode (raw-conv + backup-restore), a userInstruction edge, no PTP steps.
+    let entry = usb
         .entries
         .iter()
-        .find(|e| e.to == "RawConversion")
+        .find(|e| e.to == "raw-conv-backup-restore")
         .unwrap();
-    assert!(raw.user_instruction.is_some());
-    assert!(raw.steps.is_empty());
+    assert!(entry.user_instruction.is_some());
+    assert!(entry.steps.is_empty());
 
-    // Vendor ops gate to (RawConversion, usb): available there, wrong-connection over app.
     let any = PropView::new();
+    // raw-conv op (0x900c) is MODE-specific: available in raw-conv-backup-restore,
+    // wrong-mode elsewhere, wrong-connection off usb.
     assert_eq!(
-        m.operation_available("usb", "RawConversion", 0x900c, &any),
-        camera_config::Availability::Available
+        m.operation_available("usb", "raw-conv-backup-restore", 0x900c, &any),
+        Available
     );
     assert_eq!(
-        m.operation_available("app", "RawConversion", 0x900c, &any),
-        camera_config::Availability::WrongConnection
-    );
-    // Backup ops gate to BackupRestore, not RawConversion.
-    assert_eq!(
-        m.operation_available("usb", "BackupRestore", 0x100c, &any),
-        camera_config::Availability::Available
+        m.operation_available("usb", "shooting/stills", 0x900c, &any),
+        WrongMode
     );
     assert_eq!(
-        m.operation_available("usb", "RawConversion", 0x100c, &any),
-        camera_config::Availability::WrongMode
+        m.operation_available("app", "raw-conv-backup-restore", 0x900c, &any),
+        WrongConnection
+    );
+    // backup op (0x100c) is available in ANY mode (modes: []), still usb-only.
+    assert_eq!(
+        m.operation_available("usb", "raw-conv-backup-restore", 0x100c, &any),
+        Available
+    );
+    assert_eq!(
+        m.operation_available("usb", "shooting/stills", 0x100c, &any),
+        Available
+    );
+    assert_eq!(
+        m.operation_available("app", "shooting/stills", 0x100c, &any),
+        WrongConnection
     );
 }
 
@@ -171,12 +181,12 @@ fn remote_trigger_is_reachable_over_both_ble_and_wireless_tether() {
     let m = gfx();
     assert!(m.connections["ble"]
         .modes
-        .contains(&"RemoteTrigger".to_string()));
+        .contains(&"remote-trigger".to_string()));
     assert!(m.connections["wireless-tether"]
         .modes
-        .contains(&"RemoteTrigger".to_string()));
-    // RemoteTrigger is defined once (not duplicated per connection).
-    assert!(m.modes.contains_key("RemoteTrigger"));
+        .contains(&"remote-trigger".to_string()));
+    // remote-trigger is defined once (not duplicated per connection).
+    assert!(m.modes.contains_key("remote-trigger"));
 }
 
 #[test]
@@ -193,11 +203,11 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
     // 0x9018 live-view gates to the tether; wrong-connection over app.
     let any = PropView::new();
     assert_eq!(
-        m.operation_available("wireless-tether", "Shooting/Stills", 0x9018, &any),
+        m.operation_available("wireless-tether", "shooting/stills", 0x9018, &any),
         camera_config::Availability::Available
     );
     assert_eq!(
-        m.operation_available("app", "Shooting/Stills", 0x9018, &any),
+        m.operation_available("app", "shooting/stills", 0x9018, &any),
         camera_config::Availability::WrongConnection
     );
 }
@@ -248,7 +258,7 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
     assert!(m.connections.contains_key("usb"));
     assert!(m.connections.contains_key("wireless-tether"));
     assert!(m.modes.contains_key("shooting/stills"));
-    assert!(m.modes.contains_key("video"));
+    assert!(m.modes.contains_key("shooting/video"));
     // Substantial op/prop coverage from the enumeration.
     assert!(m.operations.len() >= 20, "ops: {}", m.operations.len());
     assert!(m.properties.len() >= 50, "props: {}", m.properties.len());
@@ -273,7 +283,7 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
     // Cold entry: tolerant preamble + vendor-prime op with literal params.
     let cold = entries
         .iter()
-        .find(|e| e.to == "ImageTransfer" && e.from.is_none())
+        .find(|e| e.to == "image-transfer" && e.from.is_none())
         .unwrap();
     assert!(cold
         .steps
@@ -292,7 +302,7 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
     // from-live-view entry binds the runtime open-capture txid into 0x1018.
     let from = entries
         .iter()
-        .find(|e| e.to == "ImageTransfer" && e.from.as_deref() == Some("Shooting/Stills"))
+        .find(|e| e.to == "image-transfer" && e.from.as_deref() == Some("shooting/stills"))
         .unwrap();
     assert_eq!(from.steps[0].send_op.as_deref(), Some("0x1018"));
     assert_eq!(
