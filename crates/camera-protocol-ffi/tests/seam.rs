@@ -83,7 +83,7 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
     assert!(plan.user_instruction.is_none());
     // First step: SetProp 0xdf00 = 6 (the real live-view startup constant).
     match &plan.steps[0] {
-        EntryStep::SetProp { prop, value } => {
+        EntryStep::SetProp { prop, value, .. } => {
             assert_eq!(*prop, 0xdf00);
             assert_eq!(*value, 6);
         }
@@ -94,7 +94,8 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
         st,
         EntryStep::SendOp {
             op: 0x902b,
-            repeat: 4
+            repeat: 4,
+            ..
         }
     )));
 
@@ -196,6 +197,42 @@ modes: { "Shooting/Stills": {} }
     );
     assert!(matches!(ok.availability, Availability::Available));
     assert!(ok.trace.requires.unwrap().passed);
+}
+
+#[test]
+fn runtime_param_slot_surfaces_through_ffi() {
+    let s = store();
+    // The from-live-view ImageTransfer entry: 0x1018 carries a runtime slot the app binds.
+    let plan = s
+        .mode_entry(
+            "app".into(),
+            Some("Shooting/Stills".into()),
+            "ImageTransfer".into(),
+        )
+        .expect("from-Stills image-import entry");
+    match &plan.steps[0] {
+        EntryStep::SendOp {
+            op,
+            params,
+            tolerant: _,
+            repeat: _,
+        } => {
+            assert_eq!(*op, 0x1018);
+            assert!(
+                matches!(&params[0], EntryParam::Runtime { slot } if slot == "openCaptureTxId")
+            );
+        }
+        other => panic!("expected SendOp 0x1018, got {other:?}"),
+    }
+    // A tolerant vendor-prime op with literal params also round-trips.
+    assert!(plan.steps.iter().any(|st| matches!(
+        st,
+        EntryStep::SendOp {
+            op: 0x9053,
+            tolerant: true,
+            ..
+        }
+    )));
 }
 
 #[test]

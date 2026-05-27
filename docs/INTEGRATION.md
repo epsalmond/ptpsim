@@ -83,8 +83,14 @@ uniffi is `crate-type = ["staticlib", "cdylib"]`. Standard per-platform packagin
 2. **Pick a connection.** `connections(platform)` → present what's actually available
    here. Bring it up: `establishment(connection)` returns the recipe (knock ports,
    GATT char UUIDs); **your code does the UDP/TCP/BLE/Wi-Fi**.
-3. **Enter a mode.** `mode_entry(connection, from, to)` → execute the `steps` (send
-   each via the codec functions over your transport) or surface the `user_instruction`.
+3. **Enter a mode.** `mode_entry(connection, from, to)` → execute the `steps`
+   (`setProp`/`getProp`/`readEcho`/`sendOp`) via the codec functions over your
+   transport, or surface the `user_instruction`. Each step may be `tolerant` (a
+   non-OK PTP *response* is advisory — log + continue; only a transport failure
+   aborts). `sendOp` `params` are literals **or** a named runtime slot
+   (`EntryParam.Runtime { slot }`, e.g. `openCaptureTxId`) that **you** bind from
+   your session state — ptpsim names which runtime value goes there; it never
+   computes it.
 4. **Drive controls, gated.** Before any op: `operation_available(...)`. To set a
    value: `control_for(...)` tells you the mechanism; the codec encodes the bytes.
 5. **Detect state.** Feed observed prop values to `detect_mode` / `operation_available`

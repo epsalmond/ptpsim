@@ -71,7 +71,13 @@ isn't.)
    (prefix match), UI grouping, and `detect` attachment. A **mode graph** of
    action-bearing **mode-entry** edges (optionally `from`-qualified) describes
    transitions; an edge carries **wire actions OR a user-instruction** (connection
-   switches usually can't be app-driven, only requested).
+   switches usually can't be app-driven, only requested). A wire action is a closed
+   `Step` vocabulary — `setProp`/`getProp`/`readEcho`/`sendOp`, each with optional
+   `tolerant` (a non-OK PTP *response* is logged + swallowed; only transport failure
+   aborts) and `sendOp` `params` that are **literals or a named runtime slot**
+   (`{runtime: openCaptureTxId}`) the I/O-owning app binds from its session state
+   (cf. value-policy `from-pairing`). **The no-DSL line:** named runtime slots are
+   data; arithmetic, branches, or loops over them would be the script trap — not added.
 7. **A workflow ≠ a mode.** Mode = camera state (gates). Workflow = app-side user
    task that *traverses* the mode graph (map vs route).
 8. **One closed predicate grammar** serves both `requires` (gating) and `detect`

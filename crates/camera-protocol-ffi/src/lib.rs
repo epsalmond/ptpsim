@@ -159,13 +159,39 @@ pub struct ControlInfo {
     pub readback: Option<u16>,
 }
 
+/// A `send_op` parameter: a literal, or a named runtime slot the app binds from its
+/// own session state (e.g. the live-view open-capture txid). Declarative — not a
+/// computed variable.
+#[derive(Debug, uniffi::Enum)]
+pub enum EntryParam {
+    Literal { value: u32 },
+    Runtime { slot: String },
+}
+
 /// One wire action in a mode-entry sequence (closed vocabulary, no branches).
+/// `tolerant` = a non-OK PTP response is acceptable (log + continue; transport
+/// failure still aborts). `params` carry `send_op` arguments.
 #[derive(Debug, uniffi::Enum)]
 pub enum EntryStep {
-    SetProp { prop: u16, value: i64 },
-    GetProp { prop: u16 },
-    ReadEcho { prop: u16 },
-    SendOp { op: u16, repeat: u32 },
+    SetProp {
+        prop: u16,
+        value: i64,
+        tolerant: bool,
+    },
+    GetProp {
+        prop: u16,
+        tolerant: bool,
+    },
+    ReadEcho {
+        prop: u16,
+        tolerant: bool,
+    },
+    SendOp {
+        op: u16,
+        params: Vec<EntryParam>,
+        repeat: u32,
+        tolerant: bool,
+    },
 }
 
 #[derive(uniffi::Record)]
@@ -510,29 +536,44 @@ fn prop_view(observed: &[PropObservation]) -> cc::PropView {
 }
 
 fn map_step(s: &cc::Step) -> Option<EntryStep> {
+    let tolerant = s.tolerant;
     if let Some(p) = &s.set_prop {
         return Some(EntryStep::SetProp {
             prop: parse_hex_code(p)?,
             value: s.value.unwrap_or(0),
+            tolerant,
         });
     }
     if let Some(p) = &s.get_prop {
         return Some(EntryStep::GetProp {
             prop: parse_hex_code(p)?,
+            tolerant,
         });
     }
     if let Some(p) = &s.read_echo {
         return Some(EntryStep::ReadEcho {
             prop: parse_hex_code(p)?,
+            tolerant,
         });
     }
     if let Some(o) = &s.send_op {
         return Some(EntryStep::SendOp {
             op: parse_hex_code(o)?,
+            params: s.params.iter().map(map_param).collect(),
             repeat: s.repeat,
+            tolerant,
         });
     }
     None
+}
+
+fn map_param(p: &cc::StepParam) -> EntryParam {
+    match p {
+        cc::StepParam::Literal(v) => EntryParam::Literal { value: *v },
+        cc::StepParam::Runtime { runtime } => EntryParam::Runtime {
+            slot: runtime.clone(),
+        },
+    }
 }
 
 fn platform_ok(c: &cc::Connection, p: &Platform) -> bool {

@@ -347,9 +347,28 @@ pub struct Step {
     /// Value for `set_prop`.
     #[serde(default)]
     pub value: Option<i64>,
+    /// Operation parameters for `send_op`: literals, or a named runtime slot the
+    /// I/O-owning client binds (e.g. the live-view open-capture txid for `0x1018`).
+    #[serde(default)]
+    pub params: Vec<StepParam>,
+    /// If true, a non-OK PTP *response* to this step is acceptable — the client
+    /// logs it and continues (advisory setup like `0xdf28`/`0xd226`/`0x9054` that
+    /// some bodies/responders reject). Only a *transport* failure aborts.
+    #[serde(default)]
+    pub tolerant: bool,
     /// Bounded repeat count (default 1).
     #[serde(default = "one")]
     pub repeat: u32,
+}
+
+/// A `send_op` parameter: a literal, or a **named runtime slot** the client fills
+/// from its own session state. Declarative binding (cf. value-policy `from-pairing`),
+/// NOT a computed variable — there is no arithmetic, branching, or looping over it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StepParam {
+    Literal(u32),
+    Runtime { runtime: String },
 }
 
 fn one() -> u32 {
@@ -568,6 +587,38 @@ connections:
         assert!(lv.steps.iter().all(Step::is_well_formed));
         // from-qualified switch (no full teardown path).
         assert_eq!(entries[1].from.as_deref(), Some("Shooting/Stills"));
+    }
+
+    #[test]
+    fn step_params_tolerant_and_runtime_slots_parse() {
+        let yaml = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    entries:
+      - to: ImageTransfer
+        steps:
+          - { getProp: "0xdf28", tolerant: true }            # read-before-write, advisory
+          - { setProp: "0xdf28", value: 3 }                  # uint32 width from the property type
+          - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }   # op with literal params
+          - { sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] } # runtime-bound param
+"#;
+        let m = CameraManifest::from_yaml(yaml).unwrap();
+        let steps = &m.connections["app"].entries[0].steps;
+        assert!(steps[0].tolerant && steps[0].get_prop.as_deref() == Some("0xdf28"));
+        assert_eq!(steps[1].set_prop.as_deref(), Some("0xdf28"));
+        assert_eq!(
+            steps[2].params,
+            vec![StepParam::Literal(0), StepParam::Literal(0x7530)]
+        );
+        assert_eq!(
+            steps[3].params,
+            vec![StepParam::Runtime {
+                runtime: "openCaptureTxId".into()
+            }]
+        );
+        assert!(steps.iter().all(Step::is_well_formed));
     }
 
     #[test]

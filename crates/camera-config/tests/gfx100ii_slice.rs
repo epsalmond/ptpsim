@@ -3,7 +3,8 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    CameraManifest, ConfigStore, ManufacturerDefaults, PropView, ValuePolicy, VersionScheme,
+    CameraManifest, ConfigStore, ManufacturerDefaults, PropView, StepParam, ValuePolicy,
+    VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -217,6 +218,43 @@ fn xlv_models_protocol_shape_with_access_gate_kept_private() {
     // The public file carries no secret/forging material.
     let raw = data("fuji/gfx100ii/gfx100ii.yaml").to_lowercase();
     assert!(!raw.contains("forge") && !raw.contains("jwt") && !raw.contains("secret"));
+}
+
+#[test]
+fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
+    let m = gfx();
+    let entries = &m.connections["app"].entries;
+    // Cold entry: tolerant preamble + vendor-prime op with literal params.
+    let cold = entries
+        .iter()
+        .find(|e| e.to == "ImageTransfer" && e.from.is_none())
+        .unwrap();
+    assert!(cold
+        .steps
+        .iter()
+        .any(|s| s.get_prop.as_deref() == Some("0xd212") && s.tolerant));
+    let prime = cold
+        .steps
+        .iter()
+        .find(|s| s.send_op.as_deref() == Some("0x9053"))
+        .unwrap();
+    assert_eq!(
+        prime.params,
+        vec![StepParam::Literal(0), StepParam::Literal(0x7530)]
+    );
+    assert!(prime.tolerant);
+    // from-live-view entry binds the runtime open-capture txid into 0x1018.
+    let from = entries
+        .iter()
+        .find(|e| e.to == "ImageTransfer" && e.from.as_deref() == Some("Shooting/Stills"))
+        .unwrap();
+    assert_eq!(from.steps[0].send_op.as_deref(), Some("0x1018"));
+    assert_eq!(
+        from.steps[0].params,
+        vec![StepParam::Runtime {
+            runtime: "openCaptureTxId".into()
+        }]
+    );
 }
 
 #[test]

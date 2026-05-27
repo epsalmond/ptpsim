@@ -56,17 +56,35 @@ connections:
           - { readEcho: "0xdf2a" }               # read then write back
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
           - { sendOp: "0x101c" }                 # InitiateOpenCapture
-      - to: ImageTransfer            # cold entry to image-import
+      - to: ImageTransfer            # cold entry to image-import (no live-view active)
+        # Ground truth: FujiCameraAPISession.enterImageImportModeUnlocked + IMAGE_TRANSFER_FW0230.
         steps:
-          - { setProp: "0xdf01", value: 0x14 }   # functionMode = 20 (image-import)
-          - { setProp: "0xdf28", value: 3 }      # feature version (uint32)
-      - to: ImageTransfer            # from-qualified: switch out of live-view first
+          - { getProp: "0xd212", tolerant: true }            # live-status preamble (best-effort)
+          - { setProp: "0xdf01", value: 0x14 }               # functionMode = 20 (image-import)
+          - { getProp: "0xdf28", tolerant: true }            # read-before-write (advisory negotiator)
+          - { setProp: "0xdf28", value: 3 }                  # feature version; uint32 width from the property type
+          # Vendor-prime block required before GetObjectHandles (0xd620/0xd621). Advisory:
+          # a body/responder may reject these (vcam returns DeviceProp_Not_Supported) — tolerate.
+          - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
+          - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
+          - { sendOp: "0x9050", tolerant: true }
+          - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
+        # TODO(protocol-mapper): 0xd226/0xd227 (filter + sort) are advisory setProps in
+        # this prelude too — add once their values are captured.
+      - to: ImageTransfer            # from live-view: terminate the open-capture first, then enter
         from: Shooting/Stills
         steps:
-          - { sendOp: "0x1018" }                 # TerminateOpenCapture (open-capture teardown)
+          # 0x1018 needs the live-view InitiateOpenCapture transaction id — RUNTIME state the
+          # app binds into the named slot (it owns transaction ids; sans-io).
+          - { sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }
+          - { getProp: "0xd212", tolerant: true }
           - { setProp: "0xdf01", value: 0x14 }
-        # NOTE: capture suggests a teardown-free switch may exist; needs more wire
-        # analysis. Modeled as the conservative (terminate-first) path for now.
+          - { getProp: "0xdf28", tolerant: true }
+          - { setProp: "0xdf28", value: 3 }
+          - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
+          - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
+          - { sendOp: "0x9050", tolerant: true }
+          - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
 
   ble:
     kind: ble
