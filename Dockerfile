@@ -11,6 +11,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY services ./services
 COPY packages ./packages
+# tools/camera-simctl is a workspace member — cargo needs it present even when
+# building -p camera-sim-service. Tiny (~20K), keeps the workspace evaluable.
+COPY tools/camera-simctl ./tools/camera-simctl
 
 RUN cargo build --release -p camera-sim-service --bin camera-sim-service \
  && strip target/release/camera-sim-service
