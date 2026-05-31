@@ -19,28 +19,41 @@ THIS IS DISTINCT FROM TWO OTHER TRACKS:
                                        (initiator-side refactor; runtime).
 - `handoff-client application-vcam-agent.md`  — backend cutover that runs ptpsim per lease
 
-This doc is the TEST-TIME use of the same ptpsim binary, from XCTest.
+This doc is the TEST-TIME use of the same ptpsim image, from XCTest.
 
-WHAT PTPSIM PROVIDES (~/git/ptpsim):
-- Binary: `camera-sim-service`
-    cargo build -p camera-sim-service --release
-  Manifest-driven, sans-IO from the iOS perspective (it owns its own sockets).
-- Manifest: packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml
-  (GENERATED — same source of truth the production app's FFI consumes; do not
-  hand-edit and do not fork a test-only copy).
-- Run shape for tests (loopback, no NAT64 needed; pick free ports per test):
-    camera-sim-service \
-      --manifest <path>/gfx100ii.consolidated.yaml \
-      --media-root <per-scenario DCIM root> \
-      --profile fuji/gfx100ii --instance-id <test-uuid> \
-      --command-bind  '127.0.0.1:<cmd>' \
-      --event-bind    '127.0.0.1:<evt>' \
-      --liveview-bind '127.0.0.1:<lv>' \
-      --control-bind  '127.0.0.1:<ctl>'
-  Default ports (55740 command / 55741 event / 55742 live-view) only work for
-  one instance at a time — pick ephemeral ports per test for parallel runs.
-  Mac simulator + macOS host both work over IPv4 loopback; switch to '[::1]'
-  for IPv6 parity with App Review.
+WHAT PTPSIM PROVIDES:
+
+
+  Multi-arch — native arm64 on Apple Silicon Macs (fast), amd64 on Intel Macs.
+
+  woodpecker.md). Reach the registry by being on the tailnet + trusting the
+  step-ca root cert (install once per dev Mac and CI runner).
+- Baked into the image: the GFX100 II rich manifest at
+    /etc/ptpsim/gfx100ii.consolidated.yaml
+  (GENERATED — same source of truth the production app's FFI consumes; do NOT
+  hand-edit and do NOT fork a test-only copy). Default CMD already references
+  it, so 'docker run image' is healthy out of the box.
+- Per-scenario run shape (ephemeral ports for parallel tests; loopback works
+  on macOS host or simulator since both are local):
+    docker run -d --rm \
+      --name ptpsim-<test-uuid> \
+      -v <per-scenario DCIM root>:/var/lib/ptpsim/media-root:ro \
+      -p 127.0.0.1:<cmd>:55740 \
+      -p 127.0.0.1:<evt>:55741 \
+      -p 127.0.0.1:<lv>:55742 \
+      -p 127.0.0.1:<ctl>:8080 \
+
+        --manifest    /etc/ptpsim/gfx100ii.consolidated.yaml \
+        --media-root  /var/lib/ptpsim/media-root \
+        --profile     fuji/gfx100ii \
+        --instance-id <test-uuid> \
+        --command-bind  '[::]:55740' \
+        --event-bind    '[::]:55741' \
+        --liveview-bind '[::]:55742' \
+        --control-bind  '0.0.0.0:8080'   # REQUIRED — XCTest reaches it from
+                                         # outside the container's netns
+  --control-bind defaults to 127.0.0.1:8080 (loopback-only) so 'docker run' is
+  smoke-testable but unreachable from the host; override to 0.0.0.0 for tests.
 
 CONTROL PLANE (test setup/teardown):
 - GET  /healthz → 200 {"ok":true,instance_id,profile,bind,sessions,media_root}.
@@ -64,34 +77,42 @@ VALIDATED BEHAVIOR (the believable surface your tests can lean on):
   gap to file upstream, not a test workaround.
 
 TASK (iOS side):
-1. Add a test fixture (XCTestObservation, a custom XCTestCase base class, or a
-   TestPlan setup phase) that:
-   - locates the prebuilt `camera-sim-service` (vendored binary, or a build
-     phase that runs `cargo build --release` against the local ptpsim checkout)
-   - spawns it with per-test ephemeral ports + per-test --media-root
-   - polls `GET http://127.0.0.1:<ctl>/healthz` until `ok:true` (typically
-     <500 ms) before letting the app try to connect
-   - POSTs `/shutdown` in teardown; falls back to SIGTERM if /shutdown didn't
-     return within a deadline; reaps the child unconditionally
-2. Point the app under test at the spawned instance. The app already has a dev
-   entry point (`connectToDevCameraHost(...)` per DESIGN.md "Relationship To
+0. One-time per dev Mac + CI runner: be on the tailnet; install the step-ca
+   root cert into the Docker daemon's trust store (per the registry contract
+
+
+1. Pick the pinned image tag for the test suite (e.g. :sha-<8> recorded in
+   the test target as an Xcode build setting or test-resource file). 'docker
+   pull <tag>' once at suite start; cache locally.
+2. Add a test fixture (XCTestObservation, a custom XCTestCase base class, or
+   a TestPlan setup phase) that, per scenario:
+   - picks free ephemeral host ports (lsof / SocketKit) for command/event/
+     live-view/control
+   - 'docker run -d' the pinned tag with -v over the per-scenario DCIM root
+     and -p for the four ports (see Run shape above)
+   - polls 'GET http://127.0.0.1:<ctl>/healthz' until 'ok:true' (typically
+     <500 ms after run) before letting the app try to connect
+   - 'docker stop' (or POST /shutdown then SIGTERM) on teardown; --rm removes
+     the container; reap the docker-run pid unconditionally
+3. Point the app under test at the spawned instance. The app already has a dev
+   entry point ('connectToDevCameraHost(...)' per DESIGN.md "Relationship To
    The Fixture TUI") that skips BLE/Wi-Fi and opens PTP/IP directly — that's
-   the right seam. Pass in the chosen command-bind host:port.
-3. Stage media fixtures per scenario (committed under the iOS test target or
-   produced by an XCTest resource):
+   the right seam. Pass in 127.0.0.1:<cmd> (the published port).
+4. Stage media fixtures per scenario (committed under the iOS test target or
+   produced by an XCTest resource), bind-mounted RO into the container:
      <scenario>/DCIM/100_FUJI/DSCF0001.JPG
      <scenario>/DCIM/100_FUJI/DSCF0002.RAF
      <scenario>/DCIM/100_FUJI/CLIP0001.MOV   # for >4 GB ceiling test
    The sim enumerates whatever's in the media root via camera-media-store.
-4. Write tests that exercise the app's WORKFLOWS, not protocol details:
+5. Write tests that exercise the app's WORKFLOWS, not protocol details:
    - connect → device info → live-view-stream-arrives
    - connect → image-import → enumerate handles → download a JPEG → checksum
    - connect → live-view → step ISO/aperture → verify readback
    Assert on app-observable outcomes, not on ptpsim's sequencing.
-5. CI: build the binary in a setup step (or commit a prebuilt binary keyed by
-   ptpsim git sha). Keep the ptpsim version that tests pin against EXPLICIT
-   (a manifest hash + binary sha you record on test-suite start) — the
-   manifest evolves; tests should pin a known surface.
+6. CI: pre-pull the pinned tag in a setup step. Keep the version that tests
+   pin against EXPLICIT (the image's :sha-<8> tag + the manifest hash you
+   record on test-suite start) — the manifest evolves; tests should pin a
+   known surface.
 
 HARD CONSTRAINTS:
 - The sim is the RESPONDER; your tests are the INITIATORS — they own every

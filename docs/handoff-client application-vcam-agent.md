@@ -15,23 +15,38 @@ ptpsim's simulator, in ~/git/client application. ptpsim ALREADY provides a belie
 GFX100 II PTP/IP responder driven by a manifest; your scope is client application's Ruby
 
 
-WHAT PTPSIM PROVIDES (~/git/ptpsim):
-- Binary: `camera-sim-service`
-    cargo build -p camera-sim-service --release
-  Generic, manifest-driven, lease-AGNOSTIC. No pool/lease logic — that's yours.
-- Manifest: packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml
-  (the rich GFX100 II — 324 props, real descriptors; GENERATED, do not hand-edit).
-- Run shape:
-    camera-sim-service \
-      --manifest <path>/gfx100ii.consolidated.yaml \
-      --media-root <per-lease card directory> \
-      --profile fuji/gfx100ii --instance-id <lease-uuid> \
-      --command-bind  '[::]:55740' \
-      --event-bind    '[::]:55741' \
-      --liveview-bind '[::]:55742' \
-      --control-bind  '127.0.0.1:<ephemeral>'
-  IPv6 binds for App Review (NAT64). Ports: 55740 command, 55741 event,
-  55742 live-view (through-picture). Media root holds DCIM/<NNN>_FUJI/….
+WHAT PTPSIM PROVIDES:
+
+
+
+  docs/woodpecker.md for the registry contract). Multi-arch (linux/amd64 +
+  linux/arm64). Generic, manifest-driven, lease-AGNOSTIC — no pool/lease logic
+  in the image, that's yours.
+- Baked into the image: the GFX100 II rich manifest at
+    /etc/ptpsim/gfx100ii.consolidated.yaml
+  (324 props, real descriptors; GENERATED — to consume a different manifest
+  per lease, mount one over /etc/ptpsim/ and override --manifest).
+- Default CMD already covers --manifest + --media-root + --profile, so
+  ad-hoc 'docker run' brings up a healthy instance against an empty card.
+- Per-lease run shape (override --instance-id + bind to the lease's IPv6):
+    docker run -d --rm \
+      --name ptpsim-<lease-uuid> \
+      -v <per-lease card directory>:/var/lib/ptpsim/media-root:ro \
+      -p [<lease-v6>]:55740:55740 \
+      -p [<lease-v6>]:55741:55741 \
+      -p [<lease-v6>]:55742:55742 \
+
+        --manifest    /etc/ptpsim/gfx100ii.consolidated.yaml \
+        --media-root  /var/lib/ptpsim/media-root \
+        --profile     fuji/gfx100ii \
+        --instance-id <lease-uuid> \
+        --command-bind  '[::]:55740' \
+        --event-bind    '[::]:55741' \
+        --liveview-bind '[::]:55742' \
+        --control-bind  '0.0.0.0:8080'   # required if you poll /healthz from
+                                         # outside the container's netns
+  Ports: 55740 command, 55741 event, 55742 live-view (through-picture).
+  IPv6 binds for App Review (NAT64). Media root holds DCIM/<NNN>_FUJI/….
 
 CONTROL PLANE (the contract the sidecar polls):
 - GET /healthz → 200 with:
@@ -52,25 +67,30 @@ VALIDATED ON THE PTPSIM SIDE:
 TASK (client application side):
 1. Delete the placeholder `crates/camera-protocol-{core,fuji,ffi}` directories
    if any remain, and any C `vcam` build/runtime no longer used.
-2. Spawn one ptpsim instance per lease from the management sidecar (touch the
-   files that currently spawn/track the C vcam):
+
+   :sha-<8> once you want lease determinism). 'docker pull' on host startup.
+3. Spawn one container per lease from the management sidecar (touch the files
+   that currently spawn/track the C vcam):
    backend/api/lib/client application/runtime/{service,instance_registry,pool,vcam_nats}.rb
-   - one per-lease media root (stage DCIM fixtures or mount per-lease storage)
+   - one per-lease media root (stage DCIM fixtures or mount per-lease storage,
+     bind-mounted RO at /var/lib/ptpsim/media-root)
    - per-lease IPv6 command bind, per-lease control port
    - pass --instance-id = the lease uuid
-3. Build the `vcam_pool` snapshot {host,capacity,count,instances:[{ipv6,up}],ts}
+4. Build the `vcam_pool` snapshot {host,capacity,count,instances:[{ipv6,up}],ts}
    by polling each instance's /healthz. Mirror as today into
    `review_camera_instances`. NATS contract (vcam.cmd.{up,down,restart},
    vcam_pool KV) is unchanged — it's still YOUR contract.
-4. Reconcile `PROFILES`: ptpsim ids look like `fuji/gfx100ii`. Refactor the
+   - Two ways to reach /healthz: (a) override --control-bind 0.0.0.0:8080 and
+     publish that port on the lease's IPv6, or (b) keep the loopback default
+     and 'docker exec' curl from the sidecar. Either is fine; pick one.
+5. Reconcile `PROFILES`: ptpsim ids look like `fuji/gfx100ii`. Refactor the
    client application profile key (e.g. `fuji_gfx100ii`) and the vcam_pool `profile`
    field to the ptpsim id. Keep `model: "GFX100 II"` so the app's model-based
    gating still fires; only `display_name` is the test marker.
-5. Graceful lifecycle: drain via POST /shutdown on lease release; SIGTERM on
-   timeout. Reap on health-check failure (no /healthz for N seconds → kill +
-   re-spawn).
-6. Package: build the deployable image (amd64 + arm64) embedding the binary
-   and a default consolidated manifest.
+6. Graceful lifecycle: drain via POST /shutdown on lease release; SIGTERM on
+   timeout. Reap on health-check failure (Docker's own HEALTHCHECK already
+   curls /healthz internally — `docker inspect --format '{{.State.Health.Status}}'`
+   reads it, or watch the SIGTERM path).
 
 VALIDATE (the remaining DESIGN gates — client application-owned):
 - #6 review-mode e2e: a review build leases ONE IPv6 instance; the app
