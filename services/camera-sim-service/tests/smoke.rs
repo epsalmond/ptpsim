@@ -94,6 +94,7 @@ fn service_drives_image_import_over_tcp() {
             liveview_bind: "127.0.0.1:0".parse().unwrap(),
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -139,13 +140,9 @@ fn service_drives_image_import_over_tcp() {
     let part = read_data_reply(&mut s);
     assert_eq!(&part, b"\xFF\xD8HELLO");
 
-    // --- live-view socket streams length-prefixed JPEG frames ---
-    let mut lv = TcpStream::connect(liveview_addr).unwrap();
-    let frame0 = read_frame_lv(&mut lv);
-    let frame1 = read_frame_lv(&mut lv);
-    assert_eq!(&frame0[0..2], &[0xFF, 0xD8], "frame is JPEG SOI");
-    assert_eq!(frame0, frame1, "static source repeats the frame");
-    drop(lv);
+    // (Live-view framing is covered in `service_streams_liveview_after_open_capture` —
+    // image-import path doesn't reach Phase::Streaming so the socket is correctly idle.)
+    let _ = liveview_addr;
 
     // --- control /healthz ---
     let body = http_get(control_addr, "/healthz");
@@ -196,4 +193,116 @@ fn http_post(addr: std::net::SocketAddr, path: &str) -> String {
     let mut out = String::new();
     let _ = s.read_to_string(&mut out);
     out
+}
+
+/// Write the StartData/EndData wire dance for a single SetDevicePropValue payload.
+fn write_set_prop_data(s: &mut TcpStream, tid: u32, payload: &[u8]) {
+    let start = PtpIpPacket::StartData(ptp_core::StartData {
+        transaction_id: tid,
+        total_length: payload.len() as u64,
+    });
+    let end = PtpIpPacket::EndData(ptp_core::DataBlock {
+        transaction_id: tid,
+        payload: payload.to_vec(),
+    });
+    write_frame(s, &fuji_framing::encode(&start).unwrap());
+    write_frame(s, &fuji_framing::encode(&end).unwrap());
+}
+
+/// Live-view smoke: gate-#4 at the TCP boundary. The simulator only emits
+/// frames after the initiator reaches Phase::Streaming (df01=22 -> InitiateOpenCapture);
+/// before that, the socket is open but idle.
+#[test]
+fn service_streams_liveview_after_open_capture() {
+    let root = tmp_card();
+    let lv_dir = root.join("liveview");
+    std::fs::create_dir_all(&lv_dir).unwrap();
+    let lv_jpeg = b"\xFF\xD8\xFF\xE0FRAME\xFF\xD9";
+    std::fs::write(lv_dir.join("frame_001.jpg"), lv_jpeg).unwrap();
+
+    let manifest = r#"
+schema: camera-config/v1
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: "2.30"
+operations:
+  "0x1002": { name: OpenSession }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, liveview_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii".into(),
+            manifest_yaml: manifest.into(),
+            media_root: root.clone(),
+            command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: Some(lv_dir.clone()),
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let lv = server.liveview_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(async move { server.run(rx).await });
+        (cmd, lv, tx, h)
+    });
+
+    // Connect to live-view BEFORE driving the engine — reads must block (gated).
+    let mut lv = TcpStream::connect(liveview_addr).unwrap();
+    lv.set_read_timeout(Some(std::time::Duration::from_millis(150)))
+        .unwrap();
+    let mut probe = [0u8; 4];
+    match lv.read_exact(&mut probe) {
+        Err(e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => {}
+        Ok(_) => panic!("frames leaked before Phase::Streaming"),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+
+    // Drive the command channel into Phase::Streaming.
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [0; 16],
+        friendly_name: "test".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
+        PtpIpPacket::InitCommandAck(_) => {}
+        other => panic!("expected InitCommandAck, got {other:?}"),
+    }
+    write_frame(&mut s, &op(0x1002, 1, vec![1]));
+    read_ok(&mut s);
+
+    // SetDevicePropValue df01=22 (u16 LE) -> Phase::LiveView
+    write_frame(&mut s, &op(0x1016, 2, vec![0xdf01]));
+    write_set_prop_data(&mut s, 2, &22u16.to_le_bytes());
+    read_ok(&mut s);
+
+    // InitiateOpenCapture -> Phase::Streaming
+    write_frame(&mut s, &op(0x101c, 3, vec![]));
+    read_ok(&mut s);
+
+    // Now frames flow: read two and confirm they're the fixture (single-frame loop).
+    lv.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+        .unwrap();
+    let frame0 = read_frame_lv(&mut lv);
+    let frame1 = read_frame_lv(&mut lv);
+    assert_eq!(&frame0[..], lv_jpeg, "first frame matches the fixture JPEG");
+    assert_eq!(frame0, frame1, "single-frame loop repeats");
+
+    drop(lv);
+    drop(s);
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
 }

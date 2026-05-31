@@ -36,6 +36,9 @@ RUN apt-get update \
 
 COPY --from=builder /build/target/release/camera-sim-service /usr/local/bin/camera-sim-service
 COPY packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml /etc/ptpsim/gfx100ii.consolidated.yaml
+# Default live-view corpus: 30 looped JPEG frames (~880 KB), JFIF-only (no EXIF).
+# Operators can override with --liveview-dir /path/to/other/frames.
+COPY packages/fixtures/liveview/640x480 /etc/ptpsim/liveview/640x480
 
 USER ptpsim:nogroup
 WORKDIR /var/lib/ptpsim
@@ -52,4 +55,5 @@ HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
 ENTRYPOINT ["camera-sim-service"]
 CMD ["--manifest", "/etc/ptpsim/gfx100ii.consolidated.yaml", \
      "--media-root", "/var/lib/ptpsim/media-root", \
-     "--profile", "fuji/gfx100ii"]
+     "--profile", "fuji/gfx100ii", \
+     "--liveview-dir", "/etc/ptpsim/liveview/640x480"]

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use camera_config::CameraManifest;
 use camera_media_store::MediaStore;
-use camera_sim::{Engine, Reply};
+use camera_sim::{Engine, FrameSource, LoopingFrameSource, Phase, Reply};
 use protocol_primitives::fuji_framing;
 use ptp_core::codes::op;
 use ptp_core::{InitCommandAck, OperationRequest, PtpCodec, PtpIpPacket};
@@ -38,16 +38,36 @@ pub struct Config {
     /// Async event socket (command+1 = 55741).
     pub event_bind: SocketAddr,
     pub control_bind: SocketAddr,
+    /// Directory of JPEG frames to loop on the live-view socket (sorted by
+    /// filename, gated on Phase::Streaming). None / empty dir => no frames.
+    pub liveview_dir: Option<std::path::PathBuf>,
 }
-
-/// A minimal valid JPEG-ish test frame (SOI … EOI) for the generated live-view
-/// source. A real source streams MJPEG frames from a directory or transcode.
-const TEST_FRAME: &[u8] = &[
-    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'p', b't', b'p', b's', b'i', b'm', 0xFF, 0xD9,
-];
 
 /// Live-view frame pacing (~30 fps).
 const FRAME_INTERVAL_MS: u64 = 33;
+
+/// Read every `.jpg` from a directory (sorted by filename) into memory once at
+/// bind. Returning an empty Vec on no-dir / empty-dir is fine; the frame loop
+/// then idles cleanly.
+fn load_liveview_frames(dir: Option<&std::path::Path>) -> std::io::Result<Vec<Vec<u8>>> {
+    let Some(dir) = dir else {
+        return Ok(Vec::new());
+    };
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("jpg"))
+        })
+        .collect();
+    paths.sort();
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        out.push(std::fs::read(&p)?);
+    }
+    Ok(out)
+}
 
 /// A bound, not-yet-serving instance. Binding first lets callers (tests) learn
 /// the OS-assigned ports before the serve loop starts.
@@ -58,6 +78,10 @@ pub struct Server {
     event: TcpListener,
     control: TcpListener,
     engine: Arc<Mutex<Engine>>,
+    /// Shared looping frame source (one cursor across all live-view clients —
+    /// the normal lease shape is one camera = one client; cursor sharing is
+    /// harmless if a smoke client connects alongside the real one).
+    frames: Arc<Mutex<LoopingFrameSource>>,
 }
 
 impl Server {
@@ -70,6 +94,10 @@ impl Server {
             .scan()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         let engine = Arc::new(Mutex::new(Engine::new(manifest, store)));
+        let frame_bytes = load_liveview_frames(config.liveview_dir.as_deref())?;
+        let frame_count = frame_bytes.len();
+        let frames = Arc::new(Mutex::new(LoopingFrameSource::new(frame_bytes)));
+        tracing::info!(frame_count, "live-view frame source loaded");
         let command = TcpListener::bind(config.command_bind).await?;
         let liveview = TcpListener::bind(config.liveview_bind).await?;
         let event = TcpListener::bind(config.event_bind).await?;
@@ -81,6 +109,7 @@ impl Server {
             event,
             control,
             engine,
+            frames,
         })
     }
 
@@ -110,6 +139,7 @@ impl Server {
             event,
             control,
             engine,
+            frames,
         } = self;
         let health = control::Health {
             instance_id: config.instance_id.clone(),
@@ -141,6 +171,7 @@ impl Server {
         };
 
         let control_loop = {
+            let engine = engine.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 loop {
@@ -156,15 +187,21 @@ impl Server {
             }
         };
 
-        // Live-view: stream length-prefixed JPEG frames to any connected client.
+        // Live-view: emit length-prefixed JPEG frames at ~30 fps, BUT only while
+        // the engine is in Phase::Streaming (after InitiateOpenCapture). Connection
+        // stays open and idle when not streaming — matches a real camera.
         let liveview_loop = {
+            let engine = engine.clone();
+            let frames = frames.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 loop {
                     tokio::select! {
                         accepted = liveview.accept() => {
                             if let Ok((stream, _)) = accepted {
-                                tokio::spawn(stream_liveview(stream));
+                                let engine = engine.clone();
+                                let frames = frames.clone();
+                                tokio::spawn(stream_liveview(stream, engine, frames));
                             }
                         }
                         _ = sub.recv() => break,
@@ -200,12 +237,25 @@ impl Server {
 }
 
 /// Stream live-view frames to one connected client until it disconnects or the
-/// write fails. Frames are length-prefixed via the shared primitive.
-async fn stream_liveview(mut stream: TcpStream) {
+/// write fails. Each tick: if the engine is in Phase::Streaming, pull the next
+/// frame from the shared LoopingFrameSource and write [u32 len | JPEG] via the
+/// shared framing primitive. Otherwise idle (the connection stays open but no
+/// bytes flow — matching a real camera between OpenCapture cycles).
+async fn stream_liveview(
+    mut stream: TcpStream,
+    engine: Arc<Mutex<Engine>>,
+    frames: Arc<Mutex<LoopingFrameSource>>,
+) {
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_INTERVAL_MS));
     loop {
         tick.tick().await;
-        let packet = protocol_primitives::liveview::frame_packet(TEST_FRAME);
+        if !matches!(engine.lock().await.phase(), Phase::Streaming) {
+            continue;
+        }
+        let Some(jpeg) = frames.lock().await.next_frame() else {
+            continue;
+        };
+        let packet = protocol_primitives::liveview::frame_packet(&jpeg);
         if stream.write_all(&packet).await.is_err() {
             break;
         }

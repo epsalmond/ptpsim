@@ -35,6 +35,12 @@ struct Args {
     /// Control HTTP bind (loopback by default).
     #[arg(long, default_value = "127.0.0.1:8080")]
     control_bind: SocketAddr,
+    /// Directory of JPEG frames the live-view socket emits, looped in sorted-
+    /// filename order at ~30 fps. Unset / empty dir => the socket accepts but
+    /// emits no frames. Frames are gated on engine Phase::Streaming (after
+    /// InitiateOpenCapture), matching a real camera.
+    #[arg(long)]
+    liveview_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -58,6 +64,7 @@ async fn main() -> anyhow::Result<()> {
         liveview_bind: args.liveview_bind,
         event_bind: args.event_bind,
         control_bind: args.control_bind,
+        liveview_dir: args.liveview_dir,
     };
 
     let server = Server::bind(config).await?;

@@ -50,6 +50,12 @@ impl Engine {
         &self.state
     }
 
+    /// Current phase — small Copy enum, safe to read under a brief lock from
+    /// the live-view writer to gate emission on Phase::Streaming.
+    pub fn phase(&self) -> Phase {
+        self.state.phase
+    }
+
     /// Install a fault (control API `/faults`). Checked before normal dispatch.
     pub fn install_fault(&mut self, fault: Fault) {
         self.faults.install(fault);
