@@ -34,6 +34,13 @@ cargo test            # Rust workspace
 ( cd tools/protocol-mapper && python -m pytest -q )   # probe
 ```
 
+## CI/CD
+
+
+the off-site remote and webhook source; do not add GitHub Actions for this repo.
+
+
+
 ## License
 
 Dual-licensed under MIT OR Apache-2.0.
