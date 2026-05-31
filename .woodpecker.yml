@@ -1,0 +1,16 @@
+
+# First pipeline: a plumbing smoke step (always green, proves the
+# webhook → server → nas agent → step path) plus a real workspace build.
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: smoke
+    image: alpine
+    commands:
+      - echo "woodpecker reached ptpsim @ ${CI_COMMIT_SHA:0:8} on ${CI_COMMIT_BRANCH}"
+
+  - name: build
+    image: rust:1-slim
+    commands:
+      - cargo build --workspace
