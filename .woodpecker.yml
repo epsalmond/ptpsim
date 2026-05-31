@@ -27,3 +27,23 @@ steps:
       # protocol-mapper's pyproject defaults to --cov= ; override since pytest-cov
       # isn't in the CI image and the other tests need bleak/hardware anyway.
       - cd tools/protocol-mapper && pytest tests/test_gphoto2_labels.py -o addopts="" -q
+
+  # Build + push the deployable image to the local registry on main pushes only.
+
+  #   docker_registry — e.g. registry.psalmond.com:5000
+  #   docker_repo     — e.g. registry.psalmond.com:5000/ptpsim
+  # Add username/password secrets if your registry requires auth.
+  - name: image
+    image: woodpeckerci/plugin-docker-buildx
+    settings:
+      registry:
+        from_secret: docker_registry
+      repo:
+        from_secret: docker_repo
+      tags:
+        - latest
+        - sha-${CI_COMMIT_SHA:0:8}
+      platforms: linux/amd64,linux/arm64
+    when:
+      branch: main
+      event: push

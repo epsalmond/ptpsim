@@ -1,0 +1,29 @@
+# Keep the build context tight. The Dockerfile selectively COPYs what it needs;
+# this just reduces the context Docker sends to the daemon.
+
+# Build outputs
+**/target
+**/*.bak
+
+# VCS / editor
+**/.git
+**/.gitignore
+**/.DS_Store
+**/.vscode
+**/.idea
+
+# Dev-only docs / tooling — not in the runtime image
+docs
+tools
+DESIGN.md
+README.md
+LICENSE*
+*.md
+
+# Tests don't go into release artifacts
+**/tests
+
+# CI lives outside the build context
+.woodpecker.yml
+.dockerignore
+Dockerfile
