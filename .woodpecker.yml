@@ -1,6 +1,8 @@
 
-# First pipeline: a plumbing smoke step (always green, proves the
-# webhook → server → nas agent → step path) plus a real workspace build.
+# Smoke proves the webhook→server→nas-agent path; the workspace step matches the
+# local quality gates (fmt + clippy -D warnings + 120 tests including the #3/#4
+# believability gates). Builds are pure Rust (no openssl/ring/native deps), so
+# rust:1-slim suffices.
 when:
   - event: [push, pull_request]
 
@@ -10,7 +12,18 @@ steps:
     commands:
       - echo "woodpecker reached ptpsim @ ${CI_COMMIT_SHA:0:8} on ${CI_COMMIT_BRANCH}"
 
-  - name: build
+  - name: workspace
     image: rust:1-slim
     commands:
-      - cargo build --workspace
+      - rustup component add rustfmt clippy
+      - cargo fmt --all --check
+      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo test --workspace
+
+  - name: python-mapper
+    image: python:3.11-slim
+    commands:
+      - pip install -q pytest
+      # protocol-mapper's pyproject defaults to --cov= ; override since pytest-cov
+      # isn't in the CI image and the other tests need bleak/hardware anyway.
+      - cd tools/protocol-mapper && pytest tests/test_gphoto2_labels.py -o addopts="" -q
