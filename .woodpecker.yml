@@ -33,6 +33,7 @@ steps:
   - name: image
     image: woodpeckerci/plugin-docker-buildx
     privileged: true
+    network_mode: mgmt-public
     settings:
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ${LOCAL_DOCKER_REGISTRY}/ptpsim
