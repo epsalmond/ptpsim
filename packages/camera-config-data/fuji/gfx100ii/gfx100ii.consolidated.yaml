@@ -24,13 +24,17 @@ evidence:
     kind: wire-capture
     path: tools/protocol-mapper/scripts/xlv_capsweep.py
     date: ''
+  docImageTransfer:
+    kind: doc
+    path: evidence/IMAGE_TRANSFER_FW0230.md
+    date: ''
+  docLiveControls:
+    kind: doc
+    path: evidence/PTP_PROPERTIES_REFERENCE.md
+    date: ''
   docXlv:
     kind: doc
     path: docs/TRANSPORTS.md#xlv
-    date: ''
-  docimage-transfer:
-    kind: doc
-    path: evidence/IMAGE_TRANSFER_FW0230.md
     date: ''
   iosBLEReg:
     kind: ios-source
@@ -44,6 +48,10 @@ evidence:
     kind: ios-source
     path: client application/.../client applicationCore/FujiPTPIP.swift
     date: 2026-05-26
+  iosLiveControls:
+    kind: ios-source
+    path: client application/.../client applicationApp/FujiCameraAPISession.swift
+    date: 2026-05-27
   iosStartupSeq:
     kind: ios-source
     path: client application/.../client applicationApp/FujiCameraAPISession.swift
@@ -80,46 +88,32 @@ operations:
     - activeProbe
   '0x1002':
     name: OpenSession
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
-    modes:
-    - card-reader
-    - raw-conv-backup-restore
-    - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
-    - tether-auto
+    modes: []
     connections:
-    - usb
-    - wireless-tether
+    - app
     requires: null
     evidence:
-    - activeProbe
+    - iosStartupSeq
   '0x1003':
     name: CloseSession
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
-    modes:
-    - card-reader
-    - raw-conv-backup-restore
-    - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
-    - tether-auto
+    modes: []
     connections:
-    - usb
-    - wireless-tether
+    - app
     requires: null
     evidence:
-    - activeProbe
+    - iosStartupSeq
   '0x1004':
     name: GetStorageIDs
     owner: ''
@@ -205,18 +199,22 @@ operations:
     evidence:
     - activeProbe
   '0x1008':
-    name: GetBackupSettingsInfo
+    name: GetObjectInfo
     owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
-    modes: []
+    modes:
+    - image-transfer
+    - raw-conv-backup-restore
     connections:
+    - app
     - usb
     requires: null
     evidence:
+    - docImageTransfer
     - staticRawStudio
   '0x1009':
     name: GetBackupSettings
@@ -234,25 +232,19 @@ operations:
     - staticRawStudio
   '0x100a':
     name: GetThumb
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
-    - card-reader
-    - raw-conv-backup-restore
-    - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
-    - tether-auto
+    - image-transfer
     connections:
-    - usb
-    - wireless-tether
+    - app
     requires: null
     evidence:
-    - activeProbe
+    - docImageTransfer
   '0x100b':
     name: DeleteObject
     owner: ''
@@ -304,7 +296,7 @@ operations:
     - staticRawStudio
   '0x100e':
     name: InitiateCapture
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
@@ -312,14 +304,12 @@ operations:
     property: null
     modes:
     - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
     connections:
-    - usb
-    - wireless-tether
+    - app
     requires: null
     evidence:
-    - activeProbe
+    - iosLiveControls
+    - docLiveControls
   '0x100f':
     name: FormatStore
     owner: ''
@@ -338,67 +328,57 @@ operations:
     - activeProbe
   '0x1014':
     name: GetDevicePropDesc
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
-    - card-reader
-    - raw-conv-backup-restore
-    - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
-    - tether-auto
+    - shooting
     connections:
-    - usb
-    - wireless-tether
+    - app
     requires: null
     evidence:
-    - activeProbe
+    - iosLiveControls
   '0x1015':
     name: GetDevicePropValue
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
-    - card-reader
-    - raw-conv-backup-restore
-    - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
-    - tether-auto
+    - shooting
+    - image-transfer
     connections:
-    - usb
-    - wireless-tether
+    - app
     requires: null
     evidence:
-    - activeProbe
+    - iosStartupSeq
+    - iosLiveControls
+    - docImageTransfer
   '0x1016':
     name: SetDevicePropValue
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
-    - card-reader
-    - raw-conv-backup-restore
-    - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
-    - tether-auto
+    - shooting
+    - image-transfer
     connections:
-    - usb
+    - app
     - wireless-tether
     requires: null
     evidence:
-    - activeProbe
+    - iosStartupSeq
+    - iosLiveControls
+    - docImageTransfer
+    - wireTether
   '0x1017':
     name: ResetDevicePropValue
     owner: ''
@@ -428,26 +408,26 @@ operations:
     property: null
     modes:
     - shooting
-    connections: []
+    connections:
+    - app
     requires: null
     evidence:
     - iosStartupSeq
   '0x101b':
     name: GetPartialObject
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
-    - card-reader
-    - tether-auto
+    - image-transfer
     connections:
-    - usb
+    - app
     requires: null
     evidence:
-    - activeProbe
+    - docImageTransfer
   '0x101c':
     name: InitiateOpenCapture
     owner: standard-ptp
@@ -458,7 +438,8 @@ operations:
     property: null
     modes:
     - shooting
-    connections: []
+    connections:
+    - app
     requires: null
     evidence:
     - iosStartupSeq
@@ -528,6 +509,54 @@ operations:
     requires: null
     evidence:
     - activeProbe
+  '0x9022':
+    name: FujiVendor9022
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - shooting/stills
+    connections:
+    - app
+    requires: null
+    evidence:
+    - iosLiveControls
+    - docLiveControls
+  '0x9026':
+    name: LockS1Lock
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - shooting/stills
+    connections:
+    - app
+    requires: null
+    evidence:
+    - iosLiveControls
+    - docLiveControls
+  '0x9027':
+    name: UnlockS1Lock
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - shooting/stills
+    connections:
+    - app
+    requires: null
+    evidence:
+    - iosLiveControls
+    - docLiveControls
   '0x902b':
     name: FujiVendor902B
     owner: fuji-vendor
@@ -538,12 +567,61 @@ operations:
     property: null
     modes:
     - shooting/stills
-    connections: []
+    connections:
+    - app
     requires: null
     evidence:
     - iosStartupSeq
+  '0x902c':
+    name: StepShutterspeed
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: property.step
+    property: '0xd240'
+    modes:
+    - shooting/stills
+    connections:
+    - app
+    requires: null
+    evidence:
+    - iosLiveControls
+    - docLiveControls
+  '0x902d':
+    name: StepFnumber
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: property.step
+    property: '0x5007'
+    modes:
+    - shooting/stills
+    connections:
+    - app
+    requires: null
+    evidence:
+    - iosLiveControls
+    - docLiveControls
+  '0x902e':
+    name: StepExposureBias
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: property.step
+    property: '0x5010'
+    modes:
+    - shooting/stills
+    connections:
+    - app
+    requires: null
+    evidence:
+    - iosLiveControls
+    - docLiveControls
   '0x9050':
-    name: FujiVendor9050
+    name: FujiImageImportBegin
     owner: fuji-vendor
     dataPhase: null
     params: []
@@ -558,7 +636,7 @@ operations:
     evidence:
     - docImageTransfer
   '0x9053':
-    name: FujiVendor9053
+    name: FujiImageImportPage
     owner: fuji-vendor
     dataPhase: null
     params: []
@@ -573,7 +651,7 @@ operations:
     evidence:
     - docImageTransfer
   '0x9054':
-    name: FujiVendor9054
+    name: FujiImageImportCurrentObjectInfo
     owner: fuji-vendor
     dataPhase: null
     params: []
@@ -588,7 +666,7 @@ operations:
     evidence:
     - docImageTransfer
   '0x9055':
-    name: FujiVendor9055
+    name: FujiImageImportCurrentObjectThumb
     owner: fuji-vendor
     dataPhase: null
     params: []
@@ -694,8 +772,8 @@ properties:
     evidence:
     - activeProbe
   '0x5005':
-    name: WhiteBalance
-    ptpName: null
+    name: whiteBalance
+    ptpName: WhiteBalance
     type: u16
     access: readWrite
     descriptor:
@@ -716,10 +794,14 @@ properties:
       - 32800
       - 32801
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
   '0x5007':
     name: aperture
     ptpName: FNumber
@@ -731,18 +813,24 @@ properties:
       - 280
       source: camera
     controls:
+      app:
+        setMethod: vendorStep
+        operation: '0x902d'
+        readback: '0xd212'
       wireless-tether:
         setMethod: absolute
         operation: '0x1016'
         readback: null
     labels: {}
     evidence:
+    - iosLiveControls
+    - docLiveControls
     - wireTether
   '0x500a':
-    name: FocusMode
-    ptpName: null
+    name: focusMode
+    ptpName: FocusMode
     type: u16
-    access: readWrite
+    access: readOnly
     descriptor:
       form: enum
       values:
@@ -751,7 +839,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
   '0x500b':
     name: ExposureMeteringMode
     ptpName: null
@@ -766,6 +854,20 @@ properties:
     labels: {}
     evidence:
     - activeProbe
+  '0x500c':
+    name: flashMode
+    ptpName: FlashMode
+    type: u16
+    access: readWrite
+    descriptor: null
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
+    labels: {}
+    evidence:
+    - iosLiveControls
   '0x500d':
     name: shutterSpeed
     ptpName: ExposureTime
@@ -857,6 +959,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
+    - iosLiveControls
     - wireTether
   '0x500f':
     name: iso
@@ -906,9 +1009,9 @@ properties:
     evidence:
     - wireTether
   '0x5010':
-    name: ExposureBiasCompensation
-    ptpName: null
-    type: i16
+    name: exposureBias
+    ptpName: ExposureBiasCompensation
+    type: u16
     access: readWrite
     descriptor:
       form: enum
@@ -945,10 +1048,15 @@ properties:
       - 4667
       - 5000
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: vendorStep
+        operation: '0x902e'
+        readback: '0xd212'
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
+    - docLiveControls
   '0x5011':
     name: DateTime
     ptpName: null
@@ -963,8 +1071,8 @@ properties:
     evidence:
     - activeProbe
   '0x5012':
-    name: CaptureDelay
-    ptpName: null
+    name: selfTimer
+    ptpName: SelfTimer
     type: u16
     access: readWrite
     descriptor:
@@ -974,10 +1082,14 @@ properties:
       - 2000
       - 0
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
   '0x5015':
     name: Sharpness
     ptpName: null
@@ -1008,7 +1120,7 @@ properties:
     evidence:
     - activeProbe
   '0xd001':
-    name: raw_0xd001
+    name: filmSimulation
     ptpName: null
     type: u16
     access: readWrite
@@ -1036,10 +1148,14 @@ properties:
       - 18
       - 19
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
   '0xd007':
     name: raw_0xd007
     ptpName: null
@@ -1333,33 +1449,42 @@ properties:
     evidence:
     - activeProbe
   '0xd02a':
-    name: raw_0xd02a
-    ptpName: null
-    type: u16
+    name: stillIso
+    ptpName: ISO
+    type: u32
     access: readWrite
     descriptor:
       form: enum
       values:
       - 32769
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: '0xd212'
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
+    - docLiveControls
   '0xd02b':
-    name: raw_0xd02b
-    ptpName: null
-    type: u16
+    name: movieIso
+    ptpName: MovieISO
+    type: u32
     access: readWrite
     descriptor:
       form: enum
       values:
       - 32769
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
   '0xd02d':
     name: raw_0xd02d
     ptpName: null
@@ -1953,6 +2078,17 @@ properties:
     labels: {}
     evidence:
     - activeProbe
+  '0xd17c':
+    name: s1Lock
+    ptpName: null
+    type: u32
+    access: readOnly
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - iosLiveControls
+    - docLiveControls
   '0xd17e':
     name: raw_0xd17e
     ptpName: null
@@ -2696,9 +2832,9 @@ properties:
     evidence:
     - activeProbe
   '0xd209':
-    name: raw_0xd209
+    name: s1LockColor
     ptpName: null
-    type: u16
+    type: u32
     access: readOnly
     descriptor:
       form: enum
@@ -2707,7 +2843,8 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
+    - docLiveControls
   '0xd20a':
     name: raw_0xd20a
     ptpName: null
@@ -2791,9 +2928,9 @@ properties:
     evidence:
     - activeProbe
   '0xd212':
-    name: raw_0xd212
+    name: liveStatus
     ptpName: null
-    type: undef
+    type: u8a
     access: readOnly
     descriptor:
       form: none
@@ -2802,7 +2939,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docImageTransfer
   '0xd215':
     name: raw_0xd215
     ptpName: null
@@ -2909,10 +3046,10 @@ properties:
     evidence:
     - activeProbe
   '0xd226':
-    name: raw_0xd226
+    name: imageImportFilter
     ptpName: null
-    type: str
-    access: readOnly
+    type: u16
+    access: readWrite
     descriptor:
       form: none
       values: []
@@ -2920,12 +3057,12 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docImageTransfer
   '0xd227':
-    name: raw_0xd227
+    name: imageImportSort
     ptpName: null
-    type: str
-    access: readOnly
+    type: u16
+    access: readWrite
     descriptor:
       form: none
       values: []
@@ -2933,7 +3070,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docImageTransfer
   '0xd228':
     name: raw_0xd228
     ptpName: null
@@ -3243,19 +3380,24 @@ properties:
     evidence:
     - activeProbe
   '0xd240':
-    name: raw_0xd240
-    ptpName: null
-    type: u16
+    name: shutterSpeedEx
+    ptpName: ShutterSpeedEx
+    type: u32
     access: readWrite
     descriptor:
       form: enum
       values:
       - 280
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: vendorStep
+        operation: '0x902c'
+        readback: '0xd212'
     labels: {}
     evidence:
-    - activeProbe
+    - iosLiveControls
+    - docLiveControls
   '0xd241':
     name: raw_0xd241
     ptpName: null
@@ -3333,9 +3475,9 @@ properties:
     evidence:
     - activeProbe
   '0xd244':
-    name: raw_0xd244
+    name: imageImportD244
     ptpName: null
-    type: str
+    type: u8a
     access: readOnly
     descriptor:
       form: none
@@ -3344,7 +3486,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docImageTransfer
   '0xd245':
     name: raw_0xd245
     ptpName: null
@@ -5546,6 +5688,26 @@ properties:
     labels: {}
     evidence:
     - activeProbe
+  '0xd620':
+    name: imageImportObjectCount
+    ptpName: null
+    type: u32
+    access: readOnly
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - docImageTransfer
+  '0xd621':
+    name: imageImportObjectHandles
+    ptpName: null
+    type: u8a
+    access: readOnly
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - docImageTransfer
   '0xdf00':
     name: functionModeMajor
     ptpName: null
@@ -5576,7 +5738,7 @@ properties:
     labels: {}
     evidence:
     - iosStartupSeq
-    - docimage-transfer
+    - docImageTransfer
   '0xdf2a':
     name: liveDf2a
     ptpName: null
@@ -5770,7 +5932,31 @@ connections:
         sendOp: null
         value: 3
         params: []
-        tolerant: false
+        tolerant: true
+        repeat: 1
+      - setProp: '0xd226'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 0
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: '0xd227'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 0
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: null
+        getProp: '0xd244'
+        readEcho: null
+        sendOp: null
+        value: null
+        params: []
+        tolerant: true
         repeat: 1
       - setProp: null
         getProp: null
@@ -5852,7 +6038,31 @@ connections:
         sendOp: null
         value: 3
         params: []
-        tolerant: false
+        tolerant: true
+        repeat: 1
+      - setProp: '0xd226'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 0
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: '0xd227'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        value: 0
+        params: []
+        tolerant: true
+        repeat: 1
+      - setProp: null
+        getProp: '0xd244'
+        readEcho: null
+        sendOp: null
+        value: null
+        params: []
+        tolerant: true
         repeat: 1
       - setProp: null
         getProp: null

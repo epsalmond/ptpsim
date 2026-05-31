@@ -77,6 +77,41 @@ fn control_mechanism_varies_by_connection() {
         .expect("aperture control over tether");
     assert_eq!(ctl.set_method.as_deref(), Some("absolute"));
     assert_eq!(ctl.operation, Some(0x1016));
+
+    let app_aperture = s
+        .control_for("app".into(), "shooting/stills".into(), 0x5007)
+        .expect("aperture control over app");
+    assert_eq!(app_aperture.set_method.as_deref(), Some("vendorStep"));
+    assert_eq!(app_aperture.operation, Some(0x902d));
+    assert_eq!(app_aperture.readback, Some(0xd212));
+
+    let app_iso = s
+        .control_for("app".into(), "shooting/stills".into(), 0xd02a)
+        .expect("ISO control over app");
+    assert_eq!(app_iso.set_method.as_deref(), Some("absolute"));
+    assert_eq!(app_iso.operation, Some(0x1016));
+    assert_eq!(app_iso.readback, Some(0xd212));
+}
+
+#[test]
+fn app_current_behavior_ops_gate_through_ffi() {
+    let s = store();
+    assert!(matches!(
+        s.operation_available("app".into(), "shooting/stills".into(), 0x9026, vec![]),
+        Availability::Available
+    ));
+    assert!(matches!(
+        s.operation_available("app".into(), "shooting/stills".into(), 0x100e, vec![]),
+        Availability::Available
+    ));
+    assert!(matches!(
+        s.operation_available("app".into(), "image-transfer".into(), 0x1008, vec![]),
+        Availability::Available
+    ));
+    assert!(matches!(
+        s.operation_available("app".into(), "image-transfer".into(), 0x101b, vec![]),
+        Availability::Available
+    ));
 }
 
 #[test]
@@ -226,6 +261,22 @@ fn property_value_width_resolves_from_manifest_type() {
         s.property_value_width(0xdf28),
         Some(ValueWidth::U32)
     )); // featureVersion u32
+    assert!(matches!(
+        s.property_value_width(0xd02a),
+        Some(ValueWidth::U32)
+    )); // App still ISO u32
+    assert!(matches!(
+        s.property_value_width(0x5010),
+        Some(ValueWidth::U16)
+    )); // exposure bias u16
+    assert!(matches!(
+        s.property_value_width(0xd226),
+        Some(ValueWidth::U16)
+    )); // imageImportFilter u16
+    assert!(matches!(
+        s.property_value_width(0xd227),
+        Some(ValueWidth::U16)
+    )); // imageImportSort u16
     assert!(s.property_value_width(0xd185).is_none()); // rawSettings u8a → unsupported
     assert!(s.property_value_width(0x9999).is_none()); // unknown property
 }
