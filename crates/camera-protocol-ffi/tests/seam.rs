@@ -148,17 +148,19 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
 }
 
 #[test]
-fn establishment_is_returned_as_data() {
+fn connection_establishment_is_returned_as_data() {
     let s = store();
     // wireless-tether: PCSS knock params surfaced for the app to drive.
-    let wt = s.establishment("wireless-tether".into()).unwrap();
+    let wt = s
+        .connection_establishment("wireless-tether".into())
+        .unwrap();
     assert_eq!(wt.mechanism.as_deref(), Some("pcss-knock-v1"));
     assert!(wt
         .params
         .iter()
         .any(|kv| kv.key == "knockPort" && kv.value == "51562"));
     // app is brought up via the BLE→WiFi handover.
-    let app = s.establishment("app".into()).unwrap();
+    let app = s.connection_establishment("app".into()).unwrap();
     assert_eq!(app.mechanism.as_deref(), Some("ble-to-wifi-ap-v1"));
 }
 

@@ -12,8 +12,14 @@
 
 use camera_config as cc;
 use cc::parse_hex_code;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+pub mod mfg_index;
+pub use mfg_index::{
+    AcquireSource, BleNotifyUntil, Confidence, EstablishmentPlan, ModelMatch, Observation,
+    Predicate, PredicateOp, Recognition, Step, StepOptions, StepValue, ValueTransform,
+};
 
 uniffi::setup_scaffolding!();
 
@@ -202,15 +208,21 @@ pub struct ModeEntryPlan {
     pub user_instruction: Option<String>,
 }
 
-#[derive(uniffi::Record)]
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct KeyValue {
     pub key: String,
     pub value: String,
 }
 
-/// How to bring a connection up (data only — the app drives the GATT/UDP/TCP I/O).
+/// How to bring a known connection up (data only — the app drives the
+/// GATT/UDP/TCP I/O). Returned by [`ConfigStore::connection_establishment`].
+///
+/// **Renamed in P1** (was `EstablishmentPlan`) — the manufacturer-index
+/// pull-model flow took the `EstablishmentPlan` name; this type covers the
+/// older single-connection query (`establishment("ble")` → "here are the
+/// GATT UUIDs and knock ports for the ble connection").
 #[derive(uniffi::Record)]
-pub struct EstablishmentPlan {
+pub struct ConnectionEstablishmentInfo {
     pub target_connection: String,
     pub mechanism: Option<String>,
     pub user_instruction: Option<String>,
@@ -338,6 +350,95 @@ impl ConfigStore {
         build_store(m, manufacturer_yaml)
     }
 
+    /// Load a manufacturer index + every model body it references (plan §3.1).
+    /// `model_bodies` carries `(model_id, yaml_text)` pairs; missing entries
+    /// surface as a parse-style [`ConfigError`].
+    #[uniffi::constructor]
+    pub fn from_manufacturer_index(
+        index_yaml: String,
+        model_bodies: Vec<KeyValue>,
+    ) -> Result<Arc<Self>, ConfigError> {
+        let bodies: BTreeMap<String, String> = model_bodies
+            .into_iter()
+            .map(|kv| (kv.key, kv.value))
+            .collect();
+        let inner = cc::ConfigStore::from_manufacturer_index(&index_yaml, bodies)?;
+        // Unwrap the Arc<cc::ConfigStore> into a fresh FFI ConfigStore. The
+        // inner Arc is private to camera-config; here we own the FFI-level
+        // Arc<ConfigStore>.
+        let inner = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+        Ok(Arc::new(ConfigStore { inner }))
+    }
+
+    // -----------------------------------------------------------------------
+    // Manufacturer-index pull model (§3.2 + §3.3 + §11)
+    // -----------------------------------------------------------------------
+
+    /// Observation → decision. Returns [`Recognition::NoMatch`] when no
+    /// signature fires; [`Recognition::Candidate`] for a single match (the
+    /// MVP case); [`Recognition::Disambiguate`] when multiple models match
+    /// the same signature.
+    pub fn recognize(&self, observation: Observation) -> Recognition {
+        let Some(index) = &self.inner.index else {
+            return Recognition::NoMatch;
+        };
+        match observation {
+            Observation::BleAdvert {
+                service_uuids,
+                manufacturer_data,
+                local_name,
+            } => mfg_index::recognize_ble(
+                index,
+                &service_uuids,
+                &manufacturer_data,
+                local_name.as_deref(),
+            ),
+        }
+    }
+
+    /// Per-(model, connection) establishment plan with the given
+    /// `initial_scope` (typically the runtime_scope from a
+    /// [`Recognition::Candidate`]).
+    ///
+    /// Returns `None` if the model is unknown or the connection has no
+    /// establishment block in the index. The plan's [`Step`] values keep
+    /// their structured `Captured` / `Runtime` / `Template` forms — scope is
+    /// resolved by the dispatcher mid-walk (plan §11.1).
+    pub fn establishment(
+        &self,
+        model: String,
+        connection: String,
+        initial_scope: Vec<KeyValue>,
+    ) -> Option<EstablishmentPlan> {
+        let index = self.inner.index.as_ref()?;
+        mfg_index::build_establishment(index, &model, &connection, &initial_scope)
+    }
+
+    /// Per §11.5: returns ONLY the unwalked tail; the dispatcher splices it
+    /// onto its existing plan at `next_step_index`. When `None` is returned,
+    /// the dispatcher leaves the existing tail in place (graceful degrade —
+    /// no matching overlay → use body's default sequence).
+    ///
+    /// **MVP stub:** always returns `None`. The BLE-only YAML in
+    /// `packages/camera-config-data/fuji/index.yaml` has no firmware-
+    /// branching `if:` blocks, so there is no overlay to apply. The P2
+    /// expansion (FilmSimulation enum growth across fw 2.50, the GFX100 II's
+    /// fw 02.30→02.40 transport flip already modeled in
+    /// `gfx100ii/fw2.40.yaml`) wires real overlay resolution here.
+    pub fn refine_establishment(
+        &self,
+        _plan_handle: String,
+        _firmware: String,
+        _scope: Vec<KeyValue>,
+        _next_step_index: u32,
+    ) -> Option<Vec<Step>> {
+        // TODO(P2): walk the family/model establishment.steps with the new
+        // firmware context, evaluate any `if:` predicates that resolve
+        // against `scope` ∪ {"firmware": firmware}, return the resulting
+        // tail from `next_step_index` onward.
+        None
+    }
+
     /// Connections valid on `platform` under the camera's firmware (instax filtered
     /// by `availableWhen`; USB/tether hidden where `platforms:` excludes — all data).
     pub fn connections(&self, platform: Platform) -> Vec<ConnectionInfo> {
@@ -359,7 +460,14 @@ impl ConfigStore {
 
     /// How to bring `connection` up: its establishment mechanism + params (knock
     /// ports, GATT char uuids) as DATA. Returns `None` for an unknown connection.
-    pub fn establishment(&self, connection: String) -> Option<EstablishmentPlan> {
+    ///
+    /// **Renamed in P1** (was `establishment(connection)`) — the
+    /// `establishment(model, connection, initial_scope)` name now belongs to
+    /// the manufacturer-index pull-model flow per plan §3.3.
+    pub fn connection_establishment(
+        &self,
+        connection: String,
+    ) -> Option<ConnectionEstablishmentInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
         let mut params = Vec::new();
         for block in ["knock", "gatt"] {
@@ -374,7 +482,7 @@ impl ConfigStore {
                 }
             }
         }
-        Some(EstablishmentPlan {
+        Some(ConnectionEstablishmentInfo {
             target_connection: connection,
             mechanism: c.establishment.clone(),
             user_instruction: None,
