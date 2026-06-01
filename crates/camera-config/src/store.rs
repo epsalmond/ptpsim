@@ -8,6 +8,11 @@
 //! queries live on [`CameraManifest`] (they need only the body); `ConfigStore`
 //! adds the manufacturer-tier resolution on top.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use crate::error::ConfigError;
+use crate::index::ResolvedManufacturerIndex;
 use crate::model::{CameraManifest, ManufacturerDefaults, ValuePolicy};
 use crate::version::VersionScheme;
 
@@ -15,6 +20,14 @@ use crate::version::VersionScheme;
 pub struct ConfigStore {
     pub manifest: CameraManifest,
     pub manufacturer: Option<ManufacturerDefaults>,
+    /// Present when loaded via [`ConfigStore::from_manufacturer_index`]: the
+    /// resolved manufacturer index (signatures, family-merged BLE blocks,
+    /// per-model views). Absent on single-body loads.
+    pub index: Option<ResolvedManufacturerIndex>,
+    /// All model body manifests keyed by model id. Empty on single-body
+    /// loads. On manufacturer-index loads, the primary body in `manifest` is
+    /// also present here under its model id.
+    pub bodies: BTreeMap<String, CameraManifest>,
 }
 
 impl ConfigStore {
@@ -23,12 +36,72 @@ impl ConfigStore {
         ConfigStore {
             manifest,
             manufacturer: None,
+            index: None,
+            bodies: BTreeMap::new(),
         }
     }
 
     pub fn with_manufacturer(mut self, defaults: ManufacturerDefaults) -> Self {
         self.manufacturer = Some(defaults);
         self
+    }
+
+    /// Load a manufacturer index plus every model body it references
+    /// (plan §3.1 / §11.10). Fail-fast: any error aborts the whole load.
+    ///
+    /// `model_bodies` maps each declared `models[*].id` to the body manifest's
+    /// YAML text. Missing entries → [`ConfigError::MissingModelBody`]; extras
+    /// not referenced by the index are silently ignored. Returns an
+    /// [`Arc<Self>`] so the iOS FFI (uniffi) can share the store across the
+    /// async hot path without re-parsing.
+    pub fn from_manufacturer_index(
+        index_yaml: &str,
+        model_bodies: BTreeMap<String, String>,
+    ) -> Result<Arc<Self>, ConfigError> {
+        let index = ResolvedManufacturerIndex::from_yaml(index_yaml)?;
+        let mut bodies: BTreeMap<String, CameraManifest> = BTreeMap::new();
+        for model_view in &index.models {
+            let id = &model_view.id;
+            let body_text = model_bodies
+                .get(id)
+                .ok_or_else(|| ConfigError::MissingModelBody { id: id.clone() })?;
+            let body: CameraManifest =
+                serde_yaml::from_str(body_text).map_err(|err| ConfigError::BodyParse {
+                    id: id.clone(),
+                    err,
+                })?;
+            bodies.insert(id.clone(), body);
+        }
+        // Plan §3.1: "the primary manifest" semantics — the first declared
+        // model's body. Single-model indices (the MVP case) trivially get
+        // the only body. Callers wanting a different model look up by id
+        // via `bodies`.
+        let primary_id =
+            index
+                .models
+                .first()
+                .map(|m| m.id.clone())
+                .ok_or_else(|| ConfigError::Validation {
+                    path: "models".to_string(),
+                    message: "manufacturer index declares zero models".to_string(),
+                })?;
+        let manifest = bodies
+            .get(&primary_id)
+            .cloned()
+            .expect("loop above inserted every model id");
+        Ok(Arc::new(ConfigStore {
+            manifest,
+            manufacturer: None,
+            index: Some(index),
+            bodies,
+        }))
+    }
+
+    /// Look up a model body by id (only useful after
+    /// [`Self::from_manufacturer_index`]; single-body loads have an empty
+    /// `bodies` map).
+    pub fn body(&self, model_id: &str) -> Option<&CameraManifest> {
+        self.bodies.get(model_id)
     }
 
     /// The version-ordering scheme this camera uses: the manufacturer's
