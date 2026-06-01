@@ -1,0 +1,17 @@
+---
+# Hosts provisioned by this Ansible tree.
+#
+
+# xcframework Woodpecker job). Add more as the Docker → VM migration brings
+# them online.
+#
+# Naming: <hostname>.local for the .local domain on the management network;
+# `ci_macos` group covers all macOS-based CI workers if/when a second one
+# joins.
+
+all:
+  children:
+    ci_macos:
+      hosts:
+
+

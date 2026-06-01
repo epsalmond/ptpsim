@@ -51,11 +51,11 @@ steps:
 
 
   # publish it as a GitHub release attachment. Recipe lives in
-  # ci/build-xcframework.sh; agent setup runbook in ci/setup-macos-agent.sh.
-  # Plan §11.11 has the design rationale.
+  # ci/build-xcframework.sh; agent provisioned by
+  # ci/ansible/woodpecker-agent.yml. Plan §11.11 has the design rationale.
   - name: xcframework
     labels:
-      platform: darwin     # routes to the macOS agent registered by setup-macos-agent.sh
+      platform: darwin     # routes to the macOS agent (see ci/ansible/)
     commands:
       - ./ci/build-xcframework.sh
       # Tarball lands at out/dist/CameraProtocolFFI-<sha8>.tar.gz.
