@@ -8,6 +8,7 @@
 
 pub mod error;
 pub mod generate;
+pub mod index;
 pub mod model;
 pub mod predicate;
 pub mod query;
@@ -16,7 +17,7 @@ pub mod store;
 pub mod trace;
 pub mod version;
 
-pub use error::{Lint, ManifestError, Severity};
+pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{enrich, generate_proposal};
 pub use model::{
     parse_hex_code, AvailableWhen, CameraIdentity, CameraManifest, Connection,

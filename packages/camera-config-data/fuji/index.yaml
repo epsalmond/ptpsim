@@ -1,0 +1,186 @@
+# Fujifilm manufacturer index (BLE-MVP P0).
+#
+# Sources for every UUID and protocol fact below:
+
+#     §3 universal GATT catalog
+#     §2 LEGACY-vs-RED detection rules
+#     §5 runtime-detection sequence
+
+#     (read first — corrects the brief; smali line citations from reference app 2.7.3)
+
+#
+# Schema: plan docs/plans/ios-rewrite-p0-p1-ble-mvp.md §2.1 (BLE-only).
+# Loader: camera_config::ConfigStore::from_manufacturer_index.
+
+manufacturer: FUJIFILM
+
+families:
+  fuji:
+    ble:
+      # Universal GATT catalog. Every Fuji BLE camera, every firmware.
+      # Source: BTConstansKt.java:22-127 in the reference app APK; same UUIDs
+      # hardcoded for LEGACY and RED styles. Which CHARACTERISTICS are
+      # actually exposed varies at runtime (camera firmware chooses), so
+      # steps that touch a per-style char (deviceIdentificationNumber)
+      # must be tolerant of the char being absent (see §11.6 + reply §5).
+      gatt:
+        # Standard BLE GATT — read triggers the iOS bond prompt.
+        protectedSerialString: "00002A25-0000-1000-8000-00805F9B34FB"
+        # Standard BLE GATT — post-pair firmware version (e.g. "02.30").
+        firmwareRevisionString: "00002A26-0000-1000-8000-00805F9B34FB"
+        # CHARACTERISTIC_FF_PAIRING_KEY — same UUID, both styles,
+        # different payload bytes (4-byte LE on LEGACY, 5-byte ASCII on RED).
+        pairingKey: "ABA356EB-9633-4E60-B73F-F52516DBD671"
+        # CHARACTERISTIC_FF_CONNECTED_DEVICE_NAME_STRING — phone display
+        # name written by initiator (e.g. "iphone"). UTF-8 bytes.
+        deviceNameString: "85B9163E-62D1-49FF-A6F5-054B4630D4A1"
+        # CHARACTERISTIC_FF_CONNECTED_DEVICE_IDENTIFICATION_NUMBER —
+        # RED-only first-pair read+echo challenge-response. Absent from
+        # the discovered characteristic map on LEGACY bodies (reply §5).
+        deviceIdentificationNumber: "F557D96B-8284-4667-8793-B971C1DECA2A"
+        # Post-pair / AP-handover characteristics (NOT walked in the MVP
+        # but belong to the same family block; here so they're catalogued).
+        functionLaunchRequest: "600655E6-3637-42F1-8FB2-44EFC5C63B13"
+        apState: "A68E3F66-0FCC-4395-8D4C-AA980B5877FA"
+        cameraSSIDNameString: "BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4"
+        cameraWiFiPassphraseString: "E809256A-915C-4967-92E8-53B7D4CAD213"
+
+      # Advertisement-format constants used by recognize() to match Fuji
+      # adverts and classify style. Family-wide.
+      advert:
+        # 1240 = Bluetooth SIG company ID for Fujifilm.
+        fujiCompanyId: 0x04D8
+        # SERVICE_FF_FILE_TRANSFER — presence in the advert's service-UUID
+        # list classifies the advert as LEGACY style (READ_THIS_FIRST §2,
+        # reference app BTManager.java:521).
+        legacyServiceUuid: "AF854C2E-B214-458E-97E2-912C4ECF2CB8"
+
+      # Establishment plan. Walks the same path for both styles, with an
+      # `if:` for the RED-only identification-number exchange. Style +
+      # pairing-key bytes come from recognize()'s runtime_scope — no
+      # acquireFirmware here because pairing doesn't depend on fw.
+      establishment:
+        mechanism: fuji-ble-pair-v1
+        steps:
+          # Peripheral is already in app scope from recognition; the
+          # dispatcher's BLE primitive holds the binding (plan §11.4).
+          - bleConnect: {}
+
+          # Trigger the iOS bond prompt by reading the standard protected
+          # serial. reference app pattern: up to 20× retries 1s apart; intermediate
+          # failures (insufficient-encryption / insufficient-authentication)
+          # are normal while the OS bond dialog is up — tolerate them.
+          # Reply §4: legacy bodies have no special 20-retry window inside
+          # reference app on THIS read; we keep the retry budget anyway because the
+          # bond prompt can stall mid-read on first encounter.
+          - bleRead:
+              gatt: protectedSerialString
+              encoding: bytes
+              captureAs: cameraSerial
+              tolerant: true
+              retries: 20
+              retryDelayMs: 1000
+
+          # Write the pairing key. Same characteristic for both styles;
+          # the BYTES come from the advert (4 LE on LEGACY, 5 ASCII on RED)
+          # — captured by recognize() into runtime_scope under
+          # `pairingKeyBytes`.
+          - bleWrite:
+              gatt: pairingKey
+              value: { captured: pairingKeyBytes }
+
+          # Write the phone-side display name. App supplies this at runtime.
+          - bleWrite:
+              gatt: deviceNameString
+              value: { runtime: terminalName, encoding: utf8 }
+
+          # RED first-pair only: read camera-generated identification
+          # number, OR with the APP_IDENTIFIER constant (0x20000000),
+          # echo the result back to the same characteristic
+          # READ_THIS_FIRST §6 the echo value is `(camera_id_num |
+          # 0x20000000)`. The OR is the FUJI RED-protocol convention used
+          # by reference app Android too — NOT platform-specific — so it belongs in
+          # the schema as a value transform.
+          #
+          # If style != "red" or the characteristic isn't exposed on this
+          # body's catalog, skip. Tolerant on the if-block covers both:
+          # missing `style` (treat as not-red, else branch which is empty)
+          # and missing characteristic (inner bleRead's `tolerant`
+          # swallows the gatt-not-found).
+          - if:
+              condition: { style: { eq: "red" } }
+              tolerant: true
+              then:
+                - bleRead:
+                    gatt: deviceIdentificationNumber
+                    encoding: u32
+                    captureAs: idNumber
+                    tolerant: true
+                    retries: 20
+                    retryDelayMs: 1000
+                - bleWrite:
+                    gatt: deviceIdentificationNumber
+                    value:
+                      captured: idNumber
+                      transform: { bitOr: 0x20000000 }
+              # No else branch — LEGACY just continues past this point.
+
+models:
+  - id: gfx100ii
+    displayName: "GFX100 II"
+    inherits: [fuji]
+    manifest: gfx100ii/gfx100ii.yaml
+
+    # Signatures detect the advert's style and capture the pairing-key
+    # bytes into runtime_scope. A Fuji advert that matches either
+    # signature produces a Candidate; recognize() seeds runtime_scope
+    # with `style` and `pairingKeyBytes` (and `shortSerial` on RED) so
+    # the establishment plan above can write them without further
+    # app-side parsing.
+    #
+    # File declaration order is the signature precedence (§11.7): the
+    # legacy signature is tried first because legacy adverts are
+    # uniquely identifiable by the presence of SERVICE_FF_FILE_TRANSFER,
+    # while RED adverts are characterised by absence (which the legacy
+    # signature would have matched first).
+    signatures:
+      bleLegacyAdvert:
+        kind: bleAdvert
+        # Per READ_THIS_FIRST §5 Detection point 1: legacy advert =
+        # Fuji company ID in mfg-data + SERVICE_FF_FILE_TRANSFER in the
+        # advertised service-UUID list.
+        require:
+          manufacturerCompanyId: "{ble.advert.fujiCompanyId}"
+          advertContainsService: "{ble.advert.legacyServiceUuid}"
+        manufacturerData:
+          # 5 bytes: type byte 0x02 + 4-byte LE pairing key.
+          minLength: 5
+          assertByte:
+            - { index: 0, equals: 0x02 }
+          captureBytes:
+            - { from: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+        scope:
+          style: "legacy"
+        suggests: { connection: ble, confidence: high }
+
+      bleRedAdvert:
+        kind: bleAdvert
+        # Detector: Fuji company ID + 6-byte mfg-data with type byte 0x01.
+        # Absence of legacy service UUID is implicit — the legacy signature
+        # above is tried first (file-declaration order, §11.7) and would
+        # have matched if the service UUID were present.
+        require:
+          manufacturerCompanyId: "{ble.advert.fujiCompanyId}"
+        manufacturerData:
+          length: 6
+          assertByte:
+            - { index: 0, equals: 0x01 }
+          captureBytes:
+            # Phone writes these same 5 ASCII bytes back to PAIRING_KEY.
+            - { from: 1, length: 5, encoding: ascii, name: pairingKeyBytes }
+            # Save under shortSerial too so the iOS persistence layer
+            # can key the saved entry by short serial without re-decoding.
+            - { from: 1, length: 5, encoding: ascii, name: shortSerial }
+        scope:
+          style: "red"
+        suggests: { connection: ble, confidence: high }
