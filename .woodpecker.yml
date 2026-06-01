@@ -48,3 +48,29 @@ steps:
     when:
       branch: main
       event: push
+
+
+  # publish it as a GitHub release attachment. Recipe lives in
+  # ci/build-xcframework.sh; agent setup runbook in ci/setup-macos-agent.sh.
+  # Plan §11.11 has the design rationale.
+  - name: xcframework
+    labels:
+      platform: darwin     # routes to the macOS agent registered by setup-macos-agent.sh
+    commands:
+      - ./ci/build-xcframework.sh
+      # Tarball lands at out/dist/CameraProtocolFFI-<sha8>.tar.gz.
+      # Publish as a GitHub release attached to the commit SHA tag. The
+      # tag is created on demand by `gh release create`; `--clobber` makes
+      # the upload idempotent on retries.
+      - export TAG="sha-${CI_COMMIT_SHA:0:8}"
+      - gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG"
+          --target "$CI_COMMIT_SHA"
+          --title "ptpsim FFI $TAG"
+          --notes "Auto-built CameraProtocolFFI.xcframework. Recipe: ci/build-xcframework.sh."
+      - gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.tar.gz" --clobber
+    environment:
+      GH_TOKEN:
+        from_secret: github_token   # fine-grained PAT with contents:write on the repo
+    when:
+      branch: main
+      event: push
