@@ -801,27 +801,35 @@ Health endpoint:
 GET /healthz
 ```
 
-Response:
+Response (the exact shape `camera_sim_service::control::Health` emits today):
 
 ```json
 {
   "ok": true,
-  "profile": "fuji/gfx100ii/fw0230",
-  "lease_id": "uuid",
+  "instance_id": "<lease-uuid-or-'local'>",
+  "profile": "fuji/gfx100ii",
   "bind": "[2602:...]:55740",
   "sessions": 1,
-  "media_root": "/media/DCIM/100_FUJI"
+  "media_root": "/var/lib/ptpsim/media-root"
 }
 ```
 
 Control endpoints should be enabled only on a private interface or protected by
 
+(graceful drain) are implemented; the rest of the table below is planned and
+distinguished so consumers don't depend on what isn't there yet.
+
+Implemented:
+
+- `GET /healthz`
+- `POST /shutdown`
+
+Planned (DO NOT depend on yet; request upstream when needed):
 
 - `POST /reset`
 - `POST /scenario/load`
 - `POST /script`
 - `POST /faults`
-- `POST /shutdown`
 - `GET /trace`
 - `GET /metrics`
 
@@ -908,20 +916,31 @@ The agent-paste handoff for that client application-side cutover lives at
 Scriptability is required for tests, review support, demos, and protocol
 exploration.
 
-CLI examples:
+CLI examples (today's binaries are `camera-sim-service` and `camera-simctl`;
+the `camera-probe` / generator examples are aspirational shape sketches —
+the current generator lives at `cargo run -p camera-config --bin camera-config-generate`):
 
 ```sh
-camera-sim serve --profile fuji/gfx100ii/fw0230 \
-  --bind '[::]' \
-  --media-root DCIM/100_FUJI \
-  --liveview-dir DCIM/mjpeg/640x480
+# IMPLEMENTED today (matches services/camera-sim-service/src/main.rs):
+camera-sim-service \
+  --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
+  --media-root <path/to/DCIM-root> \
+  --profile fuji/gfx100ii \
+  --command-bind  '[::]:55740' \
+  --event-bind    '[::]:55741' \
+  --liveview-bind '[::]:55742' \
+  --liveview-dir  packages/fixtures/liveview/640x480 \
+  --control-bind  '127.0.0.1:8080'
 
-camera-simctl reset --host http://127.0.0.1:8080
+# IMPLEMENTED today (tools/camera-simctl):
+camera-simctl health  --control 127.0.0.1:8080
+camera-simctl shutdown --control 127.0.0.1:8080
+camera-simctl smoke   --host    127.0.0.1:55740    # design gate #5
+
+# PLANNED (not implemented yet — paper shape for the script/fault surface):
 camera-simctl script run scenarios/fuji/image-import-happy.yaml
 camera-simctl fault set --op 0x101b --after-bytes 10485760 --action disconnect
 camera-probe probe --plan fuji/app/image-import --out observations/run.jsonl
-camera-probe probe --plan fuji/usb/settings-fuzz --aggressive --dry-run
-camera-manifest generate observations/run.jsonl --out manifests/fuji/gfx100ii/fw0230.yaml
 ```
 
 Scenario script shape:
