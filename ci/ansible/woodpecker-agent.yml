@@ -49,12 +49,29 @@
         that: ansible_system == "Darwin"
         fail_msg: "{{ inventory_hostname }} is not macOS (ansible_system={{ ansible_system }})"
 
-    - name: Confirm Homebrew is installed (gh CLI prerequisite)
-      ansible.builtin.command: brew --version
-      changed_when: false
-      register: brew_check
-      failed_when: brew_check.rc != 0
+    - name: Locate Homebrew prefix (PATH is unreliable for non-interactive SSH)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /opt/homebrew/bin/brew    # Apple Silicon
+        - /usr/local/bin/brew       # Intel
+      register: brew_candidates
       become: false
+
+    - name: Select an existing brew prefix
+      ansible.builtin.set_fact:
+        brew_bin: "{{ (brew_candidates.results | selectattr('stat.exists') | map(attribute='item') | list | first) | default('') }}"
+
+    - name: Fail with a useful message if brew is missing
+      ansible.builtin.fail:
+        msg: >-
+          Homebrew not found at /opt/homebrew/bin/brew or /usr/local/bin/brew.
+          Install brew first (https://brew.sh) — the gh CLI install task needs it.
+      when: brew_bin == ''
+
+    - name: Record brew prefix dir (for PATH + module hints)
+      ansible.builtin.set_fact:
+        brew_prefix: "{{ brew_bin | dirname }}"
 
   tasks:
     # ---------------------------------------------------------------------
@@ -94,11 +111,15 @@
       community.general.homebrew:
         name: gh
         state: present
+        path: "{{ brew_prefix }}"
+      environment:
+        PATH: "{{ brew_prefix }}:{{ ansible_env.PATH }}"
       become: false
       # community.general.homebrew runs as the brew owner (the user who owns
-      # /opt/homebrew or /usr/local). `become: false` lets it inherit our
-      # ansible_user — the unprivileged operator account — which is the
-      # right shape for brew.
+      # /opt/homebrew or /usr/local — typically the SSH user who installed
+      # brew). `become: false` keeps us as ansible_user; passing `path:` and
+      # an explicit PATH lets the module find the binary even though
+      # non-interactive SSH skips ~/.zshrc.
 
     # ---------------------------------------------------------------------
     # Woodpecker agent binary
