@@ -1,8 +1,7 @@
+# Linux workflow — runs on any Docker-backend agent.
+# Pure-Rust workspace (no openssl/ring/native deps), so rust:1-slim suffices.
+# Image push and python wheel publish are gated on main+push.
 
-# Smoke proves the webhook→server→nas-agent path; the workspace step matches the
-# local quality gates (fmt + clippy -D warnings + 120 tests including the #3/#4
-# believability gates). Builds are pure Rust (no openssl/ring/native deps), so
-# rust:1-slim suffices.
 when:
   - event: [push, pull_request]
 
@@ -30,10 +29,11 @@ steps:
 
 
 
+  # Reaches the registry via WOODPECKER_BACKEND_DOCKER_NETWORK on the agent
+  # (per-step network_mode was dropped in Woodpecker 3.x).
   - name: image
     image: woodpeckerci/plugin-docker-buildx
     privileged: true
-    network_mode: mgmt-public
     settings:
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ${LOCAL_DOCKER_REGISTRY}/ptpsim
@@ -45,29 +45,6 @@ steps:
         - latest
         - sha-${CI_COMMIT_SHA:0:8}
       platforms: linux/amd64,linux/arm64
-    when:
-      branch: main
-      event: push
-
-
-  # publish it as a GitHub release attachment. Recipe lives in
-  # ci/build-xcframework.sh; agent provisioned by
-  # ci/ansible/woodpecker-agent.yml. Plan §11.11 has the design rationale.
-  - name: xcframework
-    labels:
-      platform: darwin     # routes to the macOS agent (see ci/ansible/)
-    commands:
-      - ./ci/build-xcframework.sh
-      # Tarball lands at out/dist/CameraProtocolFFI-<sha8>.tar.gz.
-      # Publish as a GitHub release attached to the commit SHA tag. The
-      # tag is created on demand by `gh release create`; `--clobber` makes
-      # the upload idempotent on retries.
-      - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
-      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
-      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.tar.gz" --clobber'
-    environment:
-      GH_TOKEN:
-        from_secret: github_token   # fine-grained PAT with contents:write on the repo
     when:
       branch: main
       event: push
