@@ -21,7 +21,10 @@
   vars:
     woodpecker_user: woodpecker
     woodpecker_user_home: "/Users/{{ woodpecker_user }}"
-    woodpecker_agent_version: "3.10.0"
+    # Agent and server must match: Woodpecker bumps the gRPC wire version
+    # between minor releases (3.10→3.14 went v14→v16). Keep this aligned
+
+    woodpecker_agent_version: "3.14.1"
     woodpecker_agent_arch: "{{ 'arm64' if ansible_architecture == 'arm64' else 'amd64' }}"
     woodpecker_agent_bin: /usr/local/bin/woodpecker-agent
     woodpecker_log_dir: /var/log/woodpecker
@@ -135,15 +138,23 @@
     # and refuses (it shells out with GNU-only options). Rather than depend
     # on Homebrew's gnu-tar being installed and on PATH, we just call BSD
     # tar ourselves — it reads gzipped tarballs fine; only the Ansible
-    # module wrapper is picky. `creates:` keeps the task idempotent.
+    # module wrapper is picky. Unpack to a version-tagged dir so version
+    # bumps actually replace the binary (a non-versioned `creates:` would
+    # skip unpack on re-runs and leave the old binary in place).
+    - name: Ensure unpack target exists
+      ansible.builtin.file:
+        path: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}"
+        state: directory
+        mode: '0755'
+
     - name: Unpack the agent tarball
       ansible.builtin.command:
-        cmd: "/usr/bin/tar -xzf /tmp/woodpecker-agent-{{ woodpecker_agent_version }}.tar.gz -C /tmp"
-        creates: /tmp/woodpecker-agent
+        cmd: "/usr/bin/tar -xzf /tmp/woodpecker-agent-{{ woodpecker_agent_version }}.tar.gz -C /tmp/woodpecker-agent-{{ woodpecker_agent_version }}"
+        creates: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}/woodpecker-agent"
 
     - name: Install agent binary into /usr/local/bin
       ansible.builtin.copy:
-        src: /tmp/woodpecker-agent
+        src: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}/woodpecker-agent"
         dest: "{{ woodpecker_agent_bin }}"
         mode: '0755'
         remote_src: true

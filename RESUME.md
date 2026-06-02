@@ -63,47 +63,50 @@ uniffi 0.31 recipe + the new pull-model surface.
 ## Where we left off (this is the live state when picked up)
 
 
+server at `192.168.5.228:9000` (the internal LAN IP — not the public
+
+gRPC port 9000). `launchctl print` shows `state = running`, `runs = 1`,
+`last exit code = (never exited)`.
+
+Bumps the playbook required to get here:
+
+* `woodpecker_agent_version: "3.10.0"` → `"3.14.1"` — the agent and
+  server must match minor versions because Woodpecker bumps the gRPC
+  wire version between minor releases (3.10→3.14 was v14→v16). The
+  server is 3.14.1; agent now matches.
+* Tarball unpack moved into a version-tagged temp dir
+  (`/tmp/woodpecker-agent-<version>/`) so future version bumps actually
+  replace the binary — the prior non-versioned `creates:` guard would
+  skip unpack on re-runs.
+
+Run that worked:
 
 ```
-
+ansible-playbook woodpecker-agent.yml \
+    -e woodpecker_server=192.168.5.228:9000 \
+    -e woodpecker_agent_secret=$WP_SECRET
 ```
 
-The user attempted to verify the agent registered with the server:
-
-```
-
-```
-
-…and got **empty output**. Possibilities, in order of likelihood:
-
-1. The LaunchDaemon hasn't started writing yet (race — agent only logs
-   when it has something to say; first 60s post-boot can be silent).
-2. Log redirection isn't taking effect — plist writes to
-   `/var/log/woodpecker/{agent.log,agent.err}` but launchd may need
-   `--log-level info` env or similar to actually emit. Worth checking.
-3. The daemon is failing silently — `launchctl print system/com.woodpecker.agent`
-   shows the actual state.
-
-**This is the first thing to check on resume.**
+Labels in the live plist: `platform=darwin,arch=amd64,xcode=true`. The
+`.woodpecker.yml` `xcframework` step gates on `labels: { platform:
+darwin }` only — no `arch` constraint — so this matches.
 
 ## The blocking question for the PR
 
-Before the `ble-mvp` follow-up PR can merge, the user has to:
+Before the `ble-mvp` follow-up PR can merge:
 
-1. **Verify the agent shows up in the Woodpecker UI** (Admin → Agents) with
-   labels `platform=darwin,arch=x86_64,xcode=true`. If not, debug via
-   `launchctl print system/com.woodpecker.agent` and
-   `/var/log/woodpecker/agent.err`.
+1. ~~Get the agent talking to the server~~ — DONE (2026-06-02).
 2. **Add the `github_token` secret** to the ptpsim repo in Woodpecker
    (Settings → Secrets). Fine-grained PAT on `epsalmond/ptpsim` with
    `contents: write`. The `xcframework` step calls `gh release create` /
    `upload` which needs this.
-3. **Open the PR** for the 9 commits (or 8 if we discount the parallel
-   python-wheel one). Merging triggers the first xcframework build.
+3. **Open the PR** for the follow-up commits. Merging triggers the first
+   xcframework build.
 
 ## Next steps in priority order
 
-1. Debug the empty agent log. Likely just impatience but worth a real check.
+
+   `platform=darwin,arch=amd64,xcode=true`.
 2. Add `github_token` to Woodpecker repo secrets.
 3. Open PR for the `ble-mvp` follow-ups.
 4. After merge: monitor the first `xcframework` Woodpecker run; confirm a
