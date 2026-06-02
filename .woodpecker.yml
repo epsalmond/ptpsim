@@ -62,15 +62,40 @@ steps:
       # Publish as a GitHub release attached to the commit SHA tag. The
       # tag is created on demand by `gh release create`; `--clobber` makes
       # the upload idempotent on retries.
-      - export TAG="sha-${CI_COMMIT_SHA:0:8}"
-      - gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG"
-          --target "$CI_COMMIT_SHA"
-          --title "ptpsim FFI $TAG"
-          --notes "Auto-built CameraProtocolFFI.xcframework. Recipe: ci/build-xcframework.sh."
-      - gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.tar.gz" --clobber
+      - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
+      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
+      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.tar.gz" --clobber'
     environment:
       GH_TOKEN:
         from_secret: github_token   # fine-grained PAT with contents:write on the repo
+    when:
+      branch: main
+      event: push
+
+  # Build a Linux Python wheel of camera-protocol-ffi and attach it to the
+  # same sha-<8> release as the xcframework. Primary consumer: client application's
+  # test-injection TUI (Python script that constructs Observation values
+  # and feeds them through recognize / establishment in-process — no real
+  # BLE radio). See packages/camera-protocol-python/README.md.
+  - name: python-wheel
+    image: rust:1-slim
+    commands:
+      - apt-get update -qq
+      - apt-get install -qq -y python3 python3-pip python3-venv curl ca-certificates
+      # gh CLI (Debian's package is current enough for release upload)
+      - 'curl -fsSL https://github.com/cli/cli/releases/latest/download/gh_*_linux_amd64.deb -o /tmp/gh.deb || true'
+      - apt-get install -qq -y gh || (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update -qq && apt-get install -qq -y gh)
+      # Python build deps in a venv (PEP 668 — system Python is externally-managed)
+      - python3 -m venv /tmp/wheelvenv
+      - /tmp/wheelvenv/bin/pip install -q build setuptools wheel
+      - 'PATH="/tmp/wheelvenv/bin:$PATH" ./ci/build-python-wheel.sh'
+      # Attach to the same sha-<8> release as the xcframework
+      - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
+      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
+      - 'gh release upload "$TAG" packages/camera-protocol-python/dist/*.whl --clobber'
+    environment:
+      GH_TOKEN:
+        from_secret: github_token
     when:
       branch: main
       event: push

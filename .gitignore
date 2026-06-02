@@ -10,6 +10,13 @@ __pycache__/
 .coverage
 *.egg-info/
 
+# Python wheel build output for packages/camera-protocol-python.
+# Only pyproject.toml / setup.py / README.md are committed; src/, build/,
+# dist/ are assembled at build time by ci/build-python-wheel.sh.
+/packages/camera-protocol-python/src/
+/packages/camera-protocol-python/build/
+/packages/camera-protocol-python/dist/
+
 # OS
 .DS_Store
 

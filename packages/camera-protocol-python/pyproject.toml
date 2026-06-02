@@ -1,0 +1,32 @@
+# Python wheel for the camera-protocol-ffi uniffi bindings.
+#
+# The package is assembled by ci/build-python-wheel.sh — that script
+# generates the uniffi Python module from the cdylib's metadata, drops it
+# (renamed) into src/camera_protocol_ffi/__init__.py, copies the
+# libcamera_protocol_ffi.{so,dylib} next to it, and runs `python -m build`
+# to produce the wheel in dist/.
+#
+# The src/ tree is build-time output, NOT committed.
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "camera-protocol-ffi"
+version = "0.0.0"
+description = "ptpsim camera-protocol-ffi — manufacturer-index pull-model surface (Python via uniffi)"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "eric psalmond" }]
+
+[project.urls]
+Homepage = "https://github.com/epsalmond/ptpsim"
+Issues = "https://github.com/epsalmond/ptpsim/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"camera_protocol_ffi" = ["*.so", "*.dylib", "*.dll"]
