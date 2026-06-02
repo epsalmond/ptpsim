@@ -29,7 +29,12 @@
     woodpecker_agent_bin: /usr/local/bin/woodpecker-agent
     woodpecker_log_dir: /var/log/woodpecker
     woodpecker_plist: /Library/LaunchDaemons/com.woodpecker.agent.plist
-    woodpecker_agent_labels: "platform=darwin,arch={{ woodpecker_agent_arch }},xcode=true"
+    # Don't set `platform=` here — the agent already advertises the canonical
+    # `platform=GOOS/GOARCH` (e.g. `darwin/amd64`) as a default label. Setting
+    # it as a custom label OVERRIDES the default with the wrong value
+    # (`platform=darwin`), and workflows that select `platform: darwin/amd64`
+    # never match. xcode/host are useful extras.
+    woodpecker_agent_labels: "xcode=true,host={{ inventory_hostname_short }}"
     rust_targets:
       - aarch64-apple-ios
       - aarch64-apple-ios-sim
@@ -108,11 +113,17 @@
       loop: "{{ rust_targets }}"
 
     # ---------------------------------------------------------------------
-    # gh CLI (system-wide via Homebrew)
+    # System Homebrew formulae
+    #   gh      — needed by the xcframework + python-wheel release steps
+    #   git-lfs — Woodpecker's clone step calls `git lfs fetch` unconditionally
+    #             (even on repos without LFS); without it, clone fails on the
+    #             local backend.
     # ---------------------------------------------------------------------
-    - name: Install gh CLI
+    - name: Install Homebrew formulae
       community.general.homebrew:
-        name: gh
+        name:
+          - gh
+          - git-lfs
         state: present
         path: "{{ brew_prefix }}"
       environment:

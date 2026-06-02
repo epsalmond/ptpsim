@@ -1,6 +1,13 @@
-# Linux workflow — runs on any Docker-backend agent.
+# Linux workflow — runs on Docker-backend Linux agents.
 # Pure-Rust workspace (no openssl/ring/native deps), so rust:1-slim suffices.
 # Image push and python wheel publish are gated on main+push.
+#
+# Without the platform label this workflow has no agent constraint and can
+# land on the macOS local-backend agent, which would fail at `git lfs`
+# during clone and at trying to exec `image: rust:1-slim` as a shell.
+
+labels:
+  platform: linux/*
 
 when:
   - event: [push, pull_request]
