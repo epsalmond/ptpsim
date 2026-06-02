@@ -131,12 +131,15 @@
         dest: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}.tar.gz"
         mode: '0644'
 
+    # ansible.builtin.unarchive's pre-flight tags /usr/bin/tar as "bsd type"
+    # and refuses (it shells out with GNU-only options). Rather than depend
+    # on Homebrew's gnu-tar being installed and on PATH, we just call BSD
+    # tar ourselves — it reads gzipped tarballs fine; only the Ansible
+    # module wrapper is picky. `creates:` keeps the task idempotent.
     - name: Unpack the agent tarball
-      ansible.builtin.unarchive:
-        src: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}.tar.gz"
-        dest: /tmp/
-        remote_src: true
-        creates: "/tmp/woodpecker-agent"
+      ansible.builtin.command:
+        cmd: "/usr/bin/tar -xzf /tmp/woodpecker-agent-{{ woodpecker_agent_version }}.tar.gz -C /tmp"
+        creates: /tmp/woodpecker-agent
 
     - name: Install agent binary into /usr/local/bin
       ansible.builtin.copy:
