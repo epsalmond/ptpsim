@@ -1,0 +1,10 @@
+# Swift binding name conventions (uniffi 0.31).
+#
+# Default would be the snake_case crate name (`camera_protocol_ffi`); Swift
+# consumers expect PascalCase modules, and the §11.11 xcframework recipe
+# targets `CameraProtocolFFI`. The `ffi_module_name` is the inner FFI
+# (header + modulemap) name, kept distinct so the public Swift module and
+# the C-bridging module never collide.
+[bindings.swift]
+module_name = "CameraProtocolFFI"
+ffi_module_name = "CameraProtocolFFIFFI"

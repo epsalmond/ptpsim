@@ -6,7 +6,21 @@ packaging differ. iOS/macOS get Swift, Android gets Kotlin, from the *same* crat
 the *same* command.
 
 Full surface + design rationale: `docs/plans/ffi-surface.md`. Manifest/engine model:
-`docs/plans/camera-config.md`.
+`docs/plans/camera-config.md`. Greenfield iOS rewrite consuming the new pull-model
+surface: `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` + the handoff at
+`docs/handoff-ios-ble-mvp.md`.
+
+Two seams ship from this crate:
+
+* **Single-body queries** (`(connection, mode)`-keyed, §2–§7 below). The original
+  surface; app already knows which body it's talking to. Used by the existing
+  adoption path.
+* **Manufacturer-index pull model** (§9). Observation in → decision out; the app
+  carries zero camera knowledge and the manifest tells it what each scanned advert /
+  enumerated device means. Used by the iOS rewrite for BLE pairing and forward.
+
+Both seams coexist on `ConfigStore` — different constructors choose which one you
+get.
 
 ## 1. Mental model — ptpsim is the brain, you are the hands (sans-io)
 
@@ -29,9 +43,10 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 
 | call | gives you |
 |---|---|
-| `ConfigStore.from_bundle(body, manufacturer?)` | the loaded store |
+| `ConfigStore.from_bundle(body, manufacturer?)` | the loaded store (single-body) |
+| `ConfigStore.from_tiers(body, manufacturer?, fw_overlays)` | as above, with firmware-tier overlays merged onto the body |
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
-| `establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** |
+| `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
 | `mode_entry(connection, from, to)` | the ordered wire-steps to enter a mode (or a `user_instruction` when it's a camera-menu / manual step) |
@@ -42,38 +57,52 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 Byte codecs (build/parse PTP packets, encode values) are exported functions —
 **partial today** (see §6).
 
-## 3. Generate bindings (library mode — no UDL)
+## 3. Generate bindings (uniffi 0.31, library mode — no UDL)
 
-Build the lib, then point the bundled generator at it. **Same step, both languages:**
+Build the lib, then point the bundled generator at it. **One binary, four
+languages.** uniffi 0.31 dropped the `--library` flag (auto-detected); the
+`-l <lang>` flag selects.
 
 ```bash
-cargo build -p camera-protocol-ffi --release          # produces lib<...>.{so,dylib,a}
+cargo build -p camera-protocol-ffi --release          # produces lib<…>.{so,dylib,a}
 LIB=target/release/libcamera_protocol_ffi.<so|dylib|a>
 
 # Swift (iOS / macOS)
-cargo run -p camera-protocol-ffi --bin uniffi-bindgen -- \
-    generate --library "$LIB" --language swift  --out-dir generated/swift
+cargo run -p camera-protocol-ffi --bin uniffi-bindgen -- generate \
+    -l swift  -o generated/swift  "$LIB"
 
 # Kotlin (Android)
-cargo run -p camera-protocol-ffi --bin uniffi-bindgen -- \
-    generate --library "$LIB" --language kotlin --out-dir generated/kotlin
+cargo run -p camera-protocol-ffi --bin uniffi-bindgen -- generate \
+    -l kotlin -o generated/kotlin "$LIB"
+
+# Python (Linux / protocol-mapper)
+cargo run -p camera-protocol-ffi --bin uniffi-bindgen -- generate \
+    -l python -o generated/python "$LIB"
 ```
 
-Swift emits `camera_protocol_ffi.swift` + `…FFI.h` + `…FFI.modulemap`; Kotlin emits
-`uniffi/camera_protocol_ffi/camera_protocol_ffi.kt`. (Optional: install `swiftformat`/
-`ktlint` to auto-format; harmless warning if absent.)
+Swift emits `CameraProtocolFFI.swift` + `CameraProtocolFFIFFI.{h,modulemap}` (the
+PascalCase names come from `crates/camera-protocol-ffi/uniffi.toml`). Kotlin emits
+`uniffi/camera_protocol_ffi/camera_protocol_ffi.kt`. Python emits
+`camera_protocol_ffi.py`. Optional formatters (`swiftformat`/`ktlint`/`ruff`) run
+automatically when on PATH; harmless warning if absent.
 
 ## 4. Build + package the native library (per platform)
 
-uniffi is `crate-type = ["staticlib", "cdylib"]`. Standard per-platform packaging:
+`camera-protocol-ffi` is `crate-type = ["lib", "staticlib", "cdylib"]`. Standard
+per-platform packaging:
 
-- **iOS / macOS:** build the **staticlib** (`.a`) for each target (`aarch64-apple-ios`,
-  `aarch64-apple-ios-sim`, `aarch64-apple-darwin`, …), then
-  `xcodebuild -create-xcframework` over the `.a`s + the generated header/modulemap.
-  Vendor the `.swift` + `.xcframework` into the app (e.g. XcodeGen `project.yml`).
-- **Android:** build the **cdylib** (`.so`) per ABI (`aarch64-linux-android`, …) into
-  `jniLibs/<abi>/`; ship the `.kt` + the `.so`s (optionally as an `.aar`).
-- **Linux:** the `.so` + Python/other bindings if needed.
+- **iOS / macOS:** build the **staticlib** (`.a`) for each target
+  (`aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-apple-darwin`,
+  `x86_64-apple-darwin`), `lipo`-combine the two macOS arches, then
+  `xcodebuild -create-xcframework`. **Verified end-to-end recipe in
+  `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` §11.11** — that's the recipe
+  Woodpecker ships from CI; reuse it for local builds.
+- **Android:** build the **cdylib** (`.so`) per ABI (`aarch64-linux-android`,
+  `armv7-linux-androideabi`, `x86_64-linux-android`) into `jniLibs/<abi>/`; ship
+  the `.kt` + the `.so`s as an `.aar`. (P2 task — bindgen invocation lands
+  alongside the iOS xcframework job.)
+- **Linux / Python:** the `.so` + the generated `camera_protocol_ffi.py`. Used
+  by `protocol-mapper` (P2 task — same parent CI job as Android).
 
 ## 5. Integration pattern
 
@@ -130,3 +159,83 @@ uniffi is `crate-type = ["staticlib", "cdylib"]`. Standard per-platform packagin
 `services/camera-sim-service` runs the same manifest as a responder (IPv6 + control
 HTTP). Point your app at it to exercise connect / live-view / browse / download without
 a physical camera, and to A/B the FFI path against your legacy codec before cutover.
+
+## 9. Pull-model surface — manufacturer index (BLE-MVP)
+
+The seam the **greenfield iOS rewrite** consumes. Same `ConfigStore`, different
+constructor + a few new methods. The app pushes observations to the FFI and gets
+decisions back — **no UUIDs, byte literals, or model names in app source.**
+
+Authoritative spec: `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` (§11 is the contract
+tiebreaker). Handoff for the iOS planning agent: `docs/handoff-ios-ble-mvp.md`.
+
+### 9.1 Load (manufacturer index + every model body it references)
+
+```swift
+let store = try ConfigStore.fromManufacturerIndex(
+    indexYaml: bundleString("fuji/index.yaml"),
+    modelBodies: [
+        KeyValue(key: "gfx100ii", value: bundleString("fuji/gfx100ii/gfx100ii.yaml")),
+    ]
+)
+```
+
+Fail-fast: missing body → `MissingModelBody`; unknown family → `UnknownFamily`; bad
+YAML at any layer → `IndexParse` / `BodyParse`.
+
+### 9.2 The four pull-model calls
+
+| call | gives you |
+|---|---|
+| `recognize(observation)` | `Recognition::Candidate{model, connection, confidence, runtimeScope}` / `Disambiguate{family, candidates, runtimeScope, hint}` / `NoMatch`. `runtimeScope` is `Vec<KeyValue>` carrying the signature's derived facts (`style: "legacy"`, `pairingKeyBytes: "44732a80"`, …). |
+| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, steps: [Step] }`. `initialScope` is typically the `runtimeScope` from a `Candidate`. |
+| `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | the *unwalked tail* (steps from `nextStepIndex` onward) with firmware overlays applied — per §11.5. Returns `nil` when no overlay matched; dispatcher keeps existing plan (graceful degrade). MVP stub always returns `nil`. |
+| `connectionEstablishment(connection)` | (unchanged renamed §2 method — single-body connection bring-up) |
+
+### 9.3 The 7-verb Step grammar
+
+You build a small dispatcher; the verbs come from the FFI. Each carries
+`StepOptions { tolerant, retries, retryDelayMs }` — wrap each verb body in one
+retry loop and the same code handles all of them.
+
+| verb | what to do |
+|---|---|
+| `bleConnect` | connect to the peripheral your I/O primitive captured at recognize time. *No parameters* (§11.4 — peripheral binding is app-side). |
+| `bleRead` | read the resolved UUID, decode per `encoding`, store in scope under `captureAs`. |
+| `bleWrite` | resolve `value` → bytes (see StepValue table), write. |
+| `bleNotify` | subscribe, wait for `until` (Any / Equals / Matches), optionally `captureAs`. |
+| `acquire` | run inner step (`from[0]` — `Vec<Step>` of length 1; uniffi 0.31 doesn't accept `Box<Step>` for recursive enums), bind result to `name`. |
+| `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. |
+| `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |
+
+### 9.4 StepValue resolution
+
+| variant | bytes by |
+|---|---|
+| `Literal{bytes}` | verbatim |
+| `Template{value, transform?}` | substitute `{name}` against scope ∪ runtimeParams, then apply transform |
+| `Runtime{slot, encoding?, transform?}` | look up `slot` in runtimeParams, decode per encoding, apply transform |
+| `Captured{name, transform?}` | look up `name` in scope, apply transform |
+
+`transform`: an allowlisted post-resolution byte transform —
+`ValueTransform.bitOr(operand)` or `bitAnd(operand)`. Applied to the assembled
+bytes as a u32. Models the RED `F557D96B` echo (read 4 bytes → `value | 0x20000000`
+→ write); not iOS-specific (reference app Android does the same OR). The transform lives in
+the schema, not in your dispatcher logic — you just honour it.
+
+`runtimeParams` is a separate map you populate at walk start (terminal name, host
+IP, anything app-supplied), distinct from `scope` (recognize-seed + step captures).
+
+### 9.5 Zero camera knowledge in app source
+
+If you find yourself hardcoding a UUID, byte literal, or Fuji-specific behaviour
+in app source, something's wrong on the ptpsim side — flag it. The whole point of
+the pull model is that the app source is identical with one manifest or fifty.
+
+### 9.6 Out of scope (queued for P2+)
+
+USB / mDNS / TCP / UDP / WiFi-join verbs and their I/O primitives.
+`promptableModels()`. The `dev-direct` assertive PTP/IP flow. Full PTP session
+layer / live-view socket. The BLE→WiFi-AP handover (`fuji-ble-to-wifi-ap-v1`).
+Adding any of them is one schema verb + one dispatcher case — no other layer
+changes.

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.woodpecker.agent</string>
+    <key>UserName</key>
+    <string>{{ woodpecker_user }}</string>
+    <key>WorkingDirectory</key>
+    <string>{{ woodpecker_user_home }}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{ woodpecker_agent_bin }}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>WOODPECKER_SERVER</key>
+        <string>{{ woodpecker_server }}</string>
+        <key>WOODPECKER_AGENT_SECRET</key>
+        <string>{{ woodpecker_agent_secret }}</string>
+        <key>WOODPECKER_BACKEND</key>
+        <string>local</string>
+        <key>WOODPECKER_FILTER_LABELS</key>
+        <string>{{ woodpecker_agent_labels }}</string>
+        <key>WOODPECKER_MAX_WORKFLOWS</key>
+        <string>1</string>
+        <key>PATH</key>
+        <string>{{ woodpecker_user_home }}/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{{ woodpecker_log_dir }}/agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{ woodpecker_log_dir }}/agent.err</string>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

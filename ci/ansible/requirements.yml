@@ -1,0 +1,11 @@
+---
+# Ansible collections this tree depends on. Install with:
+#
+#     ansible-galaxy collection install -r ci/ansible/requirements.yml
+#
+# `community.general` covers `launchd` (macOS LaunchDaemon management) +
+# `homebrew` (gh CLI install). Core modules (user, get_url, template, …)
+# come from ansible-core itself; nothing else needed today.
+collections:
+  - name: community.general
+    version: ">=8.0.0"

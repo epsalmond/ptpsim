@@ -1,0 +1,193 @@
+---
+# Provision a macOS host as a Woodpecker CI agent for the xcframework job.
+#
+# Same surface as the deprecated ci/setup-macos-agent.sh — declarative,
+# idempotent. Run with:
+#
+#     cd ci/ansible
+#     ansible-galaxy collection install -r requirements.yml      # one-time
+#     ansible-playbook woodpecker-agent.yml \
+
+#         -e woodpecker_agent_secret=<agent-token-from-WP-admin>
+#
+# Replays cleanly: re-running upgrades the agent binary and re-renders the
+# launchd plist. Handler restarts the daemon only when the plist actually
+# changes.
+
+- name: Provision macOS Woodpecker CI agent
+  hosts: ci_macos
+  become: true
+
+  vars:
+    woodpecker_user: woodpecker
+    woodpecker_user_home: "/Users/{{ woodpecker_user }}"
+    # Agent and server must match: Woodpecker bumps the gRPC wire version
+    # between minor releases (3.10→3.14 went v14→v16). Keep this aligned
+
+    woodpecker_agent_version: "3.14.1"
+    woodpecker_agent_arch: "{{ 'arm64' if ansible_architecture == 'arm64' else 'amd64' }}"
+    woodpecker_agent_bin: /usr/local/bin/woodpecker-agent
+    woodpecker_log_dir: /var/log/woodpecker
+    woodpecker_plist: /Library/LaunchDaemons/com.woodpecker.agent.plist
+    woodpecker_agent_labels: "platform=darwin,arch={{ woodpecker_agent_arch }},xcode=true"
+    rust_targets:
+      - aarch64-apple-ios
+      - aarch64-apple-ios-sim
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+
+  pre_tasks:
+    - name: Require runtime secrets to be supplied
+      ansible.builtin.assert:
+        that:
+          - woodpecker_server is defined
+          - woodpecker_agent_secret is defined
+        fail_msg: >-
+          Missing -e vars. Pass at minimum:
+          -e woodpecker_server=<host:port>
+          -e woodpecker_agent_secret=<token>
+
+    - name: Confirm host is macOS
+      ansible.builtin.assert:
+        that: ansible_system == "Darwin"
+        fail_msg: "{{ inventory_hostname }} is not macOS (ansible_system={{ ansible_system }})"
+
+    - name: Locate Homebrew prefix (PATH is unreliable for non-interactive SSH)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /opt/homebrew/bin/brew    # Apple Silicon
+        - /usr/local/bin/brew       # Intel
+      register: brew_candidates
+      become: false
+
+    - name: Select an existing brew prefix
+      ansible.builtin.set_fact:
+        brew_bin: "{{ (brew_candidates.results | selectattr('stat.exists') | map(attribute='item') | list | first) | default('') }}"
+
+    - name: Fail with a useful message if brew is missing
+      ansible.builtin.fail:
+        msg: >-
+          Homebrew not found at /opt/homebrew/bin/brew or /usr/local/bin/brew.
+          Install brew first (https://brew.sh) — the gh CLI install task needs it.
+      when: brew_bin == ''
+
+    - name: Record brew prefix dir (for PATH + module hints)
+      ansible.builtin.set_fact:
+        brew_prefix: "{{ brew_bin | dirname }}"
+
+  tasks:
+    # ---------------------------------------------------------------------
+    # Service user
+    # ---------------------------------------------------------------------
+    - name: Create woodpecker service user
+      ansible.builtin.user:
+        name: "{{ woodpecker_user }}"
+        comment: Woodpecker CI
+        shell: /usr/bin/false
+        home: "{{ woodpecker_user_home }}"
+        create_home: true
+
+    # ---------------------------------------------------------------------
+    # Rust toolchain + Apple targets, under the woodpecker user
+    # ---------------------------------------------------------------------
+    - name: Install rustup for the woodpecker user
+      become_user: "{{ woodpecker_user }}"
+      ansible.builtin.shell:
+        cmd: >-
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+          sh -s -- -y --default-toolchain stable
+        creates: "{{ woodpecker_user_home }}/.cargo/bin/rustup"
+
+    - name: Install Apple cross-compile targets
+      become_user: "{{ woodpecker_user }}"
+      ansible.builtin.command:
+        cmd: "{{ woodpecker_user_home }}/.cargo/bin/rustup target add {{ item }}"
+      register: target_add
+      changed_when: "'is up to date' not in target_add.stdout"
+      loop: "{{ rust_targets }}"
+
+    # ---------------------------------------------------------------------
+    # gh CLI (system-wide via Homebrew)
+    # ---------------------------------------------------------------------
+    - name: Install gh CLI
+      community.general.homebrew:
+        name: gh
+        state: present
+        path: "{{ brew_prefix }}"
+      environment:
+        PATH: "{{ brew_prefix }}:{{ ansible_env.PATH }}"
+      become: false
+      # community.general.homebrew runs as the brew owner (the user who owns
+      # /opt/homebrew or /usr/local — typically the SSH user who installed
+      # brew). `become: false` keeps us as ansible_user; passing `path:` and
+      # an explicit PATH lets the module find the binary even though
+      # non-interactive SSH skips ~/.zshrc.
+
+    # ---------------------------------------------------------------------
+    # Woodpecker agent binary
+    # ---------------------------------------------------------------------
+    - name: Stage the agent tarball
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/woodpecker-ci/woodpecker/releases/download/v{{ woodpecker_agent_version }}/woodpecker-agent_darwin_{{ woodpecker_agent_arch }}.tar.gz
+        dest: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}.tar.gz"
+        mode: '0644'
+
+    # ansible.builtin.unarchive's pre-flight tags /usr/bin/tar as "bsd type"
+    # and refuses (it shells out with GNU-only options). Rather than depend
+    # on Homebrew's gnu-tar being installed and on PATH, we just call BSD
+    # tar ourselves — it reads gzipped tarballs fine; only the Ansible
+    # module wrapper is picky. Unpack to a version-tagged dir so version
+    # bumps actually replace the binary (a non-versioned `creates:` would
+    # skip unpack on re-runs and leave the old binary in place).
+    - name: Ensure unpack target exists
+      ansible.builtin.file:
+        path: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}"
+        state: directory
+        mode: '0755'
+
+    - name: Unpack the agent tarball
+      ansible.builtin.command:
+        cmd: "/usr/bin/tar -xzf /tmp/woodpecker-agent-{{ woodpecker_agent_version }}.tar.gz -C /tmp/woodpecker-agent-{{ woodpecker_agent_version }}"
+        creates: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}/woodpecker-agent"
+
+    - name: Install agent binary into /usr/local/bin
+      ansible.builtin.copy:
+        src: "/tmp/woodpecker-agent-{{ woodpecker_agent_version }}/woodpecker-agent"
+        dest: "{{ woodpecker_agent_bin }}"
+        mode: '0755'
+        remote_src: true
+      notify: restart agent
+
+    # ---------------------------------------------------------------------
+    # launchd service
+    # ---------------------------------------------------------------------
+    - name: Ensure log directory exists
+      ansible.builtin.file:
+        path: "{{ woodpecker_log_dir }}"
+        state: directory
+        owner: "{{ woodpecker_user }}"
+        group: staff
+        mode: '0755'
+
+    - name: Render the LaunchDaemon plist
+      ansible.builtin.template:
+        src: com.woodpecker.agent.plist.j2
+        dest: "{{ woodpecker_plist }}"
+        owner: root
+        group: wheel
+        mode: '0644'
+      notify: restart agent
+
+    - name: Enable + load the agent service
+      community.general.launchd:
+        name: com.woodpecker.agent
+        state: started
+        enabled: true
+
+  handlers:
+    - name: restart agent
+      community.general.launchd:
+        name: com.woodpecker.agent
+        state: restarted
