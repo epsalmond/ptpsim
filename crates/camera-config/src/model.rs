@@ -344,6 +344,13 @@ pub struct Step {
     /// Send operation `op` (e.g. `0x101c` InitiateOpenCapture).
     #[serde(default)]
     pub send_op: Option<HexCode>,
+    /// Re-establish the PTP/IP session in-place (reference app Take↔Get switch on `app`):
+    /// CloseSession 0x1003 → 8B `0xffffffff` sentinel → new TCP socket to the
+    /// connection's command port → cached 82B InitCmdReq → InitCmdAck →
+    /// OpenSession sid=1. Engine reuses the connection's cached identity, so
+    /// the action carries no params — `reopenSession: {}`.
+    #[serde(default)]
+    pub reopen_session: Option<ReopenSession>,
     /// Value for `set_prop`.
     #[serde(default)]
     pub value: Option<i64>,
@@ -360,6 +367,10 @@ pub struct Step {
     #[serde(default = "one")]
     pub repeat: u32,
 }
+
+/// Marker for the `reopen_session` action (empty body in YAML).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReopenSession {}
 
 /// A `send_op` parameter: a literal, or a **named runtime slot** the client fills
 /// from its own session state. Declarative binding (cf. value-policy `from-pairing`),
@@ -384,6 +395,7 @@ impl Step {
             self.get_prop.is_some(),
             self.read_echo.is_some(),
             self.send_op.is_some(),
+            self.reopen_session.is_some(),
         ]
         .into_iter()
         .filter(|b| *b)
