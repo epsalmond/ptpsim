@@ -117,6 +117,75 @@ connections:
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9050", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
+    actions:
+      # reference app shutter cycle. Wire-confirmed by MODE_CHANGES.md §3 (the 0x100E
+      # trace) + §6b (the 0x9022 pairing): every 0x100E InitiateCapture in v6
+      # is followed within ~458-746ms by an empty-params 0x9022 cleanup,
+      # paired 1:1 with the shutter. Between the two, reference app polls 0xD212
+      # (event state) several times waiting for the camera-side
+      # "JPEG-saved" flag to clear; the poll loop is the client's
+      # responsibility (no scripting hook in the Step grammar). triggers
+      # postviewEvent declares the post-shutter state-change the client
+      # polls for / awaits.
+      shutter:
+        mode: shooting/stills
+        steps:
+          - { sendOp: "0x100e", params: [0, 0] }
+          - { sendOp: "0x9022" }
+        triggers:
+          - postviewEvent: {}
+        evidence: [wireD3AppReopen, iosLiveControls, docLiveControls]
+      # reference app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW0230.md
+      # §"Confirmed enumeration": reference app **never** calls 0x1007
+      # GetObjectHandles — camera rejects with 0x2005 Operation_Not_Supported
+      # on fw02.30. Instead it reads count + handle list as PTP properties
+      # AFTER the mode-entry vendor-prime block (0x9054/55/50/53) in the
+      # `to: image-transfer` entry has run. 0xD620 returns u32 count;
+      # 0xD621 returns a count-prefixed u32[] handle list, **descending /
+      # newest-first** (v6: 0x83, 0x82, …, 0x01). Pre-reading 0xD620 sizes
+      # the buffer for 0xD621.
+      enumerateObjects:
+        mode: image-transfer
+        steps:
+          - { getProp: "0xd620" }
+          - { getProp: "0xd621" }
+        evidence: [docImageTransfer]
+      # Per-handle metadata + thumbnail — same wire shape as PCSS, different
+      # surface (reference app goes through the image-transfer mode-entry first).
+      # UI MUST publish the handle list immediately and fetch GetObjectInfo
+      # lazily per selected object — per the on-device note 2026-05-22 in
+      # IMAGE_TRANSFER_FW0230.md, an eager full GetObjectInfo sweep got the
+      # command socket closed mid-stream on a real GFX100 II.
+      getObjectInfo:
+        mode: image-transfer
+        params: [handle]
+        steps:
+          - { sendOp: "0x1008", params: [{ runtime: handle }] }
+        evidence: [docImageTransfer]
+      getThumb:
+        mode: image-transfer
+        params: [handle]
+        steps:
+          - { sendOp: "0x100a", params: [{ runtime: handle }] }
+        evidence: [docImageTransfer]
+      # Chunked download. **Different params from PCSS's whole-object 0x1009.**
+      # reference app uses 0x101B GetPartialObject in 12 MB chunks (v6: 1× small-file
+      # single-chunk + 30× chunked for a 356 MB file, per
+      # IMAGE_TRANSFER_FW0230.md TL;DR). The chunk loop lives in the client:
+      # iterate offset += length until GetObjectInfo's ObjectCompressedSize
+      # is reached. Same verb name as PCSS's whole-object getObject; the
+      # differing params[] declares the per-connection control-flow
+      # contract (whole vs chunked) without splitting the vocab.
+      getObject:
+        mode: image-transfer
+        params: [handle, offset, length]
+        steps:
+          - sendOp: "0x101b"
+            params:
+              - { runtime: handle }
+              - { runtime: offset }
+              - { runtime: length }
+        evidence: [docImageTransfer]
 
   ble:
     kind: ble
