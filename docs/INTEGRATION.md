@@ -108,7 +108,12 @@ per-platform packaging:
 
 1. **Embed the data bundle.** Ship `camera-config-data/fuji/fuji.yaml` (manufacturer)
    + `…/gfx100ii/gfx100ii.yaml` (body) as app resources; pass their contents to
-   `from_bundle`. (OTA bundle loading lands later; bundled baseline for now.)
+   `from_bundle`. Each release attaches a `camera-config-data-<sha8>.tar.gz`
+   sibling alongside the xcframework, so the FFI binary and the YAML data come
+   from the same commit and can't drift mid-integration; extract it to vendor
+   the bundle without cloning the source tree. (Co-shipped pre-data-repo-split;
+   the eventual Apache-licensed data repo will publish its own versioned
+   releases.) OTA bundle loading lands later; bundled baseline for now.
 2. **Pick a connection.** `connections(platform)` → present what's actually available
    here. Bring it up: `establishment(connection)` returns the recipe (knock ports,
    GATT char UUIDs); **your code does the UDP/TCP/BLE/Wi-Fi**.
