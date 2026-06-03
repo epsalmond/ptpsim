@@ -1,6 +1,6 @@
 # Action verbs in the manifest — schema decision
 
-**Status:** PROPOSED (awaiting approval before authoring data)
+**Status:** APPROVED 2026-06-02 (Option 3 with refinements per reviewer Q1/Q2/Q3 below)
 **Authors:** ptpsim
 **Created:** 2026-06-02
 **Triggered by:** D3-wire's PCSS shoot-download wire trace (`docs/consults/2026-06-02-ptpsim-action-on-D3-shoot-download.md`) — capture + transfer sequences need a manifest surface that today's `entries[]` doesn't model
@@ -104,17 +104,18 @@ same type, which complicates `mode_entry` lookup vs `action` lookup at the
 query surface. Existing tests for `entries[].to` keep working unchanged, but
 the client API has to pick which kind of `Entry` it's looking for.
 
-### Option 3 — New `actions:` block (RECOMMENDED)
+### Option 3 — New `actions:` block (APPROVED)
 
-Sibling to `entries:`. Named, optionally parameterized step sequences gated
-to a mode. Separate concept, separate query method:
+Sibling to `entries:`. **Closed-vocabulary** (`ActionVerb` enum) keyed map of
+parameterized step sequences gated to a mode, with **declared side-effects**
+(`triggers:`) so the client can plan UX without camera knowledge:
 
 ```yaml
 connections:
   wireless-tether:
     entries: []                     # mode-transitions: PCSS enters implicitly
     actions:
-      shutter:                      # verb name (free-form id)
+      shutter:                      # ActionVerb::Shutter (enum-keyed)
         mode: shooting/stills       # gating
         steps:
           - { setProp: "0xd039", value: 0x00010000 }
@@ -123,23 +124,29 @@ connections:
           - { sendOp:  "0x100e", params: [0, 0] }
           - { setProp: "0xd039", value: 0x00000001 }
           - { sendOp:  "0x100e", params: [0, 0] }
+        triggers: [imagePushed]     # camera auto-sends image after shutter on PCSS
       enumerateObjects:
         mode: image-transfer
-        # response decoder hint — populates a named slot the next action's
-        # params can reference. Existing 0x100A/0x100E response handling
-        # already implicitly fills slots for the live-view path.
         steps:
-          - { sendOp: "0x1007", params: [0xffffffff, 0], captureAs: handles }
+          - { sendOp: "0x1007", params: [0xffffffff, 0] }
+        # Action return value is the decoded response; client iterates it
+        # and calls getObjectInfo / getObject per handle. No intra-sequence
+        # `captureAs:` needed (see Q2).
       getObjectInfo:
         mode: image-transfer
         params: [handle]            # runtime slots the caller must bind
         steps:
-          - { sendOp: "0x1008", params: [{ runtime: handle }], captureAs: info }
+          - { sendOp: "0x1008", params: [{ runtime: handle }] }
+      getThumb:
+        mode: image-transfer
+        params: [handle]
+        steps:
+          - { sendOp: "0x100a", params: [{ runtime: handle }] }
       getObject:
         mode: image-transfer
         params: [handle]
         steps:
-          - { sendOp: "0x1009", params: [{ runtime: handle }], captureAs: bytes }
+          - { sendOp: "0x1009", params: [{ runtime: handle }] }
       deleteObject:
         mode: image-transfer
         params: [handle]
@@ -177,33 +184,72 @@ name.
 ## What lands when this is approved
 
 1. **Schema (`crates/camera-config/src/model.rs`)**:
-   - `pub struct Action { mode: String, params: Vec<String>, steps: Vec<Step>, evidence: Vec<String> }`
-   - `Connection.actions: BTreeMap<String, Action>` (defaulted empty).
+   - `pub enum ActionVerb { Shutter, EnumerateObjects, GetObjectInfo, GetThumb,
+     GetObject, DeleteObject }` — **closed vocabulary**. New verbs require a
+     schema PR (same fail-fast as Step verbs).
+   - `pub enum ActionEffect { ImagePushed, PostviewEvent, LiveViewStream }` —
+     declared side-effects, also closed.
+   - `pub struct Action { mode: String, params: Vec<String>, steps: Vec<Step>,
+     triggers: Vec<ActionEffect>, evidence: Vec<String> }`.
+   - `Connection.actions: BTreeMap<ActionVerb, Action>` (defaulted empty).
    - `CameraManifest::action(connection, verb)` query method returning
      `Option<&Action>`.
 2. **Data (`packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml`)**:
    - `wireless-tether.actions.{shutter, enumerateObjects, getObjectInfo,
      getThumb, getObject, deleteObject}` per the wire-confirmed D3 sequences.
+   - `shutter.triggers: [imagePushed]` on wireless-tether — camera auto-pushes
+     the image to the tether endpoint after capture.
 3. **Tests**: assert the 3-beat shutter values, the runtime-`handle` binding
-   in `getObject`, and that `action(wireless-tether, "shutter")` resolves.
+   in `getObject`, `triggers: [imagePushed]` on the PCSS shutter, and that
+   `action(wireless-tether, Shutter)` resolves.
 4. **INTEGRATION.md** §7 (Golden rules): a one-liner adding "no shutter
-   sequences in app source — ask `action(connection, 'shutter')`."
+   sequences in app source — ask `action(connection, ActionVerb::Shutter)`;
+   read `.triggers` to plan UX side-effects."
 
-## Open questions for the reviewer
+## Decisions (Q1/Q2/Q3 from reviewer, 2026-06-02)
 
-1. **Action-name namespace.** Free-form strings (`shutter`, `getObject`) or
-   a closed enum (`Action::Shutter | Action::GetObject | ...`)? Recommend
-   free-form — different cameras may have actions ptpsim hasn't seen yet
-   (manufacturer-tier extensions), and a closed enum would force a schema
-   change per new verb.
-2. **Response capture.** The transfer triad needs the engine to take a
-   `0x1007` response (a u32 count + u32 handle list) and bind it to a
-   named slot. We have `StepParam::Runtime { runtime: <slot> }` for *params*
-   but no symmetric `captureAs:` on `Step` for *responses*. Probably needed
-   here. Worth adding alongside Action, or defer?
-3. **Composability.** Should one action be able to invoke another (e.g. an
-   "enumerate then download all" macro)? Recommend NO — keeps actions as
-   atomic recipes. Composition is the client's job (per the sans-io model:
-   client owns control flow; manifest owns bytes).
+### Q1 — Action-name namespace: **enum, not free-form**
+
+Original recommendation was free-form to allow new manufacturer-tier verbs
+without schema PRs. **Conceded:** that argument conflated two things —
+manifest-data growth (a new camera's bytes for an existing verb) is fine as
+data; action-vocab growth (a genuinely new concept like "focus bracket sweep"
+or "panorama stitch") requires app-side reasoning anyway, so gating it on a
+code change is the *right* behavior. Free-form would let manifest data drift
+ahead of client awareness. Enum + fail-fast on unknown variant matches the
+Step-verb allowlist pattern.
+
+### Q2 — Response capture (`captureAs:` on Step): **defer**
+
+Original proposal included `captureAs:` on `Step` to bind decoded responses
+to a named slot a later step could reference via `runtime:`. **Deferred**:
+all currently-modeled actions are one observable op (plus optional setprop
+scaffolding). Multi-step actions on the table don't have intra-sequence data
+flow — `enumerateObjects` returns handles; the **client** iterates them and
+calls `getObjectInfo(h)`. **Action return value = response slot.** Revisit
+if a future action genuinely needs to plumb a response field into a later
+step's param within one recipe.
+
+### Q3 — Composability: **declared side-effects, not action-calling-action**
+
+Original framing was "should one action invoke another"; the reviewer
+sharpened it. On wireless-tether, the camera *necessarily* pushes the
+captured image to the tether after `shutter` — the app needs to wire up a
+receive handler / show a "downloading" indicator without knowing the
+connection-specific reason (PCSS auto-push vs. reference app Get-mode pull).
+
+**Decision**: `Action.triggers: Vec<ActionEffect>` declares what arrives
+after the action completes. Engine does **not** act on it — pure declaration
+for the client to plan UX:
+
+| connection | `Shutter.triggers` | app behavior |
+|---|---|---|
+| `wireless-tether` | `[ImagePushed]` | register the receive callback before calling `Shutter` |
+| `app` | `[PostviewEvent]` (when modeled) | wait for the event then prompt user to switch to Get |
+| `ble` (remote-trigger, when modeled) | `[]` | fire and forget |
+
+This is *not* control flow in the engine sense. It's a **Recipe** — same
+sans-io model: client owns control flow; manifest declares bytes AND
+post-conditions.
 
 — ptpsim
