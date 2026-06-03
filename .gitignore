@@ -2,6 +2,11 @@
 **/*.rs.bk
 Cargo.lock.orig
 
+# SwiftPM scratch dir — created when SPM tools probe the root Package.swift.
+/.build/
+# xcframework / wheel / data tarball output from ci/build-xcframework.sh.
+/out/
+
 # Python (tools/protocol-mapper)
 __pycache__/
 *.py[cod]

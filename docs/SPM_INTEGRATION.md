@@ -3,27 +3,43 @@
 How client application (or any Swift consumer) wires up `CameraProtocolFFI.xcframework`
 as a Swift Package Manager dependency from a published release.
 
-## Why we don't ship a `Package.swift` at the repo root
+## Recommended: depend on the `release/auto` branch
 
-SPM `binaryTarget(url:, checksum:)` requires the checksum to match the
-**specific** artifact URL — and a `Package.swift` committed at SHA `X`
-cannot know the checksum of the build that comes from SHA `X` (chicken
-and egg). Projects that pin a `Package.swift` at HEAD either (a) ship
-a release-please-style flow that updates `Package.swift` in a follow-up
-commit after each release, or (b) accept that `Package.swift` is "one
-release behind."
+```swift
+.package(url: "https://github.com/epsalmond/ptpsim", branch: "release/auto")
+```
 
-We've deferred that automation (tracked as task #38 follow-up). For now,
-**consumers write their own `Package.swift` snippet** pointing at a
-specific release. The release ships every byte you need:
+After every successful xcframework build, CI rewrites `Package.swift` at the
+tip of the `release/auto` branch to point at the new release's
+`.xcframework.zip` URL + checksum. Consumers SPM-fetch via `branch:` and
+get the latest CameraProtocolFFI on every `swift package resolve` — no
+per-release snippet authoring.
+
+The flow:
+1. Push to main triggers `.woodpecker/xcframework.yml`.
+2. `xcframework` step builds + uploads the release artifacts (zip + checksum + tar.gz).
+3. `bump-package-swift` step then runs `ci/update-package-swift.sh sha-<8>`
+   against a fresh `release/auto` (recreated from `origin/main` each run)
+   and force-pushes the bump.
+
+**Don't depend on `main`.** The `Package.swift` on `main` is a placeholder
+with sentinel zeros for the checksum — it points at no real release, and
+`swift package resolve` against `main` will fail. The placeholder is what
+CI rewrites to produce `release/auto`'s real values.
+
+To pin a specific release: use `revision:` with a commit SHA on
+`release/auto` whose message names the desired `sha-<8>` tag.
+
+## Alternative — write your own snippet without `release/auto`
+
+If you want to pin a release without depending on `release/auto`, each
+release ships every byte you need:
 
 | asset | role |
 |---|---|
 | `CameraProtocolFFI-<sha8>.xcframework.zip` | the artifact SPM downloads |
 | `CameraProtocolFFI-<sha8>.checksum` | SHA-256 hex of the zip — paste into your `Package.swift` |
 | `CameraProtocolFFI-<sha8>.tar.gz` | legacy / non-SPM consumers (e.g. `curl + tar -xzf` into Xcode project) |
-
-## Consumer integration
 
 ### One-time setup — pick a release
 

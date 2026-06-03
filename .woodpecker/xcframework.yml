@@ -46,3 +46,46 @@ steps:
       RUSTUP_HOME: /Users/woodpecker/.rustup
       GH_TOKEN:
         from_secret: github_token   # fine-grained PAT with contents:write on the repo
+
+  # AFTER the xcframework step uploads the zip + checksum, rewrite
+  # Package.swift to point at this build's URL + checksum, then push the
+  # bump to the `release/auto` branch. Consumers SPM-fetch via
+  # `.package(url: ..., branch: "release/auto")` and get the latest
+  # CameraProtocolFFI on every resolve — no per-release snippet authoring.
+  # See docs/SPM_INTEGRATION.md for the consumer flow and ci/update-package-swift.sh
+  # for the rewriter.
+  #
+  # Push uses x-access-token over HTTPS with the existing github_token PAT
+  # (contents:write). The remote URL update is process-local; we don't
+  # `git config --global` it.
+  - name: bump-package-swift
+    image: bash
+    depends_on: [xcframework]
+    commands:
+      - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
+      # Reset to a clean copy of main with our identity for the bump commit.
+      - 'git -C "$CI_WORKSPACE" fetch origin main'
+      - 'git -C "$CI_WORKSPACE" checkout -B release/auto origin/main'
+      - 'git -C "$CI_WORKSPACE" config user.email "ci@ptpsim.local"'
+      - 'git -C "$CI_WORKSPACE" config user.name  "ptpsim CI"'
+      # Rewrite Package.swift to point at this release's artifacts.
+      - 'bash "$CI_WORKSPACE/ci/update-package-swift.sh" "$TAG"'
+      - 'git -C "$CI_WORKSPACE" add Package.swift'
+      - 'git -C "$CI_WORKSPACE" commit -m "auto: bump Package.swift to $TAG"'
+      # Force-push: the release/auto branch is CI-owned (only contains
+      # auto-generated Package.swift bumps off main) and is recreated fresh
+
+      # WOODPECKER_MAX_WORKFLOWS=1 so this step doesn't race with itself.
+      - 'git -C "$CI_WORKSPACE" -c "http.https://github.com/.extraheader=Authorization: Bearer $GH_TOKEN" push --force origin release/auto'
+    environment:
+      # Woodpecker's local backend doesn't pass the agent's HOME/RUSTUP_HOME/
+      # CARGO_HOME through to the step subprocess; it sets PATH and
+      # WOODPECKER_* explicitly and that's it. Without these, rustup errors
+      # with "could not create home directory" / "no default toolchain is
+      # configured." The provisioning playbook installs the toolchain under
+      # /Users/woodpecker, so point the step at that.
+      HOME: /Users/woodpecker
+      CARGO_HOME: /Users/woodpecker/.cargo
+      RUSTUP_HOME: /Users/woodpecker/.rustup
+      GH_TOKEN:
+        from_secret: github_token   # fine-grained PAT with contents:write on the repo
