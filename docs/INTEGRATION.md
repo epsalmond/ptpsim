@@ -149,6 +149,19 @@ per-platform packaging:
   transport, stop — that's the thing we designed against.
 - **No protocol literals in app source.** Opcodes, prop codes, mode values, ports → ask
   the manifest. A CI grep for PTP hex literals in app sources should stay empty.
+- **No shutter or transfer sequences in app source either.** Verbs like
+  shutter / enumerateObjects / getObject are connection-specific recipes —
+  the PCSS shutter is a 3-beat `0xD039 + 0x100E` dance, the reference app shutter is
+  `0x100E + 0x9022` cleanup. Don't hardcode either; ask
+  `action(connection, ActionVerb::<verb>)`. Read `.triggers` (e.g.
+  `[ImagePushed]`) to plan UX side-effects without per-transport knowledge —
+  the camera-knowledge that's coming next stays out of your code.
+  See `docs/plans/action-verbs.md`.
+- **Settings UI filters on `Property.kind`.** Props tagged `kind: scaffold`
+  (the wireless-tether `0xD039 / 0xD21C / 0xD207` virtual-shutter +
+  keepalives) look writable on the wire but are protocol mechanics, NOT
+  user-facing values. Don't surface them in settings UI; a generic
+  set-prop-by-name path must skip them.
 - **Secrets stay out of the bundle.** Access-gate material (the XLV bearer token, BLE
   pairing secrets) is **not** in `camera-config-data` and never comes over this surface
   — your app supplies it out-of-band (a private overlay). The manifest only says *that*

@@ -281,6 +281,12 @@ pub struct Connection {
     /// `from`-qualified (a cheaper Shooting↔ImageTransfer switch vs a cold entry).
     #[serde(default)]
     pub entries: Vec<ModeEntry>,
+    /// Named, parameterized step sequences that run *within* a mode (vs `entries`,
+    /// which transition *between* modes). The verb namespace is closed
+    /// (`ActionVerb` enum); unknown YAML keys here fail to load — same fail-fast
+    /// as the Step verb allowlist. See `docs/plans/action-verbs.md`.
+    #[serde(default)]
+    pub actions: BTreeMap<ActionVerb, Action>,
     /// Connection-bring-up edges: from this connection, activate *another* (the
     /// BLE→WiFi-AP handover). Distinct from `entries` (mode transitions within a
     /// connection) — this is the establishment edge in the state graph.
@@ -328,6 +334,71 @@ pub struct ModeEntry {
     /// Optional runtime prerequisite for taking this edge.
     #[serde(default)]
     pub requires: Option<Predicate>,
+}
+
+/// Named verbs the app invokes on a connection while in a mode. Closed
+/// vocabulary; new verbs require a schema PR (same fail-fast policy as
+/// `Step`). YAML uses camelCase (`shutter`, `getObject`, …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionVerb {
+    /// Fire the shutter. Wire bytes are connection-specific (`app` = bare
+    /// `0x100E + 0x9022`; `wireless-tether` = 3-beat `0xD039 + 0x100E`).
+    Shutter,
+    /// Enumerate object handles on the SD card.
+    EnumerateObjects,
+    /// Read object metadata (PTP ObjectInfo) for a handle.
+    GetObjectInfo,
+    /// Read the thumbnail JPEG for a handle.
+    GetThumb,
+    /// Read the whole object (image bytes) for a handle.
+    GetObject,
+    /// Delete an object by handle.
+    DeleteObject,
+}
+
+/// Declared side-effects an `Action` produces — the app reads `Action.triggers`
+/// to plan UX (register receive handlers, show progress, etc.) without
+/// connection-specific knowledge. Engine does NOT act on this; pure
+/// declaration. Closed vocabulary; new effects require a schema PR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionEffect {
+    /// Camera auto-pushes the captured image to the tether endpoint after
+    /// `Shutter` (PCSS-tether). Receiver must be wired up before invoking
+    /// the action.
+    ImagePushed,
+    /// Camera emits a postview / capture-complete event after `Shutter`
+    /// (reference app `app` path: `0x9022` cleanup once `0xD212` clears).
+    PostviewEvent,
+    /// Continuous frame delivery starts (e.g. live-view through-stream on the
+    /// `app` connection after `0x101C InitiateOpenCapture`).
+    LiveViewStream,
+}
+
+/// A parameterized recipe runnable within a mode. Step sequence is the same
+/// `Step` grammar as `ModeEntry.steps`; `params` declares runtime slots the
+/// caller MUST bind for `StepParam::Runtime` references in `steps` to resolve;
+/// `triggers` declares post-conditions the app uses to plan UX.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Action {
+    /// Mode this action is valid in (gating; same path-prefix match as
+    /// `Operation.modes`).
+    pub mode: String,
+    /// Runtime slot names the caller binds; each must be referenced by at
+    /// least one `StepParam::Runtime { runtime: <slot> }` in `steps`.
+    #[serde(default)]
+    pub params: Vec<String>,
+    /// The wire sequence. Reuses the `Step` vocabulary unchanged.
+    #[serde(default)]
+    pub steps: Vec<Step>,
+    /// Post-conditions the camera produces after this action completes —
+    /// the app plans UX around them without connection-specific knowledge.
+    #[serde(default)]
+    pub triggers: Vec<ActionEffect>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
 }
 
 /// One wire action in a mode-entry sequence. A **closed step vocabulary** (not a

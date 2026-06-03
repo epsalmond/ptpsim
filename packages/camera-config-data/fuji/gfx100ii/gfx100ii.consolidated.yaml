@@ -6153,6 +6153,7 @@ connections:
         repeat: 1
       userInstruction: null
       requires: null
+    actions: {}
     enables: []
     bind:
       command: 55740
@@ -6176,6 +6177,7 @@ connections:
     modes:
     - remote-trigger
     entries: []
+    actions: {}
     enables:
     - to: app
       mechanism: ble-to-wifi-ap-v1
@@ -6210,6 +6212,7 @@ connections:
       steps: []
       userInstruction: Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB
       requires: null
+    actions: {}
     enables: []
     discovery:
       mechanism: usb
@@ -6231,6 +6234,165 @@ connections:
     - shooting/stills
     - remote-trigger
     entries: []
+    actions:
+      shutter:
+        mode: shooting/stills
+        params: []
+        steps:
+        - setProp: '0xd039'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          value: 65536
+          params: []
+          tolerant: false
+          repeat: 1
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x100e'
+          reopenSession: null
+          value: null
+          params:
+          - 0
+          - 0
+          tolerant: false
+          repeat: 1
+        - setProp: '0xd039'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          value: 131072
+          params: []
+          tolerant: false
+          repeat: 1
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x100e'
+          reopenSession: null
+          value: null
+          params:
+          - 0
+          - 0
+          tolerant: false
+          repeat: 1
+        - setProp: '0xd039'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          value: 1
+          params: []
+          tolerant: false
+          repeat: 1
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x100e'
+          reopenSession: null
+          value: null
+          params:
+          - 0
+          - 0
+          tolerant: false
+          repeat: 1
+        triggers:
+        - imagePushed
+        evidence:
+        - wirePCSSShootDownload20260523
+      enumerateObjects:
+        mode: image-transfer
+        params: []
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x1007'
+          reopenSession: null
+          value: null
+          params:
+          - 4294967295
+          - 0
+          tolerant: false
+          repeat: 1
+        triggers: []
+        evidence:
+        - wirePCSSShootDownload20260523
+      getObjectInfo:
+        mode: image-transfer
+        params:
+        - handle
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x1008'
+          reopenSession: null
+          value: null
+          params:
+          - runtime: handle
+          tolerant: false
+          repeat: 1
+        triggers: []
+        evidence:
+        - wirePCSSShootDownload20260523
+      getThumb:
+        mode: image-transfer
+        params:
+        - handle
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x100a'
+          reopenSession: null
+          value: null
+          params:
+          - runtime: handle
+          tolerant: false
+          repeat: 1
+        triggers: []
+        evidence:
+        - wirePCSSShootDownload20260523
+      getObject:
+        mode: image-transfer
+        params:
+        - handle
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x1009'
+          reopenSession: null
+          value: null
+          params:
+          - runtime: handle
+          tolerant: false
+          repeat: 1
+        triggers: []
+        evidence:
+        - wirePCSSShootDownload20260523
+      deleteObject:
+        mode: image-transfer
+        params:
+        - handle
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x100b'
+          reopenSession: null
+          value: null
+          params:
+          - runtime: handle
+          tolerant: false
+          repeat: 1
+        triggers: []
+        evidence:
+        - wirePCSSShootDownload20260523
     enables: []
     discovery:
       mechanism: pcss-knock
@@ -6255,6 +6417,7 @@ connections:
     modes:
     - shooting/stills
     entries: []
+    actions: {}
     enables: []
     auth:
       scheme: bearer

@@ -1,7 +1,9 @@
 //! Compatibility queries the simulator and app both use. All lookups are by the
 //! parsed `u16` code so callers don't deal in hex strings.
 
-use crate::model::{parse_hex_code, CameraManifest, Control, Operation, Property, Workflow};
+use crate::model::{
+    parse_hex_code, Action, ActionVerb, CameraManifest, Control, Operation, Property, Workflow,
+};
 use crate::predicate::PropView;
 use crate::version::VersionScheme;
 
@@ -91,6 +93,17 @@ impl CameraManifest {
 
     pub fn workflow(&self, id: &str) -> Option<&Workflow> {
         self.workflows.get(id)
+    }
+
+    /// Resolve a named action on a connection. The closed `ActionVerb` enum
+    /// gates new verbs to schema PRs; if a connection doesn't declare an
+    /// action for this verb, returns `None` and the caller surfaces it as
+    /// "not supported here" (e.g. `ActionVerb::Shutter` on a read-only
+    /// transport). Mode-gating against the action's `mode:` field is the
+    /// caller's responsibility — same pattern as `control_for`. See
+    /// `docs/plans/action-verbs.md`.
+    pub fn action(&self, connection: &str, verb: ActionVerb) -> Option<&Action> {
+        self.connections.get(connection)?.actions.get(&verb)
     }
 }
 

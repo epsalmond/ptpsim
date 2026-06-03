@@ -3,8 +3,8 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    CameraManifest, ConfigStore, ManufacturerDefaults, PropView, StepParam, ValuePolicy,
-    VersionScheme,
+    ActionEffect, ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, PropView,
+    StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -233,6 +233,90 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
     let pcss_iso = m.control_for(0x500f, "wireless-tether").unwrap();
     assert_eq!(pcss_iso.set_method.as_deref(), Some("absolute"));
     assert_eq!(pcss_iso.operation.as_deref(), Some("0x1016"));
+}
+
+#[test]
+fn wireless_tether_shutter_action_is_the_3_beat_pcss_sequence() {
+    // Wire-confirmed by wirePCSSShootDownload20260523 (Hyper-Utility capture). The
+    // 3 D039 phase values are 0x00010000, 0x00020000, 0x00000001 — each followed
+    // by 0x100E(0, 0). triggers: [ImagePushed] tells the app to wire up the
+    // receive handler BEFORE invoking the action.
+    let m = gfx();
+    let shutter = m
+        .action("wireless-tether", ActionVerb::Shutter)
+        .expect("wireless-tether.actions.shutter must exist");
+    assert_eq!(shutter.mode, "shooting/stills");
+    assert!(shutter.params.is_empty(), "shutter takes no runtime params");
+    assert_eq!(shutter.steps.len(), 6, "3 beats × 2 ops each");
+    let phase_values = [0x00010000_i64, 0x00020000, 0x00000001];
+    for (beat, phase) in phase_values.iter().enumerate() {
+        let setprop = &shutter.steps[beat * 2];
+        assert_eq!(setprop.set_prop.as_deref(), Some("0xd039"));
+        assert_eq!(setprop.value, Some(*phase), "beat {} phase value", beat + 1);
+        let sendop = &shutter.steps[beat * 2 + 1];
+        assert_eq!(sendop.send_op.as_deref(), Some("0x100e"));
+        assert_eq!(
+            sendop.params,
+            vec![StepParam::Literal(0), StepParam::Literal(0)]
+        );
+    }
+    assert_eq!(shutter.triggers, vec![ActionEffect::ImagePushed]);
+}
+
+#[test]
+fn wireless_tether_transfer_actions_bind_runtime_handle() {
+    // Per-handle ops are parameterized: caller binds `handle` to a slot the
+    // engine plugs into the StepParam::Runtime reference at emit time.
+    let m = gfx();
+    for verb in [
+        ActionVerb::GetObjectInfo,
+        ActionVerb::GetThumb,
+        ActionVerb::GetObject,
+        ActionVerb::DeleteObject,
+    ] {
+        let a = m
+            .action("wireless-tether", verb)
+            .unwrap_or_else(|| panic!("missing action {verb:?}"));
+        assert_eq!(a.mode, "image-transfer");
+        assert_eq!(a.params, vec!["handle".to_string()]);
+        assert_eq!(a.steps.len(), 1);
+        assert_eq!(
+            a.steps[0].params,
+            vec![StepParam::Runtime {
+                runtime: "handle".into()
+            }],
+            "{verb:?} must bind `handle`"
+        );
+        assert!(
+            a.triggers.is_empty(),
+            "{verb:?} has no declared side-effects"
+        );
+    }
+    // enumerateObjects takes no params and seeds the handle list the others consume.
+    let enumerate = m
+        .action("wireless-tether", ActionVerb::EnumerateObjects)
+        .unwrap();
+    assert!(enumerate.params.is_empty());
+    assert_eq!(enumerate.steps[0].send_op.as_deref(), Some("0x1007"));
+    assert_eq!(
+        enumerate.steps[0].params,
+        vec![StepParam::Literal(0xffffffff), StepParam::Literal(0)]
+    );
+}
+
+#[test]
+fn action_query_misses_when_connection_does_not_declare_the_verb() {
+    // The closed ActionVerb enum gates new verbs at the schema layer. A
+    // connection that doesn't declare an action for a given verb returns None
+    // — the client surfaces "not supported on this transport" without having
+    // to encode the negative list itself.
+    let m = gfx();
+    // app connection has no actions block (yet) — Shutter resolves to None.
+    assert!(m.action("app", ActionVerb::Shutter).is_none());
+    // ble has no transfer actions.
+    assert!(m.action("ble", ActionVerb::GetObject).is_none());
+    // Unknown connection name returns None too.
+    assert!(m.action("nonexistent", ActionVerb::Shutter).is_none());
 }
 
 #[test]
