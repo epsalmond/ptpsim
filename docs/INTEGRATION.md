@@ -103,8 +103,11 @@ per-platform packaging:
   `ci/spm-snippet.sh <sha-tag>`).
 - **Android:** build the **cdylib** (`.so`) per ABI (`aarch64-linux-android`,
   `armv7-linux-androideabi`, `x86_64-linux-android`) into `jniLibs/<abi>/`; ship
-  the `.kt` + the `.so`s as an `.aar`. (P2 task — bindgen invocation lands
-  alongside the iOS xcframework job.)
+  the `.kt` + the `.so`s as a source-distribution tarball (`CameraProtocolFFI-
+  <sha8>-android.tar.gz`) the consumer drops into their Gradle module via two
+  `cp -r` commands. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Real
+  `.aar` wrapping (compiled `classes.jar` + AndroidManifest) is the follow-up
+  (#43) — needs `kotlinc` + `android.jar` in CI.
 - **Linux / Python:** the `.so` + the generated `camera_protocol_ffi.py`. Used
   by `protocol-mapper` (P2 task — same parent CI job as Android).
 
