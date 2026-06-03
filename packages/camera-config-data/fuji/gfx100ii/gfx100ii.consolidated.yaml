@@ -6300,7 +6300,9 @@ connections:
           tolerant: false
           repeat: 1
         triggers:
-        - imagePushed
+        - imagesPushed:
+            min: 1
+            max: 3
         evidence:
         - wirePCSSShootDownload20260523
       enumerateObjects:
