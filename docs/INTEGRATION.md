@@ -64,21 +64,35 @@ Build the lib, then point the bundled generator at it. **One binary, four
 languages.** uniffi 0.31 dropped the `--library` flag (auto-detected); the
 `-l <lang>` flag selects.
 
+**Run from the workspace root.** Bindgen discovers `uniffi.toml` via cargo
+metadata starting at the *current* directory; running from a subdirectory
+silently falls back to default snake_case names (`camera_protocol_ffi.swift`
+instead of `CameraProtocolFFI.swift`) and may fail to detect library mode
+at all ("UDL file does not appear to be inside a crate").
+
 ```bash
-cargo build -p camera-protocol-ffi --release          # produces lib<…>.{so,dylib,a}
-LIB=target/release/libcamera_protocol_ffi.<so|dylib|a>
+# 1. Build the library in release mode. Pick the extension your platform produces:
+#       macOS  → libcamera_protocol_ffi.a       (staticlib; also dylib for dev)
+#       Linux  → libcamera_protocol_ffi.so
+#       iOS    → built per-target from ci/build-xcframework.sh
+cargo build -p camera-protocol-ffi --release
+
+# 2. Build the bindgen tool ONCE (avoids debug-rebuild on every invocation;
+#    also sidesteps the cargo-run-over-non-interactive-ssh hang).
+cargo build -p camera-protocol-ffi --release --bin uniffi-bindgen
+BINDGEN=target/release/uniffi-bindgen
+
+# 3. Pick the .a (or .so on Linux) and generate.
+LIB=target/release/libcamera_protocol_ffi.a   # .so on Linux; .a is canonical on macOS
 
 # Swift (iOS / macOS)
-cargo run -p camera-protocol-ffi --bin uniffi-bindgen -- generate \
-    -l swift  -o generated/swift  "$LIB"
+"$BINDGEN" generate -l swift  -o generated/swift  "$LIB"
 
 # Kotlin (Android)
-cargo run -p camera-protocol-ffi --bin uniffi-bindgen -- generate \
-    -l kotlin -o generated/kotlin "$LIB"
+"$BINDGEN" generate -l kotlin -o generated/kotlin "$LIB"
 
 # Python (Linux / protocol-mapper)
-cargo run -p camera-protocol-ffi --bin uniffi-bindgen -- generate \
-    -l python -o generated/python "$LIB"
+"$BINDGEN" generate -l python -o generated/python "$LIB"
 ```
 
 Swift emits `CameraProtocolFFI.swift` + `CameraProtocolFFIFFI.{h,modulemap}` (the
@@ -86,6 +100,15 @@ PascalCase names come from `crates/camera-protocol-ffi/uniffi.toml`). Kotlin emi
 `uniffi/camera_protocol_ffi/camera_protocol_ffi.kt`. Python emits
 `camera_protocol_ffi.py`. Optional formatters (`swiftformat`/`ktlint`/`ruff`) run
 automatically when on PATH; harmless warning if absent.
+
+### Troubleshooting
+
+| symptom | fix |
+|---|---|
+| `UDL file does not appear to be inside a crate` | You're running bindgen against a path it can't resolve to a crate. Confirm you're in the workspace root (not a subdirectory), the `--release` build actually produced `target/release/libcamera_protocol_ffi.{a,so,dylib}`, and you're passing the staticlib (`.a` on macOS) rather than the rlib. |
+| Swift file is `camera_protocol_ffi.swift` (snake_case) instead of `CameraProtocolFFI.swift` | Same root cause as above — bindgen didn't find `crates/camera-protocol-ffi/uniffi.toml`, so the PascalCase override didn't apply. Re-run from the workspace root after `cargo clean -p camera-protocol-ffi`. |
+| `Warning: Unable to auto-format … using swiftformat` | Harmless. Install `swiftformat` to suppress, or pass `-n` / `--no-format` to skip the attempt. The `.swift` file is still produced. |
+| `cargo run --bin uniffi-bindgen` hangs over non-interactive SSH | Cargo's stdin forwarding to the child process misbehaves over headless ssh. Build the binary once (`cargo build --release --bin uniffi-bindgen`) and invoke `target/release/uniffi-bindgen` directly. |
 
 ## 4. Build + package the native library (per platform)
 
