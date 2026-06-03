@@ -210,6 +210,58 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
         m.operation_available("app", "shooting/stills", 0x9018, &any),
         camera_config::Availability::WrongConnection
     );
+    // Image-transfer triad (wirePCSSShootDownload20260523): standard PTP ops
+    // gated to the wireless-tether image-transfer mode. No 0x101B on PCSS.
+    for op in [0x1007u16, 0x1008, 0x1009, 0x100a, 0x100b] {
+        assert_eq!(
+            m.operation_available("wireless-tether", "image-transfer", op, &any),
+            camera_config::Availability::Available,
+            "op 0x{op:04x} should be available on wireless-tether/image-transfer"
+        );
+    }
+    assert_eq!(
+        m.operation_available("wireless-tether", "image-transfer", 0x101b, &any),
+        camera_config::Availability::WrongConnection,
+        "0x101b GetPartialObject must NOT be authorized on wireless-tether"
+    );
+    // PCSS ISO is 0x500F, NOT 0xD02A (reference app path). Verify both controls land on
+    // the right connection.
+    assert!(
+        m.control_for(0xd02a, "wireless-tether").is_none(),
+        "0xD02A (reference app ISO) must not have a wireless-tether control"
+    );
+    let pcss_iso = m.control_for(0x500f, "wireless-tether").unwrap();
+    assert_eq!(pcss_iso.set_method.as_deref(), Some("absolute"));
+    assert_eq!(pcss_iso.operation.as_deref(), Some("0x1016"));
+}
+
+#[test]
+fn scaffold_props_are_tagged_so_clients_can_filter_them_out_of_settings_ui() {
+    // 0xD039 / 0xD21C / 0xD207 LOOK settable on the wire but are protocol
+    // scaffolding (virtual-shutter state machine + tethered keepalives) —
+    // wirePCSSShootDownload20260523. `kind: scaffold` lets clients filter
+    // them from settings UI without re-deriving the negative list each time.
+    let m = gfx();
+    for code in ["0xd039", "0xd21c", "0xd207"] {
+        let p = m
+            .properties
+            .get(code)
+            .unwrap_or_else(|| panic!("property {code} should exist"));
+        assert_eq!(
+            p.kind.as_deref(),
+            Some("scaffold"),
+            "{code} must carry kind: scaffold"
+        );
+    }
+    // Real settings should NOT be tagged scaffold.
+    assert!(
+        m.properties["0x5007"].kind.is_none(),
+        "aperture is a real setting"
+    );
+    assert!(
+        m.properties["0x500f"].kind.is_none(),
+        "PCSS ISO is a real setting"
+    );
 }
 
 #[test]

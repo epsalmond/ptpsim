@@ -128,6 +128,12 @@ pub struct Property {
     pub ptype: Option<String>,
     #[serde(default)]
     pub access: Option<String>,
+    /// Optional classification used by clients to filter what surfaces as a
+    /// user setting. `kind: scaffold` marks props that LOOK settable on the
+    /// wire but are actually protocol mechanics (keepalives, virtual-shutter
+    /// state machines) — clients MUST NOT expose them as user-facing settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(default)]
     pub descriptor: Option<Descriptor>,
     #[serde(default)]
