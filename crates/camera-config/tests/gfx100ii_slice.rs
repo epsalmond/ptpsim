@@ -320,12 +320,125 @@ fn action_query_misses_when_connection_does_not_declare_the_verb() {
     // — the client surfaces "not supported on this transport" without having
     // to encode the negative list itself.
     let m = gfx();
-    // app connection has no actions block (yet) — Shutter resolves to None.
-    assert!(m.action("app", ActionVerb::Shutter).is_none());
     // ble has no transfer actions.
     assert!(m.action("ble", ActionVerb::GetObject).is_none());
     // Unknown connection name returns None too.
     assert!(m.action("nonexistent", ActionVerb::Shutter).is_none());
+    // reference app `app` does NOT model DeleteObject (no wire-truth) — verb-level
+    // miss without polluting the negative list with explicit entries.
+    assert!(m.action("app", ActionVerb::DeleteObject).is_none());
+}
+
+#[test]
+fn app_shutter_action_is_100e_plus_9022_with_postview_trigger() {
+    // reference app shutter cycle (MODE_CHANGES.md §3 + §6b): 0x100E InitiateCapture(0,0)
+    // → client polls 0xD212 for the JPEG-saved flag → 0x9022 cleanup. Trigger
+    // postviewEvent declares the post-shutter state-change the client awaits.
+    let m = gfx();
+    let shutter = m
+        .action("app", ActionVerb::Shutter)
+        .expect("app.actions.shutter must exist");
+    assert_eq!(shutter.mode, "shooting/stills");
+    assert!(shutter.params.is_empty());
+    assert_eq!(shutter.steps.len(), 2);
+    assert_eq!(shutter.steps[0].send_op.as_deref(), Some("0x100e"));
+    assert_eq!(
+        shutter.steps[0].params,
+        vec![StepParam::Literal(0), StepParam::Literal(0)]
+    );
+    assert_eq!(shutter.steps[1].send_op.as_deref(), Some("0x9022"));
+    assert!(shutter.steps[1].params.is_empty());
+    assert_eq!(shutter.triggers.len(), 1);
+    let t = &shutter.triggers[0];
+    assert!(t.is_well_formed());
+    assert!(t.postview_event.is_some());
+    assert!(t.images_pushed.is_none());
+}
+
+#[test]
+fn app_transfer_actions_use_app_specific_wire_shape() {
+    // reference app differs from PCSS on the transfer path (IMAGE_TRANSFER_FW0230.md):
+    // (1) enumeration reads 0xD620/0xD621 PROPERTIES (camera rejects 0x1007),
+    // (2) getObject is CHUNKED via 0x101B with handle/offset/length params
+    //     (not whole-object 0x1009 like PCSS).
+    let m = gfx();
+
+    // Enumeration: two getProps, no sendOp, no runtime params.
+    let enumerate = m
+        .action("app", ActionVerb::EnumerateObjects)
+        .expect("app.actions.enumerateObjects");
+    assert_eq!(enumerate.mode, "image-transfer");
+    assert!(enumerate.params.is_empty());
+    assert_eq!(enumerate.steps.len(), 2);
+    assert_eq!(enumerate.steps[0].get_prop.as_deref(), Some("0xd620"));
+    assert_eq!(enumerate.steps[1].get_prop.as_deref(), Some("0xd621"));
+    assert!(enumerate.triggers.is_empty());
+
+    // Per-handle metadata + thumbnail: standard PTP, same wire shape as PCSS.
+    for verb in [ActionVerb::GetObjectInfo, ActionVerb::GetThumb] {
+        let a = m
+            .action("app", verb)
+            .unwrap_or_else(|| panic!("missing action {verb:?}"));
+        assert_eq!(a.mode, "image-transfer");
+        assert_eq!(a.params, vec!["handle".to_string()]);
+        assert_eq!(a.steps.len(), 1);
+        assert_eq!(
+            a.steps[0].params,
+            vec![StepParam::Runtime {
+                runtime: "handle".into()
+            }]
+        );
+    }
+
+    // Chunked download — three runtime slots (handle / offset / length).
+    let get = m
+        .action("app", ActionVerb::GetObject)
+        .expect("app.actions.getObject");
+    assert_eq!(get.mode, "image-transfer");
+    assert_eq!(
+        get.params,
+        vec![
+            "handle".to_string(),
+            "offset".to_string(),
+            "length".to_string()
+        ],
+        "reference app getObject is chunked — caller binds offset+length per iteration"
+    );
+    assert_eq!(get.steps.len(), 1);
+    assert_eq!(get.steps[0].send_op.as_deref(), Some("0x101b"));
+    assert_eq!(
+        get.steps[0].params,
+        vec![
+            StepParam::Runtime {
+                runtime: "handle".into()
+            },
+            StepParam::Runtime {
+                runtime: "offset".into()
+            },
+            StepParam::Runtime {
+                runtime: "length".into()
+            },
+        ]
+    );
+}
+
+#[test]
+fn getobject_params_differ_per_connection_same_verb() {
+    // The closed ActionVerb vocabulary supports same-verb-different-shape
+    // across transports: PCSS getObject is whole-object (`[handle]`),
+    // reference app getObject is chunked (`[handle, offset, length]`). Clients
+    // introspect `.params` to know what to bind at the call site.
+    let m = gfx();
+    let pcss = m
+        .action("wireless-tether", ActionVerb::GetObject)
+        .expect("wireless-tether.actions.getObject");
+    let app = m
+        .action("app", ActionVerb::GetObject)
+        .expect("app.actions.getObject");
+    assert_eq!(pcss.params.len(), 1, "PCSS getObject is whole-object");
+    assert_eq!(app.params.len(), 3, "reference app getObject is chunked");
+    assert_eq!(pcss.steps[0].send_op.as_deref(), Some("0x1009"));
+    assert_eq!(app.steps[0].send_op.as_deref(), Some("0x101b"));
 }
 
 #[test]
