@@ -1,26 +1,29 @@
 // swift-tools-version: 5.9
 //
-// CONSUMER PINNING:
+// ⚠️  DO NOT depend on this file at `main` / a tagged commit / any other ref.
+//     The URL below is a PLACEHOLDER (`sha-PLACEHOLDER`) and the checksum is
+//     sentinel zeros; `swift package resolve` against this file fails with
+//     `badResponseStatusCode(404)` from a non-existent release asset.
+//
+// CONSUMERS — pin the `release/auto` branch:
 //
 //   .package(url: "https://github.com/epsalmond/ptpsim", branch: "release/auto")
 //
-// resolves to the latest Package.swift on the `release/auto` branch, which CI
-// updates automatically after each successful xcframework build with the
-// matching release URL + SHA-256 checksum. Cheapest path for client application: SPM
-// re-resolves and you get the latest CameraProtocolFFI without writing your
-// own binaryTarget snippet.
+// `release/auto` is CI-managed: every successful xcframework build pushes
+// a fresh Package.swift to that branch with the matching release URL +
+// SHA-256 checksum. SPM re-resolves on each `swift package resolve` and you
+// get the latest CameraProtocolFFI without writing your own binaryTarget.
 //
-// To pin a specific release: replace `branch:` with `revision:` and the
-// commit SHA on `release/auto` whose update message names the desired sha-<8>
-// release tag. Or — for one-shot pinning without depending on this Package.swift
-// at all — use `ci/spm-snippet.sh <sha-tag>` to render a self-contained
-// `.binaryTarget(...)` block (see docs/SPM_INTEGRATION.md).
+// To pin a specific release on `release/auto`, use `revision:` with the
+// commit SHA whose message names the desired `sha-<8>` tag.
 //
-// The Package.swift on `main` is a placeholder — its checksum below is sentinel
-// zeros that point at no real release; `swift package resolve` against `main`
-// will fail. ALWAYS depend on `release/auto` (or a pinned `release/auto`
-// commit), never `main`. CI's bump step rewrites this file to point at each
-// release; see ci/update-package-swift.sh + .woodpecker/xcframework.yml.
+// To pin a specific release WITHOUT depending on `release/auto`, render a
+// self-contained `.binaryTarget(...)` snippet with
+// `ci/spm-snippet.sh <sha-tag>` and paste it into your own Package.swift.
+// See `docs/SPM_INTEGRATION.md`.
+//
+// The placeholder-rewrite lives in `ci/update-package-swift.sh` (driven by
+// `.woodpecker/xcframework.yml`'s `bump-package-swift` step).
 
 import PackageDescription
 
