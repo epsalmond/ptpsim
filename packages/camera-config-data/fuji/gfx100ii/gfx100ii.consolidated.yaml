@@ -7,7 +7,7 @@
 # = curated gfx100ii.yaml (connections/modes/entries/establishment + curated names,
 #   labels, gating) ENRICHED with active-probe evidence (props/descriptors/ops).
 # Mode-naming convention applied; standard PTP codes auto-named. Remaining curation:
-# ~306 vendor raw_0x props carry camera-sourced descriptors but still need names/labels
+# ~306 vendor raw_0x props carry camera-sourced descriptors but still need names/labels.
 schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
@@ -59,10 +59,18 @@ evidence:
   staticRawStudio:
     path: evidence/RAW_CONVERSION.md
     date: ''
+  wireD3AppReopen:
+    kind: wire-capture
+
+    date: 2026-06-02
   wireTether:
     kind: wire-capture
     path: tools/protocol-mapper/WIRED_TETHER_CONTROL.md
     date: 2026-05-23
+  wireTetherCaps20260527:
+    kind: wire-capture
+    path: packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
+    date: 2026-05-27
 transports: {}
 operations:
   '0x1001':
@@ -306,10 +314,12 @@ operations:
     - shooting/stills
     connections:
     - app
+    - wireless-tether
     requires: null
     evidence:
     - iosLiveControls
     - docLiveControls
+    - wireTetherCaps20260527
   '0x100f':
     name: FormatStore
     owner: ''
@@ -5861,6 +5871,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 6
         params: []
         tolerant: false
@@ -5869,6 +5880,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 22
         params: []
         tolerant: false
@@ -5877,6 +5889,7 @@ connections:
         getProp: null
         readEcho: '0xdf2a'
         sendOp: null
+        reopenSession: null
         value: null
         params: []
         tolerant: false
@@ -5885,6 +5898,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x902b'
+        reopenSession: null
         value: null
         params: []
         tolerant: false
@@ -5893,6 +5907,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x101c'
+        reopenSession: null
         value: null
         params: []
         tolerant: false
@@ -5906,6 +5921,7 @@ connections:
         getProp: '0xd212'
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: null
         params: []
         tolerant: true
@@ -5914,6 +5930,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 20
         params: []
         tolerant: false
@@ -5922,6 +5939,7 @@ connections:
         getProp: '0xdf28'
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: null
         params: []
         tolerant: true
@@ -5930,6 +5948,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 3
         params: []
         tolerant: true
@@ -5938,6 +5957,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 0
         params: []
         tolerant: true
@@ -5946,6 +5966,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 0
         params: []
         tolerant: true
@@ -5954,6 +5975,7 @@ connections:
         getProp: '0xd244'
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: null
         params: []
         tolerant: true
@@ -5962,6 +5984,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x9054'
+        reopenSession: null
         value: null
         params:
         - 268435457
@@ -5971,6 +5994,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x9055'
+        reopenSession: null
         value: null
         params:
         - 268435457
@@ -5980,6 +6004,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x9050'
+        reopenSession: null
         value: null
         params: []
         tolerant: true
@@ -5988,6 +6013,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x9053'
+        reopenSession: null
         value: null
         params:
         - 0
@@ -6003,15 +6029,26 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x1018'
+        reopenSession: null
         value: null
         params:
         - runtime: openCaptureTxId
         tolerant: false
         repeat: 1
       - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: {}
+        value: null
+        params: []
+        tolerant: false
+        repeat: 1
+      - setProp: null
         getProp: '0xd212'
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: null
         params: []
         tolerant: true
@@ -6020,6 +6057,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 20
         params: []
         tolerant: false
@@ -6028,6 +6066,7 @@ connections:
         getProp: '0xdf28'
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: null
         params: []
         tolerant: true
@@ -6036,6 +6075,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 3
         params: []
         tolerant: true
@@ -6044,6 +6084,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 0
         params: []
         tolerant: true
@@ -6052,6 +6093,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: 0
         params: []
         tolerant: true
@@ -6060,6 +6102,7 @@ connections:
         getProp: '0xd244'
         readEcho: null
         sendOp: null
+        reopenSession: null
         value: null
         params: []
         tolerant: true
@@ -6068,6 +6111,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x9054'
+        reopenSession: null
         value: null
         params:
         - 268435457
@@ -6077,6 +6121,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x9055'
+        reopenSession: null
         value: null
         params:
         - 268435457
@@ -6086,6 +6131,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x9050'
+        reopenSession: null
         value: null
         params: []
         tolerant: true
@@ -6094,6 +6140,7 @@ connections:
         getProp: null
         readEcho: null
         sendOp: '0x9053'
+        reopenSession: null
         value: null
         params:
         - 0

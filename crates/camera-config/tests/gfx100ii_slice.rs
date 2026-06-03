@@ -374,6 +374,16 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
             runtime: "openCaptureTxId".into()
         }]
     );
+    // reference app Take→Get switch re-establishes the PTP/IP session before DF01=0x14.
+    // D3-wire 2026-06-02 confirmed parameterless verb; identity is reused.
+    assert!(
+        from.steps[1].reopen_session.is_some(),
+        "reopenSession must come right after the 0x1018 in the from-LV image-transfer entry"
+    );
+    assert!(
+        from.steps[1].is_well_formed(),
+        "reopenSession step carries no other action fields"
+    );
     assert!(from
         .steps
         .iter()
