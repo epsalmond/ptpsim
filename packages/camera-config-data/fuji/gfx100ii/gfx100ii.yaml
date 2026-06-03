@@ -34,6 +34,13 @@ evidence:
   docXlv:          { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
   captureXlv:      { kind: wire-capture, path: "tools/protocol-mapper/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
 
+# Connection-name convention (see docs/consults/2026-06-02-*-wireless-tether.md):
+#   `app`             = reference app PTP/IP on :55740 (BLE → camera Wi-Fi AP → 82B WMB-tail init).
+#   `wireless-tether` = PCSS port-knock PTP/IP on :15740 (camera joins LAN, then knock+notify).
+# These ride the same physical Wi-Fi but are DIFFERENT transports with different
+# supported-op sets, different InitCmdReq tails, and different live-view paths
+# (`0x101C`+stream vs `0x9018` polled). External wire docs that label "Wireless
+# tether" usually mean the `app` slot here — verify before transcribing.
 connections:
   app:
     kind: ptpip-app                 # WiFi-AP path (camera hosts the AP; app joins)
@@ -154,6 +161,16 @@ connections:
     # remote-trigger here is the SAME mode node as over BLE — transport-independent (its
     # PTP/IP form can also push images to the camera; per-connection capability TODO).
     modes: [shooting/stills, remote-trigger]
+    # Wire-confirmed NOT-supported on this connection (per the 05-27 capability snapshot
+    # `wireTetherCaps20260527` + D3-wire 2026-06-02 reply). Don't author entries that
+    # rely on these — the camera will reject them:
+    #   - 0x9022 (post-shutter cleanup):  reference app-only; do NOT pair with 0x100E here.
+    #   - 0x101b (GetPartialObject):      not advertised — whole-object only via 0x1009.
+    #   - 0xDF01 (FunctionMode):          PCSS enters transfer-mode implicitly; no flip.
+    #   - 0x9050/0x9053/0x9054/0x9055:    reference app mode-20 vendor block; not used on PCSS.
+    # Operation-table gating reflects this (each op's `connections:` allowlist).
+    # Capture flow + image-transfer + stills↔video flip are PENDING a wire capture
+    # (D3-wire option 2). Until then `entries:` stays empty for this connection.
     evidence: [wireTether]
 
   xlv:
