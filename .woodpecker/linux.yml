@@ -98,8 +98,10 @@ steps:
   # walks the steps. Real .aar wrapping (classes.jar + AndroidManifest) is
   # task #43 — needs kotlinc + android.jar in CI which doubles image size.
   - name: android-libs
-    # cimg/android ships Android SDK + NDK 25; we add Rust on top.
-    image: cimg/android:2024.07.1-ndk
+    # cimg/android ships Android SDK + NDK; we add Rust on top.
+    # Tag scheme is `YYYY.MM[.patch][-variant]` per Docker Hub
+    # (`hub.docker.com/r/cimg/android/tags`); -ndk = SDK + NDK variant.
+    image: cimg/android:2026.03.1-ndk
     depends_on: [workspace]
     commands:
       # Rust toolchain — minimal profile is enough for cargo build / uniffi-bindgen.
