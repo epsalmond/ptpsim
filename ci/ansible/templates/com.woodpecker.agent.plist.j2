@@ -26,6 +26,17 @@
         <string>1</string>
         <key>PATH</key>
         <string>{{ woodpecker_user_home }}/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- LaunchDaemons don't inherit HOME. Without it, rustup can't find
+             its ~/.rustup default toolchain and shells out with "no default
+             is configured". Set HOME/CARGO_HOME/RUSTUP_HOME explicitly so
+             every step the agent spawns sees the rustc + targets installed
+             by this same playbook. -->
+        <key>HOME</key>
+        <string>{{ woodpecker_user_home }}</string>
+        <key>CARGO_HOME</key>
+        <string>{{ woodpecker_user_home }}/.cargo</string>
+        <key>RUSTUP_HOME</key>
+        <string>{{ woodpecker_user_home }}/.rustup</string>
     </dict>
     <key>StandardOutPath</key>
     <string>{{ woodpecker_log_dir }}/agent.log</string>
