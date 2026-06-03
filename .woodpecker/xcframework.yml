@@ -27,5 +27,14 @@ steps:
       - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
       - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.tar.gz" --clobber'
     environment:
+      # Woodpecker's local backend doesn't pass the agent's HOME/RUSTUP_HOME/
+      # CARGO_HOME through to the step subprocess; it sets PATH and
+      # WOODPECKER_* explicitly and that's it. Without these, rustup errors
+      # with "could not create home directory" / "no default toolchain is
+      # configured." The provisioning playbook installs the toolchain under
+      # /Users/woodpecker, so point the step at that.
+      HOME: /Users/woodpecker
+      CARGO_HOME: /Users/woodpecker/.cargo
+      RUSTUP_HOME: /Users/woodpecker/.rustup
       GH_TOKEN:
         from_secret: github_token   # fine-grained PAT with contents:write on the repo
