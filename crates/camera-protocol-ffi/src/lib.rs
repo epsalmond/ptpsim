@@ -198,6 +198,15 @@ pub enum EntryStep {
         repeat: u32,
         tolerant: bool,
     },
+    /// Re-establish the PTP/IP session in-place — close the current TCP
+    /// socket, send the 8-byte `0xffffffff` sentinel, open a new socket to
+    /// the connection's command port, replay the cached InitCommandRequest,
+    /// and OpenSession again. Reuses the connection's cached identity, so
+    /// the verb carries no parameters. Wire-confirmed for the reference app
+    /// `app` → image-transfer (Take→Get) flow per MODE_CHANGES.md §5.
+    ReopenSession {
+        tolerant: bool,
+    },
 }
 
 #[derive(uniffi::Record)]
@@ -206,6 +215,65 @@ pub struct ModeEntryPlan {
     pub from: Option<String>,
     pub steps: Vec<EntryStep>,
     pub user_instruction: Option<String>,
+}
+
+// ----------------------------------------------------------------------------
+// Action surface — named, parameterized recipes that run within a mode.
+// Mirrors camera-config's `Connection.actions` block (docs/plans/action-verbs.md).
+// ActionEffect ships as a uniffi tagged enum here (vs. the flat struct in
+// camera-config) so consumer Swift / Kotlin gets clean exhaustive-switch
+// ergonomics:
+//
+//     switch shutter.triggers[0] {
+//     case .imagesPushed(let min, let max): // wire up receive handler
+//     case .postviewEvent:                  // wait via 0xD212 polling
+//     case .liveViewStream:                 // continuous frame delivery
+//     }
+// ----------------------------------------------------------------------------
+
+/// Closed verb vocabulary for named in-mode actions. Mirrors
+/// `cc::ActionVerb`; new verbs require an FFI-side variant alongside the
+/// camera-config-side addition (same fail-fast as Step verbs).
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ActionVerb {
+    Shutter,
+    EnumerateObjects,
+    GetObjectInfo,
+    GetThumb,
+    GetObject,
+    DeleteObject,
+}
+
+/// Declared post-conditions an action produces — the consumer plans UX
+/// around them without per-transport knowledge. Engine does NOT act on
+/// triggers; pure declaration.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ActionEffect {
+    /// Camera auto-pushes between `min` and `max` images to the tether
+    /// endpoint after `Shutter`. Receiver MUST be wired up before invoking.
+    /// PCSS shutter: `min=1, max=3` depending on the user's JPEG/HEIF/RAW
+    /// selection.
+    ImagesPushed { min: u32, max: u32 },
+    /// Camera emits a post-shutter state change the consumer polls for
+    /// (reference app `app` path: `0xD212` clears the JPEG-saved flag, then `0x9022`).
+    PostviewEvent,
+    /// Continuous frame delivery starts (e.g. live-view through-stream
+    /// after `0x101C InitiateOpenCapture`).
+    LiveViewStream,
+}
+
+/// A parameterized recipe runnable within a mode. Returned by
+/// [`ConfigStore::action`]. The consumer reads `params` to know which
+/// runtime slots to bind for `EntryParam::Runtime` references in `steps`,
+/// then executes `steps` via its own I/O. `triggers` declares what arrives
+/// after the action completes.
+#[derive(Debug, uniffi::Record)]
+pub struct Action {
+    pub mode: String,
+    pub params: Vec<String>,
+    pub steps: Vec<EntryStep>,
+    pub triggers: Vec<ActionEffect>,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -544,6 +612,26 @@ impl ConfigStore {
         })
     }
 
+    /// Named in-mode action recipe (`docs/plans/action-verbs.md`). Returns
+    /// `None` if the connection doesn't declare an action for this verb;
+    /// the consumer surfaces it as "not supported on this transport"
+    /// without encoding a negative list itself.
+    ///
+    /// The returned `Action.params` names runtime slots the caller MUST bind
+    /// for `EntryParam::Runtime` references in `Action.steps` to resolve.
+    /// `Action.triggers` declares post-conditions to plan UX against.
+    pub fn action(&self, connection: String, verb: ActionVerb) -> Option<Action> {
+        let cc_verb = ffi_to_cc_verb(verb);
+        let a = self.inner.manifest.action(&connection, cc_verb)?;
+        Some(Action {
+            mode: a.mode.clone(),
+            params: a.params.clone(),
+            steps: a.steps.iter().filter_map(map_step).collect(),
+            triggers: a.triggers.iter().filter_map(map_action_effect).collect(),
+            evidence: a.evidence.clone(),
+        })
+    }
+
     /// Is `op` usable over `connection` in `mode` given `observed`? Intersects the
     /// orthogonal axes and evaluates the `requires` prerequisite.
     pub fn operation_available(
@@ -683,6 +771,9 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
             tolerant,
         });
     }
+    if s.reopen_session.is_some() {
+        return Some(EntryStep::ReopenSession { tolerant });
+    }
     None
 }
 
@@ -693,6 +784,37 @@ fn map_param(p: &cc::StepParam) -> EntryParam {
             slot: runtime.clone(),
         },
     }
+}
+
+fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
+    match v {
+        ActionVerb::Shutter => cc::ActionVerb::Shutter,
+        ActionVerb::EnumerateObjects => cc::ActionVerb::EnumerateObjects,
+        ActionVerb::GetObjectInfo => cc::ActionVerb::GetObjectInfo,
+        ActionVerb::GetThumb => cc::ActionVerb::GetThumb,
+        ActionVerb::GetObject => cc::ActionVerb::GetObject,
+        ActionVerb::DeleteObject => cc::ActionVerb::DeleteObject,
+    }
+}
+
+/// Translate camera-config's flat-struct `ActionEffect` (one optional
+/// field per variant) to the FFI's tagged-enum form. Returns `None` for
+/// malformed effects (no variant set) — `is_well_formed()` is the
+/// camera-config-side check that's expected to hold.
+fn map_action_effect(e: &cc::ActionEffect) -> Option<ActionEffect> {
+    if let Some(ip) = &e.images_pushed {
+        return Some(ActionEffect::ImagesPushed {
+            min: ip.min,
+            max: ip.max,
+        });
+    }
+    if e.postview_event.is_some() {
+        return Some(ActionEffect::PostviewEvent);
+    }
+    if e.live_view_stream.is_some() {
+        return Some(ActionEffect::LiveViewStream);
+    }
+    None
 }
 
 fn platform_ok(c: &cc::Connection, p: &Platform) -> bool {
