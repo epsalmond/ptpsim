@@ -96,7 +96,11 @@ per-platform packaging:
   `x86_64-apple-darwin`), `lipo`-combine the two macOS arches, then
   `xcodebuild -create-xcframework`. **Verified end-to-end recipe in
   `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` §11.11** — that's the recipe
-  Woodpecker ships from CI; reuse it for local builds.
+  Woodpecker ships from CI; reuse it for local builds. Each release
+  publishes `CameraProtocolFFI-<sha8>.xcframework.zip` + a `.checksum`
+  sibling for SPM `binaryTarget(url:, checksum:)`; consumer-side wiring
+  is **`docs/SPM_INTEGRATION.md`** (one-line render via
+  `ci/spm-snippet.sh <sha-tag>`).
 - **Android:** build the **cdylib** (`.so`) per ABI (`aarch64-linux-android`,
   `armv7-linux-androideabi`, `x86_64-linux-android`) into `jniLibs/<abi>/`; ship
   the `.kt` + the `.so`s as an `.aar`. (P2 task — bindgen invocation lands
