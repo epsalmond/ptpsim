@@ -284,6 +284,131 @@ fn property_value_width_resolves_from_manifest_type() {
 }
 
 #[test]
+fn reopen_session_step_surfaces_through_ffi_in_take_to_get_entry() {
+    // The from-live-view image-transfer entry has a reopenSession step between
+    // 0x1018 (TerminateOpenCapture) and 0xDF01=0x14 (FunctionMode=Image-Import).
+    // Without this in the FFI EntryStep enum, map_step would silently DROP the
+    // step (no error), and the camera rejects the subsequent 0x9054 — the
+    // "image transfer downloads 0 files" bug client application reported 2026-06-03.
+    let s = store();
+    let plan = s
+        .mode_entry(
+            "app".into(),
+            Some("shooting/stills".into()),
+            "image-transfer".into(),
+        )
+        .expect("from-Stills image-import entry");
+    // The reopenSession sits right after the 0x1018 sendOp.
+    assert!(matches!(
+        plan.steps[0],
+        EntryStep::SendOp { op: 0x1018, .. }
+    ));
+    assert!(
+        matches!(plan.steps[1], EntryStep::ReopenSession { tolerant: false }),
+        "expected ReopenSession at index 1, got {:?}",
+        plan.steps[1]
+    );
+    // The DF01=0x14 follow-up after reopen is still present (i.e. the prefix
+    // didn't get truncated).
+    assert!(plan.steps.iter().any(|st| matches!(
+        st,
+        EntryStep::SetProp {
+            prop: 0xdf01,
+            value: 0x14,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn action_returns_pcss_shutter_with_images_pushed_trigger() {
+    // wireless-tether shutter — the wire-confirmed 3-beat virtual-shutter
+    // (setProp 0xD039 phases + sendOp 0x100E). triggers: [ImagesPushed{1,3}]
+    // because PCSS auto-pushes 1-3 images depending on user's JPEG/HEIF/RAW.
+    let s = store();
+    let shutter = s
+        .action("wireless-tether".into(), ActionVerb::Shutter)
+        .expect("wireless-tether.actions.shutter");
+    assert_eq!(shutter.mode, "shooting/stills");
+    assert!(shutter.params.is_empty());
+    assert_eq!(shutter.steps.len(), 6); // 3 beats × 2 ops each
+                                        // Trigger surfaces as a tagged enum with min/max payload.
+    assert_eq!(shutter.triggers.len(), 1);
+    assert!(
+        matches!(
+            shutter.triggers[0],
+            ActionEffect::ImagesPushed { min: 1, max: 3 }
+        ),
+        "expected ImagesPushed{{1,3}}, got {:?}",
+        shutter.triggers[0]
+    );
+}
+
+#[test]
+fn action_returns_app_shutter_with_postview_event_trigger() {
+    // Same verb, different connection — reference app shutter is 0x100E + 0x9022
+    // cleanup; trigger is PostviewEvent (client polls 0xD212 between the two).
+    let s = store();
+    let shutter = s
+        .action("app".into(), ActionVerb::Shutter)
+        .expect("app.actions.shutter");
+    assert_eq!(shutter.steps.len(), 2);
+    assert!(matches!(
+        shutter.steps[0],
+        EntryStep::SendOp { op: 0x100e, .. }
+    ));
+    assert!(matches!(
+        shutter.steps[1],
+        EntryStep::SendOp { op: 0x9022, .. }
+    ));
+    assert!(matches!(shutter.triggers[0], ActionEffect::PostviewEvent));
+}
+
+#[test]
+fn action_getobject_params_differ_per_connection_same_verb() {
+    // PCSS getObject: whole-object 0x1009 with params: [handle].
+    // reference app getObject: chunked 0x101B with params: [handle, offset, length].
+    // Consumer reads .params at the call site to know what to bind.
+    let s = store();
+    let pcss = s
+        .action("wireless-tether".into(), ActionVerb::GetObject)
+        .expect("wireless-tether.actions.getObject");
+    let app = s
+        .action("app".into(), ActionVerb::GetObject)
+        .expect("app.actions.getObject");
+    assert_eq!(pcss.params, vec!["handle".to_string()]);
+    assert_eq!(
+        app.params,
+        vec![
+            "handle".to_string(),
+            "offset".to_string(),
+            "length".to_string()
+        ]
+    );
+    assert!(matches!(
+        pcss.steps[0],
+        EntryStep::SendOp { op: 0x1009, .. }
+    ));
+    assert!(matches!(
+        app.steps[0],
+        EntryStep::SendOp { op: 0x101b, .. }
+    ));
+}
+
+#[test]
+fn action_misses_when_connection_does_not_declare_the_verb() {
+    let s = store();
+    // ble has no transfer actions.
+    assert!(s.action("ble".into(), ActionVerb::GetObject).is_none());
+    // app does NOT model DeleteObject (no wire-truth for reference app).
+    assert!(s.action("app".into(), ActionVerb::DeleteObject).is_none());
+    // Unknown connection.
+    assert!(s
+        .action("nonexistent".into(), ActionVerb::Shutter)
+        .is_none());
+}
+
+#[test]
 fn runtime_param_slot_surfaces_through_ffi() {
     let s = store();
     // The from-live-view image-transfer entry: 0x1018 carries a runtime slot the app binds.
