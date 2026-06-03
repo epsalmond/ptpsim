@@ -59,6 +59,38 @@ steps:
       branch: main
       event: push
 
+  # Tar packages/camera-config-data/ and attach to the same sha-<8> release
+  # as the xcframework + wheel. Decouples manifest-data delivery from the
+  # source-tree vendoring client application has been doing, so the FFI version (in
+  # the xcframework / wheel) and the data version (in this tarball) ship
+  # from the same commit and can't drift. Pre-Apache-data-repo-split per
+  # project-manifest-system memory; this co-ship is the bridge until that
+  # split lands.
+  - name: manifest-data
+    image: alpine
+    depends_on: [smoke]
+    commands:
+      - apk add --no-cache github-cli
+      - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
+      - mkdir -p out/dist
+      - 'TARBALL="out/dist/camera-config-data-${CI_COMMIT_SHA:0:8}.tar.gz"'
+      - 'CHECKSUM="out/dist/camera-config-data-${CI_COMMIT_SHA:0:8}.checksum"'
+      # Tarball contains a top-level `camera-config-data/` directory so
+      # extraction yields the same path layout as the source tree. Includes
+      # fuji/{index,fuji,gfx100ii/{gfx100ii,gfx100ii.consolidated,fw*}.yaml,
+      # evidence/*.md} and golden/ (response goldens for backtest oracles).
+      - 'tar -czf "$TARBALL" -C packages camera-config-data'
+      - 'sha256sum "$TARBALL" | awk ''{print $1}'' > "$CHECKSUM"'
+      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
+      - 'gh release upload "$TAG" "$TARBALL" --clobber'
+      - 'gh release upload "$TAG" "$CHECKSUM" --clobber'
+    environment:
+      GH_TOKEN:
+        from_secret: github_token
+    when:
+      branch: main
+      event: push
+
   # Build a Linux Python wheel of camera-protocol-ffi and attach it to the
   # same sha-<8> release as the xcframework. Primary consumer: client application's
   # test-injection TUI (Python script that constructs Observation values
