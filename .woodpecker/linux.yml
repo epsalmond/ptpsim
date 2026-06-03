@@ -91,6 +91,43 @@ steps:
       branch: main
       event: push
 
+  # Build CameraProtocolFFI for Android — three cdylib ABIs + uniffi Kotlin
+  # bindings — and attach as a source-distribution tarball alongside the
+  # xcframework. Consumers integrate by copying android/jniLibs and android/
+  # kotlin into their Android Gradle module; docs/ANDROID_INTEGRATION.md
+  # walks the steps. Real .aar wrapping (classes.jar + AndroidManifest) is
+  # task #43 — needs kotlinc + android.jar in CI which doubles image size.
+  - name: android-libs
+    # cimg/android ships Android SDK + NDK 25; we add Rust on top.
+    image: cimg/android:2024.07.1-ndk
+    depends_on: [workspace]
+    commands:
+      # Rust toolchain — minimal profile is enough for cargo build / uniffi-bindgen.
+      - 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable'
+      - 'export PATH="$HOME/.cargo/bin:$PATH"'
+      - rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+      # cargo-ndk wraps cargo build with per-ABI NDK toolchain. Pinned.
+      - cargo install --quiet cargo-ndk --version 3.5.4
+      # cimg/android puts the NDK at /home/circleci/android-sdk/ndk/<version>;
+      # cargo-ndk picks it up via ANDROID_NDK_HOME or auto-discovery.
+      - 'export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$(ls -1 $ANDROID_HOME/ndk | sort -V | tail -1)"'
+      - ./ci/build-android.sh
+      # gh CLI (Debian-style; image is Ubuntu-based).
+      - 'curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg'
+      - 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null'
+      - sudo apt-get update -qq
+      - sudo apt-get install -qq -y gh
+      - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
+      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
+      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}-android.tar.gz" --clobber'
+      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}-android.checksum" --clobber'
+    environment:
+      GH_TOKEN:
+        from_secret: github_token
+    when:
+      branch: main
+      event: push
+
   # Build a Linux Python wheel of camera-protocol-ffi and attach it to the
   # same sha-<8> release as the xcframework. Primary consumer: client application's
   # test-injection TUI (Python script that constructs Observation values
