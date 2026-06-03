@@ -63,6 +63,10 @@ evidence:
     kind: wire-capture
 
     date: 2026-06-02
+  wirePCSSShootDownload20260523:
+    kind: wire-capture
+
+    date: 2026-06-02
   wireTether:
     kind: wire-capture
     path: tools/protocol-mapper/WIRED_TETHER_CONTROL.md
@@ -187,25 +191,19 @@ operations:
     - activeProbe
   '0x1007':
     name: GetObjectHandles
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
-    - card-reader
-    - raw-conv-backup-restore
-    - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
-    - tether-auto
+    - image-transfer
     connections:
-    - usb
     - wireless-tether
     requires: null
     evidence:
-    - activeProbe
+    - wirePCSSShootDownload20260523
   '0x1008':
     name: GetObjectInfo
     owner: standard-ptp
@@ -220,24 +218,30 @@ operations:
     connections:
     - app
     - usb
+    - wireless-tether
     requires: null
     evidence:
     - docImageTransfer
     - staticRawStudio
+    - wirePCSSShootDownload20260523
   '0x1009':
-    name: GetBackupSettings
+    name: GetObject
     owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
-    modes: []
+    modes:
+    - image-transfer
+    - raw-conv-backup-restore
     connections:
     - usb
+    - wireless-tether
     requires: null
     evidence:
     - staticRawStudio
+    - wirePCSSShootDownload20260523
   '0x100a':
     name: GetThumb
     owner: standard-ptp
@@ -250,30 +254,26 @@ operations:
     - image-transfer
     connections:
     - app
+    - wireless-tether
     requires: null
     evidence:
     - docImageTransfer
+    - wirePCSSShootDownload20260523
   '0x100b':
     name: DeleteObject
-    owner: ''
+    owner: standard-ptp
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
-    - card-reader
-    - raw-conv-backup-restore
-    - shooting/stills
-    - shooting/stills/pc-priority
-    - shooting/video
-    - tether-auto
+    - image-transfer
     connections:
-    - usb
     - wireless-tether
     requires: null
     evidence:
-    - activeProbe
+    - wirePCSSShootDownload20260523
   '0x100c':
     name: SetBackupSettingsInfo
     owner: standard-ptp
@@ -1018,6 +1018,7 @@ properties:
     labels: {}
     evidence:
     - wireTether
+    - wirePCSSShootDownload20260523
   '0x5010':
     name: exposureBias
     ptpName: ExposureBiasCompensation
@@ -1648,10 +1649,11 @@ properties:
     evidence:
     - activeProbe
   '0xd039':
-    name: raw_0xd039
+    name: pcssVirtualShutter
     ptpName: null
     type: u32
     access: readWrite
+    kind: scaffold
     descriptor:
       form: enum
       values:
@@ -1679,7 +1681,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - wirePCSSShootDownload20260523
   '0xd040':
     name: raw_0xd040
     ptpName: null
@@ -2797,10 +2799,11 @@ properties:
     evidence:
     - activeProbe
   '0xd207':
-    name: raw_0xd207
+    name: pcssKeepalive207
     ptpName: null
     type: u16
     access: readWrite
+    kind: scaffold
     descriptor:
       form: enum
       values:
@@ -2810,7 +2813,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - wirePCSSShootDownload20260523
   '0xd208':
     name: raw_0xd208
     ptpName: null
@@ -2977,10 +2980,11 @@ properties:
     evidence:
     - activeProbe
   '0xd21c':
-    name: raw_0xd21c
+    name: pcssKeepalive21c
     ptpName: null
     type: u16
     access: readWrite
+    kind: scaffold
     descriptor:
       form: enum
       values:
@@ -2989,7 +2993,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - wirePCSSShootDownload20260523
   '0xd21d':
     name: raw_0xd21d
     ptpName: null
@@ -6234,6 +6238,9 @@ connections:
       autoDiscoverable: false
     evidence:
     - wireTether
+    initRetries:
+      max: 3
+      backoffMs: 250
     knock:
       callbackPort: 51560
       knockPort: 51562

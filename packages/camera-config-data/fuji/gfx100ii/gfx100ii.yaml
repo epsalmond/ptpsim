@@ -31,6 +31,11 @@ evidence:
   # reference app Take↔Get session-reopen wire trace (full byte trace + identity decode).
   # Source for the `reopenSession` step in the `app` → image-transfer entry.
 
+  # 14.9-min Hyper-Utility shoot-while-download capture on PCSS/15740. Wire-confirms
+  # the 3-beat D039+0x100E shutter verb, the 0x1007/8/A/9/B transfer triad,
+  # 0x500F ISO encoding (signed -1/-2 sentinels), and event-less command socket.
+
+
   docXlv:          { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
   captureXlv:      { kind: wire-capture, path: "tools/protocol-mapper/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
 
@@ -157,20 +162,34 @@ connections:
     # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
     # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference app's 82-byte init).
     knock: { callbackPort: 51560, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0" }
+    # InitCmdReq retry tolerance: PCSS may emit 0-3 InitFail packets before
+    # InitCmdAck. Hyper-Utility waits ~250ms between retries; the engine should
+    # accept up to 3 retries before treating the handshake as failed
+    # (wirePCSSShootDownload20260523).
+    initRetries: { max: 3, backoffMs: 250 }
     discovery: { mechanism: pcss-knock, announces: none, autoDiscoverable: false }  # app needs the camera's LAN address
     # remote-trigger here is the SAME mode node as over BLE — transport-independent (its
     # PTP/IP form can also push images to the camera; per-connection capability TODO).
     modes: [shooting/stills, remote-trigger]
     # Wire-confirmed NOT-supported on this connection (per the 05-27 capability snapshot
-    # `wireTetherCaps20260527` + D3-wire 2026-06-02 reply). Don't author entries that
+    # `wireTetherCaps20260527` + D3-wire 2026-06-02 replies). Don't author entries that
     # rely on these — the camera will reject them:
     #   - 0x9022 (post-shutter cleanup):  reference app-only; do NOT pair with 0x100E here.
     #   - 0x101b (GetPartialObject):      not advertised — whole-object only via 0x1009.
     #   - 0xDF01 (FunctionMode):          PCSS enters transfer-mode implicitly; no flip.
     #   - 0x9050/0x9053/0x9054/0x9055:    reference app mode-20 vendor block; not used on PCSS.
-    # Operation-table gating reflects this (each op's `connections:` allowlist).
-    # Capture flow + image-transfer + stills↔video flip are PENDING a wire capture
-    # (D3-wire option 2). Until then `entries:` stays empty for this connection.
+    #   - Event socket (command socket only): 0 events delivered across 184s/34k
+    #     frames of active shooting — confirms PCSS is event-less mid-shoot.
+    # Wire-confirmed SUPPORTED (wirePCSSShootDownload20260523):
+    #   - Capture: 3-beat `setProp 0xD039` + `0x100E InitiateCapture(0,0)` cycle
+    #     (phase values 0x00010000 / 0x00020000 / 0x00000001). 0xD039 is a virtual
+    #     shutter state machine; see properties.0xd039 (kind: scaffold).
+    #   - Transfer: 0x1007(0xFFFFFFFF, 0) → 0x1008(handle) → 0x100A(handle, optional)
+    #     → 0x1009(handle, whole-object) → 0x100B(handle, optional delete) → re-1007.
+    #   - ISO: 0x500F (signed INT32 with -1/-2 auto sentinels), NOT 0xD02A.
+    # The verb-shape for the capture + transfer sequences is pending the schema
+    # decision in `docs/plans/action-verbs.md` — entries: stays empty until that
+    # lands. Still open: 0xD037 stills↔video flip transition capture (Q3).
     evidence: [wireTether]
 
   xlv:
@@ -226,8 +245,14 @@ workflows:
 operations:
   "0x1002": { name: OpenSession,          owner: standard-ptp, connections: [app], evidence: [iosStartupSeq] }
   "0x1003": { name: CloseSession,         owner: standard-ptp, connections: [app], evidence: [iosStartupSeq] }
-  "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, raw-conv-backup-restore], connections: [app, usb], evidence: [docImageTransfer, staticRawStudio] }
-  "0x100a": { name: GetThumb,             owner: standard-ptp, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
+  # PCSS image-transfer triad (wireless-tether). Hyper-Utility's actual download path,
+  # wire-confirmed: 0x1007(0xFFFFFFFF, 0) → 0x1008(handle) → 0x100A(handle, optional)
+  # → 0x1009(handle) → 0x100B(handle, optional delete). No 0x101B chunking; whole
+  # objects only on this connection. Evidence: wirePCSSShootDownload20260523.
+  "0x1007": { name: GetObjectHandles,     owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
+  "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, raw-conv-backup-restore], connections: [app, usb, wireless-tether], evidence: [docImageTransfer, staticRawStudio, wirePCSSShootDownload20260523] }
+  "0x100a": { name: GetThumb,             owner: standard-ptp, modes: [image-transfer], connections: [app, wireless-tether], evidence: [docImageTransfer, wirePCSSShootDownload20260523] }
+  "0x100b": { name: DeleteObject,         owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
   # 0x100e is advertised by wireless-tether (PCSS/15740) too — see the 05-27 capability
   # snapshot. The actual shutter cycle on that connection (params, completion signal,
   # whether 0x9022 fires) is not yet wire-captured; authorizing the op here unblocks
@@ -256,7 +281,11 @@ operations:
   "0x900d": { name: SendRawFromPcObject,     owner: fuji-vendor, modes: [raw-conv-backup-restore], connections: [usb], evidence: [staticRawStudio] }
   "0x100c": { name: SetBackupSettingsInfo,   owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }   # backup: all modes
   "0x100d": { name: SetBackupSettings,       owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }
-  "0x1009": { name: GetBackupSettings,       owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }
+  # 0x1009 is standard PTP GetObject. On USB in raw-conv-backup-restore mode the same
+
+  # wireless-tether in image-transfer it returns the whole image. Same op, mode-
+  # dependent payload semantics.
+  "0x1009": { name: GetObject,               owner: standard-ptp, modes: [image-transfer, raw-conv-backup-restore], connections: [usb, wireless-tether], evidence: [staticRawStudio, wirePCSSShootDownload20260523] }
   # WirelessTether live-view = vendor 0x9018 (vs the App connection's 0x101c+GetObject).
   "0x9018": { name: SdkGetLiveViewData,      owner: fuji-vendor,  modes: [shooting/stills], connections: [wireless-tether], evidence: [wireTether] }
 
@@ -296,11 +325,30 @@ properties:
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u32, access: readWrite,
               controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
+  # PCSS ISO is the standard PTP ExposureIndex, NOT the reference app 0xD02A path. Encoding is
+  # SIGNED: positive = literal ISO; `-1` (0xffffffff) = auto; `-2` (0xfffffffe) = auto
+  # with one modifier (Hyper-Utility wire trace shows both — semantics TBD). u32
+  # storage on the wire; the app interprets the bit pattern as signed.
   "0x500f": { name: iso, ptpName: ExposureIndex, type: u32, access: readWrite,
-              controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # literal ISO; 0xffffffff/-2 = auto
+              controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether, wirePCSSShootDownload20260523] }
   "0x500d": { name: shutterSpeed, ptpName: ExposureTime, type: u32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # microseconds
   "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [iosLiveControls, wireTether] }   # PASM / body dial
+
+  # ------------------------------------------------------------------------------
+  # PROTOCOL SCAFFOLDING — these props look like settings (RW, accept arbitrary
+  # writes) but their semantics are wire-protocol mechanics, NOT user-facing
+  # values. Do NOT surface them in app settings UI; do NOT let a generic
+  # set-prop-by-name path reach them. They live in the manifest only so the
+  # capture-verb / keepalive sequences can reference their codes by name.
+  # Evidence: wirePCSSShootDownload20260523 (D3-wire 06-02 follow-up).
+  # ------------------------------------------------------------------------------
+  "0xd039": { name: pcssVirtualShutter, type: u32, access: readWrite, kind: scaffold,
+              evidence: [wirePCSSShootDownload20260523] }   # 3-beat state machine paired with 0x100E on wireless-tether
+  "0xd21c": { name: pcssKeepalive21c,   type: u16, access: readWrite, kind: scaffold,
+              evidence: [wirePCSSShootDownload20260523] }   # tethered-mode keepalive; write 0 every ~30-200ms
+  "0xd207": { name: pcssKeepalive207,   type: u16, access: readWrite, kind: scaffold,
+              evidence: [wirePCSSShootDownload20260523] }   # tethered-mode keepalive; write 1, paired with D21C
 
 quirks:
   - id: pcss-knock-once-per-boot
