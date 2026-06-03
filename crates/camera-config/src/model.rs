@@ -360,21 +360,70 @@ pub enum ActionVerb {
 /// Declared side-effects an `Action` produces — the app reads `Action.triggers`
 /// to plan UX (register receive handlers, show progress, etc.) without
 /// connection-specific knowledge. Engine does NOT act on this; pure
-/// declaration. Closed vocabulary; new effects require a schema PR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ActionEffect {
-    /// Camera auto-pushes the captured image to the tether endpoint after
-    /// `Shutter` (PCSS-tether). Receiver must be wired up before invoking
-    /// the action.
-    ImagePushed,
+/// declaration.
+///
+/// Closed vocabulary: exactly one variant field is set per `ActionEffect`,
+/// and unknown fields fail to parse (`deny_unknown_fields`). Same shape as
+/// `Step` (one-action-per-mapping) so YAML stays uniform across the
+/// manifest. Adding a new effect requires a schema PR (new `Option` field
+/// + variant struct).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActionEffect {
+    /// Camera auto-pushes between `min` and `max` captured images to the
+    /// tether endpoint after `Shutter`. Cardinality is intrinsically variable:
+    /// PCSS tether produces 1-3 per press depending on the user's
+    /// JPEG / HEIF / RAW format selection; burst and bracket modes raise
+    /// the max further. The app reads `max` as the upper bound for its
+    /// receive timeout / progress UI, and may early-exit when it knows
+    /// the exact count from its own format-selection state. Receiver
+    /// MUST be wired up before invoking the action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images_pushed: Option<ImagesPushed>,
     /// Camera emits a postview / capture-complete event after `Shutter`
-    /// (reference app `app` path: `0x9022` cleanup once `0xD212` clears).
-    PostviewEvent,
+    /// (reference app `app` path: `0x9022` cleanup once `0xD212` clears). YAML body
+    /// is the empty mapping: `postviewEvent: {}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub postview_event: Option<PostviewEvent>,
     /// Continuous frame delivery starts (e.g. live-view through-stream on the
-    /// `app` connection after `0x101C InitiateOpenCapture`).
-    LiveViewStream,
+    /// `app` connection after `0x101C InitiateOpenCapture`). YAML body is
+    /// the empty mapping: `liveViewStream: {}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_view_stream: Option<LiveViewStream>,
 }
+
+impl ActionEffect {
+    /// Whether exactly one variant field is set (structural lint, like
+    /// `Step::is_well_formed`).
+    pub fn is_well_formed(&self) -> bool {
+        let n = [
+            self.images_pushed.is_some(),
+            self.postview_event.is_some(),
+            self.live_view_stream.is_some(),
+        ]
+        .into_iter()
+        .filter(|b| *b)
+        .count();
+        n == 1
+    }
+}
+
+/// Parameters for the `ImagesPushed` effect: bounded count of images the
+/// camera will spontaneously send after `Shutter`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagesPushed {
+    pub min: u32,
+    pub max: u32,
+}
+
+/// Marker for the `PostviewEvent` effect (no fields).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostviewEvent {}
+
+/// Marker for the `LiveViewStream` effect (no fields).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveViewStream {}
 
 /// A parameterized recipe runnable within a mode. Step sequence is the same
 /// `Step` grammar as `ModeEntry.steps`; `params` declares runtime slots the

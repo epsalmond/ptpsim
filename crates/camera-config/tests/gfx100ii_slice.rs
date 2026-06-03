@@ -3,7 +3,7 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    ActionEffect, ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, PropView,
+    ActionVerb, CameraManifest, ConfigStore, ImagesPushed, ManufacturerDefaults, PropView,
     StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
@@ -260,7 +260,16 @@ fn wireless_tether_shutter_action_is_the_3_beat_pcss_sequence() {
             vec![StepParam::Literal(0), StepParam::Literal(0)]
         );
     }
-    assert_eq!(shutter.triggers, vec![ActionEffect::ImagePushed]);
+    // PCSS tether produces 1-3 images per press depending on the user's
+    // JPEG / HEIF / RAW format selection — the manifest declares the bounded
+    // range so the app sets receive timeouts + progress UI without knowing
+    // which formats are selected.
+    assert_eq!(shutter.triggers.len(), 1);
+    let t = &shutter.triggers[0];
+    assert!(t.is_well_formed());
+    assert_eq!(t.images_pushed, Some(ImagesPushed { min: 1, max: 3 }));
+    assert!(t.postview_event.is_none());
+    assert!(t.live_view_stream.is_none());
 }
 
 #[test]

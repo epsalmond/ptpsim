@@ -200,7 +200,14 @@ connections:
           - { sendOp:  "0x100e", params: [0, 0] }
           - { setProp: "0xd039", value: 0x00000001 }
           - { sendOp:  "0x100e", params: [0, 0] }
-        triggers: [imagePushed]
+        # User's format selection (JPEG / HEIF / RAW) determines how many of
+        # the three the camera pushes per press — 1 to 3 images. The app
+        # already knows its own selection state and can predict the exact
+        # count; the manifest declares the bounded range so a generic
+        # receiver can budget timeouts + progress UI without app-side
+        # knowledge of which formats are selected.
+        triggers:
+          - imagesPushed: { min: 1, max: 3 }
         evidence: [wirePCSSShootDownload20260523]
       # Standard PTP enumeration. Returns a u32 count + u32 handle list. Client
       # iterates the result and calls getObjectInfo / getThumb / getObject /

@@ -124,7 +124,8 @@ connections:
           - { sendOp:  "0x100e", params: [0, 0] }
           - { setProp: "0xd039", value: 0x00000001 }
           - { sendOp:  "0x100e", params: [0, 0] }
-        triggers: [imagePushed]     # camera auto-sends image after shutter on PCSS
+        triggers:                   # 1-3 images per press (JPEG / HEIF / RAW)
+          - imagesPushed: { min: 1, max: 3 }
       enumerateObjects:
         mode: image-transfer
         steps:
@@ -187,8 +188,12 @@ name.
    - `pub enum ActionVerb { Shutter, EnumerateObjects, GetObjectInfo, GetThumb,
      GetObject, DeleteObject }` — **closed vocabulary**. New verbs require a
      schema PR (same fail-fast as Step verbs).
-   - `pub enum ActionEffect { ImagePushed, PostviewEvent, LiveViewStream }` —
-     declared side-effects, also closed.
+   - `pub struct ActionEffect` — flat struct mirroring the `Step` pattern
+     (one optional field per variant, `deny_unknown_fields`). Fields:
+     `images_pushed: Option<ImagesPushed { min: u32, max: u32 }>` (PCSS
+     1-3 / burst-mode-N), `postview_event: Option<PostviewEvent>` (reference app
+     0x9022 cleanup), `live_view_stream: Option<LiveViewStream>`.
+     `is_well_formed()` asserts exactly one variant per effect.
    - `pub struct Action { mode: String, params: Vec<String>, steps: Vec<Step>,
      triggers: Vec<ActionEffect>, evidence: Vec<String> }`.
    - `Connection.actions: BTreeMap<ActionVerb, Action>` (defaulted empty).
@@ -197,8 +202,9 @@ name.
 2. **Data (`packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml`)**:
    - `wireless-tether.actions.{shutter, enumerateObjects, getObjectInfo,
      getThumb, getObject, deleteObject}` per the wire-confirmed D3 sequences.
-   - `shutter.triggers: [imagePushed]` on wireless-tether — camera auto-pushes
-     the image to the tether endpoint after capture.
+   - `shutter.triggers: [{ imagesPushed: { min: 1, max: 3 } }]` on
+     wireless-tether — camera auto-pushes 1-3 images depending on the
+     user's JPEG / HEIF / RAW format selection.
 3. **Tests**: assert the 3-beat shutter values, the runtime-`handle` binding
    in `getObject`, `triggers: [imagePushed]` on the PCSS shutter, and that
    `action(wireless-tether, Shutter)` resolves.
@@ -244,8 +250,8 @@ for the client to plan UX:
 
 | connection | `Shutter.triggers` | app behavior |
 |---|---|---|
-| `wireless-tether` | `[ImagePushed]` | register the receive callback before calling `Shutter` |
-| `app` | `[PostviewEvent]` (when modeled) | wait for the event then prompt user to switch to Get |
+| `wireless-tether` | `[{ imagesPushed: { min: 1, max: 3 } }]` | register the receive callback before calling `Shutter`; budget receive timeout / progress UI for up to `max` arrivals; early-exit when the app's own format-selection state predicts the exact count |
+| `app` | `[{ postviewEvent: {} }]` (when modeled) | wait for the event then prompt user to switch to Get |
 | `ble` (remote-trigger, when modeled) | `[]` | fire and forget |
 
 This is *not* control flow in the engine sense. It's a **Recipe** — same
