@@ -63,6 +63,8 @@ require rustup
 require xcodebuild
 require lipo
 require tar
+require zip
+require shasum
 
 # Verify all four targets are installed before building any of them — a
 # missing target only fails partway through and wastes minutes.
@@ -146,9 +148,20 @@ xcodebuild -create-xcframework \
 DIST_DIR="${OUT_DIR}/dist"
 mkdir -p "${DIST_DIR}"
 TARBALL="${DIST_DIR}/${XCF_NAME}-${SHA8}.tar.gz"
+ZIP="${DIST_DIR}/${XCF_NAME}-${SHA8}.xcframework.zip"
+CHECKSUM="${DIST_DIR}/${XCF_NAME}-${SHA8}.checksum"
 
 echo "==> Tarball ${TARBALL}"
 tar -czf "${TARBALL}" -C "${XCF_DIR}" "${XCF_NAME}.xcframework"
+
+# SPM's binaryTarget(url:, checksum:) requires .zip, not .tar.gz, with a
+# SHA-256 hex of the zip file. Ship both so existing consumers of the
+# tarball aren't broken, and SPM-via-binaryTarget consumers get the zip.
+echo "==> Zip ${ZIP}"
+(cd "${XCF_DIR}" && zip -qry "${ZIP}" "${XCF_NAME}.xcframework")
+
+echo "==> Checksum ${CHECKSUM}"
+shasum -a 256 "${ZIP}" | awk '{print $1}' > "${CHECKSUM}"
 
 # ---------------------------------------------------------------------------
 # Done
@@ -158,6 +171,8 @@ echo
 echo "Build complete:"
 echo "  xcframework: ${XCF_DIR}/${XCF_NAME}.xcframework"
 echo "  tarball:     ${TARBALL}"
+echo "  zip:         ${ZIP}"
+echo "  checksum:    ${CHECKSUM} ($(cat "${CHECKSUM}"))"
 echo "  swift dir:   ${SWIFT_DIR}"
 echo
-du -sh "${XCF_DIR}/${XCF_NAME}.xcframework" "${TARBALL}" 2>/dev/null || true
+du -sh "${XCF_DIR}/${XCF_NAME}.xcframework" "${TARBALL}" "${ZIP}" 2>/dev/null || true

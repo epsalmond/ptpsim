@@ -19,13 +19,21 @@ steps:
     image: bash
     commands:
       - ./ci/build-xcframework.sh
-      # Tarball lands at out/dist/CameraProtocolFFI-<sha8>.tar.gz.
-      # Publish as a GitHub release attached to the commit SHA tag. The
-      # tag is created on demand by `gh release create`; `--clobber` makes
-      # the upload idempotent on retries.
+      # Artifacts land at out/dist/CameraProtocolFFI-<sha8>.{tar.gz, xcframework.zip, checksum}.
+      # Publish all three to a GitHub release attached to the commit SHA tag:
+      #   - tar.gz: legacy fetchers (curl + tar -xzf workflow)
+      #   - xcframework.zip: SPM `binaryTarget(url:, checksum:)` consumers
+      #   - checksum: SHA-256 hex of the zip, lets consumers fill the SPM
+      #     `checksum:` field without re-computing locally
+      # Tag is created on demand by `gh release create`; `--clobber` makes
+      # each upload idempotent on retries. `--generate-notes` replaces the
+      # prior literal "Auto-built artifacts." with a commits-since-last-tag
+      # changelog GitHub generates from the PR + commit titles.
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
-      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
+      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --generate-notes'
       - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.tar.gz" --clobber'
+      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.xcframework.zip" --clobber'
+      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.checksum" --clobber'
     environment:
       # Woodpecker's local backend doesn't pass the agent's HOME/RUSTUP_HOME/
       # CARGO_HOME through to the step subprocess; it sets PATH and
