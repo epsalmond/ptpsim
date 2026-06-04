@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use camera_config::CameraManifest;
-use camera_media_store::MediaStore;
+use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::{Engine, FrameSource, LoopingFrameSource, Phase, Reply};
 use protocol_primitives::fuji_framing;
 use ptp_core::codes::op;
@@ -322,7 +322,7 @@ async fn handle_command_conn(
             continue;
         };
         let data_in = if has_data_in(req.code) {
-            collect_data_in(&mut stream).await?
+            collect_data_in(&mut stream, req.transaction_id).await?
         } else {
             None
         };
@@ -335,25 +335,104 @@ async fn handle_command_conn(
     Ok(())
 }
 
-/// Collect a StartData/(Data*)/EndData sequence into the data-in payload.
-async fn collect_data_in(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
-    let mut data = Vec::new();
+/// Absolute ceiling on an initiator data-in payload. Realistic data-in is a
+/// single property value (≤ 8 bytes for scalars, short strings) so 1 MiB is
+/// generous. A larger declared `total_length` is rejected outright rather than
+/// trusted, so a client cannot use the data-in channel for unbounded growth.
+const MAX_DATA_IN_BYTES: u64 = 1024 * 1024;
+
+fn data_in_err<S: Into<String>>(msg: S) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into())
+}
+
+/// Collect a StartData/(Data*)/EndData sequence into the data-in payload. The
+/// `StartData.total_length` field is the trustable bound: we refuse anything
+/// over [`MAX_DATA_IN_BYTES`], reject payload that overflows the declared
+/// total, and require `EndData` to land exactly on it. Frames must all carry
+/// `tid`; a transaction-id mismatch is treated as a protocol error.
+async fn collect_data_in(stream: &mut TcpStream, tid: u32) -> std::io::Result<Option<Vec<u8>>> {
+    let Some(first) = read_frame(stream).await? else {
+        return Err(data_in_err("data-in: stream closed before StartData"));
+    };
+    let declared = match fuji_framing::decode(&first) {
+        Ok(PtpIpPacket::StartData(p)) => {
+            if p.transaction_id != tid {
+                return Err(data_in_err(format!(
+                    "data-in: StartData tid {} != request tid {}",
+                    p.transaction_id, tid
+                )));
+            }
+            p.total_length
+        }
+        Ok(other) => {
+            return Err(data_in_err(format!(
+                "data-in: expected StartData, got {other:?}"
+            )));
+        }
+        Err(e) => return Err(data_in_err(format!("data-in: decode failed: {e}"))),
+    };
+    if declared > MAX_DATA_IN_BYTES {
+        return Err(data_in_err(format!(
+            "data-in: declared total_length {declared} exceeds cap {MAX_DATA_IN_BYTES}"
+        )));
+    }
+    let mut data: Vec<u8> = Vec::with_capacity(declared as usize);
     loop {
         let Some(frame) = read_frame(stream).await? else {
-            break;
+            return Err(data_in_err("data-in: stream closed before EndData"));
         };
-        match fuji_framing::decode(&frame) {
-            Ok(PtpIpPacket::StartData(_)) => {}
-            Ok(PtpIpPacket::Data(d)) => data.extend_from_slice(&d.payload),
-            Ok(PtpIpPacket::EndData(d)) => {
+        let packet = fuji_framing::decode(&frame)
+            .map_err(|e| data_in_err(format!("data-in: decode failed: {e}")))?;
+        match packet {
+            PtpIpPacket::Data(d) => {
+                if d.transaction_id != tid {
+                    return Err(data_in_err(format!(
+                        "data-in: Data tid {} != request tid {}",
+                        d.transaction_id, tid
+                    )));
+                }
+                if data.len() as u64 + d.payload.len() as u64 > declared {
+                    return Err(data_in_err(
+                        "data-in: payload exceeds declared total_length",
+                    ));
+                }
                 data.extend_from_slice(&d.payload);
+            }
+            PtpIpPacket::EndData(d) => {
+                if d.transaction_id != tid {
+                    return Err(data_in_err(format!(
+                        "data-in: EndData tid {} != request tid {}",
+                        d.transaction_id, tid
+                    )));
+                }
+                if data.len() as u64 + d.payload.len() as u64 > declared {
+                    return Err(data_in_err(
+                        "data-in: payload exceeds declared total_length",
+                    ));
+                }
+                data.extend_from_slice(&d.payload);
+                if data.len() as u64 != declared {
+                    return Err(data_in_err(format!(
+                        "data-in: declared {declared}, received {}",
+                        data.len()
+                    )));
+                }
                 break;
             }
-            _ => break,
+            other => {
+                return Err(data_in_err(format!(
+                    "data-in: unexpected packet during data phase: {other:?}"
+                )));
+            }
         }
     }
     Ok(Some(data))
 }
+
+/// Bound for one streamed data-phase chunk. 1 MiB keeps the wire packet count
+/// reasonable for multi-GB downloads while capping per-frame allocation per
+/// DESIGN.md ("File downloads use bounded chunk buffers").
+const DATA_CHUNK_BYTES: usize = 1024 * 1024;
 
 async fn write_reply(
     stream: &mut TcpStream,
@@ -390,7 +469,67 @@ async fn write_reply(
                 )
                 .await?;
         }
+        Reply::DataStream { source, response } => {
+            stream_data_phase(stream, req.transaction_id, &source).await?;
+            stream
+                .write_all(
+                    &fuji_framing::encode(&PtpIpPacket::OperationResponse(response))
+                        .map_err(to_io)?,
+                )
+                .await?;
+        }
         Reply::Close => {}
+    }
+    Ok(())
+}
+
+/// Emit a StartData + N×Data + EndData sequence by reading `source` one chunk
+/// at a time. The peak in-process allocation is bounded by `DATA_CHUNK_BYTES`
+/// regardless of `source.len()`, so a multi-GB object never lands in memory.
+async fn stream_data_phase(
+    stream: &mut TcpStream,
+    transaction_id: u32,
+    source: &ByteSource,
+) -> std::io::Result<()> {
+    let total_length = source.len();
+    stream
+        .write_all(
+            &fuji_framing::encode(&PtpIpPacket::StartData(ptp_core::StartData {
+                transaction_id,
+                total_length,
+            }))
+            .map_err(to_io)?,
+        )
+        .await?;
+
+    // Last chunk goes in EndData; everything before it in Data. Empty sources
+    // get a zero-byte EndData (mirrors the prior single-EndData flow).
+    let mut offset: u64 = 0;
+    loop {
+        let remaining = total_length.saturating_sub(offset);
+        let take = (remaining as usize).min(DATA_CHUNK_BYTES);
+        let is_last = remaining as usize == take;
+        let chunk = source
+            .read_chunk(offset, take)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        offset += chunk.len() as u64;
+        let pkt = if is_last {
+            PtpIpPacket::EndData(ptp_core::DataBlock {
+                transaction_id,
+                payload: chunk,
+            })
+        } else {
+            PtpIpPacket::Data(ptp_core::DataBlock {
+                transaction_id,
+                payload: chunk,
+            })
+        };
+        stream
+            .write_all(&fuji_framing::encode(&pkt).map_err(to_io)?)
+            .await?;
+        if is_last {
+            break;
+        }
     }
     Ok(())
 }

@@ -4,7 +4,7 @@
 //! are all manifest data. The handlers here are generic PTP semantics.
 
 use camera_config::{parse_hex_code, CameraManifest};
-use camera_media_store::{MediaStore, ObjectQuery};
+use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
 use ptp_core::{DeviceInfo, OperationRequest, OperationResponse, Reader, Writer};
@@ -17,12 +17,19 @@ use crate::state::{
 const STORAGE_ID: u32 = 0x0001_0001;
 
 /// The engine's answer to one operation: a bare response, a data phase plus
-/// response, or a directive to close the connection.
+/// response, or a directive to close the connection. `Data` carries a small
+/// synthesized payload (device info, prop values); `DataStream` carries an
+/// object body the service writes in bounded chunks so a multi-GB file never
+/// lands in memory (DESIGN.md: "File downloads use bounded chunk buffers").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Response(OperationResponse),
     Data {
         data: Vec<u8>,
+        response: OperationResponse,
+    },
+    DataStream {
+        source: ByteSource,
         response: OperationResponse,
     },
     Close,
@@ -100,6 +107,17 @@ impl Engine {
         }
     }
 
+    fn data_stream(tid: u32, source: ByteSource) -> Reply {
+        Reply::DataStream {
+            source,
+            response: OperationResponse {
+                code: resp::OK,
+                transaction_id: tid,
+                params: vec![],
+            },
+        }
+    }
+
     /// Handle one operation. `data_in` carries an initiator data phase (e.g. the
     /// value for `SetDevicePropValue`).
     pub fn on_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) -> Reply {
@@ -155,25 +173,23 @@ impl Engine {
                 }
                 Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
             },
-            op::GET_THUMB => match self.store.thumbnail(p(0)).and_then(|s| s.read()) {
-                Ok(bytes) => Self::data(tid, bytes),
+            op::GET_THUMB => match self.store.thumbnail(p(0)) {
+                Ok(source) => Self::data_stream(tid, source),
                 Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
             },
-            op::GET_PARTIAL_OBJECT => {
-                match self
-                    .store
-                    .read_range(p(0), p(1) as u64, p(2))
-                    .and_then(|s| s.read())
-                {
-                    Ok(bytes) => Self::data(tid, bytes),
-                    Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
-                }
-            }
+            op::GET_PARTIAL_OBJECT => match self.store.read_range(p(0), p(1) as u64, p(2)) {
+                Ok(source) => Self::data_stream(tid, source),
+                Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
+            },
             op::GET_OBJECT => {
+                // The PTP `ObjectInfo` size field is 32-bit (`SIZE_CEILING`);
+                // objects ≥ 4 GiB are memory-card-only on the wire. We clamp at
+                // the ceiling and stream chunks, so the request never allocates
+                // a multi-GB buffer even on the boundary case.
                 let size = self.store.object_size(p(0)).unwrap_or(0);
-                let len = size.min(u32::MAX as u64) as u32;
-                match self.store.read_range(p(0), 0, len).and_then(|s| s.read()) {
-                    Ok(bytes) => Self::data(tid, bytes),
+                let len = size.min(SIZE_CEILING) as u32;
+                match self.store.read_range(p(0), 0, len) {
+                    Ok(source) => Self::data_stream(tid, source),
                     Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
                 }
             }
