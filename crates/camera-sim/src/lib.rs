@@ -112,6 +112,10 @@ properties:
                 assert_eq!(response.code, 0x2001, "data reply should carry OK");
                 data
             }
+            Reply::DataStream { source, response } => {
+                assert_eq!(response.code, 0x2001, "data-stream reply should carry OK");
+                source.read().expect("realize stream for assertion")
+            }
             other => panic!("expected data reply, got {other:?}"),
         }
     }
@@ -256,7 +260,7 @@ properties:
         e.clear_faults();
         assert!(matches!(
             e.on_operation(&op(0x1007, 4, vec![]), None),
-            Reply::Data { .. }
+            Reply::Data { .. } | Reply::DataStream { .. }
         ));
         std::fs::remove_dir_all(&root).ok();
     }

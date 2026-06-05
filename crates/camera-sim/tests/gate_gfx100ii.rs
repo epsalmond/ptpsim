@@ -43,6 +43,7 @@ fn assert_ok(reply: &Reply) {
     match reply {
         Reply::Response(r) => assert_eq!(r.code, 0x2001, "expected OK"),
         Reply::Data { response, .. } => assert_eq!(response.code, 0x2001, "expected OK"),
+        Reply::DataStream { response, .. } => assert_eq!(response.code, 0x2001, "expected OK"),
         Reply::Close => panic!("unexpected Close"),
     }
 }
@@ -52,6 +53,10 @@ fn data_of(reply: Reply) -> Vec<u8> {
         Reply::Data { data, response } => {
             assert_eq!(response.code, 0x2001, "OK expected");
             data
+        }
+        Reply::DataStream { source, response } => {
+            assert_eq!(response.code, 0x2001, "OK expected");
+            source.read().expect("realize stream")
         }
         other => panic!("expected Data, got {other:?}"),
     }

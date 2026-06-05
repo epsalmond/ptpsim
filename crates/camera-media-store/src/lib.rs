@@ -74,7 +74,9 @@ impl ByteSource {
     }
 
     /// Realize the bytes. For `FileRange`, reads exactly the window via seek —
-    /// allocating only `len` bytes regardless of the file's total size.
+    /// allocating only `len` bytes regardless of the file's total size. Callers
+    /// that hand the source to a streaming writer should prefer `read_chunk` so
+    /// no single allocation exceeds one chunk.
     pub fn read(&self) -> Result<Vec<u8>, MediaError> {
         match self {
             ByteSource::Memory(b) => Ok(b.clone()),
@@ -87,6 +89,35 @@ impl ByteSource {
                 Ok(buf)
             }
             ByteSource::Generated { len, seed } => Ok((0..*len)
+                .map(|i| (i.wrapping_mul(2654435761).wrapping_add(*seed)) as u8)
+                .collect()),
+        }
+    }
+
+    /// Read at most `max` bytes starting `chunk_offset` into the source. Returns
+    /// `Ok(Vec::new())` when `chunk_offset >= self.len()`. The allocation is
+    /// bounded by `max`, never by the source's total length — so a multi-GB
+    /// `FileRange` streams without ever materializing the whole window.
+    pub fn read_chunk(&self, chunk_offset: u64, max: usize) -> Result<Vec<u8>, MediaError> {
+        let total = self.len();
+        if chunk_offset >= total || max == 0 {
+            return Ok(Vec::new());
+        }
+        let want = ((total - chunk_offset).min(max as u64)) as usize;
+        match self {
+            ByteSource::Memory(b) => {
+                let start = chunk_offset as usize;
+                Ok(b[start..start + want].to_vec())
+            }
+            ByteSource::FileRange { path, offset, .. } => {
+                let mut f = File::open(path)?;
+                f.seek(SeekFrom::Start(*offset + chunk_offset))?;
+                let mut buf = vec![0u8; want];
+                let n = read_full(&mut f, &mut buf)?;
+                buf.truncate(n);
+                Ok(buf)
+            }
+            ByteSource::Generated { seed, .. } => Ok((chunk_offset..chunk_offset + want as u64)
                 .map(|i| (i.wrapping_mul(2654435761).wrapping_add(*seed)) as u8)
                 .collect()),
         }
@@ -509,5 +540,51 @@ mod tests {
         assert_eq!(src.len(), 8); // clamped to remaining
         assert_eq!(src.read().unwrap().len(), 8);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn read_chunk_streams_without_realizing_full_window() {
+        let root = tmpdir();
+        let p = root.join("DCIM/100_FUJI/BIG.MOV");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        // 5 GiB sparse file. The whole-window allocation would OOM the test;
+        // streaming should bound the allocation by chunk size.
+        let f = File::create(&p).unwrap();
+        let five_gib = 5u64 * 1024 * 1024 * 1024;
+        f.set_len(five_gib).unwrap();
+        drop(f);
+
+        // FileRange spanning the full file, larger than any sane buffer.
+        let src = ByteSource::FileRange {
+            path: p.clone(),
+            offset: 0,
+            len: five_gib,
+        };
+        // One chunk reads at most `max` bytes regardless of total length.
+        let chunk = src.read_chunk(0, 256 * 1024).unwrap();
+        assert_eq!(chunk.len(), 256 * 1024);
+        // The last chunk is short.
+        let tail = src.read_chunk(five_gib - 100, 256 * 1024).unwrap();
+        assert_eq!(tail.len(), 100);
+        // Past-the-end is empty, not an error.
+        assert!(src.read_chunk(five_gib, 256 * 1024).unwrap().is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn read_chunk_memory_and_generated() {
+        let mem = ByteSource::Memory(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(mem.read_chunk(0, 3).unwrap(), vec![1, 2, 3]);
+        assert_eq!(mem.read_chunk(5, 100).unwrap(), vec![6, 7, 8]);
+        assert!(mem.read_chunk(8, 1).unwrap().is_empty());
+
+        let gen = ByteSource::Generated {
+            len: 1_000_000,
+            seed: 42,
+        };
+        let first = gen.read_chunk(0, 16).unwrap();
+        let again = gen.read_chunk(0, 16).unwrap();
+        assert_eq!(first, again, "seeded generator is deterministic");
+        assert_eq!(first.len(), 16);
     }
 }
