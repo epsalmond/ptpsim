@@ -97,6 +97,12 @@ the camera before each connection attempt.**
 Tool (corrected): `scripts/pcss_discover.py <camera_ip>` — sends the `51562` knock with HOST=our IP,
 then checks whether camera `15740` opened.
 
+> ⚠ **SUPERSEDED 2026-06-05** — wire-confirmed PCSS knock port is **UDP:51562**, not 1900.
+> The "broadcast on UDP:1900" framing below was a binary-string guess; the live capture in the
+> "WIRE-CONFIRMED" section above is ground truth. See `scripts/pcss_listen.py` for the passive
+> listener, `scripts/connect_wireless_tether.py` for the active path, and
+> `protocol_mapper.pcss_frame` for the canonical frame parser shared by both.
+
 ## (SUPERSEDED speculation) discovery protocol guess from the binary — see WIRE-CONFIRMED above
 ## The discovery protocol: Fuji "PCSS/1.0" (PC Shoot Service), SSDP-style over UDP:1900
 

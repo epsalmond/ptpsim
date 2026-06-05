@@ -26,12 +26,21 @@ Exit 0 = OpenSession succeeded (camera under wireless tether control).
 from __future__ import annotations
 
 import argparse
+import json
+import os as _os
 import socket
 import struct
 import sys
 import time
 
 from rce.tools.fuji_ble_gps import ptpip
+
+# Make `protocol_mapper.*` importable when this script is run directly (no PYTHONPATH).
+_here = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+from protocol_mapper.pcss_frame import PCSSFrame, parse_pcss_frame  # noqa: E402
+from protocol_mapper.pcss_fsm import PCSSFSM, PCSSState  # noqa: E402
 
 PCSS_PORT = 51562       # UDP knock destination (camera listens here when ready)
 CALLBACK_PORT = 51560   # TCP port the PC listens on; camera dials back here (hardcoded in binaries)
@@ -78,12 +87,19 @@ def open_callback_listener(port: int) -> socket.socket:
 
 
 def wait_for_callback(srv: socket.socket, cam_ip: str, my_ip: str, retries: int,
-                      interval: float, no_knock: bool):
-    """Knock every <interval>s; return the camera's inbound callback socket when it dials :51560."""
+                      interval: float, no_knock: bool,
+                      fsm: PCSSFSM | None = None):
+    """Knock every <interval>s; return the camera's inbound callback socket when it dials :51560.
+
+    `fsm` (optional) — host-side PCSS FSM mirror; knock_sent / callback_accepted events
+    are fed in here so the timeline is captured in fsm.history.
+    """
     attempts = max(1, retries + 1)
     for i in range(attempts):
         if not no_knock:
             send_knock(cam_ip, my_ip)
+            if fsm is not None:
+                _step_and_flush(fsm, "knock_sent")
         srv.settimeout(interval)
         try:
             conn, addr = srv.accept()
@@ -94,7 +110,10 @@ def wait_for_callback(srv: socket.socket, cam_ip: str, my_ip: str, retries: int,
             print(f"[poll] ignoring callback from {addr[0]} (not the camera)")
             conn.close()
             continue
-        print(f"[ready] camera dialed back from {addr[0]}:{addr[1]} -> our :{CALLBACK_PORT}")
+        if fsm is not None:
+            _step_and_flush(fsm, "callback_accepted")
+        print(f"[ready] camera dialed back from {addr[0]}:{addr[1]} -> our :{CALLBACK_PORT}  "
+              f"fsm={fsm.current.name if fsm else '-'}")
         return conn
     return None
 
@@ -116,25 +135,45 @@ def parse_init_ack(data: bytes) -> dict:
 def handle_notify(conn: socket.socket) -> dict:
     """On the :51560 callback the camera sends a PCSS NOTIFY announcing CAMERANAME and the
     DSCPORT to use for PTP-IP. The PC MUST reply 'HTTP/1.1 200 OK' (else the camera aborts;
-    a 403 would reject). Returns parsed headers incl. 'dscport'."""
+    a 403 would reject).
+
+    Uses `protocol_mapper.pcss_frame.parse_pcss_frame` — single source of truth for PCSS frame
+    parsing, shared with the passive listener. Returns the dscport (defaulted to 15740 if absent)
+    plus the raw PCSSFrame for FSM input and bundle emission.
+    """
     conn.settimeout(3)
     try:
         data = conn.recv(2048)
     except OSError:
         data = b""
-    text = data.decode("latin1")
-    hdrs = {}
-    for line in text.split("\r\n"):
-        if ":" in line:
-            k, _, v = line.partition(":")
-            hdrs[k.strip().upper()] = v.strip()
-    out = {
-        "camera": hdrs.get("CAMERANAME"),
-        "dsc": hdrs.get("DSC"),
-        "dscport": int(hdrs["DSCPORT"]) if hdrs.get("DSCPORT", "").isdigit() else PTP_PORT,
-        "raw": text.split("\r\n", 1)[0],
-    }
-    print(f"[notify] {out['raw']}  CAMERANAME={out['camera']} DSC={out['dsc']} DSCPORT={out['dscport']}")
+
+    try:
+        peer = conn.getpeername()
+        peer_ip, peer_port = peer[0], peer[1]
+    except OSError:
+        peer_ip, peer_port = None, None
+
+    frame: PCSSFrame | None = parse_pcss_frame(data)
+    if frame is None:
+        print(f"[notify] non-PCSS payload ({len(data)}B) — proceeding with defaults")
+        out = {
+            "camera": None, "dsc": None, "dscport": PTP_PORT, "raw": "",
+            "frame": None, "peer_ip": peer_ip, "peer_port": peer_port,
+        }
+    else:
+        out = {
+            "camera": frame.camera_name,
+            "dsc": frame.dsc,
+            "dscport": frame.dsc_port or PTP_PORT,
+            "raw": frame.verb,
+            "frame": frame,
+            "peer_ip": peer_ip,
+            "peer_port": peer_port,
+        }
+        print(f"[notify] {frame.verb}  CAMERANAME={frame.camera_name}  DSC={frame.dsc}  "
+              f"DSCPORT={frame.dsc_port}  (peer={peer_ip}:{peer_port})")
+        _observe_pcss_frame(frame, peer_ip=peer_ip, peer_port=peer_port)
+
     try:
         conn.sendall(b"HTTP/1.1 200 OK\r\n\x00")  # accept; 403 would reject
         print("[notify] sent HTTP/1.1 200 OK (accept)")
@@ -143,10 +182,82 @@ def handle_notify(conn: socket.socket) -> dict:
     return out
 
 
-def connect_ptpip(cam_ip: str, my_ip: str, guid_hex: str, name: str, timeout: float, port: int):
-    """Open the PTP-IP command channel + OpenSession. The camera signals 'busy' two ways while it
-    finishes coming up: an Init_Fail(0x2019) packet (resend on the same socket) OR a TCP RST
-    (reconnect). Retry through both."""
+def _bundle_sink():
+    """Return the active observation-bundle sink, or None."""
+    try:
+        from protocol_mapper import bundle
+    except ImportError:
+        return None
+    if not bundle.active():
+        return None
+    sink = getattr(bundle, "_SINK", None)
+    if sink is None or getattr(sink, "f", None) is None:
+        return None
+    return sink
+
+
+def _observe_pcss_frame(frame: PCSSFrame, *, peer_ip: str | None,
+                        peer_port: int | None) -> None:
+    """Emit one bundle fact per parsed PCSS frame (best-effort; portable)."""
+    sink = _bundle_sink()
+    if sink is None:
+        return
+    try:
+        rec = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "kind": "pcss.frame",
+            "transport": "pcss",
+            "verb": frame.verb,
+            "status_code": frame.status_code,
+            "headers": dict(frame.headers),
+            "peer_ip": peer_ip,
+            "peer_port": peer_port,
+            "frame_bytes_hex": frame.raw.hex(),
+        }
+        sink.f.write(json.dumps(rec) + "\n")
+        sink.f.flush()
+        sink.count += 1
+    except (OSError, TypeError):
+        return
+
+
+def _observe_fsm_transition(transition) -> None:
+    """Emit one bundle fact per host-side FSM transition."""
+    sink = _bundle_sink()
+    if sink is None:
+        return
+    try:
+        rec = transition.to_dict()
+        rec["transport"] = "pcss"
+        sink.f.write(json.dumps(rec) + "\n")
+        sink.f.flush()
+        sink.count += 1
+    except (OSError, TypeError):
+        return
+
+
+def _step_and_flush(fsm: PCSSFSM, event: str, frame: PCSSFrame | None = None,
+                    *, reason: str | None = None) -> PCSSState:
+    """Run a single FSM step and emit any newly-recorded transitions to the bundle."""
+    before = len(fsm.history)
+    new_state = fsm.step(event, frame, reason=reason)
+    for t in fsm.history[before:]:
+        _observe_fsm_transition(t)
+    return new_state
+
+
+def connect_ptpip(cam_ip: str, my_ip: str, guid_hex: str, name: str, timeout: float, port: int,
+                  fsm: PCSSFSM | None = None):
+    """Open the PTP-IP command channel + OpenSession.
+
+    Replaces the flat 12-retry loop with FSM-driven control flow:
+      - Init_Fail 0x2019 (Device_Busy) -> FSM stays in HANDSHAKING, we retry on the same socket.
+      - Any other Init_Fail -> FSM moves to ERROR, we stop retrying ("different remediation").
+      - TCP RST mid-init -> FSM transitions to IDLE; reconnect and try again.
+
+    Each FSM transition is emitted as a bundle fact via `_observe_fsm_transition`.
+    """
+    fsm = fsm or PCSSFSM()
     init = build_desktop_init(name, my_ip, guid_hex)
     info: dict = {}
     sock = None
@@ -155,7 +266,8 @@ def connect_ptpip(cam_ip: str, my_ip: str, guid_hex: str, name: str, timeout: fl
             try:
                 sock = socket.create_connection((cam_ip, port), timeout)
                 sock.settimeout(timeout)
-                print(f"[ptpip] TCP connect {cam_ip}:{port}")
+                _step_and_flush(fsm, "ptpip_connected")
+                print(f"[ptpip] TCP connect {cam_ip}:{port}  fsm={fsm.current.name}")
             except OSError as exc:
                 print(f"[ptpip] connect failed ({exc}) — retry {attempt + 1}/12")
                 time.sleep(0.3)
@@ -164,7 +276,8 @@ def connect_ptpip(cam_ip: str, my_ip: str, guid_hex: str, name: str, timeout: fl
             sock.sendall(init)
             info = parse_init_ack(ptpip.recv_packet(sock))
         except OSError as exc:  # camera RST the socket = busy; reconnect and retry
-            print(f"[ptpip] init reset ({exc}) — reconnect {attempt + 1}/12")
+            _step_and_flush(fsm, "rst", reason=str(exc))
+            print(f"[ptpip] init reset ({exc}) — reconnect {attempt + 1}/12  fsm={fsm.current.name}")
             try:
                 sock.close()
             except OSError:
@@ -173,22 +286,32 @@ def connect_ptpip(cam_ip: str, my_ip: str, guid_hex: str, name: str, timeout: fl
             time.sleep(0.3)
             continue
         if info["raw_type"] == 2:
+            _step_and_flush(fsm, "init_ack")
             break
         if info["raw_type"] == 5:
+            _step_and_flush(fsm, "init_fail", reason=hex(info["fail_reason"]))
             print(f"[ptpip] Init_Fail 0x{info['fail_reason']:04x}"
-                  f"{' (Device_Busy)' if info['fail_reason'] == 0x2019 else ''} — retry {attempt + 1}/12")
+                  f"{' (Device_Busy)' if info['fail_reason'] == 0x2019 else ''}  "
+                  f"fsm={fsm.current.name} (attempt {attempt + 1}/12)")
+            if fsm.current == PCSSState.ERROR:
+                print("[ptpip] FSM -> ERROR; stop retrying (different remediation needed)")
+                break
             time.sleep(0.2)
             continue  # resend on the same socket (matches the capture)
         print(f"[ptpip] unexpected init response (type {info['raw_type']}, {info['len']}B) — reconnect")
         sock.close()
         sock = None
         time.sleep(0.3)
-    if info.get("raw_type") != 2:
+    if info.get("raw_type") != 2 or fsm.current == PCSSState.ERROR:
         if sock is not None:
             sock.close()
+        if fsm.current == PCSSState.ERROR:
+            print("[ptpip] aborting: camera Init_Fail with terminal reason (NOT Device_Busy)")
+            return 6
         print("[ptpip] camera never acked Init_Command_Request after retries — power-cycle it")
         return 3
-    print(f"[ptpip] Init_Command_Ack: camera='{info['name']}' guid={info['guid']} conn#={info['conn_no']}")
+    print(f"[ptpip] Init_Command_Ack: camera='{info['name']}' guid={info['guid']} "
+          f"conn#={info['conn_no']}  fsm={fsm.current.name}")
 
     sock.sendall(ptpip.build_open_session())
     hdr = ptpip.ptp_container_header(ptpip.recv_packet(sock))
@@ -335,21 +458,28 @@ def main(argv: list[str] | None = None) -> int:
         return 5
     print(f"[listen] TCP :{args.callback_port} for the camera's callback")
 
-    callback = wait_for_callback(srv, args.camera_ip, my_ip, args.retries, args.interval, args.no_knock)
+    fsm = PCSSFSM()  # host-side mirror of the camera's PCSS state machine
+    callback = wait_for_callback(srv, args.camera_ip, my_ip, args.retries, args.interval,
+                                 args.no_knock, fsm=fsm)
     srv.close()
     if callback is None:
-        print(f"[fail] camera never called back after {args.retries + 1} knocks — power-cycle it (once per boot)")
+        print(f"[fail] camera never called back after {args.retries + 1} knocks — "
+              f"power-cycle it (once per boot)  fsm={fsm.current.name}")
         return 2
     # the camera sends a PCSS NOTIFY here announcing CAMERANAME + DSCPORT; we must 200-OK it
     notify = handle_notify(callback)
     callback.close()  # camera closes this channel right after the ack
 
-    result = connect_ptpip(args.camera_ip, my_ip, args.guid, args.name, args.timeout, notify["dscport"])
+    _step_and_flush(fsm, "notify_received", notify.get("frame"))
+    _step_and_flush(fsm, "ok_sent")
+
+    result = connect_ptpip(args.camera_ip, my_ip, args.guid, args.name, args.timeout,
+                           notify["dscport"], fsm=fsm)
     if isinstance(result, int):
         return result
 
     sock = result
-    print("[ok] wireless tether session established — no BLE, no AP")
+    print(f"[ok] wireless tether session established — no BLE, no AP  fsm={fsm.current.name}")
 
     if args.list or args.pull_images is not None:
         out = args.out or f"rce/sessions/tether_pull_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
@@ -365,9 +495,10 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             pass
         sock.close()
-        print("[ok] CloseSession sent (camera now spent until power-cycle)")
+        _step_and_flush(fsm, "session_closed")
+        print(f"[ok] CloseSession sent (camera now spent until power-cycle)  fsm={fsm.current.name}")
     else:
-        print("[ok] session left open; sockets not retained by this CLI (use as a library to drive PTP ops)")
+        print(f"[ok] session left open; sockets not retained by this CLI  fsm={fsm.current.name}")
         sock.close()
     return 0
 
