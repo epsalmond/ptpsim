@@ -38,6 +38,13 @@ evidence:
 
   docXlv:          { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
   captureXlv:      { kind: wire-capture, path: "tools/protocol-mapper/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
+  # D3-wire PTP/IP property + opcode reference, combining live B1 enum + reference app Frida
+  # wire-decode work. Authoritative for the new gallery-filter triplet
+  # (0x9051/0x9052/0x9060), the post-shutter event codes (0xC001/0xC004/0x400D),
+  # and the firmware-update event (0x80F8). Labels disagreeing with curated
+  # wire+protocol-mapper sources (e.g. 0x9050 "FujiImageImportBegin"
+  # curated wire-derived names hold per the precedence rule.
+
 
 # Connection-name convention (see docs/consults/2026-06-02-*-wireless-tether.md):
 #   `app`             = reference app PTP/IP on :55740 (BLE → camera Wi-Fi AP → 82B WMB-tail init).
@@ -397,6 +404,33 @@ operations:
   "0x9055": { name: FujiImageImportCurrentObjectThumb, owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x9050": { name: FujiImageImportBegin,              owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x9053": { name: FujiImageImportPage,               owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
+  # Gallery-filter triplet (image-transfer mode, reference app `app` path). The 0x9051
+  # data-out payload AND-combines per-axis constraints keyed by 0xD6xx codes:
+  #   0xD600 GalleryCaptureDateAxis     (read-back only, returned by 0x9053)
+  #   0xD601 GalleryDateRange           string, type-tag 0x12, UTF-16LE "YYYYMMDD-YYYYMMDD" (`*` = unset endpoint)
+  #   0xD602 GalleryFilenamePattern     string, type-tag 0x07, UTF-16LE with `*` wildcard
+  #   0xD603 GalleryRatingBitfield      u16: 0x01=no-rating, 0x02=1★ … 0x20=5★
+  #   0xD604 GalleryFileTypeBitfield    u16: 0x01=JPEG, 0x02=HEIF, 0x04=RAF, 0x08=MP4, 0x10=MOV
+  #   0xD605 GallerySubjectsBitfield    u32: 0x01=PERSON … 0x40=TRAIN (wire-canonical; Firebase analytics swaps 0x20↔0x40)
+  # The axes are protocol-payload codes — they are NOT advertised in DeviceInfo
+  # and are not queryable via 0x1015, so they don't appear under `properties:`.
+  # Sources: GALLERY_FILTER_PROTOCOL_FW0230_2026-05-25.md + FUJI_PTP_PROP_REFERENCE
+  # §Get-mode gallery filter + MODE_CHANGES §gallery enumeration.
+  "0x9051": { name: FujiGalleryFilterSet,      owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docFujiPtpPropReference] }
+  # Returns u32 count + 6 entries (D600..D605). Sent once when the filter UI opens.
+  "0x9052": { name: FujiGalleryFilterAxes,     owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docFujiPtpPropReference] }
+  # Fires once at Get-phase end (vendor finalize). Pairs with the import flow.
+  "0x9060": { name: FujiImportFinalize,        owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docFujiPtpPropReference, docImageTransfer] }
+  # HYPOTHESIS — single-source from FUJI_PTP_PROP_REFERENCE; not yet wire-confirmed
+  # to differentiate from 0x101C. Fires after `D246=1`; clears 0xD229/0xD22A/0x500E.
+  # Same `(0, 0)` param shape as 0x101C. Pending wire-capture confirmation.
+  "0x9020": { name: FujiVideoPreviewOpenHypothesis,   owner: fuji-vendor, modes: [shooting/stills], connections: [app], evidence: [docFujiPtpPropReference] }
+  # HYPOTHESIS — handle param = txid of matching 0x9020. Same caveat.
+  "0x9021": { name: FujiVideoPreviewCloseHypothesis,  owner: fuji-vendor, modes: [shooting/stills], connections: [app], evidence: [docFujiPtpPropReference] }
+  # HYPOTHESIS — reference app→camera, 875B data-out blob carrying a settings-backup `.DAT`
+  # filename. Seen 9× in May 1 sdcard_import flows; may be the wireless equivalent
+  # of 0x100C SendObjectInfo for settings-checkpoint files. Source: single doc.
+  "0x9040": { name: FujiSendObjectInfoDatHypothesis,  owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docFujiPtpPropReference] }
   # raw-conv ops are mode-specific; backup ops are available in ~every mode (no modes key).
   "0x900c": { name: SendRawFromPcObjectInfo, owner: fuji-vendor, modes: [raw-conv-backup-restore], connections: [usb], evidence: [staticRawStudio] }
   "0x900d": { name: SendRawFromPcObject,     owner: fuji-vendor, modes: [raw-conv-backup-restore], connections: [usb], evidence: [staticRawStudio] }
@@ -470,6 +504,50 @@ properties:
               evidence: [wirePCSSShootDownload20260523] }   # tethered-mode keepalive; write 0 every ~30-200ms
   "0xd207": { name: pcssKeepalive207,   type: u16, access: readWrite, kind: scaffold,
               evidence: [wirePCSSShootDownload20260523] }   # tethered-mode keepalive; write 1, paired with D21C
+
+  # Label-only curations for probe-discovered props that the wire docs identify.
+  # Probe enrichment fills `type`/`access`/`descriptor` (see generate.rs::enrich);
+  # the name + evidence here win.
+  #
+  # 0xD037 — ptpsim Q3 OPEN ITEM (see connections.wireless-tether comment above).
+  # FUJI_PTP_PROP_REFERENCE labels this as the PCSS-path stills/video toggle
+  # (`0x0001`=stills, `0x0101`=video), but the flip-transition is UNTESTED on
+  # wire and the values come from a 05-27 wireless-stills vs wireless-video
+  # capability-snapshot diff. Label as a hypothesis until a real flip is
+  # captured. Scaffold-classified so a generic settings-by-name path doesn't
+  # reach it.
+  "0xd037": { name: pcssStillsVideoToggleHypothesis, kind: scaffold,
+              evidence: [docFujiPtpPropReference] }
+  # 0xD246 — reference app Take in-screen toggle (`0`=stills, `1`=video). PCSS equivalent
+  # is 0xD037 above. DevicePropDesc enum reports `[0x00, 0x00]` (Fuji bool quirk).
+  "0xd246": { name: appInShooterStillsVideo,
+              evidence: [docFujiPtpPropReference] }
+  # 0xD22B — read during Get-mode bootstrap, between 0x9050 and 0x9053
+  # (see image-transfer entry sequence). Purpose unknown; treat as part of the
+  # bootstrap ritual until a wire trace shows the value used.
+  "0xd22b": { name: imageImportBootstrapD22b,
+              evidence: [docFujiPtpPropReference, docImageTransfer] }
+
+# PTP-IP event codes arriving on the camera's separate `event` socket (port 55741
+# on the `app` connection). On the `wireless-tether` PCSS path the event socket is
+# absent (0 events delivered over 184s of active shooting per
+# wirePCSSShootDownload20260523) — clients there must poll 0xD212/keepalives instead.
+# Names mirror the wire docs; codes are the ones observed in the v6/v8 Frida traces
+# (FUJI_PTP_PROP_REFERENCE §PTP event codes + MODE_CHANGES §3 trace).
+events:
+  # Fires after every 0x100E InitiateCapture (paired with the 0x9022 cleanup); the
+  # payload includes the new object's size. Referenced from the curated shutter
+  # action's `triggers.postviewEvent` — landing the wire code here grounds the
+  # declared trigger so consumers know which event to await.
+  "0xc001": { name: PostviewComplete,         destination: app, evidence: [docFujiPtpPropReference, wireD3AppReopen] }
+  # Fires when the shutter is pressed but the image isn't yet saved.
+  "0xc004": { name: CapturePending,           destination: app, evidence: [docFujiPtpPropReference, wireD3AppReopen] }
+  # Standard PTP "image saved" event. Closes the capture cycle on the wire.
+  "0x400d": { name: CaptureComplete,          destination: app, evidence: [docFujiPtpPropReference, wireD3AppReopen] }
+  # HYPOTHESIS — single-source. Appears during the firmware-update flow per the
+  # wire-doc cross-ref; not yet wire-confirmed in the shoot/download captures
+  # we have. Park until a fw-update capture lands.
+  "0x80f8": { name: FirmwareUpdateTrigger,    destination: app, evidence: [docFujiPtpPropReference] }
 
 quirks:
   - id: pcss-knock-once-per-boot
