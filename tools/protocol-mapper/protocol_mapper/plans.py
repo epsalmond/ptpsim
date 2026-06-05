@@ -81,6 +81,21 @@ def _argv_pull(camera_ip, *, dry_run=False, **kw):
     return a
 
 
+def _argv_pcss_listen(camera_ip, *, dry_run=False, **kw):
+    # Passive listener — `camera_ip` is unused (we bind 0.0.0.0); kept positional for the
+    # shared runner signature.
+    a: list[str] = []
+    if kw.get("bundle"):
+        a += ["--bundle", kw["bundle"]]
+    if kw.get("duration"):
+        a += ["--duration", str(kw["duration"])]
+    if kw.get("mcast"):
+        a.append("--mcast")
+    if kw.get("no_1900"):
+        a.append("--no-1900")
+    return a
+
+
 REGISTRY: dict[str, Plan] = {}
 
 
@@ -97,6 +112,9 @@ _reg("fuji/pcss/auto/partial-header", RiskClass.SAFE, "pcss", "auto",
 _reg("fuji/pcss/auto/pull-backup", RiskClass.SAFE, "pcss", "auto",
      "Pull the 69500B settings .dat; --check-band reports 5GHz/2.4GHz.",
      _wrap("pcss", "auto", _argv_pull, "pull_backup"))
+_reg("fuji/pcss/passive/listen", RiskClass.SAFE, "pcss", "passive",
+     "Passive UDP listener on :51562 + :1900 — parses PCSS frames, JSONL bundle facts.",
+     _wrap("pcss", "passive", _argv_pcss_listen, "pcss_listen"))
 _reg("fuji/app/import/image-import", RiskClass.SAFE, "app", "import",
      "reference app AP image-import (DF01=20) browse/enumerate — needs BLE→AP launched first.",
      _wrap("app", "import",
