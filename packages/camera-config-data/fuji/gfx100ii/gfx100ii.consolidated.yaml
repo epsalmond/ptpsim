@@ -24,6 +24,10 @@ evidence:
     kind: wire-capture
     path: tools/protocol-mapper/scripts/xlv_capsweep.py
     date: ''
+  docFujiPtpPropReference:
+    kind: doc
+
+    date: 2026-06-04
   docImageTransfer:
     kind: doc
     path: evidence/IMAGE_TRANSFER_FW0230.md
@@ -519,6 +523,36 @@ operations:
     requires: null
     evidence:
     - activeProbe
+  '0x9020':
+    name: FujiVideoPreviewOpenHypothesis
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - shooting/stills
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docFujiPtpPropReference
+  '0x9021':
+    name: FujiVideoPreviewCloseHypothesis
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - shooting/stills
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docFujiPtpPropReference
   '0x9022':
     name: FujiVendor9022
     owner: fuji-vendor
@@ -630,6 +664,21 @@ operations:
     evidence:
     - iosLiveControls
     - docLiveControls
+  '0x9040':
+    name: FujiSendObjectInfoDatHypothesis
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - image-transfer
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docFujiPtpPropReference
   '0x9050':
     name: FujiImageImportBegin
     owner: fuji-vendor
@@ -645,6 +694,36 @@ operations:
     requires: null
     evidence:
     - docImageTransfer
+  '0x9051':
+    name: FujiGalleryFilterSet
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - image-transfer
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docFujiPtpPropReference
+  '0x9052':
+    name: FujiGalleryFilterAxes
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - image-transfer
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docFujiPtpPropReference
   '0x9053':
     name: FujiImageImportPage
     owner: fuji-vendor
@@ -689,6 +768,22 @@ operations:
     - app
     requires: null
     evidence:
+    - docImageTransfer
+  '0x9060':
+    name: FujiImportFinalize
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - image-transfer
+    connections:
+    - app
+    requires: null
+    evidence:
+    - docFujiPtpPropReference
     - docImageTransfer
   '0x9801':
     name: raw_0x9801
@@ -1622,10 +1717,11 @@ properties:
     evidence:
     - activeProbe
   '0xd037':
-    name: raw_0xd037
+    name: pcssStillsVideoToggleHypothesis
     ptpName: null
     type: u16
     access: readWrite
+    kind: scaffold
     descriptor:
       form: enum
       values:
@@ -1634,7 +1730,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docFujiPtpPropReference
   '0xd038':
     name: raw_0xd038
     ptpName: null
@@ -3129,7 +3225,7 @@ properties:
     evidence:
     - activeProbe
   '0xd22b':
-    name: raw_0xd22b
+    name: imageImportBootstrapD22b
     ptpName: null
     type: i16
     access: readWrite
@@ -3140,7 +3236,8 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docFujiPtpPropReference
+    - docImageTransfer
   '0xd22c':
     name: raw_0xd22c
     ptpName: null
@@ -3515,7 +3612,7 @@ properties:
     evidence:
     - activeProbe
   '0xd246':
-    name: raw_0xd246
+    name: appInShooterStillsVideo
     ptpName: null
     type: u16
     access: readWrite
@@ -3533,7 +3630,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docFujiPtpPropReference
   '0xd247':
     name: raw_0xd247
     ptpName: null
@@ -5800,7 +5897,30 @@ workflows:
     evidence:
     - iosFeatureMode
 media: null
-events: {}
+events:
+  '0x400d':
+    name: CaptureComplete
+    destination: app
+    evidence:
+    - docFujiPtpPropReference
+    - wireD3AppReopen
+  '0x80f8':
+    name: FirmwareUpdateTrigger
+    destination: app
+    evidence:
+    - docFujiPtpPropReference
+  '0xc001':
+    name: PostviewComplete
+    destination: app
+    evidence:
+    - docFujiPtpPropReference
+    - wireD3AppReopen
+  '0xc004':
+    name: CapturePending
+    destination: app
+    evidence:
+    - docFujiPtpPropReference
+    - wireD3AppReopen
 quirks:
 - id: pcss-knock-once-per-boot
   appliesTo:
