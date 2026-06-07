@@ -3,7 +3,7 @@
 **Status:** APPROVED 2026-06-02 (Option 3 with refinements per reviewer Q1/Q2/Q3 below)
 **Authors:** ptpsim
 **Created:** 2026-06-02
-**Triggered by:** D3-wire's PCSS shoot-download wire trace (`docs/consults/2026-06-02-ptpsim-action-on-D3-shoot-download.md`) — capture + transfer sequences need a manifest surface that today's `entries[]` doesn't model
+**Triggered by:** the PCSS shoot-download wire trace (`wirePCSSShootDownload20260523`) — capture + transfer sequences need a manifest surface that today's `entries[]` doesn't model
 
 ## Problem
 

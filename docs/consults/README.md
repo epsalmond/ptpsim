@@ -1,8 +1,14 @@
 # Consults
 
-Paired Q&A between ptpsim and its peers (client application iOS app, D3-wire, etc.).
-**Both the request and the reply land here as siblings**, so it's clear that a
-question was asked AND answered.
+Paired Q&A between ptpsim and its **public-consumer peers** — the client application
+iOS app, the Android consumer, other open clients of the ptpsim manifest/FFI.
+**Both the request and the reply land here as siblings**, so it's clear that
+a question was asked AND answered.
+
+Consults with private-repo counterparties (firmware-RE, wire-capture, or any
+other non-public research surface) do NOT live here. Those belong in their
+own private trees, and ptpsim references the durable findings via the
+manifest / evidence / docs (by topic, not by path), never by back-link.
 
 ## Naming
 
@@ -54,7 +60,3 @@ durable_facts_lifted_into: [<file paths where reusable knowledge is encoded>]
 schema doc-strings, design docs — so the same question doesn't need to be
 re-asked. The consult is the trail; the manifest is the authoritative answer.
 `durable_facts_lifted_into:` in the reply frontmatter is the receipt.
-
-
-in their respective repos; reference the other side via `prior_consult:` or
-`re_consult:` rather than duplicating.
