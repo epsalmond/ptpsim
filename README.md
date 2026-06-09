@@ -34,12 +34,9 @@ cargo test            # Rust workspace
 ( cd tools/protocol-mapper && python -m pytest -q )   # probe
 ```
 
-## CI/CD
+## CI
 
-
-the off-site remote and webhook source; do not add GitHub Actions for this repo.
-
-
+Continuous integration runs via Woodpecker CI; see [`.woodpecker.yml`](.woodpecker.yml).
 
 ## License
 

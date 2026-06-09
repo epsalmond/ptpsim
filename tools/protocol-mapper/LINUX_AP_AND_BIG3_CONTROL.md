@@ -40,7 +40,7 @@ Steps it runs (each also usable standalone):
      `0x8002` (Launching) → `0x8001` (Launched).
    - fw 2.30 has **no registration-ID ack** (`f557d96b` is RED-only/absent). RED /
      newer firmware: read `f557d96b`, write `id | 0x20000000` before the name write.
-2. **Wi-Fi join** — `sudo nmcli con add type wifi … ssid FUJIFILM-GFX100II-0C3E
+2. **Wi-Fi join** — `sudo nmcli con add type wifi … ssid FUJIFILM-GFX100II-XXXX
    ipv4.never-default yes` (open AP on fw 2.30; `never-default` keeps internet on
    Ethernet). Camera = `192.168.0.1`; host gets `192.168.0.0/24`.
 3. **`scripts/probe_iso_liveview.py`** — PTP-IP probe (read-only Phase 1).

@@ -21,7 +21,7 @@ Source kinds:
 Use `scan` first to list the decodable frames in a blob dir and choose one.
 
 Examples:
-
+  extract_golden.py scan  --blobs <path-to-frida-blobs>
   extract_golden.py frida --blobs <dir> --select op:0x1002 \
       --label open-session-request --description "OpenSession on reference app cmd channel" \
       --transport app --firmware 2.30

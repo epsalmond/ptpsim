@@ -285,7 +285,7 @@ in: response packet (12 bytes)
 
 ### Empirical field-value tally (81 decoded ObjectInfo responses from v6)
 
-Added 2026-05-25 by D6 after a full decode pass over the v6 capture's
+Added 2026-05-25 after a full decode pass over the v6 capture's
 GetObjectInfo data-phase payloads. This is what the gallery-enumeration
 metadata channel ACTUALLY carries in practice (vs. what the struct
 *could* carry per spec).

@@ -1,7 +1,7 @@
 """Host-side mirror of the camera's PCSS state machine.
 
 The camera's PCSS daemon is a 6-state FSM, statically reverse-engineered on Fuji
-firmware 2.30 by D1:
+firmware 2.30:
 
   pcss_state_set_and_notify @ 0x03216534  writes the state byte to [0x0449d6d4]
 

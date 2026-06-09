@@ -1,7 +1,7 @@
 # Wired tether — camera control surface (WIRE-CONFIRMED 2026-05-23)
 
 Source: full desktop-tether-app walkthrough over **wired gigabit Ethernet** (camera 192.168.4.169
-
+bridged into br0; inline pcap capture). User
 exercised ~every setting in the app. Connection = same PCSS knock + PTP-IP/15740 as Wi-Fi; wired is
 faster + smoother (the app's choppiness is its single-threaded UI, not the protocol).
 

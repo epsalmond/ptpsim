@@ -63,10 +63,6 @@ evidence:
   staticRawStudio:
     path: evidence/RAW_CONVERSION.md
     date: ''
-  wireD3AppReopen:
-    kind: wire-capture
-
-    date: 2026-06-02
   wirePCSSShootDownload20260523:
     kind: wire-capture
 
@@ -79,6 +75,10 @@ evidence:
     kind: wire-capture
     path: packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
     date: 2026-05-27
+  wireAppReopen:
+    kind: wire-capture
+
+    date: 2026-06-02
 transports: {}
 operations:
   '0x1001':
@@ -5903,7 +5903,7 @@ events:
     destination: app
     evidence:
     - docFujiPtpPropReference
-    - wireD3AppReopen
+    - wireAppReopen
   '0x80f8':
     name: FirmwareUpdateTrigger
     destination: app
@@ -5914,13 +5914,13 @@ events:
     destination: app
     evidence:
     - docFujiPtpPropReference
-    - wireD3AppReopen
+    - wireAppReopen
   '0xc004':
     name: CapturePending
     destination: app
     evidence:
     - docFujiPtpPropReference
-    - wireD3AppReopen
+    - wireAppReopen
 quirks:
 - id: pcss-knock-once-per-boot
   appliesTo:
@@ -6301,7 +6301,7 @@ connections:
         triggers:
         - postviewEvent: {}
         evidence:
-        - wireD3AppReopen
+        - wireAppReopen
         - iosLiveControls
         - docLiveControls
       enumerateObjects:

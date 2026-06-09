@@ -26,7 +26,7 @@ evidence:
   # STRONGEST tier: wire-confirmed over wired-gigabit + Wi-Fi infra PTP-IP tether.
   wireTether:      { kind: wire-capture, path: "tools/protocol-mapper/WIRED_TETHER_CONTROL.md", date: "2026-05-23" }
   # Per-(connection,mode) GetDeviceInfo + GetDevicePropDesc snapshots on PCSS/15740.
-  # Authoritative for the wireless-tether supported-ops set (D3-wire 2026-05-27 run).
+  # Authoritative for the wireless-tether supported-ops set (2026-05-27 wire capture).
   wireTetherCaps20260527: { kind: wire-capture, path: "packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
   # reference app Take↔Get session-reopen wire trace (full byte trace + identity decode).
   # Source for the `reopenSession` step in the `app` → image-transfer entry.
@@ -35,10 +35,9 @@ evidence:
   # the 3-beat D039+0x100E shutter verb, the 0x1007/8/A/9/B transfer triad,
   # 0x500F ISO encoding (signed -1/-2 sentinels), and event-less command socket.
 
-
   docXlv:          { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
   captureXlv:      { kind: wire-capture, path: "tools/protocol-mapper/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
-  # D3-wire PTP/IP property + opcode reference, combining live B1 enum + reference app Frida
+  # Wire-derived PTP/IP property + opcode reference, combining live B1 enum + reference app Frida
   # wire-decode work. Authoritative for the new gallery-filter triplet
   # (0x9051/0x9052/0x9060), the post-shutter event codes (0xC001/0xC004/0x400D),
   # and the firmware-update event (0x80F8). Labels disagreeing with curated
@@ -108,7 +107,7 @@ connections:
           # reference app re-establishes the PTP/IP session in-Wi-Fi when switching Take↔Get
           # (MODE_CHANGES.md §5). Verb collapses: CloseSession 0x1003 → 8B sentinel
           # `08 00 00 00 ff ff ff ff` → new TCP socket to :55740 → cached 82B InitCmdReq
-          # (identity byte-identical across sessions per D3-wire 2026-06-02 answers
+          # (identity byte-identical across sessions per wire-capture 2026-06-02 answers
           # Q4) → InitCmdAck → OpenSession sid=1. Skipping it makes the camera reject
           # 0x9054 (verified on device — this was the "image transfer downloads 0 files"
           # bug). Verb is parameterless: engine reuses the connection's cached identity.
@@ -141,7 +140,7 @@ connections:
           - { sendOp: "0x9022" }
         triggers:
           - postviewEvent: {}
-        evidence: [wireD3AppReopen, iosLiveControls, docLiveControls]
+        evidence: [wireAppReopen, iosLiveControls, docLiveControls]
       # reference app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW0230.md
       # §"Confirmed enumeration": reference app **never** calls 0x1007
       # GetObjectHandles — camera rejects with 0x2005 Operation_Not_Supported
@@ -248,7 +247,7 @@ connections:
     # PTP/IP form can also push images to the camera; per-connection capability TODO).
     modes: [shooting/stills, remote-trigger]
     # Wire-confirmed NOT-supported on this connection (per the 05-27 capability snapshot
-    # `wireTetherCaps20260527` + D3-wire 2026-06-02 replies). Don't author entries that
+    # `wireTetherCaps20260527` + wire-capture 2026-06-02 replies). Don't author entries that
     # rely on these — the camera will reject them:
     #   - 0x9022 (post-shutter cleanup):  reference app-only; do NOT pair with 0x100E here.
     #   - 0x101b (GetPartialObject):      not advertised — whole-object only via 0x1009.
@@ -384,8 +383,8 @@ operations:
   # 0x100e is advertised by wireless-tether (PCSS/15740) too — see the 05-27 capability
   # snapshot. The actual shutter cycle on that connection (params, completion signal,
   # whether 0x9022 fires) is not yet wire-captured; authorizing the op here unblocks
-  # the app-side shutter call. wireless-tether entries: filled in once D3-wire ships
-  # the wire capture (see 2026-06-02 consult).
+  # the app-side shutter call. wireless-tether entries: filled in once the wire
+  # capture lands (see 2026-06-02 consult).
   "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], evidence: [iosLiveControls, docLiveControls, wireTetherCaps20260527] }
   "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosLiveControls] }
   "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer], connections: [app], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer] }
@@ -496,7 +495,7 @@ properties:
   # values. Do NOT surface them in app settings UI; do NOT let a generic
   # set-prop-by-name path reach them. They live in the manifest only so the
   # capture-verb / keepalive sequences can reference their codes by name.
-  # Evidence: wirePCSSShootDownload20260523 (D3-wire 06-02 follow-up).
+  # Evidence: wirePCSSShootDownload20260523 (wire capture 06-02 follow-up).
   # ------------------------------------------------------------------------------
   "0xd039": { name: pcssVirtualShutter, type: u32, access: readWrite, kind: scaffold,
               evidence: [wirePCSSShootDownload20260523] }   # 3-beat state machine paired with 0x100E on wireless-tether
@@ -539,11 +538,11 @@ events:
   # payload includes the new object's size. Referenced from the curated shutter
   # action's `triggers.postviewEvent` — landing the wire code here grounds the
   # declared trigger so consumers know which event to await.
-  "0xc001": { name: PostviewComplete,         destination: app, evidence: [docFujiPtpPropReference, wireD3AppReopen] }
+  "0xc001": { name: PostviewComplete,         destination: app, evidence: [docFujiPtpPropReference, wireAppReopen] }
   # Fires when the shutter is pressed but the image isn't yet saved.
-  "0xc004": { name: CapturePending,           destination: app, evidence: [docFujiPtpPropReference, wireD3AppReopen] }
+  "0xc004": { name: CapturePending,           destination: app, evidence: [docFujiPtpPropReference, wireAppReopen] }
   # Standard PTP "image saved" event. Closes the capture cycle on the wire.
-  "0x400d": { name: CaptureComplete,          destination: app, evidence: [docFujiPtpPropReference, wireD3AppReopen] }
+  "0x400d": { name: CaptureComplete,          destination: app, evidence: [docFujiPtpPropReference, wireAppReopen] }
   # HYPOTHESIS — single-source. Appears during the firmware-update flow per the
   # wire-doc cross-ref; not yet wire-confirmed in the shoot/download captures
   # we have. Park until a fw-update capture lands.

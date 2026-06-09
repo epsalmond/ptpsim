@@ -41,23 +41,22 @@ fn loader_requires_every_declared_model_body() {
 // recognize() — BLE advert classification
 // ---------------------------------------------------------------------------
 
-/// The LEGACY advert observed in the 2026-05-16 GFX100 II / fw 02.30 test
-/// run (operator-brief 10:21:01 row). Mfg-data is `0x02 + 4-byte LE key`.
+/// A synthetic LEGACY advert in the GFX100 II / fw 02.30 shape observed during
+/// the 2026-05-16 test run. Mfg-data is `0x02 + 4-byte LE key`.
 fn synthetic_legacy_advert() -> Observation {
     Observation::BleAdvert {
         service_uuids: vec![
             "AF854C2E-B214-458E-97E2-912C4ECF2CB8".to_string(), // SERVICE_FF_FILE_TRANSFER
             "6514EB81-4E8F-458D-AA2A-E691336CDFAC".to_string(), // CAMERA_CONTROL — harmless
         ],
-        // type=0x02 + key bytes 44 73 2a 80 (the same clean-pair payload
-        // observed at 10:21:06.722 in the operator brief).
+        // type=0x02 + key bytes (synthetic placeholder values).
         manufacturer_data: vec![0x02, 0x44, 0x73, 0x2a, 0x80],
         local_name: Some("GFX100 II".to_string()),
     }
 }
 
-/// A synthetic RED advert: type=0x01 + 5 ASCII bytes (the "33E01" prefix of
-/// camera serial "33E01721" from the operator brief 09:54:47.684 read).
+/// A synthetic RED advert: type=0x01 + 5 ASCII bytes (placeholder "ABCDE",
+/// the shape of a 5-byte short-serial used as the RED pairing key).
 fn synthetic_red_advert() -> Observation {
     Observation::BleAdvert {
         service_uuids: vec![
@@ -65,7 +64,7 @@ fn synthetic_red_advert() -> Observation {
             // SERVICE_FF_FILE_TRANSFER (legacy detector). Per READ_THIS_FIRST §2.
             "123D8F06-62A1-4935-9322-833C531EE225".to_string(),
         ],
-        manufacturer_data: vec![0x01, b'3', b'3', b'E', b'0', b'1'],
+        manufacturer_data: vec![0x01, b'A', b'B', b'C', b'D', b'E'],
         local_name: Some("GFX100 II".to_string()),
     }
 }
@@ -119,10 +118,10 @@ fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
             // can persist the saved entry by short serial without re-decoding.
             assert!(runtime_scope
                 .iter()
-                .any(|kv| kv.key == "pairingKeyBytes" && kv.value == "33E01"));
+                .any(|kv| kv.key == "pairingKeyBytes" && kv.value == "ABCDE"));
             assert!(runtime_scope
                 .iter()
-                .any(|kv| kv.key == "shortSerial" && kv.value == "33E01"));
+                .any(|kv| kv.key == "shortSerial" && kv.value == "ABCDE"));
         }
         other => panic!("expected Candidate, got {other:?}"),
     }

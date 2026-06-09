@@ -55,13 +55,13 @@ class FakeConn:
         if sensitive:
             self.sensitive_reads.append(uuid.lower())
         values = {
-            uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER: bytes.fromhex("70df0500"),
+            uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER: bytes.fromhex("00112233"),
             uuids.CHAR_GAP_DEVICE_NAME: b"GFX100 II\x00",
-            uuids.CHAR_SERIAL_NUMBER_STRING: b"230829053020110C3E\x00",
-            uuids.CHAR_CAMERA_MAC_ADDRESS: b"38-7C-76-74-73-20\x00",
+            uuids.CHAR_SERIAL_NUMBER_STRING: b"00000000000000XXXX\x00",
+            uuids.CHAR_CAMERA_MAC_ADDRESS: b"00-11-22-33-44-55\x00",
             uuids.CHAR_FIRMWARE_REVISION_STRING: b"02.40\x00",
-            uuids.CHAR_CAMERA_SERIAL_NUMBER: b"33E01721\x00",
-            uuids.CHAR_CAMERA_SSID_NAME_STRING: b"FUJIFILM-GFX100II-0C3E\x00",
+            uuids.CHAR_CAMERA_SERIAL_NUMBER: b"ABCDE000\x00",
+            uuids.CHAR_CAMERA_SSID_NAME_STRING: b"FUJIFILM-GFX100II-XXXX\x00",
             uuids.CHAR_LOCATION_SYNC_STATE: b"\x01\x00",
             uuids.CHAR_DATE_SYNC_STATE: b"\x01\x00",
             uuids.CHAR_AP_STATE: b"\x00\x80",
@@ -135,7 +135,7 @@ class WifiConn(FakeConn):
             self.reads.append(uuid)
             if sensitive:
                 self.sensitive_reads.append(uuid.lower())
-            return b"CQAggA8AEEAVADjgIQA0\x00"
+            return b"placeholder-passphrase-xx\x00"
         if uuid == uuids.CHAR_AP_STATE and self.launch_requested:
             self.events.append(("read", uuid.lower()))
             self.reads.append(uuid)
@@ -538,8 +538,8 @@ async def test_wifi_info_reads_sensitive_credentials_and_launches_ap(tmp_path, m
     )
 
     assert "passphrase" not in info
-    assert info["ssid"] == "FUJIFILM-GFX100II-0C3E"
-    assert info["bssid"] == "38-7C-76-74-73-20"
+    assert info["ssid"] == "FUJIFILM-GFX100II-XXXX"
+    assert info["bssid"] == "00-11-22-33-44-55"
     assert info["ap_state"] == "0180"
     assert info["ap_state_label"] == "launched"
     assert info["passphrase_present"] is True
@@ -550,13 +550,13 @@ async def test_wifi_info_reads_sensitive_credentials_and_launches_ap(tmp_path, m
 
     credentials_path = session.path / "wifi_credentials.json"
     credentials = json.loads(credentials_path.read_text(encoding="utf-8"))
-    assert credentials["passphrase"] == "CQAggA8AEEAVADjgIQA0"
+    assert credentials["passphrase"] == "placeholder-passphrase-xx"
     assert stat.S_IMODE(credentials_path.stat().st_mode) == 0o600
 
     redacted = (session.path / "wifi_info_redacted.json").read_text(encoding="utf-8")
     log = (session.path / "session.log").read_text(encoding="utf-8")
-    assert "CQAggA8AEEAVADjgIQA0" not in redacted
-    assert "CQAggA8AEEAVADjgIQA0" not in log
+    assert "placeholder-passphrase-xx" not in redacted
+    assert "placeholder-passphrase-xx" not in log
     assert "credentials_path" in redacted
 
 
@@ -585,7 +585,7 @@ async def test_firmware_update_prepare_writes_request_and_launches_fw_ap(tmp_pat
         read_passphrase=True,
     )
 
-    assert info["ssid"] == "FUJIFILM-GFX100II-0C3E"
+    assert info["ssid"] == "FUJIFILM-GFX100II-XXXX"
     assert info["ap_state"] == "0180"
     assert info["launch_ap"] == "fw_transfer"
     assert info["firmware_file_info_hex"] == "00" * 29

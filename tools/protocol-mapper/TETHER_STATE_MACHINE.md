@@ -2,7 +2,7 @@
 
 WIRE-CONFIRMED 2026-05-23 over wired-gigabit + Wi-Fi infra PTP-IP tether (camera 192.168.4.169).
 Tools: `scripts/connect_wireless_tether.py`, `scripts/movie_probe.py` (`--all` dumps full surface),
-
+`scripts/tether_view.py` (live feed).
 
 ## 0. Network modes (how the camera is reachable)
 | Mode | How to enter | Exposes | Notes |
@@ -87,7 +87,7 @@ complete the both-modes matrix.)
 ## 5. XLV — the unexplored mode (TODO)
 Separate infra-Wi-Fi mode that runs a **Python web server** on the camera (per earlier notes, "works but
 bad"). Not PTP-IP. Next pass: enter XLV on the camera, find its IP, map the HTTP API (live-view endpoint,
-controls, JWT/auth). Prior XLV RE exists in the cohort (Flask routes / property_code_def.py).
+controls, JWT/auth). Prior XLV RE exists upstream (Flask routes / property_code_def.py).
 
 ## State-machine summary
 NETWORK(AP | infra-PCSS | XLV | idle) → [PCSS rendezvous] → SESSION → {LIVEVIEW(0x101C/0x80000001),

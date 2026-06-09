@@ -87,8 +87,8 @@ class FakeCamera:
     async def wifi_info(self, **kwargs):
         self.calls.append(("wifi_info", kwargs))
         return {
-            "ssid": "FUJIFILM-GFX100II-0C3E",
-            "bssid": "38-7C-76-74-73-20",
+            "ssid": "FUJIFILM-GFX100II-XXXX",
+            "bssid": "00-11-22-33-44-55",
             "ap_state": "0180",
             "ap_state_label": "launched",
             "launch_ap": "get",
@@ -99,8 +99,8 @@ class FakeCamera:
     async def firmware_update_prepare(self, **kwargs):
         self.calls.append(("firmware_update_prepare", kwargs))
         return {
-            "ssid": "FUJIFILM-GFX100II-0C3E",
-            "bssid": "38-7C-76-74-73-20",
+            "ssid": "FUJIFILM-GFX100II-XXXX",
+            "bssid": "00-11-22-33-44-55",
             "ap_state": "0180",
             "ap_state_label": "launched",
             "launch_ap": "fw_transfer",

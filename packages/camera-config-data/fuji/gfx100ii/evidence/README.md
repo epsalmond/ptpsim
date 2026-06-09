@@ -27,6 +27,6 @@ distilled into `fw0230.yaml` (or a richer manifest schema).
 
 
 Consider repointing those at this `evidence/` directory (for committed material)
-or at the nas operator tree (for the discovery narrative). The discovery narrative
+or at the operator tree (for the discovery narrative). The discovery narrative
 
 

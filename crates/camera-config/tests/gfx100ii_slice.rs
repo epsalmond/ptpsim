@@ -24,7 +24,7 @@ fn app_slice_loads_and_schema_is_supported() {
     let m = gfx();
     m.require_supported_schema().unwrap();
     assert_eq!(m.camera.model, "GFX100 II");
-    // Evidence cites private client application paths → warnings, never load errors.
+    // Evidence may cite paths outside ptpsim → warnings, never load errors.
     assert!(m
         .validate()
         .iter()
@@ -633,7 +633,7 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         }]
     );
     // reference app Take→Get switch re-establishes the PTP/IP session before DF01=0x14.
-    // D3-wire 2026-06-02 confirmed parameterless verb; identity is reused.
+    // Wire-capture (2026-06-02) confirmed parameterless verb; identity is reused.
     assert!(
         from.steps[1].reopen_session.is_some(),
         "reopenSession must come right after the 0x1018 in the from-LV image-transfer entry"

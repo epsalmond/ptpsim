@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Poll GetDeviceInfo at a fixed cadence to catch a transient OperationsSupported change — built for
-D5's selector-force idx2 window. READ-ONLY. One persistent PTP session (opened before the force), then
-re-issues GetDeviceInfo every --interval s for --duration s, logging op-count + whether 0x9008 / 0x901B
-are advertised. Captures the idx0->idx2->idx0 transition without tight real-time sync, so D5 can arm the
-60 s force anytime inside the window.
+"""Poll GetDeviceInfo at a fixed cadence to catch a transient OperationsSupported change —
+useful for selector-force probes where an external driver flips the camera into an idx2
+selector window for ~60 s. READ-ONLY. One persistent PTP session (opened before the
+force), then re-issues GetDeviceInfo every --interval s for --duration s, logging
+op-count + whether 0x9008 / 0x901B are advertised. Captures the idx0->idx2->idx0
+transition without tight real-time sync, so the force can be armed anytime inside the
+polling window.
 
-Body must be in a mode != 2 (stills/video, NOT cardreader/auto) so the handler consults table[selector];
-do not change the body dial during the window (a mode-change command overwrites the selector).
+Body must be in a mode != 2 (stills/video, NOT cardreader/auto) so the handler consults
+table[selector]; do not change the body dial during the window (a mode-change command
+overwrites the selector).
 """
 import argparse
 import datetime

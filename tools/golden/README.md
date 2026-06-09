@@ -7,8 +7,8 @@ each golden self-documenting — you reference the golden, not the original pcap
 
 ## The discipline (why this tool exists)
 
-Raw captures never enter this (public) repo. They live outside it
-
+Raw captures never enter this (public) repo. They live outside it and are read
+in place. Only minimal, redacted, labeled
 golden packets are committed. A golden records its source by **name only** — not
 the path, not the bytes of anything but the one frame it documents.
 
@@ -29,7 +29,7 @@ that carries a serial.
 
 ```sh
 # List the decodable frames in a frida blob dir, then pick one:
-
+python3 tools/golden/extract_golden.py scan --blobs <path-to-frida-blobs>
 
 python3 tools/golden/extract_golden.py frida --blobs <dir> --select op:0x1002 \
     --label open-session-request --transport app --firmware 2.30 \
