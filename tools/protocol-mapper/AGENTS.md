@@ -188,8 +188,8 @@ uint8   UTC second
 Known-good example-capture coordinates:
 
 ```text
-lat=37.7849
-lon=-122.4783
+lat=37.81972
+lon=-122.47861
 alt=33
 speed=0
 ```
