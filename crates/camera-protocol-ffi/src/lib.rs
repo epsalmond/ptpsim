@@ -453,11 +453,13 @@ impl ConfigStore {
         match observation {
             Observation::BleAdvert {
                 service_uuids,
+                manufacturer_company_id,
                 manufacturer_data,
                 local_name,
             } => mfg_index::recognize_ble(
                 index,
                 &service_uuids,
+                manufacturer_company_id,
                 &manufacturer_data,
                 local_name.as_deref(),
             ),

@@ -49,6 +49,7 @@ fn synthetic_legacy_advert() -> Observation {
             "AF854C2E-B214-458E-97E2-912C4ECF2CB8".to_string(), // SERVICE_FF_FILE_TRANSFER
             "6514EB81-4E8F-458D-AA2A-E691336CDFAC".to_string(), // CAMERA_CONTROL — harmless
         ],
+        manufacturer_company_id: 0x04D8, // Fujifilm
         // type=0x02 + key bytes (synthetic placeholder values).
         manufacturer_data: vec![0x02, 0x44, 0x73, 0x2a, 0x80],
         local_name: Some("GFX100 II".to_string()),
@@ -64,6 +65,7 @@ fn synthetic_red_advert() -> Observation {
             // SERVICE_FF_FILE_TRANSFER (legacy detector). Per READ_THIS_FIRST §2.
             "123D8F06-62A1-4935-9322-833C531EE225".to_string(),
         ],
+        manufacturer_company_id: 0x04D8, // Fujifilm
         manufacturer_data: vec![0x01, b'A', b'B', b'C', b'D', b'E'],
         local_name: Some("GFX100 II".to_string()),
     }
@@ -130,11 +132,28 @@ fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
 #[test]
 fn non_fuji_advert_returns_nomatch() {
     let s = store();
-    // No matching service UUID + arbitrary mfg-data → NoMatch.
+    // Wrong company ID + no matching service UUID → NoMatch.
     let obs = Observation::BleAdvert {
         service_uuids: vec!["DEADBEEF-0000-1000-8000-00805F9B34FB".to_string()],
+        manufacturer_company_id: 0x004C, // Apple
         manufacturer_data: vec![0xFF, 0xFF, 0xFF],
         local_name: None,
+    };
+    assert!(matches!(s.recognize(obs), Recognition::NoMatch));
+}
+
+#[test]
+fn wrong_company_id_with_payload_shape_that_would_otherwise_match_returns_nomatch() {
+    // Guards against the false-positive window the old skip created: an advert
+    // whose payload happens to look like a Fuji RED mfg-data (6 bytes,
+    // type=0x01 + 5 ASCII) must NOT recognize as a Fuji body if the BT-SIG
+    // company-ID isn't 0x04D8.
+    let s = store();
+    let obs = Observation::BleAdvert {
+        service_uuids: vec!["123D8F06-62A1-4935-9322-833C531EE225".to_string()],
+        manufacturer_company_id: 0x004C, // Apple, not Fuji
+        manufacturer_data: vec![0x01, b'A', b'B', b'C', b'D', b'E'],
+        local_name: Some("GFX100 II".to_string()),
     };
     assert!(matches!(s.recognize(obs), Recognition::NoMatch));
 }
@@ -154,6 +173,7 @@ fn legacy_signature_wins_over_red_when_both_could_match_per_file_order() {
     let s = store();
     let obs = Observation::BleAdvert {
         service_uuids: vec!["AF854C2E-B214-458E-97E2-912C4ECF2CB8".to_string()],
+        manufacturer_company_id: 0x04D8, // Fujifilm
         manufacturer_data: vec![0x02, 0x11, 0x22, 0x33, 0x44],
         local_name: None,
     };

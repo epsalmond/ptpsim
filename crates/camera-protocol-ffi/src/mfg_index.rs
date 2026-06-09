@@ -32,11 +32,16 @@ use crate::KeyValue;
 pub enum Observation {
     /// A BLE advertisement seen during scan. Apple delivers service UUIDs as a
     /// list; some bodies advertise multiple — the matcher iterates the whole
-    /// list. `manufacturer_data` is the RAW bytes from
-    /// `CBAdvertisementDataManufacturerDataKey` (the FFI parses the BT-SIG
-    /// company-ID prefix; the app does not).
+    /// list. `manufacturer_company_id` is the 2-byte BT-SIG manufacturer ID
+    /// (routing tag). `manufacturer_data` is the payload bytes that follow,
+    /// with the company-ID prefix already stripped — `assert_byte`/
+    /// `capture_bytes` offsets in signatures are interpreted relative to it.
+    /// Consumers split iOS `CBAdvertisementDataManufacturerDataKey` into
+    /// `(company_id_LE, payload)`; Android's
+    /// `getManufacturerSpecificData(companyId)` is already in this shape.
     BleAdvert {
         service_uuids: Vec<String>,
+        manufacturer_company_id: u16,
         manufacturer_data: Vec<u8>,
         local_name: Option<String>,
     },
@@ -420,6 +425,7 @@ impl From<&ix::Step> for Step {
 pub fn recognize_ble(
     index: &ix::ResolvedManufacturerIndex,
     service_uuids: &[String],
+    manufacturer_company_id: u16,
     manufacturer_data: &[u8],
     _local_name: Option<&str>,
 ) -> Recognition {
@@ -433,7 +439,12 @@ pub fn recognize_ble(
     for model in &index.models {
         for (_sig_name, sig) in &model.signatures {
             let ix::Signature::BleAdvert(ble_sig) = sig;
-            if !signature_matches(ble_sig, &service_uuids_upper, manufacturer_data) {
+            if !signature_matches(
+                ble_sig,
+                &service_uuids_upper,
+                manufacturer_company_id,
+                manufacturer_data,
+            ) {
                 continue;
             }
             matches.push((model.id.clone(), model.display_name.clone(), ble_sig));
@@ -490,8 +501,13 @@ pub fn recognize_ble(
 fn signature_matches(
     sig: &ix::BleAdvertSignature,
     service_uuids_upper: &[String],
+    mfg_company_id: u16,
     mfg_data: &[u8],
 ) -> bool {
+    // require.manufacturerCompanyId — routing tag check before any payload work.
+    if mfg_company_id != sig.require.manufacturer_company_id {
+        return false;
+    }
     // require.advertContainsService (optional)
     if let Some(svc) = sig.require.advert_contains_service.as_deref() {
         let want = svc.to_uppercase();
@@ -516,16 +532,6 @@ fn signature_matches(
             return false;
         }
     }
-    // company-id verification: per §3.2 the FFI parses the company-ID
-    // prefix. For Fuji and most manufacturers, the company-ID is the
-    // KEY in CBAdvertisementDataManufacturerDataKey, not in the bytes
-    // themselves — but the API hands the raw bytes through. Apple's
-    // CBAdvertisementDataManufacturerDataKey already filtered by company.
-    // The signature's require.manufacturer_company_id is a structural
-    // assertion the caller (the app) should pre-filter on; here we treat
-    // it as already-verified and don't re-check. If we later expose
-    // company-id-bearing bytes, swap this.
-    let _ = sig.require.manufacturer_company_id;
     true
 }
 
