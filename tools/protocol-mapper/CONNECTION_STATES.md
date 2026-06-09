@@ -134,7 +134,7 @@ Earlier experiments used this helper to test whether macOS `ComputerName` / `Loc
 
 ```sh
 scripts/macos_pairing_identity.sh show
-scripts/macos_pairing_identity.sh set --name mbp-7274 --admin-dialog
+scripts/macos_pairing_identity.sh set --name testhost --admin-dialog
 scripts/macos_pairing_identity.sh restore --admin-dialog
 ```
 
@@ -185,7 +185,7 @@ Evidence:
 
 Meaning:
 
-The camera reports that pairing/registration completed and Bluetooth Settings records the camera, but the camera-side registration name is blank. This has now happened after app-level connected-device-name writes for `eric’s MacBook Pro (2)`, `eric's MacBook Pro (2)`, and `mbp-7274`, after macOS `ComputerName` / `LocalHostName` were set to `mbp-7274`, and after a parallel macOS Local Name advertiser exposed `mbp-7274`.
+The camera reports that pairing/registration completed and Bluetooth Settings records the camera, but the camera-side registration name is blank. This has now happened after app-level connected-device-name writes for various host name strings, after macOS `ComputerName` / `LocalHostName` were set to `testhost`, and after a parallel macOS Local Name advertiser exposed `testhost`.
 
 Firmware analysis indicates this displayed name comes from the persisted ThreadX `PairingInfo` slot. BLE pairing populates that slot from peer GAP Device Name / advertisement Local Name data; PTP-IP populates it from `InitiatorFriendlyName`. The later Fuji `CONNECTED_DEVICE_NAME_STRING` write is not the camera-list display source.
 
@@ -247,7 +247,7 @@ Workflow:
 2. If a saved reference app `PAIRING_KEY` identity payload is available, replay it before
    `CONNECTED_DEVICE_NAME_STRING`; if not, record the gap and continue only with
    evidence that the camera accepts operational post-registration sync.
-3. For AP handoff, run `scripts/camera_ap_ptpip_probe_flow.sh --address <CoreBluetooth UUID> --device-name mbp-7274 ...`.
+3. For AP handoff, run `scripts/camera_ap_ptpip_probe_flow.sh --address <CoreBluetooth UUID> --device-name testhost ...`.
 4. Preserve the direct-connect probe session because it proves the identifier is currently usable.
 
 ### `camera_registered_host_unlisted_advertising`
@@ -327,7 +327,7 @@ signals.
 
 Workflow:
 
-1. Prefer `scripts/live_ble_camera_test.sh --device-name mbp-7274 --skip-location --write-registration-ack --timeout 45` so Fuji registration and ack happen in one BLE connection.
+1. Prefer `scripts/live_ble_camera_test.sh --device-name testhost --skip-location --write-registration-ack --timeout 45` so Fuji registration and ack happen in one BLE connection.
 2. If the advertisement exposes Fuji manufacturer identity, the tool writes the
    derived reference app `PAIRING_KEY` payload before `CONNECTED_DEVICE_NAME_STRING`.
 3. Use `scripts/live_ble_camera_test.sh --pair-only --timeout 30` only when
@@ -375,7 +375,7 @@ Workflow:
 
 1. Check whether the camera lists this computer as a registered connection.
 2. Record that with `scripts/evidence/camera_registered_manual.sh --value present|absent`.
-3. If absent, keep the camera in registration mode and run `scripts/live_ble_camera_test.sh --device-name mbp-7274 --skip-location --write-registration-ack --timeout 45`.
+3. If absent, keep the camera in registration mode and run `scripts/live_ble_camera_test.sh --device-name testhost --skip-location --write-registration-ack --timeout 45`.
 4. Re-evaluate the state.
 
 ### `host_orphaned_gatt_access_camera_not_registered`
@@ -395,7 +395,7 @@ This is the state that captures “the host already thinks it can talk to the ca
 Workflow:
 
 1. Keep the camera in registration/pairing mode if possible.
-2. Run `scripts/live_ble_camera_test.sh --device-name mbp-7274 --skip-location --write-registration-ack --timeout 45`.
+2. Run `scripts/live_ble_camera_test.sh --device-name testhost --skip-location --write-registration-ack --timeout 45`.
 3. Watch for camera-side persistence, not just host-side identity reads.
 4. If the camera times out or says connection lost, run the diagnostic and classify the new state.
 
@@ -641,7 +641,7 @@ Workflow:
 1. Preserve the failed BLE session and record it with `scripts/evidence/camera_ap_ble_session.sh --session-dir rce/sessions/laptop_ble_gps_<timestamp>` if the combined flow did not already do so.
 2. Read the camera screen and stop if it returns `unknown`.
 3. Compare the failed session's `identity.json`, `writes.jsonl`, and `session.log` against the latest successful AP-launch session before changing launch values. Confirm `IMAGE_TRANSFER_SETTING_EX=01` was rewritten when present.
-4. If the screen is still `ready_to_take_photo` and direct BLE connect remains present, retry `scripts/camera_ap_ptpip_probe_flow.sh --address <CoreBluetooth UUID> --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 ...` once with the normal timeout.
+4. If the screen is still `ready_to_take_photo` and direct BLE connect remains present, retry `scripts/camera_ap_ptpip_probe_flow.sh --address <CoreBluetooth UUID> --device-name testhost --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 ...` once with the normal timeout.
 5. If it fails twice in this state, do not keep retrying. Capture fresh screen evidence and investigate prerequisites such as camera-side function state, stale connected-device state, or missing setup writes.
 
 ### `camera_ap_wifi_associated_ethernet_default`
@@ -683,9 +683,9 @@ The camera is in its app-search window and is waiting for the laptop/app to comp
 Workflow:
 
 1. Run `scripts/connect_camera_ap_wifi.sh --credentials rce/sessions/laptop_ble_gps_<timestamp>/wifi_credentials.json` if Wi-Fi is not already associated.
-2. Run `scripts/ptpip_probe.sh --friendly-name mbp-7274 --tail-profile liveview --guid f2e4538fada5485d87b27f0bd3d5ded0` while the screen remains in this state.
-3. Prefer `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 --hold-ble 0` for repeat attempts so AP launch, Wi-Fi association, and PTP/IP probe run in one window.
-4. To replay an exact reference app init request, use `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin`.
+2. Run `scripts/ptpip_probe.sh --friendly-name testhost --tail-profile liveview --guid f2e4538fada5485d87b27f0bd3d5ded0` while the screen remains in this state.
+3. Prefer `scripts/camera_ap_ptpip_probe_flow.sh --device-name testhost --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0 --hold-ble 0` for repeat attempts so AP launch, Wi-Fi association, and PTP/IP probe run in one window.
+4. To replay an exact reference app init request, use `scripts/camera_ap_ptpip_probe_flow.sh --device-name testhost --ptpip-init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin`.
 5. To attempt raw PTP OpenSession after a successful init ack, add `--ptpip-open-session`.
 6. To probe the next observed reference app PTP property read, add `--ptpip-get-prop 0xd212`.
 7. Do not use BLE hold-open as the default. `--hold-ble SEC` is diagnostic only because live evidence showed it could prevent macOS from finding the camera AP.
@@ -731,7 +731,7 @@ Workflow:
 
 1. Preserve the PTP/IP probe session directory.
 2. Send raw PTP OpenSession in the same socket with `scripts/ptpip_probe.sh --init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin --open-session`. The script delegates the PTP/IP socket exchange to `rce.tools.fuji_ble_gps.ptpip`.
-3. If OpenSession is only attempted after the camera window has changed, do not interpret failure as an OpenSession packet error. Repeat through `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin --ptpip-open-session` while the user confirms the camera screen is in the expected state.
+3. If OpenSession is only attempted after the camera window has changed, do not interpret failure as an OpenSession packet error. Repeat through `scripts/camera_ap_ptpip_probe_flow.sh --device-name testhost --ptpip-init-payload rce/reference/ptp_decoded/liveview_payload_00000061.bin --ptpip-open-session` while the user confirms the camera screen is in the expected state.
 
 ### `camera_ap_ptpip_open_session_ok`
 
@@ -974,9 +974,9 @@ The camera AP/search workflow launched, but the camera did not observe the expec
 Workflow:
 
 1. Record the screen with `scripts/evidence/camera_screen_manual.sh --value app_function_not_found_retry --note "NOT FOUND / PLEASE CHECK THE APP AND SELECT THE FUNCTION AGAIN"`.
-2. Probe `192.168.0.1:55740` with `scripts/ptpip_probe.sh --friendly-name mbp-7274 --tail-profile liveview --guid f2e4538fada5485d87b27f0bd3d5ded0`.
+2. Probe `192.168.0.1:55740` with `scripts/ptpip_probe.sh --friendly-name testhost --tail-profile liveview --guid f2e4538fada5485d87b27f0bd3d5ded0`.
 3. If the camera has already returned to the normal shooting screen, relaunch AP/search and run the PTP/IP probe during the retry window.
-4. Prefer `scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0` so AP launch, Wi-Fi association, and PTP/IP probe run back-to-back.
+4. Prefer `scripts/camera_ap_ptpip_probe_flow.sh --device-name testhost --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0` so AP launch, Wi-Fi association, and PTP/IP probe run back-to-back.
 
 ### `camera_ap_wifi_associated_internet_route_changed`
 

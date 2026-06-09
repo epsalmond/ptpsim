@@ -276,7 +276,7 @@ async def test_camera_set_location_writes_payload_repeatedly(tmp_path, monkeypat
         sleeps.append(seconds)
 
     monkeypatch.setattr("rce.tools.fuji_ble_gps.camera.asyncio.sleep", fake_sleep)
-    payload = build_payload(37.8460286, -122.4806454, 33, 0)
+    payload = build_payload(37.7849, -122.4783, 33, 0)
     frozen = payload.__class__(
         latitude=payload.latitude,
         longitude=payload.longitude,
@@ -289,7 +289,7 @@ async def test_camera_set_location_writes_payload_repeatedly(tmp_path, monkeypat
 
     gps_writes = [write for write in conn.writes if write[0] == uuids.CHAR_LOCATION_AND_SPEED]
     assert len(gps_writes) == 2
-    assert gps_writes[0][1].hex() == "7ed88e16caeffeb62100000000000000ea070501001a0e"
+    assert gps_writes[0][1].hex() == "a8848516684bffb62100000000000000ea070501001a0e"
     assert sleeps == [3.0]
 
 
@@ -357,7 +357,7 @@ async def test_pair_trigger_first_aborts_without_trigger_read(tmp_path) -> None:
 async def test_camera_live_test_can_write_gps(tmp_path, monkeypatch) -> None:
     conn = FakeConn()
     camera = FujiCamera(FakeBackend(conn), Session(root=tmp_path))
-    payload = build_payload(37.8460286, -122.4806454, 33, 0)
+    payload = build_payload(37.7849, -122.4783, 33, 0)
     sleeps: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:

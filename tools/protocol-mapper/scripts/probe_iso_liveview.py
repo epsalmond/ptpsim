@@ -726,7 +726,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="192.168.0.1")
     parser.add_argument("--port", type=int, default=55740)
     parser.add_argument("--guid", default="f2e4538fada5485d87b27f0bd3d5ded0")
-    parser.add_argument("--friendly-name", default="mbp-7274")
+    parser.add_argument("--friendly-name", default="testhost")
     parser.add_argument("--timeout", type=float, default=6.0)
     parser.add_argument("--phase2", action="store_true", help="no-op writeback of current values (mutates)")
     parser.add_argument("--phase3", action="store_true", help="one safe ISO change (mutates)")

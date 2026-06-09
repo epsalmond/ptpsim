@@ -1,6 +1,6 @@
 # Linux: BLE → Wi-Fi AP → PTP-IP, and Big-3 (shutter / aperture / ISO) control
 
-Canonical Linux-host recipe for driving a Fujifilm GFX100 II (verified body 0C3E,
+Canonical Linux-host recipe for driving a Fujifilm GFX100 II (verified on a GFX100 II body,
 fw **02.30**) from BLE pairing through Wi-Fi AP launch to PTP-IP camera control,
 plus the exact commands for the "Big 3" exposure settings.
 
@@ -11,11 +11,11 @@ Full property/encoding detail and the live-capture evidence live in the wire
 
 ## Prereqs
 
-- USB BT+Wi-Fi adapter (e.g. MediaTek MT7961). Wi-Fi iface e.g. `wlx00c0cab7f674`.
+- USB BT+Wi-Fi adapter (e.g. MediaTek MT7961). Wi-Fi iface e.g. `wlx0000aabbccdd`.
 - `bleak>=0.22` in `.venv` (Linux BlueZ backend). `python -m venv .venv && .venv/bin/pip install bleak`.
 - Passwordless sudo for `nmcli` (Wi-Fi join is the only privileged step):
-  `/etc/sudoers.d/fuji-nmcli` → `eric ALL=(root) NOPASSWD: /usr/bin/nmcli`.
-- Set the adapter GAP name (camera binds/persists it): `bluetoothctl system-alias mbp-7274`.
+  `/etc/sudoers.d/fuji-nmcli` → `<your-user> ALL=(root) NOPASSWD: /usr/bin/nmcli`.
+- Set the adapter GAP name (camera binds/persists it): `bluetoothctl system-alias testhost`.
 
 ## One-shot flow
 
@@ -29,7 +29,7 @@ Steps it runs (each also usable standalone):
    - Fuji "pairing" on fw 2.30 is **GATT-level registration, not an SMP bond** (do
      not `bluetoothctl pair`; a bare `connect` resolves the full GATT).
    - Sequence: `PAIRING_KEY (aba356eb)` = legacy key from adv mfr-data (`0x04D8`,
-     `02`+4 bytes) → `CONNECTED_DEVICE_NAME (85b9163e)` = `mbp-7274\0` →
+     `02`+4 bytes) → `CONNECTED_DEVICE_NAME (85b9163e)` = `testhost\0` →
      **`CONNECTED_DEVICE_BLE_PROTOCOL_VERSION (eb4166b0) = 0x0101`** → UTC / sync-cycle
      / image-transfer → camera acks with `LOCATION_SYNC_STATE = 0x0100` → wait.
    - **GOTCHA (the one that blocks AP launch):** the `eb4166b0 = 0x0101` write is
@@ -52,7 +52,7 @@ disconnect, and stops BLE-advertising ~60s after wake. Re-launch (re-wake) per r
 
 ```
 TCP 192.168.0.1:55740 → InitCommandRequest (GUID f2e4538fada5485d87b27f0bd3d5ded0,
-                        friendly name mbp-7274) → InitCommandAck → OpenSession(0x1002)
+                        friendly name testhost) → InitCommandAck → OpenSession(0x1002)
 SetDevicePropValue(0xDF00, u16 6)    # outer = SDK_MODE_NEUTRAL20
 SetDevicePropValue(0xDF01, u16 22)   # inner = SDK_MODE_IMAGE_LIVE_VIEW
 GetDevicePropValue(0xDF2A) ; SetDevicePropValue(0xDF2A, min(camera_max, 4))   # reference app uses 2

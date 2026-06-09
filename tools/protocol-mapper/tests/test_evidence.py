@@ -946,7 +946,7 @@ def ptpip_summary(**overrides) -> dict:
     values = {
         "host": "192.168.0.1",
         "port": 55740,
-        "friendly_name": "mbp-7274",
+        "friendly_name": "testhost",
         "route_check": "passed",
         "tcp_connect": "present",
         "init_sent": True,
@@ -1416,7 +1416,7 @@ def make_session(tmp_path: Path) -> Path:
             [
                 '{"uuid":"%s","hex":"6572696300","length":5}' % uuids.CHAR_CONNECTED_DEVICE_NAME,
                 '{"uuid":"%s","hex":"c5880620","length":4}' % uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER,
-                '{"uuid":"%s","hex":"7ed88e16caeffeb62100000000000000ea070502080001","length":23,"ts":"2026-05-02T08:00:01Z"}'
+                '{"uuid":"%s","hex":"a8848516684bffb62100000000000000ea070502080001","length":23,"ts":"2026-05-02T08:00:01Z"}'
                 % uuids.CHAR_LOCATION_AND_SPEED,
             ]
         )

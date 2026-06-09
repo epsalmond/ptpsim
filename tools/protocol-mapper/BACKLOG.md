@@ -19,7 +19,7 @@ Needed:
 Known:
 
 - Accepted reference app GUID: `f2e4538fada5485d87b27f0bd3d5ded0`
-- Laptop friendly name `mbp-7274` succeeded when paired with that GUID.
+- Laptop friendly name `testhost` succeeded when paired with that GUID.
 - A fresh deterministic GUID timed out at init.
 
 Question:

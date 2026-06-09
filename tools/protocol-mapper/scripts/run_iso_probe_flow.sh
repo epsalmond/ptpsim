@@ -9,11 +9,11 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 PY="$REPO/.venv/bin/python"
-WIFI_IFACE="${FUJI_WIFI_IFACE:-wlx00c0cab7f674}"
+WIFI_IFACE="${FUJI_WIFI_IFACE:-wlx0000aabbccdd}"
 SSID="${FUJI_AP_SSID:-FUJIFILM-GFX100II-XXXX}"
 CAM_IP="${FUJI_CAM_IP:-192.168.0.1}"
 GUID="${FUJI_PTPIP_GUID:-f2e4538fada5485d87b27f0bd3d5ded0}"
-NAME="${FUJI_PTPIP_NAME:-mbp-7274}"
+NAME="${FUJI_PTPIP_NAME:-testhost}"
 CON_NAME="fuji-cam-ap"
 
 mkdir -p "$SESSION_DIR"

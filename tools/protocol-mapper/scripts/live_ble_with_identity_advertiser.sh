@@ -8,7 +8,7 @@ Usage:
 
 Wrapper options:
   --identity-name NAME       Name advertised as BLE Local Name.
-                             Default: FUJI_BLE_IDENTITY_NAME, then mbp-7274.
+                             Default: FUJI_BLE_IDENTITY_NAME, then testhost.
   --advertise-duration SEC  Seconds to keep advertiser alive. Default: 180.
   -h, --help                Show this help.
 
@@ -20,7 +20,7 @@ Device Name 0x2A00 from this helper. This wrapper tests the Local Name fallback
 path only. Live tests showed it does not fix the camera-side blank host name.
 
 Example:
-  scripts/live_ble_with_identity_advertiser.sh --identity-name mbp-7274 -- \
+  scripts/live_ble_with_identity_advertiser.sh --identity-name testhost -- \
     --skip-location --write-registration-ack --timeout 45
 USAGE
 }
@@ -28,7 +28,7 @@ USAGE
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-identity_name="${FUJI_BLE_IDENTITY_NAME:-mbp-7274}"
+identity_name="${FUJI_BLE_IDENTITY_NAME:-testhost}"
 advertise_duration="${FUJI_BLE_IDENTITY_DURATION:-180}"
 live_args=()
 

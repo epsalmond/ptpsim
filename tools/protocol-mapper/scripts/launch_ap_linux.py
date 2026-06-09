@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scan-timeout", type=float, default=12.0)
     parser.add_argument("--connect-timeout", type=float, default=30.0)
     parser.add_argument("--ap-timeout", type=float, default=25.0)
-    parser.add_argument("--device-name", default="mbp-7274", help="registered device name to (re)write")
+    parser.add_argument("--device-name", default="testhost", help="registered device name to (re)write")
     parser.add_argument("--function", default="take", choices=sorted(uuids.FUNCTION_LAUNCH_VALUES),
                         help="FUNCTION_LAUNCH value: take=0400 (live-view control), get=0300 (SD browse), fw_transfer=0500")
     parser.add_argument("--no-pair", dest="pair", action="store_false")

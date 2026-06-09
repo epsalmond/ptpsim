@@ -8,7 +8,7 @@ PAIRING_KEY from Fujifilm manufacturer data) -> bare connect -> register ->
 FUNCTION_LAUNCH=take (0400) -> poll AP_STATE until launched.
 
 Set the BlueZ adapter alias to the device name first (bluetoothctl system-alias
-mbp-7274) so the camera persists/binds that GAP name.
+testhost) so the camera persists/binds that GAP name.
 
 Writes a small status JSON to --status-file; exit 0 iff AP launched.
 """
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="register-launch-linux")
     parser.add_argument("--name", default="GFX100 II", help="advertised name fragment to match")
     parser.add_argument("--address", default="", help="explicit BD_ADDR (skips advertisement match + PAIRING_KEY)")
-    parser.add_argument("--device-name", default="mbp-7274", help="name registered to the camera")
+    parser.add_argument("--device-name", default="testhost", help="name registered to the camera")
     parser.add_argument("--function", default="take", choices=["take", "get", "fw_transfer"])
     parser.add_argument("--scan-timeout", type=float, default=40.0)
     parser.add_argument("--ap-timeout", type=float, default=25.0)

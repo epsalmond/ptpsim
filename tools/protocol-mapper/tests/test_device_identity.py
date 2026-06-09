@@ -52,13 +52,13 @@ def test_default_device_name_sanitizes_macos_computer_name(monkeypatch) -> None:
     def fake_run(command, **kwargs):
         if command == ["scutil", "--get", "LocalHostName"]:
             return types.SimpleNamespace(returncode=1, stdout="")
-        return types.SimpleNamespace(returncode=0, stdout="eric’s MacBook Pro (2)\n")
+        return types.SimpleNamespace(returncode=0, stdout="Test User’s MacBook Pro (2)\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert default_device_name() == app_style_device_name(
-        "eric’s MacBook Pro (2)",
-        seed="eric’s MacBook Pro (2)",
+        "Test User’s MacBook Pro (2)",
+        seed="Test User’s MacBook Pro (2)",
     )
 
 

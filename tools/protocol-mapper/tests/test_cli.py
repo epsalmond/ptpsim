@@ -9,21 +9,21 @@ from rce.tools.fuji_ble_gps import cli
 
 
 def test_cli_decode_payload(capsys) -> None:
-    rc = cli.main(["decode-payload", "7ed88e16caeffeb62100000000000000ea070501001a0e"])
+    rc = cli.main(["decode-payload", "a8848516684bffb62100000000000000ea070501001a0e"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "lat=37.8460286" in out
+    assert "lat=37.7849" in out
     assert "utc=2026-05-01T00:26:14Z" in out
 
 
 def test_cli_decode_payload_file(tmp_path, capsys) -> None:
     payload = tmp_path / "payload.bin"
-    payload.write_bytes(bytes.fromhex("7ed88e16caeffeb62100000000000000ea070501001a0e"))
+    payload.write_bytes(bytes.fromhex("a8848516684bffb62100000000000000ea070501001a0e"))
 
     rc = cli.main(["decode-payload", str(payload)])
 
     assert rc == 0
-    assert "lon=-122.4806454" in capsys.readouterr().out
+    assert "lon=-122.4783" in capsys.readouterr().out
 
 
 def test_cli_dry_run_writes_session(tmp_path, capsys) -> None:
@@ -33,9 +33,9 @@ def test_cli_dry_run_writes_session(tmp_path, capsys) -> None:
             str(tmp_path),
             "set-location",
             "--lat",
-            "37.8460286",
+            "37.7849",
             "--lon",
-            "-122.4806454",
+            "-122.4783",
             "--alt",
             "33",
             "--speed",
@@ -46,7 +46,7 @@ def test_cli_dry_run_writes_session(tmp_path, capsys) -> None:
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert "lat=37.8460286" in out
+    assert "lat=37.7849" in out
     sessions = list(Path(tmp_path).glob("laptop_ble_gps_*"))
     assert len(sessions) == 1
     assert (sessions[0] / "payloads" / "location_dry_run.bin").exists()

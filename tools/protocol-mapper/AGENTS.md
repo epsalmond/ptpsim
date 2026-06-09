@@ -108,7 +108,7 @@ Working as of 2026-05-05:
 - GPS sync works. The confirmed minimal post-restart flow used two GPS writes five seconds apart and showed the camera GPS icon.
 - The camera-side registered host name still displays empty on macOS. Treat this as a non-blocking display-name defect for GPS/control work.
 - AP/Wi-Fi handoff is scripted. BLE can read SSID/BSSID/AP state, store the AP passphrase in a `0600` credentials file with redacted logs, launch the AP, and ask macOS to associate while preserving the Ethernet internet route.
-- PTP/IP probing is implemented. Generated init using accepted reference app GUID `f2e4538fada5485d87b27f0bd3d5ded0`, laptop friendly name `mbp-7274`, and the liveview tail succeeded through `GetDevicePropValue 0xD212`.
+- PTP/IP probing is implemented. Generated init using accepted reference app GUID `f2e4538fada5485d87b27f0bd3d5ded0`, laptop friendly name `testhost`, and the liveview tail succeeded through `GetDevicePropValue 0xD212`.
 - SD-card browse and object download flows are live-tested. The scripts can list folders/dates, list object handles, fetch ObjectInfo/thumbnail data, download a complete JPEG, and export it with a sidecar manifest.
 - Firmware-update modeling is implemented from the successful 2026-05-08 reference app capture. The code builds/decodes the BLE `FirmwareUpdateRequestInfo`, builds the 839-byte firmware `SendObjectInfo` payload byte-for-byte against the capture, plans 1 MiB `0x9042` chunks, and has separate BLE-prepare and PTP/IP-upload scripts. The PTP/IP upload script is dry-run by default and requires `--execute` for the destructive DAT transfer.
 - Camera-screen vision is scripted. LCD geometry is calibrated separately, current screens can be classified through the iPhone Continuity Camera, and preserved `capture.json` artifacts can be reclassified without another camera round trip.
@@ -161,13 +161,13 @@ The code converts names to an reference app-shaped `host-####` token before writ
 
 Firmware inspection says the camera's Bluetooth device-list UI reads the displayed name from a persisted ThreadX `PairingInfo` slot populated during bond setup from peer GAP Device Name / Local Name data, or from PTP-IP `InitiatorFriendlyName` for Wi-Fi tethering. It is not populated by the Fuji app-level `CONNECTED_DEVICE_NAME_STRING` write.
 
-Fresh pairing with app-level `CONNECTED_DEVICE_NAME_STRING=mbp-7274`, plus macOS `ComputerName` and `LocalHostName` set to `mbp-7274`, still produced an empty camera-side displayed host name. A later macOS Local Name advertiser experiment also left the camera-side name blank because public CoreBluetooth refused GAP `0x1800` / Device Name `0x2A00`. Do not repeat those macOS identity experiments unless new evidence shows CoreBluetooth can expose a peer-readable GAP Device Name during bonding.
+Fresh pairing with app-level `CONNECTED_DEVICE_NAME_STRING=testhost`, plus macOS `ComputerName` and `LocalHostName` set to `testhost`, still produced an empty camera-side displayed host name. A later macOS Local Name advertiser experiment also left the camera-side name blank because public CoreBluetooth refused GAP `0x1800` / Device Name `0x2A00`. Do not repeat those macOS identity experiments unless new evidence shows CoreBluetooth can expose a peer-readable GAP Device Name during bonding.
 
 For future Linux/BlueZ work, verify and set the adapter alias before pairing:
 
 ```sh
 bluetoothctl show | grep -i alias
-bluetoothctl system-alias mbp-7274
+bluetoothctl system-alias testhost
 ```
 
 GPS payload is 23 bytes:
@@ -188,8 +188,8 @@ uint8   UTC second
 Known-good example-capture coordinates:
 
 ```text
-lat=37.8460286
-lon=-122.4806454
+lat=37.7849
+lon=-122.4783
 alt=33
 speed=0
 ```
@@ -252,26 +252,26 @@ When adding behavior:
 Use registration-only before GPS:
 
 ```sh
-scripts/live_ble_camera_test.sh --device-name mbp-7274 --skip-location --write-registration-ack --timeout 45
+scripts/live_ble_camera_test.sh --device-name testhost --skip-location --write-registration-ack --timeout 45
 ```
 
 Only run GPS writes after the state machine says registration is persisted and the camera is ready:
 
 ```sh
-scripts/live_ble_camera_test.sh --device-name mbp-7274 --write-registration-ack --lat <lat> --lon <lon> --alt <meters> --speed <mps> --repeat 2 --interval 5 --timeout 45
+scripts/live_ble_camera_test.sh --device-name testhost --write-registration-ack --lat <lat> --lon <lon> --alt <meters> --speed <mps> --repeat 2 --interval 5 --timeout 45
 ```
 
 AP Wi-Fi handoff is split into deterministic steps:
 
 ```sh
-scripts/camera_ap_prepare.sh --device-name mbp-7274 --timeout 45
+scripts/camera_ap_prepare.sh --device-name testhost --timeout 45
 scripts/connect_camera_ap_wifi.sh --credentials rce/sessions/laptop_ble_gps_<timestamp>/wifi_credentials.json
 scripts/evidence/camera_ap_wifi_session.sh --session-dir rce/sessions/camera_ap_wifi_<timestamp>
-scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0
+scripts/ptpip_probe.sh --friendly-name testhost --guid f2e4538fada5485d87b27f0bd3d5ded0
 scripts/evidence/ptpip_probe_session.sh --session-dir rce/sessions/ptpip_probe_<timestamp>
-scripts/camera_ap_ptpip_probe_flow.sh --device-name mbp-7274 --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0
-scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0 --open-session --app-sequence sdcard-folder-and-dates
-scripts/ptpip_probe.sh --friendly-name mbp-7274 --guid f2e4538fada5485d87b27f0bd3d5ded0 --open-session --app-sequence sdcard-object-handles
+scripts/camera_ap_ptpip_probe_flow.sh --device-name testhost --ptpip-guid f2e4538fada5485d87b27f0bd3d5ded0
+scripts/ptpip_probe.sh --friendly-name testhost --guid f2e4538fada5485d87b27f0bd3d5ded0 --open-session --app-sequence sdcard-folder-and-dates
+scripts/ptpip_probe.sh --friendly-name testhost --guid f2e4538fada5485d87b27f0bd3d5ded0 --open-session --app-sequence sdcard-object-handles
 scripts/camera_ap_download_object.sh --handle 0x0000000c
 scripts/ptpip_export_object.sh --session-dir rce/sessions/ptpip_probe_<timestamp> --output-dir rce/downloads/manual_export
 ```
