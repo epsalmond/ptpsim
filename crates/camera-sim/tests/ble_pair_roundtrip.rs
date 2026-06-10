@@ -243,3 +243,37 @@ fn legacy_body_without_id_characteristic_still_completes() {
         Some("01")
     );
 }
+
+#[test]
+fn red_body_without_id_characteristic_skips_the_echo_and_completes() {
+    // #38: a red-styled body that doesn't expose deviceIdentificationNumber
+    // must complete the plan with BOTH id steps skipped — the read is
+    // tolerant (gatt-not-found) and the echo write is tolerant (idNumber
+    // unbound). Before the fix the echo write hard-failed the walk.
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let scope = recognize(&view, &red_facts(ble));
+    assert_eq!(scope.get("style").map(String::as_str), Some("red"));
+
+    // Catalog WITHOUT deviceIdentificationNumber at all.
+    let id_uuid = uuid(ble, "deviceIdentificationNumber");
+    let mut responder = BleResponder::new(ble.gatt.values().filter(|u| **u != id_uuid).cloned())
+        .serve_read(&uuid(ble, "protectedSerialString"), b"FF123456")
+        .serve_read(&uuid(ble, "transferState"), &[0x00]);
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &ble.establishment.steps,
+        &scope,
+        &runtime_params(),
+    )
+    .expect("plan completes despite the absent characteristic");
+
+    assert!(!outcome.scope.contains_key("idNumber"));
+    assert!(
+        responder.written(&id_uuid).is_empty(),
+        "no echo write reached the absent characteristic"
+    );
+    // The CCCD rounds still ran in full after the skipped exchange.
+    assert_eq!(responder.subscribed().len(), 13);
+}

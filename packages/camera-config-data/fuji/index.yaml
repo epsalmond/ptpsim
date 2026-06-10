@@ -122,10 +122,13 @@ families:
           # the schema as a value transform.
           #
           # If style != "red" or the characteristic isn't exposed on this
-          # body's catalog, skip. Tolerant on the if-block covers both:
-          # missing `style` (treat as not-red, else branch which is empty)
-          # and missing characteristic (inner bleRead's `tolerant`
-          # swallows the gatt-not-found).
+          # body's catalog, skip. Three tolerant flags cover the cases:
+          # the if-block's tolerant treats a missing `style` as not-red
+          # (empty else branch); the inner bleRead's tolerant swallows the
+          # gatt-not-found on a body without the characteristic; and the
+          # echo bleWrite's tolerant skips when that read left `idNumber`
+          # unbound (an unresolved captured ref is otherwise a hard step
+          # failure per §11.6 — see #38).
           - if:
               condition: { style: { eq: "red" } }
               tolerant: true
@@ -142,6 +145,7 @@ families:
                     value:
                       captured: idNumber
                       transform: { bitOr: 0x20000000 }
+                    tolerant: true
               # No else branch — LEGACY just continues past this point.
 
           # First register-notify round (reference app BTRequester.mFirstRegisterNotify).
