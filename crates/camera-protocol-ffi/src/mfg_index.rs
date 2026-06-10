@@ -575,7 +575,7 @@ pub fn recognize_ble(
     for model in &index.models {
         for (_sig_name, sig) in &model.signatures {
             let ix::Signature::BleAdvert(ble_sig) = sig;
-            if !signature_matches(
+            if !ix::eval::advert_signature_matches(
                 ble_sig,
                 &service_uuids_upper,
                 manufacturer_company_id,
@@ -594,7 +594,10 @@ pub fn recognize_ble(
         0 => Recognition::NoMatch,
         1 => {
             let (model_id, _display, sig) = &matches[0];
-            let runtime_scope = build_runtime_scope(sig, manufacturer_data);
+            let runtime_scope = ix::eval::advert_scope(sig, manufacturer_data)
+                .into_iter()
+                .map(|(key, value)| KeyValue { key, value })
+                .collect();
             Recognition::Candidate {
                 model: model_id.clone(),
                 connection: sig.suggests.connection.clone(),
@@ -632,70 +635,6 @@ pub fn recognize_ble(
             }
         }
     }
-}
-
-fn signature_matches(
-    sig: &ix::BleAdvertSignature,
-    service_uuids_upper: &[String],
-    mfg_company_id: u16,
-    mfg_data: &[u8],
-) -> bool {
-    // require.manufacturerCompanyId — routing tag check before any payload work.
-    if mfg_company_id != sig.require.manufacturer_company_id {
-        return false;
-    }
-    // require.advertContainsService (optional)
-    if let Some(svc) = sig.require.advert_contains_service.as_deref() {
-        let want = svc.to_uppercase();
-        if !service_uuids_upper.contains(&want) {
-            return false;
-        }
-    }
-    // mfg-data length envelope
-    if let Some(len) = sig.manufacturer_data.length {
-        if mfg_data.len() != len {
-            return false;
-        }
-    }
-    if let Some(min) = sig.manufacturer_data.min_length {
-        if mfg_data.len() < min {
-            return false;
-        }
-    }
-    // byte assertions
-    for asrt in &sig.manufacturer_data.assert_byte {
-        if mfg_data.get(asrt.index) != Some(&asrt.equals) {
-            return false;
-        }
-    }
-    true
-}
-
-fn build_runtime_scope(sig: &ix::BleAdvertSignature, mfg_data: &[u8]) -> Vec<KeyValue> {
-    let mut out: Vec<KeyValue> =
-        Vec::with_capacity(sig.scope.len() + sig.manufacturer_data.capture_bytes.len());
-    // Literal scope facts (style, etc.) first.
-    for (k, v) in &sig.scope {
-        out.push(KeyValue {
-            key: k.clone(),
-            value: v.clone(),
-        });
-    }
-    // Captured byte ranges, decoded per §11.2.
-    for cap in &sig.manufacturer_data.capture_bytes {
-        let end = cap.from + cap.length;
-        if end > mfg_data.len() {
-            continue; // capture would read past the buffer; skip
-        }
-        let bytes = &mfg_data[cap.from..end];
-        if let Some(value) = ix::eval::decode_bytes(bytes, cap.encoding) {
-            out.push(KeyValue {
-                key: cap.name.clone(),
-                value,
-            });
-        }
-    }
-    out
 }
 
 fn intersect_scope<'a>(

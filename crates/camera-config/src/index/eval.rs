@@ -5,7 +5,69 @@
 //! grammar on another platform must match this module byte-for-byte — the
 //! unit tests at the bottom are the executable spec.
 
-use super::types::{Encoding, Transform};
+use super::types::{BleAdvertSignature, Encoding, Transform};
+
+/// Match one BLE-advert signature against observed advert facts (§11.7 —
+/// the caller iterates signatures in file-declaration order).
+/// `service_uuids_upper` must already be uppercased; `mfg_data` is the
+/// post-company-id payload (the FFI `Observation::BleAdvert` contract).
+pub fn advert_signature_matches(
+    sig: &BleAdvertSignature,
+    service_uuids_upper: &[String],
+    mfg_company_id: u16,
+    mfg_data: &[u8],
+) -> bool {
+    // require.manufacturerCompanyId — routing tag check before any payload work.
+    if mfg_company_id != sig.require.manufacturer_company_id {
+        return false;
+    }
+    // require.advertContainsService (optional)
+    if let Some(svc) = sig.require.advert_contains_service.as_deref() {
+        let want = svc.to_uppercase();
+        if !service_uuids_upper.contains(&want) {
+            return false;
+        }
+    }
+    // mfg-data length envelope
+    if let Some(len) = sig.manufacturer_data.length {
+        if mfg_data.len() != len {
+            return false;
+        }
+    }
+    if let Some(min) = sig.manufacturer_data.min_length {
+        if mfg_data.len() < min {
+            return false;
+        }
+    }
+    // byte assertions
+    for asrt in &sig.manufacturer_data.assert_byte {
+        if mfg_data.get(asrt.index) != Some(&asrt.equals) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Derive a matched signature's runtime-scope facts: literal `scope:`
+/// entries first, then captures decoded per §11.2. A capture that would
+/// read past the payload is skipped (never an error).
+pub fn advert_scope(sig: &BleAdvertSignature, mfg_data: &[u8]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> =
+        Vec::with_capacity(sig.scope.len() + sig.manufacturer_data.capture_bytes.len());
+    for (k, v) in &sig.scope {
+        out.push((k.clone(), v.clone()));
+    }
+    for cap in &sig.manufacturer_data.capture_bytes {
+        let end = cap.from + cap.length;
+        if end > mfg_data.len() {
+            continue; // capture would read past the buffer; skip
+        }
+        if let Some(value) = decode_bytes(&mfg_data[cap.from..end], cap.encoding) {
+            out.push((cap.name.clone(), value));
+        }
+    }
+    out
+}
 
 /// Apply a transform chain in order (§11.13). `None` when any link fails
 /// (out-of-range window, integer op on > 8 bytes, wrong width for
