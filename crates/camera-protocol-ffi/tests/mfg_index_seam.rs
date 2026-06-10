@@ -455,3 +455,49 @@ fn fuji_cccd_finalization_subscribes_default_to_notify_mode() {
     assert!(!modes.is_empty(), "fuji plan carries bleSubscribe steps");
     assert!(modes.iter().all(|m| matches!(m, CccdMode::Notify)));
 }
+
+// ---------------------------------------------------------------------------
+// bleRequestMtu + bleDiscoverServices cross the seam (multivendor pass)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mtu_and_discover_services_surface_through_ffi() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: { fujiCompanyId: 1 }
+      establishment:
+        mechanism: test
+        steps:
+          - bleConnect: {}
+          - bleRequestMtu: { mtu: 158, tolerant: true }
+          - bleDiscoverServices: {}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let s = ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".to_string(),
+            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+        }],
+    )
+    .expect("synthetic index loads");
+    let plan = s
+        .establishment("tm1".into(), "ble".into(), vec![])
+        .expect("plan present");
+    match &plan.steps[1] {
+        Step::BleRequestMtu { mtu, opts } => {
+            assert_eq!(*mtu, 158);
+            assert!(opts.tolerant);
+        }
+        other => panic!("expected BleRequestMtu, got {other:?}"),
+    }
+    assert!(matches!(&plan.steps[2], Step::BleDiscoverServices { .. }));
+}

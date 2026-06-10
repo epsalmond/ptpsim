@@ -134,10 +134,10 @@ pub struct EstablishmentBlock {
 // Step grammar (BLE-only in the MVP)
 // ---------------------------------------------------------------------------
 
-/// The seven MVP step verbs. Authored in YAML as a one-entry mapping whose
+/// The BLE step verbs. Authored in YAML as a one-entry mapping whose
 /// key names the verb: `- bleConnect: {}` / `- bleRead: { gatt: ..., ... }`.
 /// Custom `Deserialize` (see [`super::parse`]) dispatches on the verb key.
-/// Verbs not in the MVP allowlist (`usbEnumerate`, `tcpListen`, …) fail with
+/// Verbs not in the allowlist (`usbEnumerate`, `tcpListen`, …) fail with
 /// an explicit "unknown step verb" message.
 ///
 /// Serialize side keeps the externally-tagged default — Step values aren't
@@ -146,6 +146,8 @@ pub struct EstablishmentBlock {
 #[serde(rename_all = "camelCase")]
 pub enum Step {
     BleConnect(BleConnectStep),
+    BleRequestMtu(BleRequestMtuStep),
+    BleDiscoverServices(BleDiscoverServicesStep),
     BleRead(BleReadStep),
     BleWrite(BleWriteStep),
     BleSubscribe(BleSubscribeStep),
@@ -156,11 +158,13 @@ pub enum Step {
 }
 
 impl Step {
-    /// One of the MVP verbs (always true for a deserialized `Step`).
+    /// One of the allowlisted verbs (always true for a deserialized `Step`).
     /// Used by validation passes that walk untyped trees.
     pub fn verb_name(&self) -> &'static str {
         match self {
             Step::BleConnect(_) => "bleConnect",
+            Step::BleRequestMtu(_) => "bleRequestMtu",
+            Step::BleDiscoverServices(_) => "bleDiscoverServices",
             Step::BleRead(_) => "bleRead",
             Step::BleWrite(_) => "bleWrite",
             Step::BleSubscribe(_) => "bleSubscribe",
@@ -177,6 +181,8 @@ impl Step {
     pub fn options(&self) -> StepOptions {
         match self {
             Step::BleConnect(s) => s.opts.clone(),
+            Step::BleRequestMtu(s) => s.opts.clone(),
+            Step::BleDiscoverServices(s) => s.opts.clone(),
             Step::BleRead(s) => s.opts.clone(),
             Step::BleWrite(s) => s.opts.clone(),
             Step::BleSubscribe(s) => s.opts.clone(),
@@ -208,6 +214,30 @@ pub struct StepOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct BleConnectStep {
+    #[serde(flatten)]
+    pub opts: StepOptions,
+}
+
+/// `bleRequestMtu: { mtu: 158 }` — ask the link for an ATT MTU before GATT
+/// traffic. Sony pairing/Wi-Fi flows request 158. On platforms without an
+/// explicit request API (CoreBluetooth negotiates automatically), the
+/// dispatcher treats this as a checkpoint: succeed if the negotiated MTU
+/// is ≥ `mtu`, else step failure (tolerant-aware as usual).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleRequestMtuStep {
+    pub mtu: u16,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `bleDiscoverServices: {}` — make GATT service discovery an explicit state
+/// transition (Sony/Canon/Nikon apps all gate on it). On platforms whose BLE
+/// stack auto-discovers, this is a completion checkpoint, not a re-trigger.
+/// Discovery timeout is dispatcher policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BleDiscoverServicesStep {
     #[serde(flatten)]
     pub opts: StepOptions,
 }

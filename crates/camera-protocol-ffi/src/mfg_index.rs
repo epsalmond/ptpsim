@@ -114,11 +114,23 @@ pub struct StepOptions {
     pub retry_delay_ms: u32,
 }
 
-/// The seven MVP step verbs (plan §3.3). Externally inlined so each variant
+/// The BLE step verbs (plan §3.3 + §11). Externally inlined so each variant
 /// is a flat record at the uniffi layer.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum Step {
     BleConnect {
+        opts: StepOptions,
+    },
+    /// Request an ATT MTU before GATT traffic. On platforms without an
+    /// explicit request API (CoreBluetooth), succeed if the negotiated MTU
+    /// is ≥ `mtu`, else step failure.
+    BleRequestMtu {
+        mtu: u16,
+        opts: StepOptions,
+    },
+    /// Explicit GATT service-discovery checkpoint. On auto-discovering
+    /// stacks, complete when discovery has completed — don't re-trigger.
+    BleDiscoverServices {
         opts: StepOptions,
     },
     BleWrite {
@@ -480,6 +492,13 @@ impl From<&ix::Step> for Step {
     fn from(s: &ix::Step) -> Self {
         match s {
             ix::Step::BleConnect(inner) => Step::BleConnect {
+                opts: (&inner.opts).into(),
+            },
+            ix::Step::BleRequestMtu(inner) => Step::BleRequestMtu {
+                mtu: inner.mtu,
+                opts: (&inner.opts).into(),
+            },
+            ix::Step::BleDiscoverServices(inner) => Step::BleDiscoverServices {
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleRead(inner) => Step::BleRead {

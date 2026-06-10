@@ -241,7 +241,7 @@ YAML at any layer → `IndexParse` / `BodyParse`.
 | `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | the *unwalked tail* (steps from `nextStepIndex` onward) with firmware overlays applied — per §11.5. Returns `nil` when no overlay matched; dispatcher keeps existing plan (graceful degrade). MVP stub always returns `nil`. |
 | `connectionEstablishment(connection)` | (unchanged renamed §2 method — single-body connection bring-up) |
 
-### 9.3 The 7-verb Step grammar
+### 9.3 The 10-verb Step grammar
 
 You build a small dispatcher; the verbs come from the FFI. Each carries
 `StepOptions { tolerant, retries, retryDelayMs }` — wrap each verb body in one
@@ -250,6 +250,8 @@ retry loop and the same code handles all of them.
 | verb | what to do |
 |---|---|
 | `bleConnect` | connect to the peripheral your I/O primitive captured at recognize time. *No parameters* (§11.4 — peripheral binding is app-side). |
+| `bleRequestMtu` | request ATT MTU `mtu` before GATT traffic. If your platform has no request API (CoreBluetooth negotiates on its own), treat as a checkpoint: succeed when the negotiated MTU ≥ `mtu`. |
+| `bleDiscoverServices` | explicit service-discovery state transition. If your stack auto-discovers, complete when discovery has completed — don't re-trigger. Discovery timeout is your policy. |
 | `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13 — empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. |
 | `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate — CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |

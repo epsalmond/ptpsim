@@ -189,7 +189,7 @@ fn resolve_gatt_names_in_steps(
         let verb = verb_key.as_str().unwrap_or("");
         let here = format!("{path_ctx}[{i}].{verb}");
         match verb {
-            "bleConnect" => {}
+            "bleConnect" | "bleRequestMtu" | "bleDiscoverServices" => {}
             "bleRead" | "bleWrite" | "bleSubscribe" | "bleNotify" => {
                 resolve_gatt_field(body, gatt, &here)?;
             }
@@ -235,7 +235,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (MVP allowlist: bleConnect, bleRead, bleWrite, bleSubscribe, bleNotify, acquire, acquireFirmware, if)"),
+                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, acquire, acquireFirmware, if)"),
                 });
             }
         }
@@ -538,6 +538,12 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleConnect" => Ok(Step::BleConnect(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleConnect", e))?,
             )),
+            "bleRequestMtu" => Ok(Step::BleRequestMtu(
+                serde_yaml::from_value(body).map_err(|e| dec_err("bleRequestMtu", e))?,
+            )),
+            "bleDiscoverServices" => Ok(Step::BleDiscoverServices(
+                serde_yaml::from_value(body).map_err(|e| dec_err("bleDiscoverServices", e))?,
+            )),
             "bleRead" => Ok(Step::BleRead(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleRead", e))?,
             )),
@@ -560,7 +566,7 @@ impl<'de> serde::Deserialize<'de> for Step {
                 serde_yaml::from_value(body).map_err(|e| dec_err("if", e))?,
             )),
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (MVP allowlist: bleConnect, bleRead, bleWrite, bleSubscribe, bleNotify, acquire, acquireFirmware, if)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, acquire, acquireFirmware, if)"
             ))),
         }
     }

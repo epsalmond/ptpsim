@@ -815,3 +815,43 @@ models:
         other => panic!("expected bleNotify, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// bleRequestMtu + bleDiscoverServices setup verbs (multivendor pass)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mtu_and_discover_services_verbs_parse() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: { fujiCompanyId: 1 }
+      establishment:
+        mechanism: test
+        steps:
+          - bleConnect: {}
+          - bleRequestMtu: { mtu: 158 }
+          - bleDiscoverServices: {}
+          - bleRead: { gatt: c, encoding: bytes, captureAs: x }
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("setup verbs load");
+    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    match &steps[1] {
+        Step::BleRequestMtu(s) => {
+            assert_eq!(s.mtu, 158);
+            assert!(!s.opts.tolerant);
+        }
+        other => panic!("expected bleRequestMtu, got {other:?}"),
+    }
+    assert!(matches!(&steps[2], Step::BleDiscoverServices(_)));
+    assert_eq!(steps[1].verb_name(), "bleRequestMtu");
+    assert_eq!(steps[2].verb_name(), "bleDiscoverServices");
+}
