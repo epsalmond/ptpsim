@@ -252,7 +252,8 @@ retry loop and the same code handles all of them.
 | `bleConnect` | connect to the peripheral your I/O primitive captured at recognize time. *No parameters* (§11.4 — peripheral binding is app-side). |
 | `bleRead` | read the resolved UUID, decode per `encoding`, store in scope under `captureAs`. |
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. |
-| `bleNotify` | subscribe, wait for `until` (Any / Equals / Matches), optionally `captureAs`. |
+| `bleSubscribe` | enable CCCD on the resolved UUID; success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
+| `bleNotify` | subscribe AND wait for `until` (Any / Equals / Matches), optionally `captureAs`. Use when the plan needs to capture or gate on a notification payload. |
 | `acquire` | run inner step (`from[0]` — `Vec<Step>` of length 1; uniffi 0.31 doesn't accept `Box<Step>` for recursive enums), bind result to `name`. |
 | `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. |
 | `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |
