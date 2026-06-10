@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 pub mod mfg_index;
 pub use mfg_index::{
-    AcquireSource, BleNotifyUntil, CccdMode, Confidence, EstablishmentPlan, ModelMatch,
-    NotifyCapture, Observation, Predicate, PredicateOp, Recognition, Step, StepOptions, StepValue,
-    Transform,
+    AcquireSource, BleAdRecord, BleManufacturerData, BleNotifyUntil, BleServiceData, CccdMode,
+    Confidence, EstablishmentPlan, ModelMatch, NotifyCapture, Observation, Predicate, PredicateOp,
+    Recognition, Step, StepOptions, StepValue, Transform,
 };
 
 uniffi::setup_scaffolding!();
@@ -454,16 +454,28 @@ impl ConfigStore {
         match observation {
             Observation::BleAdvert {
                 service_uuids,
-                manufacturer_company_id,
                 manufacturer_data,
+                service_data,
                 local_name,
-            } => mfg_index::recognize_ble(
-                index,
-                &service_uuids,
-                manufacturer_company_id,
-                &manufacturer_data,
-                local_name.as_deref(),
-            ),
+                tx_power,
+                ad_records,
+            } => {
+                let facts = cc::index::eval::BleAdvertFacts {
+                    service_uuids,
+                    manufacturer_data: manufacturer_data.map(|m| (m.company_id, m.payload)),
+                    service_data: service_data
+                        .into_iter()
+                        .map(|s| (s.uuid, s.payload))
+                        .collect(),
+                    local_name,
+                    tx_power,
+                    ad_records: ad_records
+                        .into_iter()
+                        .map(|r| (r.ad_type, r.payload))
+                        .collect(),
+                };
+                mfg_index::recognize_ble(index, &facts)
+            }
         }
     }
 

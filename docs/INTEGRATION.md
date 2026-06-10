@@ -237,6 +237,16 @@ YAML at any layer → `IndexParse` / `BodyParse`.
 | call | gives you |
 |---|---|
 | `recognize(observation)` | `Recognition::Candidate{model, connection, confidence, runtimeScope}` / `Disambiguate{family, candidates, runtimeScope, hint}` / `NoMatch`. `runtimeScope` is `Vec<KeyValue>` carrying the signature's derived facts (`style: "legacy"`, `pairingKeyBytes: "44732a80"`, …). |
+
+`Observation::BleAdvert` carries `{ serviceUuids, manufacturerData?:
+{ companyId, payload }, serviceData: [{uuid, payload}], localName?,
+txPower?, adRecords: [{adType, payload}] }`. Populate every field your
+platform exposes and leave the rest nil/empty — signature predicates over an
+absent field evaluate false, never error (plan §11.14). `manufacturerData.payload`
+is the bytes AFTER the 2-byte company id: split iOS
+`CBAdvertisementDataManufacturerDataKey` into `(companyId LE, payload)`;
+Android `getManufacturerSpecificData(id)` is already the payload.
+CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
 | `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, steps: [Step] }`. `initialScope` is typically the `runtimeScope` from a `Candidate`. |
 | `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | the *unwalked tail* (steps from `nextStepIndex` onward) with firmware overlays applied — per §11.5. Returns `nil` when no overlay matched; dispatcher keeps existing plan (graceful degrade). MVP stub always returns `nil`. |
 | `connectionEstablishment(connection)` | (unchanged renamed §2 method — single-body connection bring-up) |

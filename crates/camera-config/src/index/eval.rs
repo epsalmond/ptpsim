@@ -5,43 +5,114 @@
 //! grammar on another platform must match this module byte-for-byte — the
 //! unit tests at the bottom are the executable spec.
 
-use super::types::{BleAdvertSignature, Encoding, Transform};
+use super::types::{
+    AdvertByteSource, AdvertPredicate, BleAdvertSignature, Encoding, PayloadPredicate, Transform,
+};
+
+/// Transport-neutral facts about one observed BLE advertisement — what the
+/// predicate model (§11.14) evaluates against. The FFI converts its
+/// `Observation::BleAdvert` into this; a platform that can't supply a field
+/// leaves it `None`/empty and predicates over it evaluate false
+/// (absent-field rule).
+#[derive(Debug, Clone, Default)]
+pub struct BleAdvertFacts {
+    pub service_uuids: Vec<String>,
+    /// `(company_id, post-company-id payload)`.
+    pub manufacturer_data: Option<(u16, Vec<u8>)>,
+    /// `(service UUID, payload)` pairs.
+    pub service_data: Vec<(String, Vec<u8>)>,
+    pub local_name: Option<String>,
+    pub tx_power: Option<i8>,
+    /// `(AD type, as-on-air payload)` — for AD type 0xFF the payload
+    /// INCLUDES the 2-byte LE company id.
+    pub ad_records: Vec<(u8, Vec<u8>)>,
+}
 
 /// Match one BLE-advert signature against observed advert facts (§11.7 —
 /// the caller iterates signatures in file-declaration order).
-/// `service_uuids_upper` must already be uppercased; `mfg_data` is the
-/// post-company-id payload (the FFI `Observation::BleAdvert` contract).
-pub fn advert_signature_matches(
-    sig: &BleAdvertSignature,
-    service_uuids_upper: &[String],
-    mfg_company_id: u16,
-    mfg_data: &[u8],
-) -> bool {
-    // require.manufacturerCompanyId — routing tag check before any payload work.
-    if mfg_company_id != sig.require.manufacturer_company_id {
-        return false;
+pub fn advert_matches(sig: &BleAdvertSignature, facts: &BleAdvertFacts) -> bool {
+    eval_predicate(&sig.require, facts)
+}
+
+fn eval_predicate(p: &AdvertPredicate, facts: &BleAdvertFacts) -> bool {
+    use AdvertPredicate as P;
+    match p {
+        P::All(children) => children.iter().all(|c| eval_predicate(c, facts)),
+        P::Any(children) => children.iter().any(|c| eval_predicate(c, facts)),
+        P::Not(inner) => !eval_predicate(inner, facts),
+        P::ManufacturerData(m) => match &facts.manufacturer_data {
+            None => false, // absent-field rule
+            Some((company_id, payload)) => {
+                if let Some(want) = m.company_id {
+                    if want != *company_id {
+                        return false;
+                    }
+                }
+                payload_holds(&m.payload, payload)
+            }
+        },
+        P::ServiceUuids { contains } => facts
+            .service_uuids
+            .iter()
+            .any(|u| u.eq_ignore_ascii_case(contains)),
+        P::ServiceData { uuid, payload } => facts
+            .service_data
+            .iter()
+            .filter(|(u, _)| u.eq_ignore_ascii_case(uuid))
+            .any(|(_, bytes)| payload_holds(payload, bytes)),
+        P::LocalName(n) => match &facts.local_name {
+            None => false,
+            Some(name) => {
+                if let Some(want) = &n.equals {
+                    return name == want;
+                }
+                if let Some(want) = &n.prefix {
+                    return name.starts_with(want);
+                }
+                if let Some(want) = &n.contains {
+                    return name.contains(want);
+                }
+                false // unreachable post-validation (exactly-one-of)
+            }
+        },
+        P::TxPower { min, max } => match facts.tx_power {
+            None => false,
+            Some(p) => min.is_none_or(|lo| p >= lo) && max.is_none_or(|hi| p <= hi),
+        },
+        P::RawAdRecord { ad_type, payload } => facts
+            .ad_records
+            .iter()
+            .filter(|(t, _)| t == ad_type)
+            .any(|(_, bytes)| payload_holds(payload, bytes)),
     }
-    // require.advertContainsService (optional)
-    if let Some(svc) = sig.require.advert_contains_service.as_deref() {
-        let want = svc.to_uppercase();
-        if !service_uuids_upper.contains(&want) {
+}
+
+fn payload_holds(p: &PayloadPredicate, bytes: &[u8]) -> bool {
+    if let Some(len) = p.length {
+        if bytes.len() != len {
             return false;
         }
     }
-    // mfg-data length envelope
-    if let Some(len) = sig.manufacturer_data.length {
-        if mfg_data.len() != len {
+    if let Some(min) = p.min_length {
+        if bytes.len() < min {
             return false;
         }
     }
-    if let Some(min) = sig.manufacturer_data.min_length {
-        if mfg_data.len() < min {
+    for asrt in &p.assert_byte {
+        if bytes.get(asrt.index) != Some(&asrt.equals) {
             return false;
         }
     }
-    // byte assertions
-    for asrt in &sig.manufacturer_data.assert_byte {
-        if mfg_data.get(asrt.index) != Some(&asrt.equals) {
+    for bits in &p.assert_bits {
+        // Read the minimum LE width covering the mask, starting at offset.
+        let width = (64 - bits.mask.leading_zeros() as usize).div_ceil(8);
+        let width = width.max(1);
+        let Some(slice) = bytes.get(bits.offset..bits.offset + width) else {
+            return false; // payload too short — absent-field rule
+        };
+        let mut le = [0u8; 8];
+        le[..slice.len()].copy_from_slice(slice);
+        if (u64::from_le_bytes(le) & bits.mask) != bits.equals {
             return false;
         }
     }
@@ -49,24 +120,59 @@ pub fn advert_signature_matches(
 }
 
 /// Derive a matched signature's runtime-scope facts: literal `scope:`
-/// entries first, then captures decoded per §11.2. A capture that would
-/// read past the payload is skipped (never an error).
-pub fn advert_scope(sig: &BleAdvertSignature, mfg_data: &[u8]) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> =
-        Vec::with_capacity(sig.scope.len() + sig.manufacturer_data.capture_bytes.len());
+/// entries first, then captures run through the §11.13 pipeline
+/// (`source bytes → window → transform chain → encoding → string`).
+/// A capture that fails anywhere is skipped (never an error).
+pub fn advert_scope(sig: &BleAdvertSignature, facts: &BleAdvertFacts) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::with_capacity(sig.scope.len() + sig.capture.len());
     for (k, v) in &sig.scope {
         out.push((k.clone(), v.clone()));
     }
-    for cap in &sig.manufacturer_data.capture_bytes {
-        let end = cap.from + cap.length;
-        if end > mfg_data.len() {
-            continue; // capture would read past the buffer; skip
+    for cap in &sig.capture {
+        let Some(source) = capture_source_bytes(&cap.source, facts) else {
+            continue;
+        };
+        let end = match cap.length {
+            Some(l) => match cap.at.checked_add(l) {
+                Some(e) => e,
+                None => continue,
+            },
+            None => source.len(),
+        };
+        if cap.at > source.len() || end > source.len() {
+            continue;
         }
-        if let Some(value) = decode_bytes(&mfg_data[cap.from..end], cap.encoding) {
+        let Some(bytes) = apply_transforms(&source[cap.at..end], &cap.transform) else {
+            continue;
+        };
+        if let Some(value) = decode_bytes(&bytes, cap.encoding) {
             out.push((cap.name.clone(), value));
         }
     }
     out
+}
+
+fn capture_source_bytes<'a>(
+    source: &AdvertByteSource,
+    facts: &'a BleAdvertFacts,
+) -> Option<&'a [u8]> {
+    match source {
+        AdvertByteSource::ManufacturerData => facts
+            .manufacturer_data
+            .as_ref()
+            .map(|(_, payload)| payload.as_slice()),
+        AdvertByteSource::RawAdRecord { ad_type } => facts
+            .ad_records
+            .iter()
+            .find(|(t, _)| t == ad_type)
+            .map(|(_, bytes)| bytes.as_slice()),
+        AdvertByteSource::ServiceData { uuid } => facts
+            .service_data
+            .iter()
+            .find(|(u, _)| u.eq_ignore_ascii_case(uuid))
+            .map(|(_, bytes)| bytes.as_slice()),
+        AdvertByteSource::LocalName => facts.local_name.as_deref().map(str::as_bytes),
+    }
 }
 
 /// Apply a transform chain in order (§11.13). `None` when any link fails
@@ -183,6 +289,211 @@ pub fn hex_lower(b: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::types::{
+        AdvertCapture, BitsAssertion, ByteAssertion, LocalNamePredicate, MfgDataPredicate,
+    };
+    use std::collections::BTreeMap;
+
+    fn sig(require: AdvertPredicate, capture: Vec<AdvertCapture>) -> BleAdvertSignature {
+        BleAdvertSignature {
+            require,
+            capture,
+            scope: BTreeMap::new(),
+            suggests: crate::index::types::SuggestsBlock {
+                connection: "ble".into(),
+                confidence: crate::index::types::Confidence::High,
+            },
+        }
+    }
+
+    fn mfg(company_id: Option<u16>, payload: PayloadPredicate) -> AdvertPredicate {
+        AdvertPredicate::ManufacturerData(MfgDataPredicate {
+            company_id,
+            payload,
+        })
+    }
+
+    #[test]
+    fn absent_fields_evaluate_false_and_not_inverts() {
+        let facts = BleAdvertFacts::default(); // nothing observed
+        let name_pred = AdvertPredicate::LocalName(LocalNamePredicate {
+            prefix: Some("GFX".into()),
+            ..Default::default()
+        });
+        assert!(!advert_matches(&sig(name_pred.clone(), vec![]), &facts));
+        assert!(advert_matches(
+            &sig(AdvertPredicate::Not(Box::new(name_pred)), vec![]),
+            &facts
+        ));
+        // No mfg data observed → mfg predicate false even with no constraints.
+        assert!(!advert_matches(
+            &sig(mfg(None, PayloadPredicate::default()), vec![]),
+            &facts
+        ));
+        assert!(!advert_matches(
+            &sig(
+                AdvertPredicate::TxPower {
+                    min: Some(-100),
+                    max: None
+                },
+                vec![]
+            ),
+            &facts
+        ));
+    }
+
+    #[test]
+    fn combinators_and_bits_assertions() {
+        let facts = BleAdvertFacts {
+            service_uuids: vec!["0000de00-3dd4-4255-8d62-6dc7b9bd5561".into()],
+            manufacturer_data: Some((0x012D, vec![0x21, 0b0000_0110, 0x07])),
+            local_name: Some("ILCE-7M4".into()),
+            tx_power: Some(-59),
+            ..Default::default()
+        };
+        // Case-insensitive service-UUID compare.
+        let svc = AdvertPredicate::ServiceUuids {
+            contains: "0000DE00-3DD4-4255-8D62-6DC7B9BD5561".into(),
+        };
+        assert!(advert_matches(&sig(svc.clone(), vec![]), &facts));
+        // Bits: byte 1, mask 0x06 == 0x06 (two feature flags set).
+        let bits = mfg(
+            Some(0x012D),
+            PayloadPredicate {
+                assert_bits: vec![BitsAssertion {
+                    offset: 1,
+                    mask: 0x06,
+                    equals: 0x06,
+                }],
+                ..Default::default()
+            },
+        );
+        assert!(advert_matches(&sig(bits.clone(), vec![]), &facts));
+        // any-of with a failing branch still matches; all-of with the same fails.
+        let wrong_byte = mfg(
+            Some(0x012D),
+            PayloadPredicate {
+                assert_byte: vec![ByteAssertion {
+                    index: 0,
+                    equals: 0x99,
+                }],
+                ..Default::default()
+            },
+        );
+        assert!(advert_matches(
+            &sig(
+                AdvertPredicate::Any(vec![wrong_byte.clone(), bits.clone()]),
+                vec![]
+            ),
+            &facts
+        ));
+        assert!(!advert_matches(
+            &sig(AdvertPredicate::All(vec![wrong_byte, bits]), vec![]),
+            &facts
+        ));
+        // Bits read past the payload end → false, not error.
+        let oob = mfg(
+            None,
+            PayloadPredicate {
+                assert_bits: vec![BitsAssertion {
+                    offset: 2,
+                    mask: 0xFFFF,
+                    equals: 0,
+                }],
+                ..Default::default()
+            },
+        );
+        assert!(!advert_matches(&sig(oob, vec![]), &facts));
+        // TxPower bounds.
+        assert!(advert_matches(
+            &sig(
+                AdvertPredicate::TxPower {
+                    min: Some(-70),
+                    max: Some(-50)
+                },
+                vec![]
+            ),
+            &facts
+        ));
+        // LocalName prefix.
+        assert!(advert_matches(
+            &sig(
+                AdvertPredicate::LocalName(LocalNamePredicate {
+                    prefix: Some("ILCE".into()),
+                    ..Default::default()
+                }),
+                vec![]
+            ),
+            &facts
+        ));
+    }
+
+    #[test]
+    fn captures_pull_from_sources_through_transform_chains() {
+        let facts = BleAdvertFacts {
+            manufacturer_data: Some((0x01A9, vec![0x01, 0x34, 0x12, 0xAA])),
+            local_name: Some("Canon EOS R5".into()),
+            ad_records: vec![(0x21, vec![0x10, 0x20, 0x30])],
+            ..Default::default()
+        };
+        let s = sig(
+            mfg(Some(0x01A9), PayloadPredicate::default()),
+            vec![
+                // Canon-style: reverse 2 bytes then decode as u16-le == 0x1234 byte-swapped.
+                AdvertCapture {
+                    source: AdvertByteSource::ManufacturerData,
+                    at: 1,
+                    length: Some(2),
+                    transform: vec![Transform::ReverseBytes],
+                    encoding: Encoding::U16Le,
+                    name: "usbId".into(),
+                },
+                AdvertCapture {
+                    source: AdvertByteSource::RawAdRecord { ad_type: 0x21 },
+                    at: 1,
+                    length: None,
+                    transform: vec![],
+                    encoding: Encoding::Bytes,
+                    name: "rawTail".into(),
+                },
+                AdvertCapture {
+                    source: AdvertByteSource::LocalName,
+                    at: 0,
+                    length: Some(5),
+                    transform: vec![],
+                    encoding: Encoding::Ascii,
+                    name: "brand".into(),
+                },
+                // Out-of-range window → skipped, not an error.
+                AdvertCapture {
+                    source: AdvertByteSource::ManufacturerData,
+                    at: 10,
+                    length: Some(1),
+                    transform: vec![],
+                    encoding: Encoding::U8,
+                    name: "missing".into(),
+                },
+                // Absent source → skipped.
+                AdvertCapture {
+                    source: AdvertByteSource::ServiceData {
+                        uuid: "FE2C".into(),
+                    },
+                    at: 0,
+                    length: None,
+                    transform: vec![],
+                    encoding: Encoding::Bytes,
+                    name: "absent".into(),
+                },
+            ],
+        );
+        let scope: BTreeMap<String, String> = advert_scope(&s, &facts).into_iter().collect();
+        // [0x34, 0x12] reversed → [0x12, 0x34] → u16-le = 0x3412 = 13330.
+        assert_eq!(scope.get("usbId").map(String::as_str), Some("13330"));
+        assert_eq!(scope.get("rawTail").map(String::as_str), Some("2030"));
+        assert_eq!(scope.get("brand").map(String::as_str), Some("Canon"));
+        assert!(!scope.contains_key("missing"));
+        assert!(!scope.contains_key("absent"));
+    }
 
     #[test]
     fn bit_or_reads_le_and_reemits_at_input_width() {

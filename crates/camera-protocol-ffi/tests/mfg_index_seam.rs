@@ -24,6 +24,28 @@ fn store() -> std::sync::Arc<ConfigStore> {
     .expect("manufacturer index loads")
 }
 
+/// Convenience constructor for the common "manufacturer data + service
+/// UUIDs" advert shape. Fields the synthetic adverts never carry
+/// (service data, TX power, raw AD records) stay empty.
+fn ble_advert(
+    service_uuids: &[&str],
+    company_id: u16,
+    payload: &[u8],
+    local_name: Option<&str>,
+) -> Observation {
+    Observation::BleAdvert {
+        service_uuids: service_uuids.iter().map(|s| s.to_string()).collect(),
+        manufacturer_data: Some(BleManufacturerData {
+            company_id,
+            payload: payload.to_vec(),
+        }),
+        service_data: vec![],
+        local_name: local_name.map(String::from),
+        tx_power: None,
+        ad_records: vec![],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // from_manufacturer_index loader
 // ---------------------------------------------------------------------------
@@ -44,31 +66,29 @@ fn loader_requires_every_declared_model_body() {
 /// A synthetic LEGACY advert in the GFX100 II / fw 02.30 shape observed during
 /// the 2026-05-16 test run. Mfg-data is `0x02 + 4-byte LE key`.
 fn synthetic_legacy_advert() -> Observation {
-    Observation::BleAdvert {
-        service_uuids: vec![
-            "AF854C2E-B214-458E-97E2-912C4ECF2CB8".to_string(), // SERVICE_FF_FILE_TRANSFER
-            "6514EB81-4E8F-458D-AA2A-E691336CDFAC".to_string(), // CAMERA_CONTROL — harmless
+    ble_advert(
+        &[
+            "AF854C2E-B214-458E-97E2-912C4ECF2CB8", // SERVICE_FF_FILE_TRANSFER
+            "6514EB81-4E8F-458D-AA2A-E691336CDFAC", // CAMERA_CONTROL — harmless
         ],
-        manufacturer_company_id: 0x04D8, // Fujifilm
+        0x04D8, // Fujifilm
         // type=0x02 + key bytes (synthetic placeholder values).
-        manufacturer_data: vec![0x02, 0x44, 0x73, 0x2a, 0x80],
-        local_name: Some("GFX100 II".to_string()),
-    }
+        &[0x02, 0x44, 0x73, 0x2a, 0x80],
+        Some("GFX100 II"),
+    )
 }
 
 /// A synthetic RED advert: type=0x01 + 5 ASCII bytes (placeholder "ABCDE",
 /// the shape of a 5-byte short-serial used as the RED pairing key).
 fn synthetic_red_advert() -> Observation {
-    Observation::BleAdvert {
-        service_uuids: vec![
-            // RED bodies advertise CONNECTED_DEVICE_INFORMATION_RED, NOT
-            // SERVICE_FF_FILE_TRANSFER (legacy detector). Per READ_THIS_FIRST §2.
-            "123D8F06-62A1-4935-9322-833C531EE225".to_string(),
-        ],
-        manufacturer_company_id: 0x04D8, // Fujifilm
-        manufacturer_data: vec![0x01, b'A', b'B', b'C', b'D', b'E'],
-        local_name: Some("GFX100 II".to_string()),
-    }
+    ble_advert(
+        // RED bodies advertise CONNECTED_DEVICE_INFORMATION_RED, NOT
+        // SERVICE_FF_FILE_TRANSFER (legacy detector). Per READ_THIS_FIRST §2.
+        &["123D8F06-62A1-4935-9322-833C531EE225"],
+        0x04D8, // Fujifilm
+        &[0x01, b'A', b'B', b'C', b'D', b'E'],
+        Some("GFX100 II"),
+    )
 }
 
 #[test]
@@ -133,12 +153,12 @@ fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
 fn non_fuji_advert_returns_nomatch() {
     let s = store();
     // Wrong company ID + no matching service UUID → NoMatch.
-    let obs = Observation::BleAdvert {
-        service_uuids: vec!["DEADBEEF-0000-1000-8000-00805F9B34FB".to_string()],
-        manufacturer_company_id: 0x004C, // Apple
-        manufacturer_data: vec![0xFF, 0xFF, 0xFF],
-        local_name: None,
-    };
+    let obs = ble_advert(
+        &["DEADBEEF-0000-1000-8000-00805F9B34FB"],
+        0x004C, // Apple
+        &[0xFF, 0xFF, 0xFF],
+        None,
+    );
     assert!(matches!(s.recognize(obs), Recognition::NoMatch));
 }
 
@@ -149,12 +169,12 @@ fn wrong_company_id_with_payload_shape_that_would_otherwise_match_returns_nomatc
     // type=0x01 + 5 ASCII) must NOT recognize as a Fuji body if the BT-SIG
     // company-ID isn't 0x04D8.
     let s = store();
-    let obs = Observation::BleAdvert {
-        service_uuids: vec!["123D8F06-62A1-4935-9322-833C531EE225".to_string()],
-        manufacturer_company_id: 0x004C, // Apple, not Fuji
-        manufacturer_data: vec![0x01, b'A', b'B', b'C', b'D', b'E'],
-        local_name: Some("GFX100 II".to_string()),
-    };
+    let obs = ble_advert(
+        &["123D8F06-62A1-4935-9322-833C531EE225"],
+        0x004C, // Apple, not Fuji
+        &[0x01, b'A', b'B', b'C', b'D', b'E'],
+        Some("GFX100 II"),
+    );
     assert!(matches!(s.recognize(obs), Recognition::NoMatch));
 }
 
@@ -171,12 +191,12 @@ fn legacy_signature_wins_over_red_when_both_could_match_per_file_order() {
     // legacy expects min_length>=5. A 5-byte mfg-data with legacy type byte
     // passes legacy and FAILS red (length mismatch).
     let s = store();
-    let obs = Observation::BleAdvert {
-        service_uuids: vec!["AF854C2E-B214-458E-97E2-912C4ECF2CB8".to_string()],
-        manufacturer_company_id: 0x04D8, // Fujifilm
-        manufacturer_data: vec![0x02, 0x11, 0x22, 0x33, 0x44],
-        local_name: None,
-    };
+    let obs = ble_advert(
+        &["AF854C2E-B214-458E-97E2-912C4ECF2CB8"],
+        0x04D8, // Fujifilm
+        &[0x02, 0x11, 0x22, 0x33, 0x44],
+        None,
+    );
     let Recognition::Candidate { runtime_scope, .. } = s.recognize(obs) else {
         panic!("expected Candidate");
     };
@@ -376,7 +396,7 @@ families:
   test:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -468,7 +488,7 @@ families:
   test:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -500,4 +520,81 @@ models:
         other => panic!("expected BleRequestMtu, got {other:?}"),
     }
     assert!(matches!(&plan.steps[2], Step::BleDiscoverServices { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// §11.14 predicate model crosses the seam (multivendor pass)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn service_uuid_plus_local_name_recognition_without_manufacturer_data() {
+    // The Nikon shape: no manufacturer data anywhere, recognition by service
+    // UUID + local-name prefix. Inexpressible pre-predicate-model.
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: {}
+      establishment: { mechanism: test, steps: [ { bleConnect: {} } ] }
+models:
+  - id: tm1
+    displayName: "Test Z9"
+    inherits: [test]
+    manifest: tm1.yaml
+    signatures:
+      lss:
+        kind: bleAdvert
+        require:
+          all:
+            - serviceUuids: { contains: "0000DE00-3DD4-4255-8D62-6DC7B9BD5561" }
+            - localName: { prefix: "Z " }
+        capture:
+          - { source: localName, encoding: utf8, name: bodyName }
+        scope: { vendor: "testco" }
+        suggests: { connection: ble, confidence: medium }
+"#;
+    let s = ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".to_string(),
+            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+        }],
+    )
+    .expect("synthetic index loads");
+    let obs = Observation::BleAdvert {
+        service_uuids: vec!["0000de00-3dd4-4255-8d62-6dc7b9bd5561".to_string()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: Some("Z 9".to_string()),
+        tx_power: None,
+        ad_records: vec![],
+    };
+    match s.recognize(obs) {
+        Recognition::Candidate {
+            model,
+            runtime_scope,
+            ..
+        } => {
+            assert_eq!(model, "tm1");
+            assert!(runtime_scope
+                .iter()
+                .any(|kv| kv.key == "vendor" && kv.value == "testco"));
+            assert!(runtime_scope
+                .iter()
+                .any(|kv| kv.key == "bodyName" && kv.value == "Z 9"));
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+    // Same advert without the local name → NoMatch (absent-field rule).
+    let obs = Observation::BleAdvert {
+        service_uuids: vec!["0000de00-3dd4-4255-8d62-6dc7b9bd5561".to_string()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: None,
+        tx_power: None,
+        ad_records: vec![],
+    };
+    assert!(matches!(s.recognize(obs), Recognition::NoMatch));
 }

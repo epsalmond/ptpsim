@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use camera_config::error::ConfigError;
 use camera_config::index::{
-    BleNotifyUntil, CccdMode, Confidence, Encoding, PredicateOp, ResolvedManufacturerIndex,
-    Signature, Step, StepValue, Transform,
+    AdvertByteSource, AdvertPredicate, BleNotifyUntil, CccdMode, Confidence, Encoding, PredicateOp,
+    ResolvedManufacturerIndex, Signature, Step, StepValue, Transform,
 };
 use camera_config::ConfigStore;
 
@@ -58,9 +58,12 @@ fn family_ble_block_merges_into_gfx100ii_view() {
         Some("F557D96B-8284-4667-8793-B971C1DECA2A"),
     );
     // Advert constants inherited.
-    assert_eq!(ble.advert.fuji_company_id, 0x04D8);
+    assert_eq!(ble.advert.manufacturer_company_id, Some(0x04D8));
     assert_eq!(
-        ble.advert.legacy_service_uuid.as_deref(),
+        ble.advert
+            .service_uuids
+            .get("fileTransfer")
+            .map(String::as_str),
         Some("AF854C2E-B214-458E-97E2-912C4ECF2CB8"),
     );
     // Establishment plan inherited.
@@ -155,7 +158,7 @@ families:
       gatt:
         knownChar: "00002A25-0000-1000-8000-00805F9B34FB"
       advert:
-        fujiCompanyId: 0x1234
+        manufacturerCompanyId: 0x1234
       establishment:
         mechanism: test
         steps:
@@ -185,13 +188,23 @@ fn static_path_refs_substitute_in_signatures() {
     let (name, sig) = &gfx.signatures[0];
     assert_eq!(name, "bleLegacyAdvert");
     let Signature::BleAdvert(sig) = sig;
-    // "{ble.advert.fujiCompanyId}" resolved to 0x04D8 = 1240.
-    assert_eq!(sig.require.manufacturer_company_id, 0x04D8);
-    // "{ble.advert.legacyServiceUuid}" resolved to the real UUID.
-    assert_eq!(
-        sig.require.advert_contains_service.as_deref(),
-        Some("AF854C2E-B214-458E-97E2-912C4ECF2CB8"),
-    );
+    // The legacy require is all-of [manufacturerData, serviceUuids] with
+    // both template refs resolved to literals.
+    let AdvertPredicate::All(children) = &sig.require else {
+        panic!("expected all-of predicate, got {:?}", sig.require);
+    };
+    assert_eq!(children.len(), 2);
+    // "{ble.advert.manufacturerCompanyId}" resolved to 0x04D8 = 1240.
+    let AdvertPredicate::ManufacturerData(m) = &children[0] else {
+        panic!("expected manufacturerData first, got {:?}", children[0]);
+    };
+    assert_eq!(m.company_id, Some(0x04D8));
+    assert_eq!(m.payload.min_length, Some(5));
+    // "{ble.advert.serviceUuids.fileTransfer}" resolved to the real UUID.
+    let AdvertPredicate::ServiceUuids { contains } = &children[1] else {
+        panic!("expected serviceUuids second, got {:?}", children[1]);
+    };
+    assert_eq!(contains, "AF854C2E-B214-458E-97E2-912C4ECF2CB8");
 }
 
 #[test]
@@ -203,7 +216,7 @@ families:
     ble:
       gatt: {}
       advert:
-        fujiCompanyId: 0x1234
+        manufacturerCompanyId: 0x1234
       establishment: { mechanism: test, steps: [] }
 models:
   - id: tm1
@@ -214,8 +227,9 @@ models:
       bad:
         kind: bleAdvert
         require:
-          manufacturerCompanyId: "{ble.advert.doesNotExist}"
-        manufacturerData: { minLength: 1 }
+          manufacturerData:
+            companyId: "{ble.advert.doesNotExist}"
+            minLength: 1
         suggests: { connection: ble, confidence: high }
 "#;
     let err = ResolvedManufacturerIndex::from_yaml(yaml).unwrap_err();
@@ -234,7 +248,7 @@ families:
     ble:
       gatt: {}
       advert:
-        fujiCompanyId: 0x1234
+        manufacturerCompanyId: 0x1234
       establishment: { mechanism: test, steps: [] }
 models:
   - id: tm1
@@ -245,9 +259,8 @@ models:
       bad:
         kind: bleAdvert
         require:
-          manufacturerCompanyId: 0x1234
-          advertContainsService: "prefix-{ble.advert.fujiCompanyId}-suffix"
-        manufacturerData: { minLength: 1 }
+          serviceUuids:
+            contains: "prefix-{ble.advert.manufacturerCompanyId}-suffix"
         suggests: { connection: ble, confidence: high }
 "#;
     let err = ResolvedManufacturerIndex::from_yaml(yaml).unwrap_err();
@@ -331,7 +344,7 @@ families:
   test:
     ble:
       gatt: {}
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -361,7 +374,7 @@ families:
     ble:
       gatt:
         c: "00002A25-0000-1000-8000-00805F9B34FB"
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -449,7 +462,7 @@ families:
     ble:
       gatt:
         c: "00002A25-0000-1000-8000-00805F9B34FB"
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -499,7 +512,7 @@ families:
       gatt:
         a: "00002A25-0000-1000-8000-00805F9B34FB"
         b: "00002A26-0000-1000-8000-00805F9B34FB"
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -552,16 +565,16 @@ fn signature_scope_carries_literal_facts() {
 
     let Signature::BleAdvert(red) = &gfx.signatures[1].1;
     assert_eq!(red.scope.get("style").map(String::as_str), Some("red"));
-    // RED captures 5 ASCII bytes into pairingKeyBytes AND shortSerial.
-    assert_eq!(red.manufacturer_data.capture_bytes.len(), 2);
-    let names: Vec<&str> = red
-        .manufacturer_data
-        .capture_bytes
-        .iter()
-        .map(|c| c.name.as_str())
-        .collect();
+    // RED captures 5 ASCII bytes into pairingKeyBytes AND shortSerial,
+    // both from the manufacturer-data payload.
+    assert_eq!(red.capture.len(), 2);
+    let names: Vec<&str> = red.capture.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"pairingKeyBytes"));
     assert!(names.contains(&"shortSerial"));
+    assert!(red
+        .capture
+        .iter()
+        .all(|c| c.source == AdvertByteSource::ManufacturerData));
 }
 
 // ---------------------------------------------------------------------------
@@ -610,7 +623,7 @@ families:
   test:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -660,7 +673,7 @@ families:
   test:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -724,7 +737,7 @@ families:
   test:
     ble:
       gatt: {{ c: "00002A25-0000-1000-8000-00805F9B34FB" }}
-      advert: {{ fujiCompanyId: 1 }}
+      advert: {{ manufacturerCompanyId: 1 }}
       establishment:
         mechanism: test
         steps:
@@ -762,7 +775,7 @@ families:
   test:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -828,7 +841,7 @@ families:
   test:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
-      advert: { fujiCompanyId: 1 }
+      advert: { manufacturerCompanyId: 1 }
       establishment:
         mechanism: test
         steps:
@@ -854,4 +867,129 @@ models:
     assert!(matches!(&steps[2], Step::BleDiscoverServices(_)));
     assert_eq!(steps[1].verb_name(), "bleRequestMtu");
     assert_eq!(steps[2].verb_name(), "bleDiscoverServices");
+}
+
+// ---------------------------------------------------------------------------
+// §11.14 advert predicate model (multivendor pass)
+// ---------------------------------------------------------------------------
+
+fn predicate_fixture(require_block: &str) -> String {
+    format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {{}}
+      advert: {{ manufacturerCompanyId: 0x012D }}
+      establishment: {{ mechanism: test, steps: [] }}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+    signatures:
+      s1:
+        kind: bleAdvert
+        require:
+{require_block}
+        suggests: {{ connection: ble, confidence: low }}
+"#
+    )
+}
+
+#[test]
+fn nikon_style_signature_without_company_id_parses() {
+    // The Nikon shape from the risk pass: recognition by LSS service UUID +
+    // local-name prefix, no manufacturer data at all.
+    let yaml = predicate_fixture(
+        r#"          all:
+            - serviceUuids: { contains: "0000DE00-3DD4-4255-8D62-6DC7B9BD5561" }
+            - localName: { prefix: "Z " }
+            - not: { txPower: { min: 0 } }"#,
+    );
+    let idx = ResolvedManufacturerIndex::from_yaml(&yaml).expect("nikon-style shape loads");
+    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1;
+    let AdvertPredicate::All(children) = &sig.require else {
+        panic!("expected all-of");
+    };
+    assert_eq!(children.len(), 3);
+    assert!(matches!(&children[2], AdvertPredicate::Not(_)));
+}
+
+#[test]
+fn statically_invalid_predicates_are_load_errors() {
+    for (require, needle) in [
+        ("          all: []", "empty predicate list"),
+        (
+            "          localName: { prefix: \"A\", equals: \"B\" }",
+            "exactly one of",
+        ),
+        ("          txPower: {}", "at least one of min/max"),
+        ("          manufacturerData: {}", "vacuous"),
+        (
+            "          manufacturerData: { length: 6, minLength: 5 }",
+            "mutually exclusive",
+        ),
+        (
+            "          manufacturerData: { assertBits: { offset: 0, mask: 0, equals: 0 } }",
+            "mask 0",
+        ),
+        (
+            "          windSpeed: { knots: 12 }",
+            "unknown advert predicate",
+        ),
+    ] {
+        let err = ResolvedManufacturerIndex::from_yaml(&predicate_fixture(require)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(needle), "for `{require}`: got {msg}");
+    }
+}
+
+#[test]
+fn capture_sources_parse_in_both_authoring_forms() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {}
+      advert: { manufacturerCompanyId: 0x012D }
+      establishment: { mechanism: test, steps: [] }
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+    signatures:
+      s1:
+        kind: bleAdvert
+        require:
+          manufacturerData: { companyId: "{ble.advert.manufacturerCompanyId}" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 2, encoding: u16-le, name: model }
+          - { source: localName, encoding: utf8, name: name }
+          - { source: { rawAdRecord: 0x21 }, at: 1, encoding: bytes, name: raw21 }
+          - source: { serviceData: "FE2C" }
+            transform: { dropPrefix: 3 }
+            encoding: ascii
+            name: ssid
+        suggests: { connection: ble, confidence: low }
+"#;
+    let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("capture sources load");
+    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1;
+    assert_eq!(sig.capture.len(), 4);
+    assert_eq!(sig.capture[0].source, AdvertByteSource::ManufacturerData);
+    assert_eq!(sig.capture[1].source, AdvertByteSource::LocalName);
+    assert_eq!(
+        sig.capture[2].source,
+        AdvertByteSource::RawAdRecord { ad_type: 0x21 }
+    );
+    assert_eq!(
+        sig.capture[3].source,
+        AdvertByteSource::ServiceData {
+            uuid: "FE2C".into()
+        }
+    );
+    assert_eq!(sig.capture[3].transform, vec![Transform::DropPrefix(3)]);
 }

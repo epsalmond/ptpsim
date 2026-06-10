@@ -32,7 +32,7 @@ pub struct ManufacturerIndex {
 }
 
 /// One model entry inside a `ManufacturerIndex`. Pre-resolution — `signatures`
-/// may still hold `{ble.advert.fujiCompanyId}`-style template refs, and
+/// may still hold `{ble.advert.manufacturerCompanyId}`-style template refs, and
 /// `establishment.steps[*].gatt` may still hold symbolic names if the model
 /// declares an inline establishment.
 ///
@@ -99,27 +99,28 @@ pub struct FamilyBleBlock {
     /// the loader resolves to the UUID at index-build time (§11.3).
     #[serde(default)]
     pub gatt: BTreeMap<String, String>,
+    #[serde(default)]
     pub advert: BleAdvertConstants,
     pub establishment: EstablishmentBlock,
 }
 
-/// Family-wide advert detectors used by recognize() to match a BLE advert to
-/// this family and classify its style. The field name `fuji_company_id` is the
-/// authored YAML key; on RED-style cameras the company ID is still the
-/// Fujifilm BT-SIG value (0x04D8) — the "fuji" in the field name marks the
-/// family, not the protocol.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Family-wide advert constants that signatures reference via
+/// `{ble.advert.…}` template refs (§11.1). Both fields optional — Nikon-style
+/// families recognize by service UUID + local name and need neither.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BleAdvertConstants {
-    /// Bluetooth-SIG manufacturer company ID. Used as the lookup key into the
-    /// advertiser's manufacturer-specific data map (1240 / 0x04D8 for
-    /// Fujifilm).
-    pub fuji_company_id: u16,
-    /// Service UUID whose presence in an advert classifies it as the
-    /// pre-RED "legacy" style. Optional — some families don't need a
-    /// per-style detector.
+    /// Bluetooth-SIG manufacturer company ID this family advertises under
+    /// (1240 / 0x04D8 for Fujifilm — note that on Fuji RED-style cameras
+    /// the company ID is still the Fujifilm value; the constant marks the
+    /// family, not the protocol style).
     #[serde(default)]
-    pub legacy_service_uuid: Option<String>,
+    pub manufacturer_company_id: Option<u16>,
+    /// Named service UUIDs (`serviceUuids.<name>` in template refs) used by
+    /// signatures and steps — e.g. Fuji's `fileTransfer` UUID whose advert
+    /// presence classifies the pre-RED "legacy" style.
+    #[serde(default)]
+    pub service_uuids: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -657,8 +658,13 @@ pub enum Signature {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BleAdvertSignature {
-    pub require: BleAdvertRequire,
-    pub manufacturer_data: BleAdvertMfgData,
+    /// Predicate over the observed advert (§11.14). A signature matches when
+    /// its predicate evaluates true.
+    pub require: AdvertPredicate,
+    /// Field captures bound into runtime_scope on match (§11.13 pipeline).
+    /// A failing capture is skipped, never an error.
+    #[serde(default)]
+    pub capture: Vec<AdvertCapture>,
     /// Literal scope facts injected into runtime_scope on match
     /// (e.g. `style: legacy`). Plan §11.1 stores all scope as strings.
     #[serde(default)]
@@ -666,17 +672,71 @@ pub struct BleAdvertSignature {
     pub suggests: SuggestsBlock,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Predicate over an observed BLE advert (§11.14). Authored in YAML as a
+/// single-entry mapping whose key names the predicate kind or combinator;
+/// custom Deserialize (see [`super::parse`]) dispatches on the key.
+///
+/// **Absent-field rule:** a predicate over a field the advert did not carry
+/// (no manufacturer data, no local name, no TX power, empty AD-record list)
+/// evaluates **false**, never an error. Mind `not:` over such a predicate —
+/// it evaluates true.
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BleAdvertRequire {
-    pub manufacturer_company_id: u16,
-    #[serde(default)]
-    pub advert_contains_service: Option<String>,
+pub enum AdvertPredicate {
+    /// Every child predicate must hold. Empty list rejected at load.
+    All(Vec<AdvertPredicate>),
+    /// At least one child predicate must hold. Empty list rejected at load.
+    Any(Vec<AdvertPredicate>),
+    Not(Box<AdvertPredicate>),
+    /// Over the manufacturer-specific AD record. `companyId` optional —
+    /// Nikon recognition needs none. Payload constraints are over the
+    /// post-company-id payload (§11.14 offset semantics).
+    ManufacturerData(MfgDataPredicate),
+    /// The advert's service-UUID list contains this UUID
+    /// (case-insensitive compare).
+    ServiceUuids {
+        contains: String,
+    },
+    /// Constraints over the service-data payload advertised for `uuid`.
+    ServiceData {
+        uuid: String,
+        #[serde(flatten)]
+        payload: PayloadPredicate,
+    },
+    LocalName(LocalNamePredicate),
+    /// Advertised TX power within `[min, max]`; at least one bound
+    /// required at load.
+    TxPower {
+        min: Option<i8>,
+        max: Option<i8>,
+    },
+    /// Constraints over a raw AD record's payload exactly as seen on air —
+    /// for `ad_type` 0xFF that INCLUDES the 2-byte LE company id (§11.14).
+    RawAdRecord {
+        ad_type: u8,
+        #[serde(flatten)]
+        payload: PayloadPredicate,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BleAdvertMfgData {
+pub struct MfgDataPredicate {
+    /// BT-SIG manufacturer company id; when present the observed company id
+    /// must equal it. Optional so vendors recognizable without one (Nikon)
+    /// stay expressible — but data SHOULD pin it when the vendor uses
+    /// manufacturer data at all (false-positive window otherwise; see #23).
+    #[serde(default)]
+    pub company_id: Option<u16>,
+    #[serde(flatten)]
+    pub payload: PayloadPredicate,
+}
+
+/// Byte-level constraints over a payload (manufacturer data after the
+/// company id, service data, or a raw AD record).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PayloadPredicate {
     /// Exact length, in bytes. Mutually exclusive with `min_length`
     /// (validated at load).
     #[serde(default)]
@@ -684,30 +744,93 @@ pub struct BleAdvertMfgData {
     #[serde(default)]
     pub min_length: Option<usize>,
     /// Byte-level equality assertions. Authored either as a single map (the
-    /// §2.1 compact form) or as a list — the loader's custom Deserialize
-    /// accepts both.
+    /// §2.1 compact form) or as a list.
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
-    pub assert_byte: Vec<MfgByteAssertion>,
-    #[serde(default)]
-    pub capture_bytes: Vec<MfgByteCapture>,
+    pub assert_byte: Vec<ByteAssertion>,
+    /// Bitfield assertions (Sony feature flags). Authored single-map or list.
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub assert_bits: Vec<BitsAssertion>,
+}
+
+impl PayloadPredicate {
+    /// True when no constraint is declared (used by load validation to
+    /// reject vacuous predicates).
+    pub fn is_empty(&self) -> bool {
+        self.length.is_none()
+            && self.min_length.is_none()
+            && self.assert_byte.is_empty()
+            && self.assert_bits.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MfgByteAssertion {
+pub struct ByteAssertion {
     pub index: usize,
     pub equals: u8,
 }
 
+/// Read the minimum LE-bytes covering `mask` starting at byte `offset`;
+/// predicate is `(value & mask) == equals`. A payload too short for the
+/// read evaluates false (absent-field rule), never an error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MfgByteCapture {
-    /// Start offset in the mfg-data byte array.
-    pub from: usize,
-    pub length: usize,
+pub struct BitsAssertion {
+    #[serde(default)]
+    pub offset: usize,
+    pub mask: u64,
+    pub equals: u64,
+}
+
+/// Local-name string predicate; exactly one of the three forms (validated
+/// at load). Plain string ops only — regex evaluation is deliberately not
+/// in the engine-side vocabulary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalNamePredicate {
+    #[serde(default)]
+    pub equals: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub contains: Option<String>,
+}
+
+/// One advert field capture: source bytes → window `[at, at+length)` →
+/// transform chain → `encoding` decode → runtime_scope under `name`
+/// (§11.13 pipeline). A capture that fails anywhere is skipped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdvertCapture {
+    pub source: AdvertByteSource,
+    /// Start offset into the source bytes.
+    #[serde(default)]
+    pub at: usize,
+    /// Window length; omitted = to end of the source bytes.
+    #[serde(default)]
+    pub length: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub transform: Vec<Transform>,
     pub encoding: Encoding,
-    /// Scope key the captured bytes are bound to.
+    /// Scope key the captured value binds to.
     pub name: String,
+}
+
+/// Where an advert capture reads its bytes. Authored as a bare string
+/// (`manufacturerData`, `localName`) or a single-entry mapping
+/// (`{ rawAdRecord: 0x21 }`, `{ serviceData: "<uuid>" }`); custom
+/// Deserialize dispatches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AdvertByteSource {
+    /// The post-company-id manufacturer-data payload (§11.14).
+    ManufacturerData,
+    /// A raw AD record's payload as seen on air, selected by AD type.
+    RawAdRecord { ad_type: u8 },
+    /// The service-data payload advertised for this UUID.
+    ServiceData { uuid: String },
+    /// The UTF-8 bytes of the advertised local name.
+    LocalName,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

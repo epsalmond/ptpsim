@@ -28,23 +28,56 @@ use crate::KeyValue;
 /// The pull-model input: what the app observed, the FFI decides what it means.
 /// Plan §3.2 — only BLE is in the MVP. Later transports extend the enum
 /// without changing callers.
+///
+/// Populate every field your platform exposes and leave the rest
+/// `None`/empty — predicates over an absent field evaluate false, never
+/// error (§11.14). CoreBluetooth cannot supply `ad_records` (no raw AD
+/// access) and exposes TX power only when the advert carries it.
 #[derive(Debug, uniffi::Enum)]
 pub enum Observation {
     /// A BLE advertisement seen during scan. Apple delivers service UUIDs as a
     /// list; some bodies advertise multiple — the matcher iterates the whole
-    /// list. `manufacturer_company_id` is the 2-byte BT-SIG manufacturer ID
-    /// (routing tag). `manufacturer_data` is the payload bytes that follow,
-    /// with the company-ID prefix already stripped — `assert_byte`/
-    /// `capture_bytes` offsets in signatures are interpreted relative to it.
-    /// Consumers split iOS `CBAdvertisementDataManufacturerDataKey` into
-    /// `(company_id_LE, payload)`; Android's
-    /// `getManufacturerSpecificData(companyId)` is already in this shape.
+    /// list.
     BleAdvert {
         service_uuids: Vec<String>,
-        manufacturer_company_id: u16,
-        manufacturer_data: Vec<u8>,
+        /// The manufacturer-specific AD record, split into company id +
+        /// post-id payload — signature payload offsets are relative to the
+        /// payload (§11.14). Consumers split iOS
+        /// `CBAdvertisementDataManufacturerDataKey` into
+        /// `(company_id_LE, payload)`; Android's
+        /// `getManufacturerSpecificData(companyId)` is already the payload.
+        manufacturer_data: Option<BleManufacturerData>,
+        /// Service-data AD records, one entry per advertised UUID.
+        service_data: Vec<BleServiceData>,
         local_name: Option<String>,
+        /// Advertised TX power level (dBm), when the advert carries one.
+        tx_power: Option<i8>,
+        /// Raw AD records exactly as seen on air, for platforms that expose
+        /// them (Android `ScanRecord.getBytes()`); empty on iOS.
+        ad_records: Vec<BleAdRecord>,
     },
+}
+
+/// The manufacturer-specific AD record split per §11.14: `payload` excludes
+/// the 2-byte LE company id.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BleManufacturerData {
+    pub company_id: u16,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BleServiceData {
+    pub uuid: String,
+    pub payload: Vec<u8>,
+}
+
+/// One raw AD record as seen on air — for `ad_type` 0xFF the payload
+/// INCLUDES the 2-byte LE company id.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BleAdRecord {
+    pub ad_type: u8,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Debug, uniffi::Enum)]
@@ -551,8 +584,9 @@ impl From<&ix::Step> for Step {
 // recognize() — observation → decision
 // ---------------------------------------------------------------------------
 
-/// Match a [`Observation::BleAdvert`] against every (model, signature) pair
-/// in the resolved index, in file-declaration order (§11.7).
+/// Match a [`Observation::BleAdvert`] (converted to
+/// [`ix::eval::BleAdvertFacts`]) against every (model, signature) pair in
+/// the resolved index, in file-declaration order (§11.7).
 ///
 /// For the MVP the family fact "all Fuji adverts" never disambiguates by
 /// model (the GFX100 II is the only declared model). When P2 adds more
@@ -560,13 +594,8 @@ impl From<&ix::Step> for Step {
 /// scope facts common to all matches.
 pub fn recognize_ble(
     index: &ix::ResolvedManufacturerIndex,
-    service_uuids: &[String],
-    manufacturer_company_id: u16,
-    manufacturer_data: &[u8],
-    _local_name: Option<&str>,
+    facts: &ix::eval::BleAdvertFacts,
 ) -> Recognition {
-    let service_uuids_upper: Vec<String> = service_uuids.iter().map(|s| s.to_uppercase()).collect();
-
     // Walk models in declaration order; per model walk signatures in file
     // order. The MVP returns the FIRST matching signature; multi-model
     // disambiguation gets added when a second body matches the same family
@@ -575,12 +604,7 @@ pub fn recognize_ble(
     for model in &index.models {
         for (_sig_name, sig) in &model.signatures {
             let ix::Signature::BleAdvert(ble_sig) = sig;
-            if !ix::eval::advert_signature_matches(
-                ble_sig,
-                &service_uuids_upper,
-                manufacturer_company_id,
-                manufacturer_data,
-            ) {
+            if !ix::eval::advert_matches(ble_sig, facts) {
                 continue;
             }
             matches.push((model.id.clone(), model.display_name.clone(), ble_sig));
@@ -594,7 +618,7 @@ pub fn recognize_ble(
         0 => Recognition::NoMatch,
         1 => {
             let (model_id, _display, sig) = &matches[0];
-            let runtime_scope = ix::eval::advert_scope(sig, manufacturer_data)
+            let runtime_scope = ix::eval::advert_scope(sig, facts)
                 .into_iter()
                 .map(|(key, value)| KeyValue { key, value })
                 .collect();

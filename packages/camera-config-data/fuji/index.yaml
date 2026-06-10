@@ -61,15 +61,18 @@ families:
         locationSyncCycle: "C95D91AE-B247-4D6D-8661-7DD5D6A0F85B"
         cameraWiFiPassphraseString: "E809256A-915C-4967-92E8-53B7D4CAD213"
 
-      # Advertisement-format constants used by recognize() to match Fuji
-      # adverts and classify style. Family-wide.
+      # Advertisement-format constants signatures reference via
+      # {ble.advert.…} template refs. Family-wide. Note: RED-style cameras
+      # still advertise under the Fujifilm company ID — the constant marks
+      # the family, not the protocol style.
       advert:
         # 1240 = Bluetooth SIG company ID for Fujifilm.
-        fujiCompanyId: 0x04D8
-        # SERVICE_FF_FILE_TRANSFER — presence in the advert's service-UUID
-        # list classifies the advert as LEGACY style (READ_THIS_FIRST §2,
-        # reference app BTManager.java:521).
-        legacyServiceUuid: "AF854C2E-B214-458E-97E2-912C4ECF2CB8"
+        manufacturerCompanyId: 0x04D8
+        serviceUuids:
+          # SERVICE_FF_FILE_TRANSFER — presence in the advert's service-UUID
+          # list classifies the advert as LEGACY style (READ_THIS_FIRST §2,
+          # reference app BTManager.java:521).
+          fileTransfer: "AF854C2E-B214-458E-97E2-912C4ECF2CB8"
 
       # Establishment plan. Walks the same path for both styles, with an
       # `if:` for the RED-only identification-number exchange. Style +
@@ -201,39 +204,38 @@ models:
         kind: bleAdvert
         # Per READ_THIS_FIRST §5 Detection point 1: legacy advert =
         # Fuji company ID in mfg-data + SERVICE_FF_FILE_TRANSFER in the
-        # advertised service-UUID list.
+        # advertised service-UUID list. Mfg-data payload (post-company-id,
+        # §11.14): 5 bytes = type byte 0x02 + 4-byte LE pairing key.
         require:
-          manufacturerCompanyId: "{ble.advert.fujiCompanyId}"
-          advertContainsService: "{ble.advert.legacyServiceUuid}"
-        manufacturerData:
-          # 5 bytes: type byte 0x02 + 4-byte LE pairing key.
-          minLength: 5
-          assertByte:
-            - { index: 0, equals: 0x02 }
-          captureBytes:
-            - { from: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 5
+                assertByte: { index: 0, equals: 0x02 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.fileTransfer}" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
         scope:
           style: "legacy"
         suggests: { connection: ble, confidence: high }
 
       bleRedAdvert:
         kind: bleAdvert
-        # Detector: Fuji company ID + 6-byte mfg-data with type byte 0x01.
-        # Absence of legacy service UUID is implicit — the legacy signature
-        # above is tried first (file-declaration order, §11.7) and would
-        # have matched if the service UUID were present.
+        # Detector: Fuji company ID + 6-byte mfg-data payload with type byte
+        # 0x01. Absence of the legacy service UUID is implicit — the legacy
+        # signature above is tried first (file-declaration order, §11.7) and
+        # would have matched if the service UUID were present.
         require:
-          manufacturerCompanyId: "{ble.advert.fujiCompanyId}"
-        manufacturerData:
-          length: 6
-          assertByte:
-            - { index: 0, equals: 0x01 }
-          captureBytes:
-            # Phone writes these same 5 ASCII bytes back to PAIRING_KEY.
-            - { from: 1, length: 5, encoding: ascii, name: pairingKeyBytes }
-            # Save under shortSerial too so the iOS persistence layer
-            # can key the saved entry by short serial without re-decoding.
-            - { from: 1, length: 5, encoding: ascii, name: shortSerial }
+          manufacturerData:
+            companyId: "{ble.advert.manufacturerCompanyId}"
+            length: 6
+            assertByte: { index: 0, equals: 0x01 }
+        capture:
+          # Phone writes these same 5 ASCII bytes back to PAIRING_KEY.
+          - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: pairingKeyBytes }
+          # Save under shortSerial too so the iOS persistence layer
+          # can key the saved entry by short serial without re-decoding.
+          - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: shortSerial }
         scope:
           style: "red"
         suggests: { connection: ble, confidence: high }

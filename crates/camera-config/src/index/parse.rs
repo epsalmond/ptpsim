@@ -64,7 +64,7 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
     let (ble, ble_value_for_resolve) = build_ble_block(index, model)?;
 
     // -- Signatures: per-signature, plant the merged BLE Value as a sibling
-    //    so paths like `{ble.advert.fujiCompanyId}` resolve, then typed-decode.
+    //    so paths like `{ble.advert.manufacturerCompanyId}` resolve, then typed-decode.
     //    File-declaration order is preserved (§11.7).
     let mut signatures: Vec<(String, Signature)> = Vec::with_capacity(model.signatures.len());
     for (sig_name, raw_sig_value) in &model.signatures {
@@ -109,7 +109,8 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
 /// Build the merged + resolved BLE block for one model. Returns both the
 /// typed [`FamilyBleBlock`] (for [`ModelView`]) and the raw `Value` form
 /// (for downstream signature static-ref resolution — paths like
-/// `{ble.advert.fujiCompanyId}` dot-walk into this Value).
+/// `{ble.advert.manufacturerCompanyId}` (and nested-map paths like
+/// `{ble.advert.serviceUuids.fileTransfer}`) dot-walk into this Value).
 fn build_ble_block(
     index: &ManufacturerIndex,
     model: &IndexedModel,
@@ -366,7 +367,7 @@ fn substitute_static_paths(
     }
 }
 
-/// `"{ble.advert.fujiCompanyId}"` → `Some("ble.advert.fujiCompanyId")`.
+/// `"{ble.advert.manufacturerCompanyId}"` → `Some("ble.advert.manufacturerCompanyId")`.
 /// Returns `None` for anything else.
 fn whole_brace_path(s: &str) -> Option<&str> {
     let s = s.strip_prefix('{')?.strip_suffix('}')?;
@@ -439,15 +440,85 @@ fn parse_signature(mut value: Value) -> Result<Signature, String> {
         SignatureKind::BleAdvert => {
             let sig: BleAdvertSignature = serde_yaml::from_value(value)
                 .map_err(|e| format!("typed BleAdvert decode: {e}"))?;
-            if sig.manufacturer_data.length.is_some() && sig.manufacturer_data.min_length.is_some()
-            {
-                return Err(
-                    "manufacturerData.length and manufacturerData.minLength are mutually exclusive"
-                        .to_string(),
-                );
+            validate_advert_predicate(&sig.require)?;
+            for (i, cap) in sig.capture.iter().enumerate() {
+                if cap.length == Some(0) {
+                    return Err(format!("capture[{i}]: length 0 can never capture bytes"));
+                }
             }
             Ok(Signature::BleAdvert(sig))
         }
+    }
+}
+
+/// Static checks the predicate grammar can't express in types alone (§11.14):
+/// non-empty combinators, mutually-exclusive length forms, exactly-one
+/// local-name form, at-least-one TX-power bound, non-vacuous payloads,
+/// non-zero bit masks.
+fn validate_advert_predicate(p: &super::types::AdvertPredicate) -> Result<(), String> {
+    use super::types::AdvertPredicate as P;
+    let payload_checks = |ctx: &str, pl: &super::types::PayloadPredicate| -> Result<(), String> {
+        if pl.length.is_some() && pl.min_length.is_some() {
+            return Err(format!(
+                "{ctx}: length and minLength are mutually exclusive"
+            ));
+        }
+        for b in &pl.assert_bits {
+            if b.mask == 0 {
+                return Err(format!("{ctx}: assertBits mask 0 always yields 0"));
+            }
+        }
+        Ok(())
+    };
+    match p {
+        P::All(children) | P::Any(children) => {
+            if children.is_empty() {
+                return Err("all/any: empty predicate list".to_string());
+            }
+            for c in children {
+                validate_advert_predicate(c)?;
+            }
+            Ok(())
+        }
+        P::Not(inner) => validate_advert_predicate(inner),
+        P::ManufacturerData(m) => {
+            if m.company_id.is_none() && m.payload.is_empty() {
+                return Err(
+                    "manufacturerData: no companyId and no payload constraint (vacuous)"
+                        .to_string(),
+                );
+            }
+            payload_checks("manufacturerData", &m.payload)
+        }
+        P::ServiceUuids { contains } => {
+            if contains.is_empty() {
+                return Err("serviceUuids.contains: empty UUID".to_string());
+            }
+            Ok(())
+        }
+        P::ServiceData { uuid, payload } => {
+            if uuid.is_empty() {
+                return Err("serviceData: empty UUID".to_string());
+            }
+            payload_checks("serviceData", payload)
+        }
+        P::LocalName(n) => {
+            let forms = [&n.equals, &n.prefix, &n.contains]
+                .iter()
+                .filter(|f| f.is_some())
+                .count();
+            if forms != 1 {
+                return Err("localName: exactly one of equals/prefix/contains required".to_string());
+            }
+            Ok(())
+        }
+        P::TxPower { min, max } => {
+            if min.is_none() && max.is_none() {
+                return Err("txPower: at least one of min/max required".to_string());
+            }
+            Ok(())
+        }
+        P::RawAdRecord { payload, .. } => payload_checks("rawAdRecord", payload),
     }
 }
 
@@ -816,6 +887,160 @@ impl<'de> serde::Deserialize<'de> for AcquireSource {
             other => Err(D::Error::custom(format!(
                 "unknown acquireSource '{other}' (allowlist: bleAdvert, bleRead, userPrompt)"
             ))),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for super::types::AdvertPredicate {
+    /// YAML form: a single-entry mapping whose key names the predicate kind
+    /// (`manufacturerData`, `serviceUuids`, `serviceData`, `localName`,
+    /// `txPower`, `rawAdRecord`) or combinator (`all`, `any`, `not`).
+    /// Recursive for combinators.
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use super::types::AdvertPredicate as P;
+        use serde::de::Error;
+        let mapping = serde_yaml::Mapping::deserialize(d)?;
+        if mapping.len() != 1 {
+            return Err(D::Error::custom(format!(
+                "advert predicate must be a single-entry mapping (got {} keys); wrap siblings in all:/any:",
+                mapping.len()
+            )));
+        }
+        let (key_v, body) = mapping.into_iter().next().unwrap();
+        let key = key_v
+            .as_str()
+            .ok_or_else(|| D::Error::custom("advert predicate key must be a string"))?
+            .to_string();
+        let dec = |what: &str, e: serde_yaml::Error| D::Error::custom(format!("{what}: {e}"));
+        match key.as_str() {
+            "all" => Ok(P::All(
+                serde_yaml::from_value(body).map_err(|e| dec("all", e))?,
+            )),
+            "any" => Ok(P::Any(
+                serde_yaml::from_value(body).map_err(|e| dec("any", e))?,
+            )),
+            "not" => Ok(P::Not(Box::new(
+                serde_yaml::from_value(body).map_err(|e| dec("not", e))?,
+            ))),
+            "manufacturerData" => Ok(P::ManufacturerData(
+                serde_yaml::from_value(body).map_err(|e| dec("manufacturerData", e))?,
+            )),
+            "serviceUuids" => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct R {
+                    contains: String,
+                }
+                let r: R = serde_yaml::from_value(body).map_err(|e| dec("serviceUuids", e))?;
+                Ok(P::ServiceUuids { contains: r.contains })
+            }
+            "serviceData" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct R {
+                    uuid: String,
+                    #[serde(flatten)]
+                    payload: super::types::PayloadPredicate,
+                }
+                let r: R = serde_yaml::from_value(body).map_err(|e| dec("serviceData", e))?;
+                Ok(P::ServiceData {
+                    uuid: r.uuid,
+                    payload: r.payload,
+                })
+            }
+            "localName" => Ok(P::LocalName(
+                serde_yaml::from_value(body).map_err(|e| dec("localName", e))?,
+            )),
+            "txPower" => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct R {
+                    #[serde(default)]
+                    min: Option<i8>,
+                    #[serde(default)]
+                    max: Option<i8>,
+                }
+                let r: R = serde_yaml::from_value(body).map_err(|e| dec("txPower", e))?;
+                Ok(P::TxPower {
+                    min: r.min,
+                    max: r.max,
+                })
+            }
+            "rawAdRecord" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct R {
+                    ad_type: u8,
+                    #[serde(flatten)]
+                    payload: super::types::PayloadPredicate,
+                }
+                let r: R = serde_yaml::from_value(body).map_err(|e| dec("rawAdRecord", e))?;
+                Ok(P::RawAdRecord {
+                    ad_type: r.ad_type,
+                    payload: r.payload,
+                })
+            }
+            other => Err(D::Error::custom(format!(
+                "unknown advert predicate '{other}' (allowlist: all, any, not, manufacturerData, serviceUuids, serviceData, localName, txPower, rawAdRecord)"
+            ))),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for super::types::AdvertByteSource {
+    /// YAML form: bare string (`manufacturerData`, `localName`) or a
+    /// single-entry mapping (`{ rawAdRecord: <adType> }`,
+    /// `{ serviceData: "<uuid>" }`).
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use super::types::AdvertByteSource as S;
+        use serde::de::Error;
+        let v = Value::deserialize(d)?;
+        match v {
+            Value::String(s) => match s.as_str() {
+                "manufacturerData" => Ok(S::ManufacturerData),
+                "localName" => Ok(S::LocalName),
+                other => Err(D::Error::custom(format!(
+                    "unknown capture source '{other}' (bare-string allowlist: manufacturerData, localName)"
+                ))),
+            },
+            Value::Mapping(m) => {
+                if m.len() != 1 {
+                    return Err(D::Error::custom(
+                        "capture source mapping must have exactly one key",
+                    ));
+                }
+                let (key_v, body) = m.into_iter().next().unwrap();
+                let key = key_v
+                    .as_str()
+                    .ok_or_else(|| D::Error::custom("capture source key must be a string"))?;
+                match key {
+                    "rawAdRecord" => {
+                        let ad_type = body.as_u64().filter(|n| *n <= 0xFF).ok_or_else(|| {
+                            D::Error::custom("rawAdRecord: <u8 AD type> required")
+                        })?;
+                        Ok(S::RawAdRecord {
+                            ad_type: ad_type as u8,
+                        })
+                    }
+                    "serviceData" => {
+                        let uuid = body
+                            .as_str()
+                            .ok_or_else(|| D::Error::custom("serviceData: <uuid string> required"))?
+                            .to_string();
+                        Ok(S::ServiceData { uuid })
+                    }
+                    other => Err(D::Error::custom(format!(
+                        "unknown capture source '{other}' (mapping allowlist: rawAdRecord, serviceData)"
+                    ))),
+                }
+            }
+            _ => Err(D::Error::custom("capture source: invalid shape")),
         }
     }
 }
