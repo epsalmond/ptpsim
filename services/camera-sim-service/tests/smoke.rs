@@ -510,3 +510,80 @@ properties:
     });
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// #26(1): a manifest authored against a schema this build doesn't support
+/// must fail at bind, not misbehave at request time.
+#[tokio::test]
+async fn bind_rejects_unsupported_manifest_schema() {
+    let root = tmp_card();
+    let config = Config {
+        instance_id: "test".into(),
+        profile: "fuji/gfx100ii".into(),
+        manifest_yaml: MANIFEST.replace("camera-config/v1", "camera-config/v999"),
+        media_root: root.clone(),
+        command_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_bind: "127.0.0.1:0".parse().unwrap(),
+        event_bind: "127.0.0.1:0".parse().unwrap(),
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+    };
+    let err = match Server::bind(config).await {
+        Err(e) => e,
+        Ok(_) => panic!("stale schema must not boot"),
+    };
+    assert!(
+        err.to_string().contains("camera-config/v999"),
+        "error names the offending schema: {err}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// #26(2): a control client that connects and stalls before sending its
+/// request line must not block the accept loop — a second client's /healthz
+/// completes while the first sits idle.
+#[tokio::test]
+async fn idle_control_connection_does_not_block_healthz() {
+    let root = tmp_card();
+    let config = Config {
+        instance_id: "test".into(),
+        profile: "fuji/gfx100ii".into(),
+        manifest_yaml: MANIFEST.into(),
+        media_root: root.clone(),
+        command_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_bind: "127.0.0.1:0".parse().unwrap(),
+        event_bind: "127.0.0.1:0".parse().unwrap(),
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+    };
+    let server = Server::bind(config).await.unwrap();
+    let ctl = server.control_addr();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let h = tokio::spawn(server.run(rx));
+
+    // Client A: connect and go silent (held open for the whole test).
+    let stalled = TcpStream::connect(ctl).unwrap();
+
+    // Client B: full /healthz round-trip must complete despite A.
+    let healthz = tokio::task::spawn_blocking(move || {
+        let mut s = TcpStream::connect(ctl).unwrap();
+        s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        out
+    });
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(5), healthz)
+        .await
+        .expect("healthz must not hang behind an idle control connection")
+        .unwrap();
+    assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp}");
+    let body = resp.split("\r\n\r\n").nth(1).unwrap_or("");
+    let parsed: serde_json::Value = serde_json::from_str(body).expect("healthz body is JSON");
+    assert_eq!(parsed["ok"], serde_json::json!(true));
+    assert_eq!(parsed["instance_id"], serde_json::json!("test"));
+
+    drop(stalled);
+    let _ = tx.send(());
+    let _ = h.await;
+    let _ = std::fs::remove_dir_all(root);
+}

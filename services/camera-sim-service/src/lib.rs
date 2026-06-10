@@ -88,6 +88,11 @@ impl Server {
     pub async fn bind(config: Config) -> std::io::Result<Self> {
         let manifest = CameraManifest::from_yaml(&config.manifest_yaml)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        // Refuse to boot with a manifest this build can't faithfully serve —
+        // a newer-schema manifest would otherwise misbehave at request time.
+        manifest
+            .require_supported_schema()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         let mut store = MediaStore::open(&config.media_root)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))?;
         store
@@ -178,7 +183,16 @@ impl Server {
                     tokio::select! {
                         accepted = control.accept() => {
                             if let Ok((stream, _)) = accepted {
-                                control::handle(stream, health.clone(), &engine, ctl_shutdown.clone()).await;
+                                // Per-connection task, like the liveview/command
+                                // loops — a client that connects and stalls before
+                                // its request line must not block the accept loop
+                                // (and with it /healthz + /shutdown).
+                                tokio::spawn(control::handle(
+                                    stream,
+                                    health.clone(),
+                                    engine.clone(),
+                                    ctl_shutdown.clone(),
+                                ));
                             }
                         }
                         _ = sub.recv() => break,

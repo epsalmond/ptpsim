@@ -186,6 +186,7 @@ dependencies = [
  "clap",
  "protocol-primitives",
  "ptp-core",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

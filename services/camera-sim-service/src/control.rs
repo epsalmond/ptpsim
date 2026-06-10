@@ -21,17 +21,22 @@ pub struct Health {
 
 impl Health {
     fn json(&self, sessions: usize) -> String {
-        format!(
-            r#"{{"ok":true,"instance_id":"{}","profile":"{}","bind":"{}","sessions":{},"media_root":"{}"}}"#,
-            self.instance_id, self.profile, self.command_addr, sessions, self.media_root
-        )
+        serde_json::json!({
+            "ok": true,
+            "instance_id": self.instance_id,
+            "profile": self.profile,
+            "bind": self.command_addr.to_string(),
+            "sessions": sessions,
+            "media_root": self.media_root,
+        })
+        .to_string()
     }
 }
 
 pub async fn handle(
     mut stream: TcpStream,
     health: Health,
-    engine: &Arc<Mutex<Engine>>,
+    engine: Arc<Mutex<Engine>>,
     shutdown: broadcast::Sender<()>,
 ) {
     let mut buf = [0u8; 1024];
