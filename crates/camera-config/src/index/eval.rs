@@ -286,6 +286,104 @@ pub fn hex_lower(b: &[u8]) -> String {
     s
 }
 
+/// Best-effort decode of a YAML literal value into bytes — the engine-side
+/// twin of the dispatcher's `StepValue::Literal` / `BleNotifyUntil::Equals`
+/// handling (the FFI delegates here):
+/// * String of hex digits (optionally `0x`-prefixed, even length) → hex bytes.
+/// * Other string + `utf8` encoding hint → UTF-8 bytes.
+/// * Sequence of u8 numbers → bytes verbatim.
+/// * Integer + a width-bearing encoding → fixed-width bytes per §11.2.
+///
+/// `None` for shapes outside that coverage; callers surface a tolerant-aware
+/// error.
+pub fn yaml_literal_to_bytes(v: &serde_yaml::Value, encoding: Option<Encoding>) -> Option<Vec<u8>> {
+    use Encoding::*;
+    match v {
+        serde_yaml::Value::String(s) => {
+            let trimmed = s.trim();
+            let payload = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+            if payload.chars().all(|c| c.is_ascii_hexdigit()) && payload.len() % 2 == 0 {
+                let mut out = Vec::with_capacity(payload.len() / 2);
+                let bytes = payload.as_bytes();
+                for chunk in bytes.chunks(2) {
+                    let hi = (chunk[0] as char).to_digit(16)? as u8;
+                    let lo = (chunk[1] as char).to_digit(16)? as u8;
+                    out.push((hi << 4) | lo);
+                }
+                return Some(out);
+            }
+            if matches!(encoding, Some(Utf8)) {
+                return Some(s.as_bytes().to_vec());
+            }
+            None
+        }
+        serde_yaml::Value::Number(n) => {
+            let n_u = n.as_u64()?;
+            match encoding {
+                Some(U8) => Some(vec![n_u as u8]),
+                Some(U16Le) => Some((n_u as u16).to_le_bytes().to_vec()),
+                Some(U16Be) => Some((n_u as u16).to_be_bytes().to_vec()),
+                Some(U32) | Some(U32Le) => Some((n_u as u32).to_le_bytes().to_vec()),
+                Some(U32Be) => Some((n_u as u32).to_be_bytes().to_vec()),
+                _ => None,
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            let mut out = Vec::with_capacity(seq.len());
+            for v in seq {
+                let b = v.as_u64()?;
+                if b > 255 {
+                    return None;
+                }
+                out.push(b as u8);
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Convert a runtime_scope string back into wire bytes for a
+/// `{ captured: <name> }` write — the inverse of [`decode_bytes`]'s
+/// byte-flavoured encodings. Scope carries strings (§11.2): byte captures
+/// land as even-length lowercase hex, integer captures as decimal. The
+/// heuristic mirrors [`yaml_literal_to_bytes`]: even-length all-hex strings
+/// hex-decode (this also round-trips decimal u32 captures like `idNumber`
+/// via the caller passing `encoding`), everything else is UTF-8 bytes.
+/// Ambiguity caveat: a 5-char ASCII capture like `ABCDE` is odd-length so
+/// it stays text, but an even-length all-hex ASCII value would hex-decode —
+/// data authors should capture text with non-hex alphabets or odd lengths
+/// in mind (true for every current Fuji capture).
+pub fn scope_string_to_bytes(value: &str, encoding: Option<Encoding>) -> Option<Vec<u8>> {
+    if let Some(enc) = encoding {
+        match enc {
+            Encoding::Utf8 | Encoding::Ascii => return Some(value.as_bytes().to_vec()),
+            Encoding::U8 => return value.parse::<u8>().ok().map(|v| vec![v]),
+            Encoding::U16Le => return value.parse::<u16>().ok().map(|v| v.to_le_bytes().to_vec()),
+            Encoding::U16Be => return value.parse::<u16>().ok().map(|v| v.to_be_bytes().to_vec()),
+            Encoding::U32 | Encoding::U32Le => {
+                return value.parse::<u32>().ok().map(|v| v.to_le_bytes().to_vec())
+            }
+            Encoding::U32Be => return value.parse::<u32>().ok().map(|v| v.to_be_bytes().to_vec()),
+            Encoding::Bytes | Encoding::BytesRaw | Encoding::BytesLe | Encoding::BytesBe => {}
+        }
+    }
+    let payload = value.strip_prefix("0x").unwrap_or(value);
+    if !payload.is_empty()
+        && payload.chars().all(|c| c.is_ascii_hexdigit())
+        && payload.len() % 2 == 0
+    {
+        let mut out = Vec::with_capacity(payload.len() / 2);
+        for chunk in payload.as_bytes().chunks(2) {
+            let hi = (chunk[0] as char).to_digit(16)? as u8;
+            let lo = (chunk[1] as char).to_digit(16)? as u8;
+            out.push((hi << 4) | lo);
+        }
+        return Some(out);
+    }
+    Some(value.as_bytes().to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

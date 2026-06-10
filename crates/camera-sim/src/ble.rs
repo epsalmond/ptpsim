@@ -1,0 +1,520 @@
+//! In-memory BLE GATT responder + reference establishment walker (issue #25
+//! Phase 1). The simulator side of the BLE pair flow: the responder plays the
+//! camera (advert constants, GATT catalog, per-characteristic read/notify
+//! policy from manifest data + test scripting), the walker plays the app
+//! dispatcher, executing a manifest establishment plan against it. No real
+//! radio — Phase 2 (BlueZ) would implement the same surface over a stack.
+//!
+//! Like the PTP/IP [`crate::Engine`], this is generic: vendor behavior comes
+//! from manifest data and per-test policy, never from code branches. The
+//! walker doubles as the executable reference for what a platform dispatcher
+//! must do per verb (resolution semantics delegate to
+//! `camera_config::index::eval`, the engine-owned spec).
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use camera_config::index::eval;
+use camera_config::index::{
+    AcquireSource, BleNotifyUntil, CccdMode, Encoding, PredicateOp, Step, StepValue,
+};
+
+/// One interaction the responder observed, in arrival order. Tests assert on
+/// this log to prove a plan drove the camera in the expected reference app order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BleEvent {
+    Connect,
+    RequestMtu { requested: u16, negotiated: u16 },
+    DiscoverServices,
+    Read { uuid: String },
+    Write { uuid: String, value: Vec<u8> },
+    Subscribe { uuid: String, mode: CccdMode },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BleError {
+    NotConnected,
+    /// The characteristic isn't in this body's exposed catalog (or, for a
+    /// read, has no value policy) — the in-memory analogue of a GATT
+    /// attribute-not-found error.
+    NotExposed(String),
+}
+
+impl std::fmt::Display for BleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BleError::NotConnected => write!(f, "peripheral not connected"),
+            BleError::NotExposed(uuid) => write!(f, "characteristic {uuid} not exposed"),
+        }
+    }
+}
+
+/// Deterministic in-memory GATT peripheral. Construct from the manifest's
+/// symbolic-name → UUID catalog, then script per-characteristic behavior:
+/// [`serve_read`](Self::serve_read) values and
+/// [`queue_notification`](Self::queue_notification) payloads.
+///
+/// A characteristic in the catalog accepts writes and CCCD subscriptions; a
+/// read additionally needs a served value (a catalogued-but-unserved
+/// characteristic read fails like a real body that doesn't expose it — the
+/// LEGACY `deviceIdentificationNumber` case).
+pub struct BleResponder {
+    catalog: BTreeSet<String>,
+    read_values: BTreeMap<String, Vec<u8>>,
+    notify_queues: BTreeMap<String, Vec<Vec<u8>>>,
+    mtu_cap: u16,
+    connected: bool,
+    services_discovered: bool,
+    log: Vec<BleEvent>,
+}
+
+impl BleResponder {
+    /// `catalog` is the manifest's `gatt:` map values (UUIDs). Names are not
+    /// kept — steps arrive with UUIDs already resolved by the loader (§11.3).
+    pub fn new<I: IntoIterator<Item = String>>(catalog: I) -> Self {
+        BleResponder {
+            catalog: catalog.into_iter().collect(),
+            read_values: BTreeMap::new(),
+            notify_queues: BTreeMap::new(),
+            mtu_cap: 247,
+            connected: false,
+            services_discovered: false,
+            log: Vec::new(),
+        }
+    }
+
+    /// Serve `bytes` on every read of `uuid` (also adds it to the catalog).
+    pub fn serve_read(mut self, uuid: &str, bytes: &[u8]) -> Self {
+        self.catalog.insert(uuid.to_string());
+        self.read_values.insert(uuid.to_string(), bytes.to_vec());
+        self
+    }
+
+    /// Queue a notification payload on `uuid` (FIFO; one per `bleNotify`).
+    pub fn queue_notification(mut self, uuid: &str, payload: &[u8]) -> Self {
+        self.catalog.insert(uuid.to_string());
+        self.notify_queues
+            .entry(uuid.to_string())
+            .or_default()
+            .push(payload.to_vec());
+        self
+    }
+
+    /// Cap the negotiable ATT MTU (default 247, typical BLE 5 stack).
+    pub fn with_mtu_cap(mut self, cap: u16) -> Self {
+        self.mtu_cap = cap;
+        self
+    }
+
+    pub fn connect(&mut self) {
+        self.connected = true;
+        // In-memory stack auto-discovers, like CoreBluetooth's connect path;
+        // bleDiscoverServices is then a checkpoint (§11.4a).
+        self.services_discovered = true;
+        self.log.push(BleEvent::Connect);
+    }
+
+    pub fn request_mtu(&mut self, requested: u16) -> Result<u16, BleError> {
+        if !self.connected {
+            return Err(BleError::NotConnected);
+        }
+        let negotiated = requested.min(self.mtu_cap);
+        self.log.push(BleEvent::RequestMtu {
+            requested,
+            negotiated,
+        });
+        Ok(negotiated)
+    }
+
+    pub fn discover_services(&mut self) -> Result<(), BleError> {
+        if !self.connected {
+            return Err(BleError::NotConnected);
+        }
+        self.services_discovered = true;
+        self.log.push(BleEvent::DiscoverServices);
+        Ok(())
+    }
+
+    fn require_char(&self, uuid: &str) -> Result<(), BleError> {
+        if !self.connected {
+            return Err(BleError::NotConnected);
+        }
+        if !self.catalog.contains(uuid) {
+            return Err(BleError::NotExposed(uuid.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn read(&mut self, uuid: &str) -> Result<Vec<u8>, BleError> {
+        self.require_char(uuid)?;
+        self.log.push(BleEvent::Read {
+            uuid: uuid.to_string(),
+        });
+        self.read_values
+            .get(uuid)
+            .cloned()
+            .ok_or_else(|| BleError::NotExposed(uuid.to_string()))
+    }
+
+    pub fn write(&mut self, uuid: &str, value: &[u8]) -> Result<(), BleError> {
+        self.require_char(uuid)?;
+        self.log.push(BleEvent::Write {
+            uuid: uuid.to_string(),
+            value: value.to_vec(),
+        });
+        Ok(())
+    }
+
+    /// CCCD descriptor write — success IS the ack (§11.8 `bleSubscribe`).
+    pub fn subscribe(&mut self, uuid: &str, mode: CccdMode) -> Result<(), BleError> {
+        self.require_char(uuid)?;
+        self.log.push(BleEvent::Subscribe {
+            uuid: uuid.to_string(),
+            mode,
+        });
+        Ok(())
+    }
+
+    /// Pop the next queued notification payload for `uuid`, if any.
+    pub fn take_notification(&mut self, uuid: &str) -> Option<Vec<u8>> {
+        let queue = self.notify_queues.get_mut(uuid)?;
+        if queue.is_empty() {
+            None
+        } else {
+            Some(queue.remove(0))
+        }
+    }
+
+    /// Every interaction, in order.
+    pub fn log(&self) -> &[BleEvent] {
+        &self.log
+    }
+
+    /// Convenience: the payloads written to `uuid`, in order.
+    pub fn written(&self, uuid: &str) -> Vec<&[u8]> {
+        self.log
+            .iter()
+            .filter_map(|e| match e {
+                BleEvent::Write { uuid: u, value } if u == uuid => Some(value.as_slice()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Convenience: the CCCD-subscribed UUIDs, in order.
+    pub fn subscribed(&self) -> Vec<&str> {
+        self.log
+            .iter()
+            .filter_map(|e| match e {
+                BleEvent::Subscribe { uuid, .. } => Some(uuid.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// Walk failure: which step (by verb + position) and why. Tolerant steps
+/// never produce one — their failures are skipped like a real dispatcher.
+#[derive(Debug)]
+pub struct WalkError {
+    pub step: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for WalkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.step, self.message)
+    }
+}
+
+/// Result of a completed walk: the final scope (recognition seed + step
+/// captures) and how many steps ran (if-branches counted inside-out).
+pub struct WalkOutcome {
+    pub scope: BTreeMap<String, String>,
+    pub steps_run: usize,
+}
+
+struct WalkCtx<'a> {
+    responder: &'a mut BleResponder,
+    scope: BTreeMap<String, String>,
+    /// Encoding each scope key was captured with — lets `{ captured: … }`
+    /// writes re-encode integer captures (the RED `idNumber` u32) instead
+    /// of guessing from the scope string.
+    encodings: BTreeMap<String, Encoding>,
+    runtime_params: BTreeMap<String, String>,
+    steps_run: usize,
+}
+
+/// Execute an establishment plan against the responder — the reference
+/// dispatcher. `retries`/`retryDelayMs` are honoured as semantics but not as
+/// timing: the responder is deterministic, so a step either succeeds on the
+/// first try or never (a retry loop would spin on the same answer). Regex
+/// `until: matches` is unsupported here (the engine deliberately carries no
+/// regex dependency); plans using it need a platform dispatcher.
+pub fn walk_establishment(
+    responder: &mut BleResponder,
+    steps: &[Step],
+    initial_scope: &BTreeMap<String, String>,
+    runtime_params: &BTreeMap<String, String>,
+) -> Result<WalkOutcome, WalkError> {
+    let mut ctx = WalkCtx {
+        responder,
+        scope: initial_scope.clone(),
+        encodings: BTreeMap::new(),
+        runtime_params: runtime_params.clone(),
+        steps_run: 0,
+    };
+    walk_steps(&mut ctx, steps, "steps")?;
+    Ok(WalkOutcome {
+        scope: ctx.scope,
+        steps_run: ctx.steps_run,
+    })
+}
+
+fn walk_steps(ctx: &mut WalkCtx<'_>, steps: &[Step], path: &str) -> Result<(), WalkError> {
+    for (i, step) in steps.iter().enumerate() {
+        let here = format!("{path}[{i}].{}", step.verb_name());
+        let tolerant = match step {
+            Step::If(s) => s.tolerant, // §11.6: If's tolerant gates predicate fields, not body errors
+            other => other.options().tolerant,
+        };
+        match run_step(ctx, step, &here) {
+            Ok(()) => ctx.steps_run += 1,
+            Err(e) if tolerant && !matches!(step, Step::If(_)) => {
+                // Tolerant step failure: skip and continue (§11.6).
+                let _ = e;
+                ctx.steps_run += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkError> {
+    let err = |message: String| WalkError {
+        step: here.to_string(),
+        message,
+    };
+    match step {
+        Step::BleConnect(_) => {
+            ctx.responder.connect();
+            Ok(())
+        }
+        Step::BleRequestMtu(s) => {
+            let negotiated = ctx
+                .responder
+                .request_mtu(s.mtu)
+                .map_err(|e| err(e.to_string()))?;
+            if negotiated < s.mtu {
+                return Err(err(format!(
+                    "negotiated MTU {negotiated} < required {}",
+                    s.mtu
+                )));
+            }
+            Ok(())
+        }
+        Step::BleDiscoverServices(_) => ctx
+            .responder
+            .discover_services()
+            .map_err(|e| err(e.to_string())),
+        Step::BleRead(s) => {
+            let wire = ctx
+                .responder
+                .read(&s.gatt)
+                .map_err(|e| err(e.to_string()))?;
+            // §11.13 capture pipeline: bytes → transform chain → encoding.
+            let bytes = eval::apply_transforms(&wire, &s.transform)
+                .ok_or_else(|| err("transform chain failed".into()))?;
+            let value = eval::decode_bytes(&bytes, s.encoding)
+                .ok_or_else(|| err(format!("decode as {} failed", s.encoding.as_token())))?;
+            ctx.scope.insert(s.capture_as.clone(), value);
+            ctx.encodings.insert(s.capture_as.clone(), s.encoding);
+            Ok(())
+        }
+        Step::BleWrite(s) => {
+            let bytes = resolve_value(ctx, &s.value).map_err(err)?;
+            ctx.responder
+                .write(&s.gatt, &bytes)
+                .map_err(|e| err(e.to_string()))
+        }
+        Step::BleSubscribe(s) => ctx
+            .responder
+            .subscribe(&s.gatt, s.mode)
+            .map_err(|e| err(e.to_string())),
+        Step::BleNotify(s) => {
+            ctx.responder
+                .subscribe(&s.gatt, s.mode)
+                .map_err(|e| err(e.to_string()))?;
+            let payload = ctx
+                .responder
+                .take_notification(&s.gatt)
+                .ok_or_else(|| err("no notification arrived (queue empty)".into()))?;
+            let accepted = match &s.until {
+                BleNotifyUntil::Any => true,
+                BleNotifyUntil::Equals { value, encoding } => {
+                    let want = eval::yaml_literal_to_bytes(value, *encoding)
+                        .ok_or_else(|| err("until.equals value undecodable".into()))?;
+                    payload == want
+                }
+                BleNotifyUntil::Matches { .. } => {
+                    return Err(err(
+                        "until.matches (regex) is unsupported in the reference walker".into(),
+                    ));
+                }
+            };
+            if !accepted {
+                return Err(err("notification payload did not satisfy until".into()));
+            }
+            if let Some(name) = &s.capture_as {
+                ctx.scope.insert(name.clone(), eval::hex_lower(&payload));
+                ctx.encodings.insert(name.clone(), Encoding::Bytes);
+            }
+            // Field captures are fail-soft (§11.8): a capture that misses
+            // its window/decode is skipped, never a step failure.
+            for cap in &s.capture {
+                let end = match cap.length {
+                    Some(l) => cap.at.saturating_add(l),
+                    None => payload.len(),
+                };
+                if cap.at > payload.len() || end > payload.len() {
+                    continue;
+                }
+                let Some(bytes) = eval::apply_transforms(&payload[cap.at..end], &cap.transform)
+                else {
+                    continue;
+                };
+                if let Some(value) = eval::decode_bytes(&bytes, cap.encoding) {
+                    ctx.scope.insert(cap.name.clone(), value);
+                    ctx.encodings.insert(cap.name.clone(), cap.encoding);
+                }
+            }
+            Ok(())
+        }
+        Step::Acquire(s) => {
+            // Run the delegate step, then alias whatever it captured under
+            // the acquire's name.
+            let before: BTreeSet<String> = ctx.scope.keys().cloned().collect();
+            run_step(ctx, &s.from, &format!("{here}.from"))?;
+            let new_key = ctx.scope.keys().find(|k| !before.contains(*k)).cloned();
+            if let Some(k) = new_key {
+                if let Some(v) = ctx.scope.get(&k).cloned() {
+                    if let Some(enc) = ctx.encodings.get(&k).copied() {
+                        ctx.encodings.insert(s.name.clone(), enc);
+                    }
+                    ctx.scope.insert(s.name.clone(), v);
+                }
+            }
+            Ok(())
+        }
+        Step::AcquireFirmware(s) => match &s.from {
+            AcquireSource::BleRead { gatt, encoding } => {
+                let wire = ctx.responder.read(gatt).map_err(|e| err(e.to_string()))?;
+                let value = eval::decode_bytes(&wire, *encoding)
+                    .ok_or_else(|| err(format!("decode as {} failed", encoding.as_token())))?;
+                ctx.scope.insert("firmware".to_string(), value);
+                ctx.encodings.insert("firmware".to_string(), *encoding);
+                Ok(())
+            }
+            other => Err(err(format!(
+                "acquireFirmware source {other:?} unsupported in the reference walker"
+            ))),
+        },
+        Step::If(s) => {
+            let field_value = ctx.scope.get(&s.condition.field);
+            let holds = match field_value {
+                None if s.tolerant => false, // §11.6: unbound field → false
+                None => {
+                    return Err(err(format!(
+                        "predicate field '{}' unbound in scope",
+                        s.condition.field
+                    )));
+                }
+                Some(actual) => predicate_holds(actual, s.condition.op, &s.condition.value),
+            };
+            let branch = if holds { &s.then } else { &s.else_branch };
+            let branch_path = format!("{here}.{}", if holds { "then" } else { "else" });
+            walk_steps(ctx, branch, &branch_path)
+        }
+    }
+}
+
+fn predicate_holds(actual: &str, op: PredicateOp, expected: &str) -> bool {
+    // Numeric compare when both sides parse; string compare otherwise.
+    let nums = (actual.parse::<i64>().ok(), expected.parse::<i64>().ok());
+    match op {
+        PredicateOp::Eq => actual == expected,
+        PredicateOp::Ne => actual != expected,
+        PredicateOp::Gt | PredicateOp::Gte | PredicateOp::Lt | PredicateOp::Lte => {
+            let ord = match nums {
+                (Some(a), Some(b)) => a.cmp(&b),
+                _ => actual.cmp(expected),
+            };
+            match op {
+                PredicateOp::Gt => ord.is_gt(),
+                PredicateOp::Gte => ord.is_ge(),
+                PredicateOp::Lt => ord.is_lt(),
+                PredicateOp::Lte => ord.is_le(),
+                _ => unreachable!(),
+            }
+        }
+        PredicateOp::In => expected.split(',').map(str::trim).any(|v| v == actual),
+    }
+}
+
+fn resolve_value(ctx: &WalkCtx<'_>, value: &StepValue) -> Result<Vec<u8>, String> {
+    match value {
+        StepValue::Literal { literal } => eval::yaml_literal_to_bytes(literal, None)
+            .ok_or_else(|| "literal undecodable".to_string()),
+        StepValue::Template {
+            template,
+            transform,
+        } => {
+            let mut out = String::new();
+            let mut rest = template.as_str();
+            while let Some(open) = rest.find('{') {
+                out.push_str(&rest[..open]);
+                let Some(close) = rest[open..].find('}') else {
+                    return Err(format!("template '{template}': unclosed brace"));
+                };
+                let name = &rest[open + 1..open + close];
+                let v = ctx
+                    .scope
+                    .get(name)
+                    .or_else(|| ctx.runtime_params.get(name))
+                    .ok_or_else(|| format!("template ref '{{{name}}}' unbound"))?;
+                out.push_str(v);
+                rest = &rest[open + close + 1..];
+            }
+            out.push_str(rest);
+            eval::apply_transforms(out.as_bytes(), transform)
+                .ok_or_else(|| "transform chain failed".to_string())
+        }
+        StepValue::Runtime {
+            runtime,
+            encoding,
+            transform,
+        } => {
+            let v = ctx
+                .runtime_params
+                .get(runtime)
+                .ok_or_else(|| format!("runtime slot '{runtime}' unbound"))?;
+            let bytes = eval::scope_string_to_bytes(v, *encoding)
+                .ok_or_else(|| format!("runtime '{runtime}' undecodable"))?;
+            eval::apply_transforms(&bytes, transform)
+                .ok_or_else(|| "transform chain failed".to_string())
+        }
+        StepValue::Captured {
+            captured,
+            transform,
+        } => {
+            let v = ctx
+                .scope
+                .get(captured)
+                .ok_or_else(|| format!("captured '{captured}' unbound in scope"))?;
+            let bytes = eval::scope_string_to_bytes(v, ctx.encodings.get(captured).copied())
+                .ok_or_else(|| format!("captured '{captured}' undecodable"))?;
+            eval::apply_transforms(&bytes, transform)
+                .ok_or_else(|| "transform chain failed".to_string())
+        }
+    }
+}

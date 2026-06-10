@@ -455,7 +455,7 @@ impl From<&ix::StepValue> for StepValue {
     fn from(v: &ix::StepValue) -> Self {
         match v {
             ix::StepValue::Literal { literal } => StepValue::Literal {
-                bytes: yaml_value_to_bytes(literal, None).unwrap_or_default(),
+                bytes: ix::eval::yaml_literal_to_bytes(literal, None).unwrap_or_default(),
             },
             ix::StepValue::Template {
                 template,
@@ -512,7 +512,7 @@ impl From<&ix::BleNotifyUntil> for BleNotifyUntil {
         match u {
             ix::BleNotifyUntil::Any => BleNotifyUntil::Any,
             ix::BleNotifyUntil::Equals { value, encoding } => BleNotifyUntil::Equals {
-                value: yaml_value_to_bytes(value, *encoding).unwrap_or_default(),
+                value: ix::eval::yaml_literal_to_bytes(value, *encoding).unwrap_or_default(),
             },
             ix::BleNotifyUntil::Matches { pattern } => BleNotifyUntil::Matches {
                 pattern: pattern.clone(),
@@ -721,64 +721,6 @@ pub fn build_establishment(
 // ---------------------------------------------------------------------------
 // Local helpers
 // ---------------------------------------------------------------------------
-
-/// Best-effort decode of a YAML literal value into bytes. Used for
-/// `StepValue::Literal { literal }` and `BleNotifyUntil::Equals { value }`.
-/// MVP coverage:
-/// * String + encoding `bytes-raw` / no encoding hint with hex digits →
-///   decoded as lowercase hex.
-/// * Sequence of u8 numbers → bytes verbatim.
-/// * Integer u8/u16/u32 + an encoding → little-endian bytes (most common
-///   on-wire form for Fuji adverts).
-///
-/// Returns `None` for shapes the MVP doesn't cover; callers fall back to an
-/// empty `Vec<u8>` and a tolerant-aware error surface mid-walk.
-fn yaml_value_to_bytes(v: &serde_yaml::Value, encoding: Option<ix::Encoding>) -> Option<Vec<u8>> {
-    use ix::Encoding::*;
-    match v {
-        serde_yaml::Value::String(s) => {
-            let trimmed = s.trim();
-            let payload = trimmed.strip_prefix("0x").unwrap_or(trimmed);
-            if payload.chars().all(|c| c.is_ascii_hexdigit()) && payload.len() % 2 == 0 {
-                let mut out = Vec::with_capacity(payload.len() / 2);
-                let bytes = payload.as_bytes();
-                for chunk in bytes.chunks(2) {
-                    let hi = (chunk[0] as char).to_digit(16)? as u8;
-                    let lo = (chunk[1] as char).to_digit(16)? as u8;
-                    out.push((hi << 4) | lo);
-                }
-                return Some(out);
-            }
-            if matches!(encoding, Some(Utf8)) {
-                return Some(s.as_bytes().to_vec());
-            }
-            None
-        }
-        serde_yaml::Value::Number(n) => {
-            let n_u = n.as_u64()?;
-            match encoding {
-                Some(U8) => Some(vec![n_u as u8]),
-                Some(U16Le) => Some((n_u as u16).to_le_bytes().to_vec()),
-                Some(U16Be) => Some((n_u as u16).to_be_bytes().to_vec()),
-                Some(U32) | Some(U32Le) => Some((n_u as u32).to_le_bytes().to_vec()),
-                Some(U32Be) => Some((n_u as u32).to_be_bytes().to_vec()),
-                _ => None,
-            }
-        }
-        serde_yaml::Value::Sequence(seq) => {
-            let mut out = Vec::with_capacity(seq.len());
-            for v in seq {
-                let b = v.as_u64()?;
-                if b > 255 {
-                    return None;
-                }
-                out.push(b as u8);
-            }
-            Some(out)
-        }
-        _ => None,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // ConfigError conversion (camera-config side → FFI side)

@@ -3,11 +3,13 @@
 //! bits it needs (compressed framing, live-view packetization, computed quirks)
 //! come from `protocol-primitives`, referenced by manifest id.
 
+pub mod ble;
 pub mod engine;
 pub mod fault;
 pub mod framesource;
 pub mod state;
 
+pub use ble::{walk_establishment, BleEvent, BleResponder, WalkOutcome};
 pub use engine::{Engine, Reply};
 pub use fault::{Fault, FaultSet};
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
