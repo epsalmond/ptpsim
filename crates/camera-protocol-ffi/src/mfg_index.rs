@@ -130,6 +130,8 @@ pub enum Step {
         gatt: String,
         encoding: String,
         capture_as: String,
+        /// Applied to the wire bytes BEFORE `encoding` decode (§11.13).
+        transform: Vec<Transform>,
         opts: StepOptions,
     },
     /// CCCD-enable only. Success on descriptor-write ack — no notification
@@ -178,11 +180,13 @@ pub enum Step {
 /// Step value forms (§11.1). At the FFI boundary:
 /// * `Literal { bytes }` — the loader decoded the YAML hex string to bytes.
 /// * `Template { value, transform }` — interpolate `{name}` against scope at
-///   walk time, then optionally apply a [`ValueTransform`] (e.g. `bitOr`).
+///   walk time, then apply the [`Transform`] chain in order.
 /// * `Runtime { slot, encoding?, transform }` — app supplies before walk.
 /// * `Captured { name, transform }` — earlier step / recognize-seed named
 ///   this slot; the RED `F557D96B` echo write uses
-///   `Captured { name: "idNumber", transform: BitOr(0x20000000) }`.
+///   `Captured { name: "idNumber", transform: [BitOr(0x20000000)] }`.
+///
+/// An empty `transform` vec means no transform.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum StepValue {
     Literal {
@@ -190,28 +194,53 @@ pub enum StepValue {
     },
     Template {
         value: String,
-        transform: Option<ValueTransform>,
+        transform: Vec<Transform>,
     },
     Runtime {
         slot: String,
         encoding: Option<String>,
-        transform: Option<ValueTransform>,
+        transform: Vec<Transform>,
     },
     Captured {
         name: String,
-        transform: Option<ValueTransform>,
+        transform: Vec<Transform>,
     },
 }
 
-/// Allowlisted post-resolution byte transforms (BLE-MVP follow-up). The
-/// dispatcher applies the transform between resolving the captured/runtime
-/// bytes and writing them. Operand width matches the input bytes (most
-/// commonly 4 bytes / u32). The allowlist starts tiny by design — extend
-/// later via one schema field + one dispatcher match arm.
-#[derive(Debug, Clone, Copy, uniffi::Enum)]
-pub enum ValueTransform {
-    BitOr { operand: u64 },
-    BitAnd { operand: u64 },
+/// Closed byte→byte transform vocabulary (§11.13). The dispatcher applies
+/// the chain in order between resolving bytes and using them (write value)
+/// or before `encoding`-decoding them (read/notify captures). Semantics are
+/// specified by `camera_config::index::eval::apply_transforms` — implement
+/// the dispatcher side to match its unit tests. Chain failure (out-of-range
+/// slice, integer op on > 8 bytes, wrong width for `uuidFromBytes`) counts
+/// as step failure under §11.6.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum Transform {
+    /// Input ≤ 8 bytes LE; re-emit at input width.
+    BitOr {
+        operand: u64,
+    },
+    /// Input ≤ 8 bytes LE; re-emit at input width.
+    BitAnd {
+        operand: u64,
+    },
+    /// Window `[at, at+length)`; `length` absent = to end.
+    Slice {
+        at: u64,
+        length: Option<u64>,
+    },
+    /// Same as `Slice { at: count, length: None }`.
+    DropPrefix {
+        count: u64,
+    },
+    ReverseBytes,
+    /// Exactly 16 bytes → 36 ASCII bytes of the canonical uppercase UUID.
+    UuidFromBytes,
+    /// Input ≤ 8 bytes LE: `(value & mask) >> shift`, re-emit at input width.
+    Bits {
+        mask: u64,
+        shift: u32,
+    },
 }
 
 /// Where an `acquire` / `acquireFirmware` step pulls its value from.
@@ -299,13 +328,30 @@ impl From<&ix::Predicate> for Predicate {
     }
 }
 
-impl From<ix::ValueTransform> for ValueTransform {
-    fn from(t: ix::ValueTransform) -> Self {
+impl From<&ix::Transform> for Transform {
+    fn from(t: &ix::Transform) -> Self {
         match t {
-            ix::ValueTransform::BitOr(operand) => ValueTransform::BitOr { operand },
-            ix::ValueTransform::BitAnd(operand) => ValueTransform::BitAnd { operand },
+            ix::Transform::BitOr(operand) => Transform::BitOr { operand: *operand },
+            ix::Transform::BitAnd(operand) => Transform::BitAnd { operand: *operand },
+            ix::Transform::Slice { at, length } => Transform::Slice {
+                at: *at as u64,
+                length: length.map(|l| l as u64),
+            },
+            ix::Transform::DropPrefix(count) => Transform::DropPrefix {
+                count: *count as u64,
+            },
+            ix::Transform::ReverseBytes => Transform::ReverseBytes,
+            ix::Transform::UuidFromBytes => Transform::UuidFromBytes,
+            ix::Transform::Bits { mask, shift } => Transform::Bits {
+                mask: *mask,
+                shift: *shift,
+            },
         }
     }
+}
+
+fn transforms(chain: &[ix::Transform]) -> Vec<Transform> {
+    chain.iter().map(Into::into).collect()
 }
 
 impl From<&ix::StepValue> for StepValue {
@@ -319,7 +365,7 @@ impl From<&ix::StepValue> for StepValue {
                 transform,
             } => StepValue::Template {
                 value: template.clone(),
-                transform: transform.map(Into::into),
+                transform: transforms(transform),
             },
             ix::StepValue::Runtime {
                 runtime,
@@ -328,14 +374,14 @@ impl From<&ix::StepValue> for StepValue {
             } => StepValue::Runtime {
                 slot: runtime.clone(),
                 encoding: encoding.map(|e| e.as_token().to_string()),
-                transform: transform.map(Into::into),
+                transform: transforms(transform),
             },
             ix::StepValue::Captured {
                 captured,
                 transform,
             } => StepValue::Captured {
                 name: captured.clone(),
-                transform: transform.map(Into::into),
+                transform: transforms(transform),
             },
         }
     }
@@ -388,6 +434,7 @@ impl From<&ix::Step> for Step {
                 gatt: inner.gatt.clone(),
                 encoding: inner.encoding.as_token().to_string(),
                 capture_as: inner.capture_as.clone(),
+                transform: transforms(&inner.transform),
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleWrite(inner) => Step::BleWrite {
@@ -567,7 +614,7 @@ fn build_runtime_scope(sig: &ix::BleAdvertSignature, mfg_data: &[u8]) -> Vec<Key
             continue; // capture would read past the buffer; skip
         }
         let bytes = &mfg_data[cap.from..end];
-        if let Some(value) = decode_bytes(bytes, cap.encoding) {
+        if let Some(value) = ix::eval::decode_bytes(bytes, cap.encoding) {
             out.push(KeyValue {
                 key: cap.name.clone(),
                 value,
@@ -593,73 +640,6 @@ fn intersect_scope<'a>(
         }
     }
     out
-}
-
-fn decode_bytes(bytes: &[u8], encoding: ix::Encoding) -> Option<String> {
-    match encoding {
-        ix::Encoding::Utf8 => std::str::from_utf8(bytes).ok().map(String::from),
-        ix::Encoding::Ascii => {
-            if bytes.iter().all(u8::is_ascii) {
-                std::str::from_utf8(bytes).ok().map(String::from)
-            } else {
-                None
-            }
-        }
-        ix::Encoding::Bytes | ix::Encoding::BytesRaw | ix::Encoding::BytesLe => {
-            Some(hex_lower(bytes))
-        }
-        ix::Encoding::BytesBe => Some(hex_lower(bytes)),
-        ix::Encoding::U8 => {
-            if bytes.len() == 1 {
-                Some((bytes[0] as u64).to_string())
-            } else {
-                None
-            }
-        }
-        ix::Encoding::U16Le => {
-            if bytes.len() == 2 {
-                Some((u16::from_le_bytes([bytes[0], bytes[1]]) as u64).to_string())
-            } else {
-                None
-            }
-        }
-        ix::Encoding::U16Be => {
-            if bytes.len() == 2 {
-                Some((u16::from_be_bytes([bytes[0], bytes[1]]) as u64).to_string())
-            } else {
-                None
-            }
-        }
-        ix::Encoding::U32 | ix::Encoding::U32Le => {
-            if bytes.len() == 4 {
-                Some(
-                    (u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64)
-                        .to_string(),
-                )
-            } else {
-                None
-            }
-        }
-        ix::Encoding::U32Be => {
-            if bytes.len() == 4 {
-                Some(
-                    (u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64)
-                        .to_string(),
-                )
-            } else {
-                None
-            }
-        }
-    }
-}
-
-fn hex_lower(b: &[u8]) -> String {
-    let mut s = String::with_capacity(b.len() * 2);
-    for byte in b {
-        use std::fmt::Write;
-        let _ = write!(s, "{byte:02x}");
-    }
-    s
 }
 
 fn confidence_from(c: ix::Confidence) -> Confidence {

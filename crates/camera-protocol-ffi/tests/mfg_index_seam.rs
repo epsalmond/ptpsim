@@ -216,11 +216,13 @@ fn establishment_returns_walkable_ble_plan() {
             gatt,
             encoding,
             capture_as,
+            transform,
             opts,
         } => {
             assert_eq!(gatt, "00002A25-0000-1000-8000-00805F9B34FB");
             assert_eq!(encoding, "bytes");
             assert_eq!(capture_as, "cameraSerial");
+            assert!(transform.is_empty(), "raw read, no transform chain");
             assert!(opts.tolerant);
             assert_eq!(opts.retries, 20);
             assert_eq!(opts.retry_delay_ms, 1000);
@@ -275,11 +277,13 @@ fn establishment_returns_walkable_ble_plan() {
                     gatt,
                     encoding,
                     capture_as,
+                    transform,
                     opts,
                 } => {
                     assert_eq!(gatt, "F557D96B-8284-4667-8793-B971C1DECA2A");
                     assert_eq!(encoding, "u32");
                     assert_eq!(capture_as, "idNumber");
+                    assert!(transform.is_empty(), "raw read, no transform chain");
                     assert!(opts.tolerant);
                     assert_eq!(opts.retries, 20);
                 }
@@ -352,7 +356,7 @@ fn red_echo_write_value_carries_bit_or_transform_through_ffi() {
         StepValue::Captured { name, transform } => {
             assert_eq!(name, "idNumber");
             assert!(
-                matches!(transform, Some(ValueTransform::BitOr { operand }) if *operand == 0x20000000),
+                matches!(transform.as_slice(), [Transform::BitOr { operand }] if *operand == 0x20000000),
                 "got: {transform:?}"
             );
         }

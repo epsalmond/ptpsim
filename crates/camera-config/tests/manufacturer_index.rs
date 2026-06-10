@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use camera_config::error::ConfigError;
 use camera_config::index::{
     BleNotifyUntil, Confidence, Encoding, PredicateOp, ResolvedManufacturerIndex, Signature, Step,
-    StepValue, ValueTransform,
+    StepValue, Transform,
 };
 use camera_config::ConfigStore;
 
@@ -596,7 +596,7 @@ fn red_echo_write_carries_app_identifier_bit_or_transform() {
             transform,
         } => {
             assert_eq!(captured, "idNumber");
-            assert_eq!(*transform, Some(ValueTransform::BitOr(0x20000000)));
+            assert_eq!(*transform, vec![Transform::BitOr(0x20000000)]);
         }
         other => panic!("expected Captured with transform, got {other:?}"),
     }
@@ -644,10 +644,108 @@ fn captured_without_transform_still_parses() {
     match &write_pk.value {
         StepValue::Captured { transform, .. } => {
             assert!(
-                transform.is_none(),
+                transform.is_empty(),
                 "no transform on legacy pairing-key write"
             );
         }
         other => panic!("expected Captured, got {other:?}"),
+    }
+}
+
+#[test]
+fn transform_chain_list_form_parses_in_order() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: { fujiCompanyId: 1 }
+      establishment:
+        mechanism: test
+        steps:
+          - bleRead:
+              gatt: c
+              encoding: u8
+              captureAs: flags
+              transform:
+                - slice: { at: 3, length: 1 }
+                - bits: { mask: 0x0C, shift: 2 }
+          - bleWrite:
+              gatt: c
+              value:
+                captured: flags
+                transform:
+                  - reverseBytes: {}
+                  - dropPrefix: 2
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("chain forms load");
+    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    match &steps[0] {
+        Step::BleRead(r) => assert_eq!(
+            r.transform,
+            vec![
+                Transform::Slice {
+                    at: 3,
+                    length: Some(1)
+                },
+                Transform::Bits {
+                    mask: 0x0C,
+                    shift: 2
+                },
+            ]
+        ),
+        other => panic!("expected bleRead, got {other:?}"),
+    }
+    match &steps[1] {
+        Step::BleWrite(w) => match &w.value {
+            StepValue::Captured { transform, .. } => assert_eq!(
+                *transform,
+                vec![Transform::ReverseBytes, Transform::DropPrefix(2)]
+            ),
+            other => panic!("expected Captured, got {other:?}"),
+        },
+        other => panic!("expected bleWrite, got {other:?}"),
+    }
+}
+
+#[test]
+fn statically_invalid_transform_operands_are_load_errors() {
+    let template = |transform: &str| {
+        format!(
+            r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {{ c: "00002A25-0000-1000-8000-00805F9B34FB" }}
+      advert: {{ fujiCompanyId: 1 }}
+      establishment:
+        mechanism: test
+        steps:
+          - bleWrite:
+              gatt: c
+              value: {{ captured: x, transform: {transform} }}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+        )
+    };
+    for (transform, needle) in [
+        ("{ slice: { at: 0, length: 0 } }", "length 0"),
+        ("{ bits: { mask: 0, shift: 1 } }", "mask 0"),
+        ("{ reverseBytes: 7 }", "takes no operand"),
+    ] {
+        let err = ResolvedManufacturerIndex::from_yaml(&template(transform)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(needle), "for {transform}: got {msg}");
     }
 }

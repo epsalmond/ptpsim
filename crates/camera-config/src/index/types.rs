@@ -222,6 +222,10 @@ pub struct BleReadStep {
     /// Scope slot that receives the read value, decoded per `encoding`.
     #[serde(alias = "capture_as")]
     pub capture_as: String,
+    /// Transform chain applied to the wire bytes BEFORE `encoding` decode
+    /// (§11.13 capture pipeline). Empty = decode the raw payload.
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub transform: Vec<Transform>,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }
@@ -336,51 +340,77 @@ pub enum AcquireSource {
 /// `transform:`): `{ captured: pairingKeyBytes }`,
 /// `{ runtime: terminalName, encoding: utf8 }`,
 /// `{ captured: idNumber, transform: { bitOr: 0x20000000 } }`. Custom
-/// Deserialize dispatches on the form key.
+/// Deserialize dispatches on the form key. `transform:` accepts a single
+/// mapping (1-element chain) or a list (§11.13); empty Vec = no transform.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StepValue {
     /// Literal bytes baked in at index-build time. Authored as a hex string;
     /// the loader decodes to bytes before this struct is constructed.
+    /// Transform-free: anything a chain could do to a literal belongs in the
+    /// authored bytes themselves.
     Literal { literal: serde_yaml::Value },
     /// `{ template: "...{name}..." }` — interpolate scope + runtime_params at
-    /// walk time. Optional `transform:` post-processes the assembled bytes.
+    /// walk time. `transform:` post-processes the assembled bytes.
     Template {
         template: String,
-        transform: Option<ValueTransform>,
+        transform: Vec<Transform>,
     },
     /// `{ runtime: <slot>, encoding: <name>? }` — app supplies before walk
-    /// (terminal name, host IP, etc.). Optional `transform:` post-processes
-    /// the decoded bytes.
+    /// (terminal name, host IP, etc.). `transform:` post-processes the
+    /// decoded bytes.
     Runtime {
         runtime: String,
         encoding: Option<Encoding>,
-        transform: Option<ValueTransform>,
+        transform: Vec<Transform>,
     },
     /// `{ captured: <name> }` — an earlier step (or recognize-seed) named
-    /// this. Optional `transform:` post-processes the captured bytes (the
-    /// RED `F557D96B` echo: read 4 bytes, `| 0x20000000`, write back).
+    /// this. `transform:` post-processes the captured bytes (the RED
+    /// `F557D96B` echo: read 4 bytes, `| 0x20000000`, write back).
     Captured {
         captured: String,
-        transform: Option<ValueTransform>,
+        transform: Vec<Transform>,
     },
 }
 
-/// Allowlisted post-resolution byte transforms (plan §5 follow-up). Authored
-/// in YAML as a single-entry mapping naming the primitive:
-/// `{ bitOr: 0x20000000 }`. Custom Deserialize dispatches on the key.
+/// Closed, total byte-buffer → byte-buffer transform vocabulary (plan §11.13).
+/// Authored in YAML as a single-entry mapping naming the primitive
+/// (`{ bitOr: 0x20000000 }`, `{ slice: { at: 3, length: 1 } }`) or a list of
+/// such mappings forming a chain applied in order. Custom Deserialize
+/// dispatches on the key.
 ///
-/// Operand width is inferred from the input byte length (most commonly 4
-/// bytes / u32, matching the Fuji `F557D96B` echo and the existing
-/// `encoding: u32` capture).
+/// Every transform is bytes → bytes so the vocabulary stays closed under
+/// composition; integer *decode* lives in the `Encoding` allowlist applied
+/// after the chain (§11.2). A transform that cannot apply (out-of-range
+/// slice, integer op on > 8 bytes) is a step/capture failure — tolerant-aware,
+/// never a panic. Evaluation lives in [`super::eval::apply_transforms`].
 ///
-/// The allowlist starts tiny by design — same spirit as the encoding
-/// allowlist in §11.2. Extending it later (`bitXor`, `prepend`, …) is one
-/// schema field + one dispatcher match arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum ValueTransform {
+/// The allowlist stays finite by design — same spirit as the encoding
+/// allowlist. No arbitrary expressions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum Transform {
+    /// Input ≤ 8 bytes, read LE; result re-emitted at input width LE.
     BitOr(u64),
+    /// Input ≤ 8 bytes, read LE; result re-emitted at input width LE.
     BitAnd(u64),
+    /// Window `[at, at+length)`; `length` omitted = to end. Out-of-range
+    /// fails the chain.
+    Slice {
+        at: usize,
+        length: Option<usize>,
+    },
+    /// Sugar for `Slice { at: n, length: None }`.
+    DropPrefix(usize),
+    ReverseBytes,
+    /// Exactly 16 bytes → the 36 ASCII bytes of the canonical uppercase
+    /// 8-4-4-4-12 UUID string (bind with `encoding: ascii`).
+    UuidFromBytes,
+    /// Input ≤ 8 bytes, read LE: `(value & mask) >> shift`, re-emitted at
+    /// input width LE.
+    Bits {
+        mask: u64,
+        shift: u32,
+    },
 }
 
 /// Encoding allowlist (plan §11.2). Any other token in an `encoding:` field

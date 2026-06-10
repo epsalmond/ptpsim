@@ -582,13 +582,11 @@ impl<'de> serde::Deserialize<'de> for StepValue {
             .collect();
         keys.sort();
         let read_transform =
-            |m: &serde_yaml::Mapping| -> Result<Option<super::types::ValueTransform>, D::Error> {
+            |m: &serde_yaml::Mapping| -> Result<Vec<super::types::Transform>, D::Error> {
                 match m.get(Value::String("transform".into())) {
-                    Some(v) => Ok(Some(
-                        serde_yaml::from_value::<super::types::ValueTransform>(v.clone())
-                            .map_err(|e| D::Error::custom(format!("transform: {e}")))?,
-                    )),
-                    None => Ok(None),
+                    Some(v) => transform_chain(v.clone())
+                        .map_err(|e| D::Error::custom(format!("transform: {e}"))),
+                    None => Ok(Vec::new()),
                 }
             };
         if mapping.contains_key(Value::String("literal".into())) {
@@ -648,14 +646,27 @@ impl<'de> serde::Deserialize<'de> for StepValue {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for super::types::ValueTransform {
-    /// YAML form: a single-entry mapping whose key names the transform
-    /// (`bitOr`, `bitAnd`) and whose value is the u64 operand.
+/// Normalize a `transform:` value into a chain: a single mapping is a
+/// 1-element chain; a sequence is the chain in application order (§11.13).
+pub(crate) fn transform_chain(v: Value) -> Result<Vec<super::types::Transform>, serde_yaml::Error> {
+    match v {
+        Value::Sequence(seq) => seq.into_iter().map(serde_yaml::from_value).collect(),
+        other => Ok(vec![serde_yaml::from_value(other)?]),
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for super::types::Transform {
+    /// YAML form: a single-entry mapping whose key names the transform.
+    /// Operand shapes per primitive: `bitOr`/`bitAnd` take a u64,
+    /// `dropPrefix` a usize, `slice`/`bits` a mapping body,
+    /// `reverseBytes`/`uuidFromBytes` an empty mapping (or nothing).
+    /// Statically-invalid operands (zero-length slice, zero mask) are
+    /// load errors — they could never succeed at walk time.
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        use super::types::ValueTransform;
+        use super::types::Transform;
         use serde::de::Error;
         let mapping = serde_yaml::Mapping::deserialize(d)?;
         if mapping.len() != 1 {
@@ -669,14 +680,70 @@ impl<'de> serde::Deserialize<'de> for super::types::ValueTransform {
             .as_str()
             .ok_or_else(|| D::Error::custom("transform key must be a string"))?
             .to_string();
-        let operand = val
-            .as_u64()
-            .ok_or_else(|| D::Error::custom(format!("{key}: <u64 operand> required")))?;
+        let u64_operand = |val: &Value| {
+            val.as_u64()
+                .ok_or_else(|| D::Error::custom(format!("{key}: <u64 operand> required")))
+        };
+        let empty_body = |val: &Value| match val {
+            Value::Null => Ok(()),
+            Value::Mapping(m) if m.is_empty() => Ok(()),
+            _ => Err(D::Error::custom(format!(
+                "{key}: takes no operand (use {{}})"
+            ))),
+        };
         match key.as_str() {
-            "bitOr" => Ok(ValueTransform::BitOr(operand)),
-            "bitAnd" => Ok(ValueTransform::BitAnd(operand)),
+            "bitOr" => Ok(Transform::BitOr(u64_operand(&val)?)),
+            "bitAnd" => Ok(Transform::BitAnd(u64_operand(&val)?)),
+            "dropPrefix" => Ok(Transform::DropPrefix(u64_operand(&val)? as usize)),
+            "reverseBytes" => {
+                empty_body(&val)?;
+                Ok(Transform::ReverseBytes)
+            }
+            "uuidFromBytes" => {
+                empty_body(&val)?;
+                Ok(Transform::UuidFromBytes)
+            }
+            "slice" => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct R {
+                    at: usize,
+                    #[serde(default)]
+                    length: Option<usize>,
+                }
+                let r: R = serde_yaml::from_value(val)
+                    .map_err(|e| D::Error::custom(format!("slice: {e}")))?;
+                if r.length == Some(0) {
+                    return Err(D::Error::custom("slice: length 0 can never capture bytes"));
+                }
+                Ok(Transform::Slice {
+                    at: r.at,
+                    length: r.length,
+                })
+            }
+            "bits" => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct R {
+                    mask: u64,
+                    #[serde(default)]
+                    shift: u32,
+                }
+                let r: R = serde_yaml::from_value(val)
+                    .map_err(|e| D::Error::custom(format!("bits: {e}")))?;
+                if r.mask == 0 {
+                    return Err(D::Error::custom("bits: mask 0 always yields 0"));
+                }
+                if r.shift >= 64 {
+                    return Err(D::Error::custom("bits: shift must be < 64"));
+                }
+                Ok(Transform::Bits {
+                    mask: r.mask,
+                    shift: r.shift,
+                })
+            }
             other => Err(D::Error::custom(format!(
-                "unknown transform '{other}' (allowlist: bitOr, bitAnd)"
+                "unknown transform '{other}' (allowlist: bitOr, bitAnd, slice, dropPrefix, reverseBytes, uuidFromBytes, bits)"
             ))),
         }
     }

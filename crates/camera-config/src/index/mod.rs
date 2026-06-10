@@ -22,6 +22,7 @@
 //! `until: Matches { pattern }`), the type is present and parses; the
 //! dispatcher side lands in P1.
 
+pub mod eval;
 pub mod parse;
 pub mod types;
 
@@ -31,6 +32,6 @@ pub use types::{
     BleAdvertRequire, BleAdvertSignature, BleConnectStep, BleNotifyStep, BleNotifyUntil,
     BleReadStep, BleSubscribeStep, BleWriteStep, Confidence, Encoding, EstablishmentBlock,
     FamilyBleBlock, FamilyBlock, IfStep, IndexedModel, ManufacturerIndex, MfgByteAssertion,
-    MfgByteCapture, ModelView, Predicate, PredicateOp, Signature, SignatureKind, Step,
-    StepOptions, StepValue, SuggestsBlock, ValueTransform,
+    MfgByteCapture, ModelView, Predicate, PredicateOp, Signature, SignatureKind, Step, StepOptions,
+    StepValue, SuggestsBlock, Transform,
 };

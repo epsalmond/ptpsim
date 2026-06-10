@@ -250,7 +250,7 @@ retry loop and the same code handles all of them.
 | verb | what to do |
 |---|---|
 | `bleConnect` | connect to the peripheral your I/O primitive captured at recognize time. *No parameters* (§11.4 — peripheral binding is app-side). |
-| `bleRead` | read the resolved UUID, decode per `encoding`, store in scope under `captureAs`. |
+| `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13 — empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. |
 | `bleSubscribe` | enable CCCD on the resolved UUID; success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
 | `bleNotify` | subscribe AND wait for `until` (Any / Equals / Matches), optionally `captureAs`. Use when the plan needs to capture or gate on a notification payload. |
@@ -263,15 +263,18 @@ retry loop and the same code handles all of them.
 | variant | bytes by |
 |---|---|
 | `Literal{bytes}` | verbatim |
-| `Template{value, transform?}` | substitute `{name}` against scope ∪ runtimeParams, then apply transform |
-| `Runtime{slot, encoding?, transform?}` | look up `slot` in runtimeParams, decode per encoding, apply transform |
-| `Captured{name, transform?}` | look up `name` in scope, apply transform |
+| `Template{value, transform}` | substitute `{name}` against scope ∪ runtimeParams, then apply the transform chain |
+| `Runtime{slot, encoding?, transform}` | look up `slot` in runtimeParams, decode per encoding, apply the transform chain |
+| `Captured{name, transform}` | look up `name` in scope, apply the transform chain |
 
-`transform`: an allowlisted post-resolution byte transform —
-`ValueTransform.bitOr(operand)` or `bitAnd(operand)`. Applied to the assembled
-bytes as a u32. Models the RED `F557D96B` echo (read 4 bytes → `value | 0x20000000`
-→ write); not iOS-specific (reference app Android does the same OR). The transform lives in
-the schema, not in your dispatcher logic — you just honour it.
+`transform`: a `Vec<Transform>` chain from the closed vocabulary (plan §11.13 —
+`bitOr`, `bitAnd`, `slice`, `dropPrefix`, `reverseBytes`, `uuidFromBytes`,
+`bits`), applied in order; empty = no transform. Reference semantics live in
+`camera_config::index::eval::apply_transforms` — implement your dispatcher to
+match its unit tests; a failing chain counts as step failure under §11.6.
+Models e.g. the RED `F557D96B` echo (read 4 bytes → `value | 0x20000000` →
+write); not iOS-specific (reference app Android does the same OR). The transform lives
+in the schema, not in your dispatcher logic — you just honour it.
 
 `runtimeParams` is a separate map you populate at walk start (terminal name, host
 IP, anything app-supplied), distinct from `scope` (recognize-seed + step captures).

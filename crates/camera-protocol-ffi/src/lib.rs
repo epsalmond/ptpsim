@@ -18,7 +18,7 @@ use std::sync::Arc;
 pub mod mfg_index;
 pub use mfg_index::{
     AcquireSource, BleNotifyUntil, Confidence, EstablishmentPlan, ModelMatch, Observation,
-    Predicate, PredicateOp, Recognition, Step, StepOptions, StepValue, ValueTransform,
+    Predicate, PredicateOp, Recognition, Step, StepOptions, StepValue, Transform,
 };
 
 uniffi::setup_scaffolding!();
