@@ -255,8 +255,23 @@ pub struct BleSubscribeStep {
     /// gives up. Standard BLE stacks ack in well under 1s; values of
     /// 1000–5000ms are typical.
     pub timeout_ms: u32,
+    /// Which CCCD value to write (§11.8). Canon and Nikon enable
+    /// indications on some characteristics; defaults to `notify`.
+    #[serde(default)]
+    pub mode: CccdMode,
     #[serde(flatten, default)]
     pub opts: StepOptions,
+}
+
+/// CCCD subscription mode (§11.8): which descriptor value `bleSubscribe` /
+/// `bleNotify` writes — `ENABLE_NOTIFICATION_VALUE` or
+/// `ENABLE_INDICATION_VALUE` in Android terms.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CccdMode {
+    #[default]
+    Notify,
+    Indicate,
 }
 
 /// `bleNotify` — subscribe to a characteristic (CCCD enable) AND wait for
@@ -269,12 +284,42 @@ pub struct BleSubscribeStep {
 pub struct BleNotifyStep {
     pub gatt: String,
     pub until: BleNotifyUntil,
-    /// Optional scope slot that receives the matching payload.
+    /// Optional scope slot that receives the WHOLE matching payload —
+    /// preserved for debugging and unknown record layouts even when
+    /// `capture` extracts fields.
     #[serde(default, alias = "capture_as")]
     pub capture_as: Option<String>,
+    /// Transformed field captures from the matching payload (§11.13
+    /// capture pipeline). Sony's Wi-Fi handoff status byte is the
+    /// motivating case.
+    #[serde(default)]
+    pub capture: Vec<NotifyCapture>,
+    /// CCCD value this step's subscribe phase writes; defaults to `notify`.
+    #[serde(default)]
+    pub mode: CccdMode,
     pub timeout_ms: u32,
     #[serde(flatten, default)]
     pub opts: StepOptions,
+}
+
+/// One field capture from a notification payload: window, transform chain,
+/// decode, bind. Same pipeline as advert/read captures (§11.13). A capture
+/// that fails (window out of range, chain failure, decode mismatch) is
+/// skipped — it does not fail the step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyCapture {
+    /// Start offset into the matching payload.
+    #[serde(default)]
+    pub at: usize,
+    /// Window length; omitted = to end of payload.
+    #[serde(default)]
+    pub length: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub transform: Vec<Transform>,
+    pub encoding: Encoding,
+    /// Scope key the decoded value binds to.
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

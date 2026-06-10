@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use camera_config::error::ConfigError;
 use camera_config::index::{
-    BleNotifyUntil, Confidence, Encoding, PredicateOp, ResolvedManufacturerIndex, Signature, Step,
-    StepValue, Transform,
+    BleNotifyUntil, CccdMode, Confidence, Encoding, PredicateOp, ResolvedManufacturerIndex,
+    Signature, Step, StepValue, Transform,
 };
 use camera_config::ConfigStore;
 
@@ -747,5 +747,71 @@ models:
         let err = ResolvedManufacturerIndex::from_yaml(&template(transform)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains(needle), "for {transform}: got {msg}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §11.8 CCCD mode + bleNotify field captures (multivendor pass)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cccd_mode_and_notify_captures_parse_with_defaults() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: { fujiCompanyId: 1 }
+      establishment:
+        mechanism: test
+        steps:
+          - bleSubscribe: { gatt: c, timeoutMs: 3000 }
+          - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
+          - bleNotify:
+              gatt: c
+              until: any
+              mode: indicate
+              captureAs: wholePayload
+              capture:
+                - { at: 2, length: 1, encoding: u8, name: wifiStatus }
+                - at: 3
+                  transform: { dropPrefix: 1 }
+                  encoding: ascii
+                  name: ssid
+              timeoutMs: 5000
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("mode + captures load");
+    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    match (&steps[0], &steps[1]) {
+        (Step::BleSubscribe(default_sub), Step::BleSubscribe(indicate_sub)) => {
+            assert_eq!(
+                default_sub.mode,
+                CccdMode::Notify,
+                "mode defaults to notify"
+            );
+            assert_eq!(indicate_sub.mode, CccdMode::Indicate);
+        }
+        other => panic!("expected two bleSubscribe steps, got {other:?}"),
+    }
+    match &steps[2] {
+        Step::BleNotify(n) => {
+            assert_eq!(n.mode, CccdMode::Indicate);
+            assert_eq!(n.capture_as.as_deref(), Some("wholePayload"));
+            assert_eq!(n.capture.len(), 2);
+            assert_eq!(n.capture[0].at, 2);
+            assert_eq!(n.capture[0].length, Some(1));
+            assert_eq!(n.capture[0].encoding, Encoding::U8);
+            assert_eq!(n.capture[0].name, "wifiStatus");
+            assert_eq!(n.capture[1].at, 3);
+            assert_eq!(n.capture[1].length, None, "omitted length = to end");
+            assert_eq!(n.capture[1].transform, vec![Transform::DropPrefix(1)]);
+        }
+        other => panic!("expected bleNotify, got {other:?}"),
     }
 }

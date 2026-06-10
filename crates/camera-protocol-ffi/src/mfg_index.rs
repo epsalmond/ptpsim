@@ -140,6 +140,8 @@ pub enum Step {
     BleSubscribe {
         gatt: String,
         timeout_ms: u32,
+        /// Which CCCD value to write (§11.8) — notify or indicate.
+        mode: CccdMode,
         opts: StepOptions,
     },
     /// CCCD-enable AND wait for a matching notification payload. Use when
@@ -147,7 +149,13 @@ pub enum Step {
     BleNotify {
         gatt: String,
         until: BleNotifyUntil,
+        /// Whole matching payload → scope (kept alongside field captures).
         capture_as: Option<String>,
+        /// Field captures: window → transform chain → encoding → scope.
+        /// A failing capture is skipped, it does not fail the step.
+        capture: Vec<NotifyCapture>,
+        /// CCCD value the subscribe phase writes — notify or indicate.
+        mode: CccdMode,
         timeout_ms: u32,
         opts: StepOptions,
     },
@@ -260,6 +268,29 @@ pub enum AcquireSource {
     },
 }
 
+/// CCCD subscription mode (§11.8): `ENABLE_NOTIFICATION_VALUE` vs
+/// `ENABLE_INDICATION_VALUE` in Android terms; on iOS both map to
+/// `setNotifyValue(true)` (CoreBluetooth picks per the characteristic's
+/// properties) — the mode is still carried so non-CoreBluetooth
+/// dispatchers write the right descriptor value.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum CccdMode {
+    Notify,
+    Indicate,
+}
+
+/// One field capture from a notification payload (§11.13 capture pipeline:
+/// window `[at, at+length)` → transform chain → `encoding` decode → bind to
+/// scope under `name`). `length` absent = to end.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NotifyCapture {
+    pub at: u64,
+    pub length: Option<u64>,
+    pub transform: Vec<Transform>,
+    pub encoding: String,
+    pub name: String,
+}
+
 /// `bleNotify` acceptance condition (§11.8). The Equals variant carries the
 /// decoded payload bytes — the loader applied `encoding:` if it was present
 /// in YAML.
@@ -354,6 +385,27 @@ fn transforms(chain: &[ix::Transform]) -> Vec<Transform> {
     chain.iter().map(Into::into).collect()
 }
 
+impl From<ix::CccdMode> for CccdMode {
+    fn from(m: ix::CccdMode) -> Self {
+        match m {
+            ix::CccdMode::Notify => CccdMode::Notify,
+            ix::CccdMode::Indicate => CccdMode::Indicate,
+        }
+    }
+}
+
+impl From<&ix::NotifyCapture> for NotifyCapture {
+    fn from(c: &ix::NotifyCapture) -> Self {
+        NotifyCapture {
+            at: c.at as u64,
+            length: c.length.map(|l| l as u64),
+            transform: transforms(&c.transform),
+            encoding: c.encoding.as_token().to_string(),
+            name: c.name.clone(),
+        }
+    }
+}
+
 impl From<&ix::StepValue> for StepValue {
     fn from(v: &ix::StepValue) -> Self {
         match v {
@@ -445,12 +497,15 @@ impl From<&ix::Step> for Step {
             ix::Step::BleSubscribe(inner) => Step::BleSubscribe {
                 gatt: inner.gatt.clone(),
                 timeout_ms: inner.timeout_ms,
+                mode: inner.mode.into(),
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleNotify(inner) => Step::BleNotify {
                 gatt: inner.gatt.clone(),
                 until: (&inner.until).into(),
                 capture_as: inner.capture_as.clone(),
+                capture: inner.capture.iter().map(Into::into).collect(),
+                mode: inner.mode.into(),
                 timeout_ms: inner.timeout_ms,
                 opts: (&inner.opts).into(),
             },

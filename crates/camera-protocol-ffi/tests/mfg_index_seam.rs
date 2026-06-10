@@ -363,3 +363,95 @@ fn red_echo_write_value_carries_bit_or_transform_through_ffi() {
         other => panic!("expected Captured with transform, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// CCCD mode + bleNotify field captures cross the seam (multivendor pass)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cccd_mode_and_notify_captures_surface_through_ffi() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: { fujiCompanyId: 1 }
+      establishment:
+        mechanism: test
+        steps:
+          - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
+          - bleNotify:
+              gatt: c
+              until: any
+              capture:
+                - at: 3
+                  transform: { dropPrefix: 1 }
+                  encoding: ascii
+                  name: ssid
+              timeoutMs: 5000
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let s = ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".to_string(),
+            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+        }],
+    )
+    .expect("synthetic index loads");
+    let plan = s
+        .establishment("tm1".into(), "ble".into(), vec![])
+        .expect("plan present");
+    match &plan.steps[0] {
+        Step::BleSubscribe { mode, .. } => assert!(matches!(mode, CccdMode::Indicate)),
+        other => panic!("expected BleSubscribe, got {other:?}"),
+    }
+    match &plan.steps[1] {
+        Step::BleNotify {
+            mode,
+            capture,
+            capture_as,
+            ..
+        } => {
+            assert!(matches!(mode, CccdMode::Notify), "default mode is notify");
+            assert!(capture_as.is_none());
+            assert_eq!(capture.len(), 1);
+            assert_eq!(capture[0].at, 3);
+            assert_eq!(capture[0].length, None);
+            assert_eq!(capture[0].encoding, "ascii");
+            assert_eq!(capture[0].name, "ssid");
+            assert!(
+                matches!(
+                    capture[0].transform.as_slice(),
+                    [Transform::DropPrefix { count: 1 }]
+                ),
+                "got: {:?}",
+                capture[0].transform
+            );
+        }
+        other => panic!("expected BleNotify, got {other:?}"),
+    }
+}
+
+#[test]
+fn fuji_cccd_finalization_subscribes_default_to_notify_mode() {
+    let s = store();
+    let plan = s
+        .establishment("gfx100ii".into(), "ble".into(), vec![])
+        .expect("plan present");
+    let modes: Vec<_> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::BleSubscribe { mode, .. } => Some(mode),
+            _ => None,
+        })
+        .collect();
+    assert!(!modes.is_empty(), "fuji plan carries bleSubscribe steps");
+    assert!(modes.iter().all(|m| matches!(m, CccdMode::Notify)));
+}
