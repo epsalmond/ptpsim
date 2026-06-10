@@ -38,11 +38,27 @@ families:
         # RED-only first-pair read+echo challenge-response. Absent from
         # the discovered characteristic map on LEGACY bodies (reply §5).
         deviceIdentificationNumber: "F557D96B-8284-4667-8793-B971C1DECA2A"
-        # Post-pair / AP-handover characteristics (NOT walked in the MVP
-        # but belong to the same family block; here so they're catalogued).
+        # Post-pair / AP-handover + first-pair CCCD-finalization chars.
+        # The mFirstRegisterNotify and mSecondRegisterNotify queues
+        # subscribe to most of these during pair finalization (see the
+        # establishment steps below). reference app 2.7.3 filters its static
+        # queue lists against the discovered GATT catalog, so a body
+        # missing a given characteristic just skips that CCCD enable;
+        # the plan reflects that with tolerant: true on each subscribe.
         functionLaunchRequest: "600655E6-3637-42F1-8FB2-44EFC5C63B13"
         apState: "A68E3F66-0FCC-4395-8D4C-AA980B5877FA"
+        transferState: "BD17BA04-B76B-4892-A545-B73BA1F74DAE"
+        dateSyncState: "F9150137-5D40-4801-A8DC-F7FC5B01DA50"
+        locationSyncState: "AD06C7B7-F41A-46F4-A29A-712055319122"
+        remoteBootSetting: "7170FD5A-56D9-4C19-B043-7A7047D8E1A0"
         cameraSSIDNameString: "BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4"
+        loggingSetting: "75823784-FBB7-4B71-ABAE-CD9A34072E3C"
+        cameraVitalState: "E6692C5C-B7CD-44F4-95FC-EDA07CE32560"
+        locationSyncSetting: "AAB609C4-94DD-4D89-BC60-665D5090B828"
+        imageResizeRate: "2A125640-706D-4DD1-B420-C0F4AB93C361"
+        imageResizeSetting: "82A9F452-C5CE-4EF5-8203-3FC9A47F8171"
+        iptcSetting: "DEEF7187-3F43-4364-9E22-11A8C8A15951"
+        locationSyncCycle: "C95D91AE-B247-4D6D-8661-7DD5D6A0F85B"
         cameraWiFiPassphraseString: "E809256A-915C-4967-92E8-53B7D4CAD213"
 
       # Advertisement-format constants used by recognize() to match Fuji
@@ -124,6 +140,43 @@ families:
                       captured: idNumber
                       transform: { bitOr: 0x20000000 }
               # No else branch — LEGACY just continues past this point.
+
+          # First register-notify round (reference app BTRequester.mFirstRegisterNotify).
+          # reference app filters this static array against the discovered GATT
+          # catalog before subscribing, so any char missing on a given body
+          # is just skipped — tolerant: true reproduces that. Draining this
+          # queue (all descriptor-write acks received) drives the camera's
+          # discoverState to FirstCompleted, which is what reference app's
+          # BTCamera.analyzeWriteDescriptor uses to advance.
+          #
+
+          # (BTRequester.java:232-247, BTCameraService.java:72-73).
+          - bleSubscribe: { gatt: apState,            timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: transferState,      timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: dateSyncState,      timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: locationSyncState,  timeoutMs: 3000, tolerant: true }
+
+          # Immediately after first-round drain reference app reads TRANSFER_STATE
+          # (BTCamera.java:5944-5995). Mirroring it here exercises the
+          # camera-side path that gates persistence on the post-CCCD
+          # handshake completing, not on the writes alone.
+          - bleRead:
+              gatt: transferState
+              encoding: bytes
+              captureAs: transferState
+              tolerant: true
+
+          # Second register-notify round (reference app BTRequester.mSecondRegisterNotify).
+          # Same tolerant-filter semantics as the first round.
+          - bleSubscribe: { gatt: remoteBootSetting,     timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: cameraSSIDNameString,  timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: loggingSetting,        timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: cameraVitalState,      timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: locationSyncSetting,   timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: imageResizeRate,       timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: imageResizeSetting,    timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
+          - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
 
 models:
   - id: gfx100ii
