@@ -155,20 +155,28 @@ impl Server {
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
         let ctl_shutdown = shutdown_tx.clone();
 
+        // Per-connection tasks live in a JoinSet per accept loop (audit in
+        // docs/internal-async-notes.md): the `Some(_) = join_next()` arm reaps
+        // finished tasks on a long-lived server, and JoinSet aborts everything
+        // still running when dropped — which happens when run()'s select!
+        // drops the loop future on shutdown. In-flight connections being cut
+        // on exit is the documented run() contract.
         let command_loop = {
             let engine = engine.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
+                let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         accepted = command.accept() => {
                             if let Ok((stream, _)) = accepted {
                                 let engine = engine.clone();
-                                tokio::spawn(async move {
+                                conns.spawn(async move {
                                     let _ = handle_command_conn(stream, engine).await;
                                 });
                             }
                         }
+                        Some(_) = conns.join_next(), if !conns.is_empty() => {}
                         _ = sub.recv() => break,
                     }
                 }
@@ -179,15 +187,15 @@ impl Server {
             let engine = engine.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
+                let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         accepted = control.accept() => {
                             if let Ok((stream, _)) = accepted {
-                                // Per-connection task, like the liveview/command
-                                // loops — a client that connects and stalls before
-                                // its request line must not block the accept loop
-                                // (and with it /healthz + /shutdown).
-                                tokio::spawn(control::handle(
+                                // Per-connection task — a client that connects and
+                                // stalls before its request line must not block the
+                                // accept loop (and with it /healthz + /shutdown).
+                                conns.spawn(control::handle(
                                     stream,
                                     health.clone(),
                                     engine.clone(),
@@ -195,6 +203,7 @@ impl Server {
                                 ));
                             }
                         }
+                        Some(_) = conns.join_next(), if !conns.is_empty() => {}
                         _ = sub.recv() => break,
                     }
                 }
@@ -209,15 +218,17 @@ impl Server {
             let frames = frames.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
+                let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         accepted = liveview.accept() => {
                             if let Ok((stream, _)) = accepted {
                                 let engine = engine.clone();
                                 let frames = frames.clone();
-                                tokio::spawn(stream_liveview(stream, engine, frames));
+                                conns.spawn(stream_liveview(stream, engine, frames));
                             }
                         }
+                        Some(_) = conns.join_next(), if !conns.is_empty() => {}
                         _ = sub.recv() => break,
                     }
                 }
@@ -255,23 +266,41 @@ impl Server {
 /// frame from the shared LoopingFrameSource and write [u32 len | JPEG] via the
 /// shared framing primitive. Otherwise idle (the connection stays open but no
 /// bytes flow — matching a real camera between OpenCapture cycles).
+///
+/// The read half is watched concurrently: liveview clients never send bytes,
+/// so a completed read means EOF/reset — the client is gone. Without this, a
+/// client that disconnects while the engine is NOT streaming would leave the
+/// task ticking forever (the write that would surface the error never runs).
 async fn stream_liveview(
     mut stream: TcpStream,
     engine: Arc<Mutex<Engine>>,
     frames: Arc<Mutex<LoopingFrameSource>>,
 ) {
+    let (mut rd, mut wr) = stream.split();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_INTERVAL_MS));
+    let mut probe = [0u8; 64];
     loop {
-        tick.tick().await;
-        if !matches!(engine.lock().await.phase(), Phase::Streaming) {
-            continue;
-        }
-        let Some(jpeg) = frames.lock().await.next_frame() else {
-            continue;
-        };
-        let packet = protocol_primitives::liveview::frame_packet(&jpeg);
-        if stream.write_all(&packet).await.is_err() {
-            break;
+        tokio::select! {
+            _ = tick.tick() => {
+                if !matches!(engine.lock().await.phase(), Phase::Streaming) {
+                    continue;
+                }
+                // Lock → pull frame → guard drops at end of statement; the
+                // network write below never executes under either mutex.
+                let Some(jpeg) = frames.lock().await.next_frame() else {
+                    continue;
+                };
+                let packet = protocol_primitives::liveview::frame_packet(&jpeg);
+                if wr.write_all(&packet).await.is_err() {
+                    break;
+                }
+            }
+            r = rd.read(&mut probe) => {
+                match r {
+                    Ok(0) | Err(_) => break, // EOF / reset — client gone
+                    Ok(_) => {}              // unexpected bytes; ignore
+                }
+            }
         }
     }
 }

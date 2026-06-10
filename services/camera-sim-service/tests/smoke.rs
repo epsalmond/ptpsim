@@ -587,3 +587,101 @@ async fn idle_control_connection_does_not_block_healthz() {
     let _ = h.await;
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// #27: repeated bind/run/shutdown cycles with held-open connections must
+/// tear down promptly — per-connection tasks are owned by their accept
+/// loop's JoinSet, which aborts them when run() exits. A leak shows up here
+/// as run() futures that never resolve (or runaway task accumulation under
+/// --test-threads=1).
+#[tokio::test]
+async fn bind_teardown_loop_with_live_connections_is_clean() {
+    for cycle in 0..5 {
+        let root = tmp_card();
+        let config = Config {
+            instance_id: format!("cycle-{cycle}"),
+            profile: "fuji/gfx100ii".into(),
+            manifest_yaml: MANIFEST.into(),
+            media_root: root.clone(),
+            command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let lv = server.liveview_addr();
+        let ctl = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let run = tokio::spawn(server.run(rx));
+
+        // Hold one idle connection of each flavor open across the shutdown:
+        // a command client mid-handshake, an idle liveview client, and a
+        // control client that never sends its request line.
+        let held_cmd = TcpStream::connect(cmd).unwrap();
+        let held_lv = TcpStream::connect(lv).unwrap();
+        let held_ctl = TcpStream::connect(ctl).unwrap();
+
+        // Also complete one real round-trip so the cycle isn't vacuous.
+        // spawn_blocking: #[tokio::test] is a current-thread runtime shared
+        // with the server tasks — a blocking read inline would deadlock.
+        let out = tokio::task::spawn_blocking(move || {
+            let mut s = TcpStream::connect(ctl).unwrap();
+            s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            let mut out = String::new();
+            s.read_to_string(&mut out).unwrap();
+            out
+        })
+        .await
+        .unwrap();
+        assert!(out.starts_with("HTTP/1.1 200 OK"), "cycle {cycle}: {out}");
+
+        let _ = tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .unwrap_or_else(|_| panic!("cycle {cycle}: run() did not resolve after shutdown"))
+            .unwrap();
+
+        drop((held_cmd, held_lv, held_ctl));
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// #27: a liveview client that disconnects while the engine is NOT streaming
+/// must not leave its task ticking forever — the read-half watch breaks the
+/// loop on EOF. Observable proxy: server shutdown stays prompt after many
+/// connect/disconnect cycles with no frame ever written.
+#[tokio::test]
+async fn idle_liveview_disconnects_are_reaped() {
+    let root = tmp_card();
+    let config = Config {
+        instance_id: "test".into(),
+        profile: "fuji/gfx100ii".into(),
+        manifest_yaml: MANIFEST.into(),
+        media_root: root.clone(),
+        command_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_bind: "127.0.0.1:0".parse().unwrap(),
+        event_bind: "127.0.0.1:0".parse().unwrap(),
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+    };
+    let server = Server::bind(config).await.unwrap();
+    let lv = server.liveview_addr();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let run = tokio::spawn(server.run(rx));
+
+    for _ in 0..20 {
+        let s = TcpStream::connect(lv).unwrap();
+        drop(s); // immediate disconnect, engine never streams
+    }
+    // Give the read-half watchers a moment to observe EOF.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let _ = tx.send(());
+    tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .expect("run() resolves promptly despite liveview connect/disconnect churn")
+        .unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}
