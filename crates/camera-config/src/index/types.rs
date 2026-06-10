@@ -148,6 +148,7 @@ pub enum Step {
     BleConnect(BleConnectStep),
     BleRead(BleReadStep),
     BleWrite(BleWriteStep),
+    BleSubscribe(BleSubscribeStep),
     BleNotify(BleNotifyStep),
     Acquire(AcquireStep),
     AcquireFirmware(AcquireFirmwareStep),
@@ -155,13 +156,14 @@ pub enum Step {
 }
 
 impl Step {
-    /// One of the seven MVP verbs (always true for a deserialized `Step`).
+    /// One of the MVP verbs (always true for a deserialized `Step`).
     /// Used by validation passes that walk untyped trees.
     pub fn verb_name(&self) -> &'static str {
         match self {
             Step::BleConnect(_) => "bleConnect",
             Step::BleRead(_) => "bleRead",
             Step::BleWrite(_) => "bleWrite",
+            Step::BleSubscribe(_) => "bleSubscribe",
             Step::BleNotify(_) => "bleNotify",
             Step::Acquire(_) => "acquire",
             Step::AcquireFirmware(_) => "acquireFirmware",
@@ -177,6 +179,7 @@ impl Step {
             Step::BleConnect(s) => s.opts.clone(),
             Step::BleRead(s) => s.opts.clone(),
             Step::BleWrite(s) => s.opts.clone(),
+            Step::BleSubscribe(s) => s.opts.clone(),
             Step::BleNotify(s) => s.opts.clone(),
             Step::Acquire(s) => s.opts.clone(),
             Step::AcquireFirmware(s) => s.opts.clone(),
@@ -232,6 +235,31 @@ pub struct BleWriteStep {
     pub opts: StepOptions,
 }
 
+/// `bleSubscribe` — enable notifications (CCCD descriptor write) on a
+/// characteristic. Success is signalled by the descriptor-write callback;
+/// the step does NOT wait for an actual notification payload to arrive.
+///
+/// Use this for the CCCD-enable rounds in pair flows where the camera
+/// advances its own state on the descriptor-write ack and never emits a
+/// notification on the subscribed characteristic. Use [`BleNotifyStep`]
+/// instead when the plan needs to wait for and capture a payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleSubscribeStep {
+    pub gatt: String,
+    /// Cap on how long the descriptor write may take before the dispatcher
+    /// gives up. Standard BLE stacks ack in well under 1s; values of
+    /// 1000–5000ms are typical.
+    pub timeout_ms: u32,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `bleNotify` — subscribe to a characteristic (CCCD enable) AND wait for
+/// the first notification whose payload satisfies `until`. The matching
+/// payload is optionally stashed under `capture_as`.
+///
+/// For pure CCCD-enable (no payload to wait on), use [`BleSubscribeStep`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BleNotifyStep {

@@ -486,6 +486,55 @@ models:
 }
 
 // ---------------------------------------------------------------------------
+// §11.8 bleSubscribe — CCCD-enable verb (success on descriptor-write ack)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ble_subscribe_step_parses_with_gatt_resolution_and_opts() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        a: "00002A25-0000-1000-8000-00805F9B34FB"
+        b: "00002A26-0000-1000-8000-00805F9B34FB"
+      advert: { fujiCompanyId: 1 }
+      establishment:
+        mechanism: test
+        steps:
+          - bleSubscribe:
+              gatt: a
+              timeoutMs: 1500
+          - bleSubscribe:
+              gatt: b
+              timeoutMs: 1500
+              tolerant: true
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("parses");
+    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    let subs: Vec<_> = steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::BleSubscribe(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(subs.len(), 2);
+    // gatt: names resolve to UUIDs at load time per §11.3.
+    assert_eq!(subs[0].gatt, "00002A25-0000-1000-8000-00805F9B34FB");
+    assert_eq!(subs[1].gatt, "00002A26-0000-1000-8000-00805F9B34FB");
+    assert_eq!(subs[0].timeout_ms, 1500);
+    assert!(!subs[0].opts.tolerant);
+    assert!(subs[1].opts.tolerant);
+}
+
+// ---------------------------------------------------------------------------
 // §3.2 signature scope (recognize-seed facts)
 // ---------------------------------------------------------------------------
 

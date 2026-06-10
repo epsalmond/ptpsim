@@ -29,8 +29,8 @@ pub use parse::ResolvedManufacturerIndex;
 pub use types::{
     AcquireFirmwareStep, AcquireSource, AcquireStep, BleAdvertConstants, BleAdvertMfgData,
     BleAdvertRequire, BleAdvertSignature, BleConnectStep, BleNotifyStep, BleNotifyUntil,
-    BleReadStep, BleWriteStep, Confidence, Encoding, EstablishmentBlock, FamilyBleBlock,
-    FamilyBlock, IfStep, IndexedModel, ManufacturerIndex, MfgByteAssertion, MfgByteCapture,
-    ModelView, Predicate, PredicateOp, Signature, SignatureKind, Step, StepOptions, StepValue,
-    SuggestsBlock, ValueTransform,
+    BleReadStep, BleSubscribeStep, BleWriteStep, Confidence, Encoding, EstablishmentBlock,
+    FamilyBleBlock, FamilyBlock, IfStep, IndexedModel, ManufacturerIndex, MfgByteAssertion,
+    MfgByteCapture, ModelView, Predicate, PredicateOp, Signature, SignatureKind, Step,
+    StepOptions, StepValue, SuggestsBlock, ValueTransform,
 };

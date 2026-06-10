@@ -190,7 +190,7 @@ fn resolve_gatt_names_in_steps(
         let here = format!("{path_ctx}[{i}].{verb}");
         match verb {
             "bleConnect" => {}
-            "bleRead" | "bleWrite" | "bleNotify" => {
+            "bleRead" | "bleWrite" | "bleSubscribe" | "bleNotify" => {
                 resolve_gatt_field(body, gatt, &here)?;
             }
             "acquire" => {
@@ -235,7 +235,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (MVP allowlist: bleConnect, bleRead, bleWrite, bleNotify, acquire, acquireFirmware, if)"),
+                    message: format!("unknown step verb '{other}' (MVP allowlist: bleConnect, bleRead, bleWrite, bleSubscribe, bleNotify, acquire, acquireFirmware, if)"),
                 });
             }
         }
@@ -544,6 +544,9 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleWrite" => Ok(Step::BleWrite(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleWrite", e))?,
             )),
+            "bleSubscribe" => Ok(Step::BleSubscribe(
+                serde_yaml::from_value(body).map_err(|e| dec_err("bleSubscribe", e))?,
+            )),
             "bleNotify" => Ok(Step::BleNotify(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleNotify", e))?,
             )),
@@ -557,7 +560,7 @@ impl<'de> serde::Deserialize<'de> for Step {
                 serde_yaml::from_value(body).map_err(|e| dec_err("if", e))?,
             )),
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (MVP allowlist: bleConnect, bleRead, bleWrite, bleNotify, acquire, acquireFirmware, if)"
+                "unknown step verb '{other}' (MVP allowlist: bleConnect, bleRead, bleWrite, bleSubscribe, bleNotify, acquire, acquireFirmware, if)"
             ))),
         }
     }

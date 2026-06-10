@@ -132,6 +132,16 @@ pub enum Step {
         capture_as: String,
         opts: StepOptions,
     },
+    /// CCCD-enable only. Success on descriptor-write ack — no notification
+    /// payload is waited for. Use for pair-finalization rounds where the
+    /// camera advances on the CCCD write itself.
+    BleSubscribe {
+        gatt: String,
+        timeout_ms: u32,
+        opts: StepOptions,
+    },
+    /// CCCD-enable AND wait for a matching notification payload. Use when
+    /// the plan needs to capture or gate on a specific notification value.
     BleNotify {
         gatt: String,
         until: BleNotifyUntil,
@@ -383,6 +393,11 @@ impl From<&ix::Step> for Step {
             ix::Step::BleWrite(inner) => Step::BleWrite {
                 gatt: inner.gatt.clone(),
                 value: (&inner.value).into(),
+                opts: (&inner.opts).into(),
+            },
+            ix::Step::BleSubscribe(inner) => Step::BleSubscribe {
+                gatt: inner.gatt.clone(),
+                timeout_ms: inner.timeout_ms,
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleNotify(inner) => Step::BleNotify {
