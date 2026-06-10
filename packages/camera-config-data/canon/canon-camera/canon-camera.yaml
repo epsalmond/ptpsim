@@ -1,0 +1,15 @@
+schema: camera-config/v1
+
+# PRELIMINARY placeholder body for "some Canon camera recognized over BLE".
+# Recognition-only: the advert signatures in ../index.yaml capture the USB
+# product id / body UUID into runtime_scope; per-model bodies replace this
+# placeholder once a real Canon camera is probed.
+# Evidence: APK static pass only — see ../index.yaml header.
+camera:
+  manufacturer: CANON
+  model: Canon camera (preliminary)
+
+evidence:
+  apkMultivendorBle:
+
+    date: "2026-06-10"

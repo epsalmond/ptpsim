@@ -598,3 +598,197 @@ models:
     };
     assert!(matches!(s.recognize(obs), Recognition::NoMatch));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 1 preliminary vendor recognition (Sony / Canon / Nikon) — synthetic
+// adverts derived from the 2026-06-10 APK static passes. These prove the
+// shipped data files load and the predicate model evaluates them; they do
+// NOT validate real camera variance (the data is marked preliminary).
+// ---------------------------------------------------------------------------
+
+fn vendor_store(vendor: &str, model_id: &str) -> std::sync::Arc<ConfigStore> {
+    ConfigStore::from_manufacturer_index(
+        data(&format!("{vendor}/index.yaml")),
+        vec![KeyValue {
+            key: model_id.to_string(),
+            value: data(&format!("{vendor}/{model_id}/{model_id}.yaml")),
+        }],
+    )
+    .unwrap_or_else(|e| panic!("{vendor} index loads: {e:?}"))
+}
+
+fn scope_get<'a>(scope: &'a [KeyValue], key: &str) -> Option<&'a str> {
+    scope
+        .iter()
+        .find(|kv| kv.key == key)
+        .map(|kv| kv.value.as_str())
+}
+
+#[test]
+fn sony_advert_recognised_with_version_model_code_and_flag_captures() {
+    let s = vendor_store("sony", "sony-camera");
+    // Post-company-id payload: discriminator 03 00, version 0x6400 (V1),
+    // model code "A1", feature records 0x21/0x22/0x23.
+    let obs = ble_advert(
+        &[],
+        0x012D, // Sony
+        &[
+            0x03, 0x00, // discriminator
+            0x64, 0x00, // version V1
+            b'A', b'1', // model code
+            0x21, 0xF0, 0x00, // wifi record: bit5 supported, bit4 enabled
+            0x22, 0xC0, 0x00, // pairing record: bit7 supported, bit6 enabled
+            0x23, 0x00, 0x00, // remote/transfer record
+        ],
+        None,
+    );
+    match s.recognize(obs) {
+        Recognition::Candidate {
+            model,
+            runtime_scope,
+            ..
+        } => {
+            assert_eq!(model, "sony-camera");
+            assert_eq!(scope_get(&runtime_scope, "preliminary"), Some("true"));
+            assert_eq!(scope_get(&runtime_scope, "sonyBleVersion"), Some("25600")); // 0x6400
+            assert_eq!(scope_get(&runtime_scope, "sonyModelCode"), Some("A1"));
+            assert_eq!(
+                scope_get(&runtime_scope, "sonyFeatureRecord22"),
+                Some("22c000")
+            );
+            assert_eq!(
+                scope_get(&runtime_scope, "wifiHandoverSupported"),
+                Some("1")
+            );
+            assert_eq!(scope_get(&runtime_scope, "wifiHandoverEnabled"), Some("1"));
+            assert_eq!(scope_get(&runtime_scope, "pairingSupported"), Some("1"));
+            assert_eq!(scope_get(&runtime_scope, "pairingEnabled"), Some("1"));
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+    // Wrong discriminator → NoMatch even with the Sony company id.
+    let obs = ble_advert(&[], 0x012D, &[0x99, 0x00, 0x64, 0x00, b'A', b'1'], None);
+    assert!(matches!(s.recognize(obs), Recognition::NoMatch));
+    // Minimum shape (no feature records): still matches, flag captures
+    // skip fail-soft.
+    let obs = ble_advert(&[], 0x012D, &[0x03, 0x00, 0x65, 0x00, b'Z', b'V'], None);
+    match s.recognize(obs) {
+        Recognition::Candidate { runtime_scope, .. } => {
+            assert_eq!(scope_get(&runtime_scope, "sonyBleVersion"), Some("25856")); // 0x6500
+            assert!(scope_get(&runtime_scope, "pairingSupported").is_none());
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn canon_long_and_short_advert_forms_recognised_with_reversed_captures() {
+    let s = vendor_store("canon", "canon-camera");
+    let svc = "00010000-0000-1000-0000-d8492fffa821"; // lowercase: compare is case-insensitive
+                                                      // 19-byte form: type 1, reversed USB id, reversed body UUID.
+    let mut long_payload = vec![0x01, 0x34, 0x12];
+    // Reverse of AF854C2E-B214-458E-97E2-912C4ECF2CB8's bytes.
+    long_payload.extend([
+        0xB8, 0x2C, 0xCF, 0x4E, 0x2C, 0x91, 0xE2, 0x97, 0x8E, 0x45, 0x14, 0xB2, 0x2E, 0x4C, 0x85,
+        0xAF,
+    ]);
+    let obs = ble_advert(&[svc], 0x01A9, &long_payload, None);
+    match s.recognize(obs) {
+        Recognition::Candidate { runtime_scope, .. } => {
+            assert_eq!(scope_get(&runtime_scope, "advertForm"), Some("long"));
+            assert_eq!(scope_get(&runtime_scope, "canonUsbProductId"), Some("4660")); // 0x1234
+            assert_eq!(
+                scope_get(&runtime_scope, "canonBodyUuid"),
+                Some("AF854C2E-B214-458E-97E2-912C4ECF2CB8")
+            );
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+    // 6-byte form: short id + flags bitfield.
+    let obs = ble_advert(&[svc], 0x01A9, &[0x01, 0x34, 0x12, 0xCD, 0xAB, 0x05], None);
+    match s.recognize(obs) {
+        Recognition::Candidate { runtime_scope, .. } => {
+            assert_eq!(scope_get(&runtime_scope, "advertForm"), Some("short"));
+            assert_eq!(scope_get(&runtime_scope, "canonShortId"), Some("43981")); // 0xABCD
+            assert_eq!(scope_get(&runtime_scope, "canonAdvertFlagBit0"), Some("1"));
+            assert_eq!(
+                scope_get(&runtime_scope, "canonAdvertFlagBits12"),
+                Some("2")
+            );
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+    // Same payload without the Canon service UUID → NoMatch.
+    let obs = ble_advert(&[], 0x01A9, &[0x01, 0x34, 0x12, 0xCD, 0xAB, 0x05], None);
+    assert!(matches!(s.recognize(obs), Recognition::NoMatch));
+}
+
+#[test]
+fn nikon_advert_recognised_by_lss_service_uuid_alone() {
+    let s = vendor_store("nikon", "nikon-camera");
+    let lss = "0000de00-3dd4-4255-8d62-6dc7b9bd5561";
+    // Full shape: LSS UUID + local name + optional mfg payload
+    // (client id + lssAdInfo flags). The signature never checks the
+    // company id — SnapBridge recognizes by service UUID.
+    let obs = Observation::BleAdvert {
+        service_uuids: vec![lss.to_string()],
+        manufacturer_data: Some(BleManufacturerData {
+            company_id: 0x0399,
+            payload: vec![0xDE, 0xAD, 0xBE, 0xEF, 0x06],
+        }),
+        service_data: vec![],
+        local_name: Some("Z 9".to_string()),
+        tx_power: None,
+        ad_records: vec![],
+    };
+    match s.recognize(obs) {
+        Recognition::Candidate {
+            model,
+            runtime_scope,
+            ..
+        } => {
+            assert_eq!(model, "nikon-camera");
+            assert_eq!(scope_get(&runtime_scope, "bodyName"), Some("Z 9"));
+            assert_eq!(scope_get(&runtime_scope, "nikonClientId"), Some("deadbeef"));
+            assert_eq!(scope_get(&runtime_scope, "lssDeepSleep"), Some("0"));
+            assert_eq!(scope_get(&runtime_scope, "lssAutoTransfer"), Some("1"));
+            assert_eq!(scope_get(&runtime_scope, "lssRemoteControl"), Some("1"));
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+    // Bare LSS advert (no name, no mfg data) still recognizes; all
+    // captures skip fail-soft.
+    let obs = Observation::BleAdvert {
+        service_uuids: vec![lss.to_string()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: None,
+        tx_power: None,
+        ad_records: vec![],
+    };
+    match s.recognize(obs) {
+        Recognition::Candidate { runtime_scope, .. } => {
+            assert_eq!(scope_get(&runtime_scope, "vendor"), Some("nikon"));
+            assert!(scope_get(&runtime_scope, "bodyName").is_none());
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn vendor_adverts_do_not_cross_match_fuji() {
+    // A Sony advert against the Fuji index (and vice versa) must NoMatch —
+    // company-id pinning in the data is what closes the #23 false-positive
+    // window.
+    let fuji = store();
+    let obs = ble_advert(&[], 0x012D, &[0x03, 0x00, 0x64, 0x00, b'A', b'1'], None);
+    assert!(matches!(fuji.recognize(obs), Recognition::NoMatch));
+    let sony = vendor_store("sony", "sony-camera");
+    let obs = ble_advert(
+        &["AF854C2E-B214-458E-97E2-912C4ECF2CB8"],
+        0x04D8,
+        &[0x02, 0x44, 0x73, 0x2a, 0x80],
+        None,
+    );
+    assert!(matches!(sony.recognize(obs), Recognition::NoMatch));
+}

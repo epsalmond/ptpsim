@@ -1,0 +1,15 @@
+schema: camera-config/v1
+
+# PRELIMINARY placeholder body for "some Nikon camera recognized over BLE".
+# Recognition-only: the advert signature in ../index.yaml captures the
+# advertised local name (`bodyName`) and LSS flags into runtime_scope;
+# per-model bodies replace this placeholder once a real Nikon camera is
+# probed. Evidence: APK static pass only — see ../index.yaml header.
+camera:
+  manufacturer: NIKON
+  model: Nikon camera (preliminary)
+
+evidence:
+  apkMultivendorBle:
+
+    date: "2026-06-10"

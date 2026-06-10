@@ -1,0 +1,68 @@
+# Nikon manufacturer index — PRELIMINARY, recognition only.
+#
+# (com.nikon.snapbridge.cmru 2.13.3), NOT a real camera advertisement or
+# wire capture. Validate against a real Nikon body before trusting
+# anything beyond "this advert is probably a Nikon camera".
+#
+# Evidence (operators tree, referenced by path per AGENTS.md):
+
+# Plan: docs/plans/manifest-schema-multivendor-risk-pass-2026-06-10.md (Phase 1)
+#
+# No establishment plan: SnapBridge's connection sequence (connect →
+# discover → enable notifications AND indications → LSS authentication)
+# ends in a four-stage secret-backed exchange on the Authentication
+# characteristic that must NOT become manifest script — it is deferred to
+# the `nikonLssAuthenticate` named primitive (epsalmond/ptpsim#31).
+
+manufacturer: NIKON
+
+families:
+  nikon:
+    ble:
+      gatt:
+        # Full UUIDs explicit in BleLssService; the rest of the
+        # 000020xx-3DD4-... characteristic range is catalogued in the
+        # operators doc and added here as establishment needs them.
+        lssAuthentication: "00002000-3DD4-4255-8D62-6DC7B9BD5561"
+      advert:
+        # No manufacturerCompanyId: SnapBridge's scanner recognizes by the
+        # LSS service UUID alone (BleScan.a() ScanFilter); manufacturer
+        # data is optional in the advert. This is the shape that motivated
+        # making companyId optional in the predicate model (§11.14).
+        serviceUuids:
+          lss: "0000DE00-3DD4-4255-8D62-6DC7B9BD5561"
+      establishment:
+        mechanism: recognition-only-preliminary
+        steps: []
+
+models:
+  - id: nikon-camera
+    displayName: "Nikon camera (preliminary)"
+    inherits: [nikon]
+    manifest: nikon-camera/nikon-camera.yaml
+    signatures:
+      nikonLssAdvert:
+        kind: bleAdvert
+        # Match on the LSS service UUID only. The app additionally filters
+        # by advertised local name before CONNECTING
+        # (BleConnectionAdapter.onScanResult()), but that compares against
+        # the user-selected camera — a runtime concern, so the name is
+        # captured into scope for the consumer rather than asserted here.
+        require:
+          serviceUuids: { contains: "{ble.advert.serviceUuids.lss}" }
+        capture:
+          - { source: localName, encoding: utf8, name: bodyName }
+          # Optional manufacturer payload (post-company-id, §11.14):
+          # 4-byte client id + 1 lssAdInfo flags byte (BleScanData).
+          # Captures are fail-soft — skipped when the advert carries no
+          # manufacturer data.
+          - { source: manufacturerData, at: 0, length: 4, encoding: bytes-le, name: nikonClientId }
+          - { source: manufacturerData, at: 4, length: 1, transform: { bits: { mask: 0x01, shift: 0 } }, encoding: u8, name: lssDeepSleep }
+          - { source: manufacturerData, at: 4, length: 1, transform: { bits: { mask: 0x02, shift: 1 } }, encoding: u8, name: lssAutoTransfer }
+          - { source: manufacturerData, at: 4, length: 1, transform: { bits: { mask: 0x04, shift: 2 } }, encoding: u8, name: lssRemoteControl }
+          - { source: manufacturerData, at: 4, length: 1, transform: { bits: { mask: 0x08, shift: 3 } }, encoding: u8, name: lssQuickWakeUp }
+          - { source: manufacturerData, at: 4, length: 1, transform: { bits: { mask: 0x10, shift: 4 } }, encoding: u8, name: lssBtcCooperationWait }
+        scope:
+          vendor: "nikon"
+          preliminary: "true"
+        suggests: { connection: ble, confidence: medium }
