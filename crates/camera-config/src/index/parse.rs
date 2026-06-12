@@ -219,6 +219,18 @@ fn resolve_gatt_names_in_steps(
                     }
                 }
             }
+            "bleAwaitUntil" => {
+                if let Some(body_map) = body.as_mapping_mut() {
+                    if let Some(source) = body_map.get_mut(Value::String("source".into())) {
+                        resolve_await_source_gatt(source, gatt, &format!("{here}.source"))?;
+                    }
+                    if let Some(Value::Sequence(on_each)) =
+                        body_map.get_mut(Value::String("onEach".into()))
+                    {
+                        resolve_gatt_names_in_steps(on_each, gatt, &format!("{here}.onEach"))?;
+                    }
+                }
+            }
             "if" => {
                 if let Some(body_map) = body.as_mapping_mut() {
                     if let Some(Value::Sequence(then_seq)) =
@@ -236,7 +248,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, acquire, acquireFirmware, if)"),
+                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, acquire, acquireFirmware, if)"),
                 });
             }
         }
@@ -256,18 +268,49 @@ fn resolve_gatt_field(
     let Some(Value::String(name)) = m.get(&gatt_key).cloned() else {
         return Ok(());
     };
-    let resolved = if let Some(uuid) = gatt.get(&name) {
-        uuid.clone()
-    } else if looks_like_uuid(&name) {
+    let resolved = resolve_one_gatt_name(&name, gatt, path_ctx)?;
+    m.insert(gatt_key, Value::String(resolved));
+    Ok(())
+}
+
+/// Resolve a single symbolic GATT name to its UUID (or accept an inline UUID).
+fn resolve_one_gatt_name(
+    name: &str,
+    gatt: &BTreeMap<String, String>,
+    path_ctx: &str,
+) -> Result<String, ConfigError> {
+    if let Some(uuid) = gatt.get(name) {
+        Ok(uuid.clone())
+    } else if looks_like_uuid(name) {
         // Authored as a full UUID inline — accept verbatim.
-        name
+        Ok(name.to_string())
     } else {
-        return Err(ConfigError::Validation {
+        Err(ConfigError::Validation {
             path: format!("{path_ctx}.gatt"),
             message: format!("undefined gatt symbolic name '{name}'"),
-        });
+        })
+    }
+}
+
+/// Resolve the gatt name carried inside a `bleAwaitUntil` `source:` block
+/// (`read: <name>` bare string, or `notify: { gatt: <name>, ... }`).
+fn resolve_await_source_gatt(
+    source: &mut Value,
+    gatt: &BTreeMap<String, String>,
+    path_ctx: &str,
+) -> Result<(), ConfigError> {
+    let Some(m) = source.as_mapping_mut() else {
+        return Ok(());
     };
-    m.insert(gatt_key, Value::String(resolved));
+    let read_key = Value::String("read".into());
+    if let Some(Value::String(name)) = m.get(&read_key).cloned() {
+        let resolved = resolve_one_gatt_name(&name, gatt, &format!("{path_ctx}.read"))?;
+        m.insert(read_key, Value::String(resolved));
+        return Ok(());
+    }
+    if let Some(notify) = m.get_mut(Value::String("notify".into())) {
+        resolve_gatt_field(notify, gatt, &format!("{path_ctx}.notify"))?;
+    }
     Ok(())
 }
 
@@ -311,6 +354,26 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
     }
     if let Step::Acquire(s) = step {
         validate_step(&s.from, &format!("{path}.from"))?;
+    }
+    if let Step::BleAwaitUntil(s) = step {
+        if s.timeout_ms == 0 {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.timeoutMs"),
+                message: "bleAwaitUntil timeoutMs must be > 0 (an await needs a budget)"
+                    .to_string(),
+            });
+        }
+        for (i, cap) in s.capture.iter().enumerate() {
+            if cap.length == Some(0) {
+                return Err(ConfigError::Validation {
+                    path: format!("{path}.capture[{i}].length"),
+                    message: "capture length 0 can never capture bytes".to_string(),
+                });
+            }
+        }
+        for (i, inner) in s.on_each.iter().enumerate() {
+            validate_step(inner, &format!("{path}.onEach[{i}]"))?;
+        }
     }
     // Mutually-exclusive length forms on mfg-data ranges live with the
     // signature validation; nothing further here for steps in MVP.
@@ -627,6 +690,9 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleNotify" => Ok(Step::BleNotify(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleNotify", e))?,
             )),
+            "bleAwaitUntil" => Ok(Step::BleAwaitUntil(
+                serde_yaml::from_value(body).map_err(|e| dec_err("bleAwaitUntil", e))?,
+            )),
             "acquire" => Ok(Step::Acquire(
                 serde_yaml::from_value(body).map_err(|e| dec_err("acquire", e))?,
             )),
@@ -637,7 +703,7 @@ impl<'de> serde::Deserialize<'de> for Step {
                 serde_yaml::from_value(body).map_err(|e| dec_err("if", e))?,
             )),
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, acquire, acquireFirmware, if)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, acquire, acquireFirmware, if)"
             ))),
         }
     }
@@ -886,6 +952,58 @@ impl<'de> serde::Deserialize<'de> for AcquireSource {
             }
             other => Err(D::Error::custom(format!(
                 "unknown acquireSource '{other}' (allowlist: bleAdvert, bleRead, userPrompt)"
+            ))),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for super::types::AwaitSource {
+    /// YAML form: a single-entry mapping — `read: <gatt>` (bare string) or
+    /// `notify: { gatt: <gatt>, mode: <notify|indicate>? }`. The gatt name is
+    /// resolved to a UUID by the loader's GATT pass before this typed decode.
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use super::types::AwaitSource;
+        use serde::de::Error;
+        let mapping = serde_yaml::Mapping::deserialize(d)?;
+        if mapping.len() != 1 {
+            return Err(D::Error::custom(format!(
+                "awaitSource must be a single-entry mapping (got {} keys)",
+                mapping.len()
+            )));
+        }
+        let (key_v, body) = mapping.into_iter().next().unwrap();
+        let key = key_v
+            .as_str()
+            .ok_or_else(|| D::Error::custom("awaitSource key must be a string"))?
+            .to_string();
+        match key.as_str() {
+            "read" => {
+                let gatt = body
+                    .as_str()
+                    .ok_or_else(|| D::Error::custom("read: <gatt> string required"))?
+                    .to_string();
+                Ok(AwaitSource::Read { gatt })
+            }
+            "notify" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct R {
+                    gatt: String,
+                    #[serde(default)]
+                    mode: super::types::CccdMode,
+                }
+                let r: R = serde_yaml::from_value(body)
+                    .map_err(|e| D::Error::custom(format!("notify: {e}")))?;
+                Ok(AwaitSource::Notify {
+                    gatt: r.gatt,
+                    mode: r.mode,
+                })
+            }
+            other => Err(D::Error::custom(format!(
+                "unknown awaitSource '{other}' (allowlist: read, notify)"
             ))),
         }
     }

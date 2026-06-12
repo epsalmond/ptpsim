@@ -29,10 +29,11 @@ pub mod types;
 pub use parse::ResolvedManufacturerIndex;
 pub use types::{
     AcquireFirmwareStep, AcquireSource, AcquireStep, AdvertByteSource, AdvertCapture,
-    AdvertPredicate, BitsAssertion, BleAdvertConstants, BleAdvertSignature, BleConnectStep,
-    BleDiscoverServicesStep, BleNotifyStep, BleNotifyUntil, BleReadStep, BleRequestMtuStep,
-    BleSubscribeStep, BleWriteStep, ByteAssertion, CccdMode, Confidence, Encoding,
-    EstablishmentBlock, FamilyBleBlock, FamilyBlock, IfStep, IndexedModel, LocalNamePredicate,
-    ManufacturerIndex, MfgDataPredicate, ModelView, NotifyCapture, PayloadPredicate, Predicate,
-    PredicateOp, Signature, SignatureKind, Step, StepOptions, StepValue, SuggestsBlock, Transform,
+    AdvertPredicate, AwaitSource, BitsAssertion, BleAdvertConstants, BleAdvertSignature,
+    BleAwaitUntilStep, BleConnectStep, BleDiscoverServicesStep, BleNotifyStep, BleNotifyUntil,
+    BleReadStep, BleRequestMtuStep, BleSubscribeStep, BleWriteStep, ByteAssertion, CccdMode,
+    Confidence, Encoding, EstablishmentBlock, FamilyBleBlock, FamilyBlock, IfStep, IndexedModel,
+    LocalNamePredicate, ManufacturerIndex, MfgDataPredicate, ModelView, NotifyCapture,
+    PayloadPredicate, Predicate, PredicateOp, Signature, SignatureKind, Step, StepOptions,
+    StepValue, SuggestsBlock, Transform,
 };

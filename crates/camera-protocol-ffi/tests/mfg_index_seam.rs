@@ -792,3 +792,82 @@ fn vendor_adverts_do_not_cross_match_fuji() {
     );
     assert!(matches!(sony.recognize(obs), Recognition::NoMatch));
 }
+
+// ---------------------------------------------------------------------------
+// bleAwaitUntil crosses the seam (§11.15)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ble_await_until_surfaces_through_ffi() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        statusChar: "0000CC09-0000-1000-8000-00805F9B34FB"
+        requestChar: "0000CC08-0000-1000-8000-00805F9B34FB"
+      advert: { manufacturerCompanyId: 1 }
+      establishment:
+        mechanism: test
+        steps:
+          - bleConnect: {}
+          - bleAwaitUntil:
+              source: { notify: { gatt: statusChar, mode: indicate } }
+              capture: { at: 0, length: 1, encoding: u8, name: status }
+              until: { status: { eq: 1 } }
+              onEach:
+                - bleWrite: { gatt: requestChar, value: { literal: "01" } }
+              timeoutMs: 5000
+              intervalMs: 250
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let s = ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".to_string(),
+            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+        }],
+    )
+    .expect("synthetic index loads");
+    let plan = s
+        .establishment("tm1".into(), "ble".into(), vec![])
+        .expect("plan present");
+    match &plan.steps[1] {
+        Step::BleAwaitUntil {
+            source,
+            capture,
+            until,
+            on_each,
+            timeout_ms,
+            interval_ms,
+            ..
+        } => {
+            match source {
+                AwaitSource::Notify { gatt, mode } => {
+                    assert_eq!(gatt, "0000CC09-0000-1000-8000-00805F9B34FB");
+                    assert!(matches!(mode, CccdMode::Indicate));
+                }
+                other => panic!("expected notify source, got {other:?}"),
+            }
+            assert_eq!(capture.len(), 1);
+            assert_eq!(capture[0].name, "status");
+            assert_eq!(until.field, "status");
+            assert_eq!(*timeout_ms, 5000);
+            assert_eq!(*interval_ms, 250);
+            // onEach bleWrite, gatt resolved, crosses as a nested Step.
+            assert_eq!(on_each.len(), 1);
+            match &on_each[0] {
+                Step::BleWrite { gatt, .. } => {
+                    assert_eq!(gatt, "0000CC08-0000-1000-8000-00805F9B34FB")
+                }
+                other => panic!("expected bleWrite in onEach, got {other:?}"),
+            }
+        }
+        other => panic!("expected BleAwaitUntil, got {other:?}"),
+    }
+}

@@ -153,6 +153,7 @@ pub enum Step {
     BleWrite(BleWriteStep),
     BleSubscribe(BleSubscribeStep),
     BleNotify(BleNotifyStep),
+    BleAwaitUntil(BleAwaitUntilStep),
     Acquire(AcquireStep),
     AcquireFirmware(AcquireFirmwareStep),
     If(IfStep),
@@ -170,6 +171,7 @@ impl Step {
             Step::BleWrite(_) => "bleWrite",
             Step::BleSubscribe(_) => "bleSubscribe",
             Step::BleNotify(_) => "bleNotify",
+            Step::BleAwaitUntil(_) => "bleAwaitUntil",
             Step::Acquire(_) => "acquire",
             Step::AcquireFirmware(_) => "acquireFirmware",
             Step::If(_) => "if",
@@ -188,6 +190,7 @@ impl Step {
             Step::BleWrite(s) => s.opts.clone(),
             Step::BleSubscribe(s) => s.opts.clone(),
             Step::BleNotify(s) => s.opts.clone(),
+            Step::BleAwaitUntil(s) => s.opts.clone(),
             Step::Acquire(s) => s.opts.clone(),
             Step::AcquireFirmware(s) => s.opts.clone(),
             Step::If(_) => StepOptions::default(),
@@ -351,6 +354,61 @@ pub struct NotifyCapture {
     pub encoding: Encoding,
     /// Scope key the decoded value binds to.
     pub name: String,
+}
+
+/// `bleAwaitUntil` — the await / poll-until control-flow primitive (§11.15).
+/// Observe a characteristic (poll a `read` or consume its `notify` stream)
+/// repeatedly until `until` holds over runtime_scope, optionally running
+/// `on_each` steps between iterations when it does not yet hold.
+///
+/// Condition uniformity: each iteration captures into scope (via `capture`
+/// /`capture_as`), then evaluates `until` — a [`Predicate`] over scope (the
+/// same vocabulary `if:` uses) — so read-source and notify-source share one
+/// condition shape. The motivating case is Sony's Wi-Fi handoff V2: observe
+/// the launch-status characteristic until launched, writing the launch
+/// request each iteration it isn't.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleAwaitUntilStep {
+    pub source: AwaitSource,
+    /// Transformed field captures applied to each read value / notification
+    /// payload before `until` is checked (§11.13 pipeline). Fail-soft.
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub capture: Vec<NotifyCapture>,
+    /// Optional whole-value capture (hex) per iteration, like `bleNotify`.
+    #[serde(default, alias = "capture_as")]
+    pub capture_as: Option<String>,
+    /// Satisfied when this predicate over runtime_scope holds (evaluated
+    /// after each iteration's captures land).
+    pub until: Predicate,
+    /// Steps run each iteration when `until` is NOT yet satisfied, before the
+    /// next poll/notification (Sony's launch-request write). Empty = pure
+    /// observe.
+    #[serde(default)]
+    pub on_each: Vec<Step>,
+    /// Wall-clock budget; the step fails (tolerant-aware) if `until` isn't met
+    /// before it elapses. The reference walker models this as
+    /// source-exhaustion + an iteration cap (deterministic analogue).
+    pub timeout_ms: u32,
+    /// Poll cadence for a `read` source (sleep between reads). Ignored for
+    /// `notify` (cadence is the camera's). 0 = dispatcher default.
+    #[serde(default)]
+    pub interval_ms: u32,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// Where `bleAwaitUntil` observes. Authored in YAML as a single-entry mapping
+/// (`read: <gatt>` / `notify: { gatt: <gatt>, mode: <notify|indicate>? }`);
+/// custom Deserialize dispatches on the key (see [`super::parse`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AwaitSource {
+    /// Poll a readable characteristic; each iteration is a fresh read.
+    Read { gatt: String },
+    /// Consume a characteristic's notification stream (CCCD enabled with
+    /// `mode`); each iteration awaits the next notification.
+    Notify { gatt: String, mode: CccdMode },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

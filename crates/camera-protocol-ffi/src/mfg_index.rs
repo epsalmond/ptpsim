@@ -204,6 +204,29 @@ pub enum Step {
         timeout_ms: u32,
         opts: StepOptions,
     },
+    /// Observe a characteristic until `until` holds, optionally acting each
+    /// unsatisfied iteration (§11.15). The dispatcher loops: observe (poll a
+    /// `read` source or await the `notify` stream) → apply captures into
+    /// scope → if `until` holds, done; else run `on_each` and observe again,
+    /// up to `timeout_ms`. Reference semantics:
+    /// `camera_sim::ble::run_await_until`.
+    BleAwaitUntil {
+        source: AwaitSource,
+        /// Field captures applied to each observed value before `until`
+        /// (window → transform → encoding → scope). Fail-soft.
+        capture: Vec<NotifyCapture>,
+        /// Whole observed value → scope (hex) each iteration.
+        capture_as: Option<String>,
+        /// Satisfied when this predicate holds over scope.
+        until: Predicate,
+        /// Steps run each iteration `until` is not yet met, before the next
+        /// observe. `Vec<Step>` (may be empty for a pure poll).
+        on_each: Vec<Step>,
+        timeout_ms: u32,
+        /// Poll cadence for a `read` source (ms); ignored for `notify`.
+        interval_ms: u32,
+        opts: StepOptions,
+    },
     Acquire {
         name: String,
         /// `Vec<Step>` of length 1 holding the inner step. uniffi 0.31 does
@@ -311,6 +334,14 @@ pub enum AcquireSource {
     UserPrompt {
         text: String,
     },
+}
+
+/// Where `bleAwaitUntil` observes (§11.15): poll a readable characteristic,
+/// or consume a characteristic's notification stream.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum AwaitSource {
+    Read { gatt: String },
+    Notify { gatt: String, mode: CccdMode },
 }
 
 /// CCCD subscription mode (§11.8): `ENABLE_NOTIFICATION_VALUE` vs
@@ -521,6 +552,18 @@ impl From<&ix::BleNotifyUntil> for BleNotifyUntil {
     }
 }
 
+impl From<&ix::AwaitSource> for AwaitSource {
+    fn from(s: &ix::AwaitSource) -> Self {
+        match s {
+            ix::AwaitSource::Read { gatt } => AwaitSource::Read { gatt: gatt.clone() },
+            ix::AwaitSource::Notify { gatt, mode } => AwaitSource::Notify {
+                gatt: gatt.clone(),
+                mode: (*mode).into(),
+            },
+        }
+    }
+}
+
 impl From<&ix::Step> for Step {
     fn from(s: &ix::Step) -> Self {
         match s {
@@ -559,6 +602,16 @@ impl From<&ix::Step> for Step {
                 capture: inner.capture.iter().map(Into::into).collect(),
                 mode: inner.mode.into(),
                 timeout_ms: inner.timeout_ms,
+                opts: (&inner.opts).into(),
+            },
+            ix::Step::BleAwaitUntil(inner) => Step::BleAwaitUntil {
+                source: (&inner.source).into(),
+                capture: inner.capture.iter().map(Into::into).collect(),
+                capture_as: inner.capture_as.clone(),
+                until: (&inner.until).into(),
+                on_each: inner.on_each.iter().map(Step::from).collect(),
+                timeout_ms: inner.timeout_ms,
+                interval_ms: inner.interval_ms,
                 opts: (&inner.opts).into(),
             },
             ix::Step::Acquire(inner) => Step::Acquire {

@@ -15,8 +15,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camera_config::index::eval;
 use camera_config::index::{
-    AcquireSource, BleNotifyUntil, CccdMode, Encoding, PredicateOp, Step, StepValue,
+    AcquireSource, AwaitSource, BleAwaitUntilStep, BleNotifyUntil, CccdMode, Encoding,
+    NotifyCapture, PredicateOp, Step, StepValue,
 };
+
+/// Reference-walker bound on a `bleAwaitUntil` loop: the deterministic
+/// analogue of the dispatcher's wall-clock `timeout_ms`. A sticky-unsatisfied
+/// source (a `serve_read` value that never meets `until`) hits this and fails
+/// like a real timeout rather than spinning forever.
+const MAX_AWAIT_ITERS: usize = 256;
 
 /// One interaction the responder observed, in arrival order. Tests assert on
 /// this log to prove a plan drove the camera in the expected reference app order.
@@ -60,6 +67,10 @@ impl std::fmt::Display for BleError {
 pub struct BleResponder {
     catalog: BTreeSet<String>,
     read_values: BTreeMap<String, Vec<u8>>,
+    /// Per-read evolving values (for `bleAwaitUntil` read-poll loops): each
+    /// read pops the next, the last value is sticky. Checked before
+    /// `read_values`.
+    read_sequences: BTreeMap<String, Vec<Vec<u8>>>,
     notify_queues: BTreeMap<String, Vec<Vec<u8>>>,
     mtu_cap: u16,
     connected: bool,
@@ -74,6 +85,7 @@ impl BleResponder {
         BleResponder {
             catalog: catalog.into_iter().collect(),
             read_values: BTreeMap::new(),
+            read_sequences: BTreeMap::new(),
             notify_queues: BTreeMap::new(),
             mtu_cap: 247,
             connected: false,
@@ -86,6 +98,17 @@ impl BleResponder {
     pub fn serve_read(mut self, uuid: &str, bytes: &[u8]) -> Self {
         self.catalog.insert(uuid.to_string());
         self.read_values.insert(uuid.to_string(), bytes.to_vec());
+        self
+    }
+
+    /// Serve an evolving sequence of read values on `uuid`: each `read` pops
+    /// the next, the last value is sticky (returned on every read once the
+    /// sequence is down to one). Drives `bleAwaitUntil` read-poll loops —
+    /// e.g. `serve_read_sequence(color, [0, 0, 1])` models AF focusing then
+    /// locking. Takes precedence over `serve_read` for the same uuid.
+    pub fn serve_read_sequence(mut self, uuid: &str, values: Vec<Vec<u8>>) -> Self {
+        self.catalog.insert(uuid.to_string());
+        self.read_sequences.insert(uuid.to_string(), values);
         self
     }
 
@@ -149,6 +172,16 @@ impl BleResponder {
         self.log.push(BleEvent::Read {
             uuid: uuid.to_string(),
         });
+        // Sequenced reads (await loops) take precedence: advance while more
+        // than one remains, stick on the last.
+        if let Some(seq) = self.read_sequences.get_mut(uuid) {
+            if seq.len() > 1 {
+                return Ok(seq.remove(0));
+            }
+            if let Some(last) = seq.first() {
+                return Ok(last.clone());
+            }
+        }
         self.read_values
             .get(uuid)
             .cloned()
@@ -365,31 +398,10 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
             if !accepted {
                 return Err(err("notification payload did not satisfy until".into()));
             }
-            if let Some(name) = &s.capture_as {
-                ctx.scope.insert(name.clone(), eval::hex_lower(&payload));
-                ctx.encodings.insert(name.clone(), Encoding::Bytes);
-            }
-            // Field captures are fail-soft (§11.8): a capture that misses
-            // its window/decode is skipped, never a step failure.
-            for cap in &s.capture {
-                let end = match cap.length {
-                    Some(l) => cap.at.saturating_add(l),
-                    None => payload.len(),
-                };
-                if cap.at > payload.len() || end > payload.len() {
-                    continue;
-                }
-                let Some(bytes) = eval::apply_transforms(&payload[cap.at..end], &cap.transform)
-                else {
-                    continue;
-                };
-                if let Some(value) = eval::decode_bytes(&bytes, cap.encoding) {
-                    ctx.scope.insert(cap.name.clone(), value);
-                    ctx.encodings.insert(cap.name.clone(), cap.encoding);
-                }
-            }
+            apply_value_captures(ctx, &payload, &s.capture_as, &s.capture);
             Ok(())
         }
+        Step::BleAwaitUntil(s) => run_await_until(ctx, s, here),
         Step::Acquire(s) => {
             // Run the delegate step, then alias whatever it captured under
             // the acquire's name.
@@ -436,6 +448,98 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
             walk_steps(ctx, branch, &branch_path)
         }
     }
+}
+
+/// Bind a value (read result / notification payload) into scope: the whole
+/// value under `capture_as` (hex), then each field capture through the
+/// §11.13 pipeline (window → transform → encoding). Fail-soft: a capture
+/// whose window/transform/decode fails is skipped, never an error. Shared by
+/// `bleNotify` and each `bleAwaitUntil` iteration.
+fn apply_value_captures(
+    ctx: &mut WalkCtx<'_>,
+    value: &[u8],
+    capture_as: &Option<String>,
+    captures: &[NotifyCapture],
+) {
+    if let Some(name) = capture_as {
+        ctx.scope.insert(name.clone(), eval::hex_lower(value));
+        ctx.encodings.insert(name.clone(), Encoding::Bytes);
+    }
+    for cap in captures {
+        let end = match cap.length {
+            Some(l) => cap.at.saturating_add(l),
+            None => value.len(),
+        };
+        if cap.at > value.len() || end > value.len() {
+            continue;
+        }
+        let Some(bytes) = eval::apply_transforms(&value[cap.at..end], &cap.transform) else {
+            continue;
+        };
+        if let Some(decoded) = eval::decode_bytes(&bytes, cap.encoding) {
+            ctx.scope.insert(cap.name.clone(), decoded);
+            ctx.encodings.insert(cap.name.clone(), cap.encoding);
+        }
+    }
+}
+
+/// Execute a `bleAwaitUntil` step (§11.15): observe the source until `until`
+/// holds over scope, running `on_each` between unsatisfied iterations.
+/// Deterministic timeout = source exhaustion or [`MAX_AWAIT_ITERS`].
+fn run_await_until(
+    ctx: &mut WalkCtx<'_>,
+    s: &BleAwaitUntilStep,
+    here: &str,
+) -> Result<(), WalkError> {
+    let err = |message: String| WalkError {
+        step: here.to_string(),
+        message,
+    };
+    // CCCD-enable once up front for a notify source (the camera then streams).
+    if let AwaitSource::Notify { gatt, mode } = &s.source {
+        ctx.responder
+            .subscribe(gatt, *mode)
+            .map_err(|e| err(e.to_string()))?;
+    }
+    for _ in 0..MAX_AWAIT_ITERS {
+        // Observe one value.
+        let value = match &s.source {
+            AwaitSource::Read { gatt } => {
+                ctx.responder.read(gatt).map_err(|e| err(e.to_string()))?
+            }
+            AwaitSource::Notify { gatt, .. } => match ctx.responder.take_notification(gatt) {
+                Some(p) => p,
+                None => {
+                    return Err(err(
+                        "awaited notification never arrived (source exhausted before `until`)"
+                            .into(),
+                    ))
+                }
+            },
+        };
+        apply_value_captures(ctx, &value, &s.capture_as, &s.capture);
+
+        // Satisfied? `until` is a Predicate over scope (the `if` vocabulary).
+        let satisfied = match ctx.scope.get(&s.until.field) {
+            Some(actual) => predicate_holds(actual, s.until.op, &s.until.value),
+            // An unbound field can't satisfy the condition; keep observing
+            // (a capture too short to bind it is the deterministic analogue
+            // of "the camera hasn't reported it yet").
+            None => false,
+        };
+        if satisfied {
+            return Ok(());
+        }
+        // Not yet: act, then observe again. interval_ms is dispatcher cadence
+        // — the deterministic walker doesn't sleep.
+        walk_steps(ctx, &s.on_each, &format!("{here}.onEach"))?;
+    }
+    Err(err(format!(
+        "`until` ({} {} {}) not satisfied within {MAX_AWAIT_ITERS} observations",
+        s.until.field,
+        s.until.op.as_token(),
+        s.until.value
+    )))
 }
 
 fn predicate_holds(actual: &str, op: PredicateOp, expected: &str) -> bool {

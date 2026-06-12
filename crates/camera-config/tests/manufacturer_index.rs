@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use camera_config::error::ConfigError;
+use camera_config::index::eval::{advert_matches, BleAdvertFacts};
 use camera_config::index::{
     AdvertByteSource, AdvertPredicate, BleNotifyUntil, CccdMode, Confidence, Encoding, PredicateOp,
     ResolvedManufacturerIndex, Signature, Step, StepValue, Transform,
@@ -24,6 +25,16 @@ fn data(rel: &str) -> String {
 
 fn real_index() -> ResolvedManufacturerIndex {
     ResolvedManufacturerIndex::from_yaml(&data("fuji/index.yaml")).expect("fuji/index.yaml loads")
+}
+
+fn store_for(vendor: &str, model_id: &str) -> std::sync::Arc<ConfigStore> {
+    let mut bodies = BTreeMap::new();
+    bodies.insert(
+        model_id.to_string(),
+        data(&format!("{vendor}/{model_id}/{model_id}.yaml")),
+    );
+    ConfigStore::from_manufacturer_index(&data(&format!("{vendor}/index.yaml")), bodies)
+        .unwrap_or_else(|e| panic!("{vendor}/{model_id} loads: {e:?}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -847,7 +858,7 @@ families:
         steps:
           - bleConnect: {}
           - bleRequestMtu: { mtu: 158 }
-          - bleDiscoverServices: {}
+          - bleDiscoverServices: { tolerant: true, retries: 3, retryDelayMs: 250 }
           - bleRead: { gatt: c, encoding: bytes, captureAs: x }
 models:
   - id: tm1
@@ -865,6 +876,14 @@ models:
         other => panic!("expected bleRequestMtu, got {other:?}"),
     }
     assert!(matches!(&steps[2], Step::BleDiscoverServices(_)));
+    match &steps[2] {
+        Step::BleDiscoverServices(s) => {
+            assert!(s.opts.tolerant);
+            assert_eq!(s.opts.retries, 3);
+            assert_eq!(s.opts.retry_delay_ms, 250);
+        }
+        other => panic!("expected bleDiscoverServices, got {other:?}"),
+    }
     assert_eq!(steps[1].verb_name(), "bleRequestMtu");
     assert_eq!(steps[2].verb_name(), "bleDiscoverServices");
 }
@@ -918,6 +937,63 @@ fn nikon_style_signature_without_company_id_parses() {
 }
 
 #[test]
+fn manufacturer_payload_constraint_without_company_id_matches() {
+    let yaml = predicate_fixture(
+        r#"          manufacturerData:
+            minLength: 2
+            assertByte: { index: 0, equals: 0x42 }"#,
+    );
+    let idx = ResolvedManufacturerIndex::from_yaml(&yaml)
+        .expect("manufacturerData without companyId but with payload constraint loads");
+    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1;
+    let facts = BleAdvertFacts {
+        manufacturer_data: Some((0x9999, vec![0x42, 0x10])),
+        ..Default::default()
+    };
+    assert!(
+        advert_matches(sig, &facts),
+        "payload constraint should match regardless of company id when omitted"
+    );
+    let wrong = BleAdvertFacts {
+        manufacturer_data: Some((0x9999, vec![0x41, 0x10])),
+        ..Default::default()
+    };
+    assert!(!advert_matches(sig, &wrong));
+}
+
+#[test]
+fn service_data_and_raw_ad_record_predicates_evaluate() {
+    let yaml = predicate_fixture(
+        r#"          all:
+            - serviceData:
+                uuid: "FE2C"
+                minLength: 4
+                assertByte: { index: 0, equals: 0xaa }
+            - rawAdRecord:
+                adType: 0xff
+                minLength: 4
+                assertByte:
+                  - { index: 0, equals: 0x2d }
+                  - { index: 1, equals: 0x01 }"#,
+    );
+    let idx = ResolvedManufacturerIndex::from_yaml(&yaml)
+        .expect("serviceData/rawAdRecord predicate loads");
+    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1;
+    let facts = BleAdvertFacts {
+        service_data: vec![("fe2c".into(), vec![0xaa, 0xbb, 0xcc, 0xdd])],
+        // Raw AD manufacturer payload as seen on air: company id included.
+        ad_records: vec![(0xff, vec![0x2d, 0x01, 0x03, 0x00])],
+        ..Default::default()
+    };
+    assert!(advert_matches(sig, &facts));
+    let missing_raw = BleAdvertFacts {
+        service_data: vec![("fe2c".into(), vec![0xaa, 0xbb, 0xcc, 0xdd])],
+        ..Default::default()
+    };
+    assert!(!advert_matches(sig, &missing_raw));
+}
+
+#[test]
 fn statically_invalid_predicates_are_load_errors() {
     for (require, needle) in [
         ("          all: []", "empty predicate list"),
@@ -943,6 +1019,42 @@ fn statically_invalid_predicates_are_load_errors() {
         let err = ResolvedManufacturerIndex::from_yaml(&predicate_fixture(require)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains(needle), "for `{require}`: got {msg}");
+    }
+}
+
+#[test]
+fn invalid_cccd_modes_are_load_errors() {
+    let template = |verb: &str| {
+        format!(
+            r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {{ c: "00002A25-0000-1000-8000-00805F9B34FB" }}
+      advert: {{ manufacturerCompanyId: 1 }}
+      establishment:
+        mechanism: test
+        steps:
+          - {verb}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+        )
+    };
+    for step in [
+        "bleSubscribe: { gatt: c, timeoutMs: 3000, mode: confirm }",
+        "bleNotify: { gatt: c, until: any, timeoutMs: 3000, mode: confirm }",
+    ] {
+        let err = ResolvedManufacturerIndex::from_yaml(&template(step)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("confirm") || msg.contains("unknown variant"),
+            "for `{step}`: got {msg}"
+        );
     }
 }
 
@@ -992,4 +1104,159 @@ models:
         }
     );
     assert_eq!(sig.capture[3].transform, vec![Transform::DropPrefix(3)]);
+}
+
+#[test]
+fn preliminary_vendor_indexes_load_in_camera_config() {
+    for (vendor, model_id) in [
+        ("sony", "sony-camera"),
+        ("canon", "canon-camera"),
+        ("nikon", "nikon-camera"),
+    ] {
+        let store = store_for(vendor, model_id);
+        assert!(
+            store.index.is_some(),
+            "{vendor}/{model_id} exposes a resolved manufacturer index"
+        );
+        let expected_mfr = vendor.to_ascii_uppercase();
+        assert_eq!(
+            store.body(model_id).map(|b| b.camera.manufacturer.as_str()),
+            Some(expected_mfr.as_str()),
+            "{vendor}/{model_id} body manifest is available"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §11.15 bleAwaitUntil — deserialize, validate, gatt-resolution
+// ---------------------------------------------------------------------------
+
+fn await_fixture(step_body: &str) -> String {
+    format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        statusChar: "0000CC09-0000-1000-8000-00805F9B34FB"
+        requestChar: "0000CC08-0000-1000-8000-00805F9B34FB"
+      advert: {{ manufacturerCompanyId: 1 }}
+      establishment:
+        mechanism: test
+        steps:
+          - bleConnect: {{}}
+          - bleAwaitUntil:
+{step_body}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+    )
+}
+
+#[test]
+fn ble_await_until_both_source_forms_parse_and_resolve_gatt() {
+    // notify-source with onEach; gatt names in source + onEach resolve to UUIDs.
+    let yaml = await_fixture(
+        r#"              source: { notify: { gatt: statusChar, mode: indicate } }
+              capture: { at: 0, length: 1, encoding: u8, name: status }
+              until: { status: { eq: 1 } }
+              onEach:
+                - bleWrite: { gatt: requestChar, value: { literal: "01" } }
+              timeoutMs: 5000
+              intervalMs: 250"#,
+    );
+    let idx = ResolvedManufacturerIndex::from_yaml(&yaml).expect("notify form loads");
+    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    match &steps[1] {
+        Step::BleAwaitUntil(s) => {
+            match &s.source {
+                camera_config::index::AwaitSource::Notify { gatt, mode } => {
+                    assert_eq!(
+                        gatt, "0000CC09-0000-1000-8000-00805F9B34FB",
+                        "source gatt resolved"
+                    );
+                    assert_eq!(*mode, CccdMode::Indicate);
+                }
+                other => panic!("expected notify source, got {other:?}"),
+            }
+            assert_eq!(s.until.field, "status");
+            assert_eq!(s.timeout_ms, 5000);
+            assert_eq!(s.interval_ms, 250);
+            // onEach's gatt resolved too.
+            match &s.on_each[0] {
+                Step::BleWrite(w) => {
+                    assert_eq!(w.gatt, "0000CC08-0000-1000-8000-00805F9B34FB")
+                }
+                other => panic!("expected bleWrite in onEach, got {other:?}"),
+            }
+        }
+        other => panic!("expected bleAwaitUntil, got {other:?}"),
+    }
+
+    // read-source (bare-string gatt), no onEach.
+    let yaml = await_fixture(
+        r#"              source: { read: statusChar }
+              capture: { at: 0, length: 1, encoding: u8, name: color }
+              until: { color: { eq: 1 } }
+              timeoutMs: 3000"#,
+    );
+    let idx = ResolvedManufacturerIndex::from_yaml(&yaml).expect("read form loads");
+    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    match &steps[1] {
+        Step::BleAwaitUntil(s) => match &s.source {
+            camera_config::index::AwaitSource::Read { gatt } => {
+                assert_eq!(
+                    gatt, "0000CC09-0000-1000-8000-00805F9B34FB",
+                    "read gatt resolved"
+                );
+                assert!(s.on_each.is_empty());
+            }
+            other => panic!("expected read source, got {other:?}"),
+        },
+        other => panic!("expected bleAwaitUntil, got {other:?}"),
+    }
+}
+
+#[test]
+fn ble_await_until_validation_rejects_bad_forms() {
+    // timeoutMs: 0 — an await needs a budget.
+    let yaml = await_fixture(
+        r#"              source: { read: statusChar }
+              until: { x: { eq: 1 } }
+              timeoutMs: 0"#,
+    );
+    let err = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        err.to_string().contains("timeoutMs must be > 0"),
+        "got: {err}"
+    );
+
+    // unknown source key.
+    let yaml = await_fixture(
+        r#"              source: { poll: statusChar }
+              until: { x: { eq: 1 } }
+              timeoutMs: 1000"#,
+    );
+    let err = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        err.to_string().contains("unknown awaitSource 'poll'"),
+        "got: {err}"
+    );
+
+    // undefined gatt symbolic name in the source.
+    let yaml = await_fixture(
+        r#"              source: { read: notDeclared }
+              until: { x: { eq: 1 } }
+              timeoutMs: 1000"#,
+    );
+    let err = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("undefined gatt symbolic name 'notDeclared'"),
+        "got: {err}"
+    );
 }
