@@ -47,11 +47,10 @@ steps:
     settings:
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ${LOCAL_DOCKER_REGISTRY}/ptpsim
-      # Step containers can't resolve *.internal.psalmond.com (bridge-network
-      # attachment bypasses the host's tailscale split-DNS); point the
-      # plugin's inner dockerd at internal-dns. Exported by the Woodpecker
+      # Registry resolution inside steps rides the traefik network alias on
 
-      custom_dns: ${LOCAL_DOCKER_DNS}
+      # internal-dns serves only the internal zones, so pointing the inner
+      # dockerd at it breaks public pulls (docker.io SERVFAILs).
       username:
         from_secret: local_registry_username
       password:
