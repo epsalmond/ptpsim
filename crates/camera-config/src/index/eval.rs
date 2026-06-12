@@ -107,7 +107,13 @@ fn payload_holds(p: &PayloadPredicate, bytes: &[u8]) -> bool {
         // Read the minimum LE width covering the mask, starting at offset.
         let width = (64 - bits.mask.leading_zeros() as usize).div_ceil(8);
         let width = width.max(1);
-        let Some(slice) = bytes.get(bits.offset..bits.offset + width) else {
+        // checked_add: a huge `offset` would overflow `offset + width` and
+        // panic under debug overflow-checks — but §11.14 requires a payload
+        // too short for the read to evaluate false, never error.
+        let Some(end) = bits.offset.checked_add(width) else {
+            return false;
+        };
+        let Some(slice) = bytes.get(bits.offset..end) else {
             return false; // payload too short — absent-field rule
         };
         let mut le = [0u8; 8];
@@ -673,6 +679,22 @@ mod tests {
             "AF854C2E-B214-458E-97E2-912C4ECF2CB8"
         );
         assert!(apply_transforms(&[0u8; 15], &[Transform::UuidFromBytes]).is_none());
+    }
+
+    #[test]
+    fn assert_bits_huge_offset_is_false_not_panic() {
+        // §11.14: a payload too short for the bits read evaluates false,
+        // never errors. A near-usize::MAX offset must not overflow
+        // offset+width (panics under debug overflow-checks before the fix).
+        let pred = PayloadPredicate {
+            assert_bits: vec![BitsAssertion {
+                offset: usize::MAX,
+                mask: 0xFF,
+                equals: 0,
+            }],
+            ..Default::default()
+        };
+        assert!(!payload_holds(&pred, &[0x01, 0x02, 0x03]));
     }
 
     #[test]
