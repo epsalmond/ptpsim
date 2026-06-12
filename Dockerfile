@@ -3,7 +3,7 @@
 # workspace, no native deps → simple two-stage build.
 
 # --- builder ----------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM rust:1-slim AS builder
+FROM rust:1-slim AS builder
 WORKDIR /build
 
 # Only the workspace inputs the service needs.
