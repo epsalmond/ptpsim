@@ -251,7 +251,7 @@ CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
 | `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | the *unwalked tail* (steps from `nextStepIndex` onward) with firmware overlays applied — per §11.5. Returns `nil` when no overlay matched; dispatcher keeps existing plan (graceful degrade). MVP stub always returns `nil`. |
 | `connectionEstablishment(connection)` | (unchanged renamed §2 method — single-body connection bring-up) |
 
-### 9.3 The 10-verb Step grammar
+### 9.3 The 11-verb Step grammar
 
 You build a small dispatcher; the verbs come from the FFI. Each carries
 `StepOptions { tolerant, retries, retryDelayMs }` — wrap each verb body in one
@@ -266,6 +266,7 @@ retry loop and the same code handles all of them.
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. |
 | `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate — CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
 | `bleNotify` | subscribe (`mode` as above) AND wait for `until` (Any / Equals / Matches); bind whole payload via `captureAs` and/or extract fields via `capture` (window → transform chain → encoding → scope; a failing capture is skipped, not a step failure). |
+| `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. Each iteration: observe → apply `capture`/`captureAs` into scope → if `until` holds, done; else run `onEach` steps and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
 | `acquire` | run inner step (`from[0]` — `Vec<Step>` of length 1; uniffi 0.31 doesn't accept `Box<Step>` for recursive enums), bind result to `name`. |
 | `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. |
 | `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |
