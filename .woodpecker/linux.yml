@@ -18,9 +18,21 @@ steps:
     commands:
       - echo "woodpecker reached ptpsim @ ${CI_COMMIT_SHA:0:8} on ${CI_COMMIT_BRANCH}"
 
+  # Cargo caches: per-step host volumes (repo is trusted-volumes). Distinct
+  # subdirs per step so parallel steps never contend; cross-pipeline sharing
+  # serializes on cargo's build-dir flock, which is harmless. Docker creates
+  # the host dirs root-owned on first mount; these steps run as root.
   - name: workspace
     image: rust:1-slim
+    volumes:
+      - /data/ci-cache/ptpsim/workspace:/ci-cache
+    environment:
+      CARGO_HOME: /ci-cache/cargo-home
+      CARGO_TARGET_DIR: /ci-cache/target
+      CARGO_INCREMENTAL: "0"
     commands:
+      # Size guard: wipe past 40 GiB rather than grow unbounded.
+      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - rustup component add rustfmt clippy
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets -- -D warnings
@@ -153,7 +165,10 @@ steps:
   - name: python-wheel
     image: rust:1-slim
     depends_on: [workspace]
+    volumes:
+      - /data/ci-cache/ptpsim/wheel:/ci-cache
     commands:
+      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - apt-get update -qq
       # git: gh release create shells out to git when run inside a repo dir
       # (rust:1-slim doesn't ship it).
@@ -170,6 +185,9 @@ steps:
       - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
       - 'gh release upload "$TAG" packages/camera-protocol-python/dist/*.whl --clobber'
     environment:
+      CARGO_HOME: /ci-cache/cargo-home
+      CARGO_TARGET_DIR: /ci-cache/target
+      CARGO_INCREMENTAL: "0"
       GH_TOKEN:
         from_secret: github_token
     when:
