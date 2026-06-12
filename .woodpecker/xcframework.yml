@@ -18,6 +18,9 @@ steps:
     # `image:` for the local backend names the shell to run commands under.
     image: bash
     commands:
+      # Size guard on the persistent target cache: stale fingerprints
+      # accrete; past 40 GiB start over cold rather than grow unbounded.
+      - '[ "$(du -sk "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf "$CARGO_TARGET_DIR" || true'
       - ./ci/build-xcframework.sh
       # Artifacts land at out/dist/CameraProtocolFFI-<sha8>.{tar.gz, xcframework.zip, checksum}.
       # Publish all three to a GitHub release attached to the commit SHA tag:
@@ -44,6 +47,15 @@ steps:
       HOME: /Users/woodpecker
       CARGO_HOME: /Users/woodpecker/.cargo
       RUSTUP_HOME: /Users/woodpecker/.rustup
+      # Persistent target dir OUTSIDE the workspace: the local backend
+      # re-clones fresh every run, which made all 4 Apple-target builds cold
+      # (~8.6 min each, pipeline 113). Registry deps fingerprint against
+      # CARGO_HOME (stable), so warm runs rebuild only the workspace crates.
+      # Dir provisioned by ci/ansible/woodpecker-agent.yml; the build script
+      # honours CARGO_TARGET_DIR via its TARGET_DIR indirection.
+      CARGO_TARGET_DIR: /Users/woodpecker/ci-cache/ptpsim-target
+      # Deps aren't compiled incrementally anyway; halves the cache size.
+      CARGO_INCREMENTAL: "0"
       GH_TOKEN:
         from_secret: github_token   # fine-grained PAT with contents:write on the repo
 

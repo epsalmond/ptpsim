@@ -112,6 +112,16 @@
       changed_when: "'is up to date' not in target_add.stdout"
       loop: "{{ rust_targets }}"
 
+    # Persistent cargo target cache: the local backend re-clones the
+    # workspace fresh every pipeline, so an in-tree target/ is always cold.
+    # .woodpecker/xcframework.yml points CARGO_TARGET_DIR here instead.
+    - name: Create persistent cargo target cache for CI builds
+      ansible.builtin.file:
+        path: "{{ woodpecker_user_home }}/ci-cache/ptpsim-target"
+        state: directory
+        owner: "{{ woodpecker_user }}"
+        mode: '0755'
+
     # ---------------------------------------------------------------------
     # System Homebrew formulae
     #   gh      — needed by the xcframework + python-wheel release steps
