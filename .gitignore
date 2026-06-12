@@ -39,3 +39,7 @@ frida_messages.jsonl
 **/captures/
 **/sessions/
 *.raw.bin
+
+# Local credentials (PAT for gh / CI) — never commit
+.env
+.ENV

@@ -33,17 +33,6 @@ This means: when you surface a follow-up, a deferred fix, a code-review
 finding, or a "we should do X later" — file an issue. The in-process
 list is for *this turn's* working memory, not the project backlog.
 
-`gh issue create` is currently blocked by the PAT scope (tracked in
-#28). Workaround until that rotates:
-
-```sh
-jq -Rs '{title: "…", body: ., labels: ["bug"]}' /tmp/issue.md \
-  | gh api repos/epsalmond/ptpsim/issues --method POST --input -
-```
-
-REST works while GraphQL doesn't. Once #28 lands, delete the matching
-memory note and use `gh issue create` directly.
-
 ### Commits, PRs, pushing
 
 - Conventional small commits with a descriptive title and a body
@@ -113,9 +102,7 @@ When sources disagree about a protocol fact:
    project arc, conventions, and references.
 2. **Check** `gh issue list` for open work. Pending operational tasks
    (CI, correctness, follow-ups) are filed there; this is the project
-   backlog. As of 2026-06-09 the active follow-ups are #25 (sim BLE
-   responder), #26 (service correctness trio), #27 (async audit), #28
-   (PAT rotation).
+   backlog.
 3. **Skim** the last 10 entries of `git log --oneline` — recent commits
    are the highest-fidelity record of what just changed and why.
 4. **Don't** trust any old `RESUME.md`, `resume.sh`, or similar
@@ -140,6 +127,4 @@ cargo test --workspace                              # Rust workspace
 ( cd tools/protocol-mapper && python -m pytest -q ) # Python probe
 ```
 
-CI: Woodpecker, `.woodpecker.yml`. Don't push commits expecting CI
-state until you've verified the relevant secrets/PATs are in place
-(see #28).
+CI: Woodpecker, `.woodpecker.yml`.
