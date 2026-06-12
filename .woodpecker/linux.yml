@@ -40,26 +40,6 @@ steps:
   # (per-step network_mode was dropped in Woodpecker 3.x).
   # depends_on: [workspace] keeps it from blocking python-wheel when local
   # registry auth fails — they're independent artifacts.
-  # TEMPORARY diagnostic for the registry-auth failure (remove once green):
-  # prints non-reversible SHA-256s of the secret values the step actually
-  # receives and does a raw basic-auth probe, separating "stale secret"
-  # from "plugin/login mechanics".
-  - name: registry-debug
-    image: curlimages/curl
-    depends_on: [smoke]
-    commands:
-      - 'echo -n "$REG_USER" | sha256sum | cut -c1-16'
-      - 'echo -n "$REG_PASS" | sha256sum | cut -c1-16'
-      - 'curl -sk -o /dev/null -w "basic-auth probe: %{http_code}\n" -u "$REG_USER:$REG_PASS" "https://${LOCAL_DOCKER_REGISTRY}/v2/"'
-    environment:
-      REG_USER:
-        from_secret: local_registry_username
-      REG_PASS:
-        from_secret: local_registry_password
-    when:
-      branch: main
-      event: push
-
   - name: image
     image: woodpeckerci/plugin-docker-buildx
     privileged: true
@@ -67,6 +47,11 @@ steps:
     settings:
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ${LOCAL_DOCKER_REGISTRY}/ptpsim
+      # Step containers can't resolve *.internal.psalmond.com (bridge-network
+      # attachment bypasses the host's tailscale split-DNS); point the
+      # plugin's inner dockerd at internal-dns. Exported by the Woodpecker
+
+      custom_dns: ${LOCAL_DOCKER_DNS}
       username:
         from_secret: local_registry_username
       password:
@@ -127,10 +112,13 @@ steps:
       # cimg images run as user `circleci`, but the workspace is cloned
       # root-owned. Do NOT chown the whole workspace — parallel root steps
       # (manifest-data, python-wheel) run git in it and would die on
-      # "dubious ownership". Instead: writable dirs for cargo (target/) and
-      # build-android.sh (out/), and a safe.directory entry so gh's git
-      # calls accept the root-owned repo.
-      - 'sudo install -d -o "$(id -u)" -g "$(id -g)" target out out/android out/dist'
+      # "dubious ownership". Instead: writable out/ dirs, a PRIVATE cargo
+      # target dir (the shared target/ is root-owned by the workspace
+      # step's build; build-android.sh and uniffi-bindgen both honour
+      # CARGO_TARGET_DIR), and a safe.directory entry so gh's git calls
+      # accept the root-owned repo.
+      - 'sudo install -d -o "$(id -u)" -g "$(id -g)" out out/android out/dist'
+      - 'export CARGO_TARGET_DIR="$HOME/cargo-target"'
       - 'git config --global --add safe.directory "$CI_WORKSPACE"'
       # Rust toolchain — minimal profile is enough for cargo build / uniffi-bindgen.
       - 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable'
