@@ -55,18 +55,20 @@ steps:
   # See docs/SPM_INTEGRATION.md for the consumer flow and ci/update-package-swift.sh
   # for the rewriter.
   #
-  # Push uses x-access-token over HTTPS with the existing github_token PAT
-  # (contents:write). The remote URL update is process-local; we don't
-  # `git config --global` it.
+  # Both remote ops authenticate as x-access-token over HTTPS with the
+  # existing github_token PAT (contents:write) via a process-local inline
+  # credential helper; nothing is written to git config or the workspace.
   - name: bump-package-swift
     image: bash
     depends_on: [xcframework]
     commands:
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
       # Reset to a clean copy of main with our identity for the bump commit.
-      # The fetch needs the same token header as the push below — the local
-      # backend's workspace remote is plain https with no stored credentials.
-      - 'git -C "$CI_WORKSPACE" -c "http.https://github.com/.extraheader=Authorization: Bearer $GH_TOKEN" fetch origin main'
+      # The workspace remote is plain https with no stored credentials, and
+      # GitHub's git endpoint wants basic auth (x-access-token:<PAT>), not a
+      # Bearer header — supply it via an inline credential helper for both
+      # remote ops (nothing persisted to .git/config).
+      - 'git -C "$CI_WORKSPACE" -c credential.helper="!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f" fetch origin main'
       - 'git -C "$CI_WORKSPACE" checkout -B release/auto origin/main'
       - 'git -C "$CI_WORKSPACE" config user.email "ci@ptpsim.local"'
       - 'git -C "$CI_WORKSPACE" config user.name  "ptpsim CI"'
@@ -78,7 +80,7 @@ steps:
       # auto-generated Package.swift bumps off main) and is recreated fresh
 
       # WOODPECKER_MAX_WORKFLOWS=1 so this step doesn't race with itself.
-      - 'git -C "$CI_WORKSPACE" -c "http.https://github.com/.extraheader=Authorization: Bearer $GH_TOKEN" push --force origin release/auto'
+      - 'git -C "$CI_WORKSPACE" -c credential.helper="!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f" push --force origin release/auto'
     environment:
       # Woodpecker's local backend doesn't pass the agent's HOME/RUSTUP_HOME/
       # CARGO_HOME through to the step subprocess; it sets PATH and
