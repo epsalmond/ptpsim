@@ -77,7 +77,10 @@ connections:
     entries:
       - to: shooting/stills          # enter live-view from a cold App connection
         steps:
-          - { setProp: "0xdf00", value: 6 }      # functionModeMajor
+          # tolerant: the GFX100 II rejects this advisory write with 0x201d
+          # on hardware — mode entry must continue past it. Device-validated
+          # in client application (their #4; previously a local vendor patch there).
+          - { setProp: "0xdf00", value: 6, tolerant: true }   # functionModeMajor
           - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)
           - { readEcho: "0xdf2a" }               # read then write back
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4

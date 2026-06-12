@@ -76,6 +76,11 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     let steps = &lv.steps;
     assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf00"));
     assert_eq!(steps[0].value, Some(6));
+    // Device-validated (#39): the GFX100 II rejects this advisory write
+    // with 0x201d, so the step MUST stay tolerant or mode entry dies on
+    // real hardware. This flag regressed silently once (client application #4) —
+    // hence the explicit assert.
+    assert!(steps[0].tolerant, "0xdf00 write must be tolerant");
     assert_eq!(steps[1].value, Some(0x16)); // functionMode 22
     assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
     assert_eq!(steps[3].repeat, 4); // 902B ×4
