@@ -3,8 +3,26 @@
 # workspace, no native deps → simple two-stage build.
 
 # --- builder ----------------------------------------------------------------
-FROM rust:1-slim AS builder
+# cargo-chef splits the build into a dependency layer (cook, keyed on the
+# content-addressed recipe.json — survives any code-only change) and the
+# workspace compile. Combined with the buildx registry cache
+# (cache_images in .woodpecker/linux.yml), a code change only recompiles
+# workspace crates; a docs/data change rebuilds nothing.
+FROM rust:1-slim AS chef
+RUN cargo install --locked cargo-chef
 WORKDIR /build
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY services ./services
+COPY packages ./packages
+COPY tools/camera-simctl ./tools/camera-simctl
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /build/recipe.json .
+RUN cargo chef cook --release --recipe-path recipe.json
 
 # Only the workspace inputs the service needs.
 COPY Cargo.toml Cargo.lock ./
@@ -15,8 +33,8 @@ COPY packages ./packages
 # building -p camera-sim-service. Tiny (~20K), keeps the workspace evaluable.
 COPY tools/camera-simctl ./tools/camera-simctl
 
-RUN cargo build --release -p camera-sim-service --bin camera-sim-service \
- && strip target/release/camera-sim-service
+# No explicit strip: [profile.release] strip = true already covers it.
+RUN cargo build --release -p camera-sim-service --bin camera-sim-service
 
 # --- runtime ----------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime

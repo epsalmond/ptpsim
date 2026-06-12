@@ -12,6 +12,16 @@ labels:
 when:
   - event: push
     branch: main
+    # Skip the whole macOS workflow unless the compiled artifacts could
+    # change. Escape hatch: a commit message containing [ALL] (Woodpecker's
+    # ignore_message default) runs everything regardless.
+    path:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'ci/build-xcframework.sh'
+      - 'ci/update-package-swift.sh'
+      - '.woodpecker/xcframework.yml'
 
 steps:
   - name: xcframework

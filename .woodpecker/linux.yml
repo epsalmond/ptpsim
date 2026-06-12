@@ -23,7 +23,20 @@ steps:
   # serializes on cargo's build-dir flock, which is harmless. Docker creates
   # the host dirs root-owned on first mount; these steps run as root.
   - name: workspace
-    image: rust:1-slim
+    # ci-rust (ci/images/ci-rust/Dockerfile) bakes rustfmt/clippy + gh.
+
+    # Path filter: rust sources + the data/fixture packages the tests read.
+    # Doc-only / protocol-mapper-only changes skip the whole build+test.
+    when:
+      - path:
+          - 'crates/**'
+          - 'services/**'
+          - 'tools/camera-simctl/**'
+          - 'packages/camera-config-data/**'
+          - 'packages/fixtures/**'
+          - 'Cargo.toml'
+          - 'Cargo.lock'
+          - '.woodpecker/linux.yml'
     volumes:
       - /data/ci-cache/ptpsim/workspace:/ci-cache
     environment:
@@ -33,13 +46,16 @@ steps:
     commands:
       # Size guard: wipe past 40 GiB rather than grow unbounded.
       - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
-      - rustup component add rustfmt clippy
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets -- -D warnings
       - cargo test --workspace
 
   - name: python-mapper
     image: python:3.11-slim
+    when:
+      - path:
+          - 'tools/protocol-mapper/**'
+          - '.woodpecker/linux.yml'
     commands:
       - pip install -q pytest
       # protocol-mapper's pyproject defaults to --cov= ; override since pytest-cov
@@ -56,7 +72,13 @@ steps:
     image: woodpeckerci/plugin-docker-buildx
     privileged: true
     depends_on: [workspace]
+    # Inner docker root on /data (same rationale as ci-images.yml): room for
+    # the two-platform build, and the inner daemon's state persists across
+    # runs — local layer cache on top of the registry cache_images.
+    volumes:
+      - /data/ci-cache/ptpsim/dind-image:/dind
     settings:
+      storage_path: /dind
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ${LOCAL_DOCKER_REGISTRY}/ptpsim
       # Registry resolution inside steps rides the traefik network alias on
@@ -71,9 +93,24 @@ steps:
         - latest
         - sha-${CI_COMMIT_SHA:0:8}
       platforms: linux/amd64,linux/arm64
+      # Registry layer cache (mode=max): with the cargo-chef dep layer in
+      # the Dockerfile, code-only changes recompile workspace crates only —
+      # including the arm64/QEMU build.
+      cache_images:
+        - ${LOCAL_DOCKER_REGISTRY}/ptpsim:buildcache
     when:
       branch: main
       event: push
+      path:
+        - 'crates/**'
+        - 'services/**'
+        - 'tools/camera-simctl/**'
+        - 'packages/camera-config-data/**'
+        - 'packages/fixtures/**'
+        - 'Cargo.toml'
+        - 'Cargo.lock'
+        - 'Dockerfile'
+        - '.woodpecker/linux.yml'
 
   # Tar packages/camera-config-data/ and attach to the same sha-<8> release
   # as the xcframework + wheel. Decouples manifest-data delivery from the
@@ -106,6 +143,9 @@ steps:
     when:
       branch: main
       event: push
+      path:
+        - 'packages/camera-config-data/**'
+        - '.woodpecker/linux.yml'
 
   # Build CameraProtocolFFI for Android — three cdylib ABIs + uniffi Kotlin
   # bindings — and attach as a source-distribution tarball alongside the
@@ -114,48 +154,37 @@ steps:
   # walks the steps. Real .aar wrapping (classes.jar + AndroidManifest) is
   # task #43 — needs kotlinc + android.jar in CI which doubles image size.
   - name: android-libs
-    # cimg/android ships Android SDK + NDK; we add Rust on top.
-    # Tag scheme is `YYYY.MM[.patch][-variant]` per Docker Hub
-    # (`hub.docker.com/r/cimg/android/tags`); -ndk = SDK + NDK variant.
-    image: cimg/android:2026.03.1-ndk
+    # ci-android (ci/images/ci-android/Dockerfile) bakes the rust
+    # cross-toolchain + cargo-ndk + gh on top of cimg's SDK/NDK and runs as
+    # root — no per-run toolchain installs, no uid-3434 ownership dance.
+
     depends_on: [workspace]
+    volumes:
+      - /data/ci-cache/ptpsim/android:/ci-cache
     commands:
-      # cimg images run as user `circleci`, but the workspace is cloned
-      # root-owned. Do NOT chown the whole workspace — parallel root steps
-      # (manifest-data, python-wheel) run git in it and would die on
-      # "dubious ownership". Instead: writable out/ dirs, a PRIVATE cargo
-      # target dir (the shared target/ is root-owned by the workspace
-      # step's build; build-android.sh and uniffi-bindgen both honour
-      # CARGO_TARGET_DIR), and a safe.directory entry so gh's git calls
-      # accept the root-owned repo.
-      - 'sudo install -d -o "$(id -u)" -g "$(id -g)" out out/android out/dist'
-      - 'export CARGO_TARGET_DIR="$HOME/cargo-target"'
-      - 'git config --global --add safe.directory "$CI_WORKSPACE"'
-      # Rust toolchain — minimal profile is enough for cargo build / uniffi-bindgen.
-      - 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable'
-      - 'export PATH="$HOME/.cargo/bin:$PATH"'
-      - rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
-      # cargo-ndk wraps cargo build with per-ABI NDK toolchain. Pinned.
-      - cargo install --quiet cargo-ndk --version 3.5.4
-      # cimg/android puts the NDK at /home/circleci/android-sdk/ndk/<version>;
-      # cargo-ndk picks it up via ANDROID_NDK_HOME or auto-discovery.
-      - 'export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$(ls -1 $ANDROID_HOME/ndk | sort -V | tail -1)"'
+      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - ./ci/build-android.sh
-      # gh CLI (Debian-style; image is Ubuntu-based).
-      - 'curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg'
-      - 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null'
-      - sudo apt-get update -qq
-      - sudo apt-get install -qq -y gh
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
       - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
       - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}-android.tar.gz" --clobber'
       - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}-android.checksum" --clobber'
     environment:
+      # Registry/build caches in the volume; toolchain binaries stay on the
+      # image's PATH (/usr/local/cargo/bin) regardless of CARGO_HOME.
+      CARGO_HOME: /ci-cache/cargo-home
+      CARGO_TARGET_DIR: /ci-cache/target
+      CARGO_INCREMENTAL: "0"
       GH_TOKEN:
         from_secret: github_token
     when:
       branch: main
       event: push
+      path:
+        - 'crates/**'
+        - 'Cargo.toml'
+        - 'Cargo.lock'
+        - 'ci/build-android.sh'
+        - '.woodpecker/linux.yml'
 
   # Build a Linux Python wheel of camera-protocol-ffi and attach it to the
   # same sha-<8> release as the xcframework. Primary consumer: client application's
@@ -163,23 +192,14 @@ steps:
   # and feeds them through recognize / establishment in-process — no real
   # BLE radio). See packages/camera-protocol-python/README.md.
   - name: python-wheel
-    image: rust:1-slim
+    # ci-rust bakes git/gh and the /opt/wheelvenv build deps.
+
     depends_on: [workspace]
     volumes:
       - /data/ci-cache/ptpsim/wheel:/ci-cache
     commands:
       - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
-      - apt-get update -qq
-      # git: gh release create shells out to git when run inside a repo dir
-      # (rust:1-slim doesn't ship it).
-      - apt-get install -qq -y python3 python3-pip python3-venv curl ca-certificates git
-      # gh CLI (Debian's package is current enough for release upload)
-      - 'curl -fsSL https://github.com/cli/cli/releases/latest/download/gh_*_linux_amd64.deb -o /tmp/gh.deb || true'
-      - apt-get install -qq -y gh || (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update -qq && apt-get install -qq -y gh)
-      # Python build deps in a venv (PEP 668 — system Python is externally-managed)
-      - python3 -m venv /tmp/wheelvenv
-      - /tmp/wheelvenv/bin/pip install -q build setuptools wheel
-      - 'PATH="/tmp/wheelvenv/bin:$PATH" ./ci/build-python-wheel.sh'
+      - 'PATH="/opt/wheelvenv/bin:$PATH" ./ci/build-python-wheel.sh'
       # Attach to the same sha-<8> release as the xcframework
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
       - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
@@ -193,3 +213,10 @@ steps:
     when:
       branch: main
       event: push
+      path:
+        - 'crates/**'
+        - 'Cargo.toml'
+        - 'Cargo.lock'
+        - 'packages/camera-protocol-python/**'
+        - 'ci/build-python-wheel.sh'
+        - '.woodpecker/linux.yml'
