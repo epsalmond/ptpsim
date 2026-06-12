@@ -523,6 +523,57 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
 }
 
 #[test]
+fn af_tap_ops_and_props_are_ingested_from_the_wire_doc() {
+    // Issue #35: the AF tap / S1-lock surface from PTP_PROPERTIES_REFERENCE.md §5.
+    // DATA-only ingestion — names/access/owner/gating must match the wire doc; the
+    // camera-side AF behavior (counter bump, delayed 0xD209 flip, 0xC005 event) is a
+    // DEFERRED simulator-behavior follow-up, NOT modeled here.
+    let m = gfx();
+    let any = PropView::new();
+
+    // 0x9026 LockS1Lock (tap-to-AF) — fuji-vendor, matching its 0x90xx siblings.
+    let lock = &m.operations["0x9026"];
+    assert_eq!(lock.name, "LockS1Lock");
+    assert_eq!(lock.owner, "fuji-vendor");
+    assert_eq!(m.operations["0x902c"].owner, lock.owner, "owner matches siblings");
+    // 0x9027 UnlockS1Lock — companion release op (name PRELIMINARY per §5.1).
+    let unlock = &m.operations["0x9027"];
+    assert_eq!(unlock.name, "UnlockS1Lock");
+    assert_eq!(unlock.owner, "fuji-vendor");
+    // Both gate to the app connection in shooting/stills, and only there.
+    for op in [0x9026u16, 0x9027] {
+        assert_eq!(
+            m.operation_available("app", "shooting/stills", op, &any),
+            camera_config::Availability::Available,
+            "op 0x{op:04x} available on app/shooting-stills"
+        );
+        assert_eq!(
+            m.operation_available("wireless-tether", "shooting/stills", op, &any),
+            camera_config::Availability::WrongConnection,
+            "op 0x{op:04x} is app-only (reference app tap-to-AF path)"
+        );
+    }
+
+    // 0xD17C S1_LOCK — AF area state; high bytes also encode aspect ratio (§5.1).
+    let s1 = &m.properties["0xd17c"];
+    assert_eq!(s1.name, "s1Lock");
+    assert_eq!(s1.access.as_deref(), Some("readOnly"));
+    // 0xD209 S1_LOCK_COLOR — 0=white/none, 1=green/locked, 2=red/failed (§5.3).
+    let color = &m.properties["0xd209"];
+    assert_eq!(color.name, "s1LockColor");
+    assert_eq!(color.access.as_deref(), Some("readOnly"));
+
+    // All four cite the in-repo wire doc (docLiveControls → PTP_PROPERTIES_REFERENCE.md).
+    assert_eq!(m.evidence["docLiveControls"].kind, "doc");
+    for ev in [&lock.evidence, &unlock.evidence] {
+        assert!(ev.contains(&"docLiveControls".to_string()));
+    }
+    for p in [s1, color] {
+        assert!(p.evidence.contains(&"docLiveControls".to_string()));
+    }
+}
+
+#[test]
 fn xlv_models_protocol_shape_with_access_gate_kept_private() {
     let m = gfx();
     let xlv = &m.connections["xlv"];
