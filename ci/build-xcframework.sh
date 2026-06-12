@@ -82,6 +82,11 @@ done
 
 cd "${ROOT}"
 
+# Honour an externally-provided CARGO_TARGET_DIR (CI sets a persistent one so
+# re-cloned workspaces still get warm incremental builds); default to the
+# in-tree target/ for local runs.
+TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT}/target}"
+
 echo "==> Building ${CRATE} for 4 Apple targets (profile: ${PROFILE})"
 for t in "${IOS_DEVICE_TARGET}" "${IOS_SIM_TARGET}" "${MACOS_ARM_TARGET}" "${MACOS_X86_TARGET}"; do
     echo "  - ${t}"
@@ -98,8 +103,8 @@ mkdir -p "${LIPO_DIR}"
 echo "==> lipo macOS arm64 + x86_64 -> ${LIPO_DIR}/${STATICLIB}"
 lipo -create \
     -output "${LIPO_DIR}/${STATICLIB}" \
-    "target/${MACOS_ARM_TARGET}/${PROFILE}/${STATICLIB}" \
-    "target/${MACOS_X86_TARGET}/${PROFILE}/${STATICLIB}"
+    "${TARGET_DIR}/${MACOS_ARM_TARGET}/${PROFILE}/${STATICLIB}" \
+    "${TARGET_DIR}/${MACOS_X86_TARGET}/${PROFILE}/${STATICLIB}"
 
 # ---------------------------------------------------------------------------
 # Swift bindings
@@ -113,7 +118,7 @@ echo "==> Generating Swift bindings (uniffi 0.31, single binary)"
 cargo run --bin uniffi-bindgen -- generate \
     -l swift \
     -o "${SWIFT_DIR}" \
-    "target/${IOS_DEVICE_TARGET}/${PROFILE}/${STATICLIB}"
+    "${TARGET_DIR}/${IOS_DEVICE_TARGET}/${PROFILE}/${STATICLIB}"
 
 # Sanity-check the module name override took effect (config in
 # crates/camera-protocol-ffi/uniffi.toml).
@@ -133,9 +138,9 @@ mkdir -p "${XCF_DIR}"
 
 echo "==> xcodebuild -create-xcframework -> ${XCF_DIR}/${XCF_NAME}.xcframework"
 xcodebuild -create-xcframework \
-    -library "target/${IOS_DEVICE_TARGET}/${PROFILE}/${STATICLIB}" \
+    -library "${TARGET_DIR}/${IOS_DEVICE_TARGET}/${PROFILE}/${STATICLIB}" \
     -headers "${SWIFT_DIR}" \
-    -library "target/${IOS_SIM_TARGET}/${PROFILE}/${STATICLIB}" \
+    -library "${TARGET_DIR}/${IOS_SIM_TARGET}/${PROFILE}/${STATICLIB}" \
     -headers "${SWIFT_DIR}" \
     -library "${LIPO_DIR}/${STATICLIB}" \
     -headers "${SWIFT_DIR}" \

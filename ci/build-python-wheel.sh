@@ -57,7 +57,8 @@ esac
 echo "==> Building ${CRATE} (release)"
 cargo build -p "${CRATE}" --release
 
-NATIVE_LIB_PATH="target/release/${NATIVE_LIB}"
+TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT}/target}"
+NATIVE_LIB_PATH="${TARGET_DIR}/release/${NATIVE_LIB}"
 test -f "${NATIVE_LIB_PATH}" || {
     echo "FATAL: ${NATIVE_LIB_PATH} not produced" >&2
     exit 1
@@ -81,7 +82,7 @@ echo "==> Generating Python bindings via uniffi-bindgen (-l python)"
 cargo run --bin uniffi-bindgen -- generate \
     -l python \
     -o "${STAGE}" \
-    "target/release/libcamera_protocol_ffi.a"
+    "${TARGET_DIR}/release/libcamera_protocol_ffi.a"
 
 # uniffi emits camera_protocol_ffi.py at the top of the output dir; rename
 # to __init__.py so it forms the package body.
