@@ -127,4 +127,10 @@ cargo test --workspace                              # Rust workspace
 ( cd tools/protocol-mapper && python -m pytest -q ) # Python probe
 ```
 
-CI: Woodpecker, `.woodpecker.yml`.
+CI: Woodpecker, `.woodpecker/`. Steps are path-filtered and heavily
+cached (#41): docs-only pushes run almost nothing; toolchain images come
+prebuilt from the local registry (`ci/images/`, rebuilt by a manual
+trigger of the ci-images workflow — do that to pick up a new rustc, and
+budget one cold cache run after); the macOS agent keeps a persistent
+cargo target dir. A commit message containing `[ALL]` bypasses every
+path filter when you need a full run.
