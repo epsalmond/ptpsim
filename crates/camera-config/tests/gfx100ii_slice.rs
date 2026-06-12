@@ -535,7 +535,10 @@ fn af_tap_ops_and_props_are_ingested_from_the_wire_doc() {
     let lock = &m.operations["0x9026"];
     assert_eq!(lock.name, "LockS1Lock");
     assert_eq!(lock.owner, "fuji-vendor");
-    assert_eq!(m.operations["0x902c"].owner, lock.owner, "owner matches siblings");
+    assert_eq!(
+        m.operations["0x902c"].owner, lock.owner,
+        "owner matches siblings"
+    );
     // 0x9027 UnlockS1Lock — companion release op (name PRELIMINARY per §5.1).
     let unlock = &m.operations["0x9027"];
     assert_eq!(unlock.name, "UnlockS1Lock");
