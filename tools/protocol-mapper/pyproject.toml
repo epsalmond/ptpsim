@@ -37,7 +37,11 @@ packages = ["rce", "protocol_mapper"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--cov=rce.tools.fuji_ble_gps --cov-report=term-missing"
+# Coverage is opt-in so a bare `pytest` runs without the pytest-cov plugin.
+# For a coverage run: `pip install pytest-cov` (the `test` extra includes it)
+# and re-add the flags, e.g.
+#   pytest --cov=rce.tools.fuji_ble_gps --cov-report=term-missing
+# addopts = "--cov=rce.tools.fuji_ble_gps --cov-report=term-missing"
 
 [tool.coverage.run]
 omit = [

@@ -7,6 +7,20 @@ import pytest
 
 from rce.tools.fuji_ble_gps import firmware_update as fw
 
+# Wire-capture reference blob. Present only in the private dev tree under the
+# operators / RE tree; scrubbed from the public repo at publish time. A
+# redacted, labeled equivalent lives under the wire-capture reference set in
+# the operators tree. Resolve relative to this test file (protocol-mapper
+# root) so the check is robust to the caller's cwd.
+_PROTOCOL_MAPPER_ROOT = Path(__file__).resolve().parent.parent
+_SENDOBJECTINFO_FIXTURE = (
+    _PROTOCOL_MAPPER_ROOT
+    / "rce"
+    / "reference"
+    / "firmware_update_20260508"
+    / "sendobjectinfo_payload.bin"
+)
+
 
 def test_build_and_decode_firmware_update_request() -> None:
     info = fw.FirmwareUpdateRequestInfo(
@@ -47,8 +61,16 @@ def test_firmware_update_request_rejects_bad_fields() -> None:
         fw.decode_firmware_update_request(b"\x00")
 
 
+@pytest.mark.skipif(
+    not _SENDOBJECTINFO_FIXTURE.exists(),
+    reason=(
+        "private wire-capture fixture not present in public repo; it lives in "
+        "the operators tree at rce/reference/firmware_update_20260508/"
+        "sendobjectinfo_payload.bin"
+    ),
+)
 def test_build_firmware_send_object_info_matches_capture_fixture() -> None:
-    fixture = Path("rce/reference/firmware_update_20260508/sendobjectinfo_payload.bin").read_bytes()
+    fixture = _SENDOBJECTINFO_FIXTURE.read_bytes()
     payload = fw.build_firmware_send_object_info("FUP_FILE.DAT", 163_184_655)
     decoded = fw.decode_firmware_send_object_info(payload)
 
