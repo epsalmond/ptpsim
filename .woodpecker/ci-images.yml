@@ -1,0 +1,47 @@
+# Build + push the CI toolchain images (ci/images/*) to the local registry.
+# Path-filtered: runs only when the image recipes (or this file) change.
+# `manual` events bypass path filters (Woodpecker's on_empty default), so a
+# manual pipeline trigger is the forced-rebuild knob — use it to pick up a
+# new rustc; budget one cold cargo-cache run downstream afterwards.
+#
+# Registry resolution inside steps rides the traefik network alias on
+
+
+labels:
+  platform: linux/amd64
+
+when:
+  - event: [push, manual]
+    branch: main
+    path: ['ci/images/**', '.woodpecker/ci-images.yml']
+
+steps:
+  - name: ci-rust
+    image: woodpeckerci/plugin-docker-buildx
+    privileged: true
+    settings:
+      registry: ${LOCAL_DOCKER_REGISTRY}
+      repo: ${LOCAL_DOCKER_REGISTRY}/ci-rust
+      dockerfile: ci/images/ci-rust/Dockerfile
+      context: ci/images/ci-rust
+      platforms: linux/amd64
+      tags: [latest]
+      username:
+        from_secret: local_registry_username
+      password:
+        from_secret: local_registry_password
+
+  - name: ci-android
+    image: woodpeckerci/plugin-docker-buildx
+    privileged: true
+    settings:
+      registry: ${LOCAL_DOCKER_REGISTRY}
+      repo: ${LOCAL_DOCKER_REGISTRY}/ci-android
+      dockerfile: ci/images/ci-android/Dockerfile
+      context: ci/images/ci-android
+      platforms: linux/amd64
+      tags: [latest]
+      username:
+        from_secret: local_registry_username
+      password:
+        from_secret: local_registry_password
