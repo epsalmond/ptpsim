@@ -64,7 +64,9 @@ steps:
     commands:
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
       # Reset to a clean copy of main with our identity for the bump commit.
-      - 'git -C "$CI_WORKSPACE" fetch origin main'
+      # The fetch needs the same token header as the push below — the local
+      # backend's workspace remote is plain https with no stored credentials.
+      - 'git -C "$CI_WORKSPACE" -c "http.https://github.com/.extraheader=Authorization: Bearer $GH_TOKEN" fetch origin main'
       - 'git -C "$CI_WORKSPACE" checkout -B release/auto origin/main'
       - 'git -C "$CI_WORKSPACE" config user.email "ci@ptpsim.local"'
       - 'git -C "$CI_WORKSPACE" config user.name  "ptpsim CI"'

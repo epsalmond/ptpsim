@@ -114,13 +114,19 @@ rm -rf "${KOTLIN_DIR}"
 mkdir -p "${KOTLIN_DIR}"
 
 echo "==> Generating Kotlin bindings (uniffi 0.31)"
-# Point uniffi at any one of the built .so files — uniffi extracts the binding
-# metadata from the cdylib's embedded UniFFI section; the .kt output is
-# arch-independent.
+# Point uniffi at a HOST dev-profile staticlib, NOT the built android .so:
+# the workspace [profile.release] sets strip = true, which removes the
+# uniffi metadata section from release cdylibs (same reason
+# build-python-wheel.sh feeds bindgen the .a). The .kt output is arch- and
+# profile-independent. The dev host build is nearly free — the
+# uniffi-bindgen binary was just compiled in the same profile.
+cargo build -p "${CRATE}"
+HOST_LIB="${CARGO_TARGET_DIR:-${ROOT}/target}/debug/libcamera_protocol_ffi.a"
+test -f "${HOST_LIB}" || { echo "FATAL: ${HOST_LIB} not produced" >&2; exit 1; }
 cargo run --bin uniffi-bindgen -- generate \
     -l kotlin \
     -o "${KOTLIN_DIR}" \
-    "${JNILIBS_DIR}/arm64-v8a/${SO_NAME}"
+    "${HOST_LIB}"
 
 # uniffi writes to <out>/uniffi/<crate>/<crate>.kt. Sanity-check it landed.
 KOTLIN_FILE="${KOTLIN_DIR}/uniffi/camera_protocol_ffi/camera_protocol_ffi.kt"
