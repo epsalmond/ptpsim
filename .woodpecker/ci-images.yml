@@ -19,7 +19,14 @@ steps:
   - name: ci-rust
     image: woodpeckerci/plugin-docker-buildx
     privileged: true
+    # Inner docker root on /data: the default lives in the step container's
+    # overlay (host docker zvol, ~12 GiB free), which the ~10 GiB cimg base
+    # blows through ("no space left on device", pipeline 117). Persistent =
+    # the inner daemon's pulled bases + layers also survive across runs.
+    volumes:
+      - /data/ci-cache/ptpsim/dind-ci-rust:/dind
     settings:
+      storage_path: /dind
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ${LOCAL_DOCKER_REGISTRY}/ci-rust
       dockerfile: ci/images/ci-rust/Dockerfile
@@ -34,7 +41,14 @@ steps:
   - name: ci-android
     image: woodpeckerci/plugin-docker-buildx
     privileged: true
+    # Inner docker root on /data: the default lives in the step container's
+    # overlay (host docker zvol, ~12 GiB free), which the ~10 GiB cimg base
+    # blows through ("no space left on device", pipeline 117). Persistent =
+    # the inner daemon's pulled bases + layers also survive across runs.
+    volumes:
+      - /data/ci-cache/ptpsim/dind-ci-android:/dind
     settings:
+      storage_path: /dind
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ${LOCAL_DOCKER_REGISTRY}/ci-android
       dockerfile: ci/images/ci-android/Dockerfile
