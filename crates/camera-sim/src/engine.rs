@@ -140,7 +140,7 @@ impl Engine {
             return Self::err(tid, resp::SESSION_NOT_OPEN);
         }
 
-        match req.code {
+        let reply = match req.code {
             op::OPEN_SESSION => {
                 self.state.session_open = true;
                 self.state.phase = Phase::SessionOpen;
@@ -205,30 +205,33 @@ impl Engine {
             }
             op::GET_DEVICE_PROP_VALUE => {
                 let code = p(0) as u16;
+                // A deferred op-effect transition settles on its scheduled poll.
+                self.state.resolve_pending(code);
                 // 0xd212 is a *computed* live-status bundle, not a stored value:
                 // assemble it from current state via the shared quirk primitive.
                 if code == 0xd212 {
-                    return Self::data(tid, self.status_d212());
-                }
-                // A manifest-declared prop always returns a value (current, else a
-                // typed default) — a real camera doesn't reject a supported prop just
-                // because nothing set it yet. Only props absent from the manifest are
-                // unsupported.
-                match self.state.props.get(&code) {
-                    Some(v) => {
-                        let mut w = Writer::new();
-                        let _ = v.encode(&mut w);
-                        Self::data(tid, w.into_vec())
-                    }
-                    None => match self.manifest.property(code) {
-                        Some(prop) => {
-                            let v = crate::state::typed(datatype_of(prop.ptype.as_deref()), 0);
+                    Self::data(tid, self.status_d212())
+                } else {
+                    // A manifest-declared prop always returns a value (current, else
+                    // a typed default) — a real camera doesn't reject a supported
+                    // prop just because nothing set it yet. Only props absent from
+                    // the manifest are unsupported.
+                    match self.state.props.get(&code) {
+                        Some(v) => {
                             let mut w = Writer::new();
                             let _ = v.encode(&mut w);
                             Self::data(tid, w.into_vec())
                         }
-                        None => Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED),
-                    },
+                        None => match self.manifest.property(code) {
+                            Some(prop) => {
+                                let v = crate::state::typed(datatype_of(prop.ptype.as_deref()), 0);
+                                let mut w = Writer::new();
+                                let _ = v.encode(&mut w);
+                                Self::data(tid, w.into_vec())
+                            }
+                            None => Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED),
+                        },
+                    }
                 }
             }
             op::SET_DEVICE_PROP_VALUE => self.set_prop(tid, p(0) as u16, data_in),
@@ -242,6 +245,40 @@ impl Engine {
             }
             // Vendor / other ops: resolve from the manifest, not a brand branch.
             other => self.dispatch_manifest_op(tid, other, &req.params),
+        };
+        // Apply this op's manifest-declared camera-side effects on success —
+        // arming immediate writes or deferred (poll-settled) transitions (§5.5
+        // AF stub). Generic: the behavior is manifest data, not a brand branch.
+        if reply_is_ok(&reply) {
+            self.apply_op_effects(req.code);
+        }
+        reply
+    }
+
+    /// Arm the manifest-declared [`OpEffect`]s of operation `code` against state.
+    /// No-op for ops without effects (the common case).
+    fn apply_op_effects(&mut self, code: u16) {
+        let Some(opdef) = self.manifest.operation(code) else {
+            return;
+        };
+        if opdef.effects.is_empty() {
+            return;
+        }
+        // Snapshot (target code, value, settle) under the immutable manifest
+        // borrow, then mutate state.
+        let armed: Vec<(u16, i64, u32)> = opdef
+            .effects
+            .iter()
+            .filter_map(|e| parse_hex_code(&e.set_prop).map(|c| (c, e.value, e.settle_after_polls)))
+            .collect();
+        for (target, value, settle) in armed {
+            let datatype = datatype_of(
+                self.manifest
+                    .property(target)
+                    .and_then(|p| p.ptype.as_deref()),
+            );
+            self.state
+                .arm_effect(target, crate::state::typed(datatype, value), settle);
         }
     }
 
@@ -375,6 +412,16 @@ impl Engine {
     }
 }
 
+/// Whether a reply carries an OK response code (effects arm only on success).
+fn reply_is_ok(reply: &Reply) -> bool {
+    match reply {
+        Reply::Response(r)
+        | Reply::Data { response: r, .. }
+        | Reply::DataStream { response: r, .. } => r.code == resp::OK,
+        Reply::Close => false,
+    }
+}
+
 fn value_to_i64(v: &PropValue) -> Option<i64> {
     Some(match v {
         PropValue::U8(x) => *x as i64,
@@ -383,4 +430,99 @@ fn value_to_i64(v: &PropValue) -> Option<i64> {
         PropValue::U64(x) => *x as i64,
         PropValue::Str(_) => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use camera_config::CameraManifest;
+    use camera_media_store::MediaStore;
+
+    fn empty_store() -> MediaStore {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ptpsim-engine-{nanos}"));
+        std::fs::create_dir_all(&root).unwrap();
+        MediaStore::open(&root).unwrap()
+    }
+
+    fn req(code: u16, tid: u32, params: Vec<u32>) -> OperationRequest {
+        OperationRequest {
+            data_phase_info: 1,
+            code,
+            transaction_id: tid,
+            params,
+        }
+    }
+
+    /// Read a GetDevicePropValue reply back to an i64 (u16 width here).
+    fn poll(engine: &mut Engine, code: u16, tid: u32) -> i64 {
+        let reply = engine.on_operation(
+            &req(op::GET_DEVICE_PROP_VALUE, tid, vec![code as u32]),
+            None,
+        );
+        let Reply::Data { data, .. } = reply else {
+            panic!("expected data reply for {code:#06x}");
+        };
+        let mut r = ptp_core::Reader::new(&data);
+        value_to_i64(&PropValue::decode(&mut r, ptp_core::codes::datatype_code::UINT16).unwrap())
+            .unwrap()
+    }
+
+    /// §5.5 AF stub: 0x9026 arms a deferred 0xd209 → 1 transition visible on the
+    /// 2nd poll. Models the camera-side effect as op-effects-in-data.
+    #[test]
+    fn op_effect_flips_prop_after_settle_polls() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    effects:
+      - { setProp: "0xd209", value: 1, settleAfterPolls: 2 }
+properties:
+  "0xd209": { name: s1LockColor, type: u16, access: readOnly }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        e.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        // Trigger the AF op; the effect arms a deferred transition.
+        assert!(reply_is_ok(&e.on_operation(&req(0x9026, 2, vec![0]), None)));
+        // settleAfterPolls = 2: still 0 on poll 1, flips to 1 on poll 2.
+        assert_eq!(poll(&mut e, 0xd209, 3), 0, "not settled yet (poll 1)");
+        assert_eq!(poll(&mut e, 0xd209, 4), 1, "settled (poll 2)");
+        assert_eq!(poll(&mut e, 0xd209, 5), 1, "stays settled");
+    }
+
+    /// settleAfterPolls = 0 writes immediately (no deferral).
+    #[test]
+    fn immediate_op_effect_writes_at_once() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    effects:
+      - { setProp: "0xd209", value: 2 }
+properties:
+  "0xd209": { name: s1LockColor, type: u16, access: readOnly }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        e.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        e.on_operation(&req(0x9026, 2, vec![0]), None);
+        assert_eq!(
+            poll(&mut e, 0xd209, 3),
+            2,
+            "immediate effect visible at once"
+        );
+    }
 }

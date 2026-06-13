@@ -114,8 +114,35 @@ pub struct Operation {
     /// not-writing, …); evaluated by the engine, not a tree edge.
     #[serde(default)]
     pub requires: Option<Predicate>,
+    /// Camera-side state mutations this operation triggers — the simulator
+    /// applies them so a poll-until (`awaitUntil`) flow round-trips (the §5.5 AF
+    /// stub: `0x9026 LockS1Lock` → `0xd209 S1_LOCK_COLOR` flips to locked).
+    /// Curated sim-behavior data (not probe-derivable). Distinct from
+    /// [`ActionEffect`], which is an app-facing declaration the engine does NOT
+    /// act on.
+    #[serde(default)]
+    pub effects: Vec<OpEffect>,
     #[serde(default)]
     pub evidence: Vec<String>,
+}
+
+/// A camera-side state mutation an operation produces (consumed by the
+/// simulator engine, NOT mirrored to the app FFI — the app sends ops; the
+/// camera applies effects). `settle_after_polls` is the deterministic analogue
+/// of §5.5's wall-clock AF delay: the new value becomes visible after that many
+/// `GetDevicePropValue` polls of `set_prop` (0 = immediate). The reference
+/// executor's poll-until loop iterates until the value settles — the PTP
+/// analogue of the BLE walker's `serve_read_sequence`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpEffect {
+    /// Property whose value the operation changes.
+    pub set_prop: HexCode,
+    /// The value it settles to.
+    pub value: i64,
+    /// Polls of `set_prop` before the new value is visible (0 = immediate).
+    #[serde(default)]
+    pub settle_after_polls: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

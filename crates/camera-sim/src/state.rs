@@ -28,6 +28,18 @@ pub struct CameraState {
     pub phase: Phase,
     /// Current property values, keyed by property code.
     pub props: BTreeMap<u16, PropValue>,
+    /// Deferred op-effect transitions awaiting their settle poll (the §5.5 AF
+    /// delay analogue). Keyed by target prop code; resolved by `resolve_pending`
+    /// on each `GetDevicePropValue` of that code. Internal — driven only via
+    /// [`CameraState::arm_effect`] / [`CameraState::resolve_pending`].
+    pending: BTreeMap<u16, PendingTransition>,
+}
+
+/// A scheduled op-effect: the value `set_prop` settles to, and how many more
+/// polls of it until the new value is visible.
+struct PendingTransition {
+    value: PropValue,
+    remaining: u32,
 }
 
 impl CameraState {
@@ -50,6 +62,41 @@ impl CameraState {
             session_open: false,
             phase: Phase::Disconnected,
             props,
+            pending: BTreeMap::new(),
+        }
+    }
+
+    /// Arm an op-effect on `code`. Immediate (`settle_after_polls == 0`) writes
+    /// the value now; otherwise it becomes visible after that many
+    /// `GetDevicePropValue` polls of `code` (see [`resolve_pending`]). Re-arming
+    /// replaces any in-flight transition for the same prop.
+    ///
+    /// [`resolve_pending`]: CameraState::resolve_pending
+    pub fn arm_effect(&mut self, code: u16, value: PropValue, settle_after_polls: u32) {
+        if settle_after_polls == 0 {
+            self.props.insert(code, value);
+            self.pending.remove(&code);
+        } else {
+            self.pending.insert(
+                code,
+                PendingTransition {
+                    value,
+                    remaining: settle_after_polls,
+                },
+            );
+        }
+    }
+
+    /// Advance any pending transition for `code` by one poll; commit the new
+    /// value when its countdown reaches zero. No-op when nothing is pending.
+    pub fn resolve_pending(&mut self, code: u16) {
+        if let Some(p) = self.pending.get_mut(&code) {
+            p.remaining = p.remaining.saturating_sub(1);
+            if p.remaining == 0 {
+                let value = p.value.clone();
+                self.props.insert(code, value);
+                self.pending.remove(&code);
+            }
         }
     }
 
