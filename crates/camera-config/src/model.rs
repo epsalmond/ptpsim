@@ -492,6 +492,40 @@ pub struct Step {
     /// Bounded repeat count (default 1).
     #[serde(default = "one")]
     pub repeat: u32,
+    /// Poll `source` until `until` holds over observed property values, running
+    /// `on_each` each unsatisfied iteration — the PTP-IP await/poll-until verb
+    /// (#29 postview, #42 AF). Mirrors the BLE `bleAwaitUntil` contract (§11.15):
+    /// a condition-wait, NOT a bounded loop (that's `repeat`) and NOT a for-each
+    /// over a collection (a distinct future construct). See [`AwaitUntil`].
+    #[serde(default)]
+    pub await_until: Option<AwaitUntil>,
+}
+
+/// The PTP-IP await/poll-until step body (§11.15 contract, mirrored from the BLE
+/// grammar). Unlike BLE — whose source is `read | notify` over byte windows — the
+/// PTP-IP source is always a property poll: a `GetDevicePropValue(source)` IS the
+/// capture (the typed value lands in the observed [`crate::predicate::PropView`]
+/// keyed by prop code). `until` reuses the existing PTP [`Predicate`] over that
+/// view; `mask` handles `0xd212`-style composite sub-fields. The AF box color is
+/// driven by this poll, not the `0xc005` event (PTP_PROPERTIES_REFERENCE.md §5.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AwaitUntil {
+    /// Property polled each iteration (`GetDevicePropValue`).
+    pub source: HexCode,
+    /// Satisfied when this predicate over observed values holds.
+    pub until: Predicate,
+    /// Steps run each iteration when `until` is NOT yet satisfied, before the
+    /// next poll. Empty = a pure poll.
+    #[serde(default)]
+    pub on_each: Vec<Step>,
+    /// Dispatcher wall-clock budget; the step fails (tolerant-aware) if `until`
+    /// isn't met before it elapses. The reference executor models this as a
+    /// deterministic iteration cap (the §11.15 analogue).
+    pub timeout_ms: u32,
+    /// Poll cadence (the dispatcher sleeps between polls). 0 = dispatcher default.
+    #[serde(default)]
+    pub interval_ms: u32,
 }
 
 /// Marker for the `reopen_session` action (empty body in YAML).
@@ -522,6 +556,7 @@ impl Step {
             self.read_echo.is_some(),
             self.send_op.is_some(),
             self.reopen_session.is_some(),
+            self.await_until.is_some(),
         ]
         .into_iter()
         .filter(|b| *b)
@@ -756,6 +791,47 @@ connections:
                 runtime: "openCaptureTxId".into()
             }]
         );
+        assert!(steps.iter().all(Step::is_well_formed));
+    }
+
+    #[test]
+    fn await_until_step_parses() {
+        // The #42 AF poll: tap-to-AF then poll S1_LOCK_COLOR until locked.
+        let yaml = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    entries:
+      - to: Shooting/Stills
+        steps:
+          - { sendOp: "0x9026", params: [0x09060403] }
+          - awaitUntil:
+              source: "0xd209"
+              until: { prop: "0xd209", eq: 1 }
+              timeoutMs: 5000
+              intervalMs: 250
+              onEach:
+                - { getProp: "0xd212", tolerant: true }
+"#;
+        let m = CameraManifest::from_yaml(yaml).unwrap();
+        let steps = &m.connections["app"].entries[0].steps;
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].send_op.as_deref(), Some("0x9026"));
+        let aw = steps[1].await_until.as_ref().expect("awaitUntil parsed");
+        assert_eq!(aw.source, "0xd209");
+        assert_eq!(aw.timeout_ms, 5000);
+        assert_eq!(aw.interval_ms, 250);
+        assert_eq!(aw.on_each.len(), 1);
+        assert_eq!(aw.on_each[0].get_prop.as_deref(), Some("0xd212"));
+        // `until` is the PTP predicate over observed values.
+        assert!(aw
+            .until
+            .eval(&crate::predicate::PropView::new().with(0xd209, 1)));
+        assert!(!aw
+            .until
+            .eval(&crate::predicate::PropView::new().with(0xd209, 0)));
+        // Exactly-one-action holds for the awaitUntil step too.
         assert!(steps.iter().all(Step::is_well_formed));
     }
 
