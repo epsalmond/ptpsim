@@ -175,6 +175,100 @@ pub enum EntryParam {
     Runtime { slot: String },
 }
 
+/// The PTP condition vocabulary (`cc::Predicate`) mirrored for the app: a
+/// closed tree of property-value comparisons used by `awaitUntil`'s `until`.
+/// Distinct from the BLE-recognition `Predicate` (a string-scope compare in
+/// `mfg_index`). A FULL mirror is required — a partial one would silently drop
+/// `all`/`any`/`not` conditions (the exact hand-mirror hazard this surface
+/// guards against). Evaluate it with [`await_until_satisfied`] so Swift never
+/// re-implements masking/connective logic.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum FfiPredicate {
+    /// All children hold (conjunction).
+    All { all: Vec<FfiPredicate> },
+    /// Any child holds (disjunction).
+    Any { any: Vec<FfiPredicate> },
+    /// Negation. One-element by construction — `not(all(children))` preserves
+    /// `cc::Predicate::Not`'s single-operand semantics through uniffi's
+    /// `Vec`-based recursion (uniffi has no bare boxed-enum field).
+    Not { not: Vec<FfiPredicate> },
+    /// Compare one (optionally masked) property value.
+    Leaf {
+        prop: u16,
+        mask: Option<i64>,
+        eq: Option<i64>,
+        ne: Option<i64>,
+        lt: Option<i64>,
+        gt: Option<i64>,
+    },
+}
+
+impl From<&cc::Predicate> for FfiPredicate {
+    fn from(p: &cc::Predicate) -> Self {
+        match p {
+            cc::Predicate::All { all } => FfiPredicate::All {
+                all: all.iter().map(FfiPredicate::from).collect(),
+            },
+            cc::Predicate::Any { any } => FfiPredicate::Any {
+                any: any.iter().map(FfiPredicate::from).collect(),
+            },
+            cc::Predicate::Not { not } => FfiPredicate::Not {
+                not: vec![FfiPredicate::from(not.as_ref())],
+            },
+            cc::Predicate::Leaf(l) => FfiPredicate::Leaf {
+                prop: parse_hex_code(&l.prop).unwrap_or(0),
+                mask: l.mask,
+                eq: l.eq,
+                ne: l.ne,
+                lt: l.lt,
+                gt: l.gt,
+            },
+        }
+    }
+}
+
+impl From<&FfiPredicate> for cc::Predicate {
+    fn from(p: &FfiPredicate) -> Self {
+        match p {
+            FfiPredicate::All { all } => cc::Predicate::All {
+                all: all.iter().map(cc::Predicate::from).collect(),
+            },
+            FfiPredicate::Any { any } => cc::Predicate::Any {
+                any: any.iter().map(cc::Predicate::from).collect(),
+            },
+            FfiPredicate::Not { not } => cc::Predicate::Not {
+                not: Box::new(cc::Predicate::All {
+                    all: not.iter().map(cc::Predicate::from).collect(),
+                }),
+            },
+            FfiPredicate::Leaf {
+                prop,
+                mask,
+                eq,
+                ne,
+                lt,
+                gt,
+            } => cc::Predicate::Leaf(cc::Leaf {
+                prop: format!("0x{prop:04x}"),
+                mask: *mask,
+                eq: *eq,
+                ne: *ne,
+                lt: *lt,
+                gt: *gt,
+            }),
+        }
+    }
+}
+
+/// Evaluate an `awaitUntil` `until` predicate against observed property values
+/// — the dispatcher calls this each poll instead of re-implementing the PTP
+/// predicate logic in Swift. Reuses the canonical `cc::Predicate::eval`.
+#[uniffi::export]
+pub fn await_until_satisfied(until: FfiPredicate, observed: Vec<PropObservation>) -> bool {
+    let pred: cc::Predicate = (&until).into();
+    pred.eval(&prop_view(&observed))
+}
+
 /// One wire action in a mode-entry sequence (closed vocabulary, no branches).
 /// `tolerant` = a non-OK PTP response is acceptable (log + continue; transport
 /// failure still aborts). `params` carry `send_op` arguments.
@@ -206,6 +300,20 @@ pub enum EntryStep {
     /// the verb carries no parameters. Wire-confirmed for the reference app
     /// `app` → image-transfer (Take→Get) flow per MODE_CHANGES.md §5.
     ReopenSession {
+        tolerant: bool,
+    },
+    /// Poll `source_prop` (`GetDevicePropValue`) until `until` holds over the
+    /// observed values, running `on_each` each unsatisfied iteration — the
+    /// PTP-IP await/poll-until verb (#29 postview, #42 AF), mirroring the BLE
+    /// `bleAwaitUntil` contract (§11.15). The dispatcher owns the loop +
+    /// `timeout_ms`/`interval_ms`; evaluate `until` each poll with
+    /// [`await_until_satisfied`].
+    AwaitUntil {
+        source_prop: u16,
+        until: FfiPredicate,
+        on_each: Vec<EntryStep>,
+        timeout_ms: u32,
+        interval_ms: u32,
         tolerant: bool,
     },
 }
@@ -789,6 +897,16 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
     if s.reopen_session.is_some() {
         return Some(EntryStep::ReopenSession { tolerant });
     }
+    if let Some(aw) = &s.await_until {
+        return Some(EntryStep::AwaitUntil {
+            source_prop: parse_hex_code(&aw.source)?,
+            until: (&aw.until).into(),
+            on_each: aw.on_each.iter().filter_map(map_step).collect(),
+            timeout_ms: aw.timeout_ms,
+            interval_ms: aw.interval_ms,
+            tolerant,
+        });
+    }
     None
 }
 
@@ -875,4 +993,94 @@ fn yaml_path<'a>(
         cur = cur.get(*key)?;
     }
     Some(cur)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(prop: &str, eq: i64) -> cc::Predicate {
+        cc::Predicate::Leaf(cc::Leaf {
+            prop: prop.into(),
+            mask: None,
+            eq: Some(eq),
+            ne: None,
+            lt: None,
+            gt: None,
+        })
+    }
+
+    /// The hand-mirror seam: an `awaitUntil` step (with a nested `onEach` and a
+    /// multi-leaf `all` predicate) must map to `EntryStep::AwaitUntil` and NOT
+    /// be silently dropped by `map_step`'s `filter_map`.
+    #[test]
+    fn await_until_step_maps_and_is_not_dropped() {
+        let step = cc::Step {
+            await_until: Some(cc::AwaitUntil {
+                source: "0xd209".into(),
+                until: cc::Predicate::All {
+                    all: vec![leaf("0xd209", 1), leaf("0xd17c", 0)],
+                },
+                on_each: vec![cc::Step {
+                    get_prop: Some("0xd212".into()),
+                    tolerant: true,
+                    ..Default::default()
+                }],
+                timeout_ms: 5000,
+                interval_ms: 250,
+            }),
+            ..Default::default()
+        };
+        let mapped = map_step(&step).expect("awaitUntil must not be dropped");
+        match mapped {
+            EntryStep::AwaitUntil {
+                source_prop,
+                until,
+                on_each,
+                timeout_ms,
+                interval_ms,
+                tolerant,
+            } => {
+                assert_eq!(source_prop, 0xd209);
+                assert_eq!(timeout_ms, 5000);
+                assert_eq!(interval_ms, 250);
+                assert!(!tolerant);
+                // Nested onEach mapped recursively.
+                assert_eq!(on_each.len(), 1);
+                assert!(matches!(
+                    on_each[0],
+                    EntryStep::GetProp { prop: 0xd212, .. }
+                ));
+                // The multi-leaf `all` predicate survived (not flattened to one).
+                match until {
+                    FfiPredicate::All { all } => assert_eq!(all.len(), 2),
+                    other => panic!("expected All predicate, got {other:?}"),
+                }
+            }
+            other => panic!("expected AwaitUntil, got {other:?}"),
+        }
+    }
+
+    /// `await_until_satisfied` evaluates the mirrored predicate via the canonical
+    /// engine logic (no Swift-side re-implementation).
+    #[test]
+    fn await_until_satisfied_evaluates_via_engine() {
+        let until = FfiPredicate::from(&cc::Predicate::All {
+            all: vec![leaf("0xd209", 1)],
+        });
+        assert!(await_until_satisfied(
+            until.clone(),
+            vec![PropObservation {
+                code: 0xd209,
+                value: 1
+            }]
+        ));
+        assert!(!await_until_satisfied(
+            until,
+            vec![PropObservation {
+                code: 0xd209,
+                value: 0
+            }]
+        ));
+    }
 }
