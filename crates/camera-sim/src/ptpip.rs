@@ -442,6 +442,52 @@ properties:
         assert_eq!(out.observed.get(0xdf01), Some(0));
     }
 
+    /// #42 keystone round-trip: tap-to-AF (`0x9026`) then poll `0xd209`
+    /// `S1_LOCK_COLOR` until it flips to locked (1). The camera-side flip is
+    /// modeled as an op-effect with a 2-poll settle delay, so the poll-until
+    /// loop genuinely iterates before satisfying — proving executor +
+    /// op-effects-in-data + awaitUntil round-trip sim-side end to end.
+    #[test]
+    fn af_lock_round_trips_via_op_effect_and_poll_until() {
+        const AF_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    effects:
+      - { setProp: "0xd209", value: 1, settleAfterPolls: 2 }
+properties:
+  "0xd209": { name: s1LockColor, type: u16, access: readOnly }
+"#;
+        let mut e = engine(AF_MANIFEST);
+        let steps = vec![
+            // Tap-to-AF: encoded AF-area param (asp_w, asp_h, col, row).
+            Step {
+                send_op: Some("0x9026".into()),
+                params: vec![StepParam::Literal(0x0906_0403)],
+                ..Default::default()
+            },
+            // Poll S1_LOCK_COLOR until the box turns green (locked).
+            Step {
+                await_until: Some(AwaitUntil {
+                    source: "0xd209".into(),
+                    until: leaf_eq("0xd209", 1),
+                    on_each: vec![],
+                    timeout_ms: 5000,
+                    interval_ms: 250,
+                }),
+                ..Default::default()
+            },
+        ];
+        let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("AF flow round-trips");
+        // The loop iterated (settle delay) then satisfied on the 2nd poll.
+        assert_eq!(out.await_iterations, vec![2]);
+        assert!(out.await_iterations[0] > 1, "poll-until loop exercised");
+        // The dispatcher observed the locked color.
+        assert_eq!(out.observed.get(0xd209), Some(1));
+    }
+
     #[test]
     fn await_until_times_out_when_never_satisfied() {
         // Nothing flips 0xdf01 off its default; `until eq 1` can never hold.
