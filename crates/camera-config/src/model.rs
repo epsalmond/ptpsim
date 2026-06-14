@@ -60,6 +60,10 @@ pub struct CameraManifest {
 pub struct CameraIdentity {
     pub manufacturer: String,
     pub model: String,
+    /// Canonical human form, e.g. `"2.30"` (matches PTP `GetDeviceInfo`). NB: the
+    /// BLE GATT advert reports the zero-padded `"02.30"` for the same camera — a
+    /// camera-reported firmware must be normalized via [`crate::version`], never
+    /// raw-compared against this field.
     #[serde(default)]
     pub firmware: String,
     #[serde(default)]

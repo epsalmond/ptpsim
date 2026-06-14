@@ -11,6 +11,14 @@
 //! **Fail-soft is the whole point:** an unparseable version never panics and is
 //! never dropped — [`compare`] returns `None` and callers fall back to exact
 //! string match. Exact match is the common path and needs no parsing at all.
+//!
+//! **Wire-form caveat (GFX100 II, verified 2026-06):** the same camera reports its
+//! firmware differently per transport — BLE GATT advertises `"02.30"`, PTP
+//! `GetDeviceInfo.DeviceVersion` returns `"2.30"`. The dotted-int comparator
+//! normalizes both to `[2, 30]`, so range queries are safe — but a *camera-reported*
+//! firmware must be compared through this module (or otherwise normalized), never by
+//! a raw `==` against a manifest string, or the BLE form would miss. Manifest
+//! identity is canonically the human form (`"2.30"`).
 
 use std::cmp::Ordering;
 
