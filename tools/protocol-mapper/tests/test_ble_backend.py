@@ -234,6 +234,11 @@ def test_fuji_manufacturer_identity_decodes_legacy_and_red() -> None:
         "kind": "legacy_pairing_key",
         "payload_hex": "28720a00",
     }
+    assert fuji_manufacturer_identity({uuids.FUJIFILM_COMPANY_ID: bytes.fromhex("02f631328001")}) == {
+        "kind": "legacy_pairing_key",
+        "payload_hex": "f6313280",
+        "extra_hex": "01",
+    }
     assert fuji_manufacturer_identity({uuids.FUJIFILM_COMPANY_ID: b"\x010C3E9"}) == {
         "kind": "red_short_serial",
         "payload_hex": "3043334539",
