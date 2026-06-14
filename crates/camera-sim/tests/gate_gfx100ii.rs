@@ -3,10 +3,11 @@
 //! "chords" — and enumerates believably. Engine-level (the service smoke test covers
 //! the TCP path). This is the vcam-replacement believability gate.
 
-use camera_config::CameraManifest;
+use camera_config::{AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam};
 use camera_media_store::MediaStore;
-use camera_sim::{Engine, Reply};
+use camera_sim::{walk_ptpip, Engine, Reply};
 use ptp_core::{DeviceInfo, OperationRequest, Reader};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 fn consolidated() -> CameraManifest {
@@ -133,4 +134,38 @@ fn gate4_live_view_choreography_runs_from_the_manifest() {
     }
     // InitiateOpenCapture only succeeds once in the live-view phase → streaming.
     assert_ok(&e.on_operation(&req(0x101c, 10, vec![]), None));
+}
+
+#[test]
+fn af_lock_round_trips_from_the_consolidated_manifest() {
+    let mut e = engine();
+    let steps = vec![
+        Step {
+            send_op: Some("0x9026".into()),
+            params: vec![StepParam::Literal(0x0906_0403)],
+            ..Default::default()
+        },
+        Step {
+            await_until: Some(AwaitUntil {
+                source: "0xd209".into(),
+                until: Predicate::Leaf(Leaf {
+                    prop: "0xd209".into(),
+                    mask: None,
+                    eq: Some(1),
+                    ne: None,
+                    lt: None,
+                    gt: None,
+                }),
+                on_each: vec![],
+                timeout_ms: 5000,
+                interval_ms: 250,
+            }),
+            ..Default::default()
+        },
+    ];
+
+    let out = walk_ptpip(&mut e, &steps, &BTreeMap::new())
+        .expect("AF lock flow should round-trip via real gfx100ii manifest");
+    assert_eq!(out.await_iterations, vec![2]);
+    assert_eq!(out.observed.get(0xd209), Some(1));
 }
