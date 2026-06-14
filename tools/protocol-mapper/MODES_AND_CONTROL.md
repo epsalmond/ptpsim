@@ -1,7 +1,7 @@
 # GFX100 II — Control priority, shooting/function modes, and mode transitions
 
 Companion to `2026-05-23-big3-control-reference.md` and `2026-05-23-property-catalog.md`.
-Body GFX100 II fw 02.30. Sources: SDK13410 ProgrammingReference §1.7–1.8 + headers,
+Body GFX100 II fw 2.30. Sources: SDK13410 ProgrammingReference §1.7–1.8 + headers,
 reference app RE (`APP_LIVEVIEW_CODE_MAP`, `PTP_PROPERTIES_REFERENCE`), and live wire captures
 (`app_real_run_fw0230_wirelevel_v6`). `[live]` = confirmed on our body.
 

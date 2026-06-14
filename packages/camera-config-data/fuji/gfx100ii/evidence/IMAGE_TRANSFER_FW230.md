@@ -1,4 +1,4 @@
-# Image transfer (download) wire protocol — reference app 2.7.3 vs fw 02.30, GFX100 II
+# Image transfer (download) wire protocol — reference app 2.7.3 vs fw 2.30, GFX100 II
 
 **Date:** 2026-05-19
 **Capture:** v6 second session 11:53:40–11:54:38 (image-import flow within the v6 run dir)
@@ -32,7 +32,7 @@ In v6 we captured:
 The original "Open questions" below (how reference app learns the handle range; whether
 `0x9054` is required) are now **resolved** by re-parsing the v6 outbound opcode
 stream and cross-checking against on-device behavior (client application on a real GFX100 II
-fw02.30 over the camera AP). **Image import requires a FRESH session — not an in-session function-mode switch.**
+fw2.30 over the camera AP). **Image import requires a FRESH session — not an in-session function-mode switch.**
 The capture shows that immediately before the image-import `OpenSession`, reference app does
 `TerminateOpenCapture` → `CloseSession` → a new `InitCommandRequest` (tid resets to 1)
 → `OpenSession`. Trying to switch a live-view session into mode 20 in place makes the
@@ -130,7 +130,7 @@ advisory feature-version/filter negotiators. Some responders/bodies don't implem
 resets if the client then aborts). The client sends these best-effort: a property
 rejection (operationRejected, response code) is logged and skipped — the response packet
 is consumed so transactions stay in sync — and only a transport failure aborts. The real
-GFX100 II fw02.30 accepts `0xDF28`; vcam does not. Verified in the simulator-vs-vcam dev
+GFX100 II fw2.30 accepts `0xDF28`; vcam does not. Verified in the simulator-vs-vcam dev
 harness (FUJI_KAGE_DEV_CAMERA_DIRECT_HOST).
 
 **SetDevicePropValue value widths (from the capture's data-phase bytes):**
@@ -142,7 +142,7 @@ InCameraViewIng AP session.
 
 **`0x9054`/`0x9055`/`0x9050`/`0x9053` ARE required on the real camera before `0xD620`.**
 (Earlier notes here said to skip them — that was wrong, based on vcam not needing them.)
-On a real GFX100 II fw02.30 cold InCameraViewIng session, `GetDevicePropValue(0xD620)`
+On a real GFX100 II fw2.30 cold InCameraViewIng session, `GetDevicePropValue(0xD620)`
 **times out with no response** unless this vendor block runs first, in this order:
 `0x9054(0x10000001)` (current-object metadata) → `0x9055(0x10000001)` (current-object
 thumbnail) → `0x9050()` (folder/begin enumeration) → `0x9053(0, 0x7530)` (page params).
@@ -161,7 +161,7 @@ vcam also names the props the capture docs left "Unknown": `0xDF00` = CameraStat
 
 **Critical corrections to earlier guesses:**
 
-- reference app **never** sends `GetObjectHandles (0x1007)`. On fw02.30 the camera **rejects
+- reference app **never** sends `GetObjectHandles (0x1007)`. On fw2.30 the camera **rejects
   `0x1007` with `0x2005 Operation_Not_Supported`** (verified on device). Use
   `0xD620`/`0xD621` to get the count and handle list.
 - `0x9054` is **required** but must be sent **in this exact sequence** — preceded by
@@ -316,7 +316,7 @@ metadata channel ACTUALLY carries in practice (vs. what the struct
 populate.
 
 **`ModificationDate` is ALWAYS EMPTY** (zero-length u16le string) across
-all 81 responses. Fuji firmware fw 02.30 does not populate this field
+all 81 responses. Fuji firmware fw 2.30 does not populate this field
 even when stat'd files on the SD card would have a mtime. iOS/Android
 clients should NOT rely on ModificationDate — only CaptureDate.
 

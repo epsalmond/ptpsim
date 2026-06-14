@@ -30,7 +30,7 @@ evidence:
     date: 2026-06-04
   docImageTransfer:
     kind: doc
-    path: evidence/IMAGE_TRANSFER_FW0230.md
+    path: evidence/IMAGE_TRANSFER_FW230.md
     date: ''
   docLiveControls:
     kind: doc

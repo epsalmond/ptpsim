@@ -1,6 +1,6 @@
 # Fuji PTP-IP reference for client application iOS
 
-**Status:** downstream consolidated reference for everything PTP-related decoded against reference app 2.7.3 + GFX100 II fw 02.30.
+**Status:** downstream consolidated reference for everything PTP-related decoded against reference app 2.7.3 + GFX100 II fw 2.30.
 **Scope:** What it is and how to use it. Forensics (how it was derived, capture-by-capture
 evidence) lives upstream in `operators/fuji/mobile/docs/` (see §"Where the forensics live").
 **Last updated:** 2026-05-23
@@ -95,10 +95,10 @@ Different from the compressed PTP-IP framing — JPEG frames have their own simp
 
 ```
 offset 0x00  uint32 LE   total_length    (inclusive of these 4 bytes)
-offset 0x04  uint32 LE   reserved        (always 0 in fw 02.30)
+offset 0x04  uint32 LE   reserved        (always 0 in fw 2.30)
 offset 0x08  uint32 LE   frame_counter   (monotonic per through-picture session, resets to 0 on reopen)
 offset 0x0c  uint32 LE   jpeg_offset_adjust  (reference app READS this; JPEG starts at byte 0x12 + value)
-offset 0x10  uint16 LE   reserved        (always 0 in fw 02.30)
+offset 0x10  uint16 LE   reserved        (always 0 in fw 2.30)
 offset 0x12+ JPEG body                   (starts FF D8 FF C4, ends FF D9; no JFIF/EXIF wrapper)
 ```
 
@@ -107,7 +107,7 @@ JFIF or EXIF APP blocks). Apple `ImageIO` / `UIImage(data:)`, libjpeg-turbo, and
 `BitmapFactory` all accept this. Strict decoders that require JFIF may not.
 
 **Skip distance:** **do not hardcode skip=14 bytes.** Read the uint32 LE at full-frame
-offset `0x0c` and skip `(value + 14)` bytes. On fw 02.30 that value is always 0 so effective
+offset `0x0c` and skip `(value + 14)` bytes. On fw 2.30 that value is always 0 so effective
 skip is 14, but the field exists for newer firmware to insert per-frame metadata between
 byte 18 and the JPEG SOI.
 
@@ -115,7 +115,7 @@ byte 18 and the JPEG SOI.
 intermediate frames.
 
 **Natural stream gaps:** the camera pauses the stream for **~1.2 seconds every ~13 seconds**
-on fw 02.30 over Wi-Fi. Not events, not errors. Your receive code must tolerate at least
+on fw 2.30 over Wi-Fi. Not events, not errors. Your receive code must tolerate at least
 1.5 s of inactivity (use ≥ 3 s for safety) without canceling the connection.
 
 ### 1.4 Response codes you'll see
@@ -355,7 +355,7 @@ Response shape (130 bytes):
    then 19 × 6-byte TLV entries: <uint16 propcode> <uint32 LE value>
 ```
 
-The 19 entries are always the same set on fw 02.30:
+The 19 entries are always the same set on fw 2.30:
 
 ```
 Standard PTP (6 entries):
@@ -384,12 +384,12 @@ Fuji vendor (13 entries):
 
 **Why polling instead of subscriptions?** `SDK_SetCameraEvent` exists but reference app does NOT use
 it for live-view properties. The camera does not push `DevicePropChanged (0x4006)` events
-for the `0xD2xx` range on fw 02.30 — none observed in any of v6/v7/v8/v9 captures. **Polling
+for the `0xD2xx` range on fw 2.30 — none observed in any of v6/v7/v8/v9 captures. **Polling
 is the only way** to get current property values.
 
 **Polling rate guidance for iOS:** reference app polls at 3.6 Hz. iOS can poll at 1 Hz with negligible
 user-visible lag for most overlay state, or off if not displaying live camera state. Do not
-try to replace with event subscriptions on fw 02.30.
+try to replace with event subscriptions on fw 2.30.
 
 ### 3.5 Function-mode pseudo-properties (`0xDF00–0xDF31`)
 
@@ -544,13 +544,13 @@ opens may or may not take effect on the next frame — untested.
 
 #### `0xD1BC Fpcsh_LiveViewMode` — command-path selector (write-only)
 
-2-value enum (UINT16). **Write-only on fw 02.30** — `/get` returns response code `cpr=8194`
+2-value enum (UINT16). **Write-only on fw 2.30** — `/get` returns response code `cpr=8194`
 (`Operation_Not_Supported`) in all observed sweeps; `/set` is accepted.
 
 | Value | Meaning |
 |---|---|
 | `0x0001` | Legacy command path (旧コマンド) — older X-T3/X-T30 / X-H1 era frame-generation flow |
-| `0x0002` | New command path (新コマンド) — reference app 2.7.3 and XLV use this on GFX100 II fw 02.30 |
+| `0x0002` | New command path (新コマンド) — reference app 2.7.3 and XLV use this on GFX100 II fw 2.30 |
 
 - XLV's runtime default: `live_view_mode: 0x0002` (new command).
 - Set with `SetDevicePropValue(0xD1BC, 0x0002)` before opening port 55742. Don't bother
@@ -625,7 +625,7 @@ See §1.3 for the 14-byte stream header + JPEG body layout. Key facts:
 - **Bandwidth:** ~810 KB/s sustained = ~6.5 Mbit/s (about half a 2.4 GHz link)
 - **Natural gaps:** ~1.2 s pause every ~13 s; not events; tolerate ≥ 3 s receive inactivity
 - **Frame counter at offset 0x08 is NOT consumed by reference app** — diagnostic only; safe to ignore
-- **Field at offset 0x0c IS consumed** as a JPEG-body-offset adjust; always 0 on fw 02.30
+- **Field at offset 0x0c IS consumed** as a JPEG-body-offset adjust; always 0 on fw 2.30
   but reserved for future per-frame metadata insertion
 
 iOS receive sketch:
@@ -682,7 +682,7 @@ offset 0x14  uint32 LE  param4
 Everything else (standard PTP `0x4003` ObjectRemoved, `0x4006` DevicePropChanged, `0x4007`
 ObjectInfoChanged, `0x400A` StoreFull, `0x400B` DeviceReset, `0x400C` StorageInfoChanged,
 `0x400E` UnreportedStatus, etc.) is logged in reference app but **not dispatched to handlers** — fw
-02.30 simply doesn't emit them.
+2.30 simply doesn't emit them.
 
 **Important:** `0xC005 AFCAPTUER` fires only in response to **phone-initiated** AF (your
 `0x9026 LockS1Lock`, see §5). Physical half-press of the camera body's shutter button does
@@ -890,7 +890,7 @@ End → next Open        : depends on user
 
 The reference app delays are UX/user choices, not camera requirements. Do not model a shutter press as
 Open → Capture → Terminate → Reopen. The v6 capture shows multiple `InitiateCapture` requests
-inside one open-capture session, and fw 02.30 resets replacement 55741/55742 sockets if client application
+inside one open-capture session, and fw 2.30 resets replacement 55741/55742 sockets if client application
 terminates/reopens them after each shutter.
 
 ### 6.4 Sibling step opcodes (no Take, just adjust)
@@ -1132,7 +1132,7 @@ If the TCP 55740 socket closes unexpectedly:
 3. Reconnect: TCP 55740 → InitCommandRequest → OpenSession → Function Mode handshake
 4. If user was in live view: re-enter (mode 22), re-open 55741 + 55742
 
-Don't try to "resume" — there is no resumption state in fw 02.30's PTP-IP.
+Don't try to "resume" — there is no resumption state in fw 2.30's PTP-IP.
 
 ---
 
@@ -1203,7 +1203,7 @@ unknowns. Capture plan exists in `MOVIE_RECORD_STATIC_KNOWLEDGE_2026-05-19.md`.
 
 ### 11.4 Camera-side activity that emits no wire signal
 
-These camera-body actions are SILENT on the wire (verified on fw 02.30 GFX100 II):
+These camera-body actions are SILENT on the wire (verified on fw 2.30 GFX100 II):
 
 - Physical half-press of the camera's shutter button
 - Physical full-press of the camera's shutter button (when not in remote-shooting mode)
@@ -1216,7 +1216,7 @@ there is no event subscription that delivers these.
 
 ### 11.5 Other bodies
 
-Everything in this doc is verified against **GFX100 II firmware 02.30**. Most reference app-supported
+Everything in this doc is verified against **GFX100 II firmware 2.30**. Most reference app-supported
 bodies should behave similarly (the propcode catalog is hardcoded in reference app and identical
 across cameras), but:
 

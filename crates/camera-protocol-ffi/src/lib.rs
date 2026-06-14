@@ -614,7 +614,7 @@ impl ConfigStore {
     /// `packages/camera-config-data/fuji/index.yaml` has no firmware-
     /// branching `if:` blocks, so there is no overlay to apply. The P2
     /// expansion (FilmSimulation enum growth across fw 2.50, the GFX100 II's
-    /// fw 02.30→02.40 transport flip already modeled in
+    /// fw 2.30→02.40 transport flip already modeled in
     /// `gfx100ii/fw2.40.yaml`) wires real overlay resolution here.
     pub fn refine_establishment(
         &self,

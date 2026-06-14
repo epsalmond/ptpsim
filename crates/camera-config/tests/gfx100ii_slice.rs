@@ -362,7 +362,7 @@ fn app_shutter_action_is_100e_plus_9022_with_postview_trigger() {
 
 #[test]
 fn app_transfer_actions_use_app_specific_wire_shape() {
-    // reference app differs from PCSS on the transfer path (IMAGE_TRANSFER_FW0230.md):
+    // reference app differs from PCSS on the transfer path (IMAGE_TRANSFER_FW230.md):
     // (1) enumeration reads 0xD620/0xD621 PROPERTIES (camera rejects 0x1007),
     // (2) getObject is CHUNKED via 0x101B with handle/offset/length params
     //     (not whole-object 0x1009 like PCSS).

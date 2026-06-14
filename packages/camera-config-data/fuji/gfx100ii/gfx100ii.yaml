@@ -19,7 +19,7 @@ evidence:
   iosStartupSeq:   { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-26" }
   iosLiveControls: { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-27" }
   docLiveControls: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
-  docImageTransfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW0230.md" }
+  docImageTransfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW230.md" }
   iosBLEReg:       { kind: ios-source, path: "client application/.../client applicationCore/FujiBLERegistration.swift", date: "2026-05-26" }
 
   # NOT wire-captured. These USB opcodes are leads pending a golden capture.
@@ -86,7 +86,7 @@ connections:
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
           - { sendOp: "0x101c" }                 # InitiateOpenCapture
       - to: image-transfer            # cold entry to image-import (no live-view active)
-        # Ground truth: FujiCameraAPISession.enterImageImportModeUnlocked + IMAGE_TRANSFER_FW0230.
+        # Ground truth: FujiCameraAPISession.enterImageImportModeUnlocked + IMAGE_TRANSFER_FW230.
         steps:
           - { getProp: "0xd212", tolerant: true }            # live-status preamble (best-effort)
           - { setProp: "0xdf01", value: 0x14 }               # functionMode = 20 (image-import)
@@ -144,10 +144,10 @@ connections:
         triggers:
           - postviewEvent: {}
         evidence: [wireAppReopen, iosLiveControls, docLiveControls]
-      # reference app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW0230.md
+      # reference app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW230.md
       # §"Confirmed enumeration": reference app **never** calls 0x1007
       # GetObjectHandles — camera rejects with 0x2005 Operation_Not_Supported
-      # on fw02.30. Instead it reads count + handle list as PTP properties
+      # on fw2.30. Instead it reads count + handle list as PTP properties
       # AFTER the mode-entry vendor-prime block (0x9054/55/50/53) in the
       # `to: image-transfer` entry has run. 0xD620 returns u32 count;
       # 0xD621 returns a count-prefixed u32[] handle list, **descending /
@@ -163,7 +163,7 @@ connections:
       # surface (reference app goes through the image-transfer mode-entry first).
       # UI MUST publish the handle list immediately and fetch GetObjectInfo
       # lazily per selected object — per the on-device note 2026-05-22 in
-      # IMAGE_TRANSFER_FW0230.md, an eager full GetObjectInfo sweep got the
+      # IMAGE_TRANSFER_FW230.md, an eager full GetObjectInfo sweep got the
       # command socket closed mid-stream on a real GFX100 II.
       getObjectInfo:
         mode: image-transfer
@@ -180,7 +180,7 @@ connections:
       # Chunked download. **Different params from PCSS's whole-object 0x1009.**
       # reference app uses 0x101B GetPartialObject in 12 MB chunks (v6: 1× small-file
       # single-chunk + 30× chunked for a 356 MB file, per
-      # IMAGE_TRANSFER_FW0230.md TL;DR). The chunk loop lives in the client:
+      # IMAGE_TRANSFER_FW230.md TL;DR). The chunk loop lives in the client:
       # iterate offset += length until GetObjectInfo's ObjectCompressedSize
       # is reached. Same verb name as PCSS's whole-object getObject; the
       # differing params[] declares the per-connection control-flow

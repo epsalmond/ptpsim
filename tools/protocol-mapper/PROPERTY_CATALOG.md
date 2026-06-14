@@ -4,7 +4,7 @@ Single source of truth for our remote-control app: for every controllable or
 readable camera property, the wire DPC, name, datatype, R/W, **how it is set**,
 value encoding, and the source(s) it came from.
 
-**Body / firmware**: GFX100 II, fw 02.30 (live-confirmed facts marked **[live]**).
+**Body / firmware**: GFX100 II, fw 2.30 (live-confirmed facts marked **[live]**).
 **Date**: 2026-05-23.
 **Companion data**: `2026-05-23-property-sweep-live.tsv` — a live read-sweep of all 159 DPCs
 (every one returns a value over the wire; only 6 — `0x5007`, `0x500A`, `0x500E`, `0x5010`,
