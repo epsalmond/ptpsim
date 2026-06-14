@@ -26,7 +26,7 @@ families:
       gatt:
         # Standard BLE GATT — read triggers the iOS bond prompt.
         protectedSerialString: "00002A25-0000-1000-8000-00805F9B34FB"
-        # Standard BLE GATT — post-pair firmware version (e.g. "02.30").
+        # Standard BLE GATT — post-pair firmware version (e.g. "2.30").
         firmwareRevisionString: "00002A26-0000-1000-8000-00805F9B34FB"
         # CHARACTERISTIC_FF_PAIRING_KEY — same UUID, both styles,
         # different payload bytes (4-byte LE on LEGACY, 5-byte ASCII on RED).

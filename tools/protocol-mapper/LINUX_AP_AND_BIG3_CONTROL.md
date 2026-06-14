@@ -1,7 +1,7 @@
 # Linux: BLE → Wi-Fi AP → PTP-IP, and Big-3 (shutter / aperture / ISO) control
 
 Canonical Linux-host recipe for driving a Fujifilm GFX100 II (verified on a GFX100 II body,
-fw **02.30**) from BLE pairing through Wi-Fi AP launch to PTP-IP camera control,
+fw **2.30**) from BLE pairing through Wi-Fi AP launch to PTP-IP camera control,
 plus the exact commands for the "Big 3" exposure settings.
 
 The macOS-first paths (`scripts/connect_camera_ap_wifi.sh`, Continuity Camera) do

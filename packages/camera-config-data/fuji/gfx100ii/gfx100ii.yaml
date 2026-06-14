@@ -147,7 +147,7 @@ connections:
       # reference app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW0230.md
       # §"Confirmed enumeration": reference app **never** calls 0x1007
       # GetObjectHandles — camera rejects with 0x2005 Operation_Not_Supported
-      # on fw02.30. Instead it reads count + handle list as PTP properties
+      # on fw2.30. Instead it reads count + handle list as PTP properties
       # AFTER the mode-entry vendor-prime block (0x9054/55/50/53) in the
       # `to: image-transfer` entry has run. 0xD620 returns u32 count;
       # 0xD621 returns a count-prefixed u32[] handle list, **descending /

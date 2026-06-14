@@ -1,6 +1,6 @@
 //! End-to-end exercise of the manufacturer-index FFI surface (plan §3.2 +
 //! §3.3 + §11): load → recognize → establishment → refine_establishment.
-//! Synthetic adverts mirror the GFX100 II / fw 02.30 observations from
+//! Synthetic adverts mirror the GFX100 II / fw 2.30 observations from
 
 
 use camera_protocol_ffi::*;
@@ -63,7 +63,7 @@ fn loader_requires_every_declared_model_body() {
 // recognize() — BLE advert classification
 // ---------------------------------------------------------------------------
 
-/// A synthetic LEGACY advert in the GFX100 II / fw 02.30 shape observed during
+/// A synthetic LEGACY advert in the GFX100 II / fw 2.30 shape observed during
 /// the 2026-05-16 test run. Mfg-data is `0x02 + 4-byte LE key`.
 fn synthetic_legacy_advert() -> Observation {
     ble_advert(
@@ -339,7 +339,7 @@ fn refine_establishment_returns_none_when_no_overlay_matches() {
     // MVP YAML has no firmware-branching `if:` blocks, so refine always
     // returns None ("graceful degrade: use body's default sequence").
     let s = store();
-    let tail = s.refine_establishment("gfx100ii:ble".into(), "02.30".into(), vec![], 2);
+    let tail = s.refine_establishment("gfx100ii:ble".into(), "2.30".into(), vec![], 2);
     assert!(tail.is_none());
 }
 
