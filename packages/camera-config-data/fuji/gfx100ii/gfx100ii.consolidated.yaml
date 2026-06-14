@@ -100,6 +100,7 @@ operations:
     - usb
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x1002':
@@ -114,6 +115,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosStartupSeq
   '0x1003':
@@ -128,6 +130,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosStartupSeq
   '0x1004':
@@ -149,6 +152,7 @@ operations:
     - usb
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x1005':
@@ -170,6 +174,7 @@ operations:
     - usb
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x1006':
@@ -191,6 +196,7 @@ operations:
     - usb
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x1007':
@@ -206,6 +212,7 @@ operations:
     connections:
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - wirePCSSShootDownload20260523
   '0x1008':
@@ -224,6 +231,7 @@ operations:
     - usb
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - docImageTransfer
     - staticRawStudio
@@ -243,6 +251,7 @@ operations:
     - usb
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - staticRawStudio
     - wirePCSSShootDownload20260523
@@ -260,6 +269,7 @@ operations:
     - app
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - docImageTransfer
     - wirePCSSShootDownload20260523
@@ -276,6 +286,7 @@ operations:
     connections:
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - wirePCSSShootDownload20260523
   '0x100c':
@@ -290,6 +301,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - staticRawStudio
   '0x100d':
@@ -304,6 +316,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - staticRawStudio
   '0x100e':
@@ -320,6 +333,7 @@ operations:
     - app
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -338,6 +352,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x1014':
@@ -353,6 +368,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosLiveControls
   '0x1015':
@@ -369,6 +385,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosStartupSeq
     - iosLiveControls
@@ -388,6 +405,7 @@ operations:
     - app
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - iosStartupSeq
     - iosLiveControls
@@ -410,6 +428,7 @@ operations:
     - usb
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x1018':
@@ -425,6 +444,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosStartupSeq
   '0x101b':
@@ -440,6 +460,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docImageTransfer
   '0x101c':
@@ -455,6 +476,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosStartupSeq
   '0x900c':
@@ -470,6 +492,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - staticRawStudio
   '0x900d':
@@ -485,6 +508,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - staticRawStudio
   '0x9018':
@@ -500,6 +524,7 @@ operations:
     connections:
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - wireTether
   '0x901d':
@@ -521,6 +546,7 @@ operations:
     - usb
     - wireless-tether
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x9020':
@@ -536,6 +562,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docFujiPtpPropReference
   '0x9021':
@@ -551,6 +578,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docFujiPtpPropReference
   '0x9022':
@@ -566,6 +594,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -582,6 +611,10 @@ operations:
     connections:
     - app
     requires: null
+    effects:
+    - setProp: '0xd209'
+      value: 1
+      settleAfterPolls: 2
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -598,6 +631,10 @@ operations:
     connections:
     - app
     requires: null
+    effects:
+    - setProp: '0xd209'
+      value: 0
+      settleAfterPolls: 0
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -614,6 +651,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosStartupSeq
   '0x902c':
@@ -629,6 +667,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -645,6 +684,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -661,6 +701,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -677,6 +718,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docFujiPtpPropReference
   '0x9050':
@@ -692,6 +734,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docImageTransfer
   '0x9051':
@@ -707,6 +750,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docFujiPtpPropReference
   '0x9052':
@@ -722,6 +766,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docFujiPtpPropReference
   '0x9053':
@@ -737,6 +782,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docImageTransfer
   '0x9054':
@@ -752,6 +798,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docImageTransfer
   '0x9055':
@@ -767,6 +814,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docImageTransfer
   '0x9060':
@@ -782,6 +830,7 @@ operations:
     connections:
     - app
     requires: null
+    effects: []
     evidence:
     - docFujiPtpPropReference
     - docImageTransfer
@@ -799,6 +848,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x9802':
@@ -815,6 +865,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x9803':
@@ -831,6 +882,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - activeProbe
   '0x9805':
@@ -847,6 +899,7 @@ operations:
     connections:
     - usb
     requires: null
+    effects: []
     evidence:
     - activeProbe
 properties:
@@ -935,7 +988,7 @@ properties:
     name: focusMode
     ptpName: FocusMode
     type: u16
-    access: readOnly
+    access: readWrite
     descriptor:
       form: enum
       values:
@@ -2943,7 +2996,7 @@ properties:
   '0xd209':
     name: s1LockColor
     ptpName: null
-    type: u32
+    type: u16
     access: readOnly
     descriptor:
       form: enum
@@ -5998,8 +6051,9 @@ connections:
         reopenSession: null
         value: 6
         params: []
-        tolerant: false
+        tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xdf01'
         getProp: null
         readEcho: null
@@ -6009,6 +6063,7 @@ connections:
         params: []
         tolerant: false
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: '0xdf2a'
@@ -6018,6 +6073,7 @@ connections:
         params: []
         tolerant: false
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6027,6 +6083,7 @@ connections:
         params: []
         tolerant: false
         repeat: 4
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6036,6 +6093,7 @@ connections:
         params: []
         tolerant: false
         repeat: 1
+        awaitUntil: null
       userInstruction: null
       requires: null
     - to: image-transfer
@@ -6050,6 +6108,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xdf01'
         getProp: null
         readEcho: null
@@ -6059,6 +6118,7 @@ connections:
         params: []
         tolerant: false
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: '0xdf28'
         readEcho: null
@@ -6068,6 +6128,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xdf28'
         getProp: null
         readEcho: null
@@ -6077,6 +6138,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xd226'
         getProp: null
         readEcho: null
@@ -6086,6 +6148,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xd227'
         getProp: null
         readEcho: null
@@ -6095,6 +6158,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: '0xd244'
         readEcho: null
@@ -6104,6 +6168,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6114,6 +6179,7 @@ connections:
         - 268435457
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6124,6 +6190,7 @@ connections:
         - 268435457
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6133,6 +6200,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6144,6 +6212,7 @@ connections:
         - 30000
         tolerant: true
         repeat: 1
+        awaitUntil: null
       userInstruction: null
       requires: null
     - to: image-transfer
@@ -6159,6 +6228,7 @@ connections:
         - runtime: openCaptureTxId
         tolerant: false
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6168,6 +6238,7 @@ connections:
         params: []
         tolerant: false
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: '0xd212'
         readEcho: null
@@ -6177,6 +6248,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xdf01'
         getProp: null
         readEcho: null
@@ -6186,6 +6258,7 @@ connections:
         params: []
         tolerant: false
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: '0xdf28'
         readEcho: null
@@ -6195,6 +6268,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xdf28'
         getProp: null
         readEcho: null
@@ -6204,6 +6278,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xd226'
         getProp: null
         readEcho: null
@@ -6213,6 +6288,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: '0xd227'
         getProp: null
         readEcho: null
@@ -6222,6 +6298,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: '0xd244'
         readEcho: null
@@ -6231,6 +6308,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6241,6 +6319,7 @@ connections:
         - 268435457
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6251,6 +6330,7 @@ connections:
         - 268435457
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6260,6 +6340,7 @@ connections:
         params: []
         tolerant: true
         repeat: 1
+        awaitUntil: null
       - setProp: null
         getProp: null
         readEcho: null
@@ -6271,6 +6352,7 @@ connections:
         - 30000
         tolerant: true
         repeat: 1
+        awaitUntil: null
       userInstruction: null
       requires: null
     actions:
@@ -6289,6 +6371,7 @@ connections:
           - 0
           tolerant: false
           repeat: 1
+          awaitUntil: null
         - setProp: null
           getProp: null
           readEcho: null
@@ -6298,6 +6381,7 @@ connections:
           params: []
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers:
         - postviewEvent: {}
         evidence:
@@ -6317,6 +6401,7 @@ connections:
           params: []
           tolerant: false
           repeat: 1
+          awaitUntil: null
         - setProp: null
           getProp: '0xd621'
           readEcho: null
@@ -6326,6 +6411,7 @@ connections:
           params: []
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - docImageTransfer
@@ -6344,6 +6430,7 @@ connections:
           - runtime: handle
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - docImageTransfer
@@ -6362,6 +6449,7 @@ connections:
           - runtime: handle
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - docImageTransfer
@@ -6384,6 +6472,7 @@ connections:
           - runtime: length
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - docImageTransfer
@@ -6481,6 +6570,7 @@ connections:
           params: []
           tolerant: false
           repeat: 1
+          awaitUntil: null
         - setProp: null
           getProp: null
           readEcho: null
@@ -6492,6 +6582,7 @@ connections:
           - 0
           tolerant: false
           repeat: 1
+          awaitUntil: null
         - setProp: '0xd039'
           getProp: null
           readEcho: null
@@ -6501,6 +6592,7 @@ connections:
           params: []
           tolerant: false
           repeat: 1
+          awaitUntil: null
         - setProp: null
           getProp: null
           readEcho: null
@@ -6512,6 +6604,7 @@ connections:
           - 0
           tolerant: false
           repeat: 1
+          awaitUntil: null
         - setProp: '0xd039'
           getProp: null
           readEcho: null
@@ -6521,6 +6614,7 @@ connections:
           params: []
           tolerant: false
           repeat: 1
+          awaitUntil: null
         - setProp: null
           getProp: null
           readEcho: null
@@ -6532,6 +6626,7 @@ connections:
           - 0
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers:
         - imagesPushed:
             min: 1
@@ -6553,6 +6648,7 @@ connections:
           - 0
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -6571,6 +6667,7 @@ connections:
           - runtime: handle
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -6589,6 +6686,7 @@ connections:
           - runtime: handle
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -6607,6 +6705,7 @@ connections:
           - runtime: handle
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -6625,6 +6724,7 @@ connections:
           - runtime: handle
           tolerant: false
           repeat: 1
+          awaitUntil: null
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523

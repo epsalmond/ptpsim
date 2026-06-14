@@ -493,6 +493,9 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
     assert_eq!(aperture.operation.as_deref(), Some("0x902d"));
     let ev = m.control_for(0x5010, "app").unwrap();
     assert_eq!(ev.operation.as_deref(), Some("0x902e"));
+    let focus = &m.properties["0x500a"];
+    assert_eq!(focus.ptype.as_deref(), Some("u16"));
+    assert_eq!(focus.access.as_deref(), Some("readWrite"));
 
     // Existing app operations are available over the app connection in their
     // current modes, and do not imply the new video/transfer-back flows.
@@ -526,8 +529,8 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
 fn af_tap_ops_and_props_are_ingested_from_the_wire_doc() {
     // Issue #35: the AF tap / S1-lock surface from PTP_PROPERTIES_REFERENCE.md §5.
     // DATA-only ingestion — names/access/owner/gating must match the wire doc; the
-    // camera-side AF behavior (counter bump, delayed 0xD209 flip, 0xC005 event) is a
-    // DEFERRED simulator-behavior follow-up, NOT modeled here.
+    // camera-side AF color flip is curated as an op-effect so the simulator can
+    // round-trip the poll-until flow against the real manifest.
     let m = gfx();
     let any = PropView::new();
 
@@ -543,6 +546,14 @@ fn af_tap_ops_and_props_are_ingested_from_the_wire_doc() {
     let unlock = &m.operations["0x9027"];
     assert_eq!(unlock.name, "UnlockS1Lock");
     assert_eq!(unlock.owner, "fuji-vendor");
+    assert_eq!(lock.effects.len(), 1);
+    assert_eq!(lock.effects[0].set_prop, "0xd209");
+    assert_eq!(lock.effects[0].value, 1);
+    assert_eq!(lock.effects[0].settle_after_polls, 2);
+    assert_eq!(unlock.effects.len(), 1);
+    assert_eq!(unlock.effects[0].set_prop, "0xd209");
+    assert_eq!(unlock.effects[0].value, 0);
+    assert_eq!(unlock.effects[0].settle_after_polls, 0);
     // Both gate to the app connection in shooting/stills, and only there.
     for op in [0x9026u16, 0x9027] {
         assert_eq!(
@@ -564,6 +575,7 @@ fn af_tap_ops_and_props_are_ingested_from_the_wire_doc() {
     // 0xD209 S1_LOCK_COLOR — 0=white/none, 1=green/locked, 2=red/failed (§5.3).
     let color = &m.properties["0xd209"];
     assert_eq!(color.name, "s1LockColor");
+    assert_eq!(color.ptype.as_deref(), Some("u16"));
     assert_eq!(color.access.as_deref(), Some("readOnly"));
 
     // All four cite the in-repo wire doc (docLiveControls → PTP_PROPERTIES_REFERENCE.md).

@@ -404,7 +404,14 @@ operations:
   # up to col=9,row=6). Camera moves the AF area, focuses, then fires 0xC005 and
   # flips 0xD209 (read success/fail from the property, not the event). owner =
   # fuji-vendor, matching the sibling 0x90xx ops in this file.
-  "0x9026": { name: LockS1Lock,           owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
+  "0x9026":
+    name: LockS1Lock
+    owner: fuji-vendor
+    modes: [shooting/stills]
+    connections: [app]
+    effects:
+      - { setProp: "0xd209", value: 1, settleAfterPolls: 2 }
+    evidence: [iosLiveControls, docLiveControls]
   # AF unlock/release companion to 0x9026 (PTP_PROPERTIES_REFERENCE.md §5.1: clears
   # the AF lock, resets 0xD209 S1_LOCK_COLOR to 0). PRELIMINARY: §5.1 marks the
   # opcode→UnlockS1Lock mapping itself "likely", and a label reconcile is pending
@@ -412,7 +419,14 @@ operations:
   # FUJI_PTP_PROP_REFERENCE "LiveStateSnapshotShort" conflict; the current operators
   # doc does NOT carry that label — it agrees on UnlockS1Lock and explicitly says
   # "not a live-state snapshot" — so no name conflict is asserted here; see report.)
-  "0x9027": { name: UnlockS1Lock,         owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
+  "0x9027":
+    name: UnlockS1Lock
+    owner: fuji-vendor
+    modes: [shooting/stills]
+    connections: [app]
+    effects:
+      - { setProp: "0xd209", value: 0 }
+    evidence: [iosLiveControls, docLiveControls]
   "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [iosStartupSeq] }
   "0x902c": { name: StepShutterspeed,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0xd240", evidence: [iosLiveControls, docLiveControls] }
   "0x902d": { name: StepFnumber,          owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5007", evidence: [iosLiveControls, docLiveControls] }
@@ -475,7 +489,7 @@ properties:
   # AF box color, carried in the 0xd212 poll bundle. PTP_PROPERTIES_REFERENCE.md
   # §5.3 (setForcusColor mapping): 0 = white/none (no AF active), 1 = green/locked
   # (AF succeeded), 2 = red/failed. Flips 0→1/2 ~one poll after the 0xC005 event.
-  "0xd209": { name: s1LockColor,       type: u32, access: readOnly,  evidence: [iosLiveControls, docLiveControls] }  # sub-property carried in 0xd212
+  "0xd209": { name: s1LockColor,       type: u16, access: readOnly,  evidence: [iosLiveControls, docLiveControls] }  # sub-property carried in 0xd212
   "0xd226": { name: imageImportFilter, type: u16, access: readWrite, evidence: [docImageTransfer] }
   "0xd227": { name: imageImportSort,   type: u16, access: readWrite, evidence: [docImageTransfer] }
   "0xd244": { name: imageImportD244,   type: u8a, access: readOnly,  evidence: [docImageTransfer] }
@@ -489,7 +503,7 @@ properties:
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0x5007": { name: aperture, ptpName: FNumber, type: u16, access: readWrite,
               controls: { app: { setMethod: vendorStep, operation: "0x902d", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls, docLiveControls, wireTether] }   # uint16 ×100 (f/2.8=280)
-  "0x500a": { name: focusMode, ptpName: FocusMode, type: u16, access: readOnly, evidence: [iosLiveControls] }
+  "0x500a": { name: focusMode, ptpName: FocusMode, type: u16, access: readWrite, evidence: [iosLiveControls] }
   "0x500c": { name: flashMode, ptpName: FlashMode, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0x5010": { name: exposureBias, ptpName: ExposureBiasCompensation, type: u16, access: readWrite,
