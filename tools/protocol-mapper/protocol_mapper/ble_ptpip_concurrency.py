@@ -318,6 +318,7 @@ class LiveViewRecorder(threading.Thread):
             "jpeg_frames": 0,
             "bytes_min": None,
             "bytes_max": None,
+            "max_gap_s": None,
             "errors": [],
         }
 
@@ -332,6 +333,8 @@ class LiveViewRecorder(threading.Thread):
         self.timeline.event("ptpip_liveview_socket_connected", port=self.port)
         sock.settimeout(0.5)
         saved = 0
+        first_frame_at: float | None = None
+        last_frame_at: float | None = None
         with sock:
             while not self.stop_event.is_set():
                 try:
@@ -355,6 +358,16 @@ class LiveViewRecorder(threading.Thread):
                     self.summary["errors"].append(repr(exc))
                     break
                 self.summary["frames"] += 1
+                now = time.monotonic()
+                if first_frame_at is None:
+                    first_frame_at = now
+                    self.summary["first_frame_ts"] = utc_iso()
+                if last_frame_at is not None:
+                    gap = round(now - last_frame_at, 3)
+                    current_max = self.summary.get("max_gap_s")
+                    self.summary["max_gap_s"] = gap if current_max is None else max(current_max, gap)
+                last_frame_at = now
+                self.summary["last_frame_ts"] = utc_iso()
                 soi = body.find(b"\xff\xd8")
                 if soi < 0:
                     continue
@@ -371,6 +384,8 @@ class LiveViewRecorder(threading.Thread):
                 if self.summary["jpeg_frames"] <= 5 or self.summary["jpeg_frames"] % 100 == 0:
                     self.timeline.event("ptpip_liveview_frame", port=self.port, bytes=size)
         self.summary["jpegs_saved"] = saved
+        if first_frame_at is not None and last_frame_at is not None:
+            self.summary["duration_s"] = round(last_frame_at - first_frame_at, 3)
 
     def stop(self) -> dict[str, Any]:
         self.stop_event.set()
@@ -419,10 +434,11 @@ class PtpControlSession:
         timeout: float,
         out_dir: Path,
         timeline: Timeline,
+        tail_profile: str = "liveview",
     ) -> "PtpControlSession":
         out_dir.mkdir(parents=True, exist_ok=True)
         sock = connect_ptpip_control(host, port, timeout, timeline)
-        init = ptpip.build_init_command_request(friendly_name, "liveview", guid=ptpip.parse_guid_hex(guid))
+        init = ptpip.build_init_command_request(friendly_name, tail_profile, guid=ptpip.parse_guid_hex(guid))
         (out_dir / "init_command_request.bin").write_bytes(init)
         sock.sendall(init)
         init_resp = ptpip.recv_packet(sock)
@@ -435,7 +451,11 @@ class PtpControlSession:
         ohdr = ptpip.ptp_container_header(open_resp)
         if ohdr.get("code") not in (ptpip.PTP_RESPONSE_OK, ptpip.PTP_RESPONSE_SESSION_ALREADY_OPEN):
             raise RuntimeError(f"OpenSession failed: {ohdr}")
-        timeline.event("ptpip_open_session_ok", response_code=f"0x{int(ohdr.get('code', 0)):04x}")
+        timeline.event(
+            "ptpip_open_session_ok",
+            response_code=f"0x{int(ohdr.get('code', 0)):04x}",
+            tail_profile=tail_profile,
+        )
         return cls(sock, out_dir, timeline)
 
     def close(self) -> dict[str, Any]:
