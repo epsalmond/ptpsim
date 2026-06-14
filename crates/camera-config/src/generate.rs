@@ -154,6 +154,8 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     modes: modes.into_iter().collect(),
                     connections: conns.into_iter().collect(),
                     requires: None,
+                    // Op-effects are curated sim-behavior, never probe-derived.
+                    effects: Vec::new(),
                     evidence: vec![EVIDENCE_ID.to_string()],
                 },
             )
@@ -354,6 +356,34 @@ connections:
         // Curated connection preserved; probe-only connection added for review.
         assert_eq!(m.connections["app"].kind.as_deref(), Some("ptpip-app"));
         assert!(m.connections.contains_key("usb"));
+    }
+
+    #[test]
+    fn curated_op_effects_survive_enrich() {
+        // Op-effects are curated sim-behavior (not probe-derivable). The merge
+        // must preserve them: curated operations win entirely, and proposal ops
+        // carry no effects.
+        let proposal = generate_proposal(EVIDENCE);
+        let curated = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    effects:
+      - { setProp: "0xd209", value: 1, settleAfterPolls: 2 }
+"#,
+        )
+        .unwrap();
+        let m = enrich(curated, proposal);
+        let af = &m.operations["0x9026"];
+        assert_eq!(af.effects.len(), 1, "curated op-effect preserved");
+        assert_eq!(af.effects[0].set_prop, "0xd209");
+        assert_eq!(af.effects[0].value, 1);
+        assert_eq!(af.effects[0].settle_after_polls, 2);
+        // A probe-only operation is added with no effects.
+        assert!(m.operations["0x1014"].effects.is_empty());
     }
 
     #[test]

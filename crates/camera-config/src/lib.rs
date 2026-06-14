@@ -20,10 +20,10 @@ pub mod version;
 pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{enrich, generate_proposal};
 pub use model::{
-    parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, CameraIdentity,
+    parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitUntil, CameraIdentity,
     CameraManifest, Connection, ConnectionTransition, Control, Descriptor, ImagesPushed,
-    LiveViewStream, ManufacturerDefaults, Mode, ModeEntry, Operation, PostviewEvent, Property,
-    Step, StepParam, ValuePolicy, ValueSource, VersionCond, Workflow,
+    LiveViewStream, ManufacturerDefaults, Mode, ModeEntry, OpEffect, Operation, PostviewEvent,
+    Property, Step, StepParam, ValuePolicy, ValueSource, VersionCond, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};

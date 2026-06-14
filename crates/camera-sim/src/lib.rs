@@ -7,12 +7,14 @@ pub mod ble;
 pub mod engine;
 pub mod fault;
 pub mod framesource;
+pub mod ptpip;
 pub mod state;
 
 pub use ble::{walk_establishment, BleEvent, BleResponder, WalkOutcome};
 pub use engine::{Engine, Reply};
 pub use fault::{Fault, FaultSet};
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
+pub use ptpip::{walk_ptpip, PtpIpError, PtpIpOutcome};
 pub use state::{CameraState, Phase};
 
 #[cfg(test)]
