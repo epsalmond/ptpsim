@@ -348,6 +348,71 @@ fn establishment_returns_none_for_unknown_model() {
         .is_none());
 }
 
+#[test]
+fn establishment_app_connection_returns_wifi_ap_plan() {
+    // Issue #47: the `app` (BLE-initiated WiFi-AP) connection now resolves to
+    // the ble-establish-wifi-ap plan — previously nil, so a paired camera had
+    // nowhere to go. The mechanism is read from the body manifest
+    // (connections.app.establishment) then looked up in the index registry.
+    let s = store();
+    let plan = s
+        .establishment("gfx100ii".into(), "app".into(), vec![])
+        .expect("app connection resolves to the ble-establish-wifi-ap plan");
+    assert_eq!(plan.plan_handle, "gfx100ii:app");
+    assert_eq!(plan.mechanism, "ble-establish-wifi-ap");
+    assert_eq!(plan.prerequisite.as_deref(), Some("ble-pair"));
+    assert_eq!(plan.params, vec!["launchMode".to_string()]);
+
+    // Opens with bleConnect (the BLE link carried over from ble-pair), then
+    // writes FUNCTION_LAUNCH_REQUEST with the runtime launchMode (u16-le).
+    assert!(matches!(plan.steps[0], Step::BleConnect { .. }));
+    let (gatt, value) = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            Step::BleWrite { gatt, value, .. } => Some((gatt, value)),
+            _ => None,
+        })
+        .expect("writes the function-launch request");
+    assert_eq!(gatt, "600655E6-3637-42F1-8FB2-44EFC5C63B13");
+    match value {
+        StepValue::Runtime { slot, encoding, .. } => {
+            assert_eq!(slot, "launchMode");
+            assert_eq!(encoding.as_deref(), Some("u16-le"));
+        }
+        other => panic!("expected Runtime launch value, got {other:?}"),
+    }
+
+    // The await step surfaces with its apState capture + predicate field.
+    let until_field = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            Step::BleAwaitUntil { capture, until, .. } => {
+                assert!(capture.iter().any(|c| c.name == "apState"));
+                Some(until.field.clone())
+            }
+            _ => None,
+        })
+        .expect("ble-establish-wifi-ap awaits apState");
+    assert_eq!(until_field, "apState");
+
+    // The credential reads bind ssid + passphrase — the consumer contract.
+    let reads: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::BleRead { capture_as, .. } => Some(capture_as.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(reads.contains(&"ssid"), "binds ssid; got {reads:?}");
+    assert!(
+        reads.contains(&"passphrase"),
+        "binds passphrase; got {reads:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // refine_establishment() — §11.5 graceful-degrade contract
 // ---------------------------------------------------------------------------

@@ -186,6 +186,42 @@ families:
             - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
             - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
 
+        # BLE-initiated Wi-Fi-AP / PTP-IP bring-up (issue #47). Runs after
+        # ble-pair: write the function-launch request, await the camera AP
+        # reaching a launched state, then read the SSID + passphrase to join.
+        # The app binds `launchMode` — 0x0004 RemoteShooting (live-view/control,
+        # stills+video) / 0x0003 InCameraViewIng (image-transfer) / 0x0005
+        # firmware; avoid 0x0001 (no PTP/IP listener). Walking the plan leaves
+        # scope["ssid"] + scope["passphrase"] bound; the camera host/port stay
+        # app-side defaults (192.168.0.1:55740).
+        ble-establish-wifi-ap:
+          mechanism: ble-establish-wifi-ap
+          prerequisite: ble-pair
+          params: [launchMode]
+          steps:
+            # The BLE link from ble-pair is still open; bleConnect is a no-op
+            # in that case but keeps the plan self-contained and walkable.
+            - bleConnect: {}
+
+            # FUNCTION_LAUNCH_REQUEST: 2-byte LE launch value bound at runtime.
+            - bleWrite:
+                gatt: functionLaunchRequest
+                value: { runtime: launchMode, encoding: u16-le }
+
+            # Await the camera AP reaching a launched state. apState parses as
+            # u16-le: launched = 0x0180 (modern → 384) or 0x0100 (legacy → 256).
+            # captureAs keeps the raw bytes for the app's fallback parsing.
+            - bleAwaitUntil:
+                source: { notify: { gatt: apState } }
+                capture: { at: 0, length: 2, encoding: u16-le, name: apState }
+                captureAs: apStateRaw
+                until: { apState: { in: "384, 256" } }
+                timeoutMs: 5000
+
+            # AP is up — read the credentials the app joins the network with.
+            - bleRead: { gatt: cameraSSIDNameString,       encoding: utf8, captureAs: ssid }
+            - bleRead: { gatt: cameraWiFiPassphraseString, encoding: utf8, captureAs: passphrase }
+
 models:
   - id: gfx100ii
     displayName: "GFX100 II"
