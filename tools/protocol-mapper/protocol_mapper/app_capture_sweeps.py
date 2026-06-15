@@ -153,6 +153,13 @@ def port_probe(host: str, ports: list[int], timeout: float) -> dict[str, Any]:
     return out
 
 
+def ap_port_probe_ports(config: "SweepConfig") -> list[int]:
+    ports = [config.command_port, config.event_port, config.liveview_port]
+    if "transfer" in config.sweeps:
+        return [port for port in ports if port != config.command_port]
+    return ports
+
+
 @dataclass
 class SweepConfig:
     issue_number: int
@@ -175,6 +182,9 @@ class SweepConfig:
     ap_ssid: str
     con_name: str
     scan_timeout: float
+    ble_connect_timeout: float
+    ble_connect_attempts: int
+    ble_connect_retry_delay_s: float
     ap_timeout: float
     ptp_timeout: float
     live_duration_s: float
@@ -185,6 +195,7 @@ class SweepConfig:
     raf_preview_bytes: int
     pcss_fallback: bool
     pcss_timeout: float
+    reuse_existing_ap_on_ble_failure: bool
     register: bool
     cleanup_wifi: bool
     preflight_only: bool
@@ -194,6 +205,54 @@ class SweepConfig:
 
 def base_compatible_config(config: SweepConfig) -> SweepConfig:
     return config
+
+
+def should_read_ap_passphrase(config: SweepConfig) -> bool:
+    return config.wifi_join_method != "iw_static"
+
+
+class PhaseBlockedError(RuntimeError):
+    def __init__(self, message: str, *, partial_summary: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.partial_summary = partial_summary or {}
+
+
+def apply_partial_summary(summary: dict[str, Any], exc: BaseException) -> None:
+    if isinstance(exc, PhaseBlockedError):
+        summary.update(exc.partial_summary)
+
+
+async def connect_ble_with_retries(
+    backend: BleakBackend,
+    device: DeviceInfo,
+    timeline: base.Timeline,
+    *,
+    attempts: int,
+    timeout: float,
+    retry_delay_s: float,
+) -> tuple[BleConnection, BleConnection, list[dict[str, Any]]]:
+    records: list[dict[str, Any]] = []
+    for attempt in range(1, attempts + 1):
+        record: dict[str, Any] = {"attempt": attempt, "timeout_s": timeout}
+        timeline.event("ble_connect_start", **record)
+        started = time.monotonic()
+        conn_cm = backend.connect(device, timeout=timeout)
+        try:
+            conn = await conn_cm.__aenter__()
+        except Exception as exc:  # noqa: BLE001 - capture artifacts need exact BLE failure
+            record.update({"elapsed_s": round(time.monotonic() - started, 3), "error": repr(exc)})
+            records.append(record)
+            timeline.event("ble_connect_error", **record)
+            if attempt < attempts and retry_delay_s > 0:
+                await asyncio.sleep(retry_delay_s)
+            continue
+        record.update({"elapsed_s": round(time.monotonic() - started, 3), "connected": True})
+        records.append(record)
+        timeline.event("ble_connect_ok", **record)
+        return conn_cm, conn, records
+
+    message = f"BLE connect failed after {attempts} attempt(s)"
+    raise PhaseBlockedError(message, partial_summary={"ble_connect": records})
 
 
 async def prepare_ble_connection(
@@ -242,8 +301,19 @@ async def connect_and_launch_ap(
     device = await camera._target(name=config.camera_name, timeout=config.scan_timeout, address=config.ble_address)
     summary: dict[str, Any] = {"device": device.to_log_dict(), "launch_mode": mode}
     timeline.event("ble_target", **summary["device"])
-    conn_cm = backend.connect(device)
-    conn = await conn_cm.__aenter__()
+    try:
+        conn_cm, conn, connect_records = await connect_ble_with_retries(
+            backend,
+            device,
+            timeline,
+            attempts=config.ble_connect_attempts,
+            timeout=config.ble_connect_timeout,
+            retry_delay_s=config.ble_connect_retry_delay_s,
+        )
+    except PhaseBlockedError as exc:
+        summary.update(exc.partial_summary)
+        raise PhaseBlockedError(str(exc), partial_summary=summary) from exc
+    summary["ble_connect"] = connect_records
     summary["_conn_cm"] = conn_cm
     try:
         summary.update(
@@ -414,6 +484,7 @@ async def run_liveview_variant(
             )
         summary["ptp_steps"] = ptp_session.steps
     except Exception as exc:  # noqa: BLE001 - live artifact should preserve exact failure
+        apply_partial_summary(summary, exc)
         summary["error"] = repr(exc)
         summary["verdict"] = f"blocked: {exc!r}"
         timeline.event("sweep_error", sweep="liveview", error=repr(exc))
@@ -463,23 +534,40 @@ async def run_ap_mode_sweep(
         "btmon_pid": btmon.process.pid if btmon.process else None,
     }
     try:
-        launch_summary, _backend, _camera, _conn = await connect_and_launch_ap(
-            config,
-            phase_dir,
-            timeline,
-            mode=mode,
-            read_passphrase=True,
-        )
-        summary.update(launch_summary)
+        try:
+            launch_summary, _backend, _camera, _conn = await connect_and_launch_ap(
+                config,
+                phase_dir,
+                timeline,
+                mode=mode,
+                read_passphrase=should_read_ap_passphrase(config),
+            )
+            summary.update(launch_summary)
+        except PhaseBlockedError as exc:
+            apply_partial_summary(summary, exc)
+            if not config.reuse_existing_ap_on_ble_failure:
+                raise
+            summary["existing_ap_reuse"] = {
+                "attempted": True,
+                "reason": repr(exc),
+                "ssid": config.ap_ssid,
+            }
+            timeline.event("existing_ap_reuse", reason=repr(exc), ssid=config.ap_ssid)
         if join_after_launch(config, phase_dir, timeline, summary):
+            ports = ap_port_probe_ports(config)
+            if config.command_port not in ports:
+                summary["port_probe_skipped"] = {
+                    str(config.command_port): "skipped before transfer sweep to avoid pre-consuming PTP/IP command socket"
+                }
             summary["port_probe"] = port_probe(
                 config.camera_host,
-                [config.command_port, config.event_port, config.liveview_port],
+                ports,
                 min(config.ptp_timeout, 3.0),
             )
         else:
             summary["port_probe"] = {"skipped": "wifi join failed"}
     except Exception as exc:  # noqa: BLE001 - live artifact should preserve exact failure
+        apply_partial_summary(summary, exc)
         summary["error"] = repr(exc)
         summary["verdict"] = f"blocked: {exc!r}"
         timeline.event("sweep_error", sweep="ap", mode=mode, error=repr(exc))
@@ -493,7 +581,10 @@ async def run_ap_mode_sweep(
                 port for port, record in summary.get("port_probe", {}).items()
                 if isinstance(record, dict) and record.get("open")
             ]
-            summary["verdict"] = "ap_launch_joined_ports_observed" if joined else "ap_launch_no_wifi_join"
+            if joined and summary.get("existing_ap_reuse"):
+                summary["verdict"] = "ap_existing_ap_ports_observed" if open_ports else "ap_existing_ap_joined"
+            else:
+                summary["verdict"] = "ap_launch_joined_ports_observed" if joined else "ap_launch_no_wifi_join"
             summary["open_ports"] = open_ports
         summary["finished_at"] = base.utc_iso()
         (phase_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, default=json_default) + "\n")
@@ -597,14 +688,25 @@ async def run_transfer_sweep(config: SweepConfig, run_dir: Path, btmon: base.Cap
     tcpdump: base.CaptureProcess | None = None
     ptp_session: base.PtpControlSession | None = None
     try:
-        launch_summary, _backend, _camera, _conn = await connect_and_launch_ap(
-            config,
-            phase_dir,
-            timeline,
-            mode="get",
-            read_passphrase=True,
-        )
-        summary.update(launch_summary)
+        try:
+            launch_summary, _backend, _camera, _conn = await connect_and_launch_ap(
+                config,
+                phase_dir,
+                timeline,
+                mode="get",
+                read_passphrase=should_read_ap_passphrase(config),
+            )
+            summary.update(launch_summary)
+        except PhaseBlockedError as exc:
+            apply_partial_summary(summary, exc)
+            if not config.reuse_existing_ap_on_ble_failure:
+                raise
+            summary["existing_ap_reuse"] = {
+                "attempted": True,
+                "reason": repr(exc),
+                "ssid": config.ap_ssid,
+            }
+            timeline.event("existing_ap_reuse", reason=repr(exc), ssid=config.ap_ssid)
         if not join_after_launch(config, phase_dir, timeline, summary):
             summary["verdict"] = "blocked: wifi join failed"
             return summary
@@ -622,6 +724,7 @@ async def run_transfer_sweep(config: SweepConfig, run_dir: Path, btmon: base.Cap
         )
         summary["metadata_probe"] = run_object_metadata_probe(config, phase_dir, timeline, ptp_session)
     except Exception as exc:  # noqa: BLE001 - live artifact should preserve exact failure
+        apply_partial_summary(summary, exc)
         summary["error"] = repr(exc)
         summary["verdict"] = f"blocked: {exc!r}"
         timeline.event("sweep_error", sweep="transfer", error=repr(exc))
@@ -670,9 +773,13 @@ def render_verdict(run_summary: dict[str, Any]) -> str:
         elif result.get("sweep") == "ap":
             notes.append(f"mode={result.get('mode')}")
             notes.append(f"open_ports={','.join(result.get('open_ports', []))}")
+            if result.get("existing_ap_reuse"):
+                notes.append("existing_ap_reuse=attempted")
         elif result.get("sweep") == "transfer":
             objects = result.get("metadata_probe", {}).get("objects", [])
             notes.append(f"objects={len(objects)}")
+            if result.get("existing_ap_reuse"):
+                notes.append("existing_ap_reuse=attempted")
             if result.get("pcss_fallback"):
                 notes.append(f"pcss_fallback_rc={result['pcss_fallback'].get('returncode')}")
         if result.get("error"):
@@ -705,6 +812,9 @@ def config_from_args(args: argparse.Namespace) -> SweepConfig:
         ap_ssid=args.ap_ssid,
         con_name=args.con_name,
         scan_timeout=args.scan_timeout,
+        ble_connect_timeout=args.ble_connect_timeout,
+        ble_connect_attempts=args.ble_connect_attempts,
+        ble_connect_retry_delay_s=args.ble_connect_retry_delay_s,
         ap_timeout=args.ap_timeout,
         ptp_timeout=args.ptp_timeout,
         live_duration_s=args.live_duration_s,
@@ -715,6 +825,7 @@ def config_from_args(args: argparse.Namespace) -> SweepConfig:
         raf_preview_bytes=args.raf_preview_bytes,
         pcss_fallback=not args.no_pcss_fallback,
         pcss_timeout=args.pcss_timeout,
+        reuse_existing_ap_on_ble_failure=not args.no_existing_ap_reuse,
         register=not args.no_register,
         cleanup_wifi=not args.keep_wifi,
         preflight_only=args.preflight_only,
@@ -812,6 +923,12 @@ def remote_local_args(args: argparse.Namespace) -> list[str]:
         args.con_name,
         "--scan-timeout",
         str(args.scan_timeout),
+        "--ble-connect-timeout",
+        str(args.ble_connect_timeout),
+        "--ble-connect-attempts",
+        str(args.ble_connect_attempts),
+        "--ble-connect-retry-delay",
+        str(args.ble_connect_retry_delay_s),
         "--ap-timeout",
         str(args.ap_timeout),
         "--ptp-timeout",
@@ -843,6 +960,8 @@ def remote_local_args(args: argparse.Namespace) -> list[str]:
         argv.append("--preflight-only")
     if args.no_pcss_fallback:
         argv.append("--no-pcss-fallback")
+    if args.no_existing_ap_reuse:
+        argv.append("--no-existing-ap-reuse")
     if args.stamp:
         argv.extend(["--stamp", args.stamp])
     return argv
@@ -953,6 +1072,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ap-ssid", default="FUJIFILM-GFX100II-0C3E")
     parser.add_argument("--con-name", default=base.DEFAULT_CON_NAME)
     parser.add_argument("--scan-timeout", type=float, default=40.0)
+    parser.add_argument("--ble-connect-timeout", type=float, default=20.0)
+    parser.add_argument("--ble-connect-attempts", type=parse_positive_int, default=3)
+    parser.add_argument("--ble-connect-retry-delay", dest="ble_connect_retry_delay_s", type=float, default=2.0)
     parser.add_argument("--ap-timeout", type=float, default=25.0)
     parser.add_argument("--ptp-timeout", type=float, default=6.0)
     parser.add_argument("--live-duration-s", type=float, default=15.0)
@@ -963,6 +1085,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raf-preview-bytes", type=parse_raf_preview_bytes, default=0)
     parser.add_argument("--no-pcss-fallback", action="store_true")
     parser.add_argument("--pcss-timeout", type=float, default=90.0)
+    parser.add_argument("--no-existing-ap-reuse", action="store_true")
     parser.add_argument("--no-register", action="store_true")
     parser.add_argument("--keep-wifi", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
