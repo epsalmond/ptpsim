@@ -168,7 +168,7 @@ fn legacy_pair_plan_round_trips_against_the_responder() {
     let mut responder = responder_for(ble);
     let outcome = walk_establishment(
         &mut responder,
-        &ble.establishment.steps,
+        &ble.establishment("ble-pair").unwrap().steps,
         &scope,
         &runtime_params(),
     )
@@ -203,7 +203,7 @@ fn red_pair_plan_round_trips_with_id_number_echo() {
     );
     let outcome = walk_establishment(
         &mut responder,
-        &ble.establishment.steps,
+        &ble.establishment("ble-pair").unwrap().steps,
         &scope,
         &runtime_params(),
     )
@@ -232,7 +232,7 @@ fn legacy_body_without_id_characteristic_still_completes() {
         .serve_read(&uuid(ble, "transferState"), &[0x01]);
     let outcome = walk_establishment(
         &mut responder,
-        &ble.establishment.steps,
+        &ble.establishment("ble-pair").unwrap().steps,
         &scope,
         &runtime_params(),
     )
@@ -263,7 +263,7 @@ fn red_body_without_id_characteristic_skips_the_echo_and_completes() {
 
     let outcome = walk_establishment(
         &mut responder,
-        &ble.establishment.steps,
+        &ble.establishment("ble-pair").unwrap().steps,
         &scope,
         &runtime_params(),
     )

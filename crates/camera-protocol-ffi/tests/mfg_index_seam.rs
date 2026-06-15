@@ -24,6 +24,24 @@ fn store() -> std::sync::Arc<ConfigStore> {
     .expect("manufacturer index loads")
 }
 
+/// Minimal body manifest for the synthetic `tm1` model used by the inline-index
+/// seam tests. Its `ble` connection declares `establishment: test`, matching the
+/// mechanism the synthetic indexes register their plan under — so
+/// `ConfigStore::establishment("tm1", "ble", …)` resolves to that plan.
+fn tm1_body() -> String {
+    r#"
+schema: camera-config/v1
+camera:
+  manufacturer: TESTCO
+  model: TM1
+connections:
+  ble:
+    kind: ble
+    establishment: test
+"#
+    .to_string()
+}
+
 /// Convenience constructor for the common "manufacturer data + service
 /// UUIDs" advert shape. Fields the synthetic adverts never carry
 /// (service data, TX power, raw AD records) stay empty.
@@ -397,19 +415,20 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
-          - bleNotify:
-              gatt: c
-              until: any
-              capture:
-                - at: 3
-                  transform: { dropPrefix: 1 }
-                  encoding: ascii
-                  name: ssid
-              timeoutMs: 5000
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
+            - bleNotify:
+                gatt: c
+                until: any
+                capture:
+                  - at: 3
+                    transform: { dropPrefix: 1 }
+                    encoding: ascii
+                    name: ssid
+                timeoutMs: 5000
 models:
   - id: tm1
     displayName: "Test"
@@ -420,7 +439,7 @@ models:
         index_yaml.to_string(),
         vec![KeyValue {
             key: "tm1".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+            value: tm1_body(),
         }],
     )
     .expect("synthetic index loads");
@@ -489,12 +508,13 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleConnect: {}
-          - bleRequestMtu: { mtu: 158, tolerant: true }
-          - bleDiscoverServices: {}
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleConnect: {}
+            - bleRequestMtu: { mtu: 158, tolerant: true }
+            - bleDiscoverServices: {}
 models:
   - id: tm1
     displayName: "Test"
@@ -505,7 +525,7 @@ models:
         index_yaml.to_string(),
         vec![KeyValue {
             key: "tm1".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+            value: tm1_body(),
         }],
     )
     .expect("synthetic index loads");
@@ -537,7 +557,7 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: {}
-      establishment: { mechanism: test, steps: [ { bleConnect: {} } ] }
+      establishments: { test: { mechanism: test, steps: [ { bleConnect: {} } ] } }
 models:
   - id: tm1
     displayName: "Test Z9"
@@ -808,18 +828,19 @@ families:
         statusChar: "0000CC09-0000-1000-8000-00805F9B34FB"
         requestChar: "0000CC08-0000-1000-8000-00805F9B34FB"
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleConnect: {}
-          - bleAwaitUntil:
-              source: { notify: { gatt: statusChar, mode: indicate } }
-              capture: { at: 0, length: 1, encoding: u8, name: status }
-              until: { status: { eq: 1 } }
-              onEach:
-                - bleWrite: { gatt: requestChar, value: { literal: "01" } }
-              timeoutMs: 5000
-              intervalMs: 250
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleConnect: {}
+            - bleAwaitUntil:
+                source: { notify: { gatt: statusChar, mode: indicate } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                onEach:
+                  - bleWrite: { gatt: requestChar, value: { literal: "01" } }
+                timeoutMs: 5000
+                intervalMs: 250
 models:
   - id: tm1
     displayName: "Test"
@@ -830,7 +851,7 @@ models:
         index_yaml.to_string(),
         vec![KeyValue {
             key: "tm1".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+            value: tm1_body(),
         }],
     )
     .expect("synthetic index loads");

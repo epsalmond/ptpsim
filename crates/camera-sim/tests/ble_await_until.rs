@@ -11,6 +11,19 @@ use camera_sim::{walk_establishment, BleEvent, BleResponder};
 /// A synthetic single-family index whose establishment is `steps`. `gatt` maps
 /// the two symbolic names used below to UUIDs the responder is keyed on.
 fn index_with_steps(steps: &str) -> ResolvedManufacturerIndex {
+    // The plan now nests steps two levels deeper (establishments → <mechanism>
+    // → steps), so bump the caller-supplied step block by two spaces to match.
+    let steps = steps
+        .lines()
+        .map(|l| {
+            if l.trim().is_empty() {
+                String::new()
+            } else {
+                format!("  {l}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let yaml = format!(
         r#"
 manufacturer: TESTCO
@@ -21,10 +34,11 @@ families:
         launchState: "0000CC09-0000-1000-8000-00805F9B34FB"
         launchRequest: "0000CC08-0000-1000-8000-00805F9B34FB"
       advert: {{ manufacturerCompanyId: 1 }}
-      establishment:
-        mechanism: test
-        steps:
-          - bleConnect: {{}}
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleConnect: {{}}
 {steps}
 models:
   - id: tm1
@@ -41,7 +55,8 @@ fn steps_of(idx: &ResolvedManufacturerIndex) -> Vec<Step> {
         .ble
         .as_ref()
         .unwrap()
-        .establishment
+        .establishment("test")
+        .unwrap()
         .steps
         .clone()
 }

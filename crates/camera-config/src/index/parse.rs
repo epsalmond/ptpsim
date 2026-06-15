@@ -138,16 +138,20 @@ fn build_ble_block(
 
     // Resolve symbolic GATT names on every step → UUID strings (§11.3).
     let gatt_map: BTreeMap<String, String> = ble_gatt_from_merged(&merged);
-    if let Some(steps) = merged
-        .get_mut("establishment")
-        .and_then(|e| e.get_mut("steps"))
-        .and_then(|s| s.as_sequence_mut())
+    if let Some(plans) = merged
+        .get_mut("establishments")
+        .and_then(|e| e.as_mapping_mut())
     {
-        resolve_gatt_names_in_steps(
-            steps,
-            &gatt_map,
-            &format!("models.{}.establishment.steps", model.id),
-        )?;
+        for (name, plan) in plans.iter_mut() {
+            let mech = name.as_str().unwrap_or("?").to_string();
+            if let Some(steps) = plan.get_mut("steps").and_then(|s| s.as_sequence_mut()) {
+                resolve_gatt_names_in_steps(
+                    steps,
+                    &gatt_map,
+                    &format!("models.{}.establishments.{mech}.steps", model.id),
+                )?;
+            }
+        }
     }
 
     // Snapshot the resolved-for-signature-substitution form (still pre
@@ -158,7 +162,9 @@ fn build_ble_block(
             path: format!("models.{}.ble", model.id),
             message: format!("typed ble decode: {e}"),
         })?;
-    validate_establishment(&ble.establishment, &ble.gatt, &model.id)?;
+    for (mech, est) in &ble.establishments {
+        validate_establishment(est, &ble.gatt, &model.id, mech)?;
+    }
     Ok((Some(ble), value_for_resolve))
 }
 
@@ -335,9 +341,13 @@ fn validate_establishment(
     est: &EstablishmentBlock,
     _gatt: &BTreeMap<String, String>,
     model_id: &str,
+    mechanism: &str,
 ) -> Result<(), ConfigError> {
     for (i, step) in est.steps.iter().enumerate() {
-        validate_step(step, &format!("models.{model_id}.establishment.steps[{i}]"))?;
+        validate_step(
+            step,
+            &format!("models.{model_id}.establishments.{mechanism}.steps[{i}]"),
+        )?;
     }
     Ok(())
 }

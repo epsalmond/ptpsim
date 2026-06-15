@@ -101,7 +101,18 @@ pub struct FamilyBleBlock {
     pub gatt: BTreeMap<String, String>,
     #[serde(default)]
     pub advert: BleAdvertConstants,
-    pub establishment: EstablishmentBlock,
+    /// Named establishment plans keyed by mechanism (`ble-pair`,
+    /// `ble-establish-wifi-ap`, …). A body connection's `establishment:`
+    /// mechanism selects one (§11). Resolve via [`Self::establishment`].
+    #[serde(default)]
+    pub establishments: BTreeMap<String, EstablishmentBlock>,
+}
+
+impl FamilyBleBlock {
+    /// The establishment plan registered under `mechanism`, if any.
+    pub fn establishment(&self, mechanism: &str) -> Option<&EstablishmentBlock> {
+        self.establishments.get(mechanism)
+    }
 }
 
 /// Family-wide advert constants that signatures reference via
@@ -127,6 +138,15 @@ pub struct BleAdvertConstants {
 #[serde(rename_all = "camelCase")]
 pub struct EstablishmentBlock {
     pub mechanism: String,
+    /// Mechanism that must complete before this plan runs (e.g.
+    /// `ble-establish-wifi-ap` requires `ble-pair`). Advisory sequencing for
+    /// the consumer; the reference walker does not enforce it.
+    #[serde(default)]
+    pub prerequisite: Option<String>,
+    /// Runtime parameter names the consumer binds before walking (e.g.
+    /// `launchMode`). Steps reference them via `{ runtime: <name> }`.
+    #[serde(default)]
+    pub params: Vec<String>,
     #[serde(default)]
     pub steps: Vec<Step>,
 }

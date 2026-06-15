@@ -78,112 +78,113 @@ families:
       # `if:` for the RED-only identification-number exchange. Style +
       # pairing-key bytes come from recognize()'s runtime_scope — no
       # acquireFirmware here because pairing doesn't depend on fw.
-      establishment:
-        mechanism: ble-pair
-        steps:
-          # Peripheral is already in app scope from recognition; the
-          # dispatcher's BLE primitive holds the binding (plan §11.4).
-          - bleConnect: {}
+      establishments:
+        ble-pair:
+          mechanism: ble-pair
+          steps:
+            # Peripheral is already in app scope from recognition; the
+            # dispatcher's BLE primitive holds the binding (plan §11.4).
+            - bleConnect: {}
 
-          # Trigger the iOS bond prompt by reading the standard protected
-          # serial. reference app pattern: up to 20× retries 1s apart; intermediate
-          # failures (insufficient-encryption / insufficient-authentication)
-          # are normal while the OS bond dialog is up — tolerate them.
-          # Reply §4: legacy bodies have no special 20-retry window inside
-          # reference app on THIS read; we keep the retry budget anyway because the
-          # bond prompt can stall mid-read on first encounter.
-          - bleRead:
-              gatt: protectedSerialString
-              encoding: bytes
-              captureAs: cameraSerial
-              tolerant: true
-              retries: 20
-              retryDelayMs: 1000
+            # Trigger the iOS bond prompt by reading the standard protected
+            # serial. reference app pattern: up to 20× retries 1s apart; intermediate
+            # failures (insufficient-encryption / insufficient-authentication)
+            # are normal while the OS bond dialog is up — tolerate them.
+            # Reply §4: legacy bodies have no special 20-retry window inside
+            # reference app on THIS read; we keep the retry budget anyway because the
+            # bond prompt can stall mid-read on first encounter.
+            - bleRead:
+                gatt: protectedSerialString
+                encoding: bytes
+                captureAs: cameraSerial
+                tolerant: true
+                retries: 20
+                retryDelayMs: 1000
 
-          # Write the pairing key. Same characteristic for both styles;
-          # the BYTES come from the advert (4 LE on LEGACY, 5 ASCII on RED)
-          # — captured by recognize() into runtime_scope under
-          # `pairingKeyBytes`.
-          - bleWrite:
-              gatt: pairingKey
-              value: { captured: pairingKeyBytes }
+            # Write the pairing key. Same characteristic for both styles;
+            # the BYTES come from the advert (4 LE on LEGACY, 5 ASCII on RED)
+            # — captured by recognize() into runtime_scope under
+            # `pairingKeyBytes`.
+            - bleWrite:
+                gatt: pairingKey
+                value: { captured: pairingKeyBytes }
 
-          # Write the phone-side display name. App supplies this at runtime.
-          - bleWrite:
-              gatt: deviceNameString
-              value: { runtime: terminalName, encoding: utf8 }
+            # Write the phone-side display name. App supplies this at runtime.
+            - bleWrite:
+                gatt: deviceNameString
+                value: { runtime: terminalName, encoding: utf8 }
 
-          # RED first-pair only: read camera-generated identification
-          # number, OR with the APP_IDENTIFIER constant (0x20000000),
-          # echo the result back to the same characteristic
-          # READ_THIS_FIRST §6 the echo value is `(camera_id_num |
-          # 0x20000000)`. The OR is the FUJI RED-protocol convention used
-          # by reference app Android too — NOT platform-specific — so it belongs in
-          # the schema as a value transform.
-          #
-          # If style != "red" or the characteristic isn't exposed on this
-          # body's catalog, skip. Three tolerant flags cover the cases:
-          # the if-block's tolerant treats a missing `style` as not-red
-          # (empty else branch); the inner bleRead's tolerant swallows the
-          # gatt-not-found on a body without the characteristic; and the
-          # echo bleWrite's tolerant skips when that read left `idNumber`
-          # unbound (an unresolved captured ref is otherwise a hard step
-          # failure per §11.6 — see #38).
-          - if:
-              condition: { style: { eq: "red" } }
-              tolerant: true
-              then:
-                - bleRead:
-                    gatt: deviceIdentificationNumber
-                    encoding: u32
-                    captureAs: idNumber
-                    tolerant: true
-                    retries: 20
-                    retryDelayMs: 1000
-                - bleWrite:
-                    gatt: deviceIdentificationNumber
-                    value:
-                      captured: idNumber
-                      transform: { bitOr: 0x20000000 }
-                    tolerant: true
-              # No else branch — LEGACY just continues past this point.
+            # RED first-pair only: read camera-generated identification
+            # number, OR with the APP_IDENTIFIER constant (0x20000000),
+            # echo the result back to the same characteristic
+            # READ_THIS_FIRST §6 the echo value is `(camera_id_num |
+            # 0x20000000)`. The OR is the FUJI RED-protocol convention used
+            # by reference app Android too — NOT platform-specific — so it belongs in
+            # the schema as a value transform.
+            #
+            # If style != "red" or the characteristic isn't exposed on this
+            # body's catalog, skip. Three tolerant flags cover the cases:
+            # the if-block's tolerant treats a missing `style` as not-red
+            # (empty else branch); the inner bleRead's tolerant swallows the
+            # gatt-not-found on a body without the characteristic; and the
+            # echo bleWrite's tolerant skips when that read left `idNumber`
+            # unbound (an unresolved captured ref is otherwise a hard step
+            # failure per §11.6 — see #38).
+            - if:
+                condition: { style: { eq: "red" } }
+                tolerant: true
+                then:
+                  - bleRead:
+                      gatt: deviceIdentificationNumber
+                      encoding: u32
+                      captureAs: idNumber
+                      tolerant: true
+                      retries: 20
+                      retryDelayMs: 1000
+                  - bleWrite:
+                      gatt: deviceIdentificationNumber
+                      value:
+                        captured: idNumber
+                        transform: { bitOr: 0x20000000 }
+                      tolerant: true
+                # No else branch — LEGACY just continues past this point.
 
-          # First register-notify round (reference app BTRequester.mFirstRegisterNotify).
-          # reference app filters this static array against the discovered GATT
-          # catalog before subscribing, so any char missing on a given body
-          # is just skipped — tolerant: true reproduces that. Draining this
-          # queue (all descriptor-write acks received) drives the camera's
-          # discoverState to FirstCompleted, which is what reference app's
-          # BTCamera.analyzeWriteDescriptor uses to advance.
-          #
+            # First register-notify round (reference app BTRequester.mFirstRegisterNotify).
+            # reference app filters this static array against the discovered GATT
+            # catalog before subscribing, so any char missing on a given body
+            # is just skipped — tolerant: true reproduces that. Draining this
+            # queue (all descriptor-write acks received) drives the camera's
+            # discoverState to FirstCompleted, which is what reference app's
+            # BTCamera.analyzeWriteDescriptor uses to advance.
+            #
 
-          # (BTRequester.java:232-247, BTCameraService.java:72-73).
-          - bleSubscribe: { gatt: apState,            timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: transferState,      timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: dateSyncState,      timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: locationSyncState,  timeoutMs: 3000, tolerant: true }
+            # (BTRequester.java:232-247, BTCameraService.java:72-73).
+            - bleSubscribe: { gatt: apState,            timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: transferState,      timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: dateSyncState,      timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: locationSyncState,  timeoutMs: 3000, tolerant: true }
 
-          # Immediately after first-round drain reference app reads TRANSFER_STATE
-          # (BTCamera.java:5944-5995). Mirroring it here exercises the
-          # camera-side path that gates persistence on the post-CCCD
-          # handshake completing, not on the writes alone.
-          - bleRead:
-              gatt: transferState
-              encoding: bytes
-              captureAs: transferState
-              tolerant: true
+            # Immediately after first-round drain reference app reads TRANSFER_STATE
+            # (BTCamera.java:5944-5995). Mirroring it here exercises the
+            # camera-side path that gates persistence on the post-CCCD
+            # handshake completing, not on the writes alone.
+            - bleRead:
+                gatt: transferState
+                encoding: bytes
+                captureAs: transferState
+                tolerant: true
 
-          # Second register-notify round (reference app BTRequester.mSecondRegisterNotify).
-          # Same tolerant-filter semantics as the first round.
-          - bleSubscribe: { gatt: remoteBootSetting,     timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: cameraSSIDNameString,  timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: loggingSetting,        timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: cameraVitalState,      timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: locationSyncSetting,   timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: imageResizeRate,       timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: imageResizeSetting,    timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
-          - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
+            # Second register-notify round (reference app BTRequester.mSecondRegisterNotify).
+            # Same tolerant-filter semantics as the first round.
+            - bleSubscribe: { gatt: remoteBootSetting,     timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: cameraSSIDNameString,  timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: loggingSetting,        timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: cameraVitalState,      timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: locationSyncSetting,   timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: imageResizeRate,       timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: imageResizeSetting,    timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
 
 models:
   - id: gfx100ii
