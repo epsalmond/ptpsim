@@ -23,9 +23,9 @@ schema authority: §11 of
 
 ### Work tracking — GitHub issues, not in-process task lists
 
-**File everything as a GitHub issue.** Agent in-process task lists
+**Work is tracked as GitHub issues.** Agent in-process task lists
 
-model swaps, and the user does swap between models. Anything worth
+model swaps, and the user does swap between models and agents. Anything worth
 remembering across sessions goes in `gh` so it's discoverable from
 `gh issue list`.
 
@@ -33,17 +33,30 @@ This means: when you surface a follow-up, a deferred fix, a code-review
 finding, or a "we should do X later" — file an issue. The in-process
 list is for *this turn's* working memory, not the project backlog.
 
-### Commits, PRs, pushing
+### SDLC — worktree → branch → PR, review, merge
 
-- Conventional small commits with a descriptive title and a body
-  explaining *why*, not *what* (diff shows what).
-- Push to `origin/main` is fine when the user has authorized this turn's
-  work — don't push unauthorized work.
-- Never force-push, `git reset --hard` shared refs, amend published
-  commits, or use `--no-verify`. If a hook fails, fix the underlying
-  issue.
-- `Closes #N` / `(#N)` footers in commit messages auto-close issues on
-  webhook sync — use them.
+1. **One agent session per worktree**, so sessions don't collide:
+   `git worktree add ~/git/ptpsim-<slug> -b <branch>` off `main`. It's
+   yours alone — multiple branches/PRs in it are fine, never a shared
+   checkout. `git worktree remove` when done.
+2. **Close issues with Pull Requests.** An issue SHOULD precede the PR (see
+   *Work tracking*); footer the PR `Closes #N`. A self-evident doc fix may
+   skip the issue.
+3. **Single-line commit messages.** Imperative (`Add logging for X`), no
+   body. The *why* goes in the PR description — or a durable `docs/*.md` if
+   it's load-bearing past the merge. Commits should not have "and."
+4. **Push the branch, open the PR, a human merges it.** Don't merge your
+   own PR unless the user asks — `main` only advances through merged PRs.
+5. **Write the PR for a human:** what was done and why it matters, in prose
+   a reviewer follows. No opcode/method dumps or
+   change-by-change logs — reviewers can read the code for that. Shorter is easier to
+   reason about.
+6. **Never** force-push, `git reset --hard` shared refs, amend published
+   commits, or use `--no-verify`. A failing hook is signal — fix the cause.
+
+Documentation SHOULD precede the code change, not follow it.
+
+Run the workspace checks (*Build + test*) before pushing.
 
 ### Schema and manifest changes
 
