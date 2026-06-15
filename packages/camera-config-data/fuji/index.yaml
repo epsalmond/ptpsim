@@ -79,7 +79,7 @@ families:
       # pairing-key bytes come from recognize()'s runtime_scope — no
       # acquireFirmware here because pairing doesn't depend on fw.
       establishment:
-        mechanism: fuji-ble-pair-v1
+        mechanism: ble-pair
         steps:
           # Peripheral is already in app scope from recognition; the
           # dispatcher's BLE primitive holds the binding (plan §11.4).

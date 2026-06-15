@@ -6036,7 +6036,7 @@ connections:
     availableWhen: null
     requiresHardware: null
     kind: ptpip-app
-    establishment: ble-to-wifi-ap-v1
+    establishment: ble-establish-wifi-ap
     modes:
     - shooting/stills
     - image-transfer
@@ -6495,14 +6495,14 @@ connections:
     availableWhen: null
     requiresHardware: null
     kind: ble
-    establishment: ble-pairing-v1
+    establishment: ble-pair
     modes:
     - remote-trigger
     entries: []
     actions: {}
     enables:
     - to: app
-      mechanism: ble-to-wifi-ap-v1
+      mechanism: ble-establish-wifi-ap
       userInstruction: null
       requires: null
     discovery:
@@ -6551,7 +6551,7 @@ connections:
     availableWhen: null
     requiresHardware: null
     kind: ptpip-direct
-    establishment: pcss-knock-v1
+    establishment: pcss-knock
     modes:
     - shooting/stills
     - remote-trigger

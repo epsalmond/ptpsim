@@ -55,7 +55,7 @@ evidence:
 connections:
   app:
     kind: ptpip-app                 # WiFi-AP path (camera hosts the AP; app joins)
-    establishment: ble-to-wifi-ap-v1 # BLE pairing brings up the camera AP, app joins + routes, then PTP-IP
+    establishment: ble-establish-wifi-ap # BLE pairing brings up the camera AP, app joins + routes, then PTP-IP
     discovery: { mechanism: ble, announces: camera }
     modes: [shooting/stills, image-transfer]
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
@@ -198,7 +198,7 @@ connections:
 
   ble:
     kind: ble
-    establishment: ble-pairing-v1    # named mechanism; GATT detail below (overlay-able)
+    establishment: ble-pair    # named mechanism; GATT detail below (overlay-able)
     discovery: { mechanism: ble, announces: camera }
     modes: [remote-trigger]
     # GATT service + key characteristics (shipping-app facts; candidate for a private
@@ -217,7 +217,7 @@ connections:
     # passphrase over GATT, app joins the AP → the `app` connection becomes available.
     enables:
       - to: app
-        mechanism: ble-to-wifi-ap-v1
+        mechanism: ble-establish-wifi-ap
     evidence: [iosBLEReg]
 
   usb:
@@ -235,7 +235,7 @@ connections:
 
   wireless-tether:
     kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference app family)
-    establishment: pcss-knock-v1     # camera joins LAN (Wi-Fi/Ethernet), then PCSS port-knock
+    establishment: pcss-knock     # camera joins LAN (Wi-Fi/Ethernet), then PCSS port-knock
     # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
     # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
     # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference app's 82-byte init).

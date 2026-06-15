@@ -78,7 +78,7 @@ fn family_ble_block_merges_into_gfx100ii_view() {
         Some("AF854C2E-B214-458E-97E2-912C4ECF2CB8"),
     );
     // Establishment plan inherited.
-    assert_eq!(ble.establishment.mechanism, "fuji-ble-pair-v1");
+    assert_eq!(ble.establishment.mechanism, "ble-pair");
     assert!(
         ble.establishment.steps.len() >= 4,
         "establishment carries the multi-step pair flow"

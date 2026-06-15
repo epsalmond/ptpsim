@@ -223,7 +223,7 @@ fn establishment_returns_walkable_ble_plan() {
         .establishment("gfx100ii".into(), "ble".into(), scope)
         .expect("plan present");
     assert_eq!(plan.plan_handle, "gfx100ii:ble");
-    assert_eq!(plan.mechanism, "fuji-ble-pair-v1");
+    assert_eq!(plan.mechanism, "ble-pair");
     assert!(plan.prerequisite.is_none());
     assert!(!plan.steps.is_empty());
 

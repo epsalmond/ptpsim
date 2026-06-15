@@ -107,13 +107,13 @@ fn ble_connection_enables_app_and_carries_remote_trigger() {
     let ble = &m.connections["ble"];
     assert_eq!(ble.kind.as_deref(), Some("ble"));
     // BLE is the establishment root: it brings up the App connection (the edge the
-    // App slice's `establishment: ble-to-wifi-ap-v1` dangles on).
+    // App slice's `establishment: ble-establish-wifi-ap` dangles on).
     let edge = ble
         .enables
         .iter()
         .find(|e| e.to == "app")
         .expect("BLE enables app");
-    assert_eq!(edge.mechanism.as_deref(), Some("ble-to-wifi-ap-v1"));
+    assert_eq!(edge.mechanism.as_deref(), Some("ble-establish-wifi-ap"));
     // BLE carries the remote-trigger mode.
     assert!(ble.modes.contains(&"remote-trigger".to_string()));
 }
@@ -199,7 +199,7 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
     let m = gfx();
     let wt = &m.connections["wireless-tether"];
     assert_eq!(wt.kind.as_deref(), Some("ptpip-direct"));
-    assert_eq!(wt.establishment.as_deref(), Some("pcss-knock-v1"));
+    assert_eq!(wt.establishment.as_deref(), Some("pcss-knock"));
     assert_eq!(m.evidence["wireTether"].kind, "wire-capture");
     // Big-3 control mechanism is per-connection: absolute over the tether.
     let ap = m.control_for(0x5007, "wireless-tether").unwrap();
