@@ -254,8 +254,11 @@ class FakeCamera:
         ),
     ],
 )
-async def test_run_async_dispatches_commands(monkeypatch, args, expected) -> None:
+async def test_run_async_dispatches_commands(monkeypatch, tmp_path, args, expected) -> None:
     monkeypatch.setattr(cli, "FujiCamera", FakeCamera)
+    if args.command == "firmware-prepare":
+        args.dat = tmp_path / "GXUP0006.DAT"
+        args.dat.write_bytes(b"firmware")
 
     assert await cli.run_async(args) == 0
 

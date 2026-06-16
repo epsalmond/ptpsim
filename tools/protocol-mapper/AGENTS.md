@@ -236,6 +236,7 @@ This uses System Settings UI automation and requires Accessibility permission fo
 Aim for full test coverage:
 
 ```sh
+.venv/bin/python -m pip install -e '.[test]'
 .venv/bin/python -m pytest -q
 ```
 

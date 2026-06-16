@@ -31,7 +31,11 @@ packages/
 
 ```sh
 cargo test            # Rust workspace
-( cd tools/protocol-mapper && python -m pytest -q )   # probe
+(
+  cd tools/protocol-mapper
+  .venv/bin/python -m pip install -e '.[test]'
+  .venv/bin/python -m pytest -q
+)
 ```
 
 ## CI
