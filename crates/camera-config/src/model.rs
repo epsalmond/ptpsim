@@ -543,18 +543,91 @@ pub struct Step {
     pub await_until: Option<AwaitUntil>,
 }
 
-/// The PTP-IP await/poll-until step body (§11.15 contract, mirrored from the BLE
-/// grammar). Unlike BLE — whose source is `read | notify` over byte windows — the
-/// PTP-IP source is always a property poll: a `GetDevicePropValue(source)` IS the
-/// capture (the typed value lands in the observed [`crate::predicate::PropView`]
-/// keyed by prop code). `until` reuses the existing PTP [`Predicate`] over that
-/// view; `mask` handles `0xd212`-style composite sub-fields. The AF box color is
-/// driven by this poll, not the `0xc005` event (PTP_PROPERTIES_REFERENCE.md §5.3).
+/// Where a PTP-IP `awaitUntil` observes (§11.16). Mirrors the BLE `AwaitSource`
+/// (`read | notify`) split as `poll | event`, authored in YAML as a single-entry
+/// mapping — `poll: <hex>` or `event: { code: <hex>, thenPoll: <hex>? }`. Custom
+/// `Deserialize` dispatches on the key (see below); `Serialize` is derived (and,
+/// like the BLE analogue, not relied on for round-trip — the manifest is
+/// load-only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AwaitSource {
+    /// Poll a property each iteration (`GetDevicePropValue`) — the #49 default.
+    /// `until` evaluates over the accumulated [`crate::predicate::PropView`].
+    Poll { prop: HexCode },
+    /// Await a completion/lifecycle event push (the camera's `0xC0xx` channel),
+    /// then do a SINGLE post-event value read of `then_poll` (#54 hybrid). The
+    /// event signals the value is ready; one read makes it visible. `then_poll:
+    /// None` = event arrival alone satisfies `until` over the existing scope.
+    Event {
+        code: HexCode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        then_poll: Option<HexCode>,
+    },
+}
+
+impl<'de> serde::Deserialize<'de> for AwaitSource {
+    /// YAML form: a single-entry mapping — `poll: <hex>` (bare string) or
+    /// `event: { code: <hex>, thenPoll: <hex>? }`. Mirrors the BLE `AwaitSource`
+    /// `read`/`notify` dispatch.
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let mapping = serde_yaml::Mapping::deserialize(d)?;
+        if mapping.len() != 1 {
+            return Err(D::Error::custom(format!(
+                "awaitUntil source must be a single-entry mapping (got {} keys)",
+                mapping.len()
+            )));
+        }
+        let (key_v, body) = mapping.into_iter().next().unwrap();
+        let key = key_v
+            .as_str()
+            .ok_or_else(|| D::Error::custom("awaitUntil source key must be a string"))?
+            .to_string();
+        match key.as_str() {
+            "poll" => {
+                let prop = body
+                    .as_str()
+                    .ok_or_else(|| D::Error::custom("poll: <hex> string required"))?
+                    .to_string();
+                Ok(AwaitSource::Poll { prop })
+            }
+            "event" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct E {
+                    code: String,
+                    #[serde(default)]
+                    then_poll: Option<String>,
+                }
+                let e: E = serde_yaml::from_value(body)
+                    .map_err(|err| D::Error::custom(format!("event: {err}")))?;
+                Ok(AwaitSource::Event {
+                    code: e.code,
+                    then_poll: e.then_poll,
+                })
+            }
+            other => Err(D::Error::custom(format!(
+                "unknown awaitUntil source '{other}' (allowlist: poll, event)"
+            ))),
+        }
+    }
+}
+
+/// The PTP-IP await/poll-until step body (§11.16 contract, mirrored from the BLE
+/// grammar). The [`source`](Self::source) is either a property `poll` (#49: a
+/// `GetDevicePropValue` IS the capture — the typed value lands in the observed
+/// [`crate::predicate::PropView`] keyed by prop code) or an `event` push (#54:
+/// await a `0xC0xx` completion, then one post-event read). `until` reuses the PTP
+/// [`Predicate`] over that view; `mask` handles `0xd212`-style composite sub-fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AwaitUntil {
-    /// Property polled each iteration (`GetDevicePropValue`).
-    pub source: HexCode,
+    /// Where to observe: a property `poll` (loop) or an `event` push (single-shot).
+    pub source: AwaitSource,
     /// Satisfied when this predicate over observed values holds.
     pub until: Predicate,
     /// Steps run each iteration when `until` is NOT yet satisfied, before the
@@ -849,7 +922,7 @@ connections:
         steps:
           - { sendOp: "0x9026", params: [0x09060403] }
           - awaitUntil:
-              source: "0xd209"
+              source: { poll: "0xd209" }
               until: { prop: "0xd209", eq: 1 }
               timeoutMs: 5000
               intervalMs: 250
@@ -861,7 +934,12 @@ connections:
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].send_op.as_deref(), Some("0x9026"));
         let aw = steps[1].await_until.as_ref().expect("awaitUntil parsed");
-        assert_eq!(aw.source, "0xd209");
+        assert_eq!(
+            aw.source,
+            AwaitSource::Poll {
+                prop: "0xd209".into()
+            }
+        );
         assert_eq!(aw.timeout_ms, 5000);
         assert_eq!(aw.interval_ms, 250);
         assert_eq!(aw.on_each.len(), 1);
@@ -875,6 +953,88 @@ connections:
             .eval(&crate::predicate::PropView::new().with(0xd209, 0)));
         // Exactly-one-action holds for the awaitUntil step too.
         assert!(steps.iter().all(Step::is_well_formed));
+    }
+
+    #[test]
+    fn await_until_event_source_parses() {
+        // #54 hybrid: await the 0xC005 completion push, then one read of 0xd209.
+        let yaml = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    entries:
+      - to: Shooting/Stills
+        steps:
+          - { sendOp: "0x9026", params: [0x09060403] }
+          - awaitUntil:
+              source: { event: { code: "0xc005", thenPoll: "0xd209" } }
+              until: { prop: "0xd209", eq: 1 }
+              timeoutMs: 5000
+"#;
+        let m = CameraManifest::from_yaml(yaml).unwrap();
+        let aw = m.connections["app"].entries[0].steps[1]
+            .await_until
+            .as_ref()
+            .expect("awaitUntil parsed");
+        assert_eq!(
+            aw.source,
+            AwaitSource::Event {
+                code: "0xc005".into(),
+                then_poll: Some("0xd209".into()),
+            }
+        );
+        // thenPoll omitted = event arrival alone.
+        let bare = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    entries:
+      - to: Shooting/Stills
+        steps:
+          - awaitUntil:
+              source: { event: { code: "0xc001" } }
+              until: { prop: "0xd400", eq: 1 }
+              timeoutMs: 5000
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            bare.connections["app"].entries[0].steps[0]
+                .await_until
+                .as_ref()
+                .unwrap()
+                .source,
+            AwaitSource::Event {
+                code: "0xc001".into(),
+                then_poll: None,
+            }
+        );
+    }
+
+    #[test]
+    fn await_until_source_rejects_unknown_key() {
+        // The single-entry-mapping allowlist (poll, event) rejects other keys.
+        let yaml = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    entries:
+      - to: Shooting/Stills
+        steps:
+          - awaitUntil:
+              source: { notify: "0xd209" }
+              until: { prop: "0xd209", eq: 1 }
+              timeoutMs: 5000
+"#;
+        let err = CameraManifest::from_yaml(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("unknown awaitUntil source"),
+            "expected allowlist error, got: {err}"
+        );
     }
 
     #[test]

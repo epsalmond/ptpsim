@@ -3,7 +3,7 @@
 //! "chords" — and enumerates believably. Engine-level (the service smoke test covers
 //! the TCP path). This is the vcam-replacement believability gate.
 
-use camera_config::{AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam};
+use camera_config::{AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam};
 use camera_media_store::MediaStore;
 use camera_sim::{walk_ptpip, Engine, Reply};
 use ptp_core::{DeviceInfo, OperationRequest, Reader};
@@ -147,7 +147,9 @@ fn af_lock_round_trips_from_the_consolidated_manifest() {
         },
         Step {
             await_until: Some(AwaitUntil {
-                source: "0xd209".into(),
+                source: AwaitSource::Poll {
+                    prop: "0xd209".into(),
+                },
                 until: Predicate::Leaf(Leaf {
                     prop: "0xd209".into(),
                     mask: None,
