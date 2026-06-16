@@ -591,10 +591,11 @@ impl ConfigStore {
     /// `initial_scope` (typically the runtime_scope from a
     /// [`Recognition::Candidate`]).
     ///
-    /// Returns `None` if the model is unknown or the connection has no
-    /// establishment block in the index. The plan's [`Step`] values keep
-    /// their structured `Captured` / `Runtime` / `Template` forms — scope is
-    /// resolved by the dispatcher mid-walk (plan §11.1).
+    /// Returns `None` if the model is unknown, the connection declares no
+    /// establishment mechanism (e.g. `usb`), or no plan is registered under
+    /// that mechanism. The plan's [`Step`] values keep their structured
+    /// `Captured` / `Runtime` / `Template` forms — scope is resolved by the
+    /// dispatcher mid-walk (plan §11.1).
     pub fn establishment(
         &self,
         model: String,
@@ -602,7 +603,16 @@ impl ConfigStore {
         initial_scope: Vec<KeyValue>,
     ) -> Option<EstablishmentPlan> {
         let index = self.inner.index.as_ref()?;
-        mfg_index::build_establishment(index, &model, &connection, &initial_scope)
+        // The body manifest maps connection → establishment mechanism; the
+        // index registry holds the plan under that mechanism name.
+        let mechanism = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)?
+            .establishment
+            .clone()?;
+        mfg_index::build_establishment(index, &model, &connection, &mechanism, &initial_scope)
     }
 
     /// Per §11.5: returns ONLY the unwalked tail; the dispatcher splices it

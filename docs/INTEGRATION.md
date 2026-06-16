@@ -302,6 +302,6 @@ the pull model is that the app source is identical with one manifest or fifty.
 
 USB / mDNS / TCP / UDP / WiFi-join verbs and their I/O primitives.
 `promptableModels()`. The `dev-direct` assertive PTP/IP flow. Full PTP session
-layer / live-view socket. The BLE→WiFi-AP handover (`fuji-ble-to-wifi-ap-v1`).
+layer / live-view socket. The BLE→WiFi-AP handover (`ble-establish-wifi-ap`).
 Adding any of them is one schema verb + one dispatcher case — no other layer
 changes.

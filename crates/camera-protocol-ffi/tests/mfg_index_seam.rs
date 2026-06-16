@@ -24,6 +24,24 @@ fn store() -> std::sync::Arc<ConfigStore> {
     .expect("manufacturer index loads")
 }
 
+/// Minimal body manifest for the synthetic `tm1` model used by the inline-index
+/// seam tests. Its `ble` connection declares `establishment: test`, matching the
+/// mechanism the synthetic indexes register their plan under — so
+/// `ConfigStore::establishment("tm1", "ble", …)` resolves to that plan.
+fn tm1_body() -> String {
+    r#"
+schema: camera-config/v1
+camera:
+  manufacturer: TESTCO
+  model: TM1
+connections:
+  ble:
+    kind: ble
+    establishment: test
+"#
+    .to_string()
+}
+
 /// Convenience constructor for the common "manufacturer data + service
 /// UUIDs" advert shape. Fields the synthetic adverts never carry
 /// (service data, TX power, raw AD records) stay empty.
@@ -223,7 +241,7 @@ fn establishment_returns_walkable_ble_plan() {
         .establishment("gfx100ii".into(), "ble".into(), scope)
         .expect("plan present");
     assert_eq!(plan.plan_handle, "gfx100ii:ble");
-    assert_eq!(plan.mechanism, "fuji-ble-pair-v1");
+    assert_eq!(plan.mechanism, "ble-pair");
     assert!(plan.prerequisite.is_none());
     assert!(!plan.steps.is_empty());
 
@@ -330,6 +348,71 @@ fn establishment_returns_none_for_unknown_model() {
         .is_none());
 }
 
+#[test]
+fn establishment_app_connection_returns_wifi_ap_plan() {
+    // Issue #47: the `app` (BLE-initiated WiFi-AP) connection now resolves to
+    // the ble-establish-wifi-ap plan — previously nil, so a paired camera had
+    // nowhere to go. The mechanism is read from the body manifest
+    // (connections.app.establishment) then looked up in the index registry.
+    let s = store();
+    let plan = s
+        .establishment("gfx100ii".into(), "app".into(), vec![])
+        .expect("app connection resolves to the ble-establish-wifi-ap plan");
+    assert_eq!(plan.plan_handle, "gfx100ii:app");
+    assert_eq!(plan.mechanism, "ble-establish-wifi-ap");
+    assert_eq!(plan.prerequisite.as_deref(), Some("ble-pair"));
+    assert_eq!(plan.params, vec!["launchMode".to_string()]);
+
+    // Opens with bleConnect (the BLE link carried over from ble-pair), then
+    // writes FUNCTION_LAUNCH_REQUEST with the runtime launchMode (u16-le).
+    assert!(matches!(plan.steps[0], Step::BleConnect { .. }));
+    let (gatt, value) = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            Step::BleWrite { gatt, value, .. } => Some((gatt, value)),
+            _ => None,
+        })
+        .expect("writes the function-launch request");
+    assert_eq!(gatt, "600655E6-3637-42F1-8FB2-44EFC5C63B13");
+    match value {
+        StepValue::Runtime { slot, encoding, .. } => {
+            assert_eq!(slot, "launchMode");
+            assert_eq!(encoding.as_deref(), Some("u16-le"));
+        }
+        other => panic!("expected Runtime launch value, got {other:?}"),
+    }
+
+    // The await step surfaces with its apState capture + predicate field.
+    let until_field = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            Step::BleAwaitUntil { capture, until, .. } => {
+                assert!(capture.iter().any(|c| c.name == "apState"));
+                Some(until.field.clone())
+            }
+            _ => None,
+        })
+        .expect("ble-establish-wifi-ap awaits apState");
+    assert_eq!(until_field, "apState");
+
+    // The credential reads bind ssid + passphrase — the consumer contract.
+    let reads: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::BleRead { capture_as, .. } => Some(capture_as.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(reads.contains(&"ssid"), "binds ssid; got {reads:?}");
+    assert!(
+        reads.contains(&"passphrase"),
+        "binds passphrase; got {reads:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // refine_establishment() — §11.5 graceful-degrade contract
 // ---------------------------------------------------------------------------
@@ -397,19 +480,20 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
-          - bleNotify:
-              gatt: c
-              until: any
-              capture:
-                - at: 3
-                  transform: { dropPrefix: 1 }
-                  encoding: ascii
-                  name: ssid
-              timeoutMs: 5000
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
+            - bleNotify:
+                gatt: c
+                until: any
+                capture:
+                  - at: 3
+                    transform: { dropPrefix: 1 }
+                    encoding: ascii
+                    name: ssid
+                timeoutMs: 5000
 models:
   - id: tm1
     displayName: "Test"
@@ -420,7 +504,7 @@ models:
         index_yaml.to_string(),
         vec![KeyValue {
             key: "tm1".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+            value: tm1_body(),
         }],
     )
     .expect("synthetic index loads");
@@ -489,12 +573,13 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleConnect: {}
-          - bleRequestMtu: { mtu: 158, tolerant: true }
-          - bleDiscoverServices: {}
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleConnect: {}
+            - bleRequestMtu: { mtu: 158, tolerant: true }
+            - bleDiscoverServices: {}
 models:
   - id: tm1
     displayName: "Test"
@@ -505,7 +590,7 @@ models:
         index_yaml.to_string(),
         vec![KeyValue {
             key: "tm1".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+            value: tm1_body(),
         }],
     )
     .expect("synthetic index loads");
@@ -537,7 +622,7 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: {}
-      establishment: { mechanism: test, steps: [ { bleConnect: {} } ] }
+      establishments: { test: { mechanism: test, steps: [ { bleConnect: {} } ] } }
 models:
   - id: tm1
     displayName: "Test Z9"
@@ -808,18 +893,19 @@ families:
         statusChar: "0000CC09-0000-1000-8000-00805F9B34FB"
         requestChar: "0000CC08-0000-1000-8000-00805F9B34FB"
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleConnect: {}
-          - bleAwaitUntil:
-              source: { notify: { gatt: statusChar, mode: indicate } }
-              capture: { at: 0, length: 1, encoding: u8, name: status }
-              until: { status: { eq: 1 } }
-              onEach:
-                - bleWrite: { gatt: requestChar, value: { literal: "01" } }
-              timeoutMs: 5000
-              intervalMs: 250
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleConnect: {}
+            - bleAwaitUntil:
+                source: { notify: { gatt: statusChar, mode: indicate } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                onEach:
+                  - bleWrite: { gatt: requestChar, value: { literal: "01" } }
+                timeoutMs: 5000
+                intervalMs: 250
 models:
   - id: tm1
     displayName: "Test"
@@ -830,7 +916,7 @@ models:
         index_yaml.to_string(),
         vec![KeyValue {
             key: "tm1".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+            value: tm1_body(),
         }],
     )
     .expect("synthetic index loads");

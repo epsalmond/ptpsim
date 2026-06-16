@@ -127,7 +127,7 @@ pub enum EntryStep {
 #[derive(uniffi::Record)]
 pub struct EstablishmentPlan {
     pub target_connection: String,         // e.g. "app" (the BLE→WiFi-AP handover)
-    pub mechanism: Option<String>,         // "ble-to-wifi-ap-v1" | "pcss-knock-v1"
+    pub mechanism: Option<String>,         // "ble-establish-wifi-ap" | "pcss-knock"
     pub user_instruction: Option<String>,
     pub params: Vec<KeyValue>,             // knock ports, GATT char uuids, etc. (app drives I/O)
 }

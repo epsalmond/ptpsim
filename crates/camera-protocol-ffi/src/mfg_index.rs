@@ -131,10 +131,13 @@ pub struct ModelMatch {
 pub struct EstablishmentPlan {
     pub plan_handle: String,
     pub mechanism: String,
-    /// MVP: always empty. Reserved for connection-bring-up chains (e.g. BLE
-    /// pairing must complete before WiFi-AP handover). The FFI never sees a
-    /// `Some(prereq)` until the §B WiFi-AP family lands in P2.
+    /// Mechanism that must complete before this plan (e.g.
+    /// `ble-establish-wifi-ap` carries `Some("ble-pair")`). Advisory — the
+    /// consumer sequences on it; the reference walker does not enforce it.
     pub prerequisite: Option<String>,
+    /// Runtime parameter names the consumer binds before walking (e.g.
+    /// `["launchMode"]`). Empty for plans that take no runtime input.
+    pub params: Vec<String>,
     pub steps: Vec<Step>,
 }
 
@@ -744,8 +747,11 @@ fn confidence_from(c: ix::Confidence) -> Confidence {
 // establishment() — model + connection + initial_scope → plan
 // ---------------------------------------------------------------------------
 
-/// Build the per-(model, connection) plan. The MVP supports only `connection
-/// == "ble"`; everything else returns `None`.
+/// Build the establishment plan registered under `mechanism` for `model`.
+/// The caller resolves `mechanism` from the body manifest's
+/// `connections[connection].establishment`; this looks it up in the index
+/// family BLE `establishments` registry. Returns `None` if the model has no
+/// BLE block or no plan is registered under `mechanism`.
 ///
 /// `initial_scope` is currently informational — the plan's steps don't
 /// inline-resolve scope at this layer (the dispatcher does that mid-walk).
@@ -755,18 +761,18 @@ pub fn build_establishment(
     index: &ix::ResolvedManufacturerIndex,
     model: &str,
     connection: &str,
+    mechanism: &str,
     _initial_scope: &[KeyValue],
 ) -> Option<EstablishmentPlan> {
     let model_view = index.models.iter().find(|m| m.id == model)?;
-    if connection != "ble" {
-        return None;
-    }
     let ble = model_view.ble.as_ref()?;
-    let steps = ble.establishment.steps.iter().map(Step::from).collect();
+    let block = ble.establishment(mechanism)?;
+    let steps = block.steps.iter().map(Step::from).collect();
     Some(EstablishmentPlan {
         plan_handle: format!("{model}:{connection}"),
-        mechanism: ble.establishment.mechanism.clone(),
-        prerequisite: None,
+        mechanism: block.mechanism.clone(),
+        prerequisite: block.prerequisite.clone(),
+        params: block.params.clone(),
         steps,
     })
 }

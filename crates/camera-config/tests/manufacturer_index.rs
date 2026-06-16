@@ -78,9 +78,9 @@ fn family_ble_block_merges_into_gfx100ii_view() {
         Some("AF854C2E-B214-458E-97E2-912C4ECF2CB8"),
     );
     // Establishment plan inherited.
-    assert_eq!(ble.establishment.mechanism, "fuji-ble-pair-v1");
+    assert_eq!(ble.establishment("ble-pair").unwrap().mechanism, "ble-pair");
     assert!(
-        ble.establishment.steps.len() >= 4,
+        ble.establishment("ble-pair").unwrap().steps.len() >= 4,
         "establishment carries the multi-step pair flow"
     );
 }
@@ -93,7 +93,13 @@ fn family_ble_block_merges_into_gfx100ii_view() {
 fn gatt_symbolic_names_in_steps_become_uuids() {
     let idx = real_index();
     let gfx = idx.models.iter().find(|m| m.id == "gfx100ii").unwrap();
-    let steps = &gfx.ble.as_ref().unwrap().establishment.steps;
+    let steps = &gfx
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("ble-pair")
+        .unwrap()
+        .steps;
 
     // Step 1 (after bleConnect): bleRead on protectedSerialString.
     let read_serial = steps
@@ -124,7 +130,13 @@ fn gatt_symbolic_names_in_steps_become_uuids() {
 fn gatt_symbolic_names_inside_if_branches_also_resolve() {
     let idx = real_index();
     let gfx = idx.models.iter().find(|m| m.id == "gfx100ii").unwrap();
-    let steps = &gfx.ble.as_ref().unwrap().establishment.steps;
+    let steps = &gfx
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("ble-pair")
+        .unwrap()
+        .steps;
     let ifs: Vec<_> = steps
         .iter()
         .filter_map(|s| match s {
@@ -170,10 +182,11 @@ families:
         knownChar: "00002A25-0000-1000-8000-00805F9B34FB"
       advert:
         manufacturerCompanyId: 0x1234
-      establishment:
-        mechanism: test
-        steps:
-          - bleRead: { gatt: notDeclared, encoding: bytes, captureAs: x }
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleRead: { gatt: notDeclared, encoding: bytes, captureAs: x }
 models:
   - id: tm1
     displayName: "Test"
@@ -228,7 +241,7 @@ families:
       gatt: {}
       advert:
         manufacturerCompanyId: 0x1234
-      establishment: { mechanism: test, steps: [] }
+      establishments: { test: { mechanism: test, steps: [] } }
 models:
   - id: tm1
     displayName: "Test"
@@ -260,7 +273,7 @@ families:
       gatt: {}
       advert:
         manufacturerCompanyId: 0x1234
-      establishment: { mechanism: test, steps: [] }
+      establishments: { test: { mechanism: test, steps: [] } }
 models:
   - id: tm1
     displayName: "Test"
@@ -356,10 +369,11 @@ families:
     ble:
       gatt: {}
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - usbEnumerate: {}
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - usbEnumerate: {}
 models:
   - id: tm1
     displayName: "Test"
@@ -386,10 +400,11 @@ families:
       gatt:
         c: "00002A25-0000-1000-8000-00805F9B34FB"
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleRead: { gatt: c, encoding: noSuchEncoding, captureAs: x }
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleRead: { gatt: c, encoding: noSuchEncoding, captureAs: x }
 models:
   - id: tm1
     displayName: "Test"
@@ -452,7 +467,14 @@ fn every_authored_encoding_is_in_the_allowlist() {
             _ => {}
         }
     }
-    for s in &gfx.ble.as_ref().unwrap().establishment.steps {
+    for s in &gfx
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("ble-pair")
+        .unwrap()
+        .steps
+    {
         collect(s, &mut seen);
     }
     // bytes (protectedSerialString) + u32 (deviceIdentificationNumber).
@@ -474,21 +496,22 @@ families:
       gatt:
         c: "00002A25-0000-1000-8000-00805F9B34FB"
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleNotify:
-              gatt: c
-              until: any
-              timeoutMs: 5000
-          - bleNotify:
-              gatt: c
-              until: { equals: "0x8001", encoding: bytes-raw }
-              timeoutMs: 5000
-          - bleNotify:
-              gatt: c
-              until: { matches: "^OK" }
-              timeoutMs: 5000
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleNotify:
+                gatt: c
+                until: any
+                timeoutMs: 5000
+            - bleNotify:
+                gatt: c
+                until: { equals: "0x8001", encoding: bytes-raw }
+                timeoutMs: 5000
+            - bleNotify:
+                gatt: c
+                until: { matches: "^OK" }
+                timeoutMs: 5000
 models:
   - id: tm1
     displayName: "Test"
@@ -496,7 +519,13 @@ models:
     manifest: tm1.yaml
 "#;
     let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("parses");
-    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
     let untils: Vec<&BleNotifyUntil> = steps
         .iter()
         .filter_map(|s| match s {
@@ -524,16 +553,17 @@ families:
         a: "00002A25-0000-1000-8000-00805F9B34FB"
         b: "00002A26-0000-1000-8000-00805F9B34FB"
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleSubscribe:
-              gatt: a
-              timeoutMs: 1500
-          - bleSubscribe:
-              gatt: b
-              timeoutMs: 1500
-              tolerant: true
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleSubscribe:
+                gatt: a
+                timeoutMs: 1500
+            - bleSubscribe:
+                gatt: b
+                timeoutMs: 1500
+                tolerant: true
 models:
   - id: tm1
     displayName: "Test"
@@ -541,7 +571,13 @@ models:
     manifest: tm1.yaml
 "#;
     let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("parses");
-    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
     let subs: Vec<_> = steps
         .iter()
         .filter_map(|s| match s {
@@ -598,7 +634,13 @@ fn red_echo_write_carries_app_identifier_bit_or_transform() {
     // `transform: { bitOr: 0x20000000 }` on the Captured StepValue.
     let idx = real_index();
     let gfx = idx.models.iter().find(|m| m.id == "gfx100ii").unwrap();
-    let steps = &gfx.ble.as_ref().unwrap().establishment.steps;
+    let steps = &gfx
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("ble-pair")
+        .unwrap()
+        .steps;
     let red_if = steps
         .iter()
         .find_map(|s| match s {
@@ -635,12 +677,13 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleWrite:
-              gatt: c
-              value: { captured: x, transform: { rotateLeft: 4 } }
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleWrite:
+                gatt: c
+                value: { captured: x, transform: { rotateLeft: 4 } }
 models:
   - id: tm1
     displayName: "Test"
@@ -656,7 +699,13 @@ models:
 fn captured_without_transform_still_parses() {
     let idx = real_index();
     let gfx = idx.models.iter().find(|m| m.id == "gfx100ii").unwrap();
-    let steps = &gfx.ble.as_ref().unwrap().establishment.steps;
+    let steps = &gfx
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("ble-pair")
+        .unwrap()
+        .steps;
     // The pre-RED-branch bleWrite of pairingKey has no transform.
     let write_pk = steps
         .iter()
@@ -685,23 +734,24 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleRead:
-              gatt: c
-              encoding: u8
-              captureAs: flags
-              transform:
-                - slice: { at: 3, length: 1 }
-                - bits: { mask: 0x0C, shift: 2 }
-          - bleWrite:
-              gatt: c
-              value:
-                captured: flags
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleRead:
+                gatt: c
+                encoding: u8
+                captureAs: flags
                 transform:
-                  - reverseBytes: {}
-                  - dropPrefix: 2
+                  - slice: { at: 3, length: 1 }
+                  - bits: { mask: 0x0C, shift: 2 }
+            - bleWrite:
+                gatt: c
+                value:
+                  captured: flags
+                  transform:
+                    - reverseBytes: {}
+                    - dropPrefix: 2
 models:
   - id: tm1
     displayName: "Test"
@@ -709,7 +759,13 @@ models:
     manifest: tm1.yaml
 "#;
     let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("chain forms load");
-    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
     match &steps[0] {
         Step::BleRead(r) => assert_eq!(
             r.transform,
@@ -749,12 +805,13 @@ families:
     ble:
       gatt: {{ c: "00002A25-0000-1000-8000-00805F9B34FB" }}
       advert: {{ manufacturerCompanyId: 1 }}
-      establishment:
-        mechanism: test
-        steps:
-          - bleWrite:
-              gatt: c
-              value: {{ captured: x, transform: {transform} }}
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleWrite:
+                gatt: c
+                value: {{ captured: x, transform: {transform} }}
 models:
   - id: tm1
     displayName: "Test"
@@ -787,23 +844,24 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleSubscribe: { gatt: c, timeoutMs: 3000 }
-          - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
-          - bleNotify:
-              gatt: c
-              until: any
-              mode: indicate
-              captureAs: wholePayload
-              capture:
-                - { at: 2, length: 1, encoding: u8, name: wifiStatus }
-                - at: 3
-                  transform: { dropPrefix: 1 }
-                  encoding: ascii
-                  name: ssid
-              timeoutMs: 5000
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleSubscribe: { gatt: c, timeoutMs: 3000 }
+            - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
+            - bleNotify:
+                gatt: c
+                until: any
+                mode: indicate
+                captureAs: wholePayload
+                capture:
+                  - { at: 2, length: 1, encoding: u8, name: wifiStatus }
+                  - at: 3
+                    transform: { dropPrefix: 1 }
+                    encoding: ascii
+                    name: ssid
+                timeoutMs: 5000
 models:
   - id: tm1
     displayName: "Test"
@@ -811,7 +869,13 @@ models:
     manifest: tm1.yaml
 "#;
     let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("mode + captures load");
-    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
     match (&steps[0], &steps[1]) {
         (Step::BleSubscribe(default_sub), Step::BleSubscribe(indicate_sub)) => {
             assert_eq!(
@@ -853,13 +917,14 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: { manufacturerCompanyId: 1 }
-      establishment:
-        mechanism: test
-        steps:
-          - bleConnect: {}
-          - bleRequestMtu: { mtu: 158 }
-          - bleDiscoverServices: { tolerant: true, retries: 3, retryDelayMs: 250 }
-          - bleRead: { gatt: c, encoding: bytes, captureAs: x }
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleConnect: {}
+            - bleRequestMtu: { mtu: 158 }
+            - bleDiscoverServices: { tolerant: true, retries: 3, retryDelayMs: 250 }
+            - bleRead: { gatt: c, encoding: bytes, captureAs: x }
 models:
   - id: tm1
     displayName: "Test"
@@ -867,7 +932,13 @@ models:
     manifest: tm1.yaml
 "#;
     let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("setup verbs load");
-    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
     match &steps[1] {
         Step::BleRequestMtu(s) => {
             assert_eq!(s.mtu, 158);
@@ -901,7 +972,7 @@ families:
     ble:
       gatt: {{}}
       advert: {{ manufacturerCompanyId: 0x012D }}
-      establishment: {{ mechanism: test, steps: [] }}
+      establishments: {{ test: {{ mechanism: test, steps: [] }} }}
 models:
   - id: tm1
     displayName: "Test"
@@ -1033,10 +1104,11 @@ families:
     ble:
       gatt: {{ c: "00002A25-0000-1000-8000-00805F9B34FB" }}
       advert: {{ manufacturerCompanyId: 1 }}
-      establishment:
-        mechanism: test
-        steps:
-          - {verb}
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - {verb}
 models:
   - id: tm1
     displayName: "Test"
@@ -1067,7 +1139,7 @@ families:
     ble:
       gatt: {}
       advert: { manufacturerCompanyId: 0x012D }
-      establishment: { mechanism: test, steps: [] }
+      establishments: { test: { mechanism: test, steps: [] } }
 models:
   - id: tm1
     displayName: "Test"
@@ -1142,11 +1214,12 @@ families:
         statusChar: "0000CC09-0000-1000-8000-00805F9B34FB"
         requestChar: "0000CC08-0000-1000-8000-00805F9B34FB"
       advert: {{ manufacturerCompanyId: 1 }}
-      establishment:
-        mechanism: test
-        steps:
-          - bleConnect: {{}}
-          - bleAwaitUntil:
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleConnect: {{}}
+            - bleAwaitUntil:
 {step_body}
 models:
   - id: tm1
@@ -1161,16 +1234,22 @@ models:
 fn ble_await_until_both_source_forms_parse_and_resolve_gatt() {
     // notify-source with onEach; gatt names in source + onEach resolve to UUIDs.
     let yaml = await_fixture(
-        r#"              source: { notify: { gatt: statusChar, mode: indicate } }
-              capture: { at: 0, length: 1, encoding: u8, name: status }
-              until: { status: { eq: 1 } }
-              onEach:
-                - bleWrite: { gatt: requestChar, value: { literal: "01" } }
-              timeoutMs: 5000
-              intervalMs: 250"#,
+        r#"                source: { notify: { gatt: statusChar, mode: indicate } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                onEach:
+                  - bleWrite: { gatt: requestChar, value: { literal: "01" } }
+                timeoutMs: 5000
+                intervalMs: 250"#,
     );
     let idx = ResolvedManufacturerIndex::from_yaml(&yaml).expect("notify form loads");
-    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
     match &steps[1] {
         Step::BleAwaitUntil(s) => {
             match &s.source {
@@ -1199,13 +1278,19 @@ fn ble_await_until_both_source_forms_parse_and_resolve_gatt() {
 
     // read-source (bare-string gatt), no onEach.
     let yaml = await_fixture(
-        r#"              source: { read: statusChar }
-              capture: { at: 0, length: 1, encoding: u8, name: color }
-              until: { color: { eq: 1 } }
-              timeoutMs: 3000"#,
+        r#"                source: { read: statusChar }
+                capture: { at: 0, length: 1, encoding: u8, name: color }
+                until: { color: { eq: 1 } }
+                timeoutMs: 3000"#,
     );
     let idx = ResolvedManufacturerIndex::from_yaml(&yaml).expect("read form loads");
-    let steps = &idx.models[0].ble.as_ref().unwrap().establishment.steps;
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
     match &steps[1] {
         Step::BleAwaitUntil(s) => match &s.source {
             camera_config::index::AwaitSource::Read { gatt } => {
@@ -1225,9 +1310,9 @@ fn ble_await_until_both_source_forms_parse_and_resolve_gatt() {
 fn ble_await_until_validation_rejects_bad_forms() {
     // timeoutMs: 0 — an await needs a budget.
     let yaml = await_fixture(
-        r#"              source: { read: statusChar }
-              until: { x: { eq: 1 } }
-              timeoutMs: 0"#,
+        r#"                source: { read: statusChar }
+                until: { x: { eq: 1 } }
+                timeoutMs: 0"#,
     );
     let err = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
     assert!(
@@ -1237,9 +1322,9 @@ fn ble_await_until_validation_rejects_bad_forms() {
 
     // unknown source key.
     let yaml = await_fixture(
-        r#"              source: { poll: statusChar }
-              until: { x: { eq: 1 } }
-              timeoutMs: 1000"#,
+        r#"                source: { poll: statusChar }
+                until: { x: { eq: 1 } }
+                timeoutMs: 1000"#,
     );
     let err = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
     assert!(
@@ -1249,9 +1334,9 @@ fn ble_await_until_validation_rejects_bad_forms() {
 
     // undefined gatt symbolic name in the source.
     let yaml = await_fixture(
-        r#"              source: { read: notDeclared }
-              until: { x: { eq: 1 } }
-              timeoutMs: 1000"#,
+        r#"                source: { read: notDeclared }
+                until: { x: { eq: 1 } }
+                timeoutMs: 1000"#,
     );
     let err = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
     assert!(
