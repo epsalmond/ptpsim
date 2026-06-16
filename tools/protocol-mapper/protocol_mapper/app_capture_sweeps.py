@@ -25,6 +25,7 @@ DEFAULT_ISSUE_NUMBER = 60
 DEFAULT_REMOTE_WORKDIR = "/home/eric/ptpsim-protocol-mapper-capture-sweeps"
 SWEEPS = ("liveview", "ap", "transfer")
 AP_MODES = ("take", "get", "fw_transfer")
+BLE_RECOVERY_MODES = ("off", "gate", "reset-on-fail", "reset-each-phase")
 POLL_SPECS = {
     "none": None,
     "1s": 1.0,
@@ -60,6 +61,13 @@ def parse_ap_modes(value: str) -> list[str]:
 
 def parse_poll_specs(value: str) -> list[str]:
     return parse_csv(value, tuple(POLL_SPECS), "poll spec")
+
+
+def parse_ble_recovery_mode(value: str) -> str:
+    mode = value.strip().lower()
+    if mode not in BLE_RECOVERY_MODES:
+        raise argparse.ArgumentTypeError(f"invalid BLE recovery mode: {value}")
+    return mode
 
 
 def parse_positive_int(value: str) -> int:
@@ -185,6 +193,9 @@ class SweepConfig:
     ble_connect_timeout: float
     ble_connect_attempts: int
     ble_connect_retry_delay_s: float
+    ble_recovery_mode: str
+    ble_recovery_timeout: float
+    ble_recovery_settle_s: float
     ap_timeout: float
     ptp_timeout: float
     live_duration_s: float
@@ -222,6 +233,169 @@ def apply_partial_summary(summary: dict[str, Any], exc: BaseException) -> None:
         summary.update(exc.partial_summary)
 
 
+def mark_reset_required(summary: dict[str, Any], reason: str) -> None:
+    summary["reset_required"] = True
+    summary["reset_reason"] = reason
+
+
+def blocked_verdict(summary: dict[str, Any], exc: BaseException | None = None) -> str:
+    if summary.get("reset_required"):
+        return f"blocked: reset_required: {summary.get('reset_reason', 'ble_recovery_failed')}"
+    if exc is not None:
+        return f"blocked: {exc!r}"
+    return "blocked"
+
+
+def run_ble_recovery_command(
+    timeline: base.Timeline,
+    argv: list[str],
+    *,
+    label: str,
+    timeout: float,
+) -> dict[str, Any]:
+    result = base.run_cmd(argv, timeout=timeout)
+    record = {"label": label, **result}
+    timeline.event(
+        "ble_recovery_command",
+        label=label,
+        argv=result.get("argv", argv),
+        returncode=result.get("returncode"),
+        stdout=result.get("stdout", ""),
+        stderr=result.get("stderr", ""),
+        error=result.get("error", ""),
+        elapsed_s=result.get("elapsed_s"),
+    )
+    return record
+
+
+async def run_ble_adapter_reset(
+    config: SweepConfig,
+    timeline: base.Timeline,
+    *,
+    trigger: str,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "trigger": trigger,
+        "mode": config.ble_recovery_mode,
+        "adapter_reset": True,
+        "commands": [],
+    }
+    timeline.event("ble_adapter_reset_start", trigger=trigger, mode=config.ble_recovery_mode)
+    summary["commands"].append(
+        run_ble_recovery_command(
+            timeline,
+            ["bluetoothctl", "power", "off"],
+            label="adapter_power_off",
+            timeout=config.ble_recovery_timeout,
+        )
+    )
+    if config.ble_recovery_settle_s > 0:
+        await asyncio.sleep(config.ble_recovery_settle_s)
+    summary["commands"].append(
+        run_ble_recovery_command(
+            timeline,
+            ["bluetoothctl", "power", "on"],
+            label="adapter_power_on",
+            timeout=config.ble_recovery_timeout,
+        )
+    )
+    if config.ble_recovery_settle_s > 0:
+        await asyncio.sleep(config.ble_recovery_settle_s)
+    summary["commands"].append(
+        run_ble_recovery_command(
+            timeline,
+            ["bluetoothctl", "show"],
+            label="adapter_show_after_reset",
+            timeout=config.ble_recovery_timeout,
+        )
+    )
+    summary["ok"] = all(command.get("returncode") == 0 for command in summary["commands"])
+    timeline.event("ble_adapter_reset_finish", trigger=trigger, ok=summary["ok"])
+    return summary
+
+
+async def run_pre_phase_ble_recovery(config: SweepConfig, timeline: base.Timeline) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "trigger": "pre_phase",
+        "mode": config.ble_recovery_mode,
+        "commands": [],
+    }
+    if config.ble_recovery_mode == "off":
+        summary["skipped"] = True
+        timeline.event("ble_recovery_skipped", trigger="pre_phase", mode=config.ble_recovery_mode)
+        return summary
+
+    timeline.event("ble_recovery_start", trigger="pre_phase", mode=config.ble_recovery_mode)
+    summary["commands"].append(
+        run_ble_recovery_command(
+            timeline,
+            ["bluetoothctl", "show"],
+            label="adapter_show_before_recovery",
+            timeout=config.ble_recovery_timeout,
+        )
+    )
+    summary["commands"].append(
+        run_ble_recovery_command(
+            timeline,
+            ["bluetoothctl", "scan", "off"],
+            label="scan_off",
+            timeout=config.ble_recovery_timeout,
+        )
+    )
+    if config.ble_address:
+        summary["commands"].append(
+            run_ble_recovery_command(
+                timeline,
+                ["bluetoothctl", "disconnect", config.ble_address],
+                label="disconnect_target",
+                timeout=config.ble_recovery_timeout,
+            )
+        )
+    else:
+        summary["disconnect_target"] = "skipped: no BLE address configured"
+    if config.ble_recovery_mode == "reset-each-phase":
+        summary["adapter_reset"] = await run_ble_adapter_reset(config, timeline, trigger="pre_phase")
+    elif config.ble_recovery_settle_s > 0:
+        await asyncio.sleep(config.ble_recovery_settle_s)
+    summary["ok"] = True
+    timeline.event("ble_recovery_finish", trigger="pre_phase", mode=config.ble_recovery_mode)
+    return summary
+
+
+async def find_ready_ble_device(
+    camera: FujiCamera,
+    config: SweepConfig,
+    timeline: base.Timeline,
+    *,
+    cycle: str,
+) -> DeviceInfo:
+    timeline.event(
+        "ble_ready_probe_start",
+        cycle=cycle,
+        name=config.camera_name,
+        address=config.ble_address,
+        timeout_s=config.scan_timeout,
+    )
+    started = time.monotonic()
+    try:
+        device = await camera._target(name=config.camera_name, timeout=config.scan_timeout, address=config.ble_address)
+    except Exception as exc:
+        timeline.event(
+            "ble_ready_probe_error",
+            cycle=cycle,
+            elapsed_s=round(time.monotonic() - started, 3),
+            error=repr(exc),
+        )
+        raise
+    timeline.event(
+        "ble_ready_probe_ok",
+        cycle=cycle,
+        elapsed_s=round(time.monotonic() - started, 3),
+        **device.to_log_dict(),
+    )
+    return device
+
+
 async def connect_ble_with_retries(
     backend: BleakBackend,
     device: DeviceInfo,
@@ -230,10 +404,13 @@ async def connect_ble_with_retries(
     attempts: int,
     timeout: float,
     retry_delay_s: float,
+    cycle: str | None = None,
 ) -> tuple[BleConnection, BleConnection, list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
     for attempt in range(1, attempts + 1):
         record: dict[str, Any] = {"attempt": attempt, "timeout_s": timeout}
+        if cycle:
+            record["cycle"] = cycle
         timeline.event("ble_connect_start", **record)
         started = time.monotonic()
         conn_cm = backend.connect(device, timeout=timeout)
@@ -298,9 +475,16 @@ async def connect_and_launch_ap(
     ble_session = Session(root=phase_dir, label=f"ble_{mode}")
     backend = BleakBackend(ble_session)
     camera = FujiCamera(backend, ble_session)
-    device = await camera._target(name=config.camera_name, timeout=config.scan_timeout, address=config.ble_address)
-    summary: dict[str, Any] = {"device": device.to_log_dict(), "launch_mode": mode}
-    timeline.event("ble_target", **summary["device"])
+    summary: dict[str, Any] = {"launch_mode": mode, "ble_recovery": []}
+    summary["ble_recovery"].append(await run_pre_phase_ble_recovery(config, timeline))
+    try:
+        device = await find_ready_ble_device(camera, config, timeline, cycle="initial")
+    except Exception as exc:  # noqa: BLE001 - readiness failures are capture evidence
+        summary["ble_ready"] = {"cycle": "initial", "ok": False, "error": repr(exc)}
+        mark_reset_required(summary, "ble_not_advertising")
+        raise PhaseBlockedError("BLE ready gate failed before AP launch", partial_summary=summary) from exc
+    summary["device"] = device.to_log_dict()
+    timeline.event("ble_target", cycle="initial", **summary["device"])
     try:
         conn_cm, conn, connect_records = await connect_ble_with_retries(
             backend,
@@ -309,10 +493,55 @@ async def connect_and_launch_ap(
             attempts=config.ble_connect_attempts,
             timeout=config.ble_connect_timeout,
             retry_delay_s=config.ble_connect_retry_delay_s,
+            cycle="initial",
         )
     except PhaseBlockedError as exc:
         summary.update(exc.partial_summary)
-        raise PhaseBlockedError(str(exc), partial_summary=summary) from exc
+        if config.ble_recovery_mode == "reset-on-fail":
+            summary["ble_recovery"].append(
+                await run_ble_adapter_reset(config, timeline, trigger="ble_connect_failure")
+            )
+            try:
+                device = await find_ready_ble_device(camera, config, timeline, cycle="post_adapter_reset")
+            except Exception as ready_exc:  # noqa: BLE001 - readiness failures are capture evidence
+                summary["ble_ready_after_reset"] = {
+                    "cycle": "post_adapter_reset",
+                    "ok": False,
+                    "error": repr(ready_exc),
+                }
+                mark_reset_required(summary, "ble_not_advertising_after_adapter_reset")
+                raise PhaseBlockedError(
+                    "BLE ready gate failed after adapter reset",
+                    partial_summary=summary,
+                ) from ready_exc
+            summary["device_after_reset"] = device.to_log_dict()
+            timeline.event("ble_target", cycle="post_adapter_reset", **summary["device_after_reset"])
+            try:
+                conn_cm, conn, retry_records = await connect_ble_with_retries(
+                    backend,
+                    device,
+                    timeline,
+                    attempts=config.ble_connect_attempts,
+                    timeout=config.ble_connect_timeout,
+                    retry_delay_s=config.ble_connect_retry_delay_s,
+                    cycle="post_adapter_reset",
+                )
+            except PhaseBlockedError as retry_exc:
+                summary["ble_connect"] = summary.get("ble_connect", []) + retry_exc.partial_summary.get("ble_connect", [])
+                mark_reset_required(summary, "ble_connect_failed_after_adapter_reset")
+                raise PhaseBlockedError(
+                    "BLE connect failed after adapter reset",
+                    partial_summary=summary,
+                ) from retry_exc
+            connect_records = summary.get("ble_connect", []) + retry_records
+        else:
+            mark_reset_required(
+                summary,
+                "ble_connect_failed_recovery_disabled"
+                if config.ble_recovery_mode == "off"
+                else "ble_connect_failed_adapter_reset_not_enabled",
+            )
+            raise PhaseBlockedError(str(exc), partial_summary=summary) from exc
     summary["ble_connect"] = connect_records
     summary["_conn_cm"] = conn_cm
     try:
@@ -486,7 +715,7 @@ async def run_liveview_variant(
     except Exception as exc:  # noqa: BLE001 - live artifact should preserve exact failure
         apply_partial_summary(summary, exc)
         summary["error"] = repr(exc)
-        summary["verdict"] = f"blocked: {exc!r}"
+        summary["verdict"] = blocked_verdict(summary, exc)
         timeline.event("sweep_error", sweep="liveview", error=repr(exc))
     finally:
         if event_reader is not None:
@@ -545,6 +774,14 @@ async def run_ap_mode_sweep(
             summary.update(launch_summary)
         except PhaseBlockedError as exc:
             apply_partial_summary(summary, exc)
+            if summary.get("reset_required"):
+                summary["existing_ap_reuse"] = {
+                    "attempted": False,
+                    "reason": repr(exc),
+                    "skipped": "reset_required",
+                }
+                timeline.event("existing_ap_reuse_skipped", reason=repr(exc), skipped="reset_required")
+                raise
             if not config.reuse_existing_ap_on_ble_failure:
                 raise
             summary["existing_ap_reuse"] = {
@@ -566,10 +803,12 @@ async def run_ap_mode_sweep(
             )
         else:
             summary["port_probe"] = {"skipped": "wifi join failed"}
+            if summary.get("reset_required"):
+                summary["verdict"] = blocked_verdict(summary)
     except Exception as exc:  # noqa: BLE001 - live artifact should preserve exact failure
         apply_partial_summary(summary, exc)
         summary["error"] = repr(exc)
-        summary["verdict"] = f"blocked: {exc!r}"
+        summary["verdict"] = blocked_verdict(summary, exc)
         timeline.event("sweep_error", sweep="ap", mode=mode, error=repr(exc))
     finally:
         if config.cleanup_wifi:
@@ -699,6 +938,14 @@ async def run_transfer_sweep(config: SweepConfig, run_dir: Path, btmon: base.Cap
             summary.update(launch_summary)
         except PhaseBlockedError as exc:
             apply_partial_summary(summary, exc)
+            if summary.get("reset_required"):
+                summary["existing_ap_reuse"] = {
+                    "attempted": False,
+                    "reason": repr(exc),
+                    "skipped": "reset_required",
+                }
+                timeline.event("existing_ap_reuse_skipped", reason=repr(exc), skipped="reset_required")
+                raise
             if not config.reuse_existing_ap_on_ble_failure:
                 raise
             summary["existing_ap_reuse"] = {
@@ -708,7 +955,7 @@ async def run_transfer_sweep(config: SweepConfig, run_dir: Path, btmon: base.Cap
             }
             timeline.event("existing_ap_reuse", reason=repr(exc), ssid=config.ap_ssid)
         if not join_after_launch(config, phase_dir, timeline, summary):
-            summary["verdict"] = "blocked: wifi join failed"
+            summary["verdict"] = blocked_verdict(summary) if summary.get("reset_required") else "blocked: wifi join failed"
             return summary
         tcpdump = base.start_tcpdump(base_compatible_config(config), phase_dir)
         summary["tcpdump"] = {"argv": tcpdump.argv, "pid": tcpdump.process.pid if tcpdump.process else None}
@@ -726,7 +973,7 @@ async def run_transfer_sweep(config: SweepConfig, run_dir: Path, btmon: base.Cap
     except Exception as exc:  # noqa: BLE001 - live artifact should preserve exact failure
         apply_partial_summary(summary, exc)
         summary["error"] = repr(exc)
-        summary["verdict"] = f"blocked: {exc!r}"
+        summary["verdict"] = blocked_verdict(summary, exc)
         timeline.event("sweep_error", sweep="transfer", error=repr(exc))
         if config.pcss_fallback:
             summary["pcss_fallback"] = run_pcss_fallback(config, phase_dir)
@@ -761,6 +1008,12 @@ def render_verdict(run_summary: dict[str, Any]) -> str:
     ]
     for result in run_summary.get("results", []):
         notes: list[str] = []
+        if result.get("ble_recovery"):
+            modes = [str(record.get("mode")) for record in result["ble_recovery"] if isinstance(record, dict)]
+            if modes:
+                notes.append(f"ble_recovery={','.join(modes)}")
+        if result.get("reset_required"):
+            notes.append(f"reset_required={result.get('reset_reason', 'unknown')}")
         if result.get("sweep") == "liveview":
             live = result.get("liveview_reader", {})
             notes.append(f"poll={result.get('poll')}")
@@ -773,13 +1026,19 @@ def render_verdict(run_summary: dict[str, Any]) -> str:
         elif result.get("sweep") == "ap":
             notes.append(f"mode={result.get('mode')}")
             notes.append(f"open_ports={','.join(result.get('open_ports', []))}")
-            if result.get("existing_ap_reuse"):
+            reuse = result.get("existing_ap_reuse")
+            if reuse and reuse.get("attempted"):
                 notes.append("existing_ap_reuse=attempted")
+            elif reuse and reuse.get("skipped"):
+                notes.append(f"existing_ap_reuse=skipped:{reuse.get('skipped')}")
         elif result.get("sweep") == "transfer":
             objects = result.get("metadata_probe", {}).get("objects", [])
             notes.append(f"objects={len(objects)}")
-            if result.get("existing_ap_reuse"):
+            reuse = result.get("existing_ap_reuse")
+            if reuse and reuse.get("attempted"):
                 notes.append("existing_ap_reuse=attempted")
+            elif reuse and reuse.get("skipped"):
+                notes.append(f"existing_ap_reuse=skipped:{reuse.get('skipped')}")
             if result.get("pcss_fallback"):
                 notes.append(f"pcss_fallback_rc={result['pcss_fallback'].get('returncode')}")
         if result.get("error"):
@@ -815,6 +1074,9 @@ def config_from_args(args: argparse.Namespace) -> SweepConfig:
         ble_connect_timeout=args.ble_connect_timeout,
         ble_connect_attempts=args.ble_connect_attempts,
         ble_connect_retry_delay_s=args.ble_connect_retry_delay_s,
+        ble_recovery_mode="off" if args.no_ble_recovery else args.ble_recovery_mode,
+        ble_recovery_timeout=args.ble_recovery_timeout,
+        ble_recovery_settle_s=args.ble_recovery_settle_s,
         ap_timeout=args.ap_timeout,
         ptp_timeout=args.ptp_timeout,
         live_duration_s=args.live_duration_s,
@@ -929,6 +1191,12 @@ def remote_local_args(args: argparse.Namespace) -> list[str]:
         str(args.ble_connect_attempts),
         "--ble-connect-retry-delay",
         str(args.ble_connect_retry_delay_s),
+        "--ble-recovery-mode",
+        args.ble_recovery_mode,
+        "--ble-recovery-timeout",
+        str(args.ble_recovery_timeout),
+        "--ble-recovery-settle-s",
+        str(args.ble_recovery_settle_s),
         "--ap-timeout",
         str(args.ap_timeout),
         "--ptp-timeout",
@@ -962,6 +1230,8 @@ def remote_local_args(args: argparse.Namespace) -> list[str]:
         argv.append("--no-pcss-fallback")
     if args.no_existing_ap_reuse:
         argv.append("--no-existing-ap-reuse")
+    if args.no_ble_recovery:
+        argv.append("--no-ble-recovery")
     if args.stamp:
         argv.extend(["--stamp", args.stamp])
     return argv
@@ -1075,6 +1345,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ble-connect-timeout", type=float, default=20.0)
     parser.add_argument("--ble-connect-attempts", type=parse_positive_int, default=3)
     parser.add_argument("--ble-connect-retry-delay", dest="ble_connect_retry_delay_s", type=float, default=2.0)
+    parser.add_argument(
+        "--ble-recovery-mode",
+        type=parse_ble_recovery_mode,
+        choices=BLE_RECOVERY_MODES,
+        default="reset-on-fail",
+        help="BlueZ recovery policy before BLE-launched reference app phases",
+    )
+    parser.add_argument("--ble-recovery-timeout", type=float, default=8.0)
+    parser.add_argument("--ble-recovery-settle-s", type=float, default=2.0)
     parser.add_argument("--ap-timeout", type=float, default=25.0)
     parser.add_argument("--ptp-timeout", type=float, default=6.0)
     parser.add_argument("--live-duration-s", type=float, default=15.0)
@@ -1086,6 +1365,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-pcss-fallback", action="store_true")
     parser.add_argument("--pcss-timeout", type=float, default=90.0)
     parser.add_argument("--no-existing-ap-reuse", action="store_true")
+    parser.add_argument("--no-ble-recovery", action="store_true")
     parser.add_argument("--no-register", action="store_true")
     parser.add_argument("--keep-wifi", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
