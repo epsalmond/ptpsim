@@ -137,7 +137,11 @@ When sources disagree about a protocol fact:
 
 ```sh
 cargo test --workspace                              # Rust workspace
-( cd tools/protocol-mapper && python -m pytest -q ) # Python probe
+(
+  cd tools/protocol-mapper
+  .venv/bin/python -m pip install -e '.[test]'
+  .venv/bin/python -m pytest -q
+)
 ```
 
 CI: Woodpecker, `.woodpecker/`. Steps are path-filtered and heavily

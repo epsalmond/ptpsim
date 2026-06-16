@@ -16,8 +16,12 @@ from rce.tools.fuji_ble_gps.camera import (
     build_utc_timezone_payload,
 )
 from rce.tools.fuji_ble_gps.ble_backend import DeviceInfo
+from rce.tools.fuji_ble_gps.payload import registration_ack_value
 from rce.tools.fuji_ble_gps.session import Session
 from rce.tools.fuji_ble_gps import uuids
+
+
+FAKE_REGISTRATION_ID = bytes.fromhex("00112233")
 
 
 class FakeConn:
@@ -55,7 +59,7 @@ class FakeConn:
         if sensitive:
             self.sensitive_reads.append(uuid.lower())
         values = {
-            uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER: bytes.fromhex("00112233"),
+            uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER: FAKE_REGISTRATION_ID,
             uuids.CHAR_GAP_DEVICE_NAME: b"GFX100 II\x00",
             uuids.CHAR_SERIAL_NUMBER_STRING: b"00000000000000XXXX\x00",
             uuids.CHAR_CAMERA_MAC_ADDRESS: b"00-11-22-33-44-55\x00",
@@ -105,6 +109,7 @@ class FakeBackend:
         self.conn = conn
         self.device = DeviceInfo(address="corebluetooth-uuid", name="GFX100 II", rssi=-50)
         self.find_calls = 0
+        self.address_find_calls = 0
 
     async def scan(self, timeout: float = 8.0):
         return [self.device]
@@ -112,6 +117,10 @@ class FakeBackend:
     async def find_device(self, name: str, timeout: float = 8.0):
         self.find_calls += 1
         return self.device
+
+    async def find_device_by_address(self, address: str, name: str, timeout: float = 8.0):
+        self.address_find_calls += 1
+        return DeviceInfo(address=address, name=name, rssi=self.device.rssi)
 
     def connect(self, device: DeviceInfo):
         return self.conn
@@ -221,7 +230,11 @@ async def test_camera_register_runs_observed_sequence(tmp_path, monkeypatch) -> 
         uuids.CHAR_AP_STATE,
     ]
     assert conn.writes[0] == (uuids.CHAR_CONNECTED_DEVICE_NAME, b"Fuji-Laptop\x00", True)
-    assert (uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER, bytes.fromhex("70df0520"), True) in conn.writes
+    assert (
+        uuids.CHAR_CONNECTED_DEVICE_IDENTIFICATION_NUMBER,
+        registration_ack_value(FAKE_REGISTRATION_ID),
+        True,
+    ) in conn.writes
     assert (
         uuids.CHAR_UTC_AND_TIMEZONE,
         bytes.fromhex("ea070501033708e0fcffff01"),
@@ -402,6 +415,7 @@ async def test_camera_can_use_explicit_address_without_scan(tmp_path) -> None:
     await camera.discover(address="known-corebluetooth-uuid")
 
     assert backend.find_calls == 0
+    assert backend.address_find_calls == 1
 
 
 @pytest.mark.asyncio

@@ -185,6 +185,7 @@ camera/iPhone alignment before proceeding.
 ## Tests
 
 ```sh
+.venv/bin/python -m pip install -e '.[test]'
 .venv/bin/python -m pytest -q
 ```
 

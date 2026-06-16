@@ -57,10 +57,8 @@ steps:
           - 'tools/protocol-mapper/**'
           - '.woodpecker/linux.yml'
     commands:
-      - pip install -q pytest
-      # protocol-mapper's pyproject defaults to --cov= ; override since pytest-cov
-      # isn't in the CI image and the other tests need bleak/hardware anyway.
-      - cd tools/protocol-mapper && pytest tests/test_gphoto2_labels.py -o addopts="" -q
+      - pip install -q -e './tools/protocol-mapper[test]'
+      - cd tools/protocol-mapper && python -m pytest -q
 
 
 
