@@ -67,6 +67,10 @@ evidence:
     kind: wire-capture
 
     date: 2026-06-02
+  wireReopenTrace:
+    kind: wire-capture
+
+    date: 2026-06-02
   wireTether:
     kind: wire-capture
     path: tools/protocol-mapper/WIRED_TETHER_CONTROL.md
@@ -75,10 +79,6 @@ evidence:
     kind: wire-capture
     path: packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
     date: 2026-05-27
-  wireAppReopen:
-    kind: wire-capture
-
-    date: 2026-06-02
 transports: {}
 operations:
   '0x1001':
@@ -5956,7 +5956,7 @@ events:
     destination: app
     evidence:
     - docFujiPtpPropReference
-    - wireAppReopen
+    - wireReopenTrace
   '0x80f8':
     name: FirmwareUpdateTrigger
     destination: app
@@ -5967,13 +5967,13 @@ events:
     destination: app
     evidence:
     - docFujiPtpPropReference
-    - wireAppReopen
+    - wireReopenTrace
   '0xc004':
     name: CapturePending
     destination: app
     evidence:
     - docFujiPtpPropReference
-    - wireAppReopen
+    - wireReopenTrace
 quirks:
 - id: pcss-knock-once-per-boot
   appliesTo:
@@ -6385,7 +6385,7 @@ connections:
         triggers:
         - postviewEvent: {}
         evidence:
-        - wireAppReopen
+        - wireReopenTrace
         - iosLiveControls
         - docLiveControls
       enumerateObjects:

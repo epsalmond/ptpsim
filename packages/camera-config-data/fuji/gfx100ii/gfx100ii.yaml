@@ -28,7 +28,7 @@ evidence:
   # Per-(connection,mode) GetDeviceInfo + GetDevicePropDesc snapshots on PCSS/15740.
   # Authoritative for the wireless-tether supported-ops set (2026-05-27 wire capture).
   wireTetherCaps20260527: { kind: wire-capture, path: "packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
-  # reference app Take↔Get session-reopen wire trace (full byte trace + identity decode).
+  # reference-app Take↔Get session-reopen wire trace (full byte trace + identity decode).
   # Source for the `reopenSession` step in the `app` → image-transfer entry.
 
   # 14.9-min Hyper-Utility shoot-while-download capture on PCSS/15740. Wire-confirms
@@ -37,7 +37,7 @@ evidence:
 
   docXlv:          { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
   captureXlv:      { kind: wire-capture, path: "tools/protocol-mapper/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
-  # Wire-derived PTP/IP property + opcode reference, combining live B1 enum + reference app Frida
+  # Wire-derived PTP/IP property + opcode reference, combining live B1 enum + reference-app instrumentation
   # wire-decode work. Authoritative for the new gallery-filter triplet
   # (0x9051/0x9052/0x9060), the post-shutter event codes (0xC001/0xC004/0x400D),
   # and the firmware-update event (0x80F8). Labels disagreeing with curated
@@ -46,7 +46,7 @@ evidence:
 
 
 # Connection-name convention (see docs/consults/2026-06-02-*-wireless-tether.md):
-#   `app`             = reference app PTP/IP on :55740 (BLE → camera Wi-Fi AP → 82B WMB-tail init).
+#   `app`             = reference-app PTP/IP on :55740 (BLE → camera Wi-Fi AP → 82B WMB-tail init).
 #   `wireless-tether` = PCSS port-knock PTP/IP on :15740 (camera joins LAN, then knock+notify).
 # These ride the same physical Wi-Fi but are DIFFERENT transports with different
 # supported-op sets, different InitCmdReq tails, and different live-view paths
@@ -107,7 +107,7 @@ connections:
           # 0x1018 needs the live-view InitiateOpenCapture transaction id — RUNTIME state the
           # app binds into the named slot (it owns transaction ids; sans-io).
           - { sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }
-          # reference app re-establishes the PTP/IP session in-Wi-Fi when switching Take↔Get
+          # reference-app re-establishes the PTP/IP session in-Wi-Fi when switching Take↔Get
           # (MODE_CHANGES.md §5). Verb collapses: CloseSession 0x1003 → 8B sentinel
           # `08 00 00 00 ff ff ff ff` → new TCP socket to :55740 → cached 82B InitCmdReq
           # (identity byte-identical across sessions per wire-capture 2026-06-02 answers
@@ -127,10 +127,10 @@ connections:
           - { sendOp: "0x9050", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
     actions:
-      # reference app shutter cycle. Wire-confirmed by MODE_CHANGES.md §3 (the 0x100E
+      # reference-app shutter cycle. Wire-confirmed by MODE_CHANGES.md §3 (the 0x100E
       # trace) + §6b (the 0x9022 pairing): every 0x100E InitiateCapture in v6
       # is followed within ~458-746ms by an empty-params 0x9022 cleanup,
-      # paired 1:1 with the shutter. Between the two, reference app polls 0xD212
+      # paired 1:1 with the shutter. Between the two, reference-app polls 0xD212
       # (event state) several times waiting for the camera-side
       # "JPEG-saved" flag to clear; the poll loop is the client's
       # responsibility (no scripting hook in the Step grammar). triggers
@@ -143,9 +143,9 @@ connections:
           - { sendOp: "0x9022" }
         triggers:
           - postviewEvent: {}
-        evidence: [wireAppReopen, iosLiveControls, docLiveControls]
-      # reference app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW230.md
-      # §"Confirmed enumeration": reference app **never** calls 0x1007
+        evidence: [wireReopenTrace, iosLiveControls, docLiveControls]
+      # reference-app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW230.md
+      # §"Confirmed enumeration": reference-app **never** calls 0x1007
       # GetObjectHandles — camera rejects with 0x2005 Operation_Not_Supported
       # on fw2.30. Instead it reads count + handle list as PTP properties
       # AFTER the mode-entry vendor-prime block (0x9054/55/50/53) in the
@@ -160,7 +160,7 @@ connections:
           - { getProp: "0xd621" }
         evidence: [docImageTransfer]
       # Per-handle metadata + thumbnail — same wire shape as PCSS, different
-      # surface (reference app goes through the image-transfer mode-entry first).
+      # surface (reference-app goes through the image-transfer mode-entry first).
       # UI MUST publish the handle list immediately and fetch GetObjectInfo
       # lazily per selected object — per the on-device note 2026-05-22 in
       # IMAGE_TRANSFER_FW230.md, an eager full GetObjectInfo sweep got the
@@ -178,7 +178,7 @@ connections:
           - { sendOp: "0x100a", params: [{ runtime: handle }] }
         evidence: [docImageTransfer]
       # Chunked download. **Different params from PCSS's whole-object 0x1009.**
-      # reference app uses 0x101B GetPartialObject in 12 MB chunks (v6: 1× small-file
+      # reference-app uses 0x101B GetPartialObject in 12 MB chunks (v6: 1× small-file
       # single-chunk + 30× chunked for a 356 MB file, per
       # IMAGE_TRANSFER_FW230.md TL;DR). The chunk loop lives in the client:
       # iterate offset += length until GetObjectInfo's ObjectCompressedSize
@@ -234,11 +234,11 @@ connections:
     evidence: [staticRawStudio]
 
   wireless-tether:
-    kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference app family)
+    kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference-app family)
     establishment: pcss-knock     # camera joins LAN (Wi-Fi/Ethernet), then PCSS port-knock
     # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
     # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
-    # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference app's 82-byte init).
+    # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference-app's 82-byte init).
     knock: { callbackPort: 51560, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0" }
     # InitCmdReq retry tolerance: PCSS may emit 0-3 InitFail packets before
     # InitCmdAck. Hyper-Utility waits ~250ms between retries; the engine should
@@ -252,10 +252,10 @@ connections:
     # Wire-confirmed NOT-supported on this connection (per the 05-27 capability snapshot
     # `wireTetherCaps20260527` + wire-capture 2026-06-02 replies). Don't author entries that
     # rely on these — the camera will reject them:
-    #   - 0x9022 (post-shutter cleanup):  reference app-only; do NOT pair with 0x100E here.
+    #   - 0x9022 (post-shutter cleanup):  reference-app-only; do NOT pair with 0x100E here.
     #   - 0x101b (GetPartialObject):      not advertised — whole-object only via 0x1009.
     #   - 0xDF01 (FunctionMode):          PCSS enters transfer-mode implicitly; no flip.
-    #   - 0x9050/0x9053/0x9054/0x9055:    reference app mode-20 vendor block; not used on PCSS.
+    #   - 0x9050/0x9053/0x9054/0x9055:    reference-app mode-20 vendor block; not used on PCSS.
     #   - Event socket (command socket only): 0 events delivered across 184s/34k
     #     frames of active shooting — confirms PCSS is event-less mid-shoot.
     # Wire-confirmed SUPPORTED (wirePCSSShootDownload20260523) — recipes in `actions:`
@@ -397,7 +397,7 @@ operations:
   "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosStartupSeq] }
   "0x9022": { name: FujiVendor9022,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
   # Tap-to-AF (S1 lock). PTP_PROPERTIES_REFERENCE.md §5.1/§5.2: param is a 4-byte
-  # LE u32 packing the AF area, built by reference app's FinderView.execS1Lock as the hex
+  # LE u32 packing the AF area, built by the reference app as the hex
   # string "WWHHIIJJ". As wire bytes (LE) it unpacks: byte15=W=asp_w (aspect-ratio
   # width numerator), byte14=H=asp_h (aspect-ratio height numerator), byte13=I=col,
   # byte12=J=row — col/row are the 1-indexed AF-grid cell (GFX100 II 4:3: observed
@@ -435,7 +435,7 @@ operations:
   "0x9055": { name: FujiImageImportCurrentObjectThumb, owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x9050": { name: FujiImageImportBegin,              owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x9053": { name: FujiImageImportPage,               owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
-  # Gallery-filter triplet (image-transfer mode, reference app `app` path). The 0x9051
+  # Gallery-filter triplet (image-transfer mode, reference-app `app` path). The 0x9051
   # data-out payload AND-combines per-axis constraints keyed by 0xD6xx codes:
   #   0xD600 GalleryCaptureDateAxis     (read-back only, returned by 0x9053)
   #   0xD601 GalleryDateRange           string, type-tag 0x12, UTF-16LE "YYYYMMDD-YYYYMMDD" (`*` = unset endpoint)
@@ -458,7 +458,7 @@ operations:
   "0x9020": { name: FujiVideoPreviewOpenHypothesis,   owner: fuji-vendor, modes: [shooting/stills], connections: [app], evidence: [docFujiPtpPropReference] }
   # HYPOTHESIS — handle param = txid of matching 0x9020. Same caveat.
   "0x9021": { name: FujiVideoPreviewCloseHypothesis,  owner: fuji-vendor, modes: [shooting/stills], connections: [app], evidence: [docFujiPtpPropReference] }
-  # HYPOTHESIS — reference app→camera, 875B data-out blob carrying a settings-backup `.DAT`
+  # HYPOTHESIS — reference-app→camera, 875B data-out blob carrying a settings-backup `.DAT`
   # filename. Seen 9× in May 1 sdcard_import flows; may be the wireless equivalent
   # of 0x100C SendObjectInfo for settings-checkpoint files. Source: single doc.
   "0x9040": { name: FujiSendObjectInfoDatHypothesis,  owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docFujiPtpPropReference] }
@@ -518,7 +518,7 @@ properties:
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u32, access: readWrite,
               controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
-  # PCSS ISO is the standard PTP ExposureIndex, NOT the reference app 0xD02A path. Encoding is
+  # PCSS ISO is the standard PTP ExposureIndex, NOT the reference-app 0xD02A path. Encoding is
   # SIGNED: positive = literal ISO; `-1` (0xffffffff) = auto; `-2` (0xfffffffe) = auto
   # with one modifier (Hyper-Utility wire trace shows both — semantics TBD). u32
   # storage on the wire; the app interprets the bit pattern as signed.
@@ -556,7 +556,7 @@ properties:
   # reach it.
   "0xd037": { name: pcssStillsVideoToggleHypothesis, kind: scaffold,
               evidence: [docFujiPtpPropReference] }
-  # 0xD246 — reference app Take in-screen toggle (`0`=stills, `1`=video). PCSS equivalent
+  # 0xD246 — reference-app Take in-screen toggle (`0`=stills, `1`=video). PCSS equivalent
   # is 0xD037 above. DevicePropDesc enum reports `[0x00, 0x00]` (Fuji bool quirk).
   "0xd246": { name: appInShooterStillsVideo,
               evidence: [docFujiPtpPropReference] }
@@ -570,18 +570,18 @@ properties:
 # on the `app` connection). On the `wireless-tether` PCSS path the event socket is
 # absent (0 events delivered over 184s of active shooting per
 # wirePCSSShootDownload20260523) — clients there must poll 0xD212/keepalives instead.
-# Names mirror the wire docs; codes are the ones observed in the v6/v8 Frida traces
+# Names mirror the wire docs; codes are the ones observed in the v6/v8 captures
 # (FUJI_PTP_PROP_REFERENCE §PTP event codes + MODE_CHANGES §3 trace).
 events:
   # Fires after every 0x100E InitiateCapture (paired with the 0x9022 cleanup); the
   # payload includes the new object's size. Referenced from the curated shutter
   # action's `triggers.postviewEvent` — landing the wire code here grounds the
   # declared trigger so consumers know which event to await.
-  "0xc001": { name: PostviewComplete,         destination: app, evidence: [docFujiPtpPropReference, wireAppReopen] }
+  "0xc001": { name: PostviewComplete,         destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
   # Fires when the shutter is pressed but the image isn't yet saved.
-  "0xc004": { name: CapturePending,           destination: app, evidence: [docFujiPtpPropReference, wireAppReopen] }
+  "0xc004": { name: CapturePending,           destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
   # Standard PTP "image saved" event. Closes the capture cycle on the wire.
-  "0x400d": { name: CaptureComplete,          destination: app, evidence: [docFujiPtpPropReference, wireAppReopen] }
+  "0x400d": { name: CaptureComplete,          destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
   # HYPOTHESIS — single-source. Appears during the firmware-update flow per the
   # wire-doc cross-ref; not yet wire-confirmed in the shoot/download captures
   # we have. Park until a fw-update capture lands.
