@@ -154,8 +154,10 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     modes: modes.into_iter().collect(),
                     connections: conns.into_iter().collect(),
                     requires: None,
-                    // Op-effects are curated sim-behavior, never probe-derived.
+                    // Op-effects and emitted events are curated sim-behavior,
+                    // never probe-derived.
                     effects: Vec::new(),
+                    emits: Vec::new(),
                     evidence: vec![EVIDENCE_ID.to_string()],
                 },
             )

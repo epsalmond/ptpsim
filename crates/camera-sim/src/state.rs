@@ -5,7 +5,7 @@
 use camera_config::CameraManifest;
 use ptp_core::codes::datatype_code as dt;
 use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Fuji function-mode selector properties.
 pub const PROP_DF00: u16 = 0xdf00;
@@ -33,6 +33,16 @@ pub struct CameraState {
     /// on each `GetDevicePropValue` of that code. Internal — driven only via
     /// [`CameraState::arm_effect`] / [`CameraState::resolve_pending`].
     pending: BTreeMap<u16, PendingTransition>,
+    /// Completion/lifecycle events pushed by operation `emits` (#54), FIFO. The
+    /// in-memory analogue of the camera's `0xC0xx` push channel: drained by the
+    /// event socket (`drain_events`) and by the reference executor's event-source
+    /// `awaitUntil` (`take_event`). Internal — pushed via [`push_event`], drained
+    /// via [`take_event`] / [`drain_events`].
+    ///
+    /// [`push_event`]: CameraState::push_event
+    /// [`take_event`]: CameraState::take_event
+    /// [`drain_events`]: CameraState::drain_events
+    events: VecDeque<u16>,
 }
 
 /// A scheduled op-effect: the value `set_prop` settles to, and how many more
@@ -63,6 +73,7 @@ impl CameraState {
             phase: Phase::Disconnected,
             props,
             pending: BTreeMap::new(),
+            events: VecDeque::new(),
         }
     }
 
@@ -98,6 +109,32 @@ impl CameraState {
                 self.pending.remove(&code);
             }
         }
+    }
+
+    /// Queue a completion/lifecycle event (an operation `emits` code). FIFO.
+    pub fn push_event(&mut self, code: u16) {
+        self.events.push_back(code);
+    }
+
+    /// Remove and return whether the first queued occurrence of `code` is
+    /// present — the event-source `awaitUntil` analogue of BLE `take_notification`
+    /// (keyed by code, like notify is keyed by characteristic). Order-tolerant:
+    /// a step awaiting `0xC005` matches even if `0xC004`/`0xC001` are queued
+    /// ahead. The reference oracle is order-tolerant; a real dispatcher reading
+    /// the socket sees wire order.
+    pub fn take_event(&mut self, code: u16) -> bool {
+        if let Some(i) = self.events.iter().position(|&c| c == code) {
+            self.events.remove(i);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drain all queued events in FIFO order — the event socket forwards these
+    /// to connected clients after each operation.
+    pub fn drain_events(&mut self) -> Vec<u16> {
+        self.events.drain(..).collect()
     }
 
     /// The manifest control-mode key matching the current phase, used to resolve

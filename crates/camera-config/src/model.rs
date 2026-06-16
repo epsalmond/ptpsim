@@ -126,6 +126,17 @@ pub struct Operation {
     /// act on.
     #[serde(default)]
     pub effects: Vec<OpEffect>,
+    /// Completion/lifecycle event codes this operation pushes on an OK response
+    /// (#54). The in-memory analogue of the camera's `0xC0xx` completion pushes
+    /// (`0xC004`→`0xC001`→`0x400D` capture, `0xC005` AFCAPTUER): the engine
+    /// queues these for the event socket / the reference executor's event-source
+    /// `awaitUntil`. Parallel to [`effects`](Self::effects) (property sets): an
+    /// event is a signal, not a value. Event-coupled `effects` MUST settle within
+    /// one poll (`settle_after_polls` 0 or 1) — the event is the readiness signal
+    /// and the single post-event read makes the value visible (§11.16). Curated
+    /// sim-behavior; NOT mirrored to the app FFI.
+    #[serde(default)]
+    pub emits: Vec<HexCode>,
     #[serde(default)]
     pub evidence: Vec<String>,
 }

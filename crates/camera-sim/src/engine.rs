@@ -251,6 +251,7 @@ impl Engine {
         // AF stub). Generic: the behavior is manifest data, not a brand branch.
         if reply_is_ok(&reply) {
             self.apply_op_effects(req.code);
+            self.apply_op_emits(req.code);
         }
         reply
     }
@@ -280,6 +281,39 @@ impl Engine {
             self.state
                 .arm_effect(target, crate::state::typed(datatype, value), settle);
         }
+    }
+
+    /// Queue operation `code`'s manifest-declared completion events (#54). A
+    /// sibling to [`apply_op_effects`](Self::apply_op_effects) — kept separate
+    /// because an event is a signal, not a value mutation, and an op may emit
+    /// without arming any effect. Both fire only on an OK response.
+    fn apply_op_emits(&mut self, code: u16) {
+        let Some(opdef) = self.manifest.operation(code) else {
+            return;
+        };
+        if opdef.emits.is_empty() {
+            return;
+        }
+        let codes: Vec<u16> = opdef
+            .emits
+            .iter()
+            .filter_map(|c| parse_hex_code(c))
+            .collect();
+        for c in codes {
+            self.state.push_event(c);
+        }
+    }
+
+    /// Take a queued completion event by code — the reference executor's
+    /// event-source `awaitUntil` drains here (see [`CameraState::take_event`]).
+    pub fn take_event(&mut self, code: u16) -> bool {
+        self.state.take_event(code)
+    }
+
+    /// Drain all queued completion events in FIFO order — the event socket
+    /// forwards these to connected clients (see [`CameraState::drain_events`]).
+    pub fn drain_events(&mut self) -> Vec<u16> {
+        self.state.drain_events()
     }
 
     /// Manifest-driven dispatch for non-standard ops: a `property.step` handler
@@ -524,5 +558,50 @@ properties:
             2,
             "immediate effect visible at once"
         );
+    }
+
+    /// #54: an op's `emits` codes queue a completion event on an OK response, and
+    /// `take_event` drains them by code (order-tolerant).
+    #[test]
+    fn op_emits_queue_event_on_ok() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    emits: ["0xc005"]
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        e.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        assert!(reply_is_ok(&e.on_operation(&req(0x9026, 2, vec![0]), None)));
+        assert!(e.take_event(0xc005), "0xc005 queued after the AF op");
+        assert!(!e.take_event(0xc005), "drained — not queued twice");
+    }
+
+    /// #54: a non-OK response does NOT queue the event (mirrors effects gating).
+    #[test]
+    fn op_emits_skip_on_error() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    emits: ["0xc005"]
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        // No OpenSession → the op is rejected (not OK), so nothing is emitted.
+        let reply = e.on_operation(&req(0x9026, 1, vec![0]), None);
+        assert!(!reply_is_ok(&reply), "op rejected without an open session");
+        assert!(!e.take_event(0xc005), "no event queued on a non-OK reply");
+        // drain_events also sees an empty queue.
+        assert!(e.drain_events().is_empty());
     }
 }
