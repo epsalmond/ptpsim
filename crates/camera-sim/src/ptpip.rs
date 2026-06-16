@@ -171,12 +171,12 @@ impl Ctx<'_> {
         }
     }
 
-    /// `awaitUntil` (§11.16): observe until `until` holds. The `poll` source loops
-    /// (`source` polled each iteration, `on_each` run when unsatisfied,
-    /// deterministic timeout [`MAX_AWAIT_ITERS`]); the `event` source is
-    /// single-shot — take the completion event off the engine queue, then one
-    /// post-event read of `then_poll` and a single `until` eval (the hybrid
-    /// push-then-read). A non-numeric/unsupported source poll is a hard error.
+    /// `awaitUntil` (§11.16): observe until `until` holds. A `poll` source loops —
+    /// it polls `source` each iteration and runs `on_each` when unsatisfied, up to
+    /// the deterministic timeout [`MAX_AWAIT_ITERS`]. An `event` source is
+    /// single-shot: take the completion event off the engine queue, do one
+    /// post-event read of `then_poll`, then evaluate `until` once (push-then-read).
+    /// A non-numeric/unsupported source poll is a hard error.
     fn run_await_until(
         &mut self,
         aw: &AwaitUntil,
@@ -213,9 +213,9 @@ impl Ctx<'_> {
             AwaitSource::Event { code, then_poll } => {
                 let ev =
                     parse_hex_code(code).ok_or_else(|| err(format!("bad event code {code:?}")))?;
-                // Single-shot: the push channel IS the loop. The event is either
-                // already queued (the triggering op's `emits` fired) or it never
-                // will be — the analogue of BLE notify source-exhaustion.
+                // Single-shot: there is no poll loop. By now the triggering op's
+                // `emits` has either queued this event or it never will (the same
+                // outcome BLE calls notify "source exhausted").
                 if !self.engine.take_event(ev) {
                     if tolerant {
                         self.await_iterations.push(0);

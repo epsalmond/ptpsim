@@ -116,12 +116,11 @@ impl CameraState {
         self.events.push_back(code);
     }
 
-    /// Remove and return whether the first queued occurrence of `code` is
-    /// present — the event-source `awaitUntil` analogue of BLE `take_notification`
-    /// (keyed by code, like notify is keyed by characteristic). Order-tolerant:
-    /// a step awaiting `0xC005` matches even if `0xC004`/`0xC001` are queued
-    /// ahead. The reference oracle is order-tolerant; a real dispatcher reading
-    /// the socket sees wire order.
+    /// Remove the first queued copy of `code` and return whether it was there.
+    /// Order-tolerant: a step awaiting `0xC005` still matches if `0xC004`/`0xC001`
+    /// are queued ahead of it. (This keeps the in-memory oracle order-tolerant; a
+    /// real client reading the socket sees events in wire order.) The event-source
+    /// `awaitUntil` drains here — the counterpart of BLE `take_notification`.
     pub fn take_event(&mut self, code: u16) -> bool {
         if let Some(i) = self.events.iter().position(|&c| c == code) {
             self.events.remove(i);

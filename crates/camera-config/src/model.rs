@@ -126,15 +126,21 @@ pub struct Operation {
     /// act on.
     #[serde(default)]
     pub effects: Vec<OpEffect>,
-    /// Completion/lifecycle event codes this operation pushes on an OK response
-    /// (#54). The in-memory analogue of the camera's `0xC0xx` completion pushes
-    /// (`0xC004`→`0xC001`→`0x400D` capture, `0xC005` AFCAPTUER): the engine
-    /// queues these for the event socket / the reference executor's event-source
-    /// `awaitUntil`. Parallel to [`effects`](Self::effects) (property sets): an
-    /// event is a signal, not a value. Event-coupled `effects` MUST settle within
-    /// one poll (`settle_after_polls` 0 or 1) — the event is the readiness signal
-    /// and the single post-event read makes the value visible (§11.16). Curated
-    /// sim-behavior; NOT mirrored to the app FFI.
+    /// Event codes this operation pushes when it succeeds (#54) — e.g. the AF tap
+    /// pushes `0xC005` AFCAPTUER; a capture pushes `0xC004`→`0xC001`→`0x400D`. On
+    /// an OK response the engine queues them; the live event socket forwards them
+    /// to clients, and the reference executor's event-source `awaitUntil` reads
+    /// them.
+    ///
+    /// Listed separately from [`effects`](Self::effects) because an event is a
+    /// signal, not a value change. **Authoring rule:** an effect paired with an
+    /// event must settle within one poll (`settle_after_polls` 0 or 1). The event
+    /// means "the result is ready", and the one read that follows it is what makes
+    /// the value visible — a single-shot event source has no loop to wait out a
+    /// longer settle (§11.16).
+    ///
+    /// Curated sim-behavior; not mirrored to the app FFI (the app sends ops, the
+    /// camera emits).
     #[serde(default)]
     pub emits: Vec<HexCode>,
     #[serde(default)]
@@ -543,12 +549,12 @@ pub struct Step {
     pub await_until: Option<AwaitUntil>,
 }
 
-/// Where a PTP-IP `awaitUntil` observes (§11.16). Mirrors the BLE `AwaitSource`
-/// (`read | notify`) split as `poll | event`, authored in YAML as a single-entry
-/// mapping — `poll: <hex>` or `event: { code: <hex>, thenPoll: <hex>? }`. Custom
-/// `Deserialize` dispatches on the key (see below); `Serialize` is derived (and,
-/// like the BLE analogue, not relied on for round-trip — the manifest is
-/// load-only).
+/// Where a PTP-IP `awaitUntil` observes (§11.16): a property `poll` or an `event`
+/// push. In YAML it's a single-entry mapping — `poll: <hex>` or `event: { code:
+/// <hex>, thenPoll: <hex>? }` — so `Deserialize` is hand-written to dispatch on
+/// the key (below). `Serialize` is only derived to satisfy the containing struct;
+/// it is never round-tripped, since manifests are load-only. (Same shape as the
+/// BLE grammar's `read`/`notify` source.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AwaitSource {
@@ -618,11 +624,11 @@ impl<'de> serde::Deserialize<'de> for AwaitSource {
 }
 
 /// The PTP-IP await/poll-until step body (§11.16 contract, mirrored from the BLE
-/// grammar). The [`source`](Self::source) is either a property `poll` (#49: a
-/// `GetDevicePropValue` IS the capture — the typed value lands in the observed
-/// [`crate::predicate::PropView`] keyed by prop code) or an `event` push (#54:
-/// await a `0xC0xx` completion, then one post-event read). `until` reuses the PTP
-/// [`Predicate`] over that view; `mask` handles `0xd212`-style composite sub-fields.
+/// grammar). [`source`](Self::source) is either a property `poll` or an `event`
+/// push (see [`AwaitSource`]). For a poll, each `GetDevicePropValue` is itself the
+/// capture: the typed value lands in the observed [`crate::predicate::PropView`]
+/// keyed by prop code. `until` is the PTP [`Predicate`] over that view; `mask`
+/// handles `0xd212`-style composite sub-fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AwaitUntil {
