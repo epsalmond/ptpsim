@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone, timedelta
 import json
+import os
 from pathlib import Path
 import shutil
+import time
 
 import pytest
 
@@ -41,10 +43,20 @@ def make_args(tmp_path, **kwargs):
     return argparse.Namespace(**values)
 
 
-def test_local_timestamp_uses_local_offset_format() -> None:
-    stamp = screen_vision.local_timestamp(
-        datetime(2026, 5, 2, 16, 25, 30, tzinfo=timezone(timedelta(hours=-7)))
-    )
+def test_local_timestamp_uses_local_offset_format(monkeypatch) -> None:
+    old_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    try:
+        stamp = screen_vision.local_timestamp(
+            datetime(2026, 5, 2, 16, 25, 30, tzinfo=timezone(timedelta(hours=-7)))
+        )
+    finally:
+        if old_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", old_tz)
+        time.tzset()
 
     assert stamp.compact == "20260502T162530-0700"
     assert stamp.iso == "2026-05-02T16:25:30-07:00"
