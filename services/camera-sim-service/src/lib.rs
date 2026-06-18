@@ -16,9 +16,10 @@ use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::{Engine, FrameSource, LoopingFrameSource, Phase, Reply};
 use protocol_primitives::fuji_framing;
 use ptp_core::codes::op;
-use ptp_core::{InitCommandAck, OperationRequest, PtpCodec, PtpIpPacket};
+use ptp_core::{EventPacket, InitCommandAck, OperationRequest, PtpCodec, PtpIpPacket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 
 pub mod control;
@@ -154,6 +155,13 @@ impl Server {
         };
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
         let ctl_shutdown = shutdown_tx.clone();
+        // Completion/lifecycle event push (#54): the command loop drains the
+        // engine's queued `emits` after each operation and broadcasts the codes;
+        // each connected event-socket client writes them as PTP/IP Event packets.
+        // Fire-and-forget to currently-connected clients (broadcast) — the real
+        // app opens the event socket during session setup, before triggering a
+        // capture, so the subscriber is live when the completion fires.
+        let (event_tx, _) = broadcast::channel::<u16>(16);
 
         // Per-connection tasks live in a JoinSet per accept loop (audit in
         // docs/internal-async-notes.md): the `Some(_) = join_next()` arm reaps
@@ -163,6 +171,7 @@ impl Server {
         // on exit is the documented run() contract.
         let command_loop = {
             let engine = engine.clone();
+            let event_tx = event_tx.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -171,8 +180,9 @@ impl Server {
                         accepted = command.accept() => {
                             if let Ok((stream, _)) = accepted {
                                 let engine = engine.clone();
+                                let event_tx = event_tx.clone();
                                 conns.spawn(async move {
-                                    let _ = handle_command_conn(stream, engine).await;
+                                    let _ = handle_command_conn(stream, engine, event_tx).await;
                                 });
                             }
                         }
@@ -235,15 +245,22 @@ impl Server {
             }
         };
 
-        // Event socket: accept and hold open. Event emission is manifest-driven
-        // and arrives with the CameraControls/capture work; the socket is real
-        // now so clients (and tests) can confirm all three sockets open.
+        // Event socket: push PTP/IP Event packets to connected clients. Each
+        // accepted connection subscribes to the broadcast (resubscribed in the
+        // accept arm so it only sees events emitted after it connected) and
+        // writes the codes the command loop forwards.
         let event_loop = {
             let mut sub = shutdown_tx.subscribe();
             async move {
+                let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
-                        accepted = event.accept() => { let _ = accepted; }
+                        accepted = event.accept() => {
+                            if let Ok((stream, _)) = accepted {
+                                conns.spawn(handle_event_conn(stream, event_tx.subscribe()));
+                            }
+                        }
+                        Some(_) = conns.join_next(), if !conns.is_empty() => {}
                         _ = sub.recv() => break,
                     }
                 }
@@ -335,6 +352,7 @@ fn has_data_in(code: u16) -> bool {
 async fn handle_command_conn(
     mut stream: TcpStream,
     engine: Arc<Mutex<Engine>>,
+    event_tx: broadcast::Sender<u16>,
 ) -> std::io::Result<()> {
     // 1. Standard-framed init handshake.
     let Some(first) = read_frame(&mut stream).await? else {
@@ -369,13 +387,60 @@ async fn handle_command_conn(
         } else {
             None
         };
-        let reply = {
+        let (reply, events) = {
             let mut e = engine.lock().await;
-            e.on_operation(&req, data_in.as_deref())
+            let reply = e.on_operation(&req, data_in.as_deref());
+            // Drain under the same lock so the queue is emptied atomically with
+            // the op that produced it; forward (broadcast, non-blocking) outside.
+            (reply, e.drain_events())
         };
+        for code in events {
+            // Err = no event-socket client connected; the push is dropped (the
+            // completion is only meaningful to a listening client).
+            let _ = event_tx.send(code);
+        }
         write_reply(&mut stream, &req, reply).await?;
     }
     Ok(())
+}
+
+/// Push completion/lifecycle events to one connected event-socket client until
+/// it disconnects (#54). Each broadcast code is written as a standard-framed
+/// PTP/IP `Event` packet. Mirrors [`stream_liveview`]'s read-half watcher: event
+/// clients never send bytes, so a completed read means EOF/reset — the client is
+/// gone, and without watching it a never-emitting session would hang the task.
+async fn handle_event_conn(mut stream: TcpStream, mut events: broadcast::Receiver<u16>) {
+    let (mut rd, mut wr) = stream.split();
+    let mut probe = [0u8; 64];
+    loop {
+        tokio::select! {
+            recv = events.recv() => {
+                match recv {
+                    Ok(code) => {
+                        let packet = PtpIpPacket::Event(EventPacket {
+                            code,
+                            transaction_id: 0,
+                            params: vec![],
+                        });
+                        let Ok(bytes) = ptp_core::encode(&packet) else { break };
+                        if wr.write_all(&bytes).await.is_err() {
+                            break; // client gone
+                        }
+                    }
+                    // Closed: the server is shutting down. Lagged: this slow
+                    // client overflowed the buffer — drop it rather than send
+                    // out-of-order completions.
+                    Err(_) => break,
+                }
+            }
+            r = rd.read(&mut probe) => {
+                match r {
+                    Ok(0) | Err(_) => break, // EOF / reset — client gone
+                    Ok(_) => {}              // unexpected bytes; ignore
+                }
+            }
+        }
+    }
 }
 
 /// Absolute ceiling on an initiator data-in payload. Realistic data-in is a

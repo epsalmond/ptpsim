@@ -5,7 +5,7 @@
 use camera_config::CameraManifest;
 use ptp_core::codes::datatype_code as dt;
 use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Fuji function-mode selector properties.
 pub const PROP_DF00: u16 = 0xdf00;
@@ -33,6 +33,16 @@ pub struct CameraState {
     /// on each `GetDevicePropValue` of that code. Internal — driven only via
     /// [`CameraState::arm_effect`] / [`CameraState::resolve_pending`].
     pending: BTreeMap<u16, PendingTransition>,
+    /// Completion/lifecycle events pushed by operation `emits` (#54), FIFO. The
+    /// in-memory analogue of the camera's `0xC0xx` push channel: drained by the
+    /// event socket (`drain_events`) and by the reference executor's event-source
+    /// `awaitUntil` (`take_event`). Internal — pushed via [`push_event`], drained
+    /// via [`take_event`] / [`drain_events`].
+    ///
+    /// [`push_event`]: CameraState::push_event
+    /// [`take_event`]: CameraState::take_event
+    /// [`drain_events`]: CameraState::drain_events
+    events: VecDeque<u16>,
 }
 
 /// A scheduled op-effect: the value `set_prop` settles to, and how many more
@@ -63,6 +73,7 @@ impl CameraState {
             phase: Phase::Disconnected,
             props,
             pending: BTreeMap::new(),
+            events: VecDeque::new(),
         }
     }
 
@@ -98,6 +109,31 @@ impl CameraState {
                 self.pending.remove(&code);
             }
         }
+    }
+
+    /// Queue a completion/lifecycle event (an operation `emits` code). FIFO.
+    pub fn push_event(&mut self, code: u16) {
+        self.events.push_back(code);
+    }
+
+    /// Remove the first queued copy of `code` and return whether it was there.
+    /// Order-tolerant: a step awaiting `0xC005` still matches if `0xC004`/`0xC001`
+    /// are queued ahead of it. (This keeps the in-memory oracle order-tolerant; a
+    /// real client reading the socket sees events in wire order.) The event-source
+    /// `awaitUntil` drains here — the counterpart of BLE `take_notification`.
+    pub fn take_event(&mut self, code: u16) -> bool {
+        if let Some(i) = self.events.iter().position(|&c| c == code) {
+            self.events.remove(i);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drain all queued events in FIFO order — the event socket forwards these
+    /// to connected clients after each operation.
+    pub fn drain_events(&mut self) -> Vec<u16> {
+        self.events.drain(..).collect()
     }
 
     /// The manifest control-mode key matching the current phase, used to resolve

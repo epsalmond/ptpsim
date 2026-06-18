@@ -302,20 +302,32 @@ pub enum EntryStep {
     ReopenSession {
         tolerant: bool,
     },
-    /// Poll `source_prop` (`GetDevicePropValue`) until `until` holds over the
-    /// observed values, running `on_each` each unsatisfied iteration — the
-    /// PTP-IP await/poll-until verb (#29 postview, #42 AF), mirroring the BLE
-    /// `bleAwaitUntil` contract (§11.15). The dispatcher owns the loop +
-    /// `timeout_ms`/`interval_ms`; evaluate `until` each poll with
-    /// [`await_until_satisfied`].
+    /// Observe until `until` holds, running `on_each` each unsatisfied iteration —
+    /// the PTP-IP await/poll-until verb (#29 postview, #42 AF), mirroring the BLE
+    /// `bleAwaitUntil` contract (§11.16). [`source`](Self::AwaitUntil::source) is
+    /// either a property `Poll` (loop) or an `Event` push (single-shot
+    /// push-then-read, #54). The dispatcher owns the loop + `timeout_ms`/
+    /// `interval_ms`; evaluate `until` with [`await_until_satisfied`].
     AwaitUntil {
-        source_prop: u16,
+        source: FfiAwaitSource,
         until: FfiPredicate,
         on_each: Vec<EntryStep>,
         timeout_ms: u32,
         interval_ms: u32,
         tolerant: bool,
     },
+}
+
+/// Where a PTP-IP `awaitUntil` observes (#54). Mirrors `cc::AwaitSource`. `Poll`
+/// is the #49 default (poll a property each iteration); `Event` awaits a
+/// completion push on the event socket then does one value read (`then_poll`).
+/// On the `Event` happy path the dispatcher: opens/reads the connection's event
+/// socket (55741), awaits an event packet with `code`, issues one
+/// `GetDevicePropValue(then_poll)`, then evaluates `until` once.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum FfiAwaitSource {
+    Poll { prop: u16 },
+    Event { code: u16, then_poll: Option<u16> },
 }
 
 #[derive(uniffi::Record)]
@@ -908,8 +920,22 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
         return Some(EntryStep::ReopenSession { tolerant });
     }
     if let Some(aw) = &s.await_until {
+        let source = match &aw.source {
+            cc::AwaitSource::Poll { prop } => FfiAwaitSource::Poll {
+                prop: parse_hex_code(prop)?,
+            },
+            cc::AwaitSource::Event { code, then_poll } => FfiAwaitSource::Event {
+                code: parse_hex_code(code)?,
+                // A present-but-malformed thenPoll `?`-drops the whole step
+                // (same hazard as a bad source — guarded by the seam test).
+                then_poll: match then_poll {
+                    Some(tp) => Some(parse_hex_code(tp)?),
+                    None => None,
+                },
+            },
+        };
         return Some(EntryStep::AwaitUntil {
-            source_prop: parse_hex_code(&aw.source)?,
+            source,
             until: (&aw.until).into(),
             on_each: aw.on_each.iter().filter_map(map_step).collect(),
             timeout_ms: aw.timeout_ms,
@@ -1027,7 +1053,9 @@ mod tests {
     fn await_until_step_maps_and_is_not_dropped() {
         let step = cc::Step {
             await_until: Some(cc::AwaitUntil {
-                source: "0xd209".into(),
+                source: cc::AwaitSource::Poll {
+                    prop: "0xd209".into(),
+                },
                 until: cc::Predicate::All {
                     all: vec![leaf("0xd209", 1), leaf("0xd17c", 0)],
                 },
@@ -1044,14 +1072,14 @@ mod tests {
         let mapped = map_step(&step).expect("awaitUntil must not be dropped");
         match mapped {
             EntryStep::AwaitUntil {
-                source_prop,
+                source,
                 until,
                 on_each,
                 timeout_ms,
                 interval_ms,
                 tolerant,
             } => {
-                assert_eq!(source_prop, 0xd209);
+                assert!(matches!(source, FfiAwaitSource::Poll { prop: 0xd209 }));
                 assert_eq!(timeout_ms, 5000);
                 assert_eq!(interval_ms, 250);
                 assert!(!tolerant);
@@ -1068,6 +1096,38 @@ mod tests {
                 }
             }
             other => panic!("expected AwaitUntil, got {other:?}"),
+        }
+    }
+
+    /// #54: the event-source `awaitUntil` must also map to `EntryStep::AwaitUntil`
+    /// (carrying `FfiAwaitSource::Event`) and NOT be silently dropped.
+    #[test]
+    fn await_until_event_source_maps_and_is_not_dropped() {
+        let step = cc::Step {
+            await_until: Some(cc::AwaitUntil {
+                source: cc::AwaitSource::Event {
+                    code: "0xc005".into(),
+                    then_poll: Some("0xd209".into()),
+                },
+                until: cc::Predicate::All {
+                    all: vec![leaf("0xd209", 1)],
+                },
+                on_each: vec![],
+                timeout_ms: 5000,
+                interval_ms: 0,
+            }),
+            ..Default::default()
+        };
+        let mapped = map_step(&step).expect("event-source awaitUntil must not be dropped");
+        match mapped {
+            EntryStep::AwaitUntil {
+                source: FfiAwaitSource::Event { code, then_poll },
+                ..
+            } => {
+                assert_eq!(code, 0xc005);
+                assert_eq!(then_poll, Some(0xd209));
+            }
+            other => panic!("expected Event-source AwaitUntil, got {other:?}"),
         }
     }
 

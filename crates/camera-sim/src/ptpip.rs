@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use camera_config::model::{AwaitUntil, Step, StepParam};
+use camera_config::model::{AwaitSource, AwaitUntil, Step, StepParam};
 use camera_config::{parse_hex_code, PropView};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
@@ -171,10 +171,12 @@ impl Ctx<'_> {
         }
     }
 
-    /// `awaitUntil` (§11.15): poll `source` until `until` holds over the observed
-    /// scope, running `on_each` each unsatisfied iteration. Deterministic timeout
-    /// = [`MAX_AWAIT_ITERS`]. A non-numeric/unsupported source poll is a hard
-    /// error (it can never satisfy a numeric predicate).
+    /// `awaitUntil` (§11.16): observe until `until` holds. A `poll` source loops —
+    /// it polls `source` each iteration and runs `on_each` when unsatisfied, up to
+    /// the deterministic timeout [`MAX_AWAIT_ITERS`]. An `event` source is
+    /// single-shot: take the completion event off the engine queue, do one
+    /// post-event read of `then_poll`, then evaluate `until` once (push-then-read).
+    /// A non-numeric/unsupported source poll is a hard error.
     fn run_await_until(
         &mut self,
         aw: &AwaitUntil,
@@ -185,27 +187,59 @@ impl Ctx<'_> {
             step: here.to_string(),
             message,
         };
-        let code = parse_hex_code(&aw.source)
-            .ok_or_else(|| err(format!("bad source prop {:?}", aw.source)))?;
-        for iter in 1..=MAX_AWAIT_ITERS {
-            let v = self.poll_prop(code).map_err(err)?;
-            self.observed.set(code, v);
-            if aw.until.eval(&self.observed) {
-                self.await_iterations.push(iter);
-                return Ok(());
+        match &aw.source {
+            AwaitSource::Poll { prop } => {
+                let code =
+                    parse_hex_code(prop).ok_or_else(|| err(format!("bad source prop {prop:?}")))?;
+                for iter in 1..=MAX_AWAIT_ITERS {
+                    let v = self.poll_prop(code).map_err(err)?;
+                    self.observed.set(code, v);
+                    if aw.until.eval(&self.observed) {
+                        self.await_iterations.push(iter);
+                        return Ok(());
+                    }
+                    // Not yet: act, then poll again. interval_ms is dispatcher
+                    // cadence — the deterministic executor doesn't sleep.
+                    self.walk_steps(&aw.on_each, &format!("{here}.onEach"))?;
+                }
+                if tolerant {
+                    self.await_iterations.push(MAX_AWAIT_ITERS);
+                    return Ok(());
+                }
+                Err(err(format!(
+                    "`until` not satisfied polling {code:#06x} within {MAX_AWAIT_ITERS} observations"
+                )))
             }
-            // Not yet: act, then poll again. interval_ms is dispatcher cadence —
-            // the deterministic executor doesn't sleep.
-            self.walk_steps(&aw.on_each, &format!("{here}.onEach"))?;
+            AwaitSource::Event { code, then_poll } => {
+                let ev =
+                    parse_hex_code(code).ok_or_else(|| err(format!("bad event code {code:?}")))?;
+                // Single-shot: there is no poll loop. By now the triggering op's
+                // `emits` has either queued this event or it never will (the same
+                // outcome BLE calls notify "source exhausted").
+                if !self.engine.take_event(ev) {
+                    if tolerant {
+                        self.await_iterations.push(0);
+                        return Ok(());
+                    }
+                    return Err(err(format!("awaited event {ev:#06x} was not emitted")));
+                }
+                // The event is the readiness signal: ONE post-event value read.
+                if let Some(tp) = then_poll {
+                    let pc = parse_hex_code(tp)
+                        .ok_or_else(|| err(format!("bad thenPoll prop {tp:?}")))?;
+                    let v = self.poll_prop(pc).map_err(err)?;
+                    self.observed.set(pc, v);
+                }
+                if aw.until.eval(&self.observed) || tolerant {
+                    self.await_iterations.push(1);
+                    Ok(())
+                } else {
+                    Err(err(format!(
+                        "`until` not satisfied after event {ev:#06x} + single read"
+                    )))
+                }
+            }
         }
-        if tolerant {
-            self.await_iterations.push(MAX_AWAIT_ITERS);
-            return Ok(());
-        }
-        Err(err(format!(
-            "`until` not satisfied polling {:#06x} within {MAX_AWAIT_ITERS} observations",
-            code
-        )))
     }
 
     /// SetDevicePropValue: encode `value` at the property's datatype width and
@@ -429,7 +463,9 @@ properties:
         let mut e = engine(MANIFEST);
         let steps = vec![Step {
             await_until: Some(AwaitUntil {
-                source: "0xdf01".into(),
+                source: AwaitSource::Poll {
+                    prop: "0xdf01".into(),
+                },
                 until: leaf_eq("0xdf01", 0),
                 on_each: vec![],
                 timeout_ms: 5000,
@@ -471,7 +507,9 @@ properties:
             // Poll S1_LOCK_COLOR until the box turns green (locked).
             Step {
                 await_until: Some(AwaitUntil {
-                    source: "0xd209".into(),
+                    source: AwaitSource::Poll {
+                        prop: "0xd209".into(),
+                    },
                     until: leaf_eq("0xd209", 1),
                     on_each: vec![],
                     timeout_ms: 5000,
@@ -494,7 +532,9 @@ properties:
         let mut e = engine(MANIFEST);
         let steps = vec![Step {
             await_until: Some(AwaitUntil {
-                source: "0xdf01".into(),
+                source: AwaitSource::Poll {
+                    prop: "0xdf01".into(),
+                },
                 until: leaf_eq("0xdf01", 1),
                 on_each: vec![],
                 timeout_ms: 5000,
@@ -504,5 +544,146 @@ properties:
         }];
         let e_err = walk_ptpip(&mut e, &steps, &BTreeMap::new()).unwrap_err();
         assert!(e_err.message.contains("not satisfied"), "{e_err}");
+    }
+
+    /// #54 hybrid round-trip: tap-to-AF (`0x9026`) emits the `0xC005` AFCAPTUER
+    /// completion AND arms a `0xd209` → 1 transition that settles in one poll.
+    /// The event-source `awaitUntil` takes the event, then does ONE post-event
+    /// read which resolves the pending value — proving push-then-read end to end.
+    #[test]
+    fn af_capture_round_trips_via_event_source_then_single_read() {
+        const AF_EVENT_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    effects:
+      - { setProp: "0xd209", value: 1, settleAfterPolls: 1 }
+    emits: ["0xc005"]
+properties:
+  "0xd209": { name: s1LockColor, type: u16, access: readOnly }
+"#;
+        let mut e = engine(AF_EVENT_MANIFEST);
+        let steps = vec![
+            Step {
+                send_op: Some("0x9026".into()),
+                params: vec![StepParam::Literal(0x0906_0403)],
+                ..Default::default()
+            },
+            Step {
+                await_until: Some(AwaitUntil {
+                    source: AwaitSource::Event {
+                        code: "0xc005".into(),
+                        then_poll: Some("0xd209".into()),
+                    },
+                    until: leaf_eq("0xd209", 1),
+                    on_each: vec![],
+                    timeout_ms: 5000,
+                    interval_ms: 0,
+                }),
+                ..Default::default()
+            },
+        ];
+        let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("AF capture round-trips");
+        // Single-shot: one post-event read (not a poll loop).
+        assert_eq!(out.await_iterations, vec![1]);
+        // The single post-event read resolved the settle=1 transition.
+        assert_eq!(out.observed.get(0xd209), Some(1));
+    }
+
+    /// #54: an event that is never emitted fails a strict event source, and
+    /// passes a tolerant one with a distinguishable `await_iterations` of 0.
+    #[test]
+    fn event_source_handles_missing_event() {
+        // 0x9026 has NO `emits`, so 0xc005 never arrives.
+        const NO_EMIT_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026": { name: LockS1Lock }
+properties:
+  "0xd209": { name: s1LockColor, type: u16, access: readOnly }
+"#;
+        let event_step = |tolerant| Step {
+            await_until: Some(AwaitUntil {
+                source: AwaitSource::Event {
+                    code: "0xc005".into(),
+                    then_poll: Some("0xd209".into()),
+                },
+                until: leaf_eq("0xd209", 1),
+                on_each: vec![],
+                timeout_ms: 5000,
+                interval_ms: 0,
+            }),
+            tolerant,
+            ..Default::default()
+        };
+        // Strict: missing event is a hard error.
+        let mut e = engine(NO_EMIT_MANIFEST);
+        let steps = vec![
+            Step {
+                send_op: Some("0x9026".into()),
+                ..Default::default()
+            },
+            event_step(false),
+        ];
+        let err = walk_ptpip(&mut e, &steps, &BTreeMap::new()).unwrap_err();
+        assert!(err.message.contains("not emitted"), "{err}");
+        // Tolerant: bails with await_iterations == [0] (≠ a poll loop's ≥1).
+        let mut e = engine(NO_EMIT_MANIFEST);
+        let steps = vec![
+            Step {
+                send_op: Some("0x9026".into()),
+                ..Default::default()
+            },
+            event_step(true),
+        ];
+        let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("tolerant bail");
+        assert_eq!(out.await_iterations, vec![0]);
+    }
+
+    /// #54: `thenPoll: None` — event arrival alone satisfies `until` over the
+    /// scope a prior `getProp` seeded (no post-event read).
+    #[test]
+    fn event_source_then_poll_none_uses_existing_scope() {
+        const MANIFEST_EVENT: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    emits: ["0xc001"]
+properties:
+  "0xd400": { name: probe, type: u16, access: readOnly, descriptor: { form: enum, values: [7] } }
+"#;
+        let mut e = engine(MANIFEST_EVENT);
+        let steps = vec![
+            // Seed scope: 0xd400 reads its descriptor default (7).
+            Step {
+                get_prop: Some("0xd400".into()),
+                ..Default::default()
+            },
+            Step {
+                send_op: Some("0x9026".into()),
+                ..Default::default()
+            },
+            Step {
+                await_until: Some(AwaitUntil {
+                    source: AwaitSource::Event {
+                        code: "0xc001".into(),
+                        then_poll: None,
+                    },
+                    until: leaf_eq("0xd400", 7),
+                    on_each: vec![],
+                    timeout_ms: 5000,
+                    interval_ms: 0,
+                }),
+                ..Default::default()
+            },
+        ];
+        let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("event arrival satisfies");
+        assert_eq!(out.await_iterations, vec![1]);
+        assert_eq!(out.observed.get(0xd400), Some(7));
     }
 }

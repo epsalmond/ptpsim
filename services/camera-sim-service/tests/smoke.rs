@@ -161,6 +161,83 @@ fn service_drives_image_import_over_tcp() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// #54: a completion event emitted by an operation is pushed to a connected
+/// event-socket client as a PTP/IP Event packet. The AF op (0x9026) `emits`
+/// 0xC005 AFCAPTUER; a client on the event socket (55741) must receive it.
+#[test]
+fn service_pushes_completion_event_on_event_socket() {
+    const AF_EVENT_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x1002": { name: OpenSession }
+  "0x9026":
+    name: LockS1Lock
+    emits: ["0xc005"]
+properties: {}
+"#;
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, event_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            manifest_yaml: AF_EVENT_MANIFEST.into(),
+            media_root: root.clone(),
+            command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let evt = server.event_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (cmd, evt, tx, h)
+    });
+
+    // Connect the event socket FIRST — the real app opens it during session
+    // setup, before triggering a capture. A read timeout turns a missing push
+    // into a clear failure instead of a hang.
+    let mut evt = TcpStream::connect(event_addr).unwrap();
+    evt.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+
+    // Command-socket session bring-up. These round-trips also give the event
+    // accept time to land (and subscribe) before the AF op broadcasts.
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [1; 16],
+        friendly_name: "smoke".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    let _ = read_frame(&mut s); // InitCommandAck
+    write_frame(&mut s, &op(0x1002, 1, vec![1]));
+    read_ok(&mut s);
+
+    // Tap-to-AF: the op emits 0xC005 on its OK response.
+    write_frame(&mut s, &op(0x9026, 2, vec![0x0906_0403]));
+    read_ok(&mut s);
+
+    // The push arrives on the event socket as a standard-framed Event packet.
+    match PtpIpPacket::decode(&read_frame(&mut evt)).unwrap() {
+        PtpIpPacket::Event(e) => {
+            assert_eq!(e.code, 0xc005, "AFCAPTUER event code");
+            assert_eq!(e.transaction_id, 0, "async event uses tid 0");
+        }
+        other => panic!("expected Event packet, got {other:?}"),
+    }
+
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// Read a streamed data reply, returning the reassembled payload and the
 /// count of `Data` frames that preceded `EndData`. Proves chunking: a payload
 /// larger than `DATA_CHUNK_BYTES` must arrive in at least one `Data` frame
