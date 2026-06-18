@@ -7,10 +7,10 @@ takes precedence on anything ptpsim-specific.
 
 ## What ptpsim is
 
-A scriptable, OSS camera-protocol simulator (PTP/IP responder) and
-probe toolkit. One generic engine, no per-manufacturer code; cameras
-are added as manifest **data** (`packages/camera-config-data/`) authored
-from `protocol-mapper` probes. Dual-licensed MIT OR Apache-2.0.
+A scriptable, OSS camera-protocol simulator (PTP/IP responder). One generic
+engine, no per-manufacturer code; cameras are added as manifest **data**
+(`packages/camera-config-data/`) authored from external probe evidence such as
+`epsalmond/camera-protocol-mapper`. Dual-licensed MIT OR Apache-2.0.
 
 Full design: [`DESIGN.md`](DESIGN.md). Consumer-facing FFI surface and
 verb grammar: [`docs/INTEGRATION.md`](docs/INTEGRATION.md). Manifest
@@ -73,11 +73,11 @@ Memory note expanding on this: `feedback-eager-schema-cleanup-preproduction`.
 ### Where things live, where things don't
 
 - **Manifest data** lives in `packages/camera-config-data/`. Authored
-  by people, generated from `protocol-mapper` runs, reviewed before
+  by people, generated from `camera-protocol-mapper` runs, reviewed before
   merge. Agents don't hand-author YAML manifests — they can edit small
   curated entries (gatt catalog additions, establishment-step
   ordering), but bulk data flows through the
-  protocol-mapper → generator pipeline. Memory:
+  camera-protocol-mapper → generator pipeline. Memory:
   `feedback-data-via-generator-not-agent-authoring`.
 
 
@@ -98,7 +98,7 @@ Memory note expanding on this: `feedback-eager-schema-cleanup-preproduction`.
 
 When sources disagree about a protocol fact:
 
-1. **Live wire captures > everything.** A `protocol-mapper` capture or
+1. **Live wire captures > everything.** A `camera-protocol-mapper` capture or
    btsnoop log is ground truth.
    App-side labels (reference app Java symbol names, Apple `NSString` constants)
    come from human-written source, are more trustworthy than the names
@@ -137,11 +137,6 @@ When sources disagree about a protocol fact:
 
 ```sh
 cargo test --workspace                              # Rust workspace
-(
-  cd tools/protocol-mapper
-  .venv/bin/python -m pip install -e '.[test]'
-  .venv/bin/python -m pytest -q
-)
 ```
 
 CI: Woodpecker, `.woodpecker/`. Steps are path-filtered and heavily

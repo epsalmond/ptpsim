@@ -24,7 +24,7 @@ evidence:
 
   # NOT wire-captured. These USB opcodes are leads pending a golden capture.
   # STRONGEST tier: wire-confirmed over wired-gigabit + Wi-Fi infra PTP-IP tether.
-  wireTether:      { kind: wire-capture, path: "tools/protocol-mapper/WIRED_TETHER_CONTROL.md", date: "2026-05-23" }
+  wireTether:      { kind: wire-capture, path: "https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/WIRED_TETHER_CONTROL.md", date: "2026-05-23" }
   # Per-(connection,mode) GetDeviceInfo + GetDevicePropDesc snapshots on PCSS/15740.
   # Authoritative for the wireless-tether supported-ops set (2026-05-27 wire capture).
   wireTetherCaps20260527: { kind: wire-capture, path: "packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
@@ -36,7 +36,7 @@ evidence:
   # 0x500F ISO encoding (signed -1/-2 sentinels), and event-less command socket.
 
   docXlv:          { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
-  captureXlv:      { kind: wire-capture, path: "tools/protocol-mapper/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
+  captureXlv:      { kind: wire-capture, path: "https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
   # Wire-derived PTP/IP property + opcode reference, combining live B1 enum + reference-app instrumentation
   # wire-decode work. Authoritative for the new gallery-filter triplet
   # (0x9051/0x9052/0x9060), the post-shutter event codes (0xC001/0xC004/0x400D),

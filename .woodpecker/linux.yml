@@ -26,7 +26,7 @@ steps:
     # ci-rust (ci/images/ci-rust/Dockerfile) bakes rustfmt/clippy + gh.
 
     # Path filter: rust sources + the data/fixture packages the tests read.
-    # Doc-only / protocol-mapper-only changes skip the whole build+test.
+    # Doc-only changes skip the whole build+test.
     when:
       - path:
           - 'crates/**'
@@ -49,16 +49,6 @@ steps:
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets -- -D warnings
       - cargo test --workspace
-
-  - name: python-mapper
-    image: python:3.11-slim
-    when:
-      - path:
-          - 'tools/protocol-mapper/**'
-          - '.woodpecker/linux.yml'
-    commands:
-      - pip install -q -e './tools/protocol-mapper[test]'
-      - cd tools/protocol-mapper && python -m pytest -q
 
 
 

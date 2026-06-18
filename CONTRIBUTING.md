@@ -26,9 +26,7 @@ For wire-protocol bugs, a minimal capture or transcript is the gold standard.
 
 - Run `cargo fmt --all` and `cargo clippy --workspace -- -D warnings` before
   pushing.
-- Run `cargo test --workspace` and the protocol-mapper Python test suite
-  (`cd tools/protocol-mapper && python3 -m pytest -q`) and make sure both
-  pass.
+- Run `cargo test --workspace` and make sure it passes.
 - Keep commits focused. A bug fix doesn't need surrounding cleanup; a one-shot
   doesn't need a helper. Three similar lines is better than a premature
   abstraction.
@@ -42,9 +40,10 @@ ship per-manufacturer code paths. New cameras are added by authoring a manifest
 (see [`packages/camera-config-data/`](packages/camera-config-data/)), not by
 patching the engine.
 
-The probe toolkit ([`tools/protocol-mapper/`](tools/protocol-mapper/)) is the
-opposite: it drives real cameras and emits JSONL observation bundles that feed
-the manifest-generation pipeline. Per-camera probe scripts belong there.
+The probe toolkit lives in
+[`epsalmond/camera-protocol-mapper`](https://github.com/epsalmond/camera-protocol-mapper):
+it drives real cameras and emits JSONL observation bundles that feed the
+manifest-generation pipeline. Per-camera probe scripts belong there.
 
 ## Security
 
