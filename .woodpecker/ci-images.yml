@@ -4,11 +4,15 @@
 # manual pipeline trigger is the forced-rebuild knob — use it to pick up a
 # new rustc; budget one cold cargo-cache run downstream afterwards.
 #
-# Registry resolution inside steps rides the traefik network alias on
+# Registry resolution inside steps rides the Docker agent's mgmt-public
 
+# builds use Kaniko, not privileged buildx.
 
 labels:
+  backend: docker
+  host: nas
   platform: linux/amd64
+  trust: unprivileged
 
 when:
   - event: [push, manual]
@@ -17,21 +21,14 @@ when:
 
 steps:
   - name: ci-rust
-    image: woodpeckerci/plugin-docker-buildx
-    privileged: true
-    # Inner docker root on /data: the default lives in the step container's
-    # overlay (host docker zvol, ~12 GiB free), which the ~10 GiB cimg base
-    # blows through ("no space left on device", pipeline 117). Persistent =
-    # the inner daemon's pulled bases + layers also survive across runs.
-    volumes:
-      - /data/ci-cache/ptpsim/dind-ci-rust:/dind
+    image: woodpeckerci/plugin-kaniko
     settings:
-      storage_path: /dind
       registry: ${LOCAL_DOCKER_REGISTRY}
-      repo: ${LOCAL_DOCKER_REGISTRY}/ci-rust
-      dockerfile: ci/images/ci-rust/Dockerfile
+      repo: ci-rust
       context: ci/images/ci-rust
-      platforms: linux/amd64
+      dockerfile: Dockerfile
+      cache: true
+      cache_repo: ci-rust/cache
       tags: [latest]
       username:
         from_secret: local_registry_username
@@ -39,21 +36,14 @@ steps:
         from_secret: local_registry_password
 
   - name: ci-android
-    image: woodpeckerci/plugin-docker-buildx
-    privileged: true
-    # Inner docker root on /data: the default lives in the step container's
-    # overlay (host docker zvol, ~12 GiB free), which the ~10 GiB cimg base
-    # blows through ("no space left on device", pipeline 117). Persistent =
-    # the inner daemon's pulled bases + layers also survive across runs.
-    volumes:
-      - /data/ci-cache/ptpsim/dind-ci-android:/dind
+    image: woodpeckerci/plugin-kaniko
     settings:
-      storage_path: /dind
       registry: ${LOCAL_DOCKER_REGISTRY}
-      repo: ${LOCAL_DOCKER_REGISTRY}/ci-android
-      dockerfile: ci/images/ci-android/Dockerfile
+      repo: ci-android
       context: ci/images/ci-android
-      platforms: linux/amd64
+      dockerfile: Dockerfile
+      cache: true
+      cache_repo: ci-android/cache
       tags: [latest]
       username:
         from_secret: local_registry_username
