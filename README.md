@@ -1,9 +1,9 @@
 # ptpsim
 
-A scriptable, open-source **camera-protocol simulator** (PTP/IP, responder role)
-and probe toolkit. ptpsim runs a believable camera from manifest **data** — one
-generic engine, no per-manufacturer code — and pairs with `protocol-mapper` to learn
-new cameras from observed behavior.
+A scriptable, open-source **camera-protocol simulator** (PTP/IP, responder role).
+ptpsim runs a believable camera from manifest **data** — one generic engine, no
+per-manufacturer code — and consumes observations produced by external probe
+tooling such as `camera-protocol-mapper`.
 
 See [`DESIGN.md`](DESIGN.md) for the full design.
 
@@ -21,7 +21,6 @@ services/
   camera-sim-service    tokio service: PTP listeners + control HTTP
 tools/
   camera-simctl         CLI over the control API
-  protocol-mapper          Python probe/exploration tool (emits JSONL observation bundles)
 packages/
   camera-config-data         manifest schema, golden packets, captured camera manifests
   fixtures              small redistributable media fixtures
@@ -31,11 +30,6 @@ packages/
 
 ```sh
 cargo test            # Rust workspace
-(
-  cd tools/protocol-mapper
-  .venv/bin/python -m pip install -e '.[test]'
-  .venv/bin/python -m pytest -q
-)
 ```
 
 ## CI

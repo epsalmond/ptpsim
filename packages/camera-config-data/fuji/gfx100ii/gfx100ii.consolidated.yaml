@@ -22,7 +22,7 @@ evidence:
     date: ''
   captureXlv:
     kind: wire-capture
-    path: tools/protocol-mapper/scripts/xlv_capsweep.py
+    path: https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/scripts/xlv_capsweep.py
     date: ''
   docFujiPtpPropReference:
     kind: doc
@@ -73,7 +73,7 @@ evidence:
     date: 2026-06-02
   wireTether:
     kind: wire-capture
-    path: tools/protocol-mapper/WIRED_TETHER_CONTROL.md
+    path: https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/WIRED_TETHER_CONTROL.md
     date: 2026-05-23
   wireTetherCaps20260527:
     kind: wire-capture
