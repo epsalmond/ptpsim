@@ -131,7 +131,7 @@ per-platform packaging:
   <sha8>-android.tar.gz`) the consumer drops into their Gradle module via two
   `cp -r` commands. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Real
   `.aar` wrapping (compiled `classes.jar` + AndroidManifest) is the follow-up
-  (#43) — needs `kotlinc` + `android.jar` in CI.
+  (#74) — needs `kotlinc` + `android.jar` in CI.
 - **Linux / Python:** the `.so` + the generated `camera_protocol_ffi.py`. Consumed
   across a repo boundary by the standalone `epsalmond/camera-protocol-mapper` (probe
   tooling), which pulls the generated binding — it is no longer built, tested, or
