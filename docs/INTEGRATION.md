@@ -91,7 +91,7 @@ LIB=target/release/libcamera_protocol_ffi.a   # .so on Linux; .a is canonical on
 # Kotlin (Android)
 "$BINDGEN" generate -l kotlin -o generated/kotlin "$LIB"
 
-# Python (Linux / protocol-mapper)
+# Python (Linux — consumed by the standalone camera-protocol-mapper repo)
 "$BINDGEN" generate -l python -o generated/python "$LIB"
 ```
 
@@ -132,8 +132,10 @@ per-platform packaging:
   `cp -r` commands. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Real
   `.aar` wrapping (compiled `classes.jar` + AndroidManifest) is the follow-up
   (#43) — needs `kotlinc` + `android.jar` in CI.
-- **Linux / Python:** the `.so` + the generated `camera_protocol_ffi.py`. Used
-  by `protocol-mapper` (P2 task — same parent CI job as Android).
+- **Linux / Python:** the `.so` + the generated `camera_protocol_ffi.py`. Consumed
+  across a repo boundary by the standalone `epsalmond/camera-protocol-mapper` (probe
+  tooling), which pulls the generated binding — it is no longer built, tested, or
+  shipped from ptpsim CI.
 
 ## 5. Integration pattern
 
