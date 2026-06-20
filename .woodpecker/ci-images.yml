@@ -25,8 +25,8 @@ steps:
     settings:
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ci-rust
-      context: ci/images/ci-rust
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ci/images/ci-rust/Dockerfile
       cache: true
       cache_repo: ci-rust/cache
       tags: [latest]
@@ -40,8 +40,8 @@ steps:
     settings:
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ci-android
-      context: ci/images/ci-android
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ci/images/ci-android/Dockerfile
       cache: true
       cache_repo: ci-android/cache
       tags: [latest]
