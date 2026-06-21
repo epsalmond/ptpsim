@@ -158,6 +158,20 @@ pub fn advert_scope(sig: &BleAdvertSignature, facts: &BleAdvertFacts) -> Vec<(St
     out
 }
 
+/// The encoding each advert *capture* decoded with, keyed by capture name —
+/// parallel to [`advert_scope`]'s values. A later `{ captured: … }` write-back
+/// re-encodes by this real encoding (§11.13) instead of guessing from the
+/// scope string, which silently hex-decodes an even-length all-hex-digit ASCII
+/// value. Static `scope` entries are literals with no capture encoding and are
+/// omitted; a capture whose source/window/decode fails never lands in scope, so
+/// seeding its encoding here is harmless (the key is never read back).
+pub fn advert_capture_encodings(sig: &BleAdvertSignature) -> Vec<(String, Encoding)> {
+    sig.capture
+        .iter()
+        .map(|cap| (cap.name.clone(), cap.encoding))
+        .collect()
+}
+
 fn capture_source_bytes<'a>(
     source: &AdvertByteSource,
     facts: &'a BleAdvertFacts,
@@ -415,6 +429,29 @@ mod tests {
             company_id,
             payload,
         })
+    }
+
+    #[test]
+    fn advert_capture_encodings_keys_each_capture_by_its_encoding() {
+        let cap = |name: &str, encoding| AdvertCapture {
+            source: AdvertByteSource::ManufacturerData,
+            at: 1,
+            length: Some(4),
+            transform: vec![],
+            encoding,
+            name: name.into(),
+        };
+        let s = sig(
+            mfg(Some(1), PayloadPredicate::default()),
+            vec![
+                cap("pairingKeyBytes", Encoding::Ascii),
+                cap("idNumber", Encoding::U32),
+            ],
+        );
+        let enc: BTreeMap<_, _> = advert_capture_encodings(&s).into_iter().collect();
+        assert_eq!(enc.get("pairingKeyBytes"), Some(&Encoding::Ascii));
+        assert_eq!(enc.get("idNumber"), Some(&Encoding::U32));
+        assert_eq!(enc.len(), 2, "only captures carry an encoding");
     }
 
     #[test]
