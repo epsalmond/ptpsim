@@ -39,7 +39,9 @@ models:
     manifest: tm1.yaml
 "#
     );
-    ResolvedManufacturerIndex::from_yaml(&yaml).expect("synthetic index loads").models[0]
+    ResolvedManufacturerIndex::from_yaml(&yaml)
+        .expect("synthetic index loads")
+        .models[0]
         .ble
         .as_ref()
         .unwrap()

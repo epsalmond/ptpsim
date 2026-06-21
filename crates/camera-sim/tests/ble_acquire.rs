@@ -88,7 +88,10 @@ fn acquire_aliases_delegate_capture_by_name() {
     )
     .expect("acquire over a bleRead succeeds");
 
-    assert_eq!(outcome.scope.get("rawId").map(String::as_str), Some("ABCDE"));
+    assert_eq!(
+        outcome.scope.get("rawId").map(String::as_str),
+        Some("ABCDE")
+    );
     assert_eq!(
         outcome.scope.get("deviceId").map(String::as_str),
         Some("ABCDE"),
@@ -151,8 +154,7 @@ fn acquire_binds_declared_target_not_smallest_new_key() {
                   timeoutMs: 3000
 "#,
     );
-    let mut responder =
-        BleResponder::new([STATUS.to_string()]).queue_notification(STATUS, &[0x07]);
+    let mut responder = BleResponder::new([STATUS.to_string()]).queue_notification(STATUS, &[0x07]);
 
     let outcome = walk_establishment(
         &mut responder,
