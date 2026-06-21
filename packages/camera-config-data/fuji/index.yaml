@@ -212,7 +212,11 @@ families:
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }
                 captureAs: apStateRaw
                 until: { apState: { in: "384, 256" } }
-                timeoutMs: 5000
+                # 20 s matches the camera's FUNCTION_LAUNCH_REQUEST timer: it
+                # brings up the AP autonomously and pushes apState within 20 s
+                # (operators APP_AP_HANDOVER_HANDSHAKE). 5 s timed out before any
+                # apState notify arrived on a real GFX100 II (#78).
+                timeoutMs: 20000
 
             # AP is up — read the credentials the app joins the network with.
             - bleRead: { gatt: cameraSSIDNameString,       encoding: utf8, captureAs: ssid }
