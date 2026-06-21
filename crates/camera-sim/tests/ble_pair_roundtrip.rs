@@ -245,6 +245,48 @@ fn legacy_body_without_id_characteristic_still_completes() {
 }
 
 #[test]
+fn legacy_tolerant_bond_read_skips_when_characteristic_absent_from_catalog() {
+    // Distinct from `legacy_body_without_id_characteristic_still_completes`,
+    // where the bond-trigger characteristic is catalogued but unserved (the
+    // read logs, then fails `NotExposed`). Here it is ABSENT from the catalog
+    // entirely, so `require_char` rejects it before the read is even logged —
+    // and the tolerant bond read must still skip, not abort. This covers the
+    // char-absent tolerant path on the legacy side (the RED side is #38).
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let scope = recognize(&view, &legacy_facts(ble));
+
+    let serial_uuid = uuid(ble, "protectedSerialString");
+    let mut responder =
+        BleResponder::new(ble.gatt.values().filter(|u| **u != serial_uuid).cloned())
+            .serve_read(&uuid(ble, "transferState"), &[0x00]);
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &ble.establishment("ble-pair").unwrap().steps,
+        &scope,
+        &runtime_params(),
+    )
+    .expect("the tolerant bond read skips an absent characteristic; plan completes");
+
+    assert!(!outcome.scope.contains_key("cameraSerial"));
+    // The absent characteristic was never even read (rejected pre-log).
+    assert!(
+        !responder
+            .log()
+            .iter()
+            .any(|e| matches!(e, BleEvent::Read { uuid } if *uuid == serial_uuid)),
+        "no read was logged for the absent bond characteristic"
+    );
+    assert_eq!(
+        outcome.scope.get("transferState").map(String::as_str),
+        Some("00")
+    );
+    // The CCCD rounds still ran in full.
+    assert_eq!(responder.subscribed().len(), 13);
+}
+
+#[test]
 fn red_body_without_id_characteristic_skips_the_echo_and_completes() {
     // #38: a red-styled body that doesn't expose deviceIdentificationNumber
     // must complete the plan with BOTH id steps skipped — the read is
