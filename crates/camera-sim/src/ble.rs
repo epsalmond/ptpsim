@@ -331,6 +331,19 @@ fn walk_steps(ctx: &mut WalkCtx<'_>, steps: &[Step], path: &str) -> Result<(), W
     Ok(())
 }
 
+/// The scope slot an `acquire` delegate binds its result to — the delegate's
+/// own explicit `capture_as`. `acquire` aliases THIS slot under its `name`, so
+/// a delegate without one (e.g. a `bleNotify` using only field `capture`s) has
+/// nothing for acquire to bind and is rejected rather than guessed at.
+fn primary_capture_name(step: &Step) -> Option<&str> {
+    match step {
+        Step::BleRead(s) => Some(&s.capture_as),
+        Step::BleNotify(s) => s.capture_as.as_deref(),
+        Step::BleAwaitUntil(s) => s.capture_as.as_deref(),
+        _ => None,
+    }
+}
+
 fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkError> {
     let err = |message: String| WalkError {
         step: here.to_string(),
@@ -411,18 +424,29 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
         }
         Step::BleAwaitUntil(s) => run_await_until(ctx, s, here),
         Step::Acquire(s) => {
-            // Run the delegate step, then alias whatever it captured under
-            // the acquire's name.
-            let before: BTreeSet<String> = ctx.scope.keys().cloned().collect();
-            run_step(ctx, &s.from, &format!("{here}.from"))?;
-            let new_key = ctx.scope.keys().find(|k| !before.contains(*k)).cloned();
-            if let Some(k) = new_key {
-                if let Some(v) = ctx.scope.get(&k).cloned() {
-                    if let Some(enc) = ctx.encodings.get(&k).copied() {
-                        ctx.encodings.insert(s.name.clone(), enc);
-                    }
-                    ctx.scope.insert(s.name.clone(), v);
+            // Run the delegate through `walk_steps` (a one-element slice) so its
+            // OWN tolerant/retry options apply at its level rather than the
+            // acquire's (#44 finding 2). Then alias the slot the delegate
+            // explicitly declared it captures into, by name — not whatever key
+            // a scope set-diff happens to surface, which mis-picks the
+            // lexicographically-smallest key on a multi-capture delegate and
+            // silently aliases nothing when the delegate overwrites a
+            // pre-existing (e.g. recognize-seeded) key (#44 finding 1).
+            walk_steps(ctx, std::slice::from_ref(s.from.as_ref()), &format!("{here}.from"))?;
+            let target = primary_capture_name(&s.from).ok_or_else(|| {
+                err(format!(
+                    "acquire delegate `{}` declares no capture_as to bind",
+                    s.from.verb_name()
+                ))
+            })?;
+            // A tolerant delegate that failed bound nothing — there is then no
+            // value to alias, and that is not an error (its own tolerance
+            // already decided to continue).
+            if let Some(v) = ctx.scope.get(target).cloned() {
+                if let Some(enc) = ctx.encodings.get(target).copied() {
+                    ctx.encodings.insert(s.name.clone(), enc);
                 }
+                ctx.scope.insert(s.name.clone(), v);
             }
             Ok(())
         }
