@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use camera_config::index::eval::{self, BleAdvertFacts};
 use camera_config::index::{
-    CccdMode, FamilyBleBlock, ModelView, ResolvedManufacturerIndex, Signature,
+    CccdMode, Encoding, FamilyBleBlock, ModelView, ResolvedManufacturerIndex, Signature,
 };
 use camera_sim::{walk_establishment, BleEvent, BleResponder};
 
@@ -41,12 +41,19 @@ fn uuid(ble: &FamilyBleBlock, name: &str) -> String {
 }
 
 /// Recognition exactly as the FFI does it: first matching signature in file
-/// order (§11.7) seeds the scope.
-fn recognize(view: &ModelView, facts: &BleAdvertFacts) -> BTreeMap<String, String> {
+/// order (§11.7) seeds the scope, along with each capture's encoding so a
+/// later `{ captured: … }` write-back re-encodes correctly (#43).
+fn recognize(
+    view: &ModelView,
+    facts: &BleAdvertFacts,
+) -> (BTreeMap<String, String>, BTreeMap<String, Encoding>) {
     for (_name, sig) in &view.signatures {
         let Signature::BleAdvert(sig) = sig;
         if eval::advert_matches(sig, facts) {
-            return eval::advert_scope(sig, facts).into_iter().collect();
+            return (
+                eval::advert_scope(sig, facts).into_iter().collect(),
+                eval::advert_capture_encodings(sig).into_iter().collect(),
+            );
         }
     }
     panic!("no signature matched the synthetic advert");
@@ -162,7 +169,7 @@ fn assert_app_order(ble: &FamilyBleBlock, log: &[BleEvent], red_exchange: bool) 
 fn legacy_pair_plan_round_trips_against_the_responder() {
     let view = gfx100ii();
     let ble = view.ble.as_ref().unwrap();
-    let scope = recognize(&view, &legacy_facts(ble));
+    let (scope, encodings) = recognize(&view, &legacy_facts(ble));
     assert_eq!(scope.get("style").map(String::as_str), Some("legacy"));
 
     let mut responder = responder_for(ble);
@@ -170,6 +177,7 @@ fn legacy_pair_plan_round_trips_against_the_responder() {
         &mut responder,
         &ble.establishment("ble-pair").unwrap().steps,
         &scope,
+        &encodings,
         &runtime_params(),
     )
     .expect("every step of the legacy plan completes");
@@ -192,7 +200,7 @@ fn legacy_pair_plan_round_trips_against_the_responder() {
 fn red_pair_plan_round_trips_with_id_number_echo() {
     let view = gfx100ii();
     let ble = view.ble.as_ref().unwrap();
-    let scope = recognize(&view, &red_facts(ble));
+    let (scope, encodings) = recognize(&view, &red_facts(ble));
     assert_eq!(scope.get("style").map(String::as_str), Some("red"));
     assert_eq!(scope.get("shortSerial").map(String::as_str), Some("ABCDE"));
 
@@ -205,6 +213,7 @@ fn red_pair_plan_round_trips_with_id_number_echo() {
         &mut responder,
         &ble.establishment("ble-pair").unwrap().steps,
         &scope,
+        &encodings,
         &runtime_params(),
     )
     .expect("every step of the RED plan completes");
@@ -226,7 +235,7 @@ fn legacy_body_without_id_characteristic_still_completes() {
     // fatal — the reference app behavior the data's tolerant flags encode.
     let view = gfx100ii();
     let ble = view.ble.as_ref().unwrap();
-    let scope = recognize(&view, &legacy_facts(ble));
+    let (scope, encodings) = recognize(&view, &legacy_facts(ble));
 
     let mut responder = BleResponder::new(ble.gatt.values().cloned())
         .serve_read(&uuid(ble, "transferState"), &[0x01]);
@@ -234,6 +243,7 @@ fn legacy_body_without_id_characteristic_still_completes() {
         &mut responder,
         &ble.establishment("ble-pair").unwrap().steps,
         &scope,
+        &encodings,
         &runtime_params(),
     )
     .expect("tolerant reads skip; the plan still completes");
@@ -254,7 +264,7 @@ fn legacy_tolerant_bond_read_skips_when_characteristic_absent_from_catalog() {
     // char-absent tolerant path on the legacy side (the RED side is #38).
     let view = gfx100ii();
     let ble = view.ble.as_ref().unwrap();
-    let scope = recognize(&view, &legacy_facts(ble));
+    let (scope, encodings) = recognize(&view, &legacy_facts(ble));
 
     let serial_uuid = uuid(ble, "protectedSerialString");
     let mut responder =
@@ -265,6 +275,7 @@ fn legacy_tolerant_bond_read_skips_when_characteristic_absent_from_catalog() {
         &mut responder,
         &ble.establishment("ble-pair").unwrap().steps,
         &scope,
+        &encodings,
         &runtime_params(),
     )
     .expect("the tolerant bond read skips an absent characteristic; plan completes");
@@ -294,7 +305,7 @@ fn red_body_without_id_characteristic_skips_the_echo_and_completes() {
     // unbound). Before the fix the echo write hard-failed the walk.
     let view = gfx100ii();
     let ble = view.ble.as_ref().unwrap();
-    let scope = recognize(&view, &red_facts(ble));
+    let (scope, encodings) = recognize(&view, &red_facts(ble));
     assert_eq!(scope.get("style").map(String::as_str), Some("red"));
 
     // Catalog WITHOUT deviceIdentificationNumber at all.
@@ -307,6 +318,7 @@ fn red_body_without_id_characteristic_skips_the_echo_and_completes() {
         &mut responder,
         &ble.establishment("ble-pair").unwrap().steps,
         &scope,
+        &encodings,
         &runtime_params(),
     )
     .expect("plan completes despite the absent characteristic");

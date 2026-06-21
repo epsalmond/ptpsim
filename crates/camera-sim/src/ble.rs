@@ -283,16 +283,24 @@ struct WalkCtx<'a> {
 /// first try or never (a retry loop would spin on the same answer). Regex
 /// `until: matches` is unsupported here (the engine deliberately carries no
 /// regex dependency); plans using it need a platform dispatcher.
+///
+/// `initial_encodings` carries the encoding each recognition-seeded capture
+/// decoded with (`eval::advert_capture_encodings`), seeding `ctx.encodings`
+/// just as in-walk `bleRead`/`bleNotify` captures do. Without it a later
+/// `{ captured: … }` write-back of an advert capture falls back to the
+/// scope-string heuristic, which silently hex-decodes an even-length all-hex
+/// ASCII value instead of writing its bytes (#43).
 pub fn walk_establishment(
     responder: &mut BleResponder,
     steps: &[Step],
     initial_scope: &BTreeMap<String, String>,
+    initial_encodings: &BTreeMap<String, Encoding>,
     runtime_params: &BTreeMap<String, String>,
 ) -> Result<WalkOutcome, WalkError> {
     let mut ctx = WalkCtx {
         responder,
         scope: initial_scope.clone(),
-        encodings: BTreeMap::new(),
+        encodings: initial_encodings.clone(),
         runtime_params: runtime_params.clone(),
         steps_run: 0,
     };

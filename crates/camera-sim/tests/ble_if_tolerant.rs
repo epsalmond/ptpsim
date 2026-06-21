@@ -89,6 +89,7 @@ fn if_tolerant_unbound_field_runs_else_branch() {
         &steps_of(&idx),
         &BTreeMap::new(),
         &BTreeMap::new(),
+        &BTreeMap::new(),
     )
     .expect("an unbound field under tolerant: true takes the else path, no error");
 
@@ -117,6 +118,7 @@ fn if_nontolerant_unbound_field_is_a_hard_error() {
     let err = match walk_establishment(
         &mut responder,
         &steps_of(&idx),
+        &BTreeMap::new(),
         &BTreeMap::new(),
         &BTreeMap::new(),
     ) {
