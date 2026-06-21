@@ -73,9 +73,14 @@ fn run(launch_mode: &str) -> (BTreeMap<String, String>, Vec<u8>) {
             .into_iter()
             .collect();
 
-    let outcome =
-        walk_establishment(&mut responder, steps, &BTreeMap::new(), &BTreeMap::new(), &runtime_params)
-        .expect("the establish-wifi-ap plan walks to completion");
+    let outcome = walk_establishment(
+        &mut responder,
+        steps,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &runtime_params,
+    )
+    .expect("the establish-wifi-ap plan walks to completion");
 
     let writes = responder.written(&launch);
     assert_eq!(writes.len(), 1, "launch request written exactly once");

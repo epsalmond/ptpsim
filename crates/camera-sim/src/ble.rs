@@ -432,7 +432,11 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
             // lexicographically-smallest key on a multi-capture delegate and
             // silently aliases nothing when the delegate overwrites a
             // pre-existing (e.g. recognize-seeded) key (#44 finding 1).
-            walk_steps(ctx, std::slice::from_ref(s.from.as_ref()), &format!("{here}.from"))?;
+            walk_steps(
+                ctx,
+                std::slice::from_ref(s.from.as_ref()),
+                &format!("{here}.from"),
+            )?;
             let target = primary_capture_name(&s.from).ok_or_else(|| {
                 err(format!(
                     "acquire delegate `{}` declares no capture_as to bind",
