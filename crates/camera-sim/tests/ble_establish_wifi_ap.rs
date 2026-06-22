@@ -61,10 +61,11 @@ fn run(launch_mode: &str) -> (BTreeMap<String, String>, Vec<u8>) {
         ssid_uuid.clone(),
         pass_uuid.clone(),
     ])
-    // apState notify source: not-launched (0x0000) then launched
-    // (0x0180 little-endian = 384, in the `until` set).
-    .queue_notification(&ap_state, &[0x00, 0x00])
-    .queue_notification(&ap_state, &[0x80, 0x01])
+    // apState notify source: Launching (0x8002, transitional — must NOT
+    // satisfy `until`) then Launched (0x8001). Wire bytes are little-endian,
+    // so the u16-le capture reads [01 80] = 0x8001 = 32769 (#84).
+    .queue_notification(&ap_state, &[0x02, 0x80])
+    .queue_notification(&ap_state, &[0x01, 0x80])
     .serve_read(&ssid_uuid, b"GFX100II-1234")
     .serve_read(&pass_uuid, b"hunter2pass");
 
@@ -92,8 +93,9 @@ fn establish_wifi_ap_binds_credentials_and_writes_launch_mode_4() {
     let (scope, launch_write) = run("4");
     // launchMode 4 (RemoteShooting) → u16-le [04 00].
     assert_eq!(launch_write, vec![0x04, 0x00]);
-    // apState observed until launched (0x0180 → 384).
-    assert_eq!(scope.get("apState").map(String::as_str), Some("384"));
+    // apState observed until launched (0x8001 → 32769); the transitional
+    // Launching (0x8002) notification before it did not satisfy `until`.
+    assert_eq!(scope.get("apState").map(String::as_str), Some("32769"));
     // Raw apState bytes preserved for the app's fallback parsing.
     assert!(scope.contains_key("apStateRaw"));
     // Consumer contract: SSID + passphrase bound so the app can join the AP.
