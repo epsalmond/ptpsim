@@ -211,7 +211,12 @@ families:
                 source: { notify: { gatt: apState } }
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }
                 captureAs: apStateRaw
-                until: { apState: { in: "384, 256" } }
+                # 0x8001 Launched (live-view / RemoteShooting) + 0x8003
+                # LaunchedForReservedImageTransfer — the u16-le read of wire
+                # bytes [01 80]. Excludes 0x8000 NotLaunched and 0x8002
+                # Launching (transitional). Device-verified (#84); the earlier
+                # {384, 256} was these values byte-swapped, so it never matched.
+                until: { apState: { in: "32769, 32771" } }
                 # 20 s matches the camera's FUNCTION_LAUNCH_REQUEST timer: it
                 # brings up the AP autonomously and pushes apState within 20 s
                 # (operators APP_AP_HANDOVER_HANDSHAKE). 5 s timed out before any

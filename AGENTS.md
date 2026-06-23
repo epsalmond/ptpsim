@@ -135,8 +135,14 @@ When sources disagree about a protocol fact:
 
 ## Build + test
 
+Run the full check sequence the CI linux lane gates on, in this order —
+`fmt --check` runs first and fails the lane before clippy/test, so a green
+`cargo test` alone is not enough to keep `main` building:
+
 ```sh
-cargo test --workspace                              # Rust workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 CI: Woodpecker, `.woodpecker/`. Steps are path-filtered and heavily
