@@ -512,11 +512,11 @@ properties:
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0xd001": { name: filmSimulation, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
-  "0xd02a": { name: stillIso, ptpName: ISO, type: u32, access: readWrite,
+  "0xd02a": { name: stillIso, ptpName: ISO, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
-  "0xd02b": { name: movieIso, ptpName: MovieISO, type: u32, access: readWrite,
+  "0xd02b": { name: movieIso, ptpName: MovieISO, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
-  "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u32, access: readWrite,
+  "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u16, access: readWrite,
               controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
   # PCSS ISO is the standard PTP ExposureIndex, NOT the reference-app 0xD02A path. Encoding is
   # SIGNED: positive = literal ISO; `-1` (0xffffffff) = auto; `-2` (0xfffffffe) = auto
