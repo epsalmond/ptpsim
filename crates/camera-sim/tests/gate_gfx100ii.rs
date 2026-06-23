@@ -63,6 +63,50 @@ fn data_of(reply: Reply) -> Vec<u8> {
     }
 }
 
+/// Decode a `0xD212` tight-format record stream: u16 count, then 6-byte
+/// `<code u16 LE><value u32 LE>` records.
+fn decode_record_stream(b: &[u8]) -> Vec<(u16, u32)> {
+    let count = u16::from_le_bytes([b[0], b[1]]) as usize;
+    assert_eq!(b.len(), 2 + count * 6, "u16 count + 6-byte records");
+    (0..count)
+        .map(|i| {
+            let o = 2 + i * 6;
+            (
+                u16::from_le_bytes([b[o], b[o + 1]]),
+                u32::from_le_bytes([b[o + 2], b[o + 3], b[o + 4], b[o + 5]]),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None)); // OpenSession
+
+    // The 0xD212 readback is the manifest-descriptor-driven record stream, not a
+    // hand-coded blob — its members come from the payload descriptor (#51).
+    let bytes = data_of(e.on_operation(&req(0x1015, 2, vec![0xd212]), None));
+    let records = decode_record_stream(&bytes);
+    assert_eq!(records.len(), 26, "all 26 descriptor members emitted");
+    // The named sub-fields the bundle carries survive into the stream.
+    for code in [0x5007u16, 0xd17c, 0xd209, 0xd02a] {
+        assert!(
+            records.iter().any(|(c, _)| *c == code),
+            "member {code:#06x} present in the stream"
+        );
+    }
+
+    // The bundle reflects live state: a member's record == its own scalar read.
+    let scalar = data_of(e.on_operation(&req(0x1015, 3, vec![0x5007]), None));
+    let aperture = u16::from_le_bytes([scalar[0], scalar[1]]) as u32;
+    assert_eq!(
+        records.iter().find(|(c, _)| *c == 0x5007).map(|(_, v)| *v),
+        Some(aperture),
+        "aperture in the bundle matches its individual GetDevicePropValue"
+    );
+}
+
 #[test]
 fn believable_enumeration_from_the_rich_manifest() {
     let mut e = engine();

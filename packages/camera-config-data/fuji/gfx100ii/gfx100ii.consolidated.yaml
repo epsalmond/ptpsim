@@ -3098,6 +3098,15 @@ properties:
       form: none
       values: []
       source: camera
+    payload:
+      form: recordStream
+      countWidth: 2
+      record: { codeWidth: 2, valueWidth: 4 }
+      members: ['0x5005', '0x5007', '0x500a', '0x500c', '0x500e', '0x5012',
+                '0xd001', '0xd018', '0xd028', '0xd02a', '0xd02b', '0xd17c',
+                '0xd209', '0xd21b', '0xd220', '0xd222', '0xd229', '0xd22a',
+                '0xd240', '0xd241', '0xd242', '0xd246', '0xd400', '0xd401',
+                '0xd52f', '0xdf00']
     controls: {}
     labels: {}
     evidence:
