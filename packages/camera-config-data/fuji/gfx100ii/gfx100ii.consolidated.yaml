@@ -334,6 +334,8 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits:
+    - '0xc001'
     evidence:
     - iosLiveControls
     - docLiveControls
