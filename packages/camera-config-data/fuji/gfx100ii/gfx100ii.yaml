@@ -73,6 +73,10 @@ connections:
     init:
       identity: { guid: initiatorGuid, friendlyName: initFriendlyName }
       nameFieldByteCount: 26
+      # The 28-byte fw-2.30 vendor trailer (cc004f00 + "WMB" UTF-16LE + zeros), so
+      # the app replays bytes from data instead of Swift literals (#82). Byte-perfect
+      # per INIT_COMMAND_REQUEST_FW0230_CORRECTION; matches fuji_init's tested TAIL.
+      tail: "cc004f000000000000000000000057004d0042000000000000000000"
       tailEvidence: iosFujiPTPIP     # liveViewInitTail, 28 bytes
     # Mode-graph edges over this connection. Ground truth = FujiCameraAPISession
     # startup sequence (the CameraPTPMode enum is stale/unused — its launch values

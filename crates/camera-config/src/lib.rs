@@ -21,10 +21,10 @@ pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{enrich, generate_proposal};
 pub use model::{
     parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource, AwaitUntil,
-    CameraIdentity, CameraManifest, Connection, ConnectionTransition, Control, Descriptor,
-    ImagesPushed, LiveViewStream, ManufacturerDefaults, Mode, ModeEntry, OpEffect, Operation,
-    Payload, PayloadForm, PostviewEvent, Property, RecordLayout, Step, StepParam, ValuePolicy,
-    ValueSource, VersionCond, Workflow,
+    CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition, Control,
+    Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewStream, ManufacturerDefaults, Mode,
+    ModeEntry, OpEffect, Operation, Payload, PayloadForm, PostviewEvent, Property, RecordLayout,
+    Step, StepParam, ValuePolicy, ValueSource, VersionCond, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};

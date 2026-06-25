@@ -17,6 +17,16 @@ const INIT_COMMAND_REQUEST: u32 = 1;
 const INIT_COMMAND_ACK: u32 = 2;
 const NAME_FIELD_BYTES: usize = 26;
 
+/// The 8-byte PTP/IP "keep the Wi-Fi AP up" sentinel the reference app sends in place of
+/// a TCP FIN when re-establishing in-place: a length-8 frame whose body is
+/// `0xffffffff`. The camera holds its AP up instead of tearing down (#82).
+pub const KEEP_AP_SENTINEL: [u8; 8] = [0x08, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff];
+
+/// The [`KEEP_AP_SENTINEL`] bytes as a `Vec`, for the FFI boundary.
+pub fn keep_ap_sentinel() -> Vec<u8> {
+    KEEP_AP_SENTINEL.to_vec()
+}
+
 /// Build the InitCommandRequest packet. `guid` must be 16 bytes; `tail` is the
 /// manifest-supplied trailer (28 bytes for the GFX, but length is not enforced —
 /// it's data).
@@ -157,5 +167,11 @@ mod tests {
         // length mismatch.
         let bad_len = [99u8, 0, 0, 0, 2, 0, 0, 0];
         assert!(validate_init_ack(&bad_len).is_err());
+    }
+
+    #[test]
+    fn keep_ap_sentinel_is_the_8_byte_ffffffff_frame() {
+        assert_eq!(keep_ap_sentinel(), &[0x08, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(KEEP_AP_SENTINEL.len(), 8);
     }
 }
