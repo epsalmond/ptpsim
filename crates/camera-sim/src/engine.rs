@@ -403,18 +403,33 @@ impl Engine {
             .collect()
     }
 
-    /// Assemble the `0xd212` live-status readback from current state using the
-    /// shared computed-quirk primitive (concern-organized, not a Fuji branch).
+    /// Assemble the `0xd212` live-status record stream from current state. The
+    /// member set and framing come from the property's payload descriptor
+    /// (manifest data, not a Fuji branch); each member's current value is
+    /// emitted u32-padded, 0 when unset. See operators `D212_TIGHT_FORMAT`.
     fn status_d212(&self) -> Vec<u8> {
-        let aperture = match self.state.props.get(&0x5007) {
-            Some(PropValue::U16(v)) => *v,
-            _ => 0,
-        };
-        let iso = match self.state.props.get(&0xd02a) {
-            Some(PropValue::U32(v)) => *v,
-            _ => 0,
-        };
-        protocol_primitives::quirk::status_d212(aperture, iso, false)
+        let records: Vec<(u16, u32)> = self
+            .manifest
+            .property(0xd212)
+            .and_then(|p| p.payload.as_ref())
+            .map(|payload| {
+                payload
+                    .members
+                    .iter()
+                    .filter_map(|m| parse_hex_code(m))
+                    .map(|code| {
+                        let value = self
+                            .state
+                            .props
+                            .get(&code)
+                            .and_then(value_to_i64)
+                            .unwrap_or(0) as u32;
+                        (code, value)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        protocol_primitives::quirk::record_stream(&records)
     }
 
     fn device_info_bytes(&self) -> Vec<u8> {

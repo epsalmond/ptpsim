@@ -284,6 +284,25 @@ fn property_value_width_resolves_from_manifest_type() {
 }
 
 #[test]
+fn property_payload_surfaces_d212_record_stream() {
+    let s = store();
+    // 0xD212 live-status is a record stream the app walks; the descriptor + its
+    // member allowlist must survive the FFI boundary intact (a dropped `members`
+    // would silently lose the poll set the consumer keys on).
+    let p = s
+        .property_payload(0xd212)
+        .expect("0xD212 carries a payload descriptor");
+    assert!(matches!(p.form, PayloadForm::RecordStream));
+    assert_eq!(p.count_width, Some(2));
+    let rec = p.record.expect("record layout present");
+    assert_eq!((rec.code_width, rec.value_width), (2, 4));
+    assert!(p.members.contains(&0xd17c)); // s1Lock
+    assert!(p.members.contains(&0xd209)); // s1LockColor
+    assert!(p.members.contains(&0x5007)); // aperture
+    assert!(s.property_payload(0x5007).is_none()); // a scalar property → no payload
+}
+
+#[test]
 fn reopen_session_step_surfaces_through_ffi_in_take_to_get_entry() {
     // The from-live-view image-transfer entry has a reopenSession step between
     // 0x1018 (TerminateOpenCapture) and 0xDF01=0x14 (FunctionMode=Image-Import).

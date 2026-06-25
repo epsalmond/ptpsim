@@ -184,6 +184,11 @@ pub struct Property {
     pub kind: Option<String>,
     #[serde(default)]
     pub descriptor: Option<Descriptor>,
+    /// Composite-payload layout for a byte-array property whose value is a
+    /// self-describing record stream of sub-property values (Fuji `0xD212`
+    /// live-status). Absent for scalar properties. See [`Payload`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Payload>,
     #[serde(default)]
     pub controls: BTreeMap<String, Control>,
     /// Value -> human label, e.g. `280: "f/2.8"`.
@@ -216,6 +221,45 @@ impl Descriptor {
             ValueSource::Manifest
         })
     }
+}
+
+/// Layout of a composite byte-array property whose value is a bundle of
+/// sub-property records — the Fuji `0xD212` live-status snapshot. The payload
+/// is a self-describing **record stream** (not a fixed-offset struct), so
+/// members are addressed by PTP prop code, not byte position. A consumer walks
+/// records, accepting only `members`; each member's value is interpreted at
+/// that property's own `type:` width. Evidence: operators `D212_TIGHT_FORMAT`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Payload {
+    pub form: PayloadForm,
+    /// Width of the leading element-count prefix, in bytes (`0xD212` → 2).
+    #[serde(default)]
+    pub count_width: Option<u8>,
+    /// Per-record framing: the prop-code field and value field widths.
+    #[serde(default)]
+    pub record: Option<RecordLayout>,
+    /// The prop codes the camera may emit inside this bundle (the poll
+    /// allowlist). Each member's value width comes from its own property `type:`.
+    #[serde(default)]
+    pub members: Vec<HexCode>,
+}
+
+/// The framing of a composite payload. Only `recordStream` exists today; the
+/// closed enum reserves room for a future fixed-layout bundle without a break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PayloadForm {
+    RecordStream,
+}
+
+/// Per-record field widths in a [`PayloadForm::RecordStream`] (`0xD212`: a
+/// 2-byte LE prop code + a 4-byte LE u32-padded value).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordLayout {
+    pub code_width: u8,
+    pub value_width: u8,
 }
 
 /// Where a descriptor's allowed value set is sourced.

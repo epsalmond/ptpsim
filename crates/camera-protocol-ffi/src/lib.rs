@@ -166,6 +166,44 @@ pub struct ControlInfo {
     pub readback: Option<u16>,
 }
 
+/// Mirror of `cc::Payload` — how a composite byte-array property (`0xD212`
+/// live-status) decomposes into a record stream the app walks. Full mirror:
+/// dropping `members` would silently lose the poll allowlist the consumer needs.
+#[derive(uniffi::Record)]
+pub struct PayloadInfo {
+    pub form: PayloadForm,
+    pub count_width: Option<u8>,
+    pub record: Option<RecordLayoutInfo>,
+    pub members: Vec<u16>,
+}
+
+#[derive(uniffi::Enum)]
+pub enum PayloadForm {
+    RecordStream,
+}
+
+#[derive(uniffi::Record)]
+pub struct RecordLayoutInfo {
+    pub code_width: u8,
+    pub value_width: u8,
+}
+
+impl From<&cc::Payload> for PayloadInfo {
+    fn from(p: &cc::Payload) -> Self {
+        PayloadInfo {
+            form: match p.form {
+                cc::PayloadForm::RecordStream => PayloadForm::RecordStream,
+            },
+            count_width: p.count_width,
+            record: p.record.as_ref().map(|r| RecordLayoutInfo {
+                code_width: r.code_width,
+                value_width: r.value_width,
+            }),
+            members: p.members.iter().filter_map(|m| parse_hex_code(m)).collect(),
+        }
+    }
+}
+
 /// A `send_op` parameter: a literal, or a named runtime slot the app binds from its
 /// own session state (e.g. the live-view open-capture txid). Declarative — not a
 /// computed variable.
@@ -861,6 +899,19 @@ impl ConfigStore {
             Some("u32") => Some(ValueWidth::U32),
             _ => None,
         }
+    }
+
+    /// The composite-payload layout for a property — the `0xD212` record-stream
+    /// framing plus its member poll allowlist — or `None` for a scalar property.
+    /// Lets the app walk the live-status bundle without re-implementing the
+    /// Fuji-specific parse.
+    pub fn property_payload(&self, prop: u16) -> Option<PayloadInfo> {
+        self.inner
+            .manifest
+            .property(prop)?
+            .payload
+            .as_ref()
+            .map(PayloadInfo::from)
     }
 }
 

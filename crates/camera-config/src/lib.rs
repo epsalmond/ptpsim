@@ -23,7 +23,8 @@ pub use model::{
     parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource, AwaitUntil,
     CameraIdentity, CameraManifest, Connection, ConnectionTransition, Control, Descriptor,
     ImagesPushed, LiveViewStream, ManufacturerDefaults, Mode, ModeEntry, OpEffect, Operation,
-    PostviewEvent, Property, Step, StepParam, ValuePolicy, ValueSource, VersionCond, Workflow,
+    Payload, PayloadForm, PostviewEvent, Property, RecordLayout, Step, StepParam, ValuePolicy,
+    ValueSource, VersionCond, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
@@ -109,6 +110,16 @@ impl CameraManifest {
         }
         for (code, prop) in &self.properties {
             check(&prop.evidence, &format!("property {code}"), &mut lints);
+            if let Some(payload) = &prop.payload {
+                for m in &payload.members {
+                    if !self.properties.contains_key(m) {
+                        lints.push(Lint::warn(format!(
+                            "property {code} payload member '{m}' is not a defined property; \
+                             its value width cannot be resolved for decode"
+                        )));
+                    }
+                }
+            }
         }
         for (id, wf) in &self.workflows {
             check(&wf.evidence, &format!("workflow {id}"), &mut lints);

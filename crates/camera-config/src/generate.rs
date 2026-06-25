@@ -184,6 +184,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     access: agg.access,
                     kind: None,
                     descriptor,
+                    payload: None,
                     controls: BTreeMap::new(),
                     labels: BTreeMap::new(),
                     evidence: vec![EVIDENCE_ID.to_string()],
