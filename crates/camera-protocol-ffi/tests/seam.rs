@@ -519,3 +519,39 @@ fn connection_init_assembles_the_82_byte_app_packet_from_manifest_data() {
     // A connection with no init shape returns None.
     assert!(s.connection_init("usb".into()).is_none());
 }
+
+#[test]
+fn connection_info_carries_per_connection_traits() {
+    let s = store();
+    let conns = s.connections(Platform::Macos); // app + wireless-tether both visible
+    let app = conns.iter().find(|c| c.id == "app").expect("app present");
+    assert_eq!(app.init_shape.as_deref(), Some("app82"));
+    assert!(matches!(
+        app.shutter_recipe,
+        Some(ShutterRecipe::AppPostview)
+    ));
+    assert!(matches!(
+        app.live_view_delivery.as_ref().map(|d| &d.kind),
+        Some(LiveViewDeliveryKind::Stream)
+    ));
+
+    let wt = conns
+        .iter()
+        .find(|c| c.id == "wireless-tether")
+        .expect("tether present");
+    let lv = wt
+        .live_view_delivery
+        .as_ref()
+        .expect("tether polls live view");
+    assert!(matches!(lv.kind, LiveViewDeliveryKind::Poll));
+    assert_eq!(lv.poll_op, Some(0x9018)); // hex string → u16 across the FFI
+    assert!(matches!(
+        wt.shutter_recipe,
+        Some(ShutterRecipe::WirelessTether3Beat)
+    ));
+
+    // usb declares no traits → None (the app falls back, no negative list).
+    let usb = conns.iter().find(|c| c.id == "usb").expect("usb on macOS");
+    assert!(usb.shutter_recipe.is_none());
+    assert!(usb.live_view_delivery.is_none());
+}

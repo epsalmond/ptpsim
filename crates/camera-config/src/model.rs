@@ -371,6 +371,20 @@ pub struct Connection {
     /// assemble the init bytes from manifest data alone (no client literals).
     #[serde(default)]
     pub init: Option<InitShape>,
+    /// Which init/establishment template this connection uses (#81) — names an
+    /// init shape (e.g. `app82`) so the app picks the establishment path by
+    /// trait instead of branching on connection id. Companion to `init`.
+    #[serde(default)]
+    pub init_shape: Option<String>,
+    /// How live-view frames arrive over this connection (#81): a continuous
+    /// `stream` (reference app `app`) or a `poll` loop (`wireless-tether`).
+    #[serde(default)]
+    pub live_view_delivery: Option<LiveViewDelivery>,
+    /// Which shutter recipe family this connection uses (#81) — the discriminator
+    /// that replaces the app's per-connection shutter fork. The steps still live
+    /// in `actions.shutter`.
+    #[serde(default)]
+    pub shutter_recipe: Option<ShutterRecipe>,
     #[serde(default)]
     pub modes: Vec<String>,
     /// Mode-graph edges reachable over this connection (decision #6, §3a). An edge
@@ -452,6 +466,38 @@ pub enum ActionVerb {
     GetObject,
     /// Delete an object by handle.
     DeleteObject,
+}
+
+/// How live-view frames are delivered over a connection (#81 per-connection
+/// trait). `Stream` = a continuous frame channel (reference app `app`); `Poll` = the app
+/// repeatedly issues `poll_op` (`wireless-tether`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveViewDelivery {
+    pub kind: LiveViewDeliveryKind,
+    /// The op the app polls when `kind = poll` (e.g. `0x9018`).
+    #[serde(default)]
+    pub poll_op: Option<HexCode>,
+}
+
+/// Live-view delivery mode (closed vocabulary — a new value needs a schema PR).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LiveViewDeliveryKind {
+    Stream,
+    Poll,
+}
+
+/// Which shutter recipe family a connection uses (#81). The actual steps live in
+/// `actions.shutter`; this is the discriminator that replaces the app's
+/// per-connection shutter branch. Closed vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShutterRecipe {
+    /// `app`: the bare `0x100E` + `0x9022` postview take-cycle.
+    AppPostview,
+    /// `wireless-tether`: the 3-beat `0xD039` + `0x100E` virtual shutter.
+    WirelessTether3Beat,
 }
 
 /// Declared side-effects an `Action` produces — the app reads `Action.triggers`

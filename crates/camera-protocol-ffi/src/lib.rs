@@ -150,6 +150,54 @@ pub struct ConnectionInfo {
     pub kind: String,
     pub discovery: String,
     pub auto_discoverable: bool,
+    // --- #81 per-connection traits: the app selects behavior from these
+    // instead of branching on `id`. `None` → the app falls back. ---
+    pub init_shape: Option<String>,
+    pub live_view_delivery: Option<FfiLiveViewDelivery>,
+    pub shutter_recipe: Option<ShutterRecipe>,
+}
+
+/// Mirror of `cc::LiveViewDelivery` (#81): how live-view frames arrive over a
+/// connection — a continuous `stream` or a `poll` loop issuing `poll_op`.
+#[derive(uniffi::Record)]
+pub struct FfiLiveViewDelivery {
+    pub kind: LiveViewDeliveryKind,
+    pub poll_op: Option<u16>,
+}
+
+#[derive(uniffi::Enum)]
+pub enum LiveViewDeliveryKind {
+    Stream,
+    Poll,
+}
+
+/// Mirror of `cc::ShutterRecipe` (#81): the shutter recipe family, replacing the
+/// app's per-connection shutter fork.
+#[derive(uniffi::Enum)]
+pub enum ShutterRecipe {
+    AppPostview,
+    WirelessTether3Beat,
+}
+
+impl From<&cc::LiveViewDelivery> for FfiLiveViewDelivery {
+    fn from(d: &cc::LiveViewDelivery) -> Self {
+        FfiLiveViewDelivery {
+            kind: match d.kind {
+                cc::LiveViewDeliveryKind::Stream => LiveViewDeliveryKind::Stream,
+                cc::LiveViewDeliveryKind::Poll => LiveViewDeliveryKind::Poll,
+            },
+            poll_op: d.poll_op.as_deref().and_then(parse_hex_code),
+        }
+    }
+}
+
+impl From<cc::ShutterRecipe> for ShutterRecipe {
+    fn from(r: cc::ShutterRecipe) -> Self {
+        match r {
+            cc::ShutterRecipe::AppPostview => ShutterRecipe::AppPostview,
+            cc::ShutterRecipe::WirelessTether3Beat => ShutterRecipe::WirelessTether3Beat,
+        }
+    }
 }
 
 /// The InitCommandRequest for a connection, assembled from manifest data (#82):
@@ -731,6 +779,9 @@ impl ConfigStore {
                 discovery: yaml_path_str(&c.extra, &["discovery", "mechanism"]).unwrap_or_default(),
                 auto_discoverable: yaml_path_bool(&c.extra, &["discovery", "autoDiscoverable"])
                     .unwrap_or(true),
+                init_shape: c.init_shape.clone(),
+                live_view_delivery: c.live_view_delivery.as_ref().map(Into::into),
+                shutter_recipe: c.shutter_recipe.map(Into::into),
             })
             .collect()
     }
