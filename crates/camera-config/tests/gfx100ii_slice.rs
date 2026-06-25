@@ -794,3 +794,39 @@ fn close_session_step_parses_and_is_well_formed() {
     );
     assert!(step.is_well_formed(), "exactly one action field set");
 }
+
+#[test]
+fn per_connection_traits_parse() {
+    use camera_config::{LiveViewDeliveryKind, ShutterRecipe};
+    let m = gfx();
+
+    let app = &m.connections["app"];
+    assert_eq!(app.init_shape.as_deref(), Some("app82"));
+    assert_eq!(
+        app.live_view_delivery.as_ref().map(|d| d.kind),
+        Some(LiveViewDeliveryKind::Stream)
+    );
+    assert_eq!(app.shutter_recipe, Some(ShutterRecipe::AppPostview));
+
+    let wt = &m.connections["wireless-tether"];
+    let lv = wt
+        .live_view_delivery
+        .as_ref()
+        .expect("tether polls live view");
+    assert_eq!(lv.kind, LiveViewDeliveryKind::Poll);
+    assert_eq!(lv.poll_op.as_deref(), Some("0x9018"));
+    assert_eq!(wt.shutter_recipe, Some(ShutterRecipe::WirelessTether3Beat));
+
+    // usb declares none → the app falls back (no negative list needed).
+    assert!(m.connections["usb"].shutter_recipe.is_none());
+    assert!(m.connections["usb"].live_view_delivery.is_none());
+}
+
+#[test]
+fn unknown_shutter_recipe_fails_to_load() {
+    // Closed vocabulary: an unknown value needs a schema PR, not silent acceptance.
+    let r = serde_yaml::from_str::<camera_config::Connection>(
+        "kind: ptpip-app\nshutterRecipe: teleport",
+    );
+    assert!(r.is_err(), "unknown shutterRecipe must fail to parse");
+}

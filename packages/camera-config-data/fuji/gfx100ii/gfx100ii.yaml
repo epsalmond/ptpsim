@@ -59,6 +59,11 @@ connections:
   app:
     kind: ptpip-app                 # WiFi-AP path (camera hosts the AP; app joins)
     establishment: ble-establish-wifi-ap # BLE pairing brings up the camera AP, app joins + routes, then PTP-IP
+    # Per-connection traits (#81): the app selects behavior from these, not by
+    # branching on the connection id.
+    initShape: app82                    # the 82-byte reference app InitCommandRequest (#82)
+    liveViewDelivery: { kind: stream }   # reference app delivers frames as a continuous stream
+    shutterRecipe: appPostview           # 0x100E + 0x9022 postview take-cycle
     discovery: { mechanism: ble, announces: camera }
     modes: [shooting/stills, image-transfer]
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
@@ -243,6 +248,11 @@ connections:
   wireless-tether:
     kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference-app family)
     establishment: pcss-knock     # camera joins LAN (Wi-Fi/Ethernet), then PCSS port-knock
+    # Per-connection traits (#81): a different init family, poll-based live view,
+    # and the 3-beat virtual shutter — all data-driven, not app id-branches.
+    initShape: pcssKnock                                  # PCSS init (not the 82-byte reference app)
+    liveViewDelivery: { kind: poll, pollOp: "0x9018" }    # app polls 0x9018 for frames
+    shutterRecipe: wirelessTether3Beat                    # 3-beat 0xD039 + 0x100E virtual shutter
     # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
     # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
     # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference-app's 82-byte init).
