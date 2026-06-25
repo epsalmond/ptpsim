@@ -69,6 +69,13 @@ pub fn build_app_init(
         .map_err(|e| CodecError::Encode(e.to_string()))
 }
 
+/// The 8-byte keep-AP sentinel (`0xffffffff` framed) the app sends instead of a
+/// TCP FIN to hold the camera's Wi-Fi AP up across an in-place reopen (#82).
+#[uniffi::export]
+pub fn keep_ap_sentinel() -> Vec<u8> {
+    protocol_primitives::keep_ap_sentinel()
+}
+
 #[uniffi::export]
 pub fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError> {
     protocol_primitives::validate_init_ack(&packet).map_err(|e| CodecError::Encode(e.to_string()))
@@ -143,6 +150,18 @@ pub struct ConnectionInfo {
     pub kind: String,
     pub discovery: String,
     pub auto_discoverable: bool,
+}
+
+/// The InitCommandRequest for a connection, assembled from manifest data (#82):
+/// the resolved identity + literal vendor tail, plus the pre-built 82-byte
+/// packet — so the app replays bytes with no client-side literals.
+#[derive(uniffi::Record)]
+pub struct InitShapeInfo {
+    pub guid: Vec<u8>,
+    pub friendly_name: String,
+    pub name_field_byte_count: u32,
+    pub tail: Vec<u8>,
+    pub packet: Vec<u8>,
 }
 
 #[derive(uniffi::Record)]
@@ -338,6 +357,13 @@ pub enum EntryStep {
     /// the verb carries no parameters. Wire-confirmed for the reference app
     /// `app` → image-transfer (Take→Get) flow per MODE_CHANGES.md §5.
     ReopenSession {
+        tolerant: bool,
+    },
+    /// End the PTP/IP session. `keep_ap` emits the 8-byte `0xffffffff` keep-AP
+    /// sentinel (`keep_ap_sentinel()`) instead of a TCP FIN, so the camera holds
+    /// its Wi-Fi AP up across an in-place reopen (#82).
+    CloseSession {
+        keep_ap: bool,
         tolerant: bool,
     },
     /// Observe until `until` holds, running `on_each` each unsatisfied iteration —
@@ -883,6 +909,38 @@ impl ConfigStore {
         }
     }
 
+    /// The InitCommandRequest for `connection`, assembled entirely from manifest
+    /// data: resolved GUID + friendly name (via `values:`) + the literal vendor
+    /// tail, plus the pre-built 82-byte packet — so the app replays bytes with no
+    /// client-side literals. `None` if the connection declares no `init` shape
+    /// (e.g. usb) or the identity/tail can't resolve. (#82)
+    pub fn connection_init(&self, connection: String) -> Option<InitShapeInfo> {
+        let c = self.inner.manifest.connections.get(&connection)?;
+        let init = c.init.as_ref()?;
+        let friendly_name = self.fixed_value(&init.identity.friendly_name)?;
+        let guid = hex_value(&self.fixed_value(&init.identity.guid)?)?;
+        let tail = match &init.tail {
+            Some(t) => hex_value(t)?,
+            None => Vec::new(),
+        };
+        let packet = protocol_primitives::build_app_init(&guid, &friendly_name, &tail).ok()?;
+        Some(InitShapeInfo {
+            guid,
+            friendly_name,
+            name_field_byte_count: init.name_field_byte_count,
+            tail,
+            packet,
+        })
+    }
+
+    /// Resolve a `values:` key to its fixed scalar string (`None` for non-fixed).
+    fn fixed_value(&self, key: &str) -> Option<String> {
+        match self.inner.value(key)? {
+            cc::ValuePolicy::Fixed { value } => yaml_scalar(value),
+            _ => None,
+        }
+    }
+
     pub fn value_label(&self, prop: u16, value: i64) -> Option<String> {
         self.inner
             .manifest
@@ -970,6 +1028,12 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
     if s.reopen_session.is_some() {
         return Some(EntryStep::ReopenSession { tolerant });
     }
+    if let Some(cs) = &s.close_session {
+        return Some(EntryStep::CloseSession {
+            keep_ap: cs.keep_ap,
+            tolerant,
+        });
+    }
     if let Some(aw) = &s.await_until {
         let source = match &aw.source {
             cc::AwaitSource::Poll { prop } => FfiAwaitSource::Poll {
@@ -1047,6 +1111,20 @@ fn platform_ok(c: &cc::Connection, p: &Platform) -> bool {
 }
 
 /// A scalar YAML value (string/int/bool) rendered to a string; `None` for compound.
+/// Decode an even-length hex string (optionally `0x`-prefixed) to bytes —
+/// matches `index::eval::yaml_literal_to_bytes`'s hex path, for the init GUID
+/// and vendor tail.
+fn hex_value(s: &str) -> Option<Vec<u8>> {
+    let p = s.strip_prefix("0x").unwrap_or(s);
+    if p.is_empty() || p.len() % 2 != 0 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..p.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&p[i..i + 2], 16).ok())
+        .collect()
+}
+
 fn yaml_scalar(v: &serde_yaml::Value) -> Option<String> {
     match v {
         serde_yaml::Value::String(s) => Some(s.clone()),
@@ -1100,6 +1178,24 @@ mod tests {
     /// The hand-mirror seam: an `awaitUntil` step (with a nested `onEach` and a
     /// multi-leaf `all` predicate) must map to `EntryStep::AwaitUntil` and NOT
     /// be silently dropped by `map_step`'s `filter_map`.
+    #[test]
+    fn close_session_step_maps_and_is_not_dropped() {
+        // An EntryStep that can't represent a step would silently DROP it; the
+        // closeSession marker (#82) must survive map_step like reopenSession.
+        let step = cc::Step {
+            close_session: Some(cc::CloseSession { keep_ap: true }),
+            tolerant: true,
+            ..Default::default()
+        };
+        match map_step(&step).expect("closeSession must not be dropped") {
+            EntryStep::CloseSession { keep_ap, tolerant } => {
+                assert!(keep_ap);
+                assert!(tolerant);
+            }
+            _ => panic!("expected EntryStep::CloseSession"),
+        }
+    }
+
     #[test]
     fn await_until_step_maps_and_is_not_dropped() {
         let step = cc::Step {

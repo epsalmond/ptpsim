@@ -366,6 +366,11 @@ pub struct Connection {
     pub kind: Option<String>,
     #[serde(default)]
     pub establishment: Option<String>,
+    /// The PTP/IP establishment packet shape for this connection — the
+    /// InitCommandRequest byte template (#82). When present, the engine/FFI can
+    /// assemble the init bytes from manifest data alone (no client literals).
+    #[serde(default)]
+    pub init: Option<InitShape>,
     #[serde(default)]
     pub modes: Vec<String>,
     /// Mode-graph edges reachable over this connection (decision #6, §3a). An edge
@@ -569,6 +574,9 @@ pub struct Step {
     /// the action carries no params — `reopenSession: {}`.
     #[serde(default)]
     pub reopen_session: Option<ReopenSession>,
+    /// End the PTP/IP session, optionally keeping the Wi-Fi AP up (#82).
+    #[serde(default)]
+    pub close_session: Option<CloseSession>,
     /// Value for `set_prop`.
     #[serde(default)]
     pub value: Option<i64>,
@@ -697,6 +705,48 @@ pub struct AwaitUntil {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReopenSession {}
 
+/// `closeSession` action: end the PTP/IP session. `keepAp: true` emits the
+/// 8-byte `0xffffffff` keep-AP sentinel instead of a TCP FIN, so the camera
+/// holds its Wi-Fi AP up across an in-place reopen (the graceful-close half of
+/// #82).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseSession {
+    #[serde(default)]
+    pub keep_ap: bool,
+}
+
+/// The PTP/IP InitCommandRequest wire shape as manifest data: identity slots
+/// (resolved via `values:`) framed with a literal vendor tail into the 82-byte
+/// reference app init packet (`fuji_init::build_app_init`). #82.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InitShape {
+    /// Named-value refs for the identity slots, resolved via `values:`.
+    pub identity: InitIdentity,
+    /// Fixed width of the UTF-16LE friendly-name field, in bytes (reference app = 26).
+    #[serde(default)]
+    pub name_field_byte_count: u32,
+    /// Literal vendor tail appended after the name field, as a hex string
+    /// (decoded by the same path as `StepValue::Literal`). The GFX app slice's
+    /// is the 28-byte `cc004f00…`; optional so a PCSS/zeros-tail shape may omit it.
+    #[serde(default)]
+    pub tail: Option<String>,
+    /// Evidence id(s) backing the tail bytes.
+    #[serde(default)]
+    pub tail_evidence: Option<String>,
+}
+
+/// Named-value refs for the [`InitShape`] identity slots.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InitIdentity {
+    /// `values:` key naming the initiator GUID (e.g. `initiatorGuid`).
+    pub guid: String,
+    /// `values:` key naming the friendly name (e.g. `initFriendlyName`).
+    pub friendly_name: String,
+}
+
 /// A `send_op` parameter: a literal, or a **named runtime slot** the client fills
 /// from its own session state. Declarative binding (cf. value-policy `from-pairing`),
 /// NOT a computed variable — there is no arithmetic, branching, or looping over it.
@@ -721,6 +771,7 @@ impl Step {
             self.read_echo.is_some(),
             self.send_op.is_some(),
             self.reopen_session.is_some(),
+            self.close_session.is_some(),
             self.await_until.is_some(),
         ]
         .into_iter()

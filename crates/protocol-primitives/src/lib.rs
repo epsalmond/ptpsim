@@ -14,5 +14,5 @@ pub mod usb_ptp;
 pub mod value_codec;
 
 pub use error::FramingError;
-pub use fuji_init::{build_app_init, validate_init_ack};
+pub use fuji_init::{build_app_init, keep_ap_sentinel, validate_init_ack, KEEP_AP_SENTINEL};
 pub use value_codec::{encode_value, ValueWidth};

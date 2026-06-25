@@ -764,3 +764,33 @@ fn manufacturer_tier_supplies_fixed_initiator_identity() {
         other => panic!("expected fixed initiator GUID, got {other:?}"),
     }
 }
+
+#[test]
+fn app_init_shape_is_typed_and_carries_the_vendor_tail() {
+    // #82: the init shape is a typed field (promoted out of `extra`), with the
+    // literal 28-byte tail in data so the app replays bytes, not Swift literals.
+    let m = gfx();
+    let init = m.connections["app"]
+        .init
+        .as_ref()
+        .expect("app declares an init shape");
+    assert_eq!(init.identity.guid, "initiatorGuid");
+    assert_eq!(init.identity.friendly_name, "initFriendlyName");
+    assert_eq!(init.name_field_byte_count, 26);
+    assert_eq!(
+        init.tail.as_deref(),
+        Some("cc004f000000000000000000000057004d0042000000000000000000")
+    );
+}
+
+#[test]
+fn close_session_step_parses_and_is_well_formed() {
+    // #82: the graceful-close step kind, with the keep-AP flag, is expressible.
+    let step: camera_config::Step =
+        serde_yaml::from_str("closeSession: { keepAp: true }").expect("closeSession parses");
+    assert_eq!(
+        step.close_session,
+        Some(camera_config::CloseSession { keep_ap: true })
+    );
+    assert!(step.is_well_formed(), "exactly one action field set");
+}

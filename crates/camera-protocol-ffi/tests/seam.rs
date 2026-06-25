@@ -494,3 +494,28 @@ fn detect_mode_from_observed_function_mode() {
         Some("shooting/stills")
     );
 }
+
+#[test]
+fn connection_init_assembles_the_82_byte_app_packet_from_manifest_data() {
+    let s = store();
+    let init = s
+        .connection_init("app".into())
+        .expect("the app connection declares an init shape");
+
+    // Identity resolved from `values:`, tail decoded from the manifest — the
+    // packet is assembled with zero client-side literals (#82).
+    assert_eq!(init.guid.len(), 16, "GUID is 16 bytes");
+    assert_eq!(init.tail.len(), 28, "vendor tail is 28 bytes");
+    assert_eq!(init.name_field_byte_count, 26);
+    assert_eq!(init.packet.len(), 82, "the canonical reference app init is 82 bytes");
+    // Structure: u32 length == 82, GUID at 8..24, tail at 54..82.
+    assert_eq!(
+        u32::from_le_bytes(init.packet[0..4].try_into().unwrap()),
+        82
+    );
+    assert_eq!(&init.packet[8..24], &init.guid[..]);
+    assert_eq!(&init.packet[54..82], &init.tail[..]);
+
+    // A connection with no init shape returns None.
+    assert!(s.connection_init("usb".into()).is_none());
+}
