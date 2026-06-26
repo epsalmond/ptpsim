@@ -616,7 +616,9 @@ operations:
     effects:
     - setProp: '0xd209'
       value: 1
-      settleAfterPolls: 2
+      settleAfterPolls: 1
+    emits:
+    - '0xc005'
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -5985,6 +5987,11 @@ events:
     evidence:
     - docFujiPtpPropReference
     - wireReopenTrace
+  '0xc005':
+    name: AFCAPTUER
+    destination: app
+    evidence:
+    - docFujiPtpPropReference
 quirks:
 - id: pcss-knock-once-per-boot
   appliesTo:

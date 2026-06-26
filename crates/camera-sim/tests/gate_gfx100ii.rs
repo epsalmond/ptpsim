@@ -212,6 +212,8 @@ fn af_lock_round_trips_from_the_consolidated_manifest() {
 
     let out = walk_ptpip(&mut e, &steps, &BTreeMap::new())
         .expect("AF lock flow should round-trip via real gfx100ii manifest");
-    assert_eq!(out.await_iterations, vec![2]);
+    // 0x9026 now settles 0xd209 in 1 poll (event-coupling invariant, #42 —
+    // 0x9026 emits 0xc005, so the coupled effect must settle ≤1).
+    assert_eq!(out.await_iterations, vec![1]);
     assert_eq!(out.observed.get(0xd209), Some(1));
 }
