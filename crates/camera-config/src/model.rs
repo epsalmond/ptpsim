@@ -466,6 +466,11 @@ pub enum ActionVerb {
     GetObject,
     /// Delete an object by handle.
     DeleteObject,
+    /// Tap-to-AF: `0x9026 LockS1Lock(packed area)` then await the lock result
+    /// (#35). The packed focus-area u32 is an app-supplied runtime slot.
+    AutofocusLock,
+    /// Release the AF lock: `0x9027 UnlockS1Lock` (#35).
+    AutofocusRelease,
 }
 
 /// How live-view frames are delivered over a connection (#81 per-connection

@@ -567,3 +567,38 @@ fn connection_info_carries_per_connection_traits() {
     assert!(usb.shutter_recipe.is_none());
     assert!(usb.live_view_delivery.is_none());
 }
+
+#[test]
+fn autofocus_lock_action_surfaces_the_event_source_recipe() {
+    let s = store();
+    let lock = s
+        .action("app".into(), ActionVerb::AutofocusLock)
+        .expect("app autofocusLock action");
+    assert_eq!(lock.params, vec!["afArea".to_string()]);
+    assert!(matches!(
+        lock.steps[0],
+        EntryStep::SendOp { op: 0x9026, .. }
+    ));
+    // The AF await surfaces as an event-source AwaitUntil (event 0xC005 → read 0xD209).
+    assert!(matches!(
+        &lock.steps[1],
+        EntryStep::AwaitUntil {
+            source: FfiAwaitSource::Event {
+                code: 0xc005,
+                then_poll: Some(0xd209)
+            },
+            ..
+        }
+    ));
+    let release = s
+        .action("app".into(), ActionVerb::AutofocusRelease)
+        .expect("app autofocusRelease action");
+    assert!(matches!(
+        release.steps[0],
+        EntryStep::SendOp { op: 0x9027, .. }
+    ));
+    // A connection without the verb returns None.
+    assert!(s
+        .action("wireless-tether".into(), ActionVerb::AutofocusLock)
+        .is_none());
+}

@@ -475,6 +475,8 @@ pub enum ActionVerb {
     GetThumb,
     GetObject,
     DeleteObject,
+    AutofocusLock,
+    AutofocusRelease,
 }
 
 /// Declared post-conditions an action produces — the consumer plans UX
@@ -1129,6 +1131,8 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
         ActionVerb::GetThumb => cc::ActionVerb::GetThumb,
         ActionVerb::GetObject => cc::ActionVerb::GetObject,
         ActionVerb::DeleteObject => cc::ActionVerb::DeleteObject,
+        ActionVerb::AutofocusLock => cc::ActionVerb::AutofocusLock,
+        ActionVerb::AutofocusRelease => cc::ActionVerb::AutofocusRelease,
     }
 }
 
