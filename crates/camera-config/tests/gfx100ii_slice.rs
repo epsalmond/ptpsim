@@ -335,29 +335,44 @@ fn action_query_misses_when_connection_does_not_declare_the_verb() {
 }
 
 #[test]
-fn app_shutter_action_is_100e_plus_9022_with_postview_trigger() {
-    // reference app shutter cycle (MODE_CHANGES.md §3 + §6b): 0x100E InitiateCapture(0,0)
-    // → client polls 0xD212 for the JPEG-saved flag → 0x9022 cleanup. Trigger
-    // postviewEvent declares the post-shutter state-change the client awaits.
+fn app_shutter_action_scripts_the_postview_await_take_cycle() {
+    // reference app shutter cycle (#29, MODE_CHANGES.md §6b + FUJI_PTP_PROP_REFERENCE §6):
+    // 0x100E InitiateCapture(0,0) → awaitUntil the PostviewComplete event (0xC001,
+    // JPEG saved to card) → 0x9022 cleanup/postview read. The await makes the take
+    // cycle manifest-scripted instead of client responsibility.
     let m = gfx();
     let shutter = m
         .action("app", ActionVerb::Shutter)
         .expect("app.actions.shutter must exist");
     assert_eq!(shutter.mode, "shooting/stills");
     assert!(shutter.params.is_empty());
-    assert_eq!(shutter.steps.len(), 2);
+    assert_eq!(shutter.steps.len(), 3);
     assert_eq!(shutter.steps[0].send_op.as_deref(), Some("0x100e"));
     assert_eq!(
         shutter.steps[0].params,
         vec![StepParam::Literal(0), StepParam::Literal(0)]
     );
-    assert_eq!(shutter.steps[1].send_op.as_deref(), Some("0x9022"));
-    assert!(shutter.steps[1].params.is_empty());
-    assert_eq!(shutter.triggers.len(), 1);
-    let t = &shutter.triggers[0];
-    assert!(t.is_well_formed());
-    assert!(t.postview_event.is_some());
-    assert!(t.images_pushed.is_none());
+    // The middle step waits for the camera's postview event (arrival alone gates
+    // the read — the 0x9022 below is the data read).
+    let aw = shutter.steps[1]
+        .await_until
+        .as_ref()
+        .expect("postview await step between capture and cleanup");
+    match &aw.source {
+        camera_config::AwaitSource::Event { code, then_poll } => {
+            assert_eq!(code, "0xc001");
+            assert!(then_poll.is_none());
+        }
+        other => panic!("expected an event source, got {other:?}"),
+    }
+    assert_eq!(shutter.steps[2].send_op.as_deref(), Some("0x9022"));
+    assert!(shutter
+        .steps
+        .iter()
+        .all(camera_config::Step::is_well_formed));
+    assert!(shutter.triggers[0].postview_event.is_some());
+    // 0x100E emits 0xC001 so the simulator pushes the event the await consumes.
+    assert!(m.operations["0x100e"].emits.iter().any(|e| e == "0xc001"));
 }
 
 #[test]

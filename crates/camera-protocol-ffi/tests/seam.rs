@@ -365,19 +365,31 @@ fn action_returns_pcss_shutter_with_images_pushed_trigger() {
 
 #[test]
 fn action_returns_app_shutter_with_postview_event_trigger() {
-    // Same verb, different connection — reference app shutter is 0x100E + 0x9022
-    // cleanup; trigger is PostviewEvent (client polls 0xD212 between the two).
+    // Same verb, different connection — the reference app shutter take cycle (#29):
+    // 0x100E → awaitUntil the 0xC001 PostviewComplete event → 0x9022 read.
     let s = store();
     let shutter = s
         .action("app".into(), ActionVerb::Shutter)
         .expect("app.actions.shutter");
-    assert_eq!(shutter.steps.len(), 2);
+    assert_eq!(shutter.steps.len(), 3);
     assert!(matches!(
         shutter.steps[0],
         EntryStep::SendOp { op: 0x100e, .. }
     ));
+    // The postview await surfaces as an event-source AwaitUntil; a dropped step
+    // would silently break the manifest-scripted take cycle.
     assert!(matches!(
-        shutter.steps[1],
+        &shutter.steps[1],
+        EntryStep::AwaitUntil {
+            source: FfiAwaitSource::Event {
+                code: 0xc001,
+                then_poll: None
+            },
+            ..
+        }
+    ));
+    assert!(matches!(
+        shutter.steps[2],
         EntryStep::SendOp { op: 0x9022, .. }
     ));
     assert!(matches!(shutter.triggers[0], ActionEffect::PostviewEvent));
