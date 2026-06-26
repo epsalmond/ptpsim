@@ -301,8 +301,28 @@ pub struct Workflow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Media {
+    /// Object-format table (#36): PTP object-format code → metadata, so the app
+    /// classifies objects (RAW/movie/vendor) from data instead of hardcoding
+    /// per-vendor format literals.
+    #[serde(default)]
+    pub formats: BTreeMap<HexCode, MediaFormat>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// One object-format catalog row (#36): a PTP/vendor format code's name and
+/// classification. The per-vendor RAW preview-extraction descriptor (RAF header
+/// offsets, …) is a separate, evidence-gated follow-up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaFormat {
+    pub name: String,
+    #[serde(default)]
+    pub vendor: Option<String>,
+    #[serde(default)]
+    pub is_raw: bool,
+    #[serde(default)]
+    pub is_movie: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

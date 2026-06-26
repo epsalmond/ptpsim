@@ -625,3 +625,21 @@ fn property_catalog_enumerates_through_ffi() {
         .iter()
         .any(|p| p.code == 0xd028 && p.name == "depthOfField"));
 }
+
+#[test]
+fn media_format_table_classifies_objects_through_ffi() {
+    let s = store();
+    let raf = s.media_format(0xb103).expect("RAF in the format table");
+    assert_eq!(raf.name, "raf");
+    assert_eq!(raf.vendor.as_deref(), Some("fuji"));
+    assert!(raf.is_raw && !raf.is_movie);
+
+    let mov = s.media_format(0x300d).expect("MOV in the table");
+    assert!(mov.is_movie && !mov.is_raw);
+
+    let jpeg = s.media_format(0x3801).expect("JPEG in the table");
+    assert!(!jpeg.is_raw && !jpeg.is_movie);
+
+    // An unknown / unlisted format code → None.
+    assert!(s.media_format(0x9999).is_none());
+}
