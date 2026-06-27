@@ -435,8 +435,15 @@ operations:
     owner: fuji-vendor
     modes: [shooting/stills]
     connections: [app]
+    # AF tap (§5.5): settle 0xD209 S1_LOCK_COLOR to locked, then emit the 0xC005
+    # AFCAPTUER completion event. settleAfterPolls MUST be ≤1 because the effect is
+    # event-coupled — an event-source await does ONE post-event read (the
+    # event-coupling invariant, model.rs). The §5.5 0xD17C-from-packed-param write
+    # is intentionally NOT modeled: no consumer reads it and the event params are
+    # inert job counters (#42).
+    emits: ["0xc005"]
     effects:
-      - { setProp: "0xd209", value: 1, settleAfterPolls: 2 }
+      - { setProp: "0xd209", value: 1, settleAfterPolls: 1 }
     evidence: [iosLiveControls, docLiveControls]
   # AF unlock/release companion to 0x9026 (PTP_PROPERTIES_REFERENCE.md §5.1: clears
   # the AF lock, resets 0xD209 S1_LOCK_COLOR to 0). PRELIMINARY: §5.1 marks the
@@ -624,6 +631,9 @@ events:
   "0xc001": { name: PostviewComplete,         destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
   # Fires when the shutter is pressed but the image isn't yet saved.
   "0xc004": { name: CapturePending,           destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
+  # Fires when AF (0x9026 LockS1Lock) finishes; params are job counters, not AF
+  # coordinates. The app's AF await keys on this then reads 0xD209 (§5.5).
+  "0xc005": { name: AFCAPTUER,                destination: app, evidence: [docFujiPtpPropReference] }
   # Standard PTP "image saved" event. Closes the capture cycle on the wire.
   "0x400d": { name: CaptureComplete,          destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
   # HYPOTHESIS — single-source. Appears during the firmware-update flow per the
