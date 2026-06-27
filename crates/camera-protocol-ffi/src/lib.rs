@@ -257,6 +257,18 @@ pub struct PropertyInfo {
     pub labels: Vec<KeyValue>,
 }
 
+/// An object-format classification from the manifest media table (#36): the
+/// PTP/vendor format code's name, vendor, and RAW/movie flags — so the app
+/// holds no per-vendor format literals.
+#[derive(uniffi::Record)]
+pub struct MediaFormatInfo {
+    pub code: u16,
+    pub name: String,
+    pub vendor: Option<String>,
+    pub is_raw: bool,
+    pub is_movie: bool,
+}
+
 #[derive(uniffi::Enum)]
 pub enum PayloadForm {
     RecordStream,
@@ -1070,6 +1082,25 @@ impl ConfigStore {
                 })
             })
             .collect()
+    }
+
+    /// Classify an object-format code from the manifest media table (#36) — name,
+    /// vendor, and RAW/movie flags — so the app holds no per-vendor format
+    /// literals. `None` if the format is not in the table.
+    pub fn media_format(&self, code: u16) -> Option<MediaFormatInfo> {
+        let media = self.inner.manifest.media.as_ref()?;
+        let f = media
+            .formats
+            .iter()
+            .find(|(k, _)| parse_hex_code(k) == Some(code))
+            .map(|(_, f)| f)?;
+        Some(MediaFormatInfo {
+            code,
+            name: f.name.clone(),
+            vendor: f.vendor.clone(),
+            is_raw: f.is_raw,
+            is_movie: f.is_movie,
+        })
     }
 }
 

@@ -667,3 +667,15 @@ quirks:
     appliesTo: [wireless-tether]
     behavior: "The PCSS knock (UDP 51562) is accepted only once per camera boot; after one session the camera ICMP-rejects further knocks until power-cycled."
     evidence: wireTether
+
+# Object-format table (#36): the app classifies enumerated objects from data,
+# not per-vendor literals. Codes wire-confirmed in IMAGE_TRANSFER_FW230.md.
+# The per-vendor RAW preview-extraction descriptor (RAF FUJIFILMCCD-RAW header
+# offsets) is deferred — it needs a live RAF-download capture; the blind
+# JPEG-scan preview path works meanwhile.
+media:
+  formats:
+    "0x3801": { name: exifJpeg, vendor: standard }
+    "0xb103": { name: raf,      vendor: fuji,     isRaw: true }
+    "0xb105": { name: heif,     vendor: fuji }
+    "0x300d": { name: mov,      vendor: standard, isMovie: true }
