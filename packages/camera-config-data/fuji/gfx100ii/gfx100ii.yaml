@@ -165,6 +165,25 @@ connections:
         triggers:
           - postviewEvent: {}
         evidence: [wireReopenTrace, iosLiveControls, docLiveControls]
+      # Tap-to-AF (#35, §5.5): lock S1 on a packed focus-area, await the AF
+      # completion event (0xC005), then read the lock result. The packed area
+      # u32 is an app-supplied runtime slot — the app owns cursor→cell packing
+      # (StepParam carries no arithmetic), so ptpsim grows no packing vocabulary.
+      autofocusLock:
+        mode: shooting/stills
+        params: [afArea]
+        steps:
+          - { sendOp: "0x9026", params: [{ runtime: afArea }] }
+          - awaitUntil:
+              source: { event: { code: "0xc005", thenPoll: "0xd209" } }
+              until: { prop: "0xd209", eq: 1 }   # 0xD209 S1LockColor: 1 = locked (2 = failed)
+              timeoutMs: 5000
+        evidence: [iosLiveControls, docLiveControls]
+      autofocusRelease:
+        mode: shooting/stills
+        steps:
+          - { sendOp: "0x9027" }
+        evidence: [iosLiveControls, docLiveControls]
       # reference-app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW230.md
       # §"Confirmed enumeration": reference-app **never** calls 0x1007
       # GetObjectHandles — camera rejects with 0x2005 Operation_Not_Supported

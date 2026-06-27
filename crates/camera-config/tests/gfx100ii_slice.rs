@@ -855,3 +855,39 @@ fn unknown_shutter_recipe_fails_to_load() {
     );
     assert!(r.is_err(), "unknown shutterRecipe must fail to parse");
 }
+
+#[test]
+fn app_autofocus_actions_lock_await_and_release() {
+    use camera_config::AwaitSource;
+    let m = gfx();
+
+    // Tap-to-AF lock recipe (#35): 0x9026(packed area) → await 0xC005 + read 0xD209.
+    let lock = m
+        .action("app", ActionVerb::AutofocusLock)
+        .expect("app.actions.autofocusLock");
+    assert_eq!(lock.mode, "shooting/stills");
+    assert_eq!(lock.params, vec!["afArea".to_string()]);
+    assert_eq!(lock.steps[0].send_op.as_deref(), Some("0x9026"));
+    assert_eq!(
+        lock.steps[0].params,
+        vec![StepParam::Runtime {
+            runtime: "afArea".into()
+        }]
+    );
+    let aw = lock.steps[1].await_until.as_ref().expect("AF await step");
+    match &aw.source {
+        AwaitSource::Event { code, then_poll } => {
+            assert_eq!(code, "0xc005");
+            assert_eq!(then_poll.as_deref(), Some("0xd209")); // hybrid: event then one read
+        }
+        other => panic!("expected an event source, got {other:?}"),
+    }
+    assert!(lock.steps.iter().all(camera_config::Step::is_well_formed));
+
+    // Release recipe: single 0x9027.
+    let release = m
+        .action("app", ActionVerb::AutofocusRelease)
+        .expect("app.actions.autofocusRelease");
+    assert_eq!(release.steps.len(), 1);
+    assert_eq!(release.steps[0].send_op.as_deref(), Some("0x9027"));
+}
