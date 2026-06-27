@@ -582,6 +582,8 @@ properties:
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0xd001": { name: filmSimulation, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
+  # 0xD212 live-status member; wire-decoded label DepthOfField, probe type u16 (#50).
+  "0xd028": { name: depthOfField, type: u16, access: readWrite, evidence: [docD212TightFormat] }
   "0xd02a": { name: stillIso, ptpName: ISO, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
   "0xd02b": { name: movieIso, ptpName: MovieISO, type: u16, access: readWrite,

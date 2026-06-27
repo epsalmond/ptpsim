@@ -244,6 +244,19 @@ pub struct PayloadInfo {
     pub members: Vec<u16>,
 }
 
+/// One row of the property catalog (#50): code, name, wire type, access, the
+/// allowed value set, and value→label pairs. Lets the app present settings
+/// without hardcoding a per-vendor catalog.
+#[derive(uniffi::Record)]
+pub struct PropertyInfo {
+    pub code: u16,
+    pub name: String,
+    pub ptype: Option<String>,
+    pub access: Option<String>,
+    pub values: Vec<i64>,
+    pub labels: Vec<KeyValue>,
+}
+
 #[derive(uniffi::Enum)]
 pub enum PayloadForm {
     RecordStream,
@@ -1023,6 +1036,40 @@ impl ConfigStore {
             .payload
             .as_ref()
             .map(PayloadInfo::from)
+    }
+
+    /// Enumerate the full property catalog (#50) — every declared property's
+    /// code, name, type, access, allowed value set, and value labels — so the
+    /// app presents settings without hardcoding a per-vendor catalog. The point
+    /// lookups (property_value_width, value_label, control_for, property_payload)
+    /// remain for targeted queries.
+    pub fn properties(&self) -> Vec<PropertyInfo> {
+        self.inner
+            .manifest
+            .properties
+            .iter()
+            .filter_map(|(code, p)| {
+                Some(PropertyInfo {
+                    code: parse_hex_code(code)?,
+                    name: p.name.clone(),
+                    ptype: p.ptype.clone(),
+                    access: p.access.clone(),
+                    values: p
+                        .descriptor
+                        .as_ref()
+                        .map(|d| d.values.clone())
+                        .unwrap_or_default(),
+                    labels: p
+                        .labels
+                        .iter()
+                        .map(|(k, v)| KeyValue {
+                            key: k.clone(),
+                            value: v.clone(),
+                        })
+                        .collect(),
+                })
+            })
+            .collect()
     }
 }
 

@@ -602,3 +602,26 @@ fn autofocus_lock_action_surfaces_the_event_source_recipe() {
         .action("wireless-tether".into(), ActionVerb::AutofocusLock)
         .is_none());
 }
+
+#[test]
+fn property_catalog_enumerates_through_ffi() {
+    let s = store();
+    let cat = s.properties();
+    assert!(
+        cat.len() > 20,
+        "the catalog enumerates many props: {}",
+        cat.len()
+    );
+    // A representative scalar property surfaces with its metadata.
+    let aperture = cat
+        .iter()
+        .find(|p| p.code == 0x5007)
+        .expect("aperture in the catalog");
+    assert_eq!(aperture.name, "aperture");
+    assert_eq!(aperture.ptype.as_deref(), Some("u16"));
+    assert_eq!(aperture.access.as_deref(), Some("readWrite"));
+    // The newly-declared 0xD212 member is enumerable.
+    assert!(cat
+        .iter()
+        .any(|p| p.code == 0xd028 && p.name == "depthOfField"));
+}
