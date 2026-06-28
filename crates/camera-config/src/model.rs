@@ -405,6 +405,14 @@ pub struct Connection {
     /// in `actions.shutter`.
     #[serde(default)]
     pub shutter_recipe: Option<ShutterRecipe>,
+    /// The command-port (PTP/IP :55740) listener does NOT survive a transport-close
+    /// on this connection: the keep-AP sentinel holds the Wi-Fi AP up, but the
+    /// camera tears the listener down, so a `reopenSession`'s reconnect is refused
+    /// ("Connection refused"). Mode switches must stay in-session (#103). Device-
+    /// confirmed on the GFX100 II `app` Wi-Fi-AP path; default false (assume the
+    /// listener survives) keeps other connections' reopen behavior unchanged.
+    #[serde(default)]
+    pub command_listener_volatile: bool,
     #[serde(default)]
     pub modes: Vec<String>,
     /// Mode-graph edges reachable over this connection (decision #6, §3a). An edge

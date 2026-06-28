@@ -728,15 +728,18 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
             runtime: "openCaptureTxId".into()
         }]
     );
-    // reference app Take→Get switch re-establishes the PTP/IP session before DF01=0x14.
-    // Wire-capture (2026-06-02) confirmed parameterless verb; identity is reused.
+    // #103: the Take→Get switch stays IN-SESSION — no reopenSession. The camera
+    // refuses the reconnect after the transport-close (see `commandListenerVolatile`
+    // on `app`), so after 0x1018 it reads 0xd212 then sets DF01=0x14 on the existing
+    // socket, matching main's working flow.
     assert!(
-        from.steps[1].reopen_session.is_some(),
-        "reopenSession must come right after the 0x1018 in the from-LV image-transfer entry"
+        from.steps.iter().all(|s| s.reopen_session.is_none()),
+        "the from-LV image-transfer entry must switch in-session, not reopen (#103)"
     );
-    assert!(
-        from.steps[1].is_well_formed(),
-        "reopenSession step carries no other action fields"
+    assert_eq!(
+        from.steps[1].get_prop.as_deref(),
+        Some("0xd212"),
+        "0x1018 is followed by the in-session 0xd212 read, not a reopen"
     );
     assert!(from
         .steps

@@ -363,14 +363,32 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
     assert_eq!(plan.prerequisite.as_deref(), Some("ble-pair"));
     assert_eq!(plan.params, vec!["launchMode".to_string()]);
 
-    // Opens with bleConnect (the BLE link carried over from ble-pair), then
-    // writes FUNCTION_LAUNCH_REQUEST with the runtime launchMode (u16-le).
+    // Opens with bleConnect (the BLE link carried over from ble-pair), then arms the
+    // AP handoff with the IMAGE_TRANSFER_SETTING prep write (#102) BEFORE the
+    // FUNCTION_LAUNCH_REQUEST write (runtime launchMode, u16-le).
     assert!(matches!(plan.steps[0], Step::BleConnect { .. }));
+    let write_gatts: Vec<&str> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::BleWrite { gatt, .. } => Some(gatt.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        write_gatts.first(),
+        Some(&"98934B2C-756C-4632-AA2F-DCBA1BFEC824"),
+        "the IMAGE_TRANSFER_SETTING prep write must come first (#102)"
+    );
     let (gatt, value) = plan
         .steps
         .iter()
         .find_map(|s| match s {
-            Step::BleWrite { gatt, value, .. } => Some((gatt, value)),
+            Step::BleWrite { gatt, value, .. }
+                if gatt.as_str() == "600655E6-3637-42F1-8FB2-44EFC5C63B13" =>
+            {
+                Some((gatt, value))
+            }
             _ => None,
         })
         .expect("writes the function-launch request");

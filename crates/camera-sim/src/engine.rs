@@ -40,6 +40,9 @@ pub struct Engine {
     store: MediaStore,
     state: CameraState,
     faults: FaultSet,
+    /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
+    /// arms the session that function-launch brings up. Default armed (standalone).
+    link: crate::link::SharedLink,
 }
 
 impl Engine {
@@ -50,7 +53,21 @@ impl Engine {
             store,
             state,
             faults: FaultSet::default(),
+            link: crate::link::SharedLink::default(),
         }
+    }
+
+    /// A clone of this engine's arming link (#102), to hand to the BLE responder so
+    /// its `IMAGE_TRANSFER_SETTING` / function-launch writes arm THIS engine.
+    pub fn link(&self) -> crate::link::SharedLink {
+        std::sync::Arc::clone(&self.link)
+    }
+
+    /// Whether the PTP/IP `InitCommandRequest` handshake should be answered — false
+    /// when a BLE AP handoff launched without the arming prep write (#102). A
+    /// standalone camera is armed by default.
+    pub fn accepts_init(&self) -> bool {
+        self.link.is_armed()
     }
 
     pub fn state(&self) -> &CameraState {

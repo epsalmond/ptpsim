@@ -76,6 +76,12 @@ pub struct BleResponder {
     connected: bool,
     services_discovered: bool,
     log: Vec<BleEvent>,
+    /// Cross-transport arming link (#102): a write to `arm_uuid`
+    /// (`IMAGE_TRANSFER_SETTING`) notes the prep; a write to `launch_uuid`
+    /// (function-launch) latches the linked engine armed to that prep flag.
+    arming: Option<crate::link::SharedLink>,
+    arm_uuid: Option<String>,
+    launch_uuid: Option<String>,
 }
 
 impl BleResponder {
@@ -91,7 +97,28 @@ impl BleResponder {
             connected: false,
             services_discovered: false,
             log: Vec::new(),
+            arming: None,
+            arm_uuid: None,
+            launch_uuid: None,
         }
+    }
+
+    /// Link this responder to an engine's arming state (#102): a write to
+    /// `arm_uuid` (`IMAGE_TRANSFER_SETTING`) arms the AP handoff, and a write to
+    /// `launch_uuid` (function-launch) latches the engine armed to it — so a plan
+    /// that skips the prep write leaves the engine to drop `InitCommandRequest`.
+    pub fn link_arming(
+        mut self,
+        link: crate::link::SharedLink,
+        arm_uuid: &str,
+        launch_uuid: &str,
+    ) -> Self {
+        self.catalog.insert(arm_uuid.to_string());
+        self.catalog.insert(launch_uuid.to_string());
+        self.arming = Some(link);
+        self.arm_uuid = Some(arm_uuid.to_string());
+        self.launch_uuid = Some(launch_uuid.to_string());
+        self
     }
 
     /// Serve `bytes` on every read of `uuid` (also adds it to the catalog).
@@ -194,6 +221,15 @@ impl BleResponder {
             uuid: uuid.to_string(),
             value: value.to_vec(),
         });
+        // Cross-transport arming (#102): the prep write arms; function-launch
+        // latches the linked engine armed to whether the prep write preceded it.
+        if let Some(link) = &self.arming {
+            if self.arm_uuid.as_deref() == Some(uuid) {
+                link.note_prep_write();
+            } else if self.launch_uuid.as_deref() == Some(uuid) {
+                link.launch_ap();
+            }
+        }
         Ok(())
     }
 

@@ -3,9 +3,10 @@
 //! "chords" — and enumerates believably. Engine-level (the service smoke test covers
 //! the TCP path). This is the vcam-replacement believability gate.
 
+use camera_config::model::ReopenSession;
 use camera_config::{AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam};
 use camera_media_store::MediaStore;
-use camera_sim::{walk_ptpip, Engine, Reply};
+use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Reply};
 use ptp_core::{DeviceInfo, OperationRequest, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -216,4 +217,61 @@ fn af_lock_round_trips_from_the_consolidated_manifest() {
     // 0x9026 emits 0xc005, so the coupled effect must settle ≤1).
     assert_eq!(out.await_iterations, vec![1]);
     assert_eq!(out.observed.get(0xd209), Some(1));
+}
+
+#[test]
+fn reopen_session_is_refused_over_a_volatile_listener_connection() {
+    // #103 negative oracle: the GFX100 II `app` Wi-Fi-AP path tears down the :55740
+    // command-port listener on the transport-close, so a reopenSession's reconnect
+    // is refused — the reference executor must error, matching the device.
+    let reopen = vec![Step {
+        reopen_session: Some(ReopenSession {}),
+        ..Default::default()
+    }];
+
+    // Over `app` (commandListenerVolatile: true) → refused.
+    let mut e = engine();
+    let err = walk_ptpip_in(&mut e, &reopen, &BTreeMap::new(), Some("app")).unwrap_err();
+    assert!(
+        err.message.contains("refused the reconnect"),
+        "expected a reopen refusal, got: {}",
+        err.message
+    );
+
+    // With no volatile connection bound → reopen still re-opens in place (unchanged).
+    let mut e2 = engine();
+    walk_ptpip_in(&mut e2, &reopen, &BTreeMap::new(), None)
+        .expect("a non-volatile connection still allows an in-place reopen");
+}
+
+#[test]
+fn live_view_to_image_transfer_switches_in_session() {
+    // #103 fix: the live-view → image-transfer transition runs over the existing
+    // :55740 socket with NO reopenSession — the only flow the camera accepts. If a
+    // reopen were (re-)added, the oracle above would refuse it over the `app`
+    // connection and this end-to-end walk would fail.
+    let m = consolidated();
+    let app = &m.connections["app"];
+    let live = app
+        .entries
+        .iter()
+        .find(|e| e.to == "shooting/stills" && e.from.is_none())
+        .expect("cold live-view entry");
+    let xfer = app
+        .entries
+        .iter()
+        .find(|e| e.to == "image-transfer" && e.from.as_deref() == Some("shooting/stills"))
+        .expect("live-view → image-transfer transition");
+    assert!(
+        xfer.steps.iter().all(|s| s.reopen_session.is_none()),
+        "the transition must switch in-session, not reopen (#103)"
+    );
+
+    // Run live-view bring-up then the transition as one in-session walk over `app`.
+    let mut steps = live.steps.clone();
+    steps.extend(xfer.steps.clone());
+    let mut e = engine();
+    let params = BTreeMap::from([("openCaptureTxId".to_string(), "1".to_string())]);
+    walk_ptpip_in(&mut e, &steps, &params, Some("app"))
+        .expect("in-session live-view → image-transfer flow runs end-to-end");
 }

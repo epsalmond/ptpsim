@@ -762,3 +762,54 @@ async fn idle_liveview_disconnects_are_reaped() {
         .unwrap();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn unarmed_engine_drops_init_command_request() {
+    // #102: a BLE AP handoff that function-launched WITHOUT the IMAGE_TRANSFER_SETTING
+    // prep write leaves the engine unarmed — the service must drop InitCommandRequest
+    // with NO ack (the camera accepts the TCP, then silently hangs up). The default
+    // (standalone, armed) path is covered by `service_drives_image_import_over_tcp`.
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            manifest_yaml: MANIFEST.into(),
+            media_root: root.clone(),
+            command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        // Model the AP handoff function-launch with no preceding prep write → unarmed.
+        server.camera_link().await.launch_ap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (cmd, tx, h)
+    });
+
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [1; 16],
+        friendly_name: "smoke".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    // The server hangs up without acking → a clean EOF (0 bytes), not an ack frame.
+    let mut buf = [0u8; 4];
+    let n = s.read(&mut buf).expect("read returns (EOF), not a timeout");
+    assert_eq!(
+        n, 0,
+        "unarmed engine must drop InitCommandRequest with no ack (#102)"
+    );
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}
