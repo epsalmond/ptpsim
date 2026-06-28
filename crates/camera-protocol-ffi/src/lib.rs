@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 pub mod mfg_index;
 pub use mfg_index::{
-    AcquireSource, AwaitSource, BleAdRecord, BleManufacturerData, BleNotifyUntil, BleServiceData,
-    CccdMode, Confidence, EstablishmentPlan, ModelMatch, NotifyCapture, Observation, Predicate,
-    PredicateOp, Recognition, Step, StepOptions, StepValue, Transform,
+    AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
+    BleServiceData, CccdMode, Confidence, EstablishmentPlan, ModelMatch, NotifyCapture,
+    Observation, Predicate, PredicateOp, Recognition, Step, StepOptions, StepValue, Transform,
 };
 
 uniffi::setup_scaffolding!();
@@ -784,6 +784,14 @@ impl ConfigStore {
             .establishment
             .clone()?;
         mfg_index::build_establishment(index, &model, &connection, &mechanism, &initial_scope)
+    }
+
+    /// The BLE-native control action plan registered under `action` for `model`
+    /// (#91) — e.g. `remote-shutter`, `write-gps`. Runnable from the resting
+    /// BLE-connected link without Wi-Fi. `None` if the model or action is unknown.
+    pub fn ble_action(&self, model: String, action: String) -> Option<BleActionPlan> {
+        let index = self.inner.index.as_ref()?;
+        mfg_index::build_ble_action(index, &model, &action)
     }
 
     /// Per §11.5: returns ONLY the unwalked tail; the dispatcher splices it

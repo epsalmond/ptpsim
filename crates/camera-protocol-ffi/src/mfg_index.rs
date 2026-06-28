@@ -135,9 +135,16 @@ pub struct EstablishmentPlan {
     /// `ble-establish-wifi-ap` carries `Some("ble-pair")`). Advisory — the
     /// consumer sequences on it; the reference walker does not enforce it.
     pub prerequisite: Option<String>,
+    /// User-initiated from an established BLE link, NOT auto-chained after
+    /// `prerequisite` (#91): the consumer rests at BLE-connected and runs this
+    /// on a user action.
+    pub on_demand: bool,
     /// Runtime parameter names the consumer binds before walking (e.g.
     /// `["launchMode"]`). Empty for plans that take no runtime input.
     pub params: Vec<String>,
+    /// Slot names the host should persist after this plan to replay on a later
+    /// `ble-reconnect` (#91). Empty for plans with nothing to cache.
+    pub persist: Vec<String>,
     pub steps: Vec<Step>,
 }
 
@@ -772,8 +779,42 @@ pub fn build_establishment(
         plan_handle: format!("{model}:{connection}"),
         mechanism: block.mechanism.clone(),
         prerequisite: block.prerequisite.clone(),
+        on_demand: block.on_demand,
+        params: block.params.clone(),
+        persist: block.persist.clone(),
+        steps,
+    })
+}
+
+/// The output of [`crate::ConfigStore::ble_action`]: a walkable BLE-native
+/// control action over an established link (#91) — `remote-shutter`,
+/// `write-time`, `write-gps`. The `Step` values keep their structured forms; the
+/// host binds `params` and walks the steps from the resting BLE link.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BleActionPlan {
+    pub action: String,
+    pub params: Vec<String>,
+    pub steps: Vec<Step>,
+    pub evidence: Vec<String>,
+}
+
+/// Build the BLE action plan registered under `action` for `model`. Looks it up
+/// in the index family BLE `actions` registry. Returns `None` if the model has
+/// no BLE block or no action is registered under `action`.
+pub fn build_ble_action(
+    index: &ix::ResolvedManufacturerIndex,
+    model: &str,
+    action: &str,
+) -> Option<BleActionPlan> {
+    let model_view = index.models.iter().find(|m| m.id == model)?;
+    let ble = model_view.ble.as_ref()?;
+    let block = ble.action(action)?;
+    let steps = block.steps.iter().map(Step::from).collect();
+    Some(BleActionPlan {
+        action: action.to_string(),
         params: block.params.clone(),
         steps,
+        evidence: block.evidence.clone(),
     })
 }
 

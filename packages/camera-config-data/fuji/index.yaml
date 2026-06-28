@@ -61,6 +61,16 @@ families:
         iptcSetting: "DEEF7187-3F43-4364-9E22-11A8C8A15951"
         locationSyncCycle: "C95D91AE-B247-4D6D-8661-7DD5D6A0F85B"
         cameraWiFiPassphraseString: "E809256A-915C-4967-92E8-53B7D4CAD213"
+        # BLE-native control characteristics (#91). The app drives these from the
+        # resting BLE link without Wi-Fi — see the `actions:` block below.
+        # Source: client application FujiBLERegistration.swift (iosBLEReg).
+        # CHARACTERISTIC_FF_SHOOTING_REQUEST — S1/S2/release state writes.
+        shootingRequest: "7FCF49C6-4FF0-4777-A03D-1A79166AF7A8"
+        # CHARACTERISTIC_FF_UTC_AND_TIMEZONE — 12-byte clock/timezone write.
+        utcAndTimezone: "C52EDBCE-1FE2-4ECC-9483-907E6592BE9E"
+        # CHARACTERISTIC_FF_LOCATION_AND_SPEED — 23-byte GPS write (payload
+        # wire-verified, operators 2026-05-01 reference app run).
+        locationAndSpeed: "0F36EC14-29E5-411A-A1B6-64EE8383F090"
 
       # Advertisement-format constants signatures reference via
       # {ble.advert.…} template refs. Family-wide. Note: RED-style cameras
@@ -81,6 +91,11 @@ families:
       establishments:
         ble-pair:
           mechanism: ble-pair
+          # Identity material the host caches after pairing, to replay on a later
+          # ble-reconnect without re-entering pairing mode (#91). pairingKeyBytes
+          # is the 4/5-byte key written to PAIRING_KEY; style + cameraSerial key
+          # the cached record. Wi-Fi creds are persisted by ble-establish-wifi-ap.
+          persist: [pairingKeyBytes, style, cameraSerial]
           steps:
             # Peripheral is already in app scope from recognition; the
             # dispatcher's BLE primitive holds the binding (plan §11.4).
@@ -194,7 +209,15 @@ families:
         ble-establish-wifi-ap:
           mechanism: ble-establish-wifi-ap
           prerequisite: ble-pair
+          # User-initiated, not auto-chained after ble-pair (#91): the app rests
+          # at a BLE-connected home and launches Wi-Fi only when the user taps a
+          # Wi-Fi feature (client application requestRealCameraAPLaunch). prerequisite stays
+          # advisory — onDemand tells the consumer NOT to auto-run this.
+          onDemand: true
           params: [launchMode]
+          # The Wi-Fi creds read below are cached for reconnect (#91), alongside
+          # the pairing identity ble-pair persists.
+          persist: [ssid, passphrase]
           steps:
             # The BLE link from ble-pair is still open; bleConnect is a no-op
             # in that case but keeps the plan self-contained and walkable.
@@ -238,6 +261,96 @@ families:
             # AP is up — read the credentials the app joins the network with.
             - bleRead: { gatt: cameraSSIDNameString,       encoding: utf8, captureAs: ssid }
             - bleRead: { gatt: cameraWiFiPassphraseString, encoding: utf8, captureAs: passphrase }
+
+        # Warm resume for an ALREADY-paired camera (#91): reconnect without
+        # re-entering pairing mode. A bonded camera no longer advertises the
+        # pairing key, so the host re-seeds `pairingKeyBytes` from its persisted
+        # record (see ble-pair `persist:`) and replays it verbatim — the camera
+        # re-recognizes the device over the still-valid OS bond. Differs from
+        # ble-pair: no protectedSerialString bond-trigger (already bonded) and no
+        # RED id-number echo (the camera caches it). Source:
+
+        # (BTManager.java:1103 overrides the fresh advert key with the cached one).
+        ble-reconnect:
+          mechanism: ble-reconnect
+          persist: [pairingKeyBytes, style, cameraSerial, ssid, passphrase]
+          steps:
+            - bleConnect: {}
+
+            # Replay the cached pairing key (host re-seeds pairingKeyBytes from
+            # persistence; the fresh advert is discarded on a warm resume).
+            - bleWrite:
+                gatt: pairingKey
+                value: { captured: pairingKeyBytes }
+
+            # Re-assert the phone-side display name.
+            - bleWrite:
+                gatt: deviceNameString
+                value: { runtime: terminalName, encoding: utf8 }
+
+            # Re-enable notifications — first round. Same tolerant-filter
+            # semantics as ble-pair: a char missing on a body is skipped.
+            - bleSubscribe: { gatt: apState,            timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: transferState,      timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: dateSyncState,      timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: locationSyncState,  timeoutMs: 3000, tolerant: true }
+
+            # Confirm the post-CCCD handshake completed (mirrors ble-pair).
+            - bleRead:
+                gatt: transferState
+                encoding: bytes
+                captureAs: transferState
+                tolerant: true
+
+            # Re-enable notifications — second round.
+            - bleSubscribe: { gatt: remoteBootSetting,     timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: cameraSSIDNameString,  timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: loggingSetting,        timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: cameraVitalState,      timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: locationSyncSetting,   timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: imageResizeRate,       timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: imageResizeSetting,    timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
+            - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
+
+      # BLE-native control actions runnable from the resting BLE link without
+      # Wi-Fi (#91). Source: client application FujiBLERegistration.swift (iosBLEReg);
+      # GPS payload wire-verified (operators 2026-05-01). The cameraSettings
+      # backup/restore action is deferred (heavy chunked transfer — own issue).
+      actions:
+        # Remote shutter: an S1→S2→S1→S0 press sequence on SHOOTING_REQUEST.
+        # client application paces the writes 100ms/500ms/100ms apart (host-side; the
+        # plan declares the byte sequence — see FujiBLERemoteReleaseSequence).
+        remote-shutter:
+          evidence: [iosBLEReg]
+          steps:
+            # Runs over the resting BLE link; bleConnect is a no-op when already
+            # connected but keeps the action self-contained and walkable.
+            - bleConnect: {}
+            - bleWrite: { gatt: shootingRequest, value: { literal: "0100" } }   # S1 start
+            - bleWrite: { gatt: shootingRequest, value: { literal: "0200" } }   # S2 hold
+            - bleWrite: { gatt: shootingRequest, value: { literal: "0100" } }   # S1 return
+            - bleWrite: { gatt: shootingRequest, value: { literal: "0000" } }   # S0 release
+
+        # Clock/timezone write. The host packs the 12-byte payload (year u16-le,
+        # month, day, hour, min, sec, tz-HHMM i32-le, DST flag) — its own clock —
+        # and supplies it; the plan just writes it.
+        write-time:
+          params: [utcTimezonePayload]
+          evidence: [iosBLEReg]
+          steps:
+            - bleConnect: {}
+            - bleWrite: { gatt: utcAndTimezone, value: { runtime: utcTimezonePayload } }
+
+        # GPS/location write. The host packs the 23-byte payload (lat/lon i32-le
+        # ×1e7, alt i32-le, speed i32-le ×100, year u16-le, month, day, hour,
+        # min, sec) and supplies it. Payload layout wire-verified.
+        write-gps:
+          params: [locationSpeedPayload]
+          evidence: [iosBLEReg]
+          steps:
+            - bleConnect: {}
+            - bleWrite: { gatt: locationAndSpeed, value: { runtime: locationSpeedPayload } }
 
 models:
   - id: gfx100ii
