@@ -979,6 +979,15 @@ pub enum ValuePolicy {
     FromPairing {
         source: String,
     },
+    /// Client-derived from a runtime slot the host fills from its own session
+    /// state (e.g. the BLE-registered device name). `runtime` names the SAME slot
+    /// the establishment plan writes (e.g. `terminalName` → the `deviceNameString`
+    /// BLE write), so the PTP/IP friendly name and the BLE device name are one
+    /// value by construction — never a literal. The camera silently drops
+    /// `InitCommandRequest` if the two channels disagree (device 2026-06-28, #109).
+    ClientDerived {
+        runtime: String,
+    },
 }
 
 /// Manufacturer-tier defaults (`fuji.yaml`) — shared by every body of a make and
@@ -1346,6 +1355,23 @@ connections:
                 assert!(persist);
             }
             other => panic!("expected generated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_derived_value_policy_parses() {
+        // #109: a client-derived friendly name names the runtime slot the host fills
+        // (the same slot the BLE deviceNameString write uses) — never a literal.
+        let yaml = r#"
+manufacturer: FUJIFILM
+versionOrder: dotted-int
+values:
+  initFriendlyName: { type: client-derived, runtime: terminalName }
+"#;
+        let d = ManufacturerDefaults::from_yaml(yaml).unwrap();
+        match &d.values["initFriendlyName"] {
+            ValuePolicy::ClientDerived { runtime } => assert_eq!(runtime, "terminalName"),
+            other => panic!("expected client-derived, got {other:?}"),
         }
     }
 

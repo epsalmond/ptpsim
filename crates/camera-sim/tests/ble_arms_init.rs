@@ -127,3 +127,29 @@ fn the_real_establish_plan_arms_the_engine() {
         "the canonical ble-establish-wifi-ap plan must arm the engine"
     );
 }
+
+#[test]
+fn the_device_name_write_registers_on_the_link() {
+    // #109: the BLE `deviceNameString` write records the host's device name on the
+    // shared link, so the PTP/IP init handshake can gate its friendly name on a match.
+    let (engine, link) = engine_and_link();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().expect("ble block");
+    let name_uuid = uuid(ble, "deviceNameString");
+
+    assert_eq!(
+        engine.link().device_name(),
+        None,
+        "no name is registered until a BLE write"
+    );
+
+    let mut responder = BleResponder::new([]).link_device_name(Arc::clone(&link), &name_uuid);
+    responder.connect();
+    responder.write(&name_uuid, b"iphone").unwrap();
+
+    assert_eq!(
+        engine.link().device_name().as_deref(),
+        Some("iphone"),
+        "the deviceNameString BLE write registers the host name on the engine link (#109)"
+    );
+}

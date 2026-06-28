@@ -1,17 +1,25 @@
 # Manufacturer-tier defaults shared by every FUJIFILM body. NOT a camera (no
-# model/firmware). Holds the version-ordering scheme + the FIXED initiator
-# identity the app presents to every Fuji camera (same GUID/name across models —
-# a manufacturer-tier fixed value-policy, not per-body, not app source code).
+# model/firmware). Holds the version-ordering scheme + the initiator identity the
+# app presents to every Fuji camera: a FIXED GUID (same across models) plus a
+# CLIENT-DERIVED friendly name (the host's own device name) — a manufacturer-tier
+# value-policy, not per-body, not app source code.
 manufacturer: FUJIFILM
 versionOrder: dotted-int
 
 values:
-  # The app's own identity in the PTP-IP InitCommandRequest. Fixed and identical
-  # for every Fuji body (verified: many successful pairings across iOS/mac/linux
-  # with this constant). Evidence: client application FujiPTPIP.swift:1046-1052.
+  # The app's GUID in the PTP-IP InitCommandRequest. Fixed and identical for every
+  # Fuji body (verified: many successful pairings across iOS/mac/linux with this
+  # constant). Evidence: client application FujiPTPIP.swift:1046-1052.
   initiatorGuid:
     type: fixed
     value: "f2e4538fada5485d87b27f0bd3d5ded0"   # 16-byte GUID
+  # The app's friendly name in the InitCommandRequest. NOT a literal: it is the
+  # host's own device name, and the camera gates the init on it being CONSISTENT
+  # with the BLE deviceNameString the host registered during pairing (same
+  # `terminalName` slot — see fuji/index.yaml). A mismatch silently drops the init
+  # (GFX100 II device 2026-06-28, #109). Earlier "Pixel-6-4976" literal regressed
+  # the handoff whenever the host's real name differed. A consumer must single-
+  # source one device-derived name to both channels; do not send a constant.
   initFriendlyName:
-    type: fixed
-    value: "Pixel-6-4976"
+    type: client-derived
+    runtime: terminalName
