@@ -42,10 +42,14 @@ pub enum CodecError {
 }
 
 /// Property value width on the wire (mirrors `protocol_primitives::ValueWidth`).
+/// Signed widths (`I16`/`I32`) carry the camera's declared datatype so a consumer
+/// encodes negative values (exposure-bias, ISO auto sentinels) two's-complement.
 #[derive(Debug, uniffi::Enum)]
 pub enum ValueWidth {
     U16,
     U32,
+    I16,
+    I32,
 }
 
 impl From<ValueWidth> for protocol_primitives::ValueWidth {
@@ -53,6 +57,8 @@ impl From<ValueWidth> for protocol_primitives::ValueWidth {
         match w {
             ValueWidth::U16 => protocol_primitives::ValueWidth::U16,
             ValueWidth::U32 => protocol_primitives::ValueWidth::U32,
+            ValueWidth::I16 => protocol_primitives::ValueWidth::I16,
+            ValueWidth::I32 => protocol_primitives::ValueWidth::I32,
         }
     }
 }
@@ -81,11 +87,12 @@ pub fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError> {
     protocol_primitives::validate_init_ack(&packet).map_err(|e| CodecError::Encode(e.to_string()))
 }
 
-/// G2 — encode a resolved raw value at its property width (the per-value semantics
-/// live in the manifest; this just writes the bytes).
+/// G2 — encode a resolved value at its property width (the per-value semantics
+/// live in the manifest; this just writes the bytes). `value` is signed so signed
+/// widths (`I16`/`I32`) can carry negative exposure-bias / ISO auto sentinels.
 #[uniffi::export]
-pub fn encode_value(raw: u32, width: ValueWidth) -> Result<Vec<u8>, CodecError> {
-    protocol_primitives::encode_value(raw, width.into())
+pub fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, CodecError> {
+    protocol_primitives::encode_value(value, width.into())
         .map_err(|e| CodecError::Encode(e.to_string()))
 }
 
@@ -1033,6 +1040,8 @@ impl ConfigStore {
         match self.inner.manifest.property(prop)?.ptype.as_deref() {
             Some("u16") => Some(ValueWidth::U16),
             Some("u32") => Some(ValueWidth::U32),
+            Some("i16") => Some(ValueWidth::I16),
+            Some("i32") => Some(ValueWidth::I32),
             _ => None,
         }
     }

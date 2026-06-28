@@ -10,8 +10,8 @@ pub enum FramingError {
     Encode(#[from] ptp_core::EncodeError),
     #[error("GUID must be 16 bytes, got {0}")]
     GuidLength(usize),
-    #[error("value {value:#x} does not fit in a {width}-byte property")]
-    ValueTooWide { value: u32, width: u8 },
+    #[error("value {value} does not fit in a {width}-byte property (signed={signed})")]
+    ValueTooWide { value: i64, width: u8, signed: bool },
     #[error("InitCommandAck malformed: {0}")]
     InitAck(String),
 }

@@ -3,11 +3,11 @@
 //! ground truth). A curated width that disagrees with the probe corrupts
 //! encode/parse for every consumer, so this pins them and guards future drift.
 //!
-//! Scope is **byte width**: signedness (`i16`/`i32` vs `u16`/`u32`) is the
-//! camera's declared datatype but the codec models width only, so it is
-//! normalized out here (tracked separately). Variable-width types (`u8a`,
-//! `str`, `undef`) are one "non-fixed" class. The probe wins on a genuine
-//! width disagreement unless an `OVERRIDES` entry documents why the curated
+//! Scope is **width and signedness**: the codec now models signed datatypes
+//! (`i16`/`i32`), so a curated `u16` where the probe declares `i16` is a genuine
+//! mismatch (#88) — not normalized away. Variable-width types (`u8a`, `str`,
+//! `undef`) are one "non-fixed" class. The probe wins on a genuine
+//! width/sign disagreement unless an `OVERRIDES` entry documents why the curated
 //! value is correct.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,17 +34,23 @@ const OVERRIDES: &[(&str, &str)] = &[
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum WidthClass {
-    Fixed(u8), // byte width
-    Variable,  // u8a / str / undef — non-fixed
+    Fixed { bytes: u8, signed: bool }, // byte width + signedness
+    Variable,                          // u8a / str / undef — non-fixed
 }
 
-/// Map a `type:` token to its byte-width class, signedness-stripped.
+/// Map a `type:` token to its width class, including signedness (the codec models
+/// `i16`/`i32`, so signed and unsigned of the same width are distinct classes).
 fn width_class(t: &str) -> Option<WidthClass> {
+    let fixed = |bytes, signed| Some(WidthClass::Fixed { bytes, signed });
     match t.trim().to_ascii_lowercase().as_str() {
-        "u8" | "i8" => Some(WidthClass::Fixed(1)),
-        "u16" | "i16" => Some(WidthClass::Fixed(2)),
-        "u32" | "i32" => Some(WidthClass::Fixed(4)),
-        "u64" | "i64" => Some(WidthClass::Fixed(8)),
+        "u8" => fixed(1, false),
+        "i8" => fixed(1, true),
+        "u16" => fixed(2, false),
+        "i16" => fixed(2, true),
+        "u32" => fixed(4, false),
+        "i32" => fixed(4, true),
+        "u64" => fixed(8, false),
+        "i64" => fixed(8, true),
         "u8a" | "str" | "undef" | "" => Some(WidthClass::Variable),
         _ => None, // unknown token — surfaced as a failure below
     }

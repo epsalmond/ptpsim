@@ -576,7 +576,9 @@ properties:
   "0x500a": { name: focusMode, ptpName: FocusMode, type: u16, access: readWrite, evidence: [iosLiveControls] }
   "0x500c": { name: flashMode, ptpName: FlashMode, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
-  "0x5010": { name: exposureBias, ptpName: ExposureBiasCompensation, type: u16, access: readWrite,
+  # Exposure bias is SIGNED: probe GetDevicePropDesc declares i16, descriptor enum
+  # runs -5000..5000 milliEV (negative EV writes two's-complement, e.g. -0.3 → 0xFEB3) (#88).
+  "0x5010": { name: exposureBias, ptpName: ExposureBiasCompensation, type: i16, access: readWrite,
               controls: { app: { setMethod: vendorStep, operation: "0x902e", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
   "0x5012": { name: selfTimer, ptpName: SelfTimer, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
@@ -592,9 +594,9 @@ properties:
               controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
   # PCSS ISO is the standard PTP ExposureIndex, NOT the reference-app 0xD02A path. Encoding is
   # SIGNED: positive = literal ISO; `-1` (0xffffffff) = auto; `-2` (0xfffffffe) = auto
-  # with one modifier (Hyper-Utility wire trace shows both — semantics TBD). u32
-  # storage on the wire; the app interprets the bit pattern as signed.
-  "0x500f": { name: iso, ptpName: ExposureIndex, type: u32, access: readWrite,
+  # with one modifier (Hyper-Utility wire trace shows both — semantics TBD). Probe
+  # GetDevicePropDesc declares i32; the codec now models the signed datatype (#88).
+  "0x500f": { name: iso, ptpName: ExposureIndex, type: i32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether, wirePCSSShootDownload20260523] }
   "0x500d": { name: shutterSpeed, ptpName: ExposureTime, type: u32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # microseconds

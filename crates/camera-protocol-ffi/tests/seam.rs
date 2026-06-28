@@ -254,7 +254,7 @@ modes: { "shooting/stills": {} }
 #[test]
 fn property_value_width_resolves_from_manifest_type() {
     let s = store();
-    // u16 / u32 map to encoder widths; u8a (rawSettings) and unknown props → None.
+    // u16/u32/i16/i32 map to encoder widths; u8a (rawSettings) and unknown props → None.
     assert!(matches!(
         s.property_value_width(0x5007),
         Some(ValueWidth::U16)
@@ -269,8 +269,12 @@ fn property_value_width_resolves_from_manifest_type() {
     )); // App still ISO u16 (probe-corrected, #53)
     assert!(matches!(
         s.property_value_width(0x5010),
-        Some(ValueWidth::U16)
-    )); // exposure bias u16
+        Some(ValueWidth::I16)
+    )); // exposure bias i16 — signed (#88)
+    assert!(matches!(
+        s.property_value_width(0x500f),
+        Some(ValueWidth::I32)
+    )); // standard ISO (ExposureIndex) i32 — signed, auto sentinels (#88)
     assert!(matches!(
         s.property_value_width(0xd226),
         Some(ValueWidth::U16)
