@@ -522,27 +522,29 @@ fn detect_mode_from_observed_function_mode() {
 }
 
 #[test]
-fn connection_init_assembles_the_82_byte_app_packet_from_manifest_data() {
+fn client_derived_friendly_name_defers_the_init_packet() {
+    // #109: the PTP/IP friendly name is the host's OWN device name — client-derived
+    // from the `terminalName` slot, identical to the BLE deviceNameString — NOT a
+    // manifest literal. So the manifest exposes the policy (not a value), and
+    // connection_init declines to bake the 82-byte packet: the consumer must fill
+    // the name from session state (the adoption is #29). Packet-shape coverage lives
+    // in protocol_primitives::build_app_init's own tests.
     let s = store();
-    let init = s
-        .connection_init("app".into())
-        .expect("the app connection declares an init shape");
 
-    // Identity resolved from `values:`, tail decoded from the manifest — the
-    // packet is assembled with zero client-side literals (#82).
-    assert_eq!(init.guid.len(), 16, "GUID is 16 bytes");
-    assert_eq!(init.tail.len(), 28, "vendor tail is 28 bytes");
-    assert_eq!(init.name_field_byte_count, 26);
-    assert_eq!(init.packet.len(), 82, "the canonical reference app init is 82 bytes");
-    // Structure: u32 length == 82, GUID at 8..24, tail at 54..82.
-    assert_eq!(
-        u32::from_le_bytes(init.packet[0..4].try_into().unwrap()),
-        82
-    );
-    assert_eq!(&init.packet[8..24], &init.guid[..]);
-    assert_eq!(&init.packet[54..82], &init.tail[..]);
+    // The friendly name resolves to a client-derived runtime slot, not a literal.
+    match s.value("initFriendlyName".into()) {
+        Some(ResolvedValue::ClientDerived { runtime }) => assert_eq!(runtime, "terminalName"),
+        other => panic!("expected client-derived initFriendlyName, got {other:?}"),
+    }
+    // The GUID is still a fixed manufacturer constant (correctly modeled).
+    assert!(matches!(
+        s.value("initiatorGuid".into()),
+        Some(ResolvedValue::Fixed { .. })
+    ));
 
-    // A connection with no init shape returns None.
+    // Without a host-supplied name, the app init can't be assembled → None (was the
+    // 82-byte packet before #109). usb declares no init shape → None.
+    assert!(s.connection_init("app".into()).is_none());
     assert!(s.connection_init("usb".into()).is_none());
 }
 

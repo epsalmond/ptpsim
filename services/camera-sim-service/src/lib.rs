@@ -364,13 +364,22 @@ async fn handle_command_conn(
     let Some(first) = read_frame(&mut stream).await? else {
         return Ok(());
     };
-    let Ok(PtpIpPacket::InitCommandRequest(_)) = PtpIpPacket::decode(&first) else {
+    let Ok(PtpIpPacket::InitCommandRequest(init_req)) = PtpIpPacket::decode(&first) else {
         return Ok(()); // not a PTP/IP initiator
     };
     // The camera drops InitCommandRequest when a BLE AP handoff launched without
     // the IMAGE_TRANSFER_SETTING arming prep write (#102): no ack, just hang up.
     if !engine.lock().await.accepts_init() {
         return Ok(());
+    }
+    // If a device name was registered over BLE during pairing, the PTP/IP friendly
+    // name MUST match it — the camera silently drops a mismatch (#109): no ack.
+    // Ungated when no name was registered (standalone init), so smoke paths pass.
+    let registered_name = engine.lock().await.link().device_name();
+    if let Some(registered) = registered_name {
+        if registered != init_req.friendly_name {
+            return Ok(());
+        }
     }
     let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
         connection_number: 1,

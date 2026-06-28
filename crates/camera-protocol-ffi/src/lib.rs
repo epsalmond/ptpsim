@@ -566,9 +566,22 @@ pub struct ConnectionEstablishmentInfo {
 
 #[derive(Debug, uniffi::Enum)]
 pub enum ResolvedValue {
-    Fixed { value: String },
-    Generated { scheme: String, persist: bool },
-    FromPairing { source: String },
+    Fixed {
+        value: String,
+    },
+    Generated {
+        scheme: String,
+        persist: bool,
+    },
+    FromPairing {
+        source: String,
+    },
+    /// Client-derived from a runtime slot the host fills (e.g. the BLE-registered
+    /// device name). The consumer supplies the value; the manifest only names the
+    /// slot — it is never a literal. See `ValuePolicy::ClientDerived` (#109).
+    ClientDerived {
+        runtime: String,
+    },
 }
 
 /// Evaluation of one predicate leaf (telemetry / config iteration).
@@ -991,6 +1004,9 @@ impl ConfigStore {
             cc::ValuePolicy::FromPairing { source } => Some(ResolvedValue::FromPairing {
                 source: source.clone(),
             }),
+            cc::ValuePolicy::ClientDerived { runtime } => Some(ResolvedValue::ClientDerived {
+                runtime: runtime.clone(),
+            }),
         }
     }
 
@@ -999,6 +1015,12 @@ impl ConfigStore {
     /// tail, plus the pre-built 82-byte packet — so the app replays bytes with no
     /// client-side literals. `None` if the connection declares no `init` shape
     /// (e.g. usb) or the identity/tail can't resolve. (#82)
+    ///
+    /// Returns `None` when the friendly name is `client-derived` (#109): the name
+    /// is not a manifest literal but the host's own device name (which must equal
+    /// the BLE `deviceNameString` it registered), so the consumer must supply it
+    /// and build the packet itself. Baking the name from a host-supplied slot is
+    /// deferred to the consumer-adoption work (#29).
     pub fn connection_init(&self, connection: String) -> Option<InitShapeInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
         let init = c.init.as_ref()?;

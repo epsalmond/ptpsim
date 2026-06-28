@@ -82,6 +82,9 @@ pub struct BleResponder {
     arming: Option<crate::link::SharedLink>,
     arm_uuid: Option<String>,
     launch_uuid: Option<String>,
+    /// A write to `name_uuid` (`deviceNameString`) registers the host's device
+    /// name on the linked engine (#109) — the init handshake gates on it.
+    name_uuid: Option<String>,
 }
 
 impl BleResponder {
@@ -100,6 +103,7 @@ impl BleResponder {
             arming: None,
             arm_uuid: None,
             launch_uuid: None,
+            name_uuid: None,
         }
     }
 
@@ -118,6 +122,17 @@ impl BleResponder {
         self.arming = Some(link);
         self.arm_uuid = Some(arm_uuid.to_string());
         self.launch_uuid = Some(launch_uuid.to_string());
+        self
+    }
+
+    /// Link this responder so a write to `name_uuid` (`deviceNameString`) registers
+    /// the host's device name on the engine (#109): the init handshake then drops
+    /// an `InitCommandRequest` whose friendly name disagrees. Shares the same
+    /// `SharedLink` as [`Self::link_arming`] (cloned `Arc`), so both may be chained.
+    pub fn link_device_name(mut self, link: crate::link::SharedLink, name_uuid: &str) -> Self {
+        self.catalog.insert(name_uuid.to_string());
+        self.arming = Some(link);
+        self.name_uuid = Some(name_uuid.to_string());
         self
     }
 
@@ -223,11 +238,17 @@ impl BleResponder {
         });
         // Cross-transport arming (#102): the prep write arms; function-launch
         // latches the linked engine armed to whether the prep write preceded it.
+        // The deviceNameString write (#109) registers the host's name for the init
+        // friendly-name consistency gate. The three UUIDs are distinct.
         if let Some(link) = &self.arming {
             if self.arm_uuid.as_deref() == Some(uuid) {
                 link.note_prep_write();
             } else if self.launch_uuid.as_deref() == Some(uuid) {
                 link.launch_ap();
+            } else if self.name_uuid.as_deref() == Some(uuid) {
+                if let Ok(name) = std::str::from_utf8(value) {
+                    link.note_device_name(name.to_string());
+                }
             }
         }
         Ok(())

@@ -813,3 +813,70 @@ fn unarmed_engine_drops_init_command_request() {
     rt.block_on(handle).unwrap();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn mismatched_friendly_name_is_dropped_a_matching_one_is_acked() {
+    // #109: the camera gates InitCommandRequest on the PTP/IP friendly name matching
+    // the device name the host registered over BLE (deviceNameString). A mismatch is
+    // silently dropped (no ack); the matching name is acked. Standalone init (no BLE
+    // registration, name None) stays ungated — that path is covered by
+    // `service_drives_image_import_over_tcp` (friendly_name "smoke" → ack).
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            manifest_yaml: MANIFEST.into(),
+            media_root: root.clone(),
+            command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        // Model the BLE pairing write: the host registered its own device name.
+        server.camera_link().await.note_device_name("iphone".into());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (cmd, tx, h)
+    });
+
+    // A friendly name that disagrees with the BLE-registered "iphone" → dropped, no ack.
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mismatch = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [1; 16],
+        friendly_name: "Pixel-6-4976".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&mismatch).unwrap());
+    let mut buf = [0u8; 4];
+    let n = s.read(&mut buf).expect("read returns (EOF), not a timeout");
+    assert_eq!(
+        n, 0,
+        "a friendly name != the BLE-registered device name must be dropped (#109)"
+    );
+
+    // The matching name → acked.
+    let mut s2 = TcpStream::connect(command_addr).unwrap();
+    s2.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let matching = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [1; 16],
+        friendly_name: "iphone".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s2, &ptp_core::encode(&matching).unwrap());
+    match PtpIpPacket::decode(&read_frame(&mut s2)).unwrap() {
+        PtpIpPacket::InitCommandAck(_) => {}
+        other => panic!("expected InitCommandAck for the matching name, got {other:?}"),
+    }
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}
