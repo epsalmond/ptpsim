@@ -265,8 +265,12 @@ fn property_value_width_resolves_from_manifest_type() {
     )); // featureVersion u32
     assert!(matches!(
         s.property_value_width(0xd02a),
-        Some(ValueWidth::U16)
-    )); // App still ISO u16 (probe-corrected, #53)
+        Some(ValueWidth::U32)
+    )); // App still ISO u32 — literal/auto, degenerate u16 stub overridden (#100)
+    assert!(matches!(
+        s.property_value_width(0xd240),
+        Some(ValueWidth::U32)
+    )); // shutter u32 — 0x80000000|denom*1000, stub overridden (#100)
     assert!(matches!(
         s.property_value_width(0x5010),
         Some(ValueWidth::I16)

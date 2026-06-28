@@ -20,10 +20,18 @@ evidence:
     kind: wire-capture
     path: evidence/probe/
     date: ''
+  appCatalog:
+    kind: app-source
+    path: evidence/labels/
+    date: ''
   captureXlv:
     kind: wire-capture
     path: https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/scripts/xlv_capsweep.py
     date: ''
+  docD212TightFormat:
+    kind: wire-capture
+
+    date: 2026-06-02
   docFujiPtpPropReference:
     kind: doc
 
@@ -101,6 +109,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x1002':
@@ -116,6 +125,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosStartupSeq
   '0x1003':
@@ -131,6 +141,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosStartupSeq
   '0x1004':
@@ -153,6 +164,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x1005':
@@ -175,6 +187,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x1006':
@@ -197,6 +210,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x1007':
@@ -213,6 +227,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - wirePCSSShootDownload20260523
   '0x1008':
@@ -232,6 +247,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - docImageTransfer
     - staticRawStudio
@@ -252,6 +268,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - staticRawStudio
     - wirePCSSShootDownload20260523
@@ -270,6 +287,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - docImageTransfer
     - wirePCSSShootDownload20260523
@@ -287,6 +305,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - wirePCSSShootDownload20260523
   '0x100c':
@@ -302,6 +321,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - staticRawStudio
   '0x100d':
@@ -317,6 +337,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - staticRawStudio
   '0x100e':
@@ -355,6 +376,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x1014':
@@ -371,6 +393,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosLiveControls
   '0x1015':
@@ -388,6 +411,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosStartupSeq
     - iosLiveControls
@@ -408,6 +432,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosStartupSeq
     - iosLiveControls
@@ -431,6 +456,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x1018':
@@ -447,6 +473,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosStartupSeq
   '0x101b':
@@ -463,6 +490,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docImageTransfer
   '0x101c':
@@ -479,6 +507,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosStartupSeq
   '0x900c':
@@ -495,6 +524,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - staticRawStudio
   '0x900d':
@@ -511,6 +541,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - staticRawStudio
   '0x9018':
@@ -527,6 +558,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - wireTether
   '0x901d':
@@ -549,6 +581,7 @@ operations:
     - wireless-tether
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x9020':
@@ -565,6 +598,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docFujiPtpPropReference
   '0x9021':
@@ -581,6 +615,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docFujiPtpPropReference
   '0x9022':
@@ -597,6 +632,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -639,6 +675,7 @@ operations:
     - setProp: '0xd209'
       value: 0
       settleAfterPolls: 0
+    emits: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -656,6 +693,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosStartupSeq
   '0x902c':
@@ -672,6 +710,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -689,6 +728,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -706,6 +746,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -723,6 +764,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docFujiPtpPropReference
   '0x9050':
@@ -739,6 +781,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docImageTransfer
   '0x9051':
@@ -755,6 +798,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docFujiPtpPropReference
   '0x9052':
@@ -771,6 +815,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docFujiPtpPropReference
   '0x9053':
@@ -787,6 +832,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docImageTransfer
   '0x9054':
@@ -803,6 +849,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docImageTransfer
   '0x9055':
@@ -819,6 +866,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docImageTransfer
   '0x9060':
@@ -835,6 +883,7 @@ operations:
     - app
     requires: null
     effects: []
+    emits: []
     evidence:
     - docFujiPtpPropReference
     - docImageTransfer
@@ -853,6 +902,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x9802':
@@ -870,6 +920,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x9803':
@@ -887,6 +938,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
   '0x9805':
@@ -904,6 +956,7 @@ operations:
     - usb
     requires: null
     effects: []
+    emits: []
     evidence:
     - activeProbe
 properties:
@@ -983,11 +1036,44 @@ properties:
         setMethod: absolute
         operation: '0x1016'
         readback: null
-    labels: {}
+    labels:
+      '100': F1.0
+      '1000': F10
+      '110': F1.1
+      '1100': F11
+      '120': F1.2
+      '1300': F13
+      '140': F1.4
+      '1400': F14
+      '160': F1.6
+      '1600': F16
+      '180': F1.8
+      '1800': F18
+      '200': F2.0
+      '2000': F20
+      '220': F2.2
+      '2200': F22
+      '250': F2.5
+      '2500': F25
+      '280': F2.8
+      '2900': F29
+      '320': F3.2
+      '3200': F32
+      '350': F3.5
+      '400': F4.0
+      '450': F4.5
+      '500': F5.0
+      '560': F5.6
+      '630': F6.3
+      '710': F7.1
+      '800': F8.0
+      '900': F9.0
     evidence:
     - iosLiveControls
     - docLiveControls
     - wireTether
+    - activeProbe
+    - appCatalog
   '0x500a':
     name: focusMode
     ptpName: FocusMode
@@ -1126,7 +1212,7 @@ properties:
   '0x500f':
     name: iso
     ptpName: ExposureIndex
-    type: u32
+    type: i32
     access: readWrite
     descriptor:
       form: enum
@@ -1174,7 +1260,7 @@ properties:
   '0x5010':
     name: exposureBias
     ptpName: ExposureBiasCompensation
-    type: u16
+    type: i16
     access: readWrite
     descriptor:
       form: enum
@@ -1216,10 +1302,43 @@ properties:
         setMethod: vendorStep
         operation: '0x902e'
         readback: '0xd212'
-    labels: {}
+    labels:
+      '-1000': '-1.0'
+      '-1333': '-1.3'
+      '-1667': '-1.7'
+      '-2000': '-2.0'
+      '-2333': '-2.3'
+      '-2667': '-2.7'
+      '-3000': '-3.0'
+      '-333': '-0.3'
+      '-3333': '-3.3'
+      '-3667': '-3.7'
+      '-4000': '-4.0'
+      '-4333': '-4.3'
+      '-4667': '-4.7'
+      '-5000': '-5.0'
+      '-667': '-0.7'
+      '0': '0'
+      '1000': '+1.0'
+      '1333': '+1.3'
+      '1667': '+1.7'
+      '2000': '+2.0'
+      '2333': '+2.3'
+      '2667': '+2.7'
+      '3000': '+3.0'
+      '333': '+0.3'
+      '3333': '+3.3'
+      '3667': '+3.7'
+      '4000': '+4.0'
+      '4333': '+4.3'
+      '4667': '+4.7'
+      '5000': '+5.0'
+      '667': '+0.7'
     evidence:
     - iosLiveControls
     - docLiveControls
+    - activeProbe
+    - appCatalog
   '0x5011':
     name: DateTime
     ptpName: null
@@ -1581,7 +1700,7 @@ properties:
     evidence:
     - activeProbe
   '0xd028':
-    name: raw_0xd028
+    name: depthOfField
     ptpName: null
     type: u16
     access: readWrite
@@ -1594,7 +1713,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docD212TightFormat
   '0xd029':
     name: raw_0xd029
     ptpName: null
@@ -1614,7 +1733,7 @@ properties:
   '0xd02a':
     name: stillIso
     ptpName: ISO
-    type: u16
+    type: u32
     access: readWrite
     descriptor:
       form: enum
@@ -1626,10 +1745,47 @@ properties:
         setMethod: absolute
         operation: '0x1016'
         readback: '0xd212'
-    labels: {}
+    labels:
+      '100': '100'
+      '1000': '1000'
+      '10000': '10000'
+      '102400': '102400'
+      '125': '125'
+      '1250': '1250'
+      '12800': '12800'
+      '160': '160'
+      '1600': '1600'
+      '16000': '16000'
+      '200': '200'
+      '2000': '2000'
+      '20000': '20000'
+      '250': '250'
+      '2500': '2500'
+      '25600': '25600'
+      '320': '320'
+      '3200': '3200'
+      '32000': '32000'
+      '400': '400'
+      '4000': '4000'
+      '40000': '40000'
+      '50': '50'
+      '500': '500'
+      '5000': '5000'
+      '51200': '51200'
+      '60': '60'
+      '64': '64'
+      '640': '640'
+      '6400': '6400'
+      '64000': '64000'
+      '80': '80'
+      '800': '800'
+      '8000': '8000'
+      '80000': '80000'
     evidence:
     - iosLiveControls
     - docLiveControls
+    - activeProbe
+    - appCatalog
   '0xd02b':
     name: movieIso
     ptpName: MovieISO
@@ -3105,16 +3261,41 @@ properties:
     payload:
       form: recordStream
       countWidth: 2
-      record: { codeWidth: 2, valueWidth: 4 }
-      members: ['0x5005', '0x5007', '0x500a', '0x500c', '0x500e', '0x5012',
-                '0xd001', '0xd018', '0xd028', '0xd02a', '0xd02b', '0xd17c',
-                '0xd209', '0xd21b', '0xd220', '0xd222', '0xd229', '0xd22a',
-                '0xd240', '0xd241', '0xd242', '0xd246', '0xd400', '0xd401',
-                '0xd52f', '0xdf00']
+      record:
+        codeWidth: 2
+        valueWidth: 4
+      members:
+      - '0x5005'
+      - '0x5007'
+      - '0x500a'
+      - '0x500c'
+      - '0x500e'
+      - '0x5012'
+      - '0xd001'
+      - '0xd018'
+      - '0xd028'
+      - '0xd02a'
+      - '0xd02b'
+      - '0xd17c'
+      - '0xd209'
+      - '0xd21b'
+      - '0xd220'
+      - '0xd222'
+      - '0xd229'
+      - '0xd22a'
+      - '0xd240'
+      - '0xd241'
+      - '0xd242'
+      - '0xd246'
+      - '0xd400'
+      - '0xd401'
+      - '0xd52f'
+      - '0xdf00'
     controls: {}
     labels: {}
     evidence:
     - docImageTransfer
+    - docD212TightFormat
   '0xd215':
     name: raw_0xd215
     ptpName: null
@@ -3559,7 +3740,7 @@ properties:
   '0xd240':
     name: shutterSpeedEx
     ptpName: ShutterSpeedEx
-    type: u16
+    type: u32
     access: readWrite
     descriptor:
       form: enum
@@ -3571,10 +3752,46 @@ properties:
         setMethod: vendorStep
         operation: '0x902c'
         readback: '0xd212'
-    labels: {}
+    labels:
+      '2147487648': 1/4
+      '2147488648': 1/5
+      '2147489648': 1/6
+      '2147491648': 1/8
+      '2147493648': 1/10
+      '2147496648': 1/13
+      '2147498648': 1/15
+      '2147503648': 1/20
+      '2147508648': 1/25
+      '2147513648': 1/30
+      '2147523648': 1/40
+      '2147533648': 1/50
+      '2147543648': 1/60
+      '2147563648': 1/80
+      '2147583648': 1/100
+      '2147608648': 1/125
+      '2147643648': 1/160
+      '2147683648': 1/200
+      '2147733648': 1/250
+      '2147803648': 1/320
+      '2147883648': 1/400
+      '2147983648': 1/500
+      '2148123648': 1/640
+      '2148283648': 1/800
+      '2148483648': 1/1000
+      '2148733648': 1/1250
+      '2149083648': 1/1600
+      '2149483648': 1/2000
+      '2149983648': 1/2500
+      '2150683648': 1/3200
+      '2151483648': 1/4000
+      '2152483648': 1/5000
+      '2153883648': 1/6400
+      '2155483648': 1/8000
     evidence:
     - iosLiveControls
     - docLiveControls
+    - activeProbe
+    - appCatalog
   '0xd241':
     name: raw_0xd241
     ptpName: null
@@ -5962,7 +6179,28 @@ workflows:
     sockets: {}
     evidence:
     - iosFeatureMode
-media: null
+media:
+  formats:
+    '0x300d':
+      name: mov
+      vendor: standard
+      isRaw: false
+      isMovie: true
+    '0x3801':
+      name: exifJpeg
+      vendor: standard
+      isRaw: false
+      isMovie: false
+    '0xb103':
+      name: raf
+      vendor: fuji
+      isRaw: true
+      isMovie: false
+    '0xb105':
+      name: heif
+      vendor: fuji
+      isRaw: false
+      isMovie: false
 events:
   '0x400d':
     name: CaptureComplete
@@ -6055,6 +6293,18 @@ connections:
     requiresHardware: null
     kind: ptpip-app
     establishment: ble-establish-wifi-ap
+    init:
+      identity:
+        guid: initiatorGuid
+        friendlyName: initFriendlyName
+      nameFieldByteCount: 26
+      tail: cc004f000000000000000000000057004d0042000000000000000000
+      tailEvidence: iosFujiPTPIP
+    initShape: app82
+    liveViewDelivery:
+      kind: stream
+      pollOp: null
+    shutterRecipe: appPostview
     modes:
     - shooting/stills
     - image-transfer
@@ -6067,6 +6317,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 6
         params: []
         tolerant: true
@@ -6077,6 +6328,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 22
         params: []
         tolerant: false
@@ -6087,6 +6339,7 @@ connections:
         readEcho: '0xdf2a'
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: false
@@ -6097,6 +6350,7 @@ connections:
         readEcho: null
         sendOp: '0x902b'
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: false
@@ -6107,6 +6361,7 @@ connections:
         readEcho: null
         sendOp: '0x101c'
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: false
@@ -6122,6 +6377,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: true
@@ -6132,6 +6388,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 20
         params: []
         tolerant: false
@@ -6142,6 +6399,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: true
@@ -6152,6 +6410,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 3
         params: []
         tolerant: true
@@ -6162,6 +6421,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 0
         params: []
         tolerant: true
@@ -6172,6 +6432,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 0
         params: []
         tolerant: true
@@ -6182,6 +6443,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: true
@@ -6192,6 +6454,7 @@ connections:
         readEcho: null
         sendOp: '0x9054'
         reopenSession: null
+        closeSession: null
         value: null
         params:
         - 268435457
@@ -6203,6 +6466,7 @@ connections:
         readEcho: null
         sendOp: '0x9055'
         reopenSession: null
+        closeSession: null
         value: null
         params:
         - 268435457
@@ -6214,6 +6478,7 @@ connections:
         readEcho: null
         sendOp: '0x9050'
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: true
@@ -6224,6 +6489,7 @@ connections:
         readEcho: null
         sendOp: '0x9053'
         reopenSession: null
+        closeSession: null
         value: null
         params:
         - 0
@@ -6241,6 +6507,7 @@ connections:
         readEcho: null
         sendOp: '0x1018'
         reopenSession: null
+        closeSession: null
         value: null
         params:
         - runtime: openCaptureTxId
@@ -6252,6 +6519,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: {}
+        closeSession: null
         value: null
         params: []
         tolerant: false
@@ -6262,6 +6530,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: true
@@ -6272,6 +6541,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 20
         params: []
         tolerant: false
@@ -6282,6 +6552,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: true
@@ -6292,6 +6563,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 3
         params: []
         tolerant: true
@@ -6302,6 +6574,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 0
         params: []
         tolerant: true
@@ -6312,6 +6585,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: 0
         params: []
         tolerant: true
@@ -6322,6 +6596,7 @@ connections:
         readEcho: null
         sendOp: null
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: true
@@ -6332,6 +6607,7 @@ connections:
         readEcho: null
         sendOp: '0x9054'
         reopenSession: null
+        closeSession: null
         value: null
         params:
         - 268435457
@@ -6343,6 +6619,7 @@ connections:
         readEcho: null
         sendOp: '0x9055'
         reopenSession: null
+        closeSession: null
         value: null
         params:
         - 268435457
@@ -6354,6 +6631,7 @@ connections:
         readEcho: null
         sendOp: '0x9050'
         reopenSession: null
+        closeSession: null
         value: null
         params: []
         tolerant: true
@@ -6364,6 +6642,7 @@ connections:
         readEcho: null
         sendOp: '0x9053'
         reopenSession: null
+        closeSession: null
         value: null
         params:
         - 0
@@ -6383,6 +6662,7 @@ connections:
           readEcho: null
           sendOp: '0x100e'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - 0
@@ -6393,8 +6673,28 @@ connections:
         - setProp: null
           getProp: null
           readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil:
+            source:
+              event:
+                code: '0xc001'
+            until:
+              all: []
+            onEach: []
+            timeoutMs: 8000
+            intervalMs: 0
+        - setProp: null
+          getProp: null
+          readEcho: null
           sendOp: '0x9022'
           reopenSession: null
+          closeSession: null
           value: null
           params: []
           tolerant: false
@@ -6415,6 +6715,7 @@ connections:
           readEcho: null
           sendOp: null
           reopenSession: null
+          closeSession: null
           value: null
           params: []
           tolerant: false
@@ -6425,6 +6726,7 @@ connections:
           readEcho: null
           sendOp: null
           reopenSession: null
+          closeSession: null
           value: null
           params: []
           tolerant: false
@@ -6443,6 +6745,7 @@ connections:
           readEcho: null
           sendOp: '0x1008'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - runtime: handle
@@ -6462,6 +6765,7 @@ connections:
           readEcho: null
           sendOp: '0x100a'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - runtime: handle
@@ -6483,6 +6787,7 @@ connections:
           readEcho: null
           sendOp: '0x101b'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - runtime: handle
@@ -6494,6 +6799,67 @@ connections:
         triggers: []
         evidence:
         - docImageTransfer
+      autofocusLock:
+        mode: shooting/stills
+        params:
+        - afArea
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x9026'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params:
+          - runtime: afArea
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil:
+            source:
+              event:
+                code: '0xc005'
+                thenPoll: '0xd209'
+            until:
+              prop: '0xd209'
+              eq: 1
+            onEach: []
+            timeoutMs: 5000
+            intervalMs: 0
+        triggers: []
+        evidence:
+        - iosLiveControls
+        - docLiveControls
+      autofocusRelease:
+        mode: shooting/stills
+        params: []
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x9027'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        triggers: []
+        evidence:
+        - iosLiveControls
+        - docLiveControls
     enables: []
     bind:
       command: 55740
@@ -6502,18 +6868,16 @@ connections:
     discovery:
       mechanism: ble
       announces: camera
-    init:
-      identity:
-        guid: initiatorGuid
-        friendlyName: initFriendlyName
-      nameFieldByteCount: 26
-      tailEvidence: iosFujiPTPIP
   ble:
     ref: null
     availableWhen: null
     requiresHardware: null
     kind: ble
     establishment: ble-pair
+    init: null
+    initShape: null
+    liveViewDelivery: null
+    shutterRecipe: null
     modes:
     - remote-trigger
     entries: []
@@ -6543,6 +6907,10 @@ connections:
     requiresHardware: null
     kind: usb-ptp
     establishment: null
+    init: null
+    initShape: null
+    liveViewDelivery: null
+    shutterRecipe: null
     modes:
     - raw-conv-backup-restore
     - webcam
@@ -6570,6 +6938,12 @@ connections:
     requiresHardware: null
     kind: ptpip-direct
     establishment: pcss-knock
+    init: null
+    initShape: pcssKnock
+    liveViewDelivery:
+      kind: poll
+      pollOp: '0x9018'
+    shutterRecipe: wirelessTether3Beat
     modes:
     - shooting/stills
     - remote-trigger
@@ -6584,6 +6958,7 @@ connections:
           readEcho: null
           sendOp: null
           reopenSession: null
+          closeSession: null
           value: 65536
           params: []
           tolerant: false
@@ -6594,6 +6969,7 @@ connections:
           readEcho: null
           sendOp: '0x100e'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - 0
@@ -6606,6 +6982,7 @@ connections:
           readEcho: null
           sendOp: null
           reopenSession: null
+          closeSession: null
           value: 131072
           params: []
           tolerant: false
@@ -6616,6 +6993,7 @@ connections:
           readEcho: null
           sendOp: '0x100e'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - 0
@@ -6628,6 +7006,7 @@ connections:
           readEcho: null
           sendOp: null
           reopenSession: null
+          closeSession: null
           value: 1
           params: []
           tolerant: false
@@ -6638,6 +7017,7 @@ connections:
           readEcho: null
           sendOp: '0x100e'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - 0
@@ -6660,6 +7040,7 @@ connections:
           readEcho: null
           sendOp: '0x1007'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - 4294967295
@@ -6680,6 +7061,7 @@ connections:
           readEcho: null
           sendOp: '0x1008'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - runtime: handle
@@ -6699,6 +7081,7 @@ connections:
           readEcho: null
           sendOp: '0x100a'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - runtime: handle
@@ -6718,6 +7101,7 @@ connections:
           readEcho: null
           sendOp: '0x1009'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - runtime: handle
@@ -6737,6 +7121,7 @@ connections:
           readEcho: null
           sendOp: '0x100b'
           reopenSession: null
+          closeSession: null
           value: null
           params:
           - runtime: handle
@@ -6767,6 +7152,10 @@ connections:
     requiresHardware: null
     kind: http-xlv
     establishment: null
+    init: null
+    initShape: null
+    liveViewDelivery: null
+    shutterRecipe: null
     modes:
     - shooting/stills
     entries: []
