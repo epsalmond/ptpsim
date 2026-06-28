@@ -244,6 +244,17 @@ fn establishment_returns_walkable_ble_plan() {
     assert_eq!(plan.mechanism, "ble-pair");
     assert!(plan.prerequisite.is_none());
     assert!(!plan.steps.is_empty());
+    // #91: ble-pair is the initial establishment (not on-demand) and declares the
+    // identity material the host caches for a later ble-reconnect.
+    assert!(!plan.on_demand);
+    assert_eq!(
+        plan.persist,
+        vec![
+            "pairingKeyBytes".to_string(),
+            "style".to_string(),
+            "cameraSerial".to_string(),
+        ],
+    );
 
     // Step 0: bleConnect with no fields.
     assert!(matches!(plan.steps[0], Step::BleConnect { .. }));
@@ -349,6 +360,50 @@ fn establishment_returns_none_for_unknown_model() {
 }
 
 #[test]
+fn ble_action_returns_the_remote_shutter_plan() {
+    // #91: BLE-native control actions surface as walkable plans from the family
+    // BLE `actions:` registry. remote-shutter is the S1→S2→S1→S0 write sequence
+    // on SHOOTING_REQUEST, runnable from the resting BLE link without Wi-Fi.
+    let s = store();
+    let plan = s
+        .ble_action("gfx100ii".into(), "remote-shutter".into())
+        .expect("the remote-shutter action resolves");
+    assert_eq!(plan.action, "remote-shutter");
+
+    let payloads: Vec<Vec<u8>> = plan
+        .steps
+        .iter()
+        .filter_map(|st| match st {
+            Step::BleWrite {
+                gatt,
+                value: StepValue::Literal { bytes },
+                ..
+            } => {
+                assert_eq!(gatt, "7FCF49C6-4FF0-4777-A03D-1A79166AF7A8");
+                Some(bytes.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        payloads,
+        vec![
+            vec![0x01, 0x00],
+            vec![0x02, 0x00],
+            vec![0x01, 0x00],
+            vec![0x00, 0x00],
+        ],
+        "the S1 → S2 → S1 → S0 press sequence",
+    );
+
+    // Unknown action / model → None.
+    assert!(s.ble_action("gfx100ii".into(), "nope".into()).is_none());
+    assert!(s
+        .ble_action("xt5".into(), "remote-shutter".into())
+        .is_none());
+}
+
+#[test]
 fn establishment_app_connection_returns_wifi_ap_plan() {
     // Issue #47: the `app` (BLE-initiated WiFi-AP) connection now resolves to
     // the ble-establish-wifi-ap plan — previously nil, so a paired camera had
@@ -362,6 +417,13 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
     assert_eq!(plan.mechanism, "ble-establish-wifi-ap");
     assert_eq!(plan.prerequisite.as_deref(), Some("ble-pair"));
     assert_eq!(plan.params, vec!["launchMode".to_string()]);
+    // #91: user-initiated from the resting BLE link (NOT auto-chained after
+    // ble-pair), and the Wi-Fi creds it reads are flagged for the host to cache.
+    assert!(plan.on_demand, "the AP launch is on-demand");
+    assert_eq!(
+        plan.persist,
+        vec!["ssid".to_string(), "passphrase".to_string()]
+    );
 
     // Opens with bleConnect (the BLE link carried over from ble-pair), then arms the
     // AP handoff with the IMAGE_TRANSFER_SETTING prep write (#102) BEFORE the

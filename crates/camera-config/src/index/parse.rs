@@ -153,6 +153,21 @@ fn build_ble_block(
             }
         }
     }
+    // BLE control actions (#91) carry the same step grammar — resolve their
+    // symbolic GATT names too, or `bleWrite { gatt: shootingRequest }` reaches
+    // the walker unresolved and the write fails "characteristic not exposed".
+    if let Some(actions) = merged.get_mut("actions").and_then(|a| a.as_mapping_mut()) {
+        for (name, action) in actions.iter_mut() {
+            let act = name.as_str().unwrap_or("?").to_string();
+            if let Some(steps) = action.get_mut("steps").and_then(|s| s.as_sequence_mut()) {
+                resolve_gatt_names_in_steps(
+                    steps,
+                    &gatt_map,
+                    &format!("models.{}.actions.{act}.steps", model.id),
+                )?;
+            }
+        }
+    }
 
     // Snapshot the resolved-for-signature-substitution form (still pre
     // typed-decode) and then typed-decode for the ModelView field.

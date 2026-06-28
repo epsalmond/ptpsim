@@ -106,12 +106,22 @@ pub struct FamilyBleBlock {
     /// mechanism selects one (§11). Resolve via [`Self::establishment`].
     #[serde(default)]
     pub establishments: BTreeMap<String, EstablishmentBlock>,
+    /// Named BLE-native control actions keyed by name (`remote-shutter`,
+    /// `write-time`, `write-gps`) — runnable from the resting BLE link without
+    /// Wi-Fi (#91). Resolve via [`Self::action`].
+    #[serde(default)]
+    pub actions: BTreeMap<String, BleActionBlock>,
 }
 
 impl FamilyBleBlock {
     /// The establishment plan registered under `mechanism`, if any.
     pub fn establishment(&self, mechanism: &str) -> Option<&EstablishmentBlock> {
         self.establishments.get(mechanism)
+    }
+
+    /// The BLE-native control action registered under `name`, if any.
+    pub fn action(&self, name: &str) -> Option<&BleActionBlock> {
+        self.actions.get(name)
     }
 }
 
@@ -143,12 +153,41 @@ pub struct EstablishmentBlock {
     /// the consumer; the reference walker does not enforce it.
     #[serde(default)]
     pub prerequisite: Option<String>,
+    /// User-initiated from an already-established BLE link, NOT auto-chained
+    /// after `prerequisite` (#91): the consumer rests at a BLE-connected home
+    /// and runs this on a user action (e.g. tap "Shoot" → `ble-establish-wifi-ap`).
+    #[serde(default)]
+    pub on_demand: bool,
     /// Runtime parameter names the consumer binds before walking (e.g.
     /// `launchMode`). Steps reference them via `{ runtime: <name> }`.
     #[serde(default)]
     pub params: Vec<String>,
+    /// Captured/runtime slot names whose values the host should persist after
+    /// this plan completes, to replay on a later `ble-reconnect` (#91) — e.g.
+    /// `ble-pair` persists `pairingKeyBytes`; `ble-establish-wifi-ap` the Wi-Fi
+    /// creds. Declarative; the reference walker does not act on it.
+    #[serde(default)]
+    pub persist: Vec<String>,
     #[serde(default)]
     pub steps: Vec<Step>,
+}
+
+/// A named, runnable BLE-native control action over an already-established link
+/// (#91) — `remote-shutter`, `write-time`, `write-gps`. Reuses the establishment
+/// [`Step`] vocab unchanged; the host runs it from the resting BLE-connected
+/// state without Wi-Fi. Distinct from a PTP/IP `Action` (a different grammar).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleActionBlock {
+    /// Runtime parameter names the host binds before walking (e.g. a host-packed
+    /// `utcTimezonePayload`). Steps reference them via `{ runtime: <name> }`.
+    #[serde(default)]
+    pub params: Vec<String>,
+    #[serde(default)]
+    pub steps: Vec<Step>,
+    /// Evidence ids backing the action's GATT choreography.
+    #[serde(default)]
+    pub evidence: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
