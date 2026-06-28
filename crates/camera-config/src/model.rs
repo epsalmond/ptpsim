@@ -674,12 +674,12 @@ pub struct Step {
 
 /// Where a PTP-IP `awaitUntil` observes (§11.16): a property `poll` or an `event`
 /// push. In YAML it's a single-entry mapping — `poll: <hex>` or `event: { code:
-/// <hex>, thenPoll: <hex>? }` — so `Deserialize` is hand-written to dispatch on
-/// the key (below). `Serialize` is only derived to satisfy the containing struct;
-/// it is never round-tripped, since manifests are load-only. (Same shape as the
-/// BLE grammar's `read`/`notify` source.)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// <hex>, thenPoll: <hex>? }`. Both `Serialize` and `Deserialize` are hand-written
+/// to that exact shape: a derived externally-tagged `Serialize` emits a YAML tag
+/// (`!event`) that the deserializer can't read, so the generator's `to_yaml →
+/// from_yaml` consolidation round-trip would break. (Same shape as the BLE
+/// grammar's `read`/`notify` source.)
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AwaitSource {
     /// Poll a property each iteration (`GetDevicePropValue`) — the #49 default.
     /// `until` evaluates over the accumulated [`crate::predicate::PropView`].
@@ -690,9 +690,41 @@ pub enum AwaitSource {
     /// None` = event arrival alone satisfies `until` over the existing scope.
     Event {
         code: HexCode,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         then_poll: Option<HexCode>,
     },
+}
+
+impl serde::Serialize for AwaitSource {
+    /// Mirror the hand-written `Deserialize`: a single-entry mapping keyed by the
+    /// variant, NOT serde's externally-tagged `!event` YAML tag (which the
+    /// deserializer rejects). Keeps the generator's consolidation round-trip valid.
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(Some(1))?;
+        match self {
+            AwaitSource::Poll { prop } => map.serialize_entry("poll", prop)?,
+            AwaitSource::Event { code, then_poll } => {
+                #[derive(serde::Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Body<'a> {
+                    code: &'a str,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    then_poll: Option<&'a str>,
+                }
+                map.serialize_entry(
+                    "event",
+                    &Body {
+                        code,
+                        then_poll: then_poll.as_deref(),
+                    },
+                )?;
+            }
+        }
+        map.end()
+    }
 }
 
 impl<'de> serde::Deserialize<'de> for AwaitSource {
@@ -1207,6 +1239,31 @@ connections:
             err.contains("unknown awaitUntil source"),
             "expected allowlist error, got: {err}"
         );
+    }
+
+    #[test]
+    fn await_source_serialize_round_trips_through_yaml() {
+        // The generator's consolidation does manifest.to_yaml() → from_yaml(); a
+        // derived externally-tagged Serialize emits `!event` which the hand-written
+        // Deserialize rejects. Both source forms must survive the round-trip.
+        for src in [
+            AwaitSource::Event {
+                code: "0xc001".into(),
+                then_poll: Some("0xd212".into()),
+            },
+            AwaitSource::Event {
+                code: "0xc005".into(),
+                then_poll: None,
+            },
+            AwaitSource::Poll {
+                prop: "0xd209".into(),
+            },
+        ] {
+            let yaml = serde_yaml::to_string(&src).expect("serialize");
+            assert!(!yaml.contains('!'), "must not emit a YAML tag, got: {yaml}");
+            let back: AwaitSource = serde_yaml::from_str(&yaml).expect("deserialize");
+            assert_eq!(back, src, "round-trip mismatch via:\n{yaml}");
+        }
     }
 
     #[test]

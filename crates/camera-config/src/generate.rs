@@ -51,6 +51,11 @@ struct Frag {
     access: Option<String>,
     #[serde(default)]
     descriptor: Option<DescFrag>,
+    /// Value→label pairs for this property, keyed by stringified raw value. Not
+    /// wire-observable (the camera sends integers); carried here so a static
+    /// app-catalog source can flow through the same evidence→generator pipeline.
+    #[serde(default)]
+    labels: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Default)]
@@ -59,9 +64,20 @@ struct PropAgg {
     access: Option<String>,
     form: Option<String>,
     values: Vec<i64>,
+    labels: BTreeMap<String, String>,
+    /// Set when a fragment supplied wire-probed structure (type/access/descriptor)
+    /// — drives the `activeProbe` citation.
+    has_structure: bool,
+    /// Set when a fragment supplied labels — drives the `appCatalog` (app-source)
+    /// citation, so static labels aren't mis-cited as wire-capture.
+    has_labels: bool,
 }
 
 const EVIDENCE_ID: &str = "activeProbe";
+/// Provenance for labels: a static app/catalog source (e.g. client application's
+/// `FujiCameraPropertyCatalog`), distinct from the wire `activeProbe`. Wire
+/// labels would outrank this on conflict (see `enrich`'s per-value fill).
+const LABELS_EVIDENCE_ID: &str = "appCatalog";
 
 /// Parse one or more concatenated `camera-config-evidence/v1` JSONL files and
 /// propose a manifest. Identity is read from the evidence itself (the format
@@ -104,6 +120,10 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
             "property" if frag.supported == Some(true) => {
                 if let Some(code) = frag.code.as_deref().and_then(parse_hex_code) {
                     let agg = props.entry(code).or_default();
+                    // Wire-probed structure (any of type/access/descriptor) → the
+                    // fragment is probe-sourced; track it for the activeProbe cite.
+                    agg.has_structure |=
+                        frag.ptype.is_some() || frag.access.is_some() || frag.descriptor.is_some();
                     if agg.ptype.is_none() {
                         agg.ptype = frag.ptype;
                     }
@@ -114,6 +134,13 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                         if agg.form.is_none() {
                             agg.form = Some(d.form);
                             agg.values = numeric_values(d.values.as_ref());
+                        }
+                    }
+                    if let Some(labels) = frag.labels {
+                        agg.has_labels |= !labels.is_empty();
+                        // Fill: accumulate across fragments, first writer wins.
+                        for (v, l) in labels {
+                            agg.labels.entry(v).or_insert(l);
                         }
                     }
                 }
@@ -164,6 +191,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
         })
         .collect();
 
+    let any_labels = props.values().any(|a| a.has_labels);
     let properties = props
         .into_iter()
         .map(|(code, agg)| {
@@ -173,6 +201,20 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                 // The camera enumerated these (GetDevicePropDesc) → authoritative.
                 source: Some(ValueSource::Camera),
             });
+            // Cite each source that actually contributed: wire probe for probed
+            // structure, app-catalog for static labels. A prop seen only in label
+            // evidence (e.g. an unprobed control) cites appCatalog alone — never
+            // mis-attributed to wire-capture.
+            let mut evidence = Vec::new();
+            if agg.has_structure {
+                evidence.push(EVIDENCE_ID.to_string());
+            }
+            if agg.has_labels {
+                evidence.push(LABELS_EVIDENCE_ID.to_string());
+            }
+            if evidence.is_empty() {
+                evidence.push(EVIDENCE_ID.to_string());
+            }
             (
                 format!("0x{code:04x}"),
                 Property {
@@ -186,8 +228,8 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     descriptor,
                     payload: None,
                     controls: BTreeMap::new(),
-                    labels: BTreeMap::new(),
-                    evidence: vec![EVIDENCE_ID.to_string()],
+                    labels: agg.labels,
+                    evidence,
                 },
             )
         })
@@ -202,6 +244,16 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
             date: String::new(),
         },
     );
+    if any_labels {
+        evidence.insert(
+            LABELS_EVIDENCE_ID.to_string(),
+            Evidence {
+                kind: "app-source".to_string(),
+                path: "evidence/labels/".to_string(),
+                date: String::new(),
+            },
+        );
+    }
 
     CameraManifest {
         schema: crate::SCHEMA_VERSION.to_string(),
@@ -246,6 +298,25 @@ pub fn enrich(mut base: CameraManifest, proposal: CameraManifest) -> CameraManif
                 if bp.descriptor.is_none() {
                     bp.descriptor = pp.descriptor.clone();
                 }
+                // Labels fill per-value: a curated/wire label for a given value
+                // wins (feedback: wire-capture outranks static app-catalog); the
+                // proposal only fills values the base doesn't already label.
+                let mut filled_label = false;
+                for (v, l) in &pp.labels {
+                    if !bp.labels.contains_key(v) {
+                        bp.labels.insert(v.clone(), l.clone());
+                        filled_label = true;
+                    }
+                }
+                // When the proposal supplied labels, record where they came from
+                // so the curated property cites its label source (e.g. appCatalog).
+                if filled_label {
+                    for e in &pp.evidence {
+                        if !bp.evidence.contains(e) {
+                            bp.evidence.push(e.clone());
+                        }
+                    }
+                }
             })
             .or_insert(pp);
     }
@@ -286,7 +357,8 @@ mod tests {
 {"schema":"camera-config-evidence/v1","kind":"operation","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"usb","mode":"shooting/stills"},"code":"0x1014","supported":true}
 {"schema":"camera-config-evidence/v1","kind":"operation","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"wireless-tether","mode":"video"},"code":"0x1014","supported":true}
 {"schema":"camera-config-evidence/v1","kind":"operation","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"usb","mode":"shooting/stills"},"code":"0x9999","supported":false}
-{"schema":"camera-config-evidence/v1","kind":"property","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"usb","mode":"shooting/stills"},"code":"0x5007","supported":true,"type":"u16","access":"readWrite","descriptor":{"form":"enum","values":[280,400,560]}}
+{"schema":"camera-config-evidence/v1","kind":"property","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"usb","mode":"shooting/stills"},"code":"0x5007","supported":true,"type":"u16","access":"readWrite","descriptor":{"form":"enum","values":[280,400,560]},"labels":{"280":"f/2.8","400":"f/4.0"}}
+{"schema":"camera-config-evidence/v1","kind":"property","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"usb","mode":"shooting/stills"},"code":"0xd240","supported":true,"labels":{"1000":"1/1000"}}
 {"kind":"other","note":"ignored"}
 "#;
 
@@ -325,6 +397,60 @@ mod tests {
         assert_eq!(d.form, "enum");
         assert_eq!(d.values, vec![280, 400, 560]);
         assert_eq!(d.source, Some(ValueSource::Camera));
+    }
+
+    #[test]
+    fn generate_proposal_emits_labels_with_app_source_provenance() {
+        let m = generate_proposal(EVIDENCE);
+        let p = &m.properties["0x5007"];
+        // Labels from the evidence fragment surface on the property.
+        assert_eq!(p.labels.get("280").map(String::as_str), Some("f/2.8"));
+        assert_eq!(p.labels.get("400").map(String::as_str), Some("f/4.0"));
+        // A labeled property cites BOTH the wire probe and the static catalog,
+        // so static labels are not mis-attributed to wire-capture.
+        assert!(p.evidence.iter().any(|e| e == "activeProbe"));
+        assert!(p.evidence.iter().any(|e| e == "appCatalog"));
+        // The app-source provenance entry is registered with the right kind.
+        let app = &m.evidence["appCatalog"];
+        assert_eq!(app.kind, "app-source");
+    }
+
+    #[test]
+    fn label_only_property_cites_app_catalog_not_wire_probe() {
+        // 0xd240 appears ONLY in label evidence (no probed type/access/descriptor),
+        // like ISO/shutter that the camera didn't enumerate. It must NOT be
+        // mis-attributed to wire-capture.
+        let m = generate_proposal(EVIDENCE);
+        let p = &m.properties["0xd240"];
+        assert_eq!(p.labels.get("1000").map(String::as_str), Some("1/1000"));
+        assert!(p.evidence.iter().any(|e| e == "appCatalog"));
+        assert!(
+            !p.evidence.iter().any(|e| e == "activeProbe"),
+            "an unprobed, label-only property must not cite the wire probe"
+        );
+    }
+
+    #[test]
+    fn enrich_fills_empty_label_keys_without_clobbering_curated() {
+        let proposal = generate_proposal(EVIDENCE); // 0x5007 labels: 280→f/2.8, 400→f/4.0
+        let curated = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+properties:
+  "0x5007": { name: aperture, labels: { 280: "CURATED-2.8" } }
+"#,
+        )
+        .unwrap();
+        let m = enrich(curated, proposal);
+        let ap = &m.properties["0x5007"];
+        // Curated per-value label wins (wire/curated outranks static app-catalog).
+        assert_eq!(
+            ap.labels.get("280").map(String::as_str),
+            Some("CURATED-2.8")
+        );
+        // The value the base did not label is filled from the proposal.
+        assert_eq!(ap.labels.get("400").map(String::as_str), Some("f/4.0"));
     }
 
     #[test]

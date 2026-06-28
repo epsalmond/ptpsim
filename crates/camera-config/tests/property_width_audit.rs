@@ -30,6 +30,19 @@ const OVERRIDES: &[(&str, &str)] = &[
         "0xd227",
         "wire-proven uint16 write despite str descriptor (IMAGE_TRANSFER_FW230.md)",
     ),
+    // fw2.30 returns a degenerate single-value u16 stub descriptor for ISO/shutter,
+    // but the real datatype is u32: 0xD02A literal-ISO / 0x80000000|ceiling and
+    // 0xD240 0x80000000|denom*1000 (1/60 = 0x8000EA60). Proven by client application's UINT32
+    // DevicePropDesc parser + the v6 ISO-write capture / FUJI_PTP_PROP_REFERENCE.md
+    // [live] 0xD212 readback. The actual wire values override the stub descriptor (#100).
+    (
+        "0xd02a",
+        "u32 literal/auto ISO despite degenerate u16 stub descriptor (client application UINT32 parser, v6 ISO writes)",
+    ),
+    (
+        "0xd240",
+        "u32 0x80000000|denom*1000 shutter despite degenerate u16 stub descriptor (client application UINT32 parser, live 0xD212)",
+    ),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
