@@ -613,6 +613,12 @@ pub enum Transform {
 pub enum Encoding {
     /// UTF-8 text. Round-trip fails on invalid UTF-8 (tolerant-aware).
     Utf8,
+    /// UTF-8 text in a fixed-width, NUL-padded field: decode stops at the
+    /// first NUL (C-string semantics) so trailing `\0` padding never reaches
+    /// scope. Invalid UTF-8 in the live prefix fails the round-trip
+    /// (tolerant-aware). Mirrors reference app `Utils.getStringFromByteArray`.
+    #[serde(rename = "utf8-cstring")]
+    Utf8Cstring,
     /// ASCII text. Round-trip fails on non-ASCII bytes (tolerant-aware).
     Ascii,
     /// Lowercase hex string, no separators. No byte-order semantic.
@@ -645,6 +651,7 @@ impl Encoding {
     pub fn as_token(self) -> &'static str {
         match self {
             Encoding::Utf8 => "utf8",
+            Encoding::Utf8Cstring => "utf8-cstring",
             Encoding::Ascii => "ascii",
             Encoding::Bytes => "bytes",
             Encoding::BytesRaw => "bytes-raw",

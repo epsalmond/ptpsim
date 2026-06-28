@@ -273,6 +273,12 @@ fn window(input: &[u8], at: usize, length: Option<usize>) -> Option<Vec<u8>> {
 pub fn decode_bytes(bytes: &[u8], encoding: Encoding) -> Option<String> {
     match encoding {
         Encoding::Utf8 => std::str::from_utf8(bytes).ok().map(String::from),
+        Encoding::Utf8Cstring => {
+            // C-string semantics: the live value ends at the first NUL; the
+            // rest is fixed-width field padding the consumer must not see.
+            let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            std::str::from_utf8(&bytes[..end]).ok().map(String::from)
+        }
         Encoding::Ascii => {
             if bytes.iter().all(u8::is_ascii) {
                 std::str::from_utf8(bytes).ok().map(String::from)
@@ -332,7 +338,7 @@ pub fn yaml_literal_to_bytes(v: &serde_yaml::Value, encoding: Option<Encoding>) 
                 }
                 return Some(out);
             }
-            if matches!(encoding, Some(Utf8)) {
+            if matches!(encoding, Some(Utf8) | Some(Utf8Cstring)) {
                 return Some(s.as_bytes().to_vec());
             }
             None
@@ -377,7 +383,11 @@ pub fn yaml_literal_to_bytes(v: &serde_yaml::Value, encoding: Option<Encoding>) 
 pub fn scope_string_to_bytes(value: &str, encoding: Option<Encoding>) -> Option<Vec<u8>> {
     if let Some(enc) = encoding {
         match enc {
-            Encoding::Utf8 | Encoding::Ascii => return Some(value.as_bytes().to_vec()),
+            Encoding::Utf8 | Encoding::Utf8Cstring | Encoding::Ascii => {
+                // The host emits the bare UTF-8 bytes; the camera owns any
+                // fixed-width NUL padding on the wire.
+                return Some(value.as_bytes().to_vec());
+            }
             Encoding::U8 => return value.parse::<u8>().ok().map(|v| vec![v]),
             Encoding::U16Le => return value.parse::<u16>().ok().map(|v| v.to_le_bytes().to_vec()),
             Encoding::U16Be => return value.parse::<u16>().ok().map(|v| v.to_be_bytes().to_vec()),
@@ -701,6 +711,37 @@ mod tests {
         assert_eq!(
             apply_transforms(&[1, 2, 3], &[Transform::ReverseBytes]),
             Some(vec![3, 2, 1])
+        );
+    }
+
+    #[test]
+    fn utf8_cstring_decode_stops_at_first_nul() {
+        // #87: a fixed-width, NUL-padded SSID field — the live name ends at
+        // the first \0; the trailing padding must not reach scope.
+        let padded = b"FUJIFILM-GFX100II-0C3E\0\0\0\0\0\0\0\0\0\0";
+        assert_eq!(
+            decode_bytes(padded, Encoding::Utf8Cstring).as_deref(),
+            Some("FUJIFILM-GFX100II-0C3E"),
+        );
+        // Plain utf8 leaks the padding — the exact bug #87 reports.
+        assert_eq!(
+            decode_bytes(padded, Encoding::Utf8).as_deref(),
+            Some("FUJIFILM-GFX100II-0C3E\0\0\0\0\0\0\0\0\0\0"),
+        );
+        // No NUL: the whole buffer decodes, same as plain utf8.
+        assert_eq!(
+            decode_bytes(b"open", Encoding::Utf8Cstring).as_deref(),
+            Some("open"),
+        );
+        // Invalid UTF-8 in the live prefix fails the round-trip (tolerant-aware).
+        assert_eq!(
+            decode_bytes(&[0xff, 0x00, 0x41], Encoding::Utf8Cstring),
+            None
+        );
+        // The stripped value re-encodes to its bare UTF-8 bytes (no padding).
+        assert_eq!(
+            scope_string_to_bytes("FUJIFILM-GFX100II-0C3E", Some(Encoding::Utf8Cstring)).as_deref(),
+            Some(&b"FUJIFILM-GFX100II-0C3E"[..]),
         );
     }
 
