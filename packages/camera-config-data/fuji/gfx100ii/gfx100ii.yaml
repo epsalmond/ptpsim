@@ -64,6 +64,10 @@ connections:
     initShape: app82                    # the 82-byte reference app InitCommandRequest (#82)
     liveViewDelivery: { kind: stream }   # reference app delivers frames as a continuous stream
     shutterRecipe: appPostview           # 0x100E + 0x9022 postview take-cycle
+    # The keep-AP sentinel holds the Wi-Fi AP up, but the camera tears down the
+    # :55740 command-port listener on the transport-close — a reopenSession's
+    # reconnect is refused, so mode switches stay in-session (#103, device 2026-06-28).
+    commandListenerVolatile: true
     discovery: { mechanism: ble, announces: camera }
     modes: [shooting/stills, image-transfer]
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
@@ -119,14 +123,12 @@ connections:
           # 0x1018 needs the live-view InitiateOpenCapture transaction id — RUNTIME state the
           # app binds into the named slot (it owns transaction ids; sans-io).
           - { sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }
-          # reference-app re-establishes the PTP/IP session in-Wi-Fi when switching Take↔Get
-          # (MODE_CHANGES.md §5). Verb collapses: CloseSession 0x1003 → 8B sentinel
-          # `08 00 00 00 ff ff ff ff` → new TCP socket to :55740 → cached 82B InitCmdReq
-          # (identity byte-identical across sessions per wire-capture 2026-06-02 answers
-          # Q4) → InitCmdAck → OpenSession sid=1. Skipping it makes the camera reject
-          # 0x9054 (verified on device — this was the "image transfer downloads 0 files"
-          # bug). Verb is parameterless: engine reuses the connection's cached identity.
-          - { reopenSession: {} }
+          # Switch functionMode IN-SESSION over the existing :55740 socket — main's working,
+          # reopen-free flow. The earlier `reopenSession` here was a misdiagnosis of the
+          # "image transfer downloads 0 files" bug: the real GFX100 II REFUSES the reconnect
+          # (the command-port listener is gone after the transport-close — see the `app`
+          # connection's commandListenerVolatile trait), so the reopen self-destructs.
+          # 0x9054 is accepted in-session and files download (device-confirmed 2026-06-28, #103).
           - { getProp: "0xd212", tolerant: true }
           - { setProp: "0xdf01", value: 0x14 }
           - { getProp: "0xdf28", tolerant: true }

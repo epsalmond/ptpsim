@@ -135,6 +135,12 @@ impl Server {
         self.control.local_addr().unwrap()
     }
 
+    /// This server's arming link (#102), to hand to a BLE responder so a modeled
+    /// AP handoff arms (or fails to arm) the engine that answers `InitCommandRequest`.
+    pub async fn camera_link(&self) -> camera_sim::SharedLink {
+        self.engine.lock().await.link()
+    }
+
     /// Serve until `shutdown` resolves (the `/shutdown` endpoint or a SIGTERM
     /// handler fires it). In-flight command connections are dropped on exit.
     pub async fn run(self, shutdown: tokio::sync::oneshot::Receiver<()>) {
@@ -361,6 +367,11 @@ async fn handle_command_conn(
     let Ok(PtpIpPacket::InitCommandRequest(_)) = PtpIpPacket::decode(&first) else {
         return Ok(()); // not a PTP/IP initiator
     };
+    // The camera drops InitCommandRequest when a BLE AP handoff launched without
+    // the IMAGE_TRANSFER_SETTING arming prep write (#102): no ack, just hang up.
+    if !engine.lock().await.accepts_init() {
+        return Ok(());
+    }
     let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
         connection_number: 1,
         responder_guid: [0; 16],

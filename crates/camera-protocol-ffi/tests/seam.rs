@@ -311,12 +311,13 @@ fn property_payload_surfaces_d212_record_stream() {
 }
 
 #[test]
-fn reopen_session_step_surfaces_through_ffi_in_take_to_get_entry() {
-    // The from-live-view image-transfer entry has a reopenSession step between
-    // 0x1018 (TerminateOpenCapture) and 0xDF01=0x14 (FunctionMode=Image-Import).
-    // Without this in the FFI EntryStep enum, map_step would silently DROP the
-    // step (no error), and the camera rejects the subsequent 0x9054 — the
-    // "image transfer downloads 0 files" bug client application reported 2026-06-03.
+fn take_to_get_entry_switches_in_session_without_reopen() {
+    // #103: the from-live-view image-transfer entry switches functionMode IN-SESSION
+    // — no reopenSession. The real GFX100 II refuses the reconnect after the
+    // transport-close (the `app` connection's commandListenerVolatile trait), so
+    // 0x1018 (TerminateOpenCapture) is followed by the 0xd212 read on the existing
+    // socket, then 0xDF01=0x14 (FunctionMode=Image-Import). The earlier reopen here
+    // was the misdiagnosed "image transfer downloads 0 files" bug.
     let s = store();
     let plan = s
         .mode_entry(
@@ -325,18 +326,23 @@ fn reopen_session_step_surfaces_through_ffi_in_take_to_get_entry() {
             "image-transfer".into(),
         )
         .expect("from-Stills image-import entry");
-    // The reopenSession sits right after the 0x1018 sendOp.
     assert!(matches!(
         plan.steps[0],
         EntryStep::SendOp { op: 0x1018, .. }
     ));
     assert!(
-        matches!(plan.steps[1], EntryStep::ReopenSession { tolerant: false }),
-        "expected ReopenSession at index 1, got {:?}",
+        matches!(plan.steps[1], EntryStep::GetProp { prop: 0xd212, .. }),
+        "0x1018 is followed by the in-session 0xd212 read, not a reopen: {:?}",
         plan.steps[1]
     );
-    // The DF01=0x14 follow-up after reopen is still present (i.e. the prefix
-    // didn't get truncated).
+    assert!(
+        !plan
+            .steps
+            .iter()
+            .any(|st| matches!(st, EntryStep::ReopenSession { .. })),
+        "the take→get switch must stay in-session (#103)"
+    );
+    // The DF01=0x14 follow-up is still present (the prefix didn't get truncated).
     assert!(plan.steps.iter().any(|st| matches!(
         st,
         EntryStep::SetProp {

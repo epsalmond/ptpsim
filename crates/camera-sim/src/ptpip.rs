@@ -67,6 +67,23 @@ pub fn walk_ptpip(
     steps: &[Step],
     runtime_params: &BTreeMap<String, String>,
 ) -> Result<PtpIpOutcome, PtpIpError> {
+    walk_ptpip_in(engine, steps, runtime_params, None)
+}
+
+/// Like [`walk_ptpip`], but bound to a named connection so its traits gate the
+/// walk. Specifically `command_listener_volatile` (#103): a `reopenSession` over
+/// a connection whose command-port listener does not survive a transport-close is
+/// refused — matching the GFX100 II `app` Wi-Fi-AP path, where the in-session
+/// switch is the only thing the camera accepts.
+pub fn walk_ptpip_in(
+    engine: &mut Engine,
+    steps: &[Step],
+    runtime_params: &BTreeMap<String, String>,
+    connection: Option<&str>,
+) -> Result<PtpIpOutcome, PtpIpError> {
+    let command_listener_volatile = connection
+        .and_then(|id| engine.manifest().connections.get(id))
+        .is_some_and(|c| c.command_listener_volatile);
     let mut ctx = Ctx {
         engine,
         observed: PropView::new(),
@@ -74,6 +91,7 @@ pub fn walk_ptpip(
         tid: 1,
         steps_run: 0,
         await_iterations: Vec::new(),
+        command_listener_volatile,
     };
     // Session bring-up (idempotent): the responder rejects most ops before it.
     ctx.simple_op(op::OPEN_SESSION, vec![1], false)
@@ -99,6 +117,10 @@ struct Ctx<'a> {
     tid: u32,
     steps_run: usize,
     await_iterations: Vec<usize>,
+    /// The active connection's `command_listener_volatile` trait (#103): when set,
+    /// a `reopenSession` is refused (the camera tears the command-port listener
+    /// down on a transport-close, so the reconnect gets "Connection refused").
+    command_listener_volatile: bool,
 }
 
 impl Ctx<'_> {
@@ -158,6 +180,15 @@ impl Ctx<'_> {
             let params = self.resolve_params(&step.params).map_err(err)?;
             self.simple_op(code, params, step.tolerant).map_err(err)
         } else if step.reopen_session.is_some() {
+            if self.command_listener_volatile {
+                // The camera tore down the command-port listener on the transport-
+                // close, so the reconnect is refused — switch mode in-session (#103).
+                return Err(err(
+                    "reopenSession: camera refused the reconnect — the command-port \
+                     listener does not survive a transport-close on this connection (#103)"
+                        .into(),
+                ));
+            }
             // Deterministic analogue of the TCP teardown/reconnect: close then
             // re-open the session in place.
             self.simple_op(op::CLOSE_SESSION, vec![], step.tolerant)

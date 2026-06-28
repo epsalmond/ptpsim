@@ -46,6 +46,7 @@ families:
         # missing a given characteristic just skips that CCCD enable;
         # the plan reflects that with tolerant: true on each subscribe.
         functionLaunchRequest: "600655E6-3637-42F1-8FB2-44EFC5C63B13"
+        imageTransferSetting: "98934B2C-756C-4632-AA2F-DCBA1BFEC824"  # AP-handoff image-transfer arming (#102)
         apState: "A68E3F66-0FCC-4395-8D4C-AA980B5877FA"
         transferState: "BD17BA04-B76B-4892-A545-B73BA1F74DAE"
         dateSyncState: "F9150137-5D40-4801-A8DC-F7FC5B01DA50"
@@ -198,6 +199,17 @@ families:
             # The BLE link from ble-pair is still open; bleConnect is a no-op
             # in that case but keeps the plan self-contained and walkable.
             - bleConnect: {}
+
+            # IMAGE_TRANSFER_SETTING arms the AP handoff: the reference app writes
+            # 0x01 here IMMEDIATELY BEFORE function-launch for ALL launch modes.
+            # Skipping it brings the AP up but the camera silently drops the
+            # InitCommandRequest — the session is never armed (#102, device 2026-06-28).
+            # Tolerant: a body without the characteristic just skips it (the
+            # reference `…IfPossible` gate).
+            - bleWrite:
+                gatt: imageTransferSetting
+                value: { literal: "01" }
+                tolerant: true
 
             # FUNCTION_LAUNCH_REQUEST: 2-byte LE launch value bound at runtime.
             - bleWrite:

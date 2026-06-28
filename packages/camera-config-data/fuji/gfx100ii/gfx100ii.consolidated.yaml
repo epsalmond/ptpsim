@@ -6305,6 +6305,7 @@ connections:
       kind: stream
       pollOp: null
     shutterRecipe: appPostview
+    commandListenerVolatile: true
     modes:
     - shooting/stills
     - image-transfer
@@ -6511,17 +6512,6 @@ connections:
         value: null
         params:
         - runtime: openCaptureTxId
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: {}
-        closeSession: null
-        value: null
-        params: []
         tolerant: false
         repeat: 1
         awaitUntil: null
@@ -6878,6 +6868,7 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandListenerVolatile: false
     modes:
     - remote-trigger
     entries: []
@@ -6911,6 +6902,7 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandListenerVolatile: false
     modes:
     - raw-conv-backup-restore
     - webcam
@@ -6944,6 +6936,7 @@ connections:
       kind: poll
       pollOp: '0x9018'
     shutterRecipe: wirelessTether3Beat
+    commandListenerVolatile: false
     modes:
     - shooting/stills
     - remote-trigger
@@ -7156,6 +7149,7 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandListenerVolatile: false
     modes:
     - shooting/stills
     entries: []
