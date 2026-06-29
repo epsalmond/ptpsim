@@ -441,6 +441,67 @@ fn action_getobject_params_differ_per_connection_same_verb() {
 }
 
 #[test]
+fn action_import_objects_surfaces_the_nested_transfer_loop() {
+    // #46: the full image-transfer choreography surfaces as ONE action whose steps
+    // nest a forEach(handle) loop over a chunk(objectSize) loop. Proves the new
+    // Loop construct + ImportObjects verb cross the FFI seam with the nested body
+    // intact — the hand-written-mirror silent-drop guard.
+    let s = store();
+    let plan = s
+        .action("app".into(), ActionVerb::ImportObjects)
+        .expect("app.actions.importObjects");
+    assert_eq!(plan.mode, "image-transfer");
+
+    // The forEach iterates the 0xd621 handle list, binding `handle`.
+    let for_each = plan
+        .steps
+        .iter()
+        .find_map(|st| match st {
+            EntryStep::Loop {
+                kind:
+                    FfiLoopKind::ForEach {
+                        in_prop,
+                        bind,
+                        body,
+                    },
+                ..
+            } => Some((*in_prop, bind.as_str(), body)),
+            _ => None,
+        })
+        .expect("importObjects nests a forEach over the handle list");
+    assert_eq!(for_each.0, 0xd621);
+    assert_eq!(for_each.1, "handle");
+
+    // Its body sizes the object (GetObjectInfo) then nests the chunk download.
+    assert!(
+        for_each
+            .2
+            .iter()
+            .any(|st| matches!(st, EntryStep::SendOp { op: 0x1008, .. })),
+        "forEach body issues GetObjectInfo to size the object",
+    );
+    let chunk = for_each
+        .2
+        .iter()
+        .find_map(|st| match st {
+            EntryStep::Loop {
+                kind: FfiLoopKind::Chunk { total, body, .. },
+                ..
+            } => Some((total.as_str(), body)),
+            _ => None,
+        })
+        .expect("forEach body nests a chunk loop");
+    assert_eq!(
+        chunk.0, "objectSize",
+        "chunk total names the captured size slot"
+    );
+    assert!(
+        matches!(chunk.1.as_slice(), [EntryStep::SendOp { op: 0x101b, .. }]),
+        "chunk body is the GetPartialObject download",
+    );
+}
+
+#[test]
 fn action_misses_when_connection_does_not_declare_the_verb() {
     let s = store();
     // ble has no transfer actions.

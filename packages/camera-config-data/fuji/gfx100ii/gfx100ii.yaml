@@ -237,6 +237,56 @@ connections:
               - { runtime: offset }
               - { runtime: length }
         evidence: [docImageTransfer]
+      # #46: the FULL image-transfer choreography as ONE manifest-owned loop, so
+      # the reference executor walks arm → enumerate → for-each handle
+      # { getObjectInfo (sizes the object) → chunk-download until exhausted } end
+      # to end — identical on sim and device. Closed loop primitives only: the
+      # executor owns the chunk offset cursor; the author declares total + window.
+      #
+      # The eager per-handle sweep here is the executable REFERENCE of the transfer
+      # SHAPE. A production dispatcher still publishes the handle list immediately
+      # and fetches lazily per selected object (the on-device socket-close note in
+      # IMAGE_TRANSFER_FW230.md) — getThumb stays a standalone lazy action above,
+      # NOT in this loop. Wire shape: IMAGE_TRANSFER_FW230.md (0x101B, 12 MiB chunks).
+      importObjects:
+        mode: image-transfer
+        steps:
+          # --- arm (mirrors the to:image-transfer mode-entry; idempotent, tolerant) ---
+          - { getProp: "0xd212", tolerant: true }
+          - { setProp: "0xdf01", value: 0x14 }
+          - { getProp: "0xdf28", tolerant: true }
+          - { setProp: "0xdf28", value: 3, tolerant: true }
+          - { setProp: "0xd226", value: 0, tolerant: true }
+          - { setProp: "0xd227", value: 0, tolerant: true }
+          - { getProp: "0xd244", tolerant: true }
+          - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
+          - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
+          - { sendOp: "0x9050", tolerant: true }
+          - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
+          # --- enumerate (count sizes the 0xd621 handle list) ---
+          - { getProp: "0xd620" }
+          # --- per-handle: learn size, then chunk-download until exhausted ---
+          - loop:
+              forEach:
+                in: "0xd621"          # descending handle list (array property)
+                bind: handle
+                body:
+                  # getObjectInfo binds `objectSize` (ObjectCompressedSize) for the chunk loop.
+                  - { sendOp: "0x1008", params: [{ runtime: handle }] }
+                  - loop:
+                      chunk:
+                        total: objectSize
+                        size: 12582912        # 12 MiB windows (~30 for a 356 MiB file)
+                        offsetBind: offset
+                        lengthBind: length
+                        body:
+                          - sendOp: "0x101b"  # GetPartialObject(handle, offset, length)
+                            params:
+                              - { runtime: handle }
+                              - { runtime: offset }
+                              - { runtime: length }
+        triggers: []
+        evidence: [docImageTransfer]
 
   ble:
     kind: ble
