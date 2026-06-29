@@ -404,6 +404,54 @@ fn ble_action_returns_the_remote_shutter_plan() {
 }
 
 #[test]
+fn ble_action_binary_writes_declare_bytes_raw_encoding() {
+    // #114: write-gps/write-time write a host-packed BINARY payload (GPS/clock
+    // bytes) supplied as a runtime hex string. The bleWrite value MUST declare
+    // `bytes-raw` — without an explicit encoding a consumer defaults to utf8
+    // (client application `decode(raw, as: encoding ?? "utf8")`), which cannot carry
+    // arbitrary bytes. This surfaces the encoding across the seam so it does not.
+    let s = store();
+    for (action, gatt, slot) in [
+        (
+            "write-gps",
+            "0F36EC14-29E5-411A-A1B6-64EE8383F090",
+            "locationSpeedPayload",
+        ),
+        (
+            "write-time",
+            "C52EDBCE-1FE2-4ECC-9483-907E6592BE9E",
+            "utcTimezonePayload",
+        ),
+    ] {
+        let plan = s
+            .ble_action("gfx100ii".into(), action.into())
+            .unwrap_or_else(|| panic!("{action} resolves"));
+        let write = plan
+            .steps
+            .iter()
+            .find_map(|st| match st {
+                Step::BleWrite {
+                    gatt: g,
+                    value:
+                        StepValue::Runtime {
+                            slot: sl, encoding, ..
+                        },
+                    ..
+                } => Some((g.clone(), sl.clone(), encoding.clone())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{action} has a runtime bleWrite"));
+        assert_eq!(write.0, gatt, "{action} writes its GATT characteristic");
+        assert_eq!(write.1, slot, "{action} binds its payload slot");
+        assert_eq!(
+            write.2.as_deref(),
+            Some("bytes-raw"),
+            "{action} payload must be bytes-raw (binary), not the utf8 default",
+        );
+    }
+}
+
+#[test]
 fn establishment_app_connection_returns_wifi_ap_plan() {
     // Issue #47: the `app` (BLE-initiated WiFi-AP) connection now resolves to
     // the ble-establish-wifi-ap plan — previously nil, so a paired camera had

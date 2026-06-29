@@ -349,7 +349,11 @@ families:
           evidence: [iosBLEReg]
           steps:
             - bleConnect: {}
-            - bleWrite: { gatt: utcAndTimezone, value: { runtime: utcTimezonePayload } }
+            # bytes-raw: the host supplies the packed binary payload as a hex
+            # string. Without an explicit encoding a consumer defaults to utf8
+            # (client application `decode(raw, as: encoding ?? "utf8")`), which can't carry
+            # arbitrary bytes — bytes-raw round-trips the hex to the wire (#114).
+            - bleWrite: { gatt: utcAndTimezone, value: { runtime: utcTimezonePayload, encoding: bytes-raw } }
 
         # GPS/location write. The host packs the 23-byte payload (lat/lon i32-le
         # ×1e7, alt i32-le, speed i32-le ×100, year u16-le, month, day, hour,
@@ -359,7 +363,8 @@ families:
           evidence: [iosBLEReg]
           steps:
             - bleConnect: {}
-            - bleWrite: { gatt: locationAndSpeed, value: { runtime: locationSpeedPayload } }
+            # bytes-raw — the packed binary payload as hex; see write-time (#114).
+            - bleWrite: { gatt: locationAndSpeed, value: { runtime: locationSpeedPayload, encoding: bytes-raw } }
 
 models:
   - id: gfx100ii
