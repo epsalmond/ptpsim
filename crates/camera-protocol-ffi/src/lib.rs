@@ -18,8 +18,9 @@ use std::sync::Arc;
 pub mod mfg_index;
 pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
-    BleServiceData, CccdMode, Confidence, EstablishmentPlan, ModelMatch, NotifyCapture,
-    Observation, Predicate, PredicateOp, Recognition, Step, StepOptions, StepValue, Transform,
+    BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, EstablishmentPlan,
+    ModelMatch, NotifyCapture, Observation, Predicate, PredicateOp, Recognition, Step, StepOptions,
+    StepValue, Transform,
 };
 
 uniffi::setup_scaffolding!();

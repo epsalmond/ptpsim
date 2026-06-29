@@ -213,6 +213,7 @@ pub enum Step {
     BleSubscribe(BleSubscribeStep),
     BleNotify(BleNotifyStep),
     BleAwaitUntil(BleAwaitUntilStep),
+    BleWriteChunk(BleWriteChunkStep),
     Acquire(AcquireStep),
     AcquireFirmware(AcquireFirmwareStep),
     If(IfStep),
@@ -231,6 +232,7 @@ impl Step {
             Step::BleSubscribe(_) => "bleSubscribe",
             Step::BleNotify(_) => "bleNotify",
             Step::BleAwaitUntil(_) => "bleAwaitUntil",
+            Step::BleWriteChunk(_) => "bleWriteChunk",
             Step::Acquire(_) => "acquire",
             Step::AcquireFirmware(_) => "acquireFirmware",
             Step::If(_) => "if",
@@ -250,6 +252,7 @@ impl Step {
             Step::BleSubscribe(s) => s.opts.clone(),
             Step::BleNotify(s) => s.opts.clone(),
             Step::BleAwaitUntil(s) => s.opts.clone(),
+            Step::BleWriteChunk(s) => s.opts.clone(),
             Step::Acquire(s) => s.opts.clone(),
             Step::AcquireFirmware(s) => s.opts.clone(),
             Step::If(_) => StepOptions::default(),
@@ -330,6 +333,62 @@ pub struct BleWriteStep {
     pub value: StepValue,
     #[serde(flatten, default)]
     pub opts: StepOptions,
+}
+
+/// `bleWriteChunk` — write ONE framed window of a host-supplied blob to `gatt`,
+/// selected by a captured chunk index (#112). The upload counterpart of a
+/// `bleAwaitUntil` read-loop: each `fileTransactionState` notification announces
+/// the next index, and this verb (run from `onEach`) frames + writes that chunk.
+///
+/// A closed, declarative verb — NOT a scripting hook. The walker owns the slice
+/// math AND the frame assembly; the manifest declares only policy (source blob,
+/// window size, frame header layout, sentinel index). The blob is supplied once
+/// as a `bytes-raw` hex runtime param, like the host-packed write-gps/write-time
+/// payloads (#114). Frame: the declared header fields, then the window payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleWriteChunkStep {
+    /// Runtime slot holding the whole blob as a hex string (`bytes-raw` shape).
+    pub source: String,
+    /// Scope key holding the current chunk index (a `bleAwaitUntil` capture of
+    /// the notification's index field). Selects which window to frame + write.
+    pub index: String,
+    /// Window size in bytes. Full windows are `size` bytes; the final window is
+    /// the remainder and is labelled `sentinel_index`. Must be > 0 (validated).
+    pub size: u32,
+    /// Resolved GATT characteristic each framed window is written to
+    /// (`filePartialData`). The loader resolves the symbolic name → UUID.
+    pub gatt: String,
+    /// The DECLARED frame header, emitted before the window payload, in order.
+    /// Fuji: `[{index, u16-le}, {length, u32-le}]`. Declaring it as data keeps
+    /// the header out of engine code — another family could frame differently
+    /// without a code change.
+    pub frame: Vec<ChunkFrameField>,
+    /// The index the FINAL (remainder) window carries — Fuji `65535` / `0xffff`.
+    /// The last window holds real data, not a separate empty frame.
+    pub sentinel_index: u32,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// One field of a declared chunk-frame header (#112): a computed quantity the
+/// walker supplies (`field`), emitted at the wire width/order `encoding`. Closed
+/// set of `field` kinds — a layout declaration, not a formula language.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkFrameField {
+    pub field: ChunkField,
+    pub encoding: Encoding,
+}
+
+/// The computed quantities a [`ChunkFrameField`] can emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChunkField {
+    /// The window's chunk index (the `sentinel_index` value on the final window).
+    Index,
+    /// The window's payload length in bytes.
+    Length,
 }
 
 /// `bleSubscribe` — enable notifications (CCCD descriptor write) on a

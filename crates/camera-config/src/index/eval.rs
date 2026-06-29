@@ -414,6 +414,23 @@ pub fn scope_string_to_bytes(value: &str, encoding: Option<Encoding>) -> Option<
     Some(value.as_bytes().to_vec())
 }
 
+/// Encode an unsigned integer to wire bytes at the width/order of an integer
+/// `Encoding` — the spec-owned counterpart of [`decode_bytes`]'s integer arms,
+/// so a value emitted here round-trips through the matching decode. `None` for a
+/// non-integer encoding (text/byte-string forms have no fixed integer width).
+/// Used to assemble declared chunk-frame headers (#112).
+pub fn encode_uint(value: u64, encoding: Encoding) -> Option<Vec<u8>> {
+    use Encoding::*;
+    match encoding {
+        U8 => Some(vec![value as u8]),
+        U16Le => Some((value as u16).to_le_bytes().to_vec()),
+        U16Be => Some((value as u16).to_be_bytes().to_vec()),
+        U32 | U32Le => Some((value as u32).to_le_bytes().to_vec()),
+        U32Be => Some((value as u32).to_be_bytes().to_vec()),
+        Utf8 | Utf8Cstring | Ascii | Bytes | BytesRaw | BytesLe | BytesBe => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,6 +729,27 @@ mod tests {
             apply_transforms(&[1, 2, 3], &[Transform::ReverseBytes]),
             Some(vec![3, 2, 1])
         );
+    }
+
+    #[test]
+    fn encode_uint_matches_the_declared_width_and_order() {
+        // #112: chunk-frame headers are built with encode_uint; the bytes must
+        // match decode_bytes' integer arms so a frame round-trips.
+        assert_eq!(encode_uint(0x78, Encoding::U8), Some(vec![0x78]));
+        assert_eq!(encode_uint(0xffff, Encoding::U16Le), Some(vec![0xff, 0xff]));
+        assert_eq!(encode_uint(1, Encoding::U16Le), Some(vec![0x01, 0x00]));
+        assert_eq!(encode_uint(1, Encoding::U16Be), Some(vec![0x00, 0x01]));
+        assert_eq!(encode_uint(120, Encoding::U32Le), Some(vec![0x78, 0, 0, 0]));
+        assert_eq!(encode_uint(120, Encoding::U32Be), Some(vec![0, 0, 0, 0x78]));
+        // round-trips through decode_bytes.
+        let bytes = encode_uint(258, Encoding::U16Le).unwrap();
+        assert_eq!(
+            decode_bytes(&bytes, Encoding::U16Le).as_deref(),
+            Some("258")
+        );
+        // A non-integer encoding has no fixed width → None.
+        assert_eq!(encode_uint(1, Encoding::Utf8), None);
+        assert_eq!(encode_uint(1, Encoding::BytesRaw), None);
     }
 
     #[test]

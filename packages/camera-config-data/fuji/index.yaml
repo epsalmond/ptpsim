@@ -72,6 +72,24 @@ families:
         # wire-verified, operators 2026-05-01 reference app run).
         locationAndSpeed: "0F36EC14-29E5-411A-A1B6-64EE8383F090"
 
+        # Settings backup/restore characteristics (#112). The cameraSettings
+        # blob is transferred in framed chunks over BLE — see the settings-backup
+        # / settings-restore actions below. UUIDs from client application
+        # CameraSettingsBackup.swift; wire choreography from operators
+
+        # + APP_SETTINGS_BACKUP_RESTORE_CODE_MAP_2026-05-13.md.
+        backupRequest:        "F14E7A88-6F57-4872-A69B-B47EF3295C9B"   # BackUpRequestType u16-le (arm)
+        restoreRequest:       "F1897EB9-A9AA-40F0-8CE6-2FA7915BC459"   # RestoreRequestType u16-le (arm)
+        fileTransactionState: "2E27ED9F-5506-41CD-BA48-DAC06669AD95"   # progress notifier [opcode u16-le][idx u16-le]
+        backupState:          "11438C83-CFB0-4511-841B-759E0D2321C8"   # backup state notifier
+        restoreState:         "4B3A413C-230F-42BC-B3ED-B1DB2EADEE82"   # restore state notifier
+        fileInformation:      "C922AC69-9480-4348-8F4B-9EE29BC30D1D"   # total size / name metadata
+        filePartialSize:      "7F3400FE-17E7-4B80-8A0E-81B0343C1B49"   # negotiated chunk size
+        fileTransferIndex:    "051DD980-DF9D-4472-A2E1-35811DD24EE1"   # per-chunk index ack
+        filePartialData:      "AC0C799A-FA6C-4DF5-BBC5-BB95CCE7E6EA"   # chunk frames (read on backup, write on restore)
+        fileTransferResult:   "68052E8A-FB91-404F-8847-0EB4BE24308C"   # final OK/FAIL the phone writes back
+        settingsKeepAlive:    "AD06C7B7-F41A-46F4-A29A-712055319122"   # keep the transfer session warm
+
       # Advertisement-format constants signatures reference via
       # {ble.advert.…} template refs. Family-wide. Note: RED-style cameras
       # still advertise under the Fujifilm company ID — the constant marks
@@ -325,7 +343,7 @@ families:
       # BLE-native control actions runnable from the resting BLE link without
       # Wi-Fi (#91). Source: client application FujiBLERegistration.swift (iosBLEReg);
       # GPS payload wire-verified (operators 2026-05-01). The cameraSettings
-      # backup/restore action is deferred (heavy chunked transfer — own issue).
+      # backup/restore chunked transfer is settings-backup / settings-restore (#112).
       actions:
         # Remote shutter: an S1→S2→S1→S0 press sequence on SHOOTING_REQUEST.
         # client application paces the writes 100ms/500ms/100ms apart (host-side; the
@@ -365,6 +383,81 @@ families:
             - bleConnect: {}
             # bytes-raw — the packed binary payload as hex; see write-time (#114).
             - bleWrite: { gatt: locationAndSpeed, value: { runtime: locationSpeedPayload, encoding: bytes-raw } }
+
+        # Settings BACKUP (camera → phone): download the compressed settings blob
+        # in framed chunks. The camera streams fileTransactionState notifications
+        # [opcode u16-le][idx u16-le] — 0x0001/0x0002 announce the next chunk
+        # index, 0x0003 idx=0xffff = complete — and the phone reads filePartialData
+        # on each announcement. Frame: [idx u16-le][len u32-le][payload] (len ~120);
+        # the final data chunk is itself indexed 0xffff. Source: operators
+
+        # Reuses the existing bleAwaitUntil notify-loop — no new grammar.
+        settings-backup:
+          evidence: [iosBLEReg]
+          steps:
+            - bleConnect: {}
+            # Hold the transfer session warm. The keep-alive cadence is
+            # dispatcher-side (timed writes) — the deterministic walker only
+            # models the subscription.
+            - bleSubscribe: { gatt: settingsKeepAlive, timeoutMs: 3000, mode: notify, tolerant: true }
+            # client application writes backupRequest 0x0100 to start (backupRequestPayload).
+            # The OTA capture notes "subscribing is the trigger" on Android — model
+            # the iOS control write; the Android divergence is a [EVIDENCE-GAP].
+            - bleWrite: { gatt: backupRequest, value: { literal: "0100" } }
+            - bleAwaitUntil:
+                # fileTransactionState arrives as INDICATE on backup ([EVIDENCE-GAP]:
+                # the OTA capture flags the indicate/notify split as rig-confirmable).
+                source: { notify: { gatt: fileTransactionState, mode: indicate } }
+                capture:
+                  - { at: 0, length: 2, encoding: u16-le, name: txOpcode }
+                  - { at: 2, length: 2, encoding: u16-le, name: chunkIdx }
+                until: { txOpcode: { eq: "3" } }          # 0x0003 = stream complete
+                onEach:
+                  - bleRead: { gatt: filePartialData, encoding: bytes-raw, captureAs: chunkFrame }
+                timeoutMs: 30000
+
+        # Settings RESTORE (phone → camera): upload the host's settings blob in
+        # framed chunks. Symmetric to backup — the camera announces the next index
+        # on fileTransactionState and the phone WRITES the framed window for that
+        # index (bleWriteChunk). The host supplies the whole blob once as a
+        # bytes-raw hex param. Same [idx u16-le][len u32-le][payload] framing;
+        # the final remainder window carries index 0xffff. NOTE restore is RE'd
+        # from the Android reference app + one wire capture (iOS stubs it); the arm payload
+        # is an [EVIDENCE-GAP], see below. Source: the same OTA doc, Restore phase.
+        settings-restore:
+          params: [settingsBlob]
+          evidence: [iosBLEReg]
+          steps:
+            - bleConnect: {}
+            - bleSubscribe: { gatt: settingsKeepAlive, timeoutMs: 3000, mode: indicate, tolerant: true }
+            # [EVIDENCE-GAP] restore arm: CODE_MAP says writeRestoreRequest →
+            # restoreRequest (RestoreRequestType u16-le), but the wire capture
+            # showed a write to 7fcf49c6 with "exact payload unknown." Modeled as
+            # the restoreRequest write; the value 0100 mirrors backup and needs rig
+            # confirmation (cf. #91 apState bytes flagged for the rig).
+            - bleWrite: { gatt: restoreRequest, value: { literal: "0100" } }
+            - bleAwaitUntil:
+                # fileTransactionState arrives as NOTIFY on restore ([EVIDENCE-GAP]:
+                # the indicate/notify split vs backup is rig-confirmable).
+                source: { notify: { gatt: fileTransactionState, mode: notify } }
+                capture:
+                  - { at: 0, length: 2, encoding: u16-le, name: txOpcode }
+                  - { at: 2, length: 2, encoding: u16-le, name: chunkIdx }
+                until: { txOpcode: { eq: "3" } }
+                onEach:
+                  # Frame + write the window of settingsBlob the camera just asked
+                  # for. The walker owns the slice + frame; the sentinel index 65535
+                  # selects the final remainder window.
+                  - bleWriteChunk:
+                      source: settingsBlob
+                      index: chunkIdx
+                      size: 120
+                      gatt: filePartialData
+                      frame:
+                        - { field: index, encoding: u16-le }
+                        - { field: length, encoding: u32-le }
+                      sentinelIndex: 65535
+                timeoutMs: 30000
 
 models:
   - id: gfx100ii
