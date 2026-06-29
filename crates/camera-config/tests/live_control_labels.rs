@@ -37,6 +37,25 @@ fn iso_labels_resolve_as_u32_literals() {
 }
 
 #[test]
+fn movie_iso_mirrors_still_iso_as_u32_literals() {
+    let m = consolidated();
+    // 0xD02B reuses 0xD02A's u32 table verbatim (client application movieISO -> isoOptions;
+    // wire ref "same value seen") — #106.
+    assert_eq!(m.value_label(0xd02b, 6400), Some("6400"));
+    assert_eq!(m.value_label(0xd02b, 102400), Some("102400")); // overflows u16
+}
+
+#[test]
+fn iso_auto_ceiling_sentinels_label_as_auto_with_the_ceiling() {
+    let m = consolidated();
+    // 0x80000000 | ceiling is the auto form, distinguished from the manual literal
+    // that shares the low bytes (#107). Both still (0xD02A) and movie (0xD02B) ISO
+    // carry it. 0x80003200 = auto, ceiling 12800; 0x80001900 = auto, ceiling 6400.
+    assert_eq!(m.value_label(0xd02a, 0x8000_3200), Some("AUTO 12800"));
+    assert_eq!(m.value_label(0xd02b, 0x8000_1900), Some("AUTO 6400"));
+}
+
+#[test]
 fn shutter_labels_resolve_from_the_high_bit_u32_form() {
     let m = consolidated();
     // 0xD240 is u32: 0x80000000 | (denom × 1000). 1/60 = 0x8000_EA60.
