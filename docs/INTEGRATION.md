@@ -126,12 +126,13 @@ per-platform packaging:
   is **`docs/SPM_INTEGRATION.md`** (one-line render via
   `ci/spm-snippet.sh <sha-tag>`).
 - **Android:** build the **cdylib** (`.so`) per ABI (`aarch64-linux-android`,
-  `armv7-linux-androideabi`, `x86_64-linux-android`) into `jniLibs/<abi>/`; ship
-  the `.kt` + the `.so`s as a source-distribution tarball (`CameraProtocolFFI-
-  <sha8>-android.tar.gz`) the consumer drops into their Gradle module via two
-  `cp -r` commands. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Real
-  `.aar` wrapping (compiled `classes.jar` + AndroidManifest) is the follow-up
-  (#74) — needs `kotlinc` + `android.jar` in CI.
+  `armv7-linux-androideabi`, `x86_64-linux-android`), compile the uniffi `.kt`
+  to a `classes.jar`, and wrap both (+ `AndroidManifest.xml` + `jni/<abi>/*.so`)
+  as a real Android Archive (`CameraProtocolFFI-<sha8>.aar`) the consumer adds as
+  a Gradle file dependency (`implementation(files("libs/…​.aar"))`) plus the JNA
+  `@aar`. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Built by
+  `ci/build-android.sh` on the `ci-android` image (`kotlinc` + JNA; `android.jar`
+  from the cimg SDK).
 - **Linux / Python:** the `.so` + the generated `camera_protocol_ffi.py`. Consumed
   across a repo boundary by the standalone `epsalmond/camera-protocol-mapper` (probe
   tooling), which pulls the generated binding — it is no longer built, tested, or
