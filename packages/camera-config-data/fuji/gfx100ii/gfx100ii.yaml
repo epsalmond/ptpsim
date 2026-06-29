@@ -645,7 +645,7 @@ properties:
   # Width override is documented in the #53 property-width-audit OVERRIDES table.
   "0xd02a": { name: stillIso, ptpName: ISO, type: u32, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
-  "0xd02b": { name: movieIso, ptpName: MovieISO, type: u16, access: readWrite,
+  "0xd02b": { name: movieIso, ptpName: MovieISO, type: u32, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   # Shutter readback is u32, NOT the u16 stub the degenerate descriptor reports.
   # Encoding: 0x80000000|(denom*1000) for fractions (1/60 = 0x8000EA60), or

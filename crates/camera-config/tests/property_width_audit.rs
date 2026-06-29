@@ -40,6 +40,10 @@ const OVERRIDES: &[(&str, &str)] = &[
         "u32 literal/auto ISO despite degenerate u16 stub descriptor (client application UINT32 parser, v6 ISO writes)",
     ),
     (
+        "0xd02b",
+        "u32 movie ISO sharing 0xd02a's encoding+labels despite degenerate u16 stub descriptor (client application movieISO uint32/isoOptions, FUJI_PTP_PROP_REFERENCE D02B)",
+    ),
+    (
         "0xd240",
         "u32 0x80000000|denom*1000 shutter despite degenerate u16 stub descriptor (client application UINT32 parser, live 0xD212)",
     ),
