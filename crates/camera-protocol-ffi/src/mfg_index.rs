@@ -237,6 +237,26 @@ pub enum Step {
         interval_ms: u32,
         opts: StepOptions,
     },
+    /// Frame + write ONE window of a host blob, selected by a captured chunk
+    /// index (#112). Run from a `bleAwaitUntil` `on_each` driven by the camera's
+    /// `fileTransactionState` notifications: each announces the next index, this
+    /// frames `source[window]` with the declared header and writes it to `gatt`.
+    /// The dispatcher owns the slice math + frame assembly. Reference semantics:
+    /// `camera_sim::ble::run_write_chunk`.
+    BleWriteChunk {
+        /// Runtime slot holding the whole blob as a bytes-raw hex string.
+        source: String,
+        /// Scope key holding the current chunk index (a bleAwaitUntil capture).
+        index: String,
+        /// Window size in bytes (the final window is the remainder).
+        size: u32,
+        gatt: String,
+        /// Declared frame header, emitted before the window payload.
+        frame: Vec<ChunkFrameField>,
+        /// Index the final (remainder) window carries (Fuji `0xffff`).
+        sentinel_index: u32,
+        opts: StepOptions,
+    },
     Acquire {
         name: String,
         /// `Vec<Step>` of length 1 holding the inner step. uniffi 0.31 does
@@ -261,6 +281,30 @@ pub enum Step {
         /// (else-branch runs / step is skipped) rather than erroring.
         tolerant: bool,
     },
+}
+
+/// One field of a declared `bleWriteChunk` frame header (#112): a computed
+/// quantity (`field`) emitted at the wire width/order `encoding` (token).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ChunkFrameField {
+    pub field: ChunkField,
+    pub encoding: String,
+}
+
+/// The computed quantities a [`ChunkFrameField`] can emit. Mirrors `ix::ChunkField`.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ChunkField {
+    Index,
+    Length,
+}
+
+impl From<ix::ChunkField> for ChunkField {
+    fn from(f: ix::ChunkField) -> Self {
+        match f {
+            ix::ChunkField::Index => ChunkField::Index,
+            ix::ChunkField::Length => ChunkField::Length,
+        }
+    }
 }
 
 /// Step value forms (§11.1). At the FFI boundary:
@@ -622,6 +666,22 @@ impl From<&ix::Step> for Step {
                 on_each: inner.on_each.iter().map(Step::from).collect(),
                 timeout_ms: inner.timeout_ms,
                 interval_ms: inner.interval_ms,
+                opts: (&inner.opts).into(),
+            },
+            ix::Step::BleWriteChunk(inner) => Step::BleWriteChunk {
+                source: inner.source.clone(),
+                index: inner.index.clone(),
+                size: inner.size,
+                gatt: inner.gatt.clone(),
+                frame: inner
+                    .frame
+                    .iter()
+                    .map(|f| ChunkFrameField {
+                        field: f.field.into(),
+                        encoding: f.encoding.as_token().to_string(),
+                    })
+                    .collect(),
+                sentinel_index: inner.sentinel_index,
                 opts: (&inner.opts).into(),
             },
             ix::Step::Acquire(inner) => Step::Acquire {

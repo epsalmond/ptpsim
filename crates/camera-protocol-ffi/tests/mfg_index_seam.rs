@@ -452,6 +452,73 @@ fn ble_action_binary_writes_declare_bytes_raw_encoding() {
 }
 
 #[test]
+fn ble_action_settings_restore_surfaces_the_write_chunk_loop() {
+    // #112: the settings-restore action surfaces as a bleAwaitUntil notify-loop
+    // whose onEach carries the new BleWriteChunk verb — proving the construct +
+    // its declared frame + the GATT resolution cross the FFI seam (the
+    // hand-written-mirror silent-drop guard). Backup rides existing grammar.
+    let s = store();
+    let plan = s
+        .ble_action("gfx100ii".into(), "settings-restore".into())
+        .expect("settings-restore resolves");
+
+    let (on_each, until) = plan
+        .steps
+        .iter()
+        .find_map(|st| match st {
+            Step::BleAwaitUntil { on_each, until, .. } => Some((on_each, until)),
+            _ => None,
+        })
+        .expect("settings-restore awaits fileTransactionState");
+    assert_eq!(until.field, "txOpcode");
+    assert_eq!(until.value, "3", "loops until the 0x0003 complete state");
+
+    let chunk = on_each
+        .iter()
+        .find_map(|st| match st {
+            Step::BleWriteChunk {
+                source,
+                index,
+                size,
+                gatt,
+                frame,
+                sentinel_index,
+                ..
+            } => Some((source, index, *size, gatt, frame, *sentinel_index)),
+            _ => None,
+        })
+        .expect("onEach frames + writes a chunk");
+    assert_eq!(chunk.0, "settingsBlob");
+    assert_eq!(chunk.1, "chunkIdx");
+    assert_eq!(chunk.2, 120);
+    // GATT resolved to the filePartialData UUID — proves resolution reached the
+    // new verb's nested-in-onEach gatt field.
+    assert_eq!(chunk.3, "AC0C799A-FA6C-4DF5-BBC5-BB95CCE7E6EA");
+    assert_eq!(chunk.5, 65535);
+    // The declared frame header: [{Index, u16-le}, {Length, u32-le}].
+    assert_eq!(chunk.4.len(), 2);
+    assert!(matches!(chunk.4[0].field, ChunkField::Index));
+    assert_eq!(chunk.4[0].encoding, "u16-le");
+    assert!(matches!(chunk.4[1].field, ChunkField::Length));
+    assert_eq!(chunk.4[1].encoding, "u32-le");
+
+    // Backup surfaces a notify-source await whose onEach reads filePartialData.
+    let backup = s
+        .ble_action("gfx100ii".into(), "settings-backup".into())
+        .expect("settings-backup resolves");
+    assert!(
+        backup.steps.iter().any(|st| matches!(
+            st,
+            Step::BleAwaitUntil {
+                source: AwaitSource::Notify { .. },
+                ..
+            }
+        )),
+        "settings-backup awaits a notify source",
+    );
+}
+
+#[test]
 fn establishment_app_connection_returns_wifi_ap_plan() {
     // Issue #47: the `app` (BLE-initiated WiFi-AP) connection now resolves to
     // the ble-establish-wifi-ap plan — previously nil, so a paired camera had

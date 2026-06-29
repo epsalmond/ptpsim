@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camera_config::index::eval;
 use camera_config::index::{
-    AcquireSource, AwaitSource, BleAwaitUntilStep, BleNotifyUntil, CccdMode, Encoding,
-    NotifyCapture, PredicateOp, Step, StepValue,
+    AcquireSource, AwaitSource, BleAwaitUntilStep, BleNotifyUntil, BleWriteChunkStep, CccdMode,
+    ChunkField, Encoding, NotifyCapture, PredicateOp, Step, StepValue,
 };
 
 /// Reference-walker bound on a `bleAwaitUntil` loop: the deterministic
@@ -24,6 +24,11 @@ use camera_config::index::{
 /// source (a `serve_read` value that never meets `until`) hits this and fails
 /// like a real timeout rather than spinning forever.
 const MAX_AWAIT_ITERS: usize = 256;
+
+/// Reference-walker guard on a `bleWriteChunk` upload (#112): the deterministic
+/// analogue of a transfer budget. A blob needing more windows than this fails
+/// rather than letting a corrupt size spin. Mirrors [`MAX_AWAIT_ITERS`].
+const MAX_CHUNK_WINDOWS: usize = 4096;
 
 /// One interaction the responder observed, in arrival order. Tests assert on
 /// this log to prove a plan drove the camera in the expected reference app order.
@@ -480,6 +485,7 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
             Ok(())
         }
         Step::BleAwaitUntil(s) => run_await_until(ctx, s, here),
+        Step::BleWriteChunk(s) => run_write_chunk(ctx, s, here),
         Step::Acquire(s) => {
             // Run the delegate through `walk_steps` (a one-element slice) so its
             // OWN tolerant/retry options apply at its level rather than the
@@ -633,6 +639,90 @@ fn run_await_until(
         s.until.op.as_token(),
         s.until.value
     )))
+}
+
+/// Execute a `bleWriteChunk` (#112): frame + write ONE window of the host blob,
+/// selected by the captured chunk index. The walker owns the slice math and the
+/// frame assembly; the manifest declares only policy. Window layout mirrors
+
+/// indexed `0..full`, then a final remainder window addressed by `sentinel_index`
+/// (the camera's `0xffff` last chunk, which carries real data, not an empty frame).
+fn run_write_chunk(
+    ctx: &mut WalkCtx<'_>,
+    s: &BleWriteChunkStep,
+    here: &str,
+) -> Result<(), WalkError> {
+    let err = |message: String| WalkError {
+        step: here.to_string(),
+        message,
+    };
+
+    // The host supplies the whole blob once as a bytes-raw hex param (#114).
+    let raw = ctx
+        .runtime_params
+        .get(&s.source)
+        .ok_or_else(|| err(format!("source slot '{}' unbound", s.source)))?;
+    let blob = eval::scope_string_to_bytes(raw, Some(Encoding::BytesRaw))
+        .ok_or_else(|| err(format!("source '{}' undecodable", s.source)))?;
+
+    let size = s.size.max(1) as usize;
+    let total = blob.len();
+    // Count of full (non-final) windows: floor((total-1)/size). The final window
+    // is the remainder (1..=size bytes; empty only for an empty blob).
+    let full = if total == 0 { 0 } else { (total - 1) / size };
+    if full + 1 > MAX_CHUNK_WINDOWS {
+        return Err(err(format!(
+            "blob of {total} bytes needs {} windows, exceeds cap {MAX_CHUNK_WINDOWS}",
+            full + 1
+        )));
+    }
+
+    // The captured chunk index (a bleAwaitUntil capture of the notification) names
+    // which window to write — `sentinel_index` is the final remainder window.
+    let captured = ctx
+        .scope
+        .get(&s.index)
+        .ok_or_else(|| err(format!("index slot '{}' unbound in scope", s.index)))?;
+    let idx: u64 = captured.parse().map_err(|_| {
+        err(format!(
+            "index '{}' = {captured:?} is not an integer",
+            s.index
+        ))
+    })?;
+
+    let (offset, len) = if idx == s.sentinel_index as u64 {
+        (full * size, total - full * size)
+    } else if (idx as usize) < full {
+        (idx as usize * size, size)
+    } else {
+        return Err(err(format!(
+            "chunk index {idx} out of range (full windows 0..{full}, sentinel {})",
+            s.sentinel_index
+        )));
+    };
+
+    // Assemble the declared header, then the window payload. The header carries
+    // the chunk's own index (== the captured value) and its payload length.
+    let mut frame = Vec::new();
+    for f in &s.frame {
+        let value = match f.field {
+            ChunkField::Index => idx,
+            ChunkField::Length => len as u64,
+        };
+        let encoded = eval::encode_uint(value, f.encoding).ok_or_else(|| {
+            err(format!(
+                "frame field {:?} needs an integer encoding (got {})",
+                f.field,
+                f.encoding.as_token()
+            ))
+        })?;
+        frame.extend_from_slice(&encoded);
+    }
+    frame.extend_from_slice(&blob[offset..offset + len]);
+
+    ctx.responder
+        .write(&s.gatt, &frame)
+        .map_err(|e| err(e.to_string()))
 }
 
 fn predicate_holds(actual: &str, op: PredicateOp, expected: &str) -> bool {

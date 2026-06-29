@@ -212,7 +212,7 @@ fn resolve_gatt_names_in_steps(
         let here = format!("{path_ctx}[{i}].{verb}");
         match verb {
             "bleConnect" | "bleRequestMtu" | "bleDiscoverServices" => {}
-            "bleRead" | "bleWrite" | "bleSubscribe" | "bleNotify" => {
+            "bleRead" | "bleWrite" | "bleSubscribe" | "bleNotify" | "bleWriteChunk" => {
                 resolve_gatt_field(body, gatt, &here)?;
             }
             "acquire" => {
@@ -269,7 +269,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, acquire, acquireFirmware, if)"),
+                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if)"),
                 });
             }
         }
@@ -718,6 +718,9 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleAwaitUntil" => Ok(Step::BleAwaitUntil(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleAwaitUntil", e))?,
             )),
+            "bleWriteChunk" => Ok(Step::BleWriteChunk(
+                serde_yaml::from_value(body).map_err(|e| dec_err("bleWriteChunk", e))?,
+            )),
             "acquire" => Ok(Step::Acquire(
                 serde_yaml::from_value(body).map_err(|e| dec_err("acquire", e))?,
             )),
@@ -728,7 +731,7 @@ impl<'de> serde::Deserialize<'de> for Step {
                 serde_yaml::from_value(body).map_err(|e| dec_err("if", e))?,
             )),
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, acquire, acquireFirmware, if)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if)"
             ))),
         }
     }
