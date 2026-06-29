@@ -6850,6 +6850,209 @@ connections:
         evidence:
         - iosLiveControls
         - docLiveControls
+      importObjects:
+        mode: image-transfer
+        params: []
+        steps:
+        - setProp: null
+          getProp: '0xd212'
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: '0xdf01'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: 20
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: '0xdf28'
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: '0xdf28'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: 3
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: '0xd226'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: 0
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: '0xd227'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: 0
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: '0xd244'
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x9054'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params:
+          - 268435457
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x9055'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params:
+          - 268435457
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x9050'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x9053'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params:
+          - 0
+          - 30000
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: '0xd620'
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+          loop:
+            forEach:
+              in: '0xd621'
+              bind: handle
+              body:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x1008'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - runtime: handle
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+                loop:
+                  chunk:
+                    total: objectSize
+                    size: 12582912
+                    offsetBind: offset
+                    lengthBind: length
+                    body:
+                    - setProp: null
+                      getProp: null
+                      readEcho: null
+                      sendOp: '0x101b'
+                      reopenSession: null
+                      closeSession: null
+                      value: null
+                      params:
+                      - runtime: handle
+                      - runtime: offset
+                      - runtime: length
+                      tolerant: false
+                      repeat: 1
+                      awaitUntil: null
+        triggers: []
+        evidence:
+        - docImageTransfer
     enables: []
     bind:
       command: 55740

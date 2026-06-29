@@ -23,9 +23,9 @@ pub use model::{
     parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource, AwaitUntil,
     CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition, Control,
     Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
-    LiveViewStream, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, OpEffect, Operation,
-    Payload, PayloadForm, PostviewEvent, Property, RecordLayout, ShutterRecipe, Step, StepParam,
-    ValuePolicy, ValueSource, VersionCond, Workflow,
+    LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, OpEffect,
+    Operation, Payload, PayloadForm, PostviewEvent, Property, RecordLayout, ShutterRecipe, Step,
+    StepParam, ValuePolicy, ValueSource, VersionCond, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};

@@ -460,6 +460,34 @@ pub enum EntryStep {
         interval_ms: u32,
         tolerant: bool,
     },
+    /// A closed declarative loop (#46): `ForEach` over a captured collection (each
+    /// element binds a runtime slot for `body`), or `Chunk` by fixed size (the
+    /// dispatcher owns the offset/length cursor; `total` names the scope slot a
+    /// preceding GetObjectInfo captured). The nested `body` crosses the seam.
+    Loop {
+        kind: FfiLoopKind,
+        tolerant: bool,
+    },
+}
+
+/// The two `Loop` shapes (#46). Mirrors `cc::Loop`. `ForEach` iterates the
+/// array-valued property `in_prop`, binding each element to `bind`; `Chunk` walks
+/// `total` bytes in `size`-byte windows, binding `offset_bind`/`length_bind` each
+/// iteration. The dispatcher owns all cursor advancement — no author arithmetic.
+#[derive(Debug, uniffi::Enum)]
+pub enum FfiLoopKind {
+    ForEach {
+        in_prop: u16,
+        bind: String,
+        body: Vec<EntryStep>,
+    },
+    Chunk {
+        total: String,
+        size: u32,
+        offset_bind: String,
+        length_bind: String,
+        body: Vec<EntryStep>,
+    },
 }
 
 /// Where a PTP-IP `awaitUntil` observes (#54). Mirrors `cc::AwaitSource`. `Poll`
@@ -509,6 +537,7 @@ pub enum ActionVerb {
     DeleteObject,
     AutofocusLock,
     AutofocusRelease,
+    ImportObjects,
 }
 
 /// Declared post-conditions an action produces — the consumer plans UX
@@ -1228,6 +1257,35 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
             tolerant,
         });
     }
+    if let Some(lp) = &s.r#loop {
+        let kind = match lp {
+            cc::Loop::ForEach {
+                in_prop,
+                bind,
+                body,
+            } => FfiLoopKind::ForEach {
+                // A malformed `in` prop `?`-drops the whole step (same hazard as a
+                // bad op code — guarded by the seam test).
+                in_prop: parse_hex_code(in_prop)?,
+                bind: bind.clone(),
+                body: body.iter().filter_map(map_step).collect(),
+            },
+            cc::Loop::Chunk {
+                total,
+                size,
+                offset_bind,
+                length_bind,
+                body,
+            } => FfiLoopKind::Chunk {
+                total: total.clone(),
+                size: *size,
+                offset_bind: offset_bind.clone(),
+                length_bind: length_bind.clone(),
+                body: body.iter().filter_map(map_step).collect(),
+            },
+        };
+        return Some(EntryStep::Loop { kind, tolerant });
+    }
     None
 }
 
@@ -1250,6 +1308,7 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
         ActionVerb::DeleteObject => cc::ActionVerb::DeleteObject,
         ActionVerb::AutofocusLock => cc::ActionVerb::AutofocusLock,
         ActionVerb::AutofocusRelease => cc::ActionVerb::AutofocusRelease,
+        ActionVerb::ImportObjects => cc::ActionVerb::ImportObjects,
     }
 }
 

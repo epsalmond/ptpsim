@@ -4,7 +4,9 @@
 //! the TCP path). This is the vcam-replacement believability gate.
 
 use camera_config::model::ReopenSession;
-use camera_config::{AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam};
+use camera_config::{
+    ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam,
+};
 use camera_media_store::MediaStore;
 use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Reply};
 use ptp_core::{DeviceInfo, OperationRequest, Reader};
@@ -274,4 +276,62 @@ fn live_view_to_image_transfer_switches_in_session() {
     let params = BTreeMap::from([("openCaptureTxId".to_string(), "1".to_string())]);
     walk_ptpip_in(&mut e, &steps, &params, Some("app"))
         .expect("in-session live-view → image-transfer flow runs end-to-end");
+}
+
+/// An engine whose card holds `count` small JPGs (each one 12 MiB chunk).
+fn engine_with_jpegs(count: usize) -> Engine {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("ptpsim-gate-import-{nanos}"));
+    let dir = root.join("DCIM/100_FUJI");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..count {
+        std::fs::write(
+            dir.join(format!("DSCF{i:04}.JPG")),
+            b"\xFF\xD8HELLOJPEG\xFF\xD9",
+        )
+        .unwrap();
+    }
+    let mut store = MediaStore::open(&root).unwrap();
+    store.scan().unwrap();
+    Engine::new(consolidated(), store)
+}
+
+#[test]
+fn import_objects_runs_the_full_transfer_from_the_consolidated() {
+    // #46 keystone: the REAL importObjects action (arm → enumerate → forEach
+    // handle { getObjectInfo → chunk } → idle) walks end-to-end from the
+    // consolidated manifest, so sim and device run the identical path. Each small
+    // JPG is one 12 MiB window; three handles → three single-chunk downloads.
+    let m = consolidated();
+    let action = m
+        .action("app", ActionVerb::ImportObjects)
+        .expect("app.actions.importObjects in the consolidated");
+    let mut e = engine_with_jpegs(3);
+    let outcome = walk_ptpip_in(&mut e, &action.steps, &BTreeMap::new(), Some("app"))
+        .expect("importObjects walks the armed enumerate→forEach→chunk path");
+    assert_eq!(
+        outcome.loop_iterations,
+        vec![1, 1, 1, 3],
+        "one chunk per handle, then forEach visited all three handles",
+    );
+}
+
+#[test]
+fn import_objects_over_empty_card_downloads_nothing() {
+    // The negative oracle: an armed import against a card with no transferable
+    // objects enumerates an empty handle list and downloads nothing — the forEach
+    // runs zero iterations, no chunk loop fires.
+    let m = consolidated();
+    let action = m.action("app", ActionVerb::ImportObjects).unwrap();
+    let mut e = engine_with_jpegs(0);
+    let outcome = walk_ptpip_in(&mut e, &action.steps, &BTreeMap::new(), Some("app"))
+        .expect("importObjects walks even with nothing to transfer");
+    assert_eq!(
+        outcome.loop_iterations,
+        vec![0],
+        "forEach over an empty card is a no-op",
+    );
 }

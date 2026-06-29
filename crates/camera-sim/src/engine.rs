@@ -228,6 +228,19 @@ impl Engine {
                 // assemble it from current state via the shared quirk primitive.
                 if code == 0xd212 {
                     Self::data(tid, self.status_d212())
+                } else if code == 0xd621 {
+                    // The Fuji object-handle list property (#46): the manifest's
+                    // enumerate/import actions read it as a u32 array. Serve the
+                    // real handles (same encoding as GetObjectHandles 0x1007) so
+                    // the property-driven enumeration is believable, not a default.
+                    let mut w = Writer::new();
+                    w.ptp_array(&self.file_handles(), |w, v| w.u32(*v));
+                    Self::data(tid, w.into_vec())
+                } else if code == 0xd620 {
+                    // The object count that sizes the 0xd621 list (declared u32).
+                    let mut w = Writer::new();
+                    w.u32(self.file_handles().len() as u32);
+                    Self::data(tid, w.into_vec())
                 } else {
                     // A manifest-declared prop always returns a value (current, else
                     // a typed default) — a real camera doesn't reject a supported

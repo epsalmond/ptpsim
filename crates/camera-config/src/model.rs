@@ -499,6 +499,10 @@ pub enum ActionVerb {
     AutofocusLock,
     /// Release the AF lock: `0x9027 UnlockS1Lock` (#35).
     AutofocusRelease,
+    /// The full image-transfer choreography (#46): arm → enumerate → for-each
+    /// handle { get size → chunk-download until exhausted } → idle. The loop
+    /// lives in the manifest; the reference executor walks it end-to-end.
+    ImportObjects,
 }
 
 /// How live-view frames are delivered over a connection (#81 per-connection
@@ -678,6 +682,13 @@ pub struct Step {
     /// over a collection (a distinct future construct). See [`AwaitUntil`].
     #[serde(default)]
     pub await_until: Option<AwaitUntil>,
+    /// A closed declarative loop (#46): `forEach` over a captured collection (each
+    /// element binds a runtime slot), or `chunk`-by-size over the current object
+    /// (the executor owns the offset/length cursor). The sanctioned for-each
+    /// construct the `await_until` doc defers to; a sibling of `repeat`/`await_until`,
+    /// not a scripting hook. Skipped when absent to keep the consolidated diff small.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub r#loop: Option<Loop>,
 }
 
 /// Where a PTP-IP `awaitUntil` observes (§11.16): a property `poll` or an `event`
@@ -812,6 +823,171 @@ pub struct AwaitUntil {
     pub interval_ms: u32,
 }
 
+/// A closed, declarative loop control-flow construct (#46) — the sanctioned
+/// for-each the `await_until` doc defers to. NOT a scripting language: exactly two
+/// shapes, the executor owns every cursor/offset advance, the author declares only
+/// policy. Each loop runs under a deterministic iteration cap (the §11.15 analogue
+/// of `await_until`'s timeout). YAML is a single-entry mapping — `forEach: {...}`
+/// or `chunk: {...}` — hand-(de)serialized like [`AwaitSource`] so the generator's
+/// consolidation round-trip survives (serde's `!forEach` tag can't be reparsed).
+#[derive(Debug, Clone)]
+pub enum Loop {
+    /// Iterate the array-valued property `in_prop` (e.g. `0xd621`, the object
+    /// handle list), binding each element into the runtime slot `bind` for the
+    /// body's `StepParam::Runtime` references. General over any list-valued
+    /// property — reusable beyond image transfer.
+    ForEach {
+        in_prop: HexCode,
+        bind: String,
+        body: Vec<Step>,
+    },
+    /// Walk the current object in `size`-byte windows. The executor owns the
+    /// cursor: `offset` starts at 0 and advances by the window it just bound,
+    /// `length` is `min(total - offset, size)`, terminating when `offset` reaches
+    /// `total`. `total` names a scope slot (e.g. `objectSize`) captured from the
+    /// real `0x1008` ObjectInfo — there is no author-written arithmetic.
+    Chunk {
+        total: String,
+        size: u32,
+        offset_bind: String,
+        length_bind: String,
+        body: Vec<Step>,
+    },
+}
+
+impl serde::Serialize for Loop {
+    /// Mirror the hand-written `Deserialize`: a single-entry mapping keyed by the
+    /// variant, not serde's externally-tagged YAML tag. Keeps the generator's
+    /// consolidation round-trip valid (same contract as [`AwaitSource`]).
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = s.serialize_map(Some(1))?;
+        match self {
+            Loop::ForEach {
+                in_prop,
+                bind,
+                body,
+            } => {
+                #[derive(serde::Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Body<'a> {
+                    #[serde(rename = "in")]
+                    in_prop: &'a str,
+                    bind: &'a str,
+                    body: &'a [Step],
+                }
+                map.serialize_entry(
+                    "forEach",
+                    &Body {
+                        in_prop: in_prop.as_str(),
+                        bind: bind.as_str(),
+                        body: body.as_slice(),
+                    },
+                )?;
+            }
+            Loop::Chunk {
+                total,
+                size,
+                offset_bind,
+                length_bind,
+                body,
+            } => {
+                #[derive(serde::Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Body<'a> {
+                    total: &'a str,
+                    size: u32,
+                    offset_bind: &'a str,
+                    length_bind: &'a str,
+                    body: &'a [Step],
+                }
+                map.serialize_entry(
+                    "chunk",
+                    &Body {
+                        total: total.as_str(),
+                        size: *size,
+                        offset_bind: offset_bind.as_str(),
+                        length_bind: length_bind.as_str(),
+                        body: body.as_slice(),
+                    },
+                )?;
+            }
+        }
+        map.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Loop {
+    /// YAML form: a single-entry mapping — `forEach: { in: <hex>, bind: <slot>,
+    /// body: [...] }` or `chunk: { total: <slot>, size: <u32>, offsetBind: <slot>,
+    /// lengthBind: <slot>, body: [...] }`. Mirrors [`AwaitSource`]'s dispatch.
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let mapping = serde_yaml::Mapping::deserialize(d)?;
+        if mapping.len() != 1 {
+            return Err(D::Error::custom(format!(
+                "loop must be a single-entry mapping (got {} keys)",
+                mapping.len()
+            )));
+        }
+        let (key_v, body) = mapping.into_iter().next().unwrap();
+        let key = key_v
+            .as_str()
+            .ok_or_else(|| D::Error::custom("loop key must be a string"))?
+            .to_string();
+        match key.as_str() {
+            "forEach" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct F {
+                    #[serde(rename = "in")]
+                    in_prop: String,
+                    bind: String,
+                    #[serde(default)]
+                    body: Vec<Step>,
+                }
+                let f: F = serde_yaml::from_value(body)
+                    .map_err(|err| D::Error::custom(format!("forEach: {err}")))?;
+                Ok(Loop::ForEach {
+                    in_prop: f.in_prop,
+                    bind: f.bind,
+                    body: f.body,
+                })
+            }
+            "chunk" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct C {
+                    total: String,
+                    size: u32,
+                    offset_bind: String,
+                    length_bind: String,
+                    #[serde(default)]
+                    body: Vec<Step>,
+                }
+                let c: C = serde_yaml::from_value(body)
+                    .map_err(|err| D::Error::custom(format!("chunk: {err}")))?;
+                Ok(Loop::Chunk {
+                    total: c.total,
+                    size: c.size,
+                    offset_bind: c.offset_bind,
+                    length_bind: c.length_bind,
+                    body: c.body,
+                })
+            }
+            other => Err(D::Error::custom(format!(
+                "unknown loop kind '{other}' (allowlist: forEach, chunk)"
+            ))),
+        }
+    }
+}
+
 /// Marker for the `reopen_session` action (empty body in YAML).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReopenSession {}
@@ -884,6 +1060,7 @@ impl Step {
             self.reopen_session.is_some(),
             self.close_session.is_some(),
             self.await_until.is_some(),
+            self.r#loop.is_some(),
         ]
         .into_iter()
         .filter(|b| *b)

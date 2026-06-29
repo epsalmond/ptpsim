@@ -17,11 +17,11 @@
 
 use std::collections::BTreeMap;
 
-use camera_config::model::{AwaitSource, AwaitUntil, Step, StepParam};
+use camera_config::model::{AwaitSource, AwaitUntil, Loop, Step, StepParam};
 use camera_config::{parse_hex_code, PropView};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
-use ptp_core::{OperationRequest, Reader, Writer};
+use ptp_core::{ObjectInfo, OperationRequest, Reader, Writer};
 
 use crate::engine::{Engine, Reply};
 use crate::state::{datatype_of, typed};
@@ -31,6 +31,21 @@ use crate::state::{datatype_of, typed};
 /// holds hits this and fails like a real timeout rather than spinning forever.
 /// Mirrors `crate::ble::MAX_AWAIT_ITERS`.
 const MAX_AWAIT_ITERS: usize = 256;
+
+/// Defensive runaway guard on a `forEach` loop (#46). The handle list is a finite
+/// `Vec` the engine returns, so this is never hit in practice — it bounds a
+/// corrupt array count, not real iteration. Set high enough for any real card.
+const MAX_FOREACH_ITERS: usize = 100_000;
+
+/// Deterministic cap on a `chunk` loop's windows. Covers the 4 GiB `SIZE_CEILING`
+/// at any realistic chunk size (4 GiB / 12 MiB ≈ 358) with wide headroom; a
+/// degenerate tiny window hits it instead of spinning. The §11.15 analogue.
+const MAX_CHUNK_ITERS: usize = 4096;
+
+/// Reserved scope slot the executor binds from a `GetObjectInfo` (0x1008) response
+/// — the object's compressed size, sourced for a following `chunk` loop's `total`
+/// exactly as a real client learns it (from the ObjectInfo data phase). See #46.
+const OBJECT_SIZE_SLOT: &str = "objectSize";
 
 /// Result of a completed PTP-IP walk: the observed property values (the scope
 /// the dispatcher accumulated from polls) and per-`awaitUntil` iteration counts
@@ -42,6 +57,10 @@ pub struct PtpIpOutcome {
     /// One entry per `awaitUntil` step executed, in order: how many polls it
     /// took to satisfy `until`.
     pub await_iterations: Vec<usize>,
+    /// One entry per `loop` step executed, in order: how many iterations it ran
+    /// (forEach element count / chunk window count). Lets tests assert a transfer
+    /// actually walked the handles and chunked each object.
+    pub loop_iterations: Vec<usize>,
 }
 
 /// Walk failure: which step (by verb + position) and why. Tolerant steps never
@@ -91,6 +110,8 @@ pub fn walk_ptpip_in(
         tid: 1,
         steps_run: 0,
         await_iterations: Vec::new(),
+        loop_iterations: Vec::new(),
+        bindings: BTreeMap::new(),
         command_listener_volatile,
     };
     // Session bring-up (idempotent): the responder rejects most ops before it.
@@ -104,6 +125,7 @@ pub fn walk_ptpip_in(
         observed: ctx.observed,
         steps_run: ctx.steps_run,
         await_iterations: ctx.await_iterations,
+        loop_iterations: ctx.loop_iterations,
     })
 }
 
@@ -114,9 +136,15 @@ struct Ctx<'a> {
     /// by prop code; `until` predicates evaluate over it.
     observed: PropView,
     runtime_params: BTreeMap<String, String>,
+    /// Loop-bound scalar slots (#46): the forEach element + the chunk offset/length
+    /// the executor advances, plus the `objectSize` captured from GetObjectInfo.
+    /// Resolved by `StepParam::Runtime` ahead of `runtime_params` — loop vars
+    /// shadow caller slots within a loop body.
+    bindings: BTreeMap<String, i64>,
     tid: u32,
     steps_run: usize,
     await_iterations: Vec<usize>,
+    loop_iterations: Vec<usize>,
     /// The active connection's `command_listener_volatile` trait (#103): when set,
     /// a `reopenSession` is refused (the camera tears the command-port listener
     /// down on a transport-close, so the reconnect gets "Connection refused").
@@ -178,7 +206,14 @@ impl Ctx<'_> {
         } else if let Some(o) = &step.send_op {
             let code = parse_hex_code(o).ok_or_else(|| err(format!("bad op code {o:?}")))?;
             let params = self.resolve_params(&step.params).map_err(err)?;
-            self.simple_op(code, params, step.tolerant).map_err(err)
+            if code == op::GET_OBJECT_INFO {
+                // GetObjectInfo's purpose is to learn object metadata; capture the
+                // compressed size into `objectSize` so a following chunk loop knows
+                // its `total` — the same way a real client sizes its download (#46).
+                self.get_object_info(params, step.tolerant).map_err(err)
+            } else {
+                self.simple_op(code, params, step.tolerant).map_err(err)
+            }
         } else if step.reopen_session.is_some() {
             if self.command_listener_volatile {
                 // The camera tore down the command-port listener on the transport-
@@ -197,8 +232,137 @@ impl Ctx<'_> {
                 .map_err(err)
         } else if let Some(aw) = &step.await_until {
             self.run_await_until(aw, step.tolerant, here)
+        } else if let Some(lp) = &step.r#loop {
+            self.run_loop(lp, step.tolerant, here)
         } else {
             Err(err("step sets no action verb".into()))
+        }
+    }
+
+    /// A closed declarative loop (#46): `forEach` over a captured collection or a
+    /// `chunk`-by-size walk. The executor owns all cursor advancement; the body
+    /// reuses the ordinary step grammar with the bound slots resolvable as runtime
+    /// params. Each runs under a deterministic cap (the `awaitUntil` analogue).
+    fn run_loop(&mut self, lp: &Loop, tolerant: bool, here: &str) -> Result<(), PtpIpError> {
+        let err = |message: String| PtpIpError {
+            step: here.to_string(),
+            message,
+        };
+        match lp {
+            Loop::ForEach {
+                in_prop,
+                bind,
+                body,
+            } => {
+                let code = parse_hex_code(in_prop)
+                    .ok_or_else(|| err(format!("bad forEach prop {in_prop:?}")))?;
+                let items = self.poll_collection(code).map_err(err)?;
+                if items.len() > MAX_FOREACH_ITERS && !tolerant {
+                    return Err(err(format!(
+                        "forEach over {code:#06x} has {} elements, exceeds cap {MAX_FOREACH_ITERS}",
+                        items.len()
+                    )));
+                }
+                let n_iter = items.len().min(MAX_FOREACH_ITERS);
+                for (n, item) in items.iter().take(n_iter).enumerate() {
+                    let prev = self.bindings.insert(bind.clone(), *item);
+                    let res = self.walk_steps(body, &format!("{here}.forEach[{n}]"));
+                    restore(&mut self.bindings, bind, prev);
+                    res?;
+                }
+                self.loop_iterations.push(n_iter);
+                Ok(())
+            }
+            Loop::Chunk {
+                total,
+                size,
+                offset_bind,
+                length_bind,
+                body,
+            } => {
+                let total_bytes = *self.bindings.get(total).ok_or_else(|| {
+                    err(format!(
+                        "chunk total slot '{total}' unbound — a preceding getObjectInfo must capture it"
+                    ))
+                })? as u64;
+                let window = (*size).max(1) as u64;
+                let mut offset: u64 = 0;
+                let mut iters = 0usize;
+                while offset < total_bytes {
+                    if iters >= MAX_CHUNK_ITERS {
+                        if tolerant {
+                            break;
+                        }
+                        return Err(err(format!(
+                            "chunk loop exceeded {MAX_CHUNK_ITERS} windows for total {total_bytes}"
+                        )));
+                    }
+                    // The executor owns the arithmetic — the manifest never sees it.
+                    let length = (total_bytes - offset).min(window);
+                    let po = self.bindings.insert(offset_bind.clone(), offset as i64);
+                    let pl = self.bindings.insert(length_bind.clone(), length as i64);
+                    let res = self.walk_steps(body, &format!("{here}.chunk[{iters}]"));
+                    restore(&mut self.bindings, offset_bind, po);
+                    restore(&mut self.bindings, length_bind, pl);
+                    res?;
+                    offset += length;
+                    iters += 1;
+                }
+                self.loop_iterations.push(iters);
+                Ok(())
+            }
+        }
+    }
+
+    /// GetObjectInfo (0x1008): issue it, and on success decode the returned
+    /// `ObjectInfo` to bind `objectSize` (the compressed size) for a following
+    /// chunk loop. Capture is best-effort; the OK/tolerant gate is unchanged.
+    fn get_object_info(&mut self, params: Vec<u32>, tolerant: bool) -> Result<(), String> {
+        let tid = self.next_tid();
+        let req = OperationRequest {
+            data_phase_info: 1,
+            code: op::GET_OBJECT_INFO,
+            transaction_id: tid,
+            params,
+        };
+        let reply = self.engine.on_operation(&req, None);
+        if let Reply::Data { data, response } = &reply {
+            if response.code == resp::OK {
+                if let Ok(oi) = ObjectInfo::decode(data) {
+                    self.bindings.insert(
+                        OBJECT_SIZE_SLOT.to_string(),
+                        oi.object_compressed_size as i64,
+                    );
+                }
+            }
+        }
+        check_ok(&reply, op::GET_OBJECT_INFO, tolerant)
+    }
+
+    /// GetDevicePropValue for an array-valued property (e.g. `0xd621`, the handle
+    /// list) → decode the count-prefixed `u32` array → `Vec<i64>`. The forEach
+    /// source. A scalar/non-array reply is a hard error (tolerant-aware at the loop).
+    fn poll_collection(&mut self, code: u16) -> Result<Vec<i64>, String> {
+        let tid = self.next_tid();
+        let req = OperationRequest {
+            data_phase_info: 1,
+            code: op::GET_DEVICE_PROP_VALUE,
+            transaction_id: tid,
+            params: vec![code as u32],
+        };
+        let reply = self.engine.on_operation(&req, None);
+        match reply {
+            Reply::Data { data, response } if response.code == resp::OK => {
+                let mut r = Reader::new(&data);
+                let items = r
+                    .ptp_array(|r| r.u32())
+                    .map_err(|e| format!("decode array prop {code:#06x}: {e:?}"))?;
+                Ok(items.into_iter().map(|v| v as i64).collect())
+            }
+            other => Err(format!(
+                "GetDevicePropValue({code:#06x}) -> {}",
+                describe_reply(&other)
+            )),
         }
     }
 
@@ -339,6 +503,13 @@ impl Ctx<'_> {
             .map(|p| match p {
                 StepParam::Literal(v) => Ok(*v),
                 StepParam::Runtime { runtime } => {
+                    // Loop-bound vars (forEach element, chunk offset/length) shadow
+                    // caller-supplied runtime_params within a loop body (#46).
+                    if let Some(b) = self.bindings.get(runtime) {
+                        return u32::try_from(*b).map_err(|_| {
+                            format!("loop slot '{runtime}' value {b} out of u32 range")
+                        });
+                    }
                     let raw = self
                         .runtime_params
                         .get(runtime)
@@ -349,6 +520,20 @@ impl Ctx<'_> {
                 }
             })
             .collect()
+    }
+}
+
+/// Restore a loop-bound slot to its prior value after an iteration, so nested
+/// loops don't leak bindings (push/pop discipline). `prev` is the value the
+/// binding shadowed, if any.
+fn restore(bindings: &mut BTreeMap<String, i64>, slot: &str, prev: Option<i64>) {
+    match prev {
+        Some(v) => {
+            bindings.insert(slot.to_string(), v);
+        }
+        None => {
+            bindings.remove(slot);
+        }
     }
 }
 
@@ -368,6 +553,8 @@ fn verb_name(s: &Step) -> &'static str {
         "reopenSession"
     } else if s.await_until.is_some() {
         "awaitUntil"
+    } else if s.r#loop.is_some() {
+        "loop"
     } else {
         "?"
     }
