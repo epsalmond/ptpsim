@@ -259,8 +259,17 @@ families:
                 timeoutMs: 20000
 
             # AP is up — read the credentials the app joins the network with.
-            - bleRead: { gatt: cameraSSIDNameString,       encoding: utf8, captureAs: ssid }
-            - bleRead: { gatt: cameraWiFiPassphraseString, encoding: utf8, captureAs: passphrase }
+            # Both are fixed-width, NUL-padded GATT string fields: utf8-cstring
+            # stops at the first \0 so the join targets the bare SSID, not
+            # "FUJIFILM-GFX100II-0C3E\0\0…" which never associates (#87, device
+            # 2026-06-22; reference app decodes via Utils.getStringFromByteArray).
+            - bleRead: { gatt: cameraSSIDNameString,       encoding: utf8-cstring, captureAs: ssid }
+            # Tolerant: an OPEN AP (or legacy fw 2.30) doesn't expose the
+            # passphrase characteristic; a non-tolerant read would abort the
+            # whole handoff after a clean launch + SSID read. Skipped leaves
+            # `passphrase` unbound and the consumer joins an open network (#85,
+            # operators APP_AP_HANDOVER_HANDSHAKE_2026-05-13). SSID stays required.
+            - bleRead: { gatt: cameraWiFiPassphraseString, encoding: utf8-cstring, captureAs: passphrase, tolerant: true }
 
         # Warm resume for an ALREADY-paired camera (#91): reconnect without
         # re-entering pairing mode. A bonded camera no longer advertises the

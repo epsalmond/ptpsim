@@ -478,18 +478,30 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
     assert_eq!(until_field, "apState");
 
     // The credential reads bind ssid + passphrase — the consumer contract.
-    let reads: Vec<&str> = plan
+    // Both decode as utf8-cstring so trailing NUL padding never reaches the
+    // consumer (#87); the passphrase read is tolerant so an open/legacy-fw AP
+    // that omits the characteristic doesn't abort the handoff (#85), while the
+    // SSID stays required.
+    let reads: Vec<(&str, &str, bool)> = plan
         .steps
         .iter()
         .filter_map(|s| match s {
-            Step::BleRead { capture_as, .. } => Some(capture_as.as_str()),
+            Step::BleRead {
+                capture_as,
+                encoding,
+                opts,
+                ..
+            } => Some((capture_as.as_str(), encoding.as_str(), opts.tolerant)),
             _ => None,
         })
         .collect();
-    assert!(reads.contains(&"ssid"), "binds ssid; got {reads:?}");
     assert!(
-        reads.contains(&"passphrase"),
-        "binds passphrase; got {reads:?}"
+        reads.contains(&("ssid", "utf8-cstring", false)),
+        "ssid: required utf8-cstring read; got {reads:?}",
+    );
+    assert!(
+        reads.contains(&("passphrase", "utf8-cstring", true)),
+        "passphrase: tolerant utf8-cstring read; got {reads:?}",
     );
 }
 
