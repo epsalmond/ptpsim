@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 #
-# Build CameraProtocolFFI for Android — three cdylib ABIs + Kotlin bindings,
-# packaged as a source-distribution tarball consumers integrate into their
-# Android Gradle module's `src/main/{jniLibs, java}` trees.
+# Build CameraProtocolFFI for Android — three cdylib ABIs + the uniffi Kotlin
+# bindings compiled to a real Android Archive (.aar) consumers add as a normal
+# Gradle file dependency.
 #
 # Outputs (under $OUT_DIR, default `out/`):
 #
-#     android/jniLibs/arm64-v8a/libcamera_protocol_ffi.so
-#     android/jniLibs/armeabi-v7a/libcamera_protocol_ffi.so
-#     android/jniLibs/x86_64/libcamera_protocol_ffi.so
-#     android/kotlin/uniffi/camera_protocol_ffi/camera_protocol_ffi.kt
-#     dist/CameraProtocolFFI-<sha8>-android.tar.gz   (the publishable artifact)
+#     android/jniLibs/<abi>/libcamera_protocol_ffi.so                (intermediate)
+#     android/kotlin/uniffi/camera_protocol_ffi/camera_protocol_ffi.kt (intermediate)
+#     android/classes.jar                                            (intermediate)
+#     dist/CameraProtocolFFI-<sha8>.aar              (the publishable artifact)
+#     dist/CameraProtocolFFI-<sha8>.checksum         (SHA-256 of the .aar)
 #
 # Requires:
 #   - cargo + rustup (3 Android targets installed)
 #   - cargo-ndk (wraps cargo build with the right NDK toolchain per ABI)
 #   - Android NDK (ANDROID_NDK_HOME set, OR auto-discovered via cargo-ndk)
+#   - kotlinc + zip (compile the .kt to classes.jar, assemble the .aar)
+#   - a JNA jar ($JNA_JAR) + android.jar (from $ANDROID_HOME/$ANDROID_SDK_ROOT)
 #
-# Real .aar wrapping (classes.jar + AndroidManifest.xml in an Android-Archive
-# zip) is task #43 — needs kotlinc + android.jar in CI which doubles the
-# Docker image size. The .so + .kt this script ships are exactly the bytes
-# that would go INSIDE the .aar, so consumers can integrate today without
-# waiting for the wrapping work.
+# The .aar (#74) wraps classes.jar + AndroidManifest.xml + jni/<abi>/*.so in an
+# Android-Archive zip. The ci-android image carries kotlinc + a JNA jar for this;
+# android.jar comes from the cimg Android SDK already in the base image.
 #
 # Consumer-side: docs/ANDROID_INTEGRATION.md.
 
@@ -60,7 +60,8 @@ require() {
 require cargo
 require rustup
 require cargo-ndk
-require tar
+require kotlinc
+require zip
 require shasum
 
 for t in "${!ABIS[@]}"; do
@@ -74,6 +75,23 @@ done
 if [[ -z "${ANDROID_NDK_HOME:-}" && -z "${ANDROID_NDK_ROOT:-}" ]]; then
     echo "WARN: ANDROID_NDK_HOME / ANDROID_NDK_ROOT not set — cargo-ndk will" >&2
     echo "      try to auto-discover. If it can't, set ANDROID_NDK_HOME and rerun." >&2
+fi
+
+# .aar wrapping needs a JNA jar to compile the JNA-based uniffi bindings against.
+# The ci-android image sets JNA_JAR; fall back to a search so this runs locally.
+if [[ -z "${JNA_JAR:-}" || ! -f "${JNA_JAR:-}" ]]; then
+    JNA_JAR="$(find / -name 'jna-*.jar' 2>/dev/null | sort -V | tail -1)"
+fi
+[[ -n "${JNA_JAR}" && -f "${JNA_JAR}" ]] || {
+    echo "FATAL: no JNA jar found; set JNA_JAR to a jna-<ver>.jar" >&2
+    exit 1
+}
+# android.jar is optional for these pure-JVM bindings — include it if the SDK
+# carries one (it does in the cimg base) so the compile matches the Android API.
+ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+ANDROID_JAR=""
+if [[ -n "${ANDROID_HOME}" && -d "${ANDROID_HOME}/platforms" ]]; then
+    ANDROID_JAR="$(find "${ANDROID_HOME}/platforms" -maxdepth 2 -name android.jar 2>/dev/null | sort -V | tail -1)"
 fi
 
 cd "${ROOT}"
@@ -137,22 +155,54 @@ test -f "${KOTLIN_FILE}" || {
 }
 
 # ---------------------------------------------------------------------------
-# Tarball + checksum (matches the xcframework convention)
+# Compile bindings → classes.jar
 # ---------------------------------------------------------------------------
+
+echo "==> Compiling Kotlin bindings → classes.jar (kotlinc)"
+CLASSES_JAR="${ANDROID_DIR}/classes.jar"
+# uniffi 0.31 emits JNA-based bindings (import com.sun.jna.*), so JNA is on the
+# compile classpath; android.jar too when present. No -include-runtime: the
+# consumer app supplies kotlin-stdlib, so classes.jar holds only our classes.
+KOTLINC_CP="${JNA_JAR}${ANDROID_JAR:+:${ANDROID_JAR}}"
+kotlinc "${KOTLIN_FILE}" -classpath "${KOTLINC_CP}" -d "${CLASSES_JAR}"
+test -f "${CLASSES_JAR}" || { echo "FATAL: kotlinc did not produce ${CLASSES_JAR}" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Assemble the .aar + checksum
+# ---------------------------------------------------------------------------
+
+# Android-Archive layout (a plain zip): AndroidManifest.xml + classes.jar +
+# jni/<abi>/*.so (note: INSIDE an .aar it is jni/, not jniLibs/) + an empty
+# R.txt. Consumed as `implementation files('…/CameraProtocolFFI-<sha8>.aar')`.
+AAR_STAGE="${ANDROID_DIR}/aar"
+rm -rf "${AAR_STAGE}"
+mkdir -p "${AAR_STAGE}/jni"
+cp "${CLASSES_JAR}" "${AAR_STAGE}/classes.jar"
+for abi in "${ABIS[@]}"; do
+    mkdir -p "${AAR_STAGE}/jni/${abi}"
+    cp "${JNILIBS_DIR}/${abi}/${SO_NAME}" "${AAR_STAGE}/jni/${abi}/${SO_NAME}"
+done
+: > "${AAR_STAGE}/R.txt"
+cat > "${AAR_STAGE}/AndroidManifest.xml" <<'MANIFEST'
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="uniffi.camera_protocol_ffi">
+    <uses-sdk android:minSdkVersion="21" />
+</manifest>
+MANIFEST
 
 DIST_DIR="${OUT_DIR}/dist"
 mkdir -p "${DIST_DIR}"
-TARBALL="${DIST_DIR}/${XCF_NAME}-${SHA8}-android.tar.gz"
-CHECKSUM="${DIST_DIR}/${XCF_NAME}-${SHA8}-android.checksum"
+AAR="${DIST_DIR}/${XCF_NAME}-${SHA8}.aar"
+CHECKSUM="${DIST_DIR}/${XCF_NAME}-${SHA8}.checksum"
+rm -f "${AAR}"
 
-echo "==> Tarball ${TARBALL}"
-# Tarball contains a top-level `android/` dir mirroring the layout consumers
-# integrate into their Gradle module: android/jniLibs/<abi>/*.so +
-# android/kotlin/uniffi/camera_protocol_ffi/*.kt.
-tar -czf "${TARBALL}" -C "${OUT_DIR}" android
+echo "==> Assembling ${AAR}"
+# -X strips extra file attributes for a more reproducible archive.
+( cd "${AAR_STAGE}" && zip -q -r -X "${AAR}" AndroidManifest.xml classes.jar R.txt jni )
 
 echo "==> Checksum ${CHECKSUM}"
-shasum -a 256 "${TARBALL}" | awk '{print $1}' > "${CHECKSUM}"
+shasum -a 256 "${AAR}" | awk '{print $1}' > "${CHECKSUM}"
 
 # ---------------------------------------------------------------------------
 # Done
@@ -160,9 +210,8 @@ shasum -a 256 "${TARBALL}" | awk '{print $1}' > "${CHECKSUM}"
 
 echo
 echo "Build complete:"
-echo "  jniLibs:    ${JNILIBS_DIR}"
-echo "  kotlin:     ${KOTLIN_DIR}"
-echo "  tarball:    ${TARBALL}"
+echo "  aar:        ${AAR}"
 echo "  checksum:   ${CHECKSUM} ($(cat "${CHECKSUM}"))"
 echo
-du -sh "${JNILIBS_DIR}" "${KOTLIN_DIR}" "${TARBALL}" 2>/dev/null || true
+unzip -l "${AAR}" 2>/dev/null || true
+du -sh "${AAR}" 2>/dev/null || true

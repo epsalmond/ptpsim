@@ -157,8 +157,8 @@ steps:
       - ./ci/build-android.sh
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
       - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
-      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}-android.tar.gz" --clobber'
-      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}-android.checksum" --clobber'
+      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.aar" --clobber'
+      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.checksum" --clobber'
     environment:
       # Registry/build caches in the volume; toolchain binaries stay on the
       # image's PATH (/usr/local/cargo/bin) regardless of CARGO_HOME.

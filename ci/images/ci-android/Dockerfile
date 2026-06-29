@@ -35,5 +35,18 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update -qq \
- && apt-get install -qq -y --no-install-recommends gh \
+ && apt-get install -qq -y --no-install-recommends gh unzip \
  && rm -rf /var/lib/apt/lists/*
+
+# Kotlin compiler + a JNA jar for the .aar wrapping (#74): build-android.sh
+# compiles the uniffi Kotlin bindings to classes.jar against JNA (the uniffi
+# 0.31 Kotlin backend is JNA-based). android.jar comes from the cimg Android SDK
+# already in this base — the script discovers it at build time. Pinned, no-cache.
+ARG KOTLIN_VERSION=2.0.21
+ARG JNA_VERSION=5.14.0
+RUN curl -fsSL "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" -o /tmp/kotlin.zip \
+ && unzip -q /tmp/kotlin.zip -d /opt \
+ && rm /tmp/kotlin.zip \
+ && curl -fsSL "https://repo1.maven.org/maven2/net/java/dev/jna/jna/${JNA_VERSION}/jna-${JNA_VERSION}.jar" -o /opt/jna.jar
+ENV PATH=/opt/kotlinc/bin:$PATH \
+    JNA_JAR=/opt/jna.jar
