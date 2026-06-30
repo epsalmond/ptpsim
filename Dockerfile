@@ -47,8 +47,14 @@ RUN case "$TARGETARCH" in \
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY --from=planner /build/recipe.json .
 # Cook deps for the target arch (cross-compiled via zig) — the cached layer.
+# NOTE: cook uses the PLAIN triple (no `.2.36`). cargo-chef takes `--target`
+# literally to locate `target/<triple>/release`, but cargo-zigbuild strips the
+# glibc suffix when writing artifacts — so a suffixed cook target makes chef look
+# in a `…gnu.2.36/` dir that never exists ("Failed to cook recipe / No such file
+# or directory"). The glibc floor only matters at the final link, so it stays on
+# the `zigbuild` build below; deps are reused (the rustc target is identical).
 RUN cargo chef cook --release --zigbuild \
-      --target "$(cat /tmp/rust-target).2.36" --recipe-path recipe.json
+      --target "$(cat /tmp/rust-target)" --recipe-path recipe.json
 
 # Only the workspace inputs the service needs.
 COPY crates ./crates
