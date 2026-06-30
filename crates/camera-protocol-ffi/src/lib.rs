@@ -221,6 +221,14 @@ pub struct InitShapeInfo {
 }
 
 #[derive(uniffi::Record)]
+pub struct CameraIdentityInfo {
+    pub manufacturer: String,
+    pub model: String,
+    pub firmware: String,
+    pub identities: Vec<KeyValue>,
+}
+
+#[derive(uniffi::Record)]
 pub struct ModeInfo {
     pub path: String,
     pub capabilities: Vec<String>,
@@ -1078,6 +1086,59 @@ impl ConfigStore {
         })
     }
 
+    /// Runtime-aware InitCommandRequest assembly (#109/#29). Same shape as
+    /// [`connection_init`], but `client-derived` identity slots resolve from the
+    /// caller's runtime scope (for Fuji, `terminalName`). This lets consumers keep
+    /// the BLE deviceNameString and PTP/IP friendlyName single-sourced while still
+    /// replaying the manifest-owned vendor tail with no app-side byte literal.
+    pub fn connection_init_with_runtime(
+        &self,
+        connection: String,
+        runtime_scope: Vec<KeyValue>,
+    ) -> Option<InitShapeInfo> {
+        let c = self.inner.manifest.connections.get(&connection)?;
+        let init = c.init.as_ref()?;
+        let scope: BTreeMap<String, String> = runtime_scope
+            .into_iter()
+            .map(|kv| (kv.key, kv.value))
+            .collect();
+        let friendly_name = value_with_runtime(&self.inner, &init.identity.friendly_name, &scope)?;
+        let guid = hex_value(&value_with_runtime(
+            &self.inner,
+            &init.identity.guid,
+            &scope,
+        )?)?;
+        let tail = match &init.tail {
+            Some(t) => hex_value(t)?,
+            None => Vec::new(),
+        };
+        let packet = protocol_primitives::build_app_init(&guid, &friendly_name, &tail).ok()?;
+        Some(InitShapeInfo {
+            guid,
+            friendly_name,
+            name_field_byte_count: init.name_field_byte_count,
+            tail,
+            packet,
+        })
+    }
+
+    pub fn camera_identity(&self) -> CameraIdentityInfo {
+        let camera = &self.inner.manifest.camera;
+        CameraIdentityInfo {
+            manufacturer: camera.manufacturer.clone(),
+            model: camera.model.clone(),
+            firmware: camera.firmware.clone(),
+            identities: camera
+                .identities
+                .iter()
+                .map(|(key, value)| KeyValue {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+        }
+    }
+
     /// Resolve a `values:` key to its fixed scalar string (`None` for non-fixed).
     fn fixed_value(&self, key: &str) -> Option<String> {
         match self.inner.value(key)? {
@@ -1362,6 +1423,18 @@ fn yaml_scalar(v: &serde_yaml::Value) -> Option<String> {
         serde_yaml::Value::String(s) => Some(s.clone()),
         serde_yaml::Value::Number(n) => Some(n.to_string()),
         serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn value_with_runtime(
+    store: &cc::ConfigStore,
+    key: &str,
+    runtime_scope: &BTreeMap<String, String>,
+) -> Option<String> {
+    match store.value(key)? {
+        cc::ValuePolicy::Fixed { value } => yaml_scalar(value),
+        cc::ValuePolicy::ClientDerived { runtime } => runtime_scope.get(runtime).cloned(),
         _ => None,
     }
 }

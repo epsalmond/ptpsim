@@ -3,8 +3,8 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    ActionVerb, CameraManifest, ConfigStore, ImagesPushed, ManufacturerDefaults, PropView,
-    StepParam, ValuePolicy, VersionScheme,
+    ActionVerb, CameraManifest, ConfigStore, ImagesPushed, ManufacturerDefaults, Predicate,
+    PropView, StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -884,6 +884,23 @@ fn app_autofocus_actions_lock_await_and_release() {
             assert_eq!(then_poll.as_deref(), Some("0xd209")); // hybrid: event then one read
         }
         other => panic!("expected an event source, got {other:?}"),
+    }
+    match &aw.until {
+        Predicate::Any { any } => {
+            assert!(
+                any.iter().any(
+                    |p| matches!(p, Predicate::Leaf(l) if l.prop == "0xd209" && l.eq == Some(1))
+                ),
+                "AF lock treats 0xd209=1 as terminal locked"
+            );
+            assert!(
+                any.iter().any(
+                    |p| matches!(p, Predicate::Leaf(l) if l.prop == "0xd209" && l.eq == Some(2))
+                ),
+                "AF lock treats 0xd209=2 as terminal failed"
+            );
+        }
+        other => panic!("expected AF terminal predicate to be any(locked, failed), got {other:?}"),
     }
     assert!(lock.steps.iter().all(camera_config::Step::is_well_formed));
 

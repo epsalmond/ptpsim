@@ -607,6 +607,30 @@ fn client_derived_friendly_name_defers_the_init_packet() {
     // 82-byte packet before #109). usb declares no init shape → None.
     assert!(s.connection_init("app".into()).is_none());
     assert!(s.connection_init("usb".into()).is_none());
+
+    let init = s
+        .connection_init_with_runtime(
+            "app".into(),
+            vec![KeyValue {
+                key: "terminalName".into(),
+                value: "iphone".into(),
+            }],
+        )
+        .expect("runtime terminalName assembles app init packet");
+    assert_eq!(init.friendly_name, "iphone");
+    assert_eq!(init.name_field_byte_count, 26);
+    assert_eq!(
+        init.guid,
+        vec![
+            0xf2, 0xe4, 0x53, 0x8f, 0xad, 0xa5, 0x48, 0x5d, 0x87, 0xb2, 0x7f, 0x0b, 0xd3, 0xd5,
+            0xde, 0xd0
+        ]
+    );
+    assert_eq!(init.tail.len(), 28);
+    assert_eq!(init.packet.len(), 82);
+    assert!(s
+        .connection_init_with_runtime("app".into(), vec![])
+        .is_none());
 }
 
 #[test]
@@ -678,6 +702,19 @@ fn autofocus_lock_action_surfaces_the_event_source_recipe() {
     assert!(s
         .action("wireless-tether".into(), ActionVerb::AutofocusLock)
         .is_none());
+}
+
+#[test]
+fn camera_identity_surfaces_manifest_identity() {
+    let s = store();
+    let identity = s.camera_identity();
+    assert_eq!(identity.manufacturer, "FUJIFILM");
+    assert_eq!(identity.model, "GFX100 II");
+    assert_eq!(identity.firmware, "2.30");
+    assert!(identity
+        .identities
+        .iter()
+        .any(|kv| kv.key == "ptpDeviceName" && kv.value == "GFX100 II"));
 }
 
 #[test]

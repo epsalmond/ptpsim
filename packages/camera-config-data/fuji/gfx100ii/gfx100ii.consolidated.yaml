@@ -6929,8 +6929,11 @@ connections:
                 code: '0xc005'
                 thenPoll: '0xd209'
             until:
-              prop: '0xd209'
-              eq: 1
+              any:
+              - prop: '0xd209'
+                eq: 1
+              - prop: '0xd209'
+                eq: 2
             onEach: []
             timeoutMs: 5000
             intervalMs: 0
