@@ -19,6 +19,7 @@ when:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - 'ci/build-xcframework.sh'
       - 'ci/update-package-swift.sh'
       - '.woodpecker/xcframework.yml'
