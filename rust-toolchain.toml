@@ -1,0 +1,12 @@
+# Pin the Rust toolchain so an upstream `stable` release no longer silently
+# invalidates every CI cargo cache — a rustc version is baked into every
+# fingerprint, so an unpinned bump forces a full cold rebuild on every runner
+
+#
+# Bump this deliberately: it costs exactly one intended cold rebuild instead of
+# a surprise one every ~6 weeks. Keep it in step with the Dockerfile builder
+# base image (`rust:1.96.0-slim`) so the image build, the macOS xcframework
+# runner, and local dev all resolve to the same compiler.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]
