@@ -87,11 +87,16 @@ cd "${ROOT}"
 # in-tree target/ for local runs.
 TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT}/target}"
 
-echo "==> Building ${CRATE} for 4 Apple targets (profile: ${PROFILE})"
-for t in "${IOS_DEVICE_TARGET}" "${IOS_SIM_TARGET}" "${MACOS_ARM_TARGET}" "${MACOS_X86_TARGET}"; do
-    echo "  - ${t}"
-    cargo build -p "${CRATE}" --"${PROFILE}" --target "${t}"
-done
+# One invocation for all four targets (cargo accepts repeated --target since
+# 1.64): cargo's job scheduler then parallelizes across targets AND crates,
+# instead of the old serial loop that paid each target's link/codegen latency
+# end to end.
+echo "==> Building ${CRATE} for 4 Apple targets in one parallelized build (profile: ${PROFILE})"
+cargo build -p "${CRATE}" --"${PROFILE}" \
+    --target "${IOS_DEVICE_TARGET}" \
+    --target "${IOS_SIM_TARGET}" \
+    --target "${MACOS_ARM_TARGET}" \
+    --target "${MACOS_X86_TARGET}"
 
 # ---------------------------------------------------------------------------
 # Fat-combine the two macOS arches — xcframework wants one .a per platform
