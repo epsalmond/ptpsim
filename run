@@ -31,6 +31,10 @@ CONTROL_BIND="${PTPSIM_CONTROL_BIND:-127.0.0.1:8080}"
 
 CARGO_PROFILE="${PTPSIM_CARGO_PROFILE:-debug}"  # debug | release
 
+# Optional observer URL (#126): when set, the sim POSTs a camera-state snapshot here on change.
+# The client application dev panel hosts the receiver at .../state; unset = no callback.
+STATE_CALLBACK="${PTPSIM_STATE_CALLBACK:-}"
+
 # host:port of the command socket — what a PTP/IP client connects to.
 COMMAND_HOST="${COMMAND_BIND%:*}"
 COMMAND_PORT="${COMMAND_BIND##*:}"
@@ -82,6 +86,9 @@ if [[ -d "$LIVEVIEW_DIR" ]]; then
 else
   echo "Note: live-view dir not found ($LIVEVIEW_DIR); serving without live-view frames."
 fi
+if [[ -n "$STATE_CALLBACK" ]]; then
+  run_args+=(--state-callback "$STATE_CALLBACK")
+fi
 
 echo
 echo "Starting ptpsim camera simulator"
@@ -89,6 +96,7 @@ echo "  profile:    $PROFILE"
 echo "  manifest:   $MANIFEST"
 echo "  media-root: $MEDIA_ROOT"
 echo "  control:    $HEALTH_URL"
+[[ -n "$STATE_CALLBACK" ]] && echo "  state →     $STATE_CALLBACK"
 echo "  >> Connect a PTP/IP network camera to ${COMMAND_HOST}:${COMMAND_PORT} <<"
 echo
 exec "$BIN" "${run_args[@]}"
