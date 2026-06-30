@@ -178,7 +178,10 @@ connections:
           - { sendOp: "0x9026", params: [{ runtime: afArea }] }
           - awaitUntil:
               source: { event: { code: "0xc005", thenPoll: "0xd209" } }
-              until: { prop: "0xd209", eq: 1 }   # 0xD209 S1LockColor: 1 = locked (2 = failed)
+              until:
+                any:
+                  - { prop: "0xd209", eq: 1 }   # 0xD209 S1LockColor: 1 = locked
+                  - { prop: "0xd209", eq: 2 }   # 2 = AF failed, still a terminal focus result
               timeoutMs: 5000
         evidence: [iosLiveControls, docLiveControls]
       autofocusRelease:
