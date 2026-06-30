@@ -28,6 +28,9 @@ steps:
   - name: workspace
     # ci-rust (ci/images/ci-rust/Dockerfile) bakes rustfmt/clippy + gh.
 
+    # Always re-pull: a rebuilt ci-rust:latest must not be shadowed by a stale
+    # locally-cached tag (Woodpecker only pulls absent images by default).
+    pull: true
     # Path filter: rust sources + the data/fixture packages the tests read.
     # Doc-only changes skip the whole build+test.
     # Must trigger whenever ANY step that `depends_on: [workspace]` triggers
@@ -72,14 +75,16 @@ steps:
   - name: image
     image: woodpeckerci/plugin-docker-buildx
     privileged: true
+    # pull: a rebuilt plugin/base image is never shadowed by a stale local copy.
+    pull: true
     depends_on: [workspace]
-    # Inner docker root on /data (same rationale as ci-images.yml): room for
-    # the two-platform build, and the inner daemon's state persists across
-    # runs — local layer cache on top of the registry cache_images.
-    volumes:
-      - /data/ci-cache/ptpsim/dind-image:/dind
+    # Ephemeral dind (no persistent /dind volume): a force-killed run can't leave
+    # a stale buildx `builder` behind to wedge the next build's `buildx create`
+    # with "buildkitd.sock: connection refused" (the plugin takes no pre-step
+    # `docker buildx rm` command). Cross-run layer caching still comes from the
+    # registry cache_images below — the local /dind cache was only an extra on
+    # top, and it's what persisted the zombie builder across the kill.
     settings:
-      storage_path: /dind
       registry: ${LOCAL_DOCKER_REGISTRY}
       repo: ${LOCAL_DOCKER_REGISTRY}/ptpsim
       # Registry resolution inside steps rides the traefik network alias on
@@ -160,6 +165,9 @@ steps:
     # cross-toolchain + cargo-ndk + gh on top of cimg's SDK/NDK and runs as
     # root — no per-run toolchain installs, no uid-3434 ownership dance.
 
+    # Always re-pull: a rebuilt ci-android:latest (e.g. when kotlinc was added)
+    # must not be shadowed by a stale locally-cached tag.
+    pull: true
     depends_on: [workspace]
     volumes:
       - /data/ci-cache/ptpsim/android:/ci-cache
@@ -197,6 +205,8 @@ steps:
   - name: python-wheel
     # ci-rust bakes git/gh and the /opt/wheelvenv build deps.
 
+    # Always re-pull: don't run on a stale locally-cached ci-rust:latest.
+    pull: true
     depends_on: [workspace]
     volumes:
       - /data/ci-cache/ptpsim/wheel:/ci-cache
