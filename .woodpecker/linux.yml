@@ -30,15 +30,25 @@ steps:
 
     # Path filter: rust sources + the data/fixture packages the tests read.
     # Doc-only changes skip the whole build+test.
+    # Must trigger whenever ANY step that `depends_on: [workspace]` triggers
+    # (image / android-libs / python-wheel) — else that step references a
+    # filtered-out `workspace` and Woodpecker aborts the whole pipeline with
+    # "depends on unknown step 'workspace'". So this path set is the UNION of
+    # the dependents' paths plus the test inputs.
     when:
       - path:
           - 'crates/**'
           - 'services/**'
           - 'tools/camera-simctl/**'
           - 'packages/camera-config-data/**'
+          - 'packages/camera-protocol-python/**'
           - 'packages/fixtures/**'
           - 'Cargo.toml'
           - 'Cargo.lock'
+          - 'rust-toolchain.toml'
+          - 'Dockerfile'
+          - 'ci/build-android.sh'
+          - 'ci/build-python-wheel.sh'
           - '.woodpecker/linux.yml'
     volumes:
       - /data/ci-cache/ptpsim/workspace:/ci-cache
@@ -100,6 +110,7 @@ steps:
         - 'packages/fixtures/**'
         - 'Cargo.toml'
         - 'Cargo.lock'
+        - 'rust-toolchain.toml'
         - 'Dockerfile'
         - '.woodpecker/linux.yml'
 
@@ -174,6 +185,7 @@ steps:
         - 'crates/**'
         - 'Cargo.toml'
         - 'Cargo.lock'
+        - 'rust-toolchain.toml'
         - 'ci/build-android.sh'
         - '.woodpecker/linux.yml'
 
@@ -208,6 +220,7 @@ steps:
         - 'crates/**'
         - 'Cargo.toml'
         - 'Cargo.lock'
+        - 'rust-toolchain.toml'
         - 'packages/camera-protocol-python/**'
         - 'ci/build-python-wheel.sh'
         - '.woodpecker/linux.yml'
