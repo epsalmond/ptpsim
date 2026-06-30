@@ -95,6 +95,7 @@ fn service_drives_image_import_over_tcp() {
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
+            state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -189,6 +190,7 @@ properties: {}
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
+            state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -301,6 +303,7 @@ fn service_streams_get_object_in_bounded_chunks() {
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
+            state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -419,6 +422,7 @@ properties:
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
+            state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -525,6 +529,7 @@ properties:
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: Some(lv_dir.clone()),
+            state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -603,6 +608,7 @@ async fn bind_rejects_unsupported_manifest_schema() {
         event_bind: "127.0.0.1:0".parse().unwrap(),
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
+        state_callback: None,
     };
     let err = match Server::bind(config).await {
         Err(e) => e,
@@ -631,6 +637,7 @@ async fn idle_control_connection_does_not_block_healthz() {
         event_bind: "127.0.0.1:0".parse().unwrap(),
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
+        state_callback: None,
     };
     let server = Server::bind(config).await.unwrap();
     let ctl = server.control_addr();
@@ -684,6 +691,7 @@ async fn bind_teardown_loop_with_live_connections_is_clean() {
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
+            state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -742,6 +750,7 @@ async fn idle_liveview_disconnects_are_reaped() {
         event_bind: "127.0.0.1:0".parse().unwrap(),
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
+        state_callback: None,
     };
     let server = Server::bind(config).await.unwrap();
     let lv = server.liveview_addr();
@@ -782,6 +791,7 @@ fn unarmed_engine_drops_init_command_request() {
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
+            state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -834,6 +844,7 @@ fn mismatched_friendly_name_is_dropped_a_matching_one_is_acked() {
             event_bind: "127.0.0.1:0".parse().unwrap(),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
+            state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
@@ -878,5 +889,104 @@ fn mismatched_friendly_name_is_dropped_a_matching_one_is_acked() {
 
     let _ = shutdown_tx.send(());
     rt.block_on(handle).unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Return the POST body once the buffer holds full headers + the declared
+/// Content-Length, else None (keep reading).
+fn http_body_if_complete(buf: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(buf).ok()?;
+    let split = s.find("\r\n\r\n")?;
+    let body = &s[split + 4..];
+    let clen: usize = s[..split]
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("Content-Length:")
+                .or_else(|| l.strip_prefix("content-length:"))
+        })
+        .and_then(|v| v.trim().parse().ok())?;
+    (body.len() >= clen).then(|| body[..clen].to_string())
+}
+
+/// #126: with `--state-callback` set, a state-changing op POSTs a JSON snapshot
+/// of camera state to the observer URL. Also confirms the responder keeps
+/// serving when the observer is the only HTTP party (fire-and-forget).
+#[test]
+fn state_callback_posts_camera_state_on_change() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (body_tx, body_rx) = std::sync::mpsc::channel::<String>();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        // Observer: accept one POST, hand its JSON body to the test thread.
+        let receiver = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let recv_addr = receiver.local_addr().unwrap();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if let Ok((mut sock, _)) = receiver.accept().await {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while let Ok(n) = sock.read(&mut chunk).await {
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(body) = http_body_if_complete(&buf) {
+                        let _ = sock
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                        let _ = body_tx.send(body);
+                        break;
+                    }
+                }
+            }
+        });
+
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            manifest_yaml: MANIFEST.into(),
+            media_root: root.clone(),
+            command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: Some(format!("http://{recv_addr}/state")),
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (cmd, tx, h)
+    });
+
+    // Drive: init handshake + OpenSession (flips session_open=true and the phase).
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [1; 16],
+        friendly_name: "smoke".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    let _ = read_frame(&mut s); // InitCommandAck
+    write_frame(&mut s, &op(0x1002, 1, vec![1]));
+    read_ok(&mut s);
+
+    // The push is debounced (~150ms); wait for the observer to receive it.
+    let body = body_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("observer should receive a state POST after OpenSession");
+    assert!(body.contains("\"phase\":\"sessionOpen\""), "body: {body}");
+    assert!(body.contains("\"session_open\":true"), "body: {body}");
+
+    // The responder is still alive after the fire-and-forget push.
+    write_frame(&mut s, &op(0x1001, 2, vec![]));
+    let di = ptp_core::DeviceInfo::decode(&read_data_reply(&mut s)).unwrap();
+    assert_eq!(di.model, "GFX100 II");
+
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
     let _ = std::fs::remove_dir_all(root);
 }

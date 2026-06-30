@@ -20,9 +20,10 @@ use ptp_core::{EventPacket, InitCommandAck, OperationRequest, PtpCodec, PtpIpPac
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 pub mod control;
+mod state_callback;
 
 #[derive(Clone)]
 pub struct Config {
@@ -42,6 +43,10 @@ pub struct Config {
     /// Directory of JPEG frames to loop on the live-view socket (sorted by
     /// filename, gated on Phase::Streaming). None / empty dir => no frames.
     pub liveview_dir: Option<std::path::PathBuf>,
+    /// Optional observer URL (#126). When `Some`, the service POSTs a JSON
+    /// snapshot of camera state to it on every change (debounced, fire-and-
+    /// forget). `http://host[:port][/path]`; invalid URLs are logged and ignored.
+    pub state_callback: Option<String>,
 }
 
 /// Live-view frame pacing (~30 fps).
@@ -169,6 +174,11 @@ impl Server {
         // capture, so the subscriber is live when the completion fires.
         let (event_tx, _) = broadcast::channel::<u16>(16);
 
+        // #126 state-callback: one shared notify the command loop bumps after
+        // every op. Cheap when nobody listens; the single push task (spawned
+        // below only if --state-callback parses) consumes it, debounces, and POSTs.
+        let state_dirty = Arc::new(Notify::new());
+
         // Per-connection tasks live in a JoinSet per accept loop (audit in
         // docs/internal-async-notes.md): the `Some(_) = join_next()` arm reaps
         // finished tasks on a long-lived server, and JoinSet aborts everything
@@ -178,6 +188,7 @@ impl Server {
         let command_loop = {
             let engine = engine.clone();
             let event_tx = event_tx.clone();
+            let state_dirty = state_dirty.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -187,8 +198,9 @@ impl Server {
                             if let Ok((stream, _)) = accepted {
                                 let engine = engine.clone();
                                 let event_tx = event_tx.clone();
+                                let state_dirty = state_dirty.clone();
                                 conns.spawn(async move {
-                                    let _ = handle_command_conn(stream, engine, event_tx).await;
+                                    let _ = handle_command_conn(stream, engine, event_tx, state_dirty).await;
                                 });
                             }
                         }
@@ -272,6 +284,25 @@ impl Server {
                 }
             }
         };
+
+        // #126: spawn the single state-callback push task if a valid URL was
+        // given. Parsed up front; an invalid URL is logged once and ignored
+        // (never fatal). It ends on the shutdown broadcast like the loops.
+        if let Some(url) = config.state_callback.as_deref() {
+            match state_callback::parse_url(url) {
+                Some(target) => {
+                    tokio::spawn(state_callback::state_callback_loop(
+                        state_dirty.clone(),
+                        engine.clone(),
+                        target,
+                        shutdown_tx.subscribe(),
+                    ));
+                }
+                None => {
+                    tracing::warn!(url, "invalid --state-callback URL; state callback disabled")
+                }
+            }
+        }
 
         tokio::select! {
             _ = shutdown => {}
@@ -359,6 +390,7 @@ async fn handle_command_conn(
     mut stream: TcpStream,
     engine: Arc<Mutex<Engine>>,
     event_tx: broadcast::Sender<u16>,
+    state_dirty: Arc<Notify>,
 ) -> std::io::Result<()> {
     // 1. Standard-framed init handshake.
     let Some(first) = read_frame(&mut stream).await? else {
@@ -414,6 +446,9 @@ async fn handle_command_conn(
             // the op that produced it; forward (broadcast, non-blocking) outside.
             (reply, e.drain_events())
         };
+        // #126: the one hook — nudge the state-callback task that the camera
+        // state may have changed. Cheap; a no-op when no push task is running.
+        state_dirty.notify_one();
         for code in events {
             // Err = no event-socket client connected; the push is dropped (the
             // completion is only meaningful to a listening client).

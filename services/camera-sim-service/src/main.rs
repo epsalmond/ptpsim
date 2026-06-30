@@ -41,6 +41,12 @@ struct Args {
     /// InitiateOpenCapture), matching a real camera.
     #[arg(long)]
     liveview_dir: Option<PathBuf>,
+    /// Optional observer URL. When set, the service POSTs a JSON snapshot of
+    /// camera state (phase, session, device-property map, media object count) to
+    /// this URL whenever it changes — fire-and-forget, debounced, never blocks
+    /// the responder. e.g. the client application dev panel: http://127.0.0.1:8770/state
+    #[arg(long)]
+    state_callback: Option<String>,
 }
 
 #[tokio::main]
@@ -65,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         event_bind: args.event_bind,
         control_bind: args.control_bind,
         liveview_dir: args.liveview_dir,
+        state_callback: args.state_callback,
     };
 
     let server = Server::bind(config).await?;
