@@ -1822,6 +1822,16 @@ properties:
       '800': '800'
       '8000': '8000'
       '80000': '80000'
+    valueRows:
+    - label: '6400'
+      raw: 6400
+    - label: '12800'
+      raw: 12800
+    valueEncoding:
+      sentinel:
+        mask: 2147483648
+        meaning: autoCeiling
+        labelPrefix: AUTO
     evidence:
     - iosLiveControls
     - docLiveControls

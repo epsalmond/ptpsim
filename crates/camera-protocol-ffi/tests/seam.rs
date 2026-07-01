@@ -292,6 +292,64 @@ fn property_value_width_resolves_from_manifest_type() {
 }
 
 #[test]
+fn property_value_codec_crosses_the_ffi_seam() {
+    let s = store();
+    let decoded = s
+        .decode_property(0xd02a, 0x8000_1900)
+        .expect("auto ISO decodes through the manifest");
+    assert_eq!(decoded.raw, 0x8000_1900);
+    assert_eq!(decoded.label, "AUTO 6400");
+    assert_eq!(
+        s.encode_property(0xd02a, "AUTO 6400".into())
+            .expect("auto ISO encodes"),
+        vec![0x00, 0x19, 0x00, 0x80]
+    );
+
+    let iso = s
+        .properties()
+        .into_iter()
+        .find(|p| p.code == 0xd02a)
+        .expect("still ISO in catalog");
+    assert!(iso.value_rows.iter().any(|row| row.label == "6400"));
+    let sentinel = iso
+        .value_encoding
+        .and_then(|enc| enc.sentinel)
+        .expect("sentinel metadata crosses the seam");
+    assert_eq!(sentinel.mask, 0x8000_0000);
+    assert_eq!(sentinel.meaning.as_deref(), Some("autoCeiling"));
+    assert_eq!(sentinel.label_prefix, "AUTO");
+}
+
+#[test]
+fn property_sentinel_codec_does_not_require_legacy_label_rows() {
+    let yaml = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Body, firmware: "1.0" }
+properties:
+  "0xd02a":
+    name: stillIso
+    type: u32
+    access: readWrite
+    valueRows:
+      - { label: "6400", raw: 6400 }
+    valueEncoding:
+      sentinel: { mask: 2147483648, meaning: autoCeiling, labelPrefix: AUTO }
+"#;
+    let s = ConfigStore::from_bundle(yaml.to_string(), None).expect("bundle loads");
+    assert_eq!(
+        s.decode_property(0xd02a, 0x8000_1900)
+            .expect("sentinel decode")
+            .label,
+        "AUTO 6400"
+    );
+    assert_eq!(
+        s.encode_property(0xd02a, "AUTO 6400".into())
+            .expect("sentinel encode"),
+        vec![0x00, 0x19, 0x00, 0x80]
+    );
+}
+
+#[test]
 fn property_payload_surfaces_d212_record_stream() {
     let s = store();
     // 0xD212 live-status is a record stream the app walks; the descriptor + its
