@@ -280,7 +280,7 @@ impl Engine {
         // arming immediate writes or deferred (poll-settled) transitions (§5.5
         // AF stub). Generic: the behavior is manifest data, not a brand branch.
         if reply_is_ok(&reply) {
-            self.apply_op_effects(req.code);
+            self.apply_op_effects(req.code, &req.params);
             self.apply_op_emits(req.code);
         }
         reply
@@ -288,7 +288,7 @@ impl Engine {
 
     /// Arm the manifest-declared [`OpEffect`]s of operation `code` against state.
     /// No-op for ops without effects (the common case).
-    fn apply_op_effects(&mut self, code: u16) {
+    fn apply_op_effects(&mut self, code: u16, params: &[u32]) {
         let Some(opdef) = self.manifest.operation(code) else {
             return;
         };
@@ -296,11 +296,23 @@ impl Engine {
             return;
         }
         // Snapshot (target code, value, settle) under the immutable manifest
-        // borrow, then mutate state.
+        // borrow, then mutate state. A `fromParam` effect derives its value from
+        // this op's request params (§5.5: 0x9026's packed AF-area -> 0xD17C); a
+        // missing param index drops just that effect.
         let armed: Vec<(u16, i64, u32)> = opdef
             .effects
             .iter()
-            .filter_map(|e| parse_hex_code(&e.set_prop).map(|c| (c, e.value, e.settle_after_polls)))
+            .filter_map(|e| {
+                let target = parse_hex_code(&e.set_prop)?;
+                let value = match &e.from_param {
+                    Some(src) => {
+                        let raw = *params.get(src.index)? as u64;
+                        ((raw >> src.shift) & src.mask.unwrap_or(u64::MAX)) as i64
+                    }
+                    None => e.value,
+                };
+                Some((target, value, e.settle_after_polls))
+            })
             .collect();
         for (target, value, settle) in armed {
             let datatype = datatype_of(
@@ -536,8 +548,8 @@ mod tests {
         }
     }
 
-    /// Read a GetDevicePropValue reply back to an i64 (u16 width here).
-    fn poll(engine: &mut Engine, code: u16, tid: u32) -> i64 {
+    /// Read a GetDevicePropValue reply back to an i64, decoding at `dt` width.
+    fn poll_dt(engine: &mut Engine, code: u16, tid: u32, dt: u16) -> i64 {
         let reply = engine.on_operation(
             &req(op::GET_DEVICE_PROP_VALUE, tid, vec![code as u32]),
             None,
@@ -546,8 +558,17 @@ mod tests {
             panic!("expected data reply for {code:#06x}");
         };
         let mut r = ptp_core::Reader::new(&data);
-        value_to_i64(&PropValue::decode(&mut r, ptp_core::codes::datatype_code::UINT16).unwrap())
-            .unwrap()
+        value_to_i64(&PropValue::decode(&mut r, dt).unwrap()).unwrap()
+    }
+
+    /// Read a GetDevicePropValue reply back to an i64 (u16 width).
+    fn poll(engine: &mut Engine, code: u16, tid: u32) -> i64 {
+        poll_dt(engine, code, tid, ptp_core::codes::datatype_code::UINT16)
+    }
+
+    /// Same, decoding a u32 property (e.g. 0xD17C S1LockAreaState).
+    fn poll_u32(engine: &mut Engine, code: u16, tid: u32) -> i64 {
+        poll_dt(engine, code, tid, ptp_core::codes::datatype_code::UINT32)
     }
 
     /// §5.5 AF stub: 0x9026 arms a deferred 0xd209 → 1 transition visible on the
@@ -648,5 +669,104 @@ operations:
         assert!(!e.take_event(0xc005), "no event queued on a non-OK reply");
         // drain_events also sees an empty queue.
         assert!(e.drain_events().is_empty());
+    }
+
+    /// #96: a `fromParam` effect copies the op's request param into the target
+    /// prop — 0x9026's packed AF-area (params[0]) into 0xD17C S1LockAreaState,
+    /// immediately (settleAfterPolls defaults 0). This is the real consumer that
+    /// exercises the param-derived value the §5.5 stub previously left unmodeled.
+    #[test]
+    fn from_param_effect_copies_packed_request_param() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    effects:
+      - { setProp: "0xd17c", fromParam: { index: 0 } }
+properties:
+  "0xd17c": { name: s1Lock, type: u32, access: readOnly }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        e.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        // Packed AF-area 0x04030504 (aspW·aspH·col·row) from the tap request.
+        assert!(reply_is_ok(
+            &e.on_operation(&req(0x9026, 2, vec![0x0403_0504]), None)
+        ));
+        assert_eq!(
+            poll_u32(&mut e, 0xd17c, 3),
+            0x0403_0504,
+            "0xD17C mirrors the packed request param"
+        );
+    }
+
+    /// #96: the fromParam bit-slice (shift then mask) pulls a packed sub-field.
+    /// From 0x04030504, `>> 8 & 0xFF` selects the col byte (0x05). Grammar-level —
+    /// 0x9026 itself uses the identity form, but the slice spec must work.
+    #[test]
+    fn from_param_effect_applies_shift_and_mask() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    effects:
+      - { setProp: "0xd17c", fromParam: { index: 0, shift: 8, mask: 0xff } }
+properties:
+  "0xd17c": { name: s1Lock, type: u32, access: readOnly }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        e.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        e.on_operation(&req(0x9026, 2, vec![0x0403_0504]), None);
+        assert_eq!(
+            poll_u32(&mut e, 0xd17c, 3),
+            0x05,
+            "shift+mask extracts the col byte"
+        );
+    }
+
+    /// #96: a fromParam effect whose index is out of range drops just that effect
+    /// (no panic); a sibling fixed effect still applies.
+    #[test]
+    fn from_param_effect_skips_when_param_absent() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x9026":
+    name: LockS1Lock
+    effects:
+      - { setProp: "0xd17c", fromParam: { index: 3 } }
+      - { setProp: "0xd209", value: 1 }
+properties:
+  "0xd17c": { name: s1Lock, type: u32, access: readOnly }
+  "0xd209": { name: s1LockColor, type: u16, access: readOnly }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        e.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        // No params → index 3 is absent: the 0xd17c effect is skipped, but the
+        // sibling fixed 0xd209 effect still fires.
+        e.on_operation(&req(0x9026, 2, vec![]), None);
+        assert_eq!(
+            poll(&mut e, 0xd209, 3),
+            1,
+            "sibling fixed effect unaffected"
+        );
+        assert_eq!(
+            poll_u32(&mut e, 0xd17c, 4),
+            0,
+            "absent-param effect skipped (stays default 0)"
+        );
     }
 }
