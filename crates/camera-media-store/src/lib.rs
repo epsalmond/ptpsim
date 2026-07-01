@@ -3,7 +3,7 @@
 //! Responsibilities relevant to the simulator: root-confined (symlink-safe)
 //! traversal, stable object-handle assignment, `ObjectInfo` generation, bounded
 //! partial reads via [`ByteSource`] (never loading whole media files), the
-//! 32-bit wireless-transfer ceiling, and bounded RAF preview extraction.
+//! 32-bit wireless-transfer ceiling, and bounded RAF thumbnail extraction.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -38,7 +38,7 @@ pub enum MediaError {
     UnknownHandle(ObjectHandle),
     #[error("path escapes media root: {0}")]
     RootEscape(PathBuf),
-    #[error("no embedded preview found")]
+    #[error("no embedded thumbnail found")]
     NoPreview,
 }
 
@@ -329,12 +329,12 @@ impl MediaStore {
         })
     }
 
-    /// Extract a thumbnail. For RAF, scans a bounded prefix for the embedded
-    /// JPEG (SOI..EOI) and returns just that range. For JPEG, returns the file.
+    /// Extract a thumbnail. For RAF, returns the EXIF thumbnail embedded in
+    /// the RAF header preview JPEG. For JPEG, returns the file.
     pub fn thumbnail(&self, handle: ObjectHandle) -> Result<ByteSource, MediaError> {
         let e = self.entry(handle)?;
         match e.format {
-            fmt::RAF => extract_jpeg_preview(&e.path),
+            fmt::RAF => extract_raf_thumbnail(&e.path),
             format::EXIF_JPEG => Ok(ByteSource::FileRange {
                 path: e.path.clone(),
                 offset: 0,
@@ -344,6 +344,12 @@ impl MediaStore {
             _ => Ok(ByteSource::Generated { len: 0, seed: 0 }),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileSpan {
+    offset: u64,
+    len: u64,
 }
 
 fn format_of(path: &Path) -> u16 {
@@ -361,27 +367,222 @@ fn format_of(path: &Path) -> u16 {
     }
 }
 
-/// How far into a RAF we scan for the embedded JPEG preview before giving up.
-const PREVIEW_SCAN_LIMIT: u64 = 4 * 1024 * 1024;
+const RAF_HEADER_LEN: usize = 0x5c;
+const RAF_PREVIEW_OFFSET_AT: usize = 0x54;
+const RAF_PREVIEW_LENGTH_AT: usize = 0x58;
 
-fn extract_jpeg_preview(path: &Path) -> Result<ByteSource, MediaError> {
-    let mut f = File::open(path)?;
-    let scan = PREVIEW_SCAN_LIMIT.min(f.metadata()?.len());
-    let mut buf = vec![0u8; scan as usize];
-    let n = read_full(&mut f, &mut buf)?;
-    let buf = &buf[..n];
-    // JPEG SOI = FF D8, EOI = FF D9.
-    let soi = find(buf, &[0xFF, 0xD8]).ok_or(MediaError::NoPreview)?;
-    let eoi = find(&buf[soi..], &[0xFF, 0xD9]).ok_or(MediaError::NoPreview)? + soi + 2;
+fn extract_raf_thumbnail(path: &Path) -> Result<ByteSource, MediaError> {
+    let preview = raf_header_preview(path)?.ok_or(MediaError::NoPreview)?;
+    let thumbnail = jpeg_exif_thumbnail(path, preview)?.ok_or(MediaError::NoPreview)?;
     Ok(ByteSource::FileRange {
         path: path.to_path_buf(),
-        offset: soi as u64,
-        len: (eoi - soi) as u64,
+        offset: thumbnail.offset,
+        len: thumbnail.len,
     })
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
+fn raf_header_preview(path: &Path) -> Result<Option<FileSpan>, MediaError> {
+    let mut f = File::open(path)?;
+    let file_len = f.metadata()?.len();
+    if file_len < RAF_HEADER_LEN as u64 {
+        return Ok(None);
+    }
+    let header = read_at(&mut f, 0, RAF_HEADER_LEN)?;
+    if !header.starts_with(b"FUJIFILM") {
+        return Ok(None);
+    }
+
+    let offset = be_u32(&header[RAF_PREVIEW_OFFSET_AT..RAF_PREVIEW_OFFSET_AT + 4]) as u64;
+    let len = be_u32(&header[RAF_PREVIEW_LENGTH_AT..RAF_PREVIEW_LENGTH_AT + 4]) as u64;
+    if offset == 0 || len == 0 {
+        return Ok(None);
+    }
+    let end = offset.checked_add(len).ok_or(MediaError::NoPreview)?;
+    if end > file_len {
+        return Ok(None);
+    }
+    Ok(Some(FileSpan { offset, len }))
+}
+
+fn jpeg_exif_thumbnail(path: &Path, jpeg: FileSpan) -> Result<Option<FileSpan>, MediaError> {
+    let mut f = File::open(path)?;
+    if read_at(&mut f, jpeg.offset, 2)? != [0xff, 0xd8] {
+        return Ok(None);
+    }
+
+    let jpeg_end = jpeg
+        .offset
+        .checked_add(jpeg.len)
+        .ok_or(MediaError::NoPreview)?;
+    let mut pos = jpeg.offset + 2;
+    while pos + 4 <= jpeg_end {
+        let marker = read_at(&mut f, pos, 2)?;
+        if marker[0] != 0xff {
+            return Ok(None);
+        }
+        pos += 2;
+
+        let mut marker_id = marker[1];
+        while marker_id == 0xff && pos < jpeg_end {
+            marker_id = read_at(&mut f, pos, 1)?[0];
+            pos += 1;
+        }
+
+        if marker_id == 0xd9 || marker_id == 0xda {
+            return Ok(None);
+        }
+        if marker_id == 0x01 || (0xd0..=0xd7).contains(&marker_id) {
+            continue;
+        }
+        if pos + 2 > jpeg_end {
+            return Ok(None);
+        }
+
+        let len = u16::from_be_bytes(read_at(&mut f, pos, 2)?.try_into().unwrap()) as u64;
+        if len < 2 {
+            return Ok(None);
+        }
+        let data_offset = pos + 2;
+        let data_len = len - 2;
+        let next = data_offset
+            .checked_add(data_len)
+            .ok_or(MediaError::NoPreview)?;
+        if next > jpeg_end {
+            return Ok(None);
+        }
+
+        if marker_id == 0xe1 {
+            let data = read_at(&mut f, data_offset, data_len as usize)?;
+            if let Some(span) = exif_thumbnail_span(&data) {
+                let offset = data_offset
+                    .checked_add(span.offset)
+                    .ok_or(MediaError::NoPreview)?;
+                let end = offset.checked_add(span.len).ok_or(MediaError::NoPreview)?;
+                if end <= jpeg_end {
+                    return Ok(Some(FileSpan {
+                        offset,
+                        len: span.len,
+                    }));
+                }
+            }
+        }
+
+        pos = next;
+    }
+    Ok(None)
+}
+
+fn read_at(f: &mut File, offset: u64, len: usize) -> Result<Vec<u8>, MediaError> {
+    f.seek(SeekFrom::Start(offset))?;
+    let mut buf = vec![0u8; len];
+    let n = read_full(f, &mut buf)?;
+    if n != len {
+        return Err(MediaError::NoPreview);
+    }
+    Ok(buf)
+}
+
+fn exif_thumbnail_span(app1_data: &[u8]) -> Option<FileSpan> {
+    let tiff = app1_data.strip_prefix(b"Exif\0\0")?;
+    let endian = TiffEndian::from_header(tiff)?;
+    if tiff_u16(tiff, 2, endian)? != 42 {
+        return None;
+    }
+
+    let ifd0 = tiff_u32(tiff, 4, endian)? as usize;
+    let ifd1 = ifd_next(tiff, ifd0, endian)?;
+    let (thumb_offset, thumb_len) = ifd_jpeg_thumbnail(tiff, ifd1, endian)?;
+    if thumb_len == 0 {
+        return None;
+    }
+    let thumb_end = thumb_offset.checked_add(thumb_len)?;
+    let thumb = tiff.get(thumb_offset..thumb_end)?;
+    if !thumb.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+
+    Some(FileSpan {
+        offset: (6 + thumb_offset) as u64,
+        len: thumb_len as u64,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum TiffEndian {
+    Little,
+    Big,
+}
+
+impl TiffEndian {
+    fn from_header(tiff: &[u8]) -> Option<Self> {
+        match tiff.get(0..2)? {
+            b"II" => Some(Self::Little),
+            b"MM" => Some(Self::Big),
+            _ => None,
+        }
+    }
+}
+
+fn ifd_next(tiff: &[u8], ifd_offset: usize, endian: TiffEndian) -> Option<usize> {
+    let count = tiff_u16(tiff, ifd_offset, endian)? as usize;
+    let entries_end = ifd_offset
+        .checked_add(2)?
+        .checked_add(count.checked_mul(12)?)?;
+    let next = tiff_u32(tiff, entries_end, endian)? as usize;
+    (next != 0).then_some(next)
+}
+
+fn ifd_jpeg_thumbnail(
+    tiff: &[u8],
+    ifd_offset: usize,
+    endian: TiffEndian,
+) -> Option<(usize, usize)> {
+    let count = tiff_u16(tiff, ifd_offset, endian)? as usize;
+    let mut thumb_offset = None;
+    let mut thumb_len = None;
+    for i in 0..count {
+        let entry = ifd_offset.checked_add(2)?.checked_add(i.checked_mul(12)?)?;
+        let tag = tiff_u16(tiff, entry, endian)?;
+        match tag {
+            0x0201 => thumb_offset = Some(ifd_entry_u32(tiff, entry, endian)? as usize),
+            0x0202 => thumb_len = Some(ifd_entry_u32(tiff, entry, endian)? as usize),
+            _ => {}
+        }
+    }
+    Some((thumb_offset?, thumb_len?))
+}
+
+fn ifd_entry_u32(tiff: &[u8], entry: usize, endian: TiffEndian) -> Option<u32> {
+    let field_type = tiff_u16(tiff, entry + 2, endian)?;
+    let count = tiff_u32(tiff, entry + 4, endian)?;
+    if count != 1 {
+        return None;
+    }
+    match field_type {
+        3 => tiff_u16(tiff, entry + 8, endian).map(u32::from),
+        4 => tiff_u32(tiff, entry + 8, endian),
+        _ => None,
+    }
+}
+
+fn tiff_u16(tiff: &[u8], offset: usize, endian: TiffEndian) -> Option<u16> {
+    let bytes: [u8; 2] = tiff.get(offset..offset + 2)?.try_into().ok()?;
+    Some(match endian {
+        TiffEndian::Little => u16::from_le_bytes(bytes),
+        TiffEndian::Big => u16::from_be_bytes(bytes),
+    })
+}
+
+fn tiff_u32(tiff: &[u8], offset: usize, endian: TiffEndian) -> Option<u32> {
+    let bytes: [u8; 4] = tiff.get(offset..offset + 4)?.try_into().ok()?;
+    Some(match endian {
+        TiffEndian::Little => u32::from_le_bytes(bytes),
+        TiffEndian::Big => u32::from_be_bytes(bytes),
+    })
+}
+
+fn be_u32(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes(bytes.try_into().unwrap())
 }
 
 #[cfg(test)]
@@ -402,6 +603,54 @@ mod tests {
     fn write(path: &Path, bytes: &[u8]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         File::create(path).unwrap().write_all(bytes).unwrap();
+    }
+
+    fn jpeg_with_exif_thumbnail(thumbnail: &[u8], full_preview_marker: &[u8]) -> Vec<u8> {
+        let thumbnail_offset = 44u32;
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(b"II");
+        tiff.extend_from_slice(&42u16.to_le_bytes());
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+        tiff.extend_from_slice(&0u16.to_le_bytes());
+        tiff.extend_from_slice(&14u32.to_le_bytes());
+        tiff.extend_from_slice(&2u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0201u16.to_le_bytes());
+        tiff.extend_from_slice(&4u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&thumbnail_offset.to_le_bytes());
+        tiff.extend_from_slice(&0x0202u16.to_le_bytes());
+        tiff.extend_from_slice(&4u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&(thumbnail.len() as u32).to_le_bytes());
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(tiff.len(), thumbnail_offset as usize);
+        tiff.extend_from_slice(thumbnail);
+
+        let mut app1_data = b"Exif\0\0".to_vec();
+        app1_data.extend_from_slice(&tiff);
+        let app1_len = (app1_data.len() + 2) as u16;
+        let comment_len = (full_preview_marker.len() + 2) as u16;
+
+        let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+        jpeg.extend_from_slice(&app1_len.to_be_bytes());
+        jpeg.extend_from_slice(&app1_data);
+        jpeg.extend_from_slice(&[0xff, 0xfe]);
+        jpeg.extend_from_slice(&comment_len.to_be_bytes());
+        jpeg.extend_from_slice(full_preview_marker);
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        jpeg
+    }
+
+    fn raf_with_header_preview(preview: &[u8]) -> Vec<u8> {
+        let preview_offset = 0x94usize;
+        let mut raf = vec![0u8; preview_offset];
+        raf[0..b"FUJIFILMCCD-RAW".len()].copy_from_slice(b"FUJIFILMCCD-RAW");
+        raf[0x3c..0x40].copy_from_slice(b"0201");
+        raf[0x54..0x58].copy_from_slice(&(preview_offset as u32).to_be_bytes());
+        raf[0x58..0x5c].copy_from_slice(&(preview.len() as u32).to_be_bytes());
+        raf.extend_from_slice(preview);
+        raf.extend_from_slice(b"raw sensor data");
+        raf
     }
 
     #[test]
@@ -477,17 +726,12 @@ mod tests {
     }
 
     #[test]
-    fn raf_preview_is_bounded_range() {
+    fn raf_thumbnail_uses_exif_thumbnail_not_header_preview() {
         let root = tmpdir();
-        // RAF: header, embedded JPEG, trailer.
-        let mut raf = Vec::new();
-        raf.extend_from_slice(b"FUJIFILMCCD-RAW header padding............");
-        let jpeg_off = raf.len();
-        raf.extend_from_slice(&[0xFF, 0xD8]); // SOI
-        raf.extend_from_slice(b"PREVIEWDATA");
-        raf.extend_from_slice(&[0xFF, 0xD9]); // EOI
-        let jpeg_end = raf.len();
-        raf.extend_from_slice(b"....raw sensor data trailer....");
+        let thumbnail = b"\xff\xd8TINY-THUMB\xff\xd9";
+        let full_marker = b"FULL-HEADER-PREVIEW";
+        let preview = jpeg_with_exif_thumbnail(thumbnail, full_marker);
+        let raf = raf_with_header_preview(&preview);
         write(&root.join("DCIM/100_FUJI/DSCF9.RAF"), &raf);
 
         let mut store = MediaStore::open(&root).unwrap();
@@ -496,16 +740,21 @@ mod tests {
             parent: None,
             format: Some(fmt::RAF),
         })[0];
+        let preview_span = raf_header_preview(&root.join("DCIM/100_FUJI/DSCF9.RAF"))
+            .unwrap()
+            .expect("RAF header preview");
+        assert_eq!(preview_span.offset, 0x94);
+        assert_eq!(preview_span.len, preview.len() as u64);
+
         let src = store.thumbnail(h).unwrap();
         if let ByteSource::FileRange { offset, len, .. } = &src {
-            assert_eq!(*offset, jpeg_off as u64);
-            assert_eq!(*len, (jpeg_end - jpeg_off) as u64);
+            assert_ne!(*offset, preview_span.offset);
+            assert_eq!(*len, thumbnail.len() as u64);
         } else {
             panic!("expected a bounded FileRange");
         }
         let bytes = src.read().unwrap();
-        assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
-        assert_eq!(&bytes[bytes.len() - 2..], &[0xFF, 0xD9]);
+        assert_eq!(bytes, thumbnail);
         std::fs::remove_dir_all(&root).ok();
     }
 
