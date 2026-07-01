@@ -30,6 +30,8 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
+    const RAF_THUMBNAIL: &[u8] = b"\xff\xd8TINY-THUMB\xff\xd9";
+
     const MANIFEST: &str = r#"
 schema: camera-config/v1
 camera:
@@ -91,14 +93,60 @@ properties:
         let dir = root.join("DCIM/100_FUJI");
         std::fs::create_dir_all(&dir).unwrap();
         write(&dir.join("DSCF0001.JPG"), b"\xFF\xD8JPEGBODY\xFF\xD9");
-        // RAF with embedded preview.
-        let mut raf = b"FUJIFILMheader".to_vec();
-        raf.extend_from_slice(&[0xFF, 0xD8]);
-        raf.extend_from_slice(b"PREVIEW");
-        raf.extend_from_slice(&[0xFF, 0xD9]);
-        raf.extend_from_slice(b"rawtail");
+        let raf = raf_with_header_preview(&jpeg_with_exif_thumbnail(
+            RAF_THUMBNAIL,
+            b"FULL-HEADER-PREVIEW",
+        ));
         write(&dir.join("DSCF0002.RAF"), &raf);
         root
+    }
+
+    fn jpeg_with_exif_thumbnail(thumbnail: &[u8], full_preview_marker: &[u8]) -> Vec<u8> {
+        let thumbnail_offset = 44u32;
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(b"II");
+        tiff.extend_from_slice(&42u16.to_le_bytes());
+        tiff.extend_from_slice(&8u32.to_le_bytes());
+        tiff.extend_from_slice(&0u16.to_le_bytes());
+        tiff.extend_from_slice(&14u32.to_le_bytes());
+        tiff.extend_from_slice(&2u16.to_le_bytes());
+        tiff.extend_from_slice(&0x0201u16.to_le_bytes());
+        tiff.extend_from_slice(&4u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&thumbnail_offset.to_le_bytes());
+        tiff.extend_from_slice(&0x0202u16.to_le_bytes());
+        tiff.extend_from_slice(&4u16.to_le_bytes());
+        tiff.extend_from_slice(&1u32.to_le_bytes());
+        tiff.extend_from_slice(&(thumbnail.len() as u32).to_le_bytes());
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(tiff.len(), thumbnail_offset as usize);
+        tiff.extend_from_slice(thumbnail);
+
+        let mut app1_data = b"Exif\0\0".to_vec();
+        app1_data.extend_from_slice(&tiff);
+        let app1_len = (app1_data.len() + 2) as u16;
+        let comment_len = (full_preview_marker.len() + 2) as u16;
+
+        let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+        jpeg.extend_from_slice(&app1_len.to_be_bytes());
+        jpeg.extend_from_slice(&app1_data);
+        jpeg.extend_from_slice(&[0xff, 0xfe]);
+        jpeg.extend_from_slice(&comment_len.to_be_bytes());
+        jpeg.extend_from_slice(full_preview_marker);
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        jpeg
+    }
+
+    fn raf_with_header_preview(preview: &[u8]) -> Vec<u8> {
+        let preview_offset = 0x94usize;
+        let mut raf = vec![0u8; preview_offset];
+        raf[0..b"FUJIFILMCCD-RAW".len()].copy_from_slice(b"FUJIFILMCCD-RAW");
+        raf[0x3c..0x40].copy_from_slice(b"0201");
+        raf[0x54..0x58].copy_from_slice(&(preview_offset as u32).to_be_bytes());
+        raf[0x58..0x5c].copy_from_slice(&(preview.len() as u32).to_be_bytes());
+        raf.extend_from_slice(preview);
+        raf.extend_from_slice(b"raw sensor data");
+        raf
     }
 
     fn write(p: &Path, b: &[u8]) {
@@ -156,7 +204,7 @@ properties:
         let oi = ptp_core::ObjectInfo::decode(&oi_bytes).unwrap();
         assert!(oi.filename.ends_with(".JPG") || oi.filename.ends_with(".RAF"));
 
-        // Thumbnail of the RAF -> embedded JPEG (starts with SOI).
+        // Thumbnail of the RAF -> tiny EXIF thumbnail, not the full header preview.
         let raf = *handles
             .iter()
             .find(|h| {
@@ -168,7 +216,7 @@ properties:
             })
             .unwrap();
         let thumb = expect_data(e.on_operation(&op(0x100a, 5, vec![raf]), None));
-        assert_eq!(&thumb[0..2], &[0xFF, 0xD8]);
+        assert_eq!(thumb, RAF_THUMBNAIL);
 
         // Partial download of the first 4 bytes of the JPG.
         let jpg = *handles
