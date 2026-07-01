@@ -925,3 +925,26 @@ fn app_autofocus_actions_lock_await_and_release() {
     assert_eq!(release.steps.len(), 1);
     assert_eq!(release.steps[0].send_op.as_deref(), Some("0x9027"));
 }
+
+/// #101: the RAF embedded-JPEG locator parses from the media table — magic +
+/// big-endian offset/length at 0x54/0x58 (exiftool ProcessRAF / dcraw parse_fuji).
+/// The app reads this to GetPartialObject the embedded JPG; the sim only serves
+/// bytes and describes the layout here.
+#[test]
+fn raf_embedded_jpeg_locator_parses_from_the_media_table() {
+    use camera_config::model::Endian;
+    let m = gfx();
+    let media = m.media.as_ref().expect("media table present");
+    let raf = media.formats.get("0xb103").expect("RAF format row");
+    assert!(raf.is_raw);
+    let ej = raf
+        .embedded_jpeg
+        .as_ref()
+        .expect("RAF carries an embedded-JPEG locator");
+    assert_eq!(ej.magic, "FUJIFILMCCD-RAW");
+    assert_eq!(ej.offset_at, 0x54);
+    assert_eq!(ej.length_at, 0x58);
+    assert_eq!(ej.endian, Endian::Big);
+    // A non-RAW format has no locator.
+    assert!(media.formats["0x3801"].embedded_jpeg.is_none());
+}

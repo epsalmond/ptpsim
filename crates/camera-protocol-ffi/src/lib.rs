@@ -283,6 +283,21 @@ pub struct MediaFormatInfo {
     pub vendor: Option<String>,
     pub is_raw: bool,
     pub is_movie: bool,
+    /// Where this RAW format's embedded full-size JPEG lives (#101), so the app
+    /// can pull it with GetPartialObject. `None` for non-RAW / no embedded JPEG.
+    pub embedded_jpeg: Option<EmbeddedJpegInfo>,
+}
+
+/// Embedded-JPEG locator surfaced to the app (#101): verify `magic` at offset 0,
+/// then read a u32 JPEG start offset at `offset_at` and a u32 length at
+/// `length_at`, in the byte order `big_endian` selects. ptpsim only *describes*
+/// the layout; the app does the extraction from the bytes ptpsim serves.
+#[derive(uniffi::Record)]
+pub struct EmbeddedJpegInfo {
+    pub magic: String,
+    pub offset_at: u16,
+    pub length_at: u16,
+    pub big_endian: bool,
 }
 
 #[derive(uniffi::Enum)]
@@ -1230,6 +1245,12 @@ impl ConfigStore {
             vendor: f.vendor.clone(),
             is_raw: f.is_raw,
             is_movie: f.is_movie,
+            embedded_jpeg: f.embedded_jpeg.as_ref().map(|e| EmbeddedJpegInfo {
+                magic: e.magic.clone(),
+                offset_at: e.offset_at,
+                length_at: e.length_at,
+                big_endian: matches!(e.endian, cc::model::Endian::Big),
+            }),
         })
     }
 }

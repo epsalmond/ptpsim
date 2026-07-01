@@ -747,12 +747,24 @@ fn media_format_table_classifies_objects_through_ffi() {
     assert_eq!(raf.name, "raf");
     assert_eq!(raf.vendor.as_deref(), Some("fuji"));
     assert!(raf.is_raw && !raf.is_movie);
+    // #101: the embedded-JPEG locator reaches the app through the FFI, so it can
+    // GetPartialObject the embedded JPG (magic + big-endian offset/length @ 0x54/0x58).
+    let ej = raf
+        .embedded_jpeg
+        .as_ref()
+        .expect("RAF carries an embedded-JPEG locator");
+    assert_eq!(ej.magic, "FUJIFILMCCD-RAW");
+    assert_eq!(ej.offset_at, 0x54);
+    assert_eq!(ej.length_at, 0x58);
+    assert!(ej.big_endian, "RAF header fields are big-endian");
 
     let mov = s.media_format(0x300d).expect("MOV in the table");
     assert!(mov.is_movie && !mov.is_raw);
 
     let jpeg = s.media_format(0x3801).expect("JPEG in the table");
     assert!(!jpeg.is_raw && !jpeg.is_movie);
+    // A non-RAW format carries no embedded-JPEG locator.
+    assert!(jpeg.embedded_jpeg.is_none());
 
     // An unknown / unlisted format code → None.
     assert!(s.media_format(0x9999).is_none());
