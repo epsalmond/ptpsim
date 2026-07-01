@@ -11,11 +11,11 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use camera_config::CameraManifest;
+use camera_config::{parse_hex_code, CameraManifest, LiveViewDeliveryKind};
 use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::{Engine, FrameSource, LoopingFrameSource, Phase, Reply};
 use protocol_primitives::fuji_framing;
-use ptp_core::codes::op;
+use ptp_core::codes::{op, resp};
 use ptp_core::{EventPacket, InitCommandAck, OperationRequest, PtpCodec, PtpIpPacket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -187,6 +187,7 @@ impl Server {
         // on exit is the documented run() contract.
         let command_loop = {
             let engine = engine.clone();
+            let frames = frames.clone();
             let event_tx = event_tx.clone();
             let state_dirty = state_dirty.clone();
             let mut sub = shutdown_tx.subscribe();
@@ -197,10 +198,11 @@ impl Server {
                         accepted = command.accept() => {
                             if let Ok((stream, _)) = accepted {
                                 let engine = engine.clone();
+                                let frames = frames.clone();
                                 let event_tx = event_tx.clone();
                                 let state_dirty = state_dirty.clone();
                                 conns.spawn(async move {
-                                    let _ = handle_command_conn(stream, engine, event_tx, state_dirty).await;
+                                    let _ = handle_command_conn(stream, engine, frames, event_tx, state_dirty).await;
                                 });
                             }
                         }
@@ -389,6 +391,7 @@ fn has_data_in(code: u16) -> bool {
 async fn handle_command_conn(
     mut stream: TcpStream,
     engine: Arc<Mutex<Engine>>,
+    frames: Arc<Mutex<LoopingFrameSource>>,
     event_tx: broadcast::Sender<u16>,
     state_dirty: Arc<Notify>,
 ) -> std::io::Result<()> {
@@ -439,12 +442,18 @@ async fn handle_command_conn(
         } else {
             None
         };
-        let (reply, events) = {
+        let (reply, events, is_poll_live_view) = {
             let mut e = engine.lock().await;
+            let is_poll_live_view = is_poll_live_view_op(e.manifest(), req.code);
             let reply = e.on_operation(&req, data_in.as_deref());
             // Drain under the same lock so the queue is emptied atomically with
             // the op that produced it; forward (broadcast, non-blocking) outside.
-            (reply, e.drain_events())
+            (reply, e.drain_events(), is_poll_live_view)
+        };
+        let reply = if is_poll_live_view {
+            poll_live_view_reply(reply, &frames).await
+        } else {
+            reply
         };
         // #126: the one hook — nudge the state-callback task that the camera
         // state may have changed. Cheap; a no-op when no push task is running.
@@ -457,6 +466,33 @@ async fn handle_command_conn(
         write_reply(&mut stream, &req, reply).await?;
     }
     Ok(())
+}
+
+fn is_poll_live_view_op(manifest: &CameraManifest, code: u16) -> bool {
+    manifest.connections.values().any(|connection| {
+        let Some(delivery) = &connection.live_view_delivery else {
+            return false;
+        };
+        delivery.kind == LiveViewDeliveryKind::Poll
+            && delivery
+                .poll_op
+                .as_deref()
+                .and_then(parse_hex_code)
+                .is_some_and(|poll_op| poll_op == code)
+    })
+}
+
+async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSource>>) -> Reply {
+    let Reply::Response(response) = reply else {
+        return reply;
+    };
+    if response.code != resp::OK {
+        return Reply::Response(response);
+    }
+    let Some(data) = frames.lock().await.next_frame() else {
+        return Reply::Response(response);
+    };
+    Reply::Data { data, response }
 }
 
 /// Push completion/lifecycle events to one connected event-socket client until
