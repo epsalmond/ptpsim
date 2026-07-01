@@ -5,6 +5,7 @@
 //! computed quirk, and it lands as a shared peer — never a per-manufacturer
 //! crate. This is what keeps ptpsim from becoming "vcam in `crates/`".
 
+pub mod client_identity;
 pub mod error;
 pub mod fuji_framing;
 pub mod fuji_init;
@@ -13,6 +14,7 @@ pub mod quirk;
 pub mod usb_ptp;
 pub mod value_codec;
 
+pub use client_identity::normalize_client_name;
 pub use error::FramingError;
 pub use fuji_init::{build_app_init, keep_ap_sentinel, validate_init_ack, KEEP_AP_SENTINEL};
 pub use value_codec::{encode_value, ValueWidth};
