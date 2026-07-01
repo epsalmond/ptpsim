@@ -442,6 +442,94 @@ fn write_set_prop_data(s: &mut TcpStream, tid: u32, payload: &[u8]) {
     write_frame(s, &fuji_framing::encode_data(0x1016, tid, payload));
 }
 
+/// Wireless-tether live-view is command-channel polling: the AP through-picture
+/// stream socket stays idle, while the manifest-selected poll op returns a JPEG
+/// in a Fuji compressed data frame.
+#[test]
+fn service_serves_poll_liveview_on_command_socket() {
+    let root = tmp_card();
+    let lv_dir = root.join("liveview");
+    std::fs::create_dir_all(&lv_dir).unwrap();
+    let lv_jpeg = b"\xFF\xD8\xFF\xE0POLLFRAME\xFF\xD9";
+    std::fs::write(lv_dir.join("frame_001.jpg"), lv_jpeg).unwrap();
+
+    let manifest = r#"
+schema: camera-config/v1
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: "2.30"
+connections:
+  wireless-tether:
+    kind: ptpip-direct
+    liveViewDelivery: { kind: poll, pollOp: "0x9018" }
+operations:
+  "0x1002": { name: OpenSession }
+  "0x9018": { name: SdkGetLiveViewData }
+properties: {}
+"#;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, liveview_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii".into(),
+            manifest_yaml: manifest.into(),
+            media_root: root.clone(),
+            command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: Some(lv_dir.clone()),
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let lv = server.liveview_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(async move { server.run(rx).await });
+        (cmd, lv, tx, h)
+    });
+
+    let mut lv = TcpStream::connect(liveview_addr).unwrap();
+    lv.set_read_timeout(Some(std::time::Duration::from_millis(150)))
+        .unwrap();
+    let mut probe = [0u8; 4];
+    match lv.read_exact(&mut probe) {
+        Err(e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => {}
+        Ok(_) => panic!("stream frames leaked without Phase::Streaming"),
+        Err(e) => panic!("unexpected live-view stream error: {e}"),
+    }
+
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [0; 16],
+        friendly_name: "test".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
+        PtpIpPacket::InitCommandAck(_) => {}
+        other => panic!("expected InitCommandAck, got {other:?}"),
+    }
+    write_frame(&mut s, &op(0x1002, 1, vec![1]));
+    read_ok(&mut s);
+
+    write_frame(&mut s, &op(0x9018, 2, vec![]));
+    let frame = read_data_reply(&mut s);
+    assert_eq!(&frame[..], lv_jpeg, "poll op returns the fixture JPEG");
+
+    drop(lv);
+    drop(s);
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// Live-view smoke: gate-#4 at the TCP boundary. The simulator only emits
 /// frames after the initiator reaches Phase::Streaming (df01=22 -> InitiateOpenCapture);
 /// before that, the socket is open but idle.
