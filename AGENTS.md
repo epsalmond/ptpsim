@@ -58,6 +58,41 @@ Documentation SHOULD precede the code change, not follow it.
 
 Run the workspace checks (*Build + test*) before pushing.
 
+### Querying the Fuji operator cohort
+
+When a private protocol, firmware, wire-format, or mobile-RE question is not
+answered by this repo, ask the Fuji operator cohort instead of guessing or
+copying RE narrative into ptpsim. The tool runs on nas; from any other host,
+prefix with `ssh nas`.
+
+- Discover routing with `fuji-ask-operator --list`.
+- Ask read-only questions with `fuji-ask-operator <op> "<question>"`.
+- Delegate scoped work with `fuji-ask-operator --do <op> "<task>"`.
+- File async questions with `fuji-ask-operator --consult --as <role> <op> "<question>"`.
+  Use the cohort role whose work you represent, for example `--as W3` when the
+  question is on behalf of client application.
+
+Before using `--do`, confirm scope with the human when the work drives
+hardware, takes a new capture, writes persistence, or is otherwise irreversible.
+Analyzing already-captured data or static artifacts may proceed without that
+extra confirmation.
+
+Routing guide: USB-PTP/PTP-IP/BLE/XLV/propcodes/FW-update -> `wire` (D3);
+reference app APK/FF0018API.so/iOS RE -> `mobile` (D6); SCP108A Linux/Flask/rpmsg ->
+`linux` (D4); camera parser/dispatcher/ThreadX/cfgdata/FF80 -> `fw-ff80`
+(D1); X-Processor 5 hardware/MMU/bootrom/sensors -> `soc` (D5);
+ff80rs/codeexec tooling -> `tools` (X1); knowledge-graph hygiene ->
+`curator` (X2).
+
+Search first, spawn second: each call is a full operator session. Do not inline
+the operator's answer as RE narrative here. Lift the durable conclusion into
+the manifest comment, schema doc string, or `DESIGN.md`, and reference the
+operator/spec path that supports it.
+
+The existing `docs/consults/` flow remains for public-consumer contract
+negotiation with the client application app. `fuji-ask-operator` is for private RE lookups
+behind a manifest entry; it complements that process and does not replace it.
+
 ### Schema and manifest changes
 
 ptpsim is **pre-production** (no third-party consumers locked to the
