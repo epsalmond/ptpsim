@@ -159,11 +159,36 @@ pub struct Operation {
 pub struct OpEffect {
     /// Property whose value the operation changes.
     pub set_prop: HexCode,
-    /// The value it settles to.
+    /// The fixed value it settles to. Ignored when `from_param` is set (the value
+    /// is then taken from the operation's request parameters instead).
+    #[serde(default)]
     pub value: i64,
     /// Polls of `set_prop` before the new value is visible (0 = immediate).
     #[serde(default)]
     pub settle_after_polls: u32,
+    /// When set, the effect value comes from an operation *request* parameter
+    /// rather than the fixed `value` — e.g. 0x9026 copies its packed AF-area
+    /// param into 0xD17C (§5.5). Mutually exclusive with `value`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_param: Option<ParamSource>,
+}
+
+/// Selects an effect value from an operation request's parameters, with an
+/// optional bit-slice so a packed field can be pulled out: the chosen param is
+/// shifted right by `shift`, then ANDed with `mask` (default: the whole value).
+/// 0x9026 uses the identity form (`index: 0`, no shift/mask) — the entire packed
+/// AF-area u32 copies into 0xD17C.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParamSource {
+    /// Index into the operation's request parameter list.
+    pub index: usize,
+    /// Right-shift applied to the raw param before masking (default 0).
+    #[serde(default)]
+    pub shift: u32,
+    /// AND-mask applied after the shift (default: no mask — the full value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

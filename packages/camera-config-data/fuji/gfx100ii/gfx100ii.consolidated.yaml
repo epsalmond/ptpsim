@@ -653,6 +653,12 @@ operations:
     - setProp: '0xd209'
       value: 1
       settleAfterPolls: 1
+    - setProp: '0xd17c'
+      value: 0
+      settleAfterPolls: 0
+      fromParam:
+        index: 0
+        shift: 0
     emits:
     - '0xc005'
     evidence:

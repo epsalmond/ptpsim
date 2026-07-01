@@ -561,12 +561,26 @@ fn af_tap_ops_and_props_are_ingested_from_the_wire_doc() {
     let unlock = &m.operations["0x9027"];
     assert_eq!(unlock.name, "UnlockS1Lock");
     assert_eq!(unlock.owner, "fuji-vendor");
-    assert_eq!(lock.effects.len(), 1);
+    assert_eq!(lock.effects.len(), 2);
     assert_eq!(lock.effects[0].set_prop, "0xd209");
     assert_eq!(lock.effects[0].value, 1);
     // #42: settle ≤1 because the effect is coupled with the 0xC005 emit (an
     // event-source await does one post-event read — the event-coupling invariant).
     assert_eq!(lock.effects[0].settle_after_polls, 1);
+    // #96: the second effect mirrors the packed AF-area request param into 0xD17C
+    // (§5.5) — a param-derived value (fromParam index 0, identity copy, immediate).
+    assert_eq!(lock.effects[1].set_prop, "0xd17c");
+    let src = lock.effects[1]
+        .from_param
+        .as_ref()
+        .expect("0xd17c effect derives its value from the request param");
+    assert_eq!(src.index, 0);
+    assert_eq!(src.shift, 0);
+    assert!(src.mask.is_none(), "identity copy — no bit-slice");
+    assert_eq!(
+        lock.effects[1].settle_after_polls, 0,
+        "0xD17C updates immediately on the tap"
+    );
     assert!(
         lock.emits.iter().any(|e| e == "0xc005"),
         "0x9026 emits AFCAPTUER"

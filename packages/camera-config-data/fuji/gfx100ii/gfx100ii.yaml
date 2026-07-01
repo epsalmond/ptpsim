@@ -512,12 +512,13 @@ operations:
     # AF tap (§5.5): settle 0xD209 S1_LOCK_COLOR to locked, then emit the 0xC005
     # AFCAPTUER completion event. settleAfterPolls MUST be ≤1 because the effect is
     # event-coupled — an event-source await does ONE post-event read (the
-    # event-coupling invariant, model.rs). The §5.5 0xD17C-from-packed-param write
-    # is intentionally NOT modeled: no consumer reads it and the event params are
-    # inert job counters (#42).
+    # event-coupling invariant, model.rs). 0xD17C S1LockAreaState mirrors the packed
+    # AF-area (§5.5: high bytes aspect, low bytes tap col/row) straight from the
+    # 0x9026 request param — fromParam identity copy, immediate (#96).
     emits: ["0xc005"]
     effects:
       - { setProp: "0xd209", value: 1, settleAfterPolls: 1 }
+      - { setProp: "0xd17c", fromParam: { index: 0 } }
     evidence: [iosLiveControls, docLiveControls]
   # AF unlock/release companion to 0x9026 (PTP_PROPERTIES_REFERENCE.md §5.1: clears
   # the AF lock, resets 0xD209 S1_LOCK_COLOR to 0). PRELIMINARY: §5.1 marks the
