@@ -10,3 +10,18 @@
 [toolchain]
 channel = "1.96.0"
 components = ["clippy", "rustfmt"]
+# Cross-compile targets the android-libs (Docker ci-android) and xcframework
+# (macOS runner) CI steps need. Pinned here so rustup installs them FOR the
+# pinned toolchain on every runner. Without this a runner that baked the targets
+# into `stable` still leaves 1.96.0 without them, and build-android.sh /
+# build-xcframework.sh fatal ("rustup target '…' not installed"). One change
+
+targets = [
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
