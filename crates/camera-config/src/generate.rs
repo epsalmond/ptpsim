@@ -229,6 +229,8 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     payload: None,
                     controls: BTreeMap::new(),
                     labels: agg.labels,
+                    value_rows: Vec::new(),
+                    value_encoding: None,
                     evidence,
                 },
             )

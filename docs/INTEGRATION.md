@@ -55,7 +55,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `imagesPushed { min, max }` for PCSS shutter — camera auto-pushes images, register receiver first). See `docs/plans/action-verbs.md` |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
-| `value(key)` / `value_label(prop, value)` | value-policy resolution + human labels |
+| `value(key)` / `value_label(prop, value)` / `decode_property(prop, raw)` / `encode_property(prop, label)` | value-policy resolution, human labels, and manifest-backed property label↔wire-byte encoding |
 
 Byte codecs (build/parse PTP packets, decode datasets, encode values) are exported
 functions — the **G1–G3 set is complete** (see §6).
@@ -179,7 +179,9 @@ per-platform packaging:
   `fw2.40.yaml` flips XLV to HTTPS).
 - **Codecs (§B) — G1–G3 landed + in the bindings.** G1: `build_app_init` (the 82-byte
   init) + `validate_init_ack` + `keep_ap_sentinel`. G2: `encode_value(raw, width)` (generic
-  value encoder; per-value semantics live in `descriptor.values`/`labels`). G3: packet
+  width encoder) plus `ConfigStore.encode_property(prop, label)` /
+  `decode_property(prop, raw)` for manifest-backed property value rows and generic
+  sentinel/mask forms. Per-value semantics live in data, not app switch tables. G3: packet
   framing `build_command` / `build_data` / `parse_response` / `parse_data_payload` /
   `parse_data_phase` (standard framing streams `StartData`/`Data`/`EndData`; the Fuji
   compressed and USB channels deliver the whole data phase in one type-2 `Data` frame —

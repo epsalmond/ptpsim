@@ -663,7 +663,12 @@ properties:
   # capture, FUJI_PTP_PROP_REFERENCE.md, and client application's UINT32 DevicePropDesc parser.
   # Width override is documented in the #53 property-width-audit OVERRIDES table.
   "0xd02a": { name: stillIso, ptpName: ISO, type: u32, access: readWrite,
-              controls: { app: { setMethod: absolute, operation: "0x1016", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
+              controls: { app: { setMethod: absolute, operation: "0x1016", readback: "0xd212" } },
+              # Representative authored rows for the generic value codec. Bulk
+              # ISO labels still come from evidence/labels via the generator.
+              valueRows: [{ label: "6400", raw: 6400 }, { label: "12800", raw: 12800 }],
+              valueEncoding: { sentinel: { mask: 2147483648, meaning: autoCeiling, labelPrefix: AUTO } },
+              evidence: [iosLiveControls, docLiveControls] }
   "0xd02b": { name: movieIso, ptpName: MovieISO, type: u32, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   # Shutter readback is u32, NOT the u16 stub the degenerate descriptor reports.

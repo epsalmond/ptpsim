@@ -56,6 +56,29 @@ fn iso_auto_ceiling_sentinels_label_as_auto_with_the_ceiling() {
 }
 
 #[test]
+fn still_iso_exposes_value_rows_and_generic_sentinel_metadata() {
+    let m = consolidated();
+    let p = m.property(0xd02a).expect("still ISO property exists");
+    assert_eq!(p.value_rows[0].label, "6400");
+    assert_eq!(p.value_rows[0].raw, 6400);
+    let sentinel = p
+        .value_encoding
+        .as_ref()
+        .and_then(|enc| enc.sentinel.as_ref())
+        .expect("generic sentinel descriptor");
+    assert_eq!(sentinel.mask, 0x8000_0000);
+    assert_eq!(sentinel.meaning.as_deref(), Some("autoCeiling"));
+    assert_eq!(
+        m.decode_property_label(0xd02a, 0x8000_1900).as_deref(),
+        Some("AUTO 6400")
+    );
+    assert_eq!(
+        m.encode_property_raw(0xd02a, "AUTO 6400"),
+        Some(0x8000_1900)
+    );
+}
+
+#[test]
 fn shutter_labels_resolve_from_the_high_bit_u32_form() {
     let m = consolidated();
     // 0xD240 is u32: 0x80000000 | (denom × 1000). 1/60 = 0x8000_EA60.

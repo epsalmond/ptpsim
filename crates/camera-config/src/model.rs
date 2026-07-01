@@ -233,8 +233,49 @@ pub struct Property {
     /// Value -> human label, e.g. `280: "f/2.8"`.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// Ordered property value choices for presentation and label→raw encoding.
+    /// This is the explicit row form of `labels`: each row carries the raw value
+    /// the camera expects and the label a client presents. Bulk rows come from
+    /// evidence/generator output; hand-authored manifests keep this small.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_rows: Vec<PropertyValueRow>,
+    /// Generic value encoding hints for rows that share a bit-level form, such
+    /// as a high-bit sentinel plus a low-bit literal. The descriptor names the
+    /// shape; it does not bake manufacturer formulas into Rust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_encoding: Option<PropertyValueEncoding>,
     #[serde(default)]
     pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropertyValueRow {
+    pub label: String,
+    pub raw: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropertyValueEncoding {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentinel: Option<SentinelMask>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentinelMask {
+    /// Bits that identify the sentinel form. Value bits are the complement.
+    pub mask: i64,
+    /// Masked value that means the sentinel is present. Defaults to `mask`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equals: Option<i64>,
+    /// Stable semantic name for clients that want grouping or display policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meaning: Option<String>,
+    /// Prefix used by the generic codec when composing/decomposing sentinel
+    /// labels, e.g. `AUTO` + base label `6400` -> `AUTO 6400`.
+    pub label_prefix: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

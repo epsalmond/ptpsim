@@ -87,8 +87,40 @@ impl CameraManifest {
     /// Human label for a property value, if the manifest defines one.
     pub fn value_label(&self, property_code: u16, value: i64) -> Option<&str> {
         self.property(property_code)
-            .and_then(|p| p.labels.get(&value.to_string()))
-            .map(|s| s.as_str())
+            .and_then(|p| p.static_value_label(value))
+    }
+
+    /// Decode a raw property value to a presentation label. Exact manifest rows
+    /// win; if absent, a generic sentinel/mask descriptor can compose a label
+    /// from the low-bit base value without any manufacturer-specific formula.
+    pub fn decode_property_label(&self, property_code: u16, raw: i64) -> Option<String> {
+        let p = self.property(property_code)?;
+        if let Some(label) = p.static_value_label(raw) {
+            return Some(label.to_string());
+        }
+        let sentinel = p.value_encoding.as_ref()?.sentinel.as_ref()?;
+        let equals = sentinel.equals.unwrap_or(sentinel.mask);
+        if raw & sentinel.mask != equals {
+            return None;
+        }
+        let base_raw = raw & !sentinel.mask;
+        let base_label = p.static_value_label(base_raw)?;
+        Some(format!("{} {base_label}", sentinel.label_prefix))
+    }
+
+    /// Encode a presentation label to its raw property value. Exact manifest
+    /// rows win; if absent, a generic sentinel/mask descriptor can combine the
+    /// sentinel bits with the raw value of the label suffix.
+    pub fn encode_property_raw(&self, property_code: u16, label: &str) -> Option<i64> {
+        let p = self.property(property_code)?;
+        if let Some(raw) = p.raw_for_label(label) {
+            return Some(raw);
+        }
+        let sentinel = p.value_encoding.as_ref()?.sentinel.as_ref()?;
+        let prefix = sentinel.label_prefix.as_str();
+        let base_label = label.strip_prefix(prefix)?.strip_prefix(' ')?;
+        let base_raw = p.raw_for_label(base_label)?;
+        Some(base_raw | sentinel.equals.unwrap_or(sentinel.mask))
     }
 
     pub fn workflow(&self, id: &str) -> Option<&Workflow> {
@@ -104,6 +136,29 @@ impl CameraManifest {
     /// `docs/plans/action-verbs.md`.
     pub fn action(&self, connection: &str, verb: ActionVerb) -> Option<&Action> {
         self.connections.get(connection)?.actions.get(&verb)
+    }
+}
+
+impl Property {
+    fn static_value_label(&self, value: i64) -> Option<&str> {
+        self.value_rows
+            .iter()
+            .find(|row| row.raw == value)
+            .map(|row| row.label.as_str())
+            .or_else(|| self.labels.get(&value.to_string()).map(|s| s.as_str()))
+    }
+
+    fn raw_for_label(&self, label: &str) -> Option<i64> {
+        self.value_rows
+            .iter()
+            .find(|row| row.label == label)
+            .map(|row| row.raw)
+            .or_else(|| {
+                self.labels
+                    .iter()
+                    .find(|(_, v)| v.as_str() == label)
+                    .and_then(|(raw, _)| raw.parse::<i64>().ok())
+            })
     }
 }
 

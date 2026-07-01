@@ -683,6 +683,31 @@ pub struct PropertyInfo {
     pub access: Option<String>,
     pub values: Vec<i64>,
     pub labels: Vec<KeyValue>,
+    pub value_rows: Vec<PropertyValueInfo>,
+    pub value_encoding: Option<PropertyValueEncodingInfo>,
+}
+
+/// A manifest-backed property choice: label for UI, raw value for the camera.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PropertyValueInfo {
+    pub label: String,
+    pub raw: i64,
+}
+
+/// Generic property value encoding metadata. This is intentionally shape-based
+/// rather than camera-branded, so consumers can present grouped/sentinel values
+/// without carrying vendor formulas.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PropertyValueEncodingInfo {
+    pub sentinel: Option<SentinelMaskInfo>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SentinelMaskInfo {
+    pub mask: i64,
+    pub equals: i64,
+    pub meaning: Option<String>,
+    pub label_prefix: String,
 }
 
 /// An object-format classification from the manifest media table (#36): the
@@ -737,6 +762,34 @@ impl From<&cc::Payload> for PayloadInfo {
                 value_width: r.value_width,
             }),
             members: p.members.iter().filter_map(|m| parse_hex_code(m)).collect(),
+        }
+    }
+}
+
+impl From<&cc::PropertyValueRow> for PropertyValueInfo {
+    fn from(row: &cc::PropertyValueRow) -> Self {
+        PropertyValueInfo {
+            label: row.label.clone(),
+            raw: row.raw,
+        }
+    }
+}
+
+impl From<&cc::PropertyValueEncoding> for PropertyValueEncodingInfo {
+    fn from(enc: &cc::PropertyValueEncoding) -> Self {
+        PropertyValueEncodingInfo {
+            sentinel: enc.sentinel.as_ref().map(SentinelMaskInfo::from),
+        }
+    }
+}
+
+impl From<&cc::SentinelMask> for SentinelMaskInfo {
+    fn from(s: &cc::SentinelMask) -> Self {
+        SentinelMaskInfo {
+            mask: s.mask,
+            equals: s.equals.unwrap_or(s.mask),
+            meaning: s.meaning.clone(),
+            label_prefix: s.label_prefix.clone(),
         }
     }
 }
@@ -1687,6 +1740,35 @@ impl ConfigStore {
             .map(String::from)
     }
 
+    /// Decode a raw property value into its manifest presentation row. Exact
+    /// rows/labels win; generic sentinel/mask metadata can compose labels such
+    /// as `AUTO 6400` from the same table data.
+    pub fn decode_property(&self, prop: u16, raw: i64) -> Option<PropertyValueInfo> {
+        self.inner
+            .manifest
+            .decode_property_label(prop, raw)
+            .map(|label| PropertyValueInfo { label, raw })
+    }
+
+    /// Encode a property label to wire bytes using the manifest row/sentinel data
+    /// and the property's declared width. This is the app-facing replacement for
+    /// per-vendor value switch tables.
+    pub fn encode_property(&self, prop: u16, label: String) -> Result<Vec<u8>, CodecError> {
+        let raw = self
+            .inner
+            .manifest
+            .encode_property_raw(prop, &label)
+            .ok_or_else(|| {
+                CodecError::Encode(format!(
+                    "property 0x{prop:04x} has no encodable label {label:?}"
+                ))
+            })?;
+        let width = self.property_value_width(prop).ok_or_else(|| {
+            CodecError::Encode(format!("property 0x{prop:04x} has no encodable width"))
+        })?;
+        protocol_primitives::encode_value(raw, width.into()).map_err(codec_encode)
+    }
+
     /// The encoder width for a property, resolved from the manifest's `type`
     /// (`u16`→U16, `u32`→U32). `None` for an unknown property or an unsupported
     /// type (e.g. `u8a`) — pair with `encode_value(raw, width)`.
@@ -1742,6 +1824,11 @@ impl ConfigStore {
                             value: v.clone(),
                         })
                         .collect(),
+                    value_rows: p.value_rows.iter().map(PropertyValueInfo::from).collect(),
+                    value_encoding: p
+                        .value_encoding
+                        .as_ref()
+                        .map(PropertyValueEncodingInfo::from),
                 })
             })
             .collect()
