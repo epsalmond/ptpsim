@@ -6303,6 +6303,11 @@ media:
       vendor: fuji
       isRaw: true
       isMovie: false
+      embeddedJpeg:
+        magic: FUJIFILMCCD-RAW
+        offsetAt: 84
+        lengthAt: 88
+        endian: big
     '0xb105':
       name: heif
       vendor: fuji

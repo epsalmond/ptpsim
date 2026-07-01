@@ -311,8 +311,7 @@ pub struct Media {
 }
 
 /// One object-format catalog row (#36): a PTP/vendor format code's name and
-/// classification. The per-vendor RAW preview-extraction descriptor (RAF header
-/// offsets, …) is a separate, evidence-gated follow-up.
+/// classification, plus an optional embedded-JPEG locator (#101) for RAW formats.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaFormat {
@@ -323,6 +322,40 @@ pub struct MediaFormat {
     pub is_raw: bool,
     #[serde(default)]
     pub is_movie: bool,
+    /// Where this RAW format's embedded full-size JPEG lives (#101). Absent for
+    /// non-RAW formats and RAWs that don't embed a JPEG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded_jpeg: Option<EmbeddedJpeg>,
+}
+
+/// Byte order for reading a container's multi-byte header fields. RAW containers
+/// differ: Fuji RAF is big-endian; TIFF-based RAWs are commonly little-endian.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Endian {
+    Big,
+    Little,
+}
+
+/// Where a RAW container's embedded full-size JPEG lives, surfaced so a client
+/// can pull it with `GetPartialObject` without carrying a per-format parser. The
+/// client verifies `magic` at offset 0, then reads a u32 JPEG start offset at
+/// `offset_at` and a u32 length at `length_at`, both in `endian`. Fuji RAF:
+/// magic `FUJIFILMCCD-RAW` at 0x00, offset at 0x54, length at 0x58, big-endian —
+/// per exiftool `FujiFilm::ProcessRAF` and dcraw `parse_fuji`. The simulator
+/// itself never parses this: it serves object bytes and only *describes* the
+/// layout here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddedJpeg {
+    /// ASCII magic identifying the container, verified at offset 0.
+    pub magic: String,
+    /// Byte offset of the u32 field holding the embedded JPEG's start offset.
+    pub offset_at: u16,
+    /// Byte offset of the u32 field holding the embedded JPEG's length.
+    pub length_at: u16,
+    /// Byte order of the `offset_at` / `length_at` u32 fields.
+    pub endian: Endian,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
