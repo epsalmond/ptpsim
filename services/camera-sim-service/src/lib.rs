@@ -508,93 +508,42 @@ fn data_in_err<S: Into<String>>(msg: S) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into())
 }
 
-/// Collect a StartData/(Data*)/EndData sequence into the data-in payload. The
-/// `StartData.total_length` field is the trustable bound: we refuse anything
-/// over [`MAX_DATA_IN_BYTES`], reject payload that overflows the declared
-/// total, and require `EndData` to land exactly on it. Frames must all carry
-/// `tid`; a transaction-id mismatch is treated as a protocol error.
+/// Collect the data-in payload. The compressed channel carries a whole data
+/// phase in a single type-2 `Data` frame, so we read exactly one frame, require
+/// it to be a `Data` for this `tid`, and cap the payload at [`MAX_DATA_IN_BYTES`]
+/// (realistic data-in is a single property value). A transaction-id mismatch or
+/// any other packet type is a protocol error.
 async fn collect_data_in(stream: &mut TcpStream, tid: u32) -> std::io::Result<Option<Vec<u8>>> {
-    let Some(first) = read_frame(stream).await? else {
-        return Err(data_in_err("data-in: stream closed before StartData"));
+    let Some(frame) = read_frame(stream).await? else {
+        return Err(data_in_err("data-in: stream closed before the data frame"));
     };
-    let declared = match fuji_framing::decode(&first) {
-        Ok(PtpIpPacket::StartData(p)) => {
-            if p.transaction_id != tid {
+    match fuji_framing::decode(&frame) {
+        Ok(PtpIpPacket::Data(d)) => {
+            if d.transaction_id != tid {
                 return Err(data_in_err(format!(
-                    "data-in: StartData tid {} != request tid {}",
-                    p.transaction_id, tid
+                    "data-in: Data tid {} != request tid {}",
+                    d.transaction_id, tid
                 )));
             }
-            p.total_length
-        }
-        Ok(other) => {
-            return Err(data_in_err(format!(
-                "data-in: expected StartData, got {other:?}"
-            )));
-        }
-        Err(e) => return Err(data_in_err(format!("data-in: decode failed: {e}"))),
-    };
-    if declared > MAX_DATA_IN_BYTES {
-        return Err(data_in_err(format!(
-            "data-in: declared total_length {declared} exceeds cap {MAX_DATA_IN_BYTES}"
-        )));
-    }
-    let mut data: Vec<u8> = Vec::with_capacity(declared as usize);
-    loop {
-        let Some(frame) = read_frame(stream).await? else {
-            return Err(data_in_err("data-in: stream closed before EndData"));
-        };
-        let packet = fuji_framing::decode(&frame)
-            .map_err(|e| data_in_err(format!("data-in: decode failed: {e}")))?;
-        match packet {
-            PtpIpPacket::Data(d) => {
-                if d.transaction_id != tid {
-                    return Err(data_in_err(format!(
-                        "data-in: Data tid {} != request tid {}",
-                        d.transaction_id, tid
-                    )));
-                }
-                if data.len() as u64 + d.payload.len() as u64 > declared {
-                    return Err(data_in_err(
-                        "data-in: payload exceeds declared total_length",
-                    ));
-                }
-                data.extend_from_slice(&d.payload);
-            }
-            PtpIpPacket::EndData(d) => {
-                if d.transaction_id != tid {
-                    return Err(data_in_err(format!(
-                        "data-in: EndData tid {} != request tid {}",
-                        d.transaction_id, tid
-                    )));
-                }
-                if data.len() as u64 + d.payload.len() as u64 > declared {
-                    return Err(data_in_err(
-                        "data-in: payload exceeds declared total_length",
-                    ));
-                }
-                data.extend_from_slice(&d.payload);
-                if data.len() as u64 != declared {
-                    return Err(data_in_err(format!(
-                        "data-in: declared {declared}, received {}",
-                        data.len()
-                    )));
-                }
-                break;
-            }
-            other => {
+            if d.payload.len() as u64 > MAX_DATA_IN_BYTES {
                 return Err(data_in_err(format!(
-                    "data-in: unexpected packet during data phase: {other:?}"
+                    "data-in: payload {} exceeds cap {MAX_DATA_IN_BYTES}",
+                    d.payload.len()
                 )));
             }
+            Ok(Some(d.payload))
         }
+        Ok(other) => Err(data_in_err(format!(
+            "data-in: expected a data frame, got {other:?}"
+        ))),
+        Err(e) => Err(data_in_err(format!("data-in: decode failed: {e}"))),
     }
-    Ok(Some(data))
 }
 
-/// Bound for one streamed data-phase chunk. 1 MiB keeps the wire packet count
-/// reasonable for multi-GB downloads while capping per-frame allocation per
-/// DESIGN.md ("File downloads use bounded chunk buffers").
+/// How much of a data-phase body to read from the source per socket write. The
+/// data phase is a single wire frame, but the body is streamed in 1 MiB reads so
+/// peak in-process allocation stays bounded per DESIGN.md ("File downloads use
+/// bounded chunk buffers") even for a multi-GB object.
 const DATA_CHUNK_BYTES: usize = 1024 * 1024;
 
 async fn write_reply(
@@ -611,19 +560,13 @@ async fn write_reply(
                 .await?;
         }
         Reply::Data { data, response } => {
-            let start = PtpIpPacket::StartData(ptp_core::StartData {
-                transaction_id: req.transaction_id,
-                total_length: data.len() as u64,
-            });
-            let end = PtpIpPacket::EndData(ptp_core::DataBlock {
-                transaction_id: req.transaction_id,
-                payload: data,
-            });
+            // The whole data phase is one type-2 frame whose code echoes the op.
             stream
-                .write_all(&fuji_framing::encode(&start).map_err(to_io)?)
-                .await?;
-            stream
-                .write_all(&fuji_framing::encode(&end).map_err(to_io)?)
+                .write_all(&fuji_framing::encode_data(
+                    req.code,
+                    req.transaction_id,
+                    &data,
+                ))
                 .await?;
             stream
                 .write_all(
@@ -633,7 +576,7 @@ async fn write_reply(
                 .await?;
         }
         Reply::DataStream { source, response } => {
-            stream_data_phase(stream, req.transaction_id, &source).await?;
+            stream_data_phase(stream, req.code, req.transaction_id, &source).await?;
             stream
                 .write_all(
                     &fuji_framing::encode(&PtpIpPacket::OperationResponse(response))
@@ -646,53 +589,41 @@ async fn write_reply(
     Ok(())
 }
 
-/// Emit a StartData + N×Data + EndData sequence by reading `source` one chunk
-/// at a time. The peak in-process allocation is bounded by `DATA_CHUNK_BYTES`
-/// regardless of `source.len()`, so a multi-GB object never lands in memory.
+/// Emit the data phase as a single type-2 `Data` frame — the whole payload
+/// arrives in one length-prefixed frame on the wire, matching real Fuji (a
+/// 14.5 MB `GetObject` is one frame). The 12-byte header goes out first with the
+/// total length; the body is then streamed from `source` one `DATA_CHUNK_BYTES`
+/// read at a time, so peak in-process allocation stays bounded regardless of
+/// `source.len()` even though the client sees a single frame. `op` is echoed in
+/// the frame's code field.
 async fn stream_data_phase(
     stream: &mut TcpStream,
+    op: u16,
     transaction_id: u32,
     source: &ByteSource,
 ) -> std::io::Result<()> {
     let total_length = source.len();
+    let payload_len = u32::try_from(total_length)
+        .map_err(|_| std::io::Error::other("data-phase payload exceeds a single frame (u32)"))?;
     stream
-        .write_all(
-            &fuji_framing::encode(&PtpIpPacket::StartData(ptp_core::StartData {
-                transaction_id,
-                total_length,
-            }))
-            .map_err(to_io)?,
-        )
+        .write_all(&fuji_framing::data_frame_header(
+            op,
+            transaction_id,
+            payload_len,
+        ))
         .await?;
 
-    // Last chunk goes in EndData; everything before it in Data. Empty sources
-    // get a zero-byte EndData (mirrors the prior single-EndData flow).
     let mut offset: u64 = 0;
-    loop {
-        let remaining = total_length.saturating_sub(offset);
-        let take = (remaining as usize).min(DATA_CHUNK_BYTES);
-        let is_last = remaining as usize == take;
+    while offset < total_length {
+        let take = ((total_length - offset) as usize).min(DATA_CHUNK_BYTES);
         let chunk = source
             .read_chunk(offset, take)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        offset += chunk.len() as u64;
-        let pkt = if is_last {
-            PtpIpPacket::EndData(ptp_core::DataBlock {
-                transaction_id,
-                payload: chunk,
-            })
-        } else {
-            PtpIpPacket::Data(ptp_core::DataBlock {
-                transaction_id,
-                payload: chunk,
-            })
-        };
-        stream
-            .write_all(&fuji_framing::encode(&pkt).map_err(to_io)?)
-            .await?;
-        if is_last {
+        if chunk.is_empty() {
             break;
         }
+        offset += chunk.len() as u64;
+        stream.write_all(&chunk).await?;
     }
     Ok(())
 }

@@ -196,10 +196,10 @@ payloads; only the header differs.
 
 // G3 — PTP/IP packet framing (all framings via PtpFraming)
 #[uniffi::export] fn build_command(framing: PtpFraming, op: u16, txn: u32, params: Vec<u32>) -> Result<Vec<u8>, CodecError>;
-#[uniffi::export] fn build_data(framing: PtpFraming, txn: u32, payload: Vec<u8>) -> Result<Vec<u8>, CodecError>;
+#[uniffi::export] fn build_data(framing: PtpFraming, op: u16, txn: u32, payload: Vec<u8>) -> Result<Vec<u8>, CodecError>;
 #[uniffi::export] fn parse_response(framing: PtpFraming, packet: Vec<u8>) -> Result<ResponseFrame, CodecError>;
 #[uniffi::export] fn parse_data_payload(framing: PtpFraming, packet: Vec<u8>) -> Result<Vec<u8>, CodecError>;
-#[uniffi::export] fn parse_data_phase(framing: PtpFraming, packet: Vec<u8>) -> Result<DataPhaseFrame, CodecError>;  // Start/Data/End + total_length; drives a transfer loop (wireless-tether)
+#[uniffi::export] fn parse_data_phase(framing: PtpFraming, packet: Vec<u8>) -> Result<DataPhaseFrame, CodecError>;  // Standard streams Start/Data/End; Fuji/USB deliver one Data frame
 #[uniffi::export] fn parse_event(framing: PtpFraming, packet: Vec<u8>) -> Result<Option<CameraEvent>, CodecError>;
 
 // G3 — dataset codecs (framing-independent payloads)
@@ -211,12 +211,15 @@ payloads; only the header differs.
 
 Records/enums: `ResponseFrame { response_code, txn, params }`, `CameraEvent { code, txn, params }`,
 `DataPhaseFrame { kind: DataPhaseKind (Start|Data|End), txn, total_length?, payload }` (total_length
-set only on `Start`),
+set only on `Start`; the Fuji compressed and USB channels use a single `Data` frame — see the
+byte-exact reconciliation in `fuji_framing`),
 `PtpObjectInfo` (the generic `ObjectInfo` fields; media classification is `media_format()` + #136),
 `PtpDevicePropDesc { code, datatype, get_set, factory_default, current, form }` over
 `PtpValue { U8|U16|U32|U64|Str }` and `PtpPropForm { None | Range | Enum }`, `LiveStatus { records:
-Vec<PropObservation> }`. Notes: `build_data` models a single `Data` block — USB data phases are a
-bulk-transfer concern and are not re-emittable, so `build_data(Usb, …)` errors (decode still works).
+Vec<PropObservation> }`. Notes: the Fuji compressed data phase is one length-prefixed type-2 frame
+whose code echoes the opcode (hence `build_data` takes `op`); standard framing's `Data` carries no
+opcode, and USB data phases are a bulk-transfer concern that is not re-emittable, so
+`build_data(Usb, …)` errors (decode still works).
 `parse_event` on the Fuji compressed command channel rejects event frames (events ride a separate
 socket). The G2 sketch's per-value `encode_aperture/iso/shutter` was superseded by the single
 manifest-driven `encode_value`.

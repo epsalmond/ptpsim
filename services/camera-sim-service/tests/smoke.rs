@@ -57,16 +57,14 @@ fn op(code: u16, tid: u32, params: Vec<u32>) -> Vec<u8> {
     .unwrap()
 }
 
-/// Read a data reply: StartData, EndData(payload), OperationResponse(OK).
+/// Read a data reply: one type-2 `Data` frame (the whole payload) followed by
+/// `OperationResponse(OK)`. The compressed channel has no StartData/EndData.
 fn read_data_reply(s: &mut TcpStream) -> Vec<u8> {
-    let _start = fuji_framing::decode(&read_frame(s)).unwrap();
-    let end = fuji_framing::decode(&read_frame(s)).unwrap();
-    let resp = fuji_framing::decode(&read_frame(s)).unwrap();
-    let data = match end {
-        PtpIpPacket::EndData(d) => d.payload,
-        other => panic!("expected EndData, got {other:?}"),
+    let data = match fuji_framing::decode(&read_frame(s)).unwrap() {
+        PtpIpPacket::Data(d) => d.payload,
+        other => panic!("expected Data, got {other:?}"),
     };
-    match resp {
+    match fuji_framing::decode(&read_frame(s)).unwrap() {
         PtpIpPacket::OperationResponse(r) => assert_eq!(r.code, 0x2001, "OK expected"),
         other => panic!("expected response, got {other:?}"),
     }
@@ -240,40 +238,11 @@ properties: {}
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Read a streamed data reply, returning the reassembled payload and the
-/// count of `Data` frames that preceded `EndData`. Proves chunking: a payload
-/// larger than `DATA_CHUNK_BYTES` must arrive in at least one `Data` frame
-/// followed by one `EndData`, never a single oversized EndData.
-fn read_chunked_data_reply(s: &mut TcpStream) -> (Vec<u8>, usize) {
-    let _start = match fuji_framing::decode(&read_frame(s)).unwrap() {
-        PtpIpPacket::StartData(p) => p,
-        other => panic!("expected StartData, got {other:?}"),
-    };
-    let mut payload = Vec::new();
-    let mut data_frames = 0usize;
-    loop {
-        match fuji_framing::decode(&read_frame(s)).unwrap() {
-            PtpIpPacket::Data(d) => {
-                payload.extend_from_slice(&d.payload);
-                data_frames += 1;
-            }
-            PtpIpPacket::EndData(d) => {
-                payload.extend_from_slice(&d.payload);
-                break;
-            }
-            other => panic!("unexpected packet in data phase: {other:?}"),
-        }
-    }
-    match fuji_framing::decode(&read_frame(s)).unwrap() {
-        PtpIpPacket::OperationResponse(r) => assert_eq!(r.code, 0x2001, "OK expected"),
-        other => panic!("expected response, got {other:?}"),
-    }
-    (payload, data_frames)
-}
-
 #[test]
-fn service_streams_get_object_in_bounded_chunks() {
-    // A 2 MiB JPEG forces at least two on-wire chunks at the 1 MiB chunk size.
+fn service_serves_a_large_object_in_a_single_frame() {
+    // A 2 MiB JPEG exceeds the sim's 1 MiB internal read chunk, so the body is
+    // streamed from disk in multiple reads — yet it arrives as one type-2 frame,
+    // matching real Fuji (a whole GetObject is a single frame, even at 14.5 MB).
     let root = {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -333,16 +302,12 @@ fn service_streams_get_object_in_bounded_chunks() {
     let handles = r.ptp_array(|r| r.u32()).unwrap();
     assert_eq!(handles.len(), 1);
 
-    // GetObject — the 2 MiB JPEG.
+    // GetObject — the 2 MiB JPEG, delivered whole in a single frame.
     write_frame(&mut s, &op(0x1009, 3, vec![handles[0]]));
-    let (payload, data_frames) = read_chunked_data_reply(&mut s);
+    let payload = read_data_reply(&mut s);
     assert_eq!(payload.len(), 2 * 1024 * 1024);
     assert_eq!(&payload[0..2], &[0xFF, 0xD8]);
     assert_eq!(&payload[payload.len() - 2..], &[0xFF, 0xD9]);
-    assert!(
-        data_frames >= 1,
-        "expected at least one Data frame before EndData, got {data_frames}"
-    );
 
     rt.block_on(async {
         let _ = shutdown_tx.send(());
@@ -386,7 +351,7 @@ fn http_post(addr: std::net::SocketAddr, path: &str) -> String {
 }
 
 #[test]
-fn service_rejects_data_in_that_overflows_declared_length() {
+fn service_rejects_oversized_data_in() {
     // Reproducer for the "no upper bound on data-in collection" finding: a
     // client that declares an 8-byte data phase but keeps sending Data frames
     // is shut down rather than accumulated forever. The fix must close the
@@ -447,19 +412,11 @@ properties:
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
 
-    // SetDevicePropValue df01 with a malicious data-in: declared = 2 bytes,
-    // but ship a 256 KiB Data frame. The server must reject.
+    // SetDevicePropValue df01 with a malicious data-in: a single 2 MiB Data frame,
+    // over the 1 MiB data-in cap. The server must reject it.
     write_frame(&mut s, &op(0x1016, 2, vec![0xdf01]));
-    let start = PtpIpPacket::StartData(ptp_core::StartData {
-        transaction_id: 2,
-        total_length: 2,
-    });
-    write_frame(&mut s, &fuji_framing::encode(&start).unwrap());
-    let oversized = PtpIpPacket::Data(ptp_core::DataBlock {
-        transaction_id: 2,
-        payload: vec![0u8; 256 * 1024],
-    });
-    let _ = s.write_all(&fuji_framing::encode(&oversized).unwrap());
+    let oversized = fuji_framing::encode_data(0x1016, 2, &vec![0u8; 2 * 1024 * 1024]);
+    let _ = s.write_all(&oversized);
 
     // The connection should now be closed by the server (EOF or RST). Reading
     // anything back must either return 0 bytes or fail — never an OK response.
@@ -480,18 +437,9 @@ properties:
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Write the StartData/EndData wire dance for a single SetDevicePropValue payload.
+/// Write the single-frame data-in for a SetDevicePropValue(0x1016) payload.
 fn write_set_prop_data(s: &mut TcpStream, tid: u32, payload: &[u8]) {
-    let start = PtpIpPacket::StartData(ptp_core::StartData {
-        transaction_id: tid,
-        total_length: payload.len() as u64,
-    });
-    let end = PtpIpPacket::EndData(ptp_core::DataBlock {
-        transaction_id: tid,
-        payload: payload.to_vec(),
-    });
-    write_frame(s, &fuji_framing::encode(&start).unwrap());
-    write_frame(s, &fuji_framing::encode(&end).unwrap());
+    write_frame(s, &fuji_framing::encode_data(0x1016, tid, payload));
 }
 
 /// Live-view smoke: gate-#4 at the TCP boundary. The simulator only emits
