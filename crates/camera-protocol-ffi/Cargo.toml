@@ -19,6 +19,12 @@ path = "src/bin/uniffi-bindgen.rs"
 [dependencies]
 camera-config = { workspace = true }
 protocol-primitives = { workspace = true }
+ptp-core = { workspace = true }
 uniffi = { version = "0.31", features = ["cli"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# The codec seam tests build byte fixtures with the same primitives the FFI wraps.
+ptp-core = { workspace = true }
+protocol-primitives = { workspace = true }

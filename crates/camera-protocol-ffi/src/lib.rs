@@ -40,6 +40,16 @@ pub fn version() -> String {
 pub enum CodecError {
     #[error("{0}")]
     Encode(String),
+    #[error("{0}")]
+    Decode(String),
+}
+
+fn codec_encode<E: std::fmt::Display>(e: E) -> CodecError {
+    CodecError::Encode(e.to_string())
+}
+
+fn codec_decode<E: std::fmt::Display>(e: E) -> CodecError {
+    CodecError::Decode(e.to_string())
 }
 
 /// Property value width on the wire (mirrors `protocol_primitives::ValueWidth`).
@@ -95,6 +105,291 @@ pub fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError> {
 pub fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, CodecError> {
     protocol_primitives::encode_value(value, width.into())
         .map_err(|e| CodecError::Encode(e.to_string()))
+}
+
+// ----------------------------------------------------------------------------
+// G3 — PTP/IP packet framing + dataset codecs. The app builds/parses its own
+// wire bytes over its own socket; these turn intents↔bytes. Sans-io.
+// ----------------------------------------------------------------------------
+
+/// Which PTP/IP wire framing to build or parse with. The app derives this from
+/// the connection kind: `ptpip-app` → `FujiCompressed`, `ptpip-direct` →
+/// `Standard`, `usb-ptp` → `Usb`. All three share the same logical packets; only
+/// the header differs.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum PtpFraming {
+    Standard,
+    FujiCompressed,
+    Usb,
+}
+
+fn frame_encode(framing: PtpFraming, pkt: &ptp_core::PtpIpPacket) -> Result<Vec<u8>, CodecError> {
+    match framing {
+        PtpFraming::Standard => ptp_core::encode(pkt).map_err(codec_encode),
+        PtpFraming::FujiCompressed => {
+            protocol_primitives::fuji_framing::encode(pkt).map_err(codec_encode)
+        }
+        PtpFraming::Usb => protocol_primitives::usb_ptp::encode(pkt).map_err(codec_encode),
+    }
+}
+
+fn frame_decode(framing: PtpFraming, bytes: &[u8]) -> Result<ptp_core::PtpIpPacket, CodecError> {
+    use ptp_core::PtpCodec;
+    match framing {
+        PtpFraming::Standard => ptp_core::PtpIpPacket::decode(bytes),
+        PtpFraming::FujiCompressed => protocol_primitives::fuji_framing::decode(bytes),
+        PtpFraming::Usb => protocol_primitives::usb_ptp::decode(bytes),
+    }
+    .map_err(codec_decode)
+}
+
+/// Build an operation-request frame. The standard framing's `DataPhaseInfo`
+/// defaults to 1 (no data-out); the compressed/USB framings carry no such field.
+/// A data-out command is expressed by following this with [`build_data`].
+#[uniffi::export]
+pub fn build_command(
+    framing: PtpFraming,
+    op: u16,
+    txn: u32,
+    params: Vec<u32>,
+) -> Result<Vec<u8>, CodecError> {
+    let pkt = ptp_core::PtpIpPacket::OperationRequest(ptp_core::OperationRequest {
+        data_phase_info: 1,
+        code: op,
+        transaction_id: txn,
+        params,
+    });
+    frame_encode(framing, &pkt)
+}
+
+/// Build a data-phase frame carrying `payload` for transaction `txn`.
+#[uniffi::export]
+pub fn build_data(framing: PtpFraming, txn: u32, payload: Vec<u8>) -> Result<Vec<u8>, CodecError> {
+    let pkt = ptp_core::PtpIpPacket::Data(ptp_core::DataBlock {
+        transaction_id: txn,
+        payload,
+    });
+    frame_encode(framing, &pkt)
+}
+
+/// A decoded PTP operation response.
+#[derive(Debug, uniffi::Record)]
+pub struct ResponseFrame {
+    pub response_code: u16,
+    pub txn: u32,
+    pub params: Vec<u32>,
+}
+
+/// Parse an operation-response frame. Errors if the frame is not a response.
+#[uniffi::export]
+pub fn parse_response(framing: PtpFraming, packet: Vec<u8>) -> Result<ResponseFrame, CodecError> {
+    match frame_decode(framing, &packet)? {
+        ptp_core::PtpIpPacket::OperationResponse(r) => Ok(ResponseFrame {
+            response_code: r.code,
+            txn: r.transaction_id,
+            params: r.params,
+        }),
+        other => Err(CodecError::Decode(format!(
+            "expected an operation response, got {other:?}"
+        ))),
+    }
+}
+
+/// Extract the payload bytes from a data-phase frame (`Data` or `EndData`).
+#[uniffi::export]
+pub fn parse_data_payload(framing: PtpFraming, packet: Vec<u8>) -> Result<Vec<u8>, CodecError> {
+    match frame_decode(framing, &packet)? {
+        ptp_core::PtpIpPacket::Data(d) | ptp_core::PtpIpPacket::EndData(d) => Ok(d.payload),
+        other => Err(CodecError::Decode(format!(
+            "expected a data-phase frame, got {other:?}"
+        ))),
+    }
+}
+
+/// A decoded PTP event packet.
+#[derive(Debug, uniffi::Record)]
+pub struct CameraEvent {
+    pub code: u16,
+    pub txn: u32,
+    pub params: Vec<u32>,
+}
+
+/// Parse a frame from the event socket. `None` when the frame decodes to a
+/// non-event packet; an error when the bytes don't decode in `framing`. Standard
+/// PTP/IP events are packet-type 8; the USB/PIMA event container is type 4. The
+/// Fuji compressed command channel carries no events (they ride a separate
+/// socket), so `FujiCompressed` will reject an event frame.
+#[uniffi::export]
+pub fn parse_event(
+    framing: PtpFraming,
+    packet: Vec<u8>,
+) -> Result<Option<CameraEvent>, CodecError> {
+    match frame_decode(framing, &packet)? {
+        ptp_core::PtpIpPacket::Event(e) => Ok(Some(CameraEvent {
+            code: e.code,
+            txn: e.transaction_id,
+            params: e.params,
+        })),
+        _ => Ok(None),
+    }
+}
+
+/// A typed PTP property value (mirrors `ptp_core::PropValue`, lossless).
+#[derive(Debug, uniffi::Enum)]
+pub enum PtpValue {
+    U8 { value: u8 },
+    U16 { value: u16 },
+    U32 { value: u32 },
+    U64 { value: u64 },
+    Str { value: String },
+}
+
+impl From<&ptp_core::PropValue> for PtpValue {
+    fn from(v: &ptp_core::PropValue) -> Self {
+        match v {
+            ptp_core::PropValue::U8(x) => PtpValue::U8 { value: *x },
+            ptp_core::PropValue::U16(x) => PtpValue::U16 { value: *x },
+            ptp_core::PropValue::U32(x) => PtpValue::U32 { value: *x },
+            ptp_core::PropValue::U64(x) => PtpValue::U64 { value: *x },
+            ptp_core::PropValue::Str(s) => PtpValue::Str { value: s.clone() },
+        }
+    }
+}
+
+/// The value-constraint form of a `DevicePropDesc` (mirrors `ptp_core::PropForm`).
+#[derive(Debug, uniffi::Enum)]
+pub enum PtpPropForm {
+    None,
+    Range {
+        min: PtpValue,
+        max: PtpValue,
+        step: PtpValue,
+    },
+    Enum {
+        values: Vec<PtpValue>,
+    },
+}
+
+impl From<&ptp_core::PropForm> for PtpPropForm {
+    fn from(f: &ptp_core::PropForm) -> Self {
+        match f {
+            ptp_core::PropForm::None => PtpPropForm::None,
+            ptp_core::PropForm::Range { min, max, step } => PtpPropForm::Range {
+                min: min.into(),
+                max: max.into(),
+                step: step.into(),
+            },
+            ptp_core::PropForm::Enum(values) => PtpPropForm::Enum {
+                values: values.iter().map(PtpValue::from).collect(),
+            },
+        }
+    }
+}
+
+/// A decoded `DevicePropDesc` (generic PTP; presentation/labels are #134 data).
+#[derive(Debug, uniffi::Record)]
+pub struct PtpDevicePropDesc {
+    pub code: u16,
+    pub datatype: u16,
+    pub get_set: u8,
+    pub factory_default: PtpValue,
+    pub current: PtpValue,
+    pub form: PtpPropForm,
+}
+
+/// Parse a `GetDevicePropDesc` data payload.
+#[uniffi::export]
+pub fn parse_device_prop_desc(payload: Vec<u8>) -> Result<PtpDevicePropDesc, CodecError> {
+    let d = ptp_core::DevicePropDesc::decode(&payload).map_err(codec_decode)?;
+    Ok(PtpDevicePropDesc {
+        code: d.code,
+        datatype: d.datatype,
+        get_set: d.get_set,
+        factory_default: (&d.factory_default).into(),
+        current: (&d.current).into(),
+        form: (&d.form).into(),
+    })
+}
+
+/// A decoded `ObjectInfo` (generic ISO-15740 fields only; media classification —
+/// still/movie/RAW, Photos-compat — is `media_format()` + #136).
+#[derive(Debug, uniffi::Record)]
+pub struct PtpObjectInfo {
+    pub storage_id: u32,
+    pub object_format: u16,
+    pub protection_status: u16,
+    pub object_compressed_size: u32,
+    pub thumb_format: u16,
+    pub thumb_compressed_size: u32,
+    pub thumb_pix_width: u32,
+    pub thumb_pix_height: u32,
+    pub image_pix_width: u32,
+    pub image_pix_height: u32,
+    pub image_bit_depth: u32,
+    pub parent_object: u32,
+    pub association_type: u16,
+    pub association_desc: u32,
+    pub sequence_number: u32,
+    pub filename: String,
+    pub capture_date: String,
+    pub modification_date: String,
+    pub keywords: String,
+}
+
+/// Parse a `GetObjectInfo` data payload.
+#[uniffi::export]
+pub fn parse_object_info(payload: Vec<u8>) -> Result<PtpObjectInfo, CodecError> {
+    let o = ptp_core::ObjectInfo::decode(&payload).map_err(codec_decode)?;
+    Ok(PtpObjectInfo {
+        storage_id: o.storage_id,
+        object_format: o.object_format,
+        protection_status: o.protection_status,
+        object_compressed_size: o.object_compressed_size,
+        thumb_format: o.thumb_format,
+        thumb_compressed_size: o.thumb_compressed_size,
+        thumb_pix_width: o.thumb_pix_width,
+        thumb_pix_height: o.thumb_pix_height,
+        image_pix_width: o.image_pix_width,
+        image_pix_height: o.image_pix_height,
+        image_bit_depth: o.image_bit_depth,
+        parent_object: o.parent_object,
+        association_type: o.association_type,
+        association_desc: o.association_desc,
+        sequence_number: o.sequence_number,
+        filename: o.filename,
+        capture_date: o.capture_date,
+        modification_date: o.modification_date,
+        keywords: o.keywords,
+    })
+}
+
+/// A decoded Fuji `0xD212`-style live-status record stream (each entry a
+/// `(prop code, value)` pair; the member set is manifest-driven, #107).
+#[derive(uniffi::Record)]
+pub struct LiveStatus {
+    pub records: Vec<PropObservation>,
+}
+
+/// Parse a live-status record-stream payload into its property observations.
+#[uniffi::export]
+pub fn parse_live_status(payload: Vec<u8>) -> Result<LiveStatus, CodecError> {
+    let records = protocol_primitives::quirk::parse_record_stream(&payload)
+        .map_err(codec_decode)?
+        .into_iter()
+        .map(|(code, value)| PropObservation {
+            code,
+            value: value as i64,
+        })
+        .collect();
+    Ok(LiveStatus { records })
+}
+
+/// Parse a `u32`-counted PTP object-handle array (e.g. the `0xD621` object-list
+/// quirk or a standard `GetObjectHandles` response payload).
+#[uniffi::export]
+pub fn parse_object_handle_list(payload: Vec<u8>) -> Result<Vec<u32>, CodecError> {
+    let mut r = ptp_core::Reader::new(&payload);
+    r.ptp_array(|r| r.u32()).map_err(codec_decode)
 }
 
 // ----------------------------------------------------------------------------
