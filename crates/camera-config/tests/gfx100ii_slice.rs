@@ -33,22 +33,27 @@ fn app_slice_loads_and_schema_is_supported() {
 
 #[test]
 fn port_roles_match_the_shipping_app() {
+    use camera_config::SocketRole;
     let m = gfx();
-    let bind = m.connections["app"]
-        .extra
-        .get("bind")
-        .expect("bind present");
-    assert_eq!(bind["command"].as_u64(), Some(55740));
-    assert_eq!(
-        bind["event"].as_u64(),
-        Some(55741),
-        "event = command+1 per iOS source"
-    );
-    assert_eq!(
-        bind["liveview"].as_u64(),
-        Some(55742),
-        "live-view stream = command+2"
-    );
+    let app = &m.connections["app"];
+    let b = app
+        .bindings
+        .as_ref()
+        .expect("app declares typed socket bindings");
+    assert_eq!(b.command, 55740);
+    assert_eq!(b.event, Some(55741), "event = command+1 per iOS source");
+    assert_eq!(b.live_view, Some(55742), "live-view stream = command+2");
+    // Resolve by role — the accessor the FFI `port_for_role` calls.
+    assert_eq!(b.port_for(SocketRole::Command), Some(55740));
+    assert_eq!(b.port_for(SocketRole::Event), Some(55741));
+    assert_eq!(b.port_for(SocketRole::LiveView), Some(55742));
+    // The transport-close frame names the 8-byte keep-AP sentinel.
+    let tc = app
+        .transport_close
+        .as_ref()
+        .expect("app declares a transport-close");
+    assert_eq!(tc.sentinel, "keepApSentinel");
+    assert_eq!(tc.when.as_deref(), Some("before-image-transfer-reopen"));
 }
 
 #[test]

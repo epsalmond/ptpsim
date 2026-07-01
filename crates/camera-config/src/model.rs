@@ -471,6 +471,17 @@ pub struct Connection {
     /// listener survives) keeps other connections' reopen behavior unchanged.
     #[serde(default)]
     pub command_listener_volatile: bool,
+    /// The PTP/IP sockets a consumer binds for this connection, keyed by role
+    /// (command / event / live-view). Promotes the former free-form `bind` block
+    /// to typed data (#140) so the app binds by role instead of hardcoding the
+    /// Fuji command port + `+1`/`+2` offsets.
+    #[serde(default)]
+    pub bindings: Option<SocketBindings>,
+    /// The transport-close frame this connection sends before reopening an
+    /// image-transfer session, if it needs one (#140). Companion to
+    /// `command_listener_volatile`.
+    #[serde(default)]
+    pub transport_close: Option<TransportClose>,
     #[serde(default)]
     pub modes: Vec<String>,
     /// Mode-graph edges reachable over this connection (decision #6, §3a). An edge
@@ -493,6 +504,58 @@ pub struct Connection {
     /// UUIDs) until those are modeled / split to a private overlay.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// A PTP/IP socket role a consumer binds. `Command` is the control channel;
+/// `Event` and `LiveView` are the derived sockets (Fuji: command `+1`/`+2`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SocketRole {
+    Command,
+    Event,
+    LiveView,
+}
+
+/// The PTP/IP sockets a consumer binds for a connection, keyed by role (#140).
+/// Resolved ports are authoritative (they come from the shipping app); a role a
+/// connection lacks (e.g. `wireless-tether` has no event socket) is `None`. On the
+/// Fuji `app` path `event = command + 1` and `live_view = command + 2`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SocketBindings {
+    /// The PTP/IP command-port (control channel). Fuji default 55740.
+    pub command: u16,
+    /// The event socket, if this connection has one.
+    #[serde(default)]
+    pub event: Option<u16>,
+    /// The live-view through-picture stream socket, if this connection has one.
+    #[serde(default)]
+    pub live_view: Option<u16>,
+}
+
+impl SocketBindings {
+    /// The bound port for `role`, or `None` if this connection has no such socket.
+    pub fn port_for(&self, role: SocketRole) -> Option<u16> {
+        match role {
+            SocketRole::Command => Some(self.command),
+            SocketRole::Event => self.event,
+            SocketRole::LiveView => self.live_view,
+        }
+    }
+}
+
+/// The transport-close frame a connection sends before reopening an image-transfer
+/// session (#140). The bytes are named (not inlined) so the frame stays defined in
+/// one place — on the Fuji `app` path `sentinel = keepApSentinel`, the 8-byte
+/// `0xffffffff` frame `keep_ap_sentinel()` returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportClose {
+    /// Names the frame bytes. `keepApSentinel` = the 8-byte `0xffffffff` frame.
+    pub sentinel: String,
+    /// When the consumer sends it (e.g. `before-image-transfer-reopen`).
+    #[serde(default)]
+    pub when: Option<String>,
 }
 
 /// An establishment edge: from one connection, bring up another. Carries a named

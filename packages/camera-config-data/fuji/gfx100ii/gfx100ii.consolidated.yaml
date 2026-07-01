@@ -6424,6 +6424,13 @@ connections:
       pollOp: null
     shutterRecipe: appPostview
     commandListenerVolatile: true
+    bindings:
+      command: 55740
+      event: 55741
+      liveView: 55742
+    transportClose:
+      sentinel: keepApSentinel
+      when: before-image-transfer-reopen
     modes:
     - shooting/stills
     - image-transfer
@@ -7175,10 +7182,6 @@ connections:
         evidence:
         - docImageTransfer
     enables: []
-    bind:
-      command: 55740
-      event: 55741
-      liveview: 55742
     discovery:
       mechanism: ble
       announces: camera
@@ -7193,6 +7196,8 @@ connections:
     liveViewDelivery: null
     shutterRecipe: null
     commandListenerVolatile: false
+    bindings: null
+    transportClose: null
     modes:
     - remote-trigger
     entries: []
@@ -7227,6 +7232,8 @@ connections:
     liveViewDelivery: null
     shutterRecipe: null
     commandListenerVolatile: false
+    bindings: null
+    transportClose: null
     modes:
     - raw-conv-backup-restore
     - webcam
@@ -7261,6 +7268,8 @@ connections:
       pollOp: '0x9018'
     shutterRecipe: wirelessTether3Beat
     commandListenerVolatile: false
+    bindings: null
+    transportClose: null
     modes:
     - shooting/stills
     - remote-trigger
@@ -7474,6 +7483,8 @@ connections:
     liveViewDelivery: null
     shutterRecipe: null
     commandListenerVolatile: false
+    bindings: null
+    transportClose: null
     modes:
     - shooting/stills
     entries: []

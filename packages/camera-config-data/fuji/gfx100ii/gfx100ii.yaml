@@ -71,11 +71,15 @@ connections:
     discovery: { mechanism: ble, announces: camera }
     modes: [shooting/stills, image-transfer]
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
-    # live-view exercises both sockets, so this assignment is authoritative.
-    bind:
+    # live-view exercises both sockets, so this assignment is authoritative. Resolved
+    # ports (not offsets) so a consumer binds by role and deletes the Fuji +1/+2 math.
+    bindings:
       command: 55740                 # FujiPTPIP.defaultPort
-      event: 55741                   # liveViewEventPortOffset = 1
-      liveview: 55742                # liveViewThroughPortOffset = 2 (through-picture stream)
+      event: 55741                   # command + 1 (live-view event socket)
+      liveView: 55742                # command + 2 (through-picture stream)
+    # Before reopening an image-transfer session the app sends the 8-byte keep-AP
+    # sentinel (0xffffffff framed) instead of a TCP FIN, holding the Wi-Fi AP up (#82).
+    transportClose: { sentinel: keepApSentinel, when: before-image-transfer-reopen }
     # 82-byte InitCommandRequest = GUID(16) + uint32(0) + nameField(26) + tail(28).
     # Identity is manufacturer-tier (see fuji.yaml). Exact tail bytes come from the
     # pinned golden (FujiPTPIP.liveViewInitTail), NOT hand-transcribed here.

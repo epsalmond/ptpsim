@@ -47,6 +47,15 @@ impl ConfigStore {
     /// Returns the establishment plan as DATA; the app drives the actual GATT/UDP/TCP I/O.
     pub fn establishment(&self, connection: String) -> Option<EstablishmentPlan>;
 
+    // --- WHERE: socket binding roles + derived ports (#140) ---
+    /// The port to bind for `role` (command/event/live-view) — the app binds by role
+    /// instead of hardcoding the Fuji command port + `+1`/`+2` offsets. `None` = no such socket.
+    pub fn port_for_role(&self, connection: String, role: SocketRole) -> Option<u16>;
+    pub fn socket_bindings(&self, connection: String) -> Vec<SocketBindingInfo>; // command → event → live-view
+    /// The transport-close frame (manifest names the sentinel; resolved to bytes here)
+    /// sent before reopening an image-transfer session. On the Fuji `app` path = keep-AP sentinel.
+    pub fn transport_close(&self, connection: String) -> Option<TransportCloseInfo>;
+
     // --- WHERE: modes within a connection ---
     pub fn modes(&self, connection: String) -> Vec<ModeInfo>;             // hierarchical paths
     pub fn capabilities(&self, connection: String, mode: String) -> Vec<String>;
@@ -90,7 +99,18 @@ pub struct ConnectionInfo {
     pub kind: String,          // "ptpip-app" | "ble" | "usb-ptp" | "ptpip-direct" | "http-xlv"
     pub discovery: String,     // "ble" | "usb" | "pcss-knock" | "http-probe"
     pub auto_discoverable: bool,
+    // + per-connection traits (#81) and, via the accessors above, socket bindings
+    //   (#140): init_shape, live_view_delivery, shutter_recipe.
 }
+
+#[derive(uniffi::Enum)]  // #140 — bind by role, not by hardcoded Fuji offsets
+pub enum SocketRole { Command, Event, LiveView }
+
+#[derive(uniffi::Record)]
+pub struct SocketBindingInfo { pub role: SocketRole, pub port: u16 }
+
+#[derive(uniffi::Record)]
+pub struct TransportCloseInfo { pub packet: Vec<u8>, pub when: Option<String> } // named sentinel → bytes
 
 #[derive(uniffi::Record)]
 pub struct ModeInfo { pub path: String, pub capabilities: Vec<String> }

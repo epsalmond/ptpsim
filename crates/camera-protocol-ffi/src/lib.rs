@@ -1008,6 +1008,41 @@ impl From<cc::ResolutionTrace> for ResolutionTrace {
     }
 }
 
+/// A PTP/IP socket role a consumer binds (mirrors `cc::SocketRole`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SocketRole {
+    Command,
+    Event,
+    LiveView,
+}
+
+impl From<SocketRole> for cc::SocketRole {
+    fn from(r: SocketRole) -> Self {
+        match r {
+            SocketRole::Command => cc::SocketRole::Command,
+            SocketRole::Event => cc::SocketRole::Event,
+            SocketRole::LiveView => cc::SocketRole::LiveView,
+        }
+    }
+}
+
+/// One bound socket for a connection: which role, on which port (#140).
+#[derive(Debug, uniffi::Record)]
+pub struct SocketBindingInfo {
+    pub role: SocketRole,
+    pub port: u16,
+}
+
+/// The transport-close frame a connection sends before an image-transfer reopen,
+/// with the manifest's named sentinel resolved to bytes (#140).
+#[derive(Debug, uniffi::Record)]
+pub struct TransportCloseInfo {
+    /// The frame bytes to send.
+    pub packet: Vec<u8>,
+    /// When to send it (e.g. `before-image-transfer-reopen`), if declared.
+    pub when: Option<String>,
+}
+
 // ----------------------------------------------------------------------------
 // ConfigStore — the loaded, queryable seam
 // ----------------------------------------------------------------------------
@@ -1218,6 +1253,61 @@ impl ConfigStore {
             mechanism: c.establishment.clone(),
             user_instruction: None,
             params,
+        })
+    }
+
+    /// The port a consumer binds for `role` on `connection` (command / event /
+    /// live-view), or `None` if this connection has no such socket. Replaces the
+    /// app's hardcoded Fuji command-port + `+1`/`+2` offsets (#140).
+    pub fn port_for_role(&self, connection: String, role: SocketRole) -> Option<u16> {
+        self.inner
+            .manifest
+            .connections
+            .get(&connection)?
+            .bindings
+            .as_ref()?
+            .port_for(role.into())
+    }
+
+    /// Every bound socket for `connection`, keyed by role, in `command → event →
+    /// live-view` order (roles the connection lacks are omitted).
+    pub fn socket_bindings(&self, connection: String) -> Vec<SocketBindingInfo> {
+        let Some(b) = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)
+            .and_then(|c| c.bindings.as_ref())
+        else {
+            return Vec::new();
+        };
+        [
+            (SocketRole::Command, Some(b.command)),
+            (SocketRole::Event, b.event),
+            (SocketRole::LiveView, b.live_view),
+        ]
+        .into_iter()
+        .filter_map(|(role, port)| port.map(|port| SocketBindingInfo { role, port }))
+        .collect()
+    }
+
+    /// The transport-close frame `connection` sends before reopening an
+    /// image-transfer session, with the named sentinel resolved to bytes (#140).
+    pub fn transport_close(&self, connection: String) -> Option<TransportCloseInfo> {
+        let tc = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)?
+            .transport_close
+            .as_ref()?;
+        let packet = match tc.sentinel.as_str() {
+            "keepApSentinel" => protocol_primitives::keep_ap_sentinel(),
+            _ => return None,
+        };
+        Some(TransportCloseInfo {
+            packet,
+            when: tc.when.clone(),
         })
     }
 

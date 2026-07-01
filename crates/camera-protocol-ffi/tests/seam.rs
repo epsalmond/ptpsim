@@ -952,3 +952,43 @@ fn parse_object_handle_list_decodes_a_u32_array() {
         vec![7, 9, 11]
     );
 }
+
+#[test]
+fn socket_bindings_and_transport_close_surface_through_ffi() {
+    let s = store();
+    // Resolved ports keyed by role — the app binds by role, not Fuji offsets (#140).
+    assert_eq!(
+        s.port_for_role("app".into(), SocketRole::Command),
+        Some(55740)
+    );
+    assert_eq!(
+        s.port_for_role("app".into(), SocketRole::Event),
+        Some(55741)
+    );
+    assert_eq!(
+        s.port_for_role("app".into(), SocketRole::LiveView),
+        Some(55742)
+    );
+    // socket_bindings lists the three roles in command → event → live-view order.
+    let binds = s.socket_bindings("app".into());
+    assert_eq!(binds.len(), 3);
+    assert_eq!(binds[0].role, SocketRole::Command);
+    assert_eq!(binds[0].port, 55740);
+    assert_eq!(binds[2].role, SocketRole::LiveView);
+
+    // wireless-tether has no typed bindings block → no event socket, empty list.
+    assert_eq!(
+        s.port_for_role("wireless-tether".into(), SocketRole::Event),
+        None
+    );
+    assert!(s.socket_bindings("wireless-tether".into()).is_empty());
+
+    // Transport-close resolves the named sentinel to the 8-byte keep-AP frame.
+    let tc = s
+        .transport_close("app".into())
+        .expect("app declares a transport-close");
+    assert_eq!(tc.packet, keep_ap_sentinel());
+    assert_eq!(tc.when.as_deref(), Some("before-image-transfer-reopen"));
+    // A connection without one → None.
+    assert!(s.transport_close("wireless-tether".into()).is_none());
+}
