@@ -777,8 +777,8 @@ fn media_format_table_classifies_objects_through_ffi() {
 // ---------------------------------------------------------------------------
 
 use ptp_core::{
-    DevicePropDesc, EventPacket, ObjectInfo, OperationResponse, PropForm, PropValue, PtpIpPacket,
-    Writer,
+    DataBlock, DevicePropDesc, EventPacket, ObjectInfo, OperationResponse, PropForm, PropValue,
+    PtpIpPacket, StartData, Writer,
 };
 
 #[test]
@@ -976,12 +976,17 @@ fn socket_bindings_and_transport_close_surface_through_ffi() {
     assert_eq!(binds[0].port, 55740);
     assert_eq!(binds[2].role, SocketRole::LiveView);
 
-    // wireless-tether has no typed bindings block → no event socket, empty list.
+    // wireless-tether binds only a command socket (PCSS DSPORT 15740); poll-based
+    // delivery means no event/live-view socket.
+    assert_eq!(
+        s.port_for_role("wireless-tether".into(), SocketRole::Command),
+        Some(15740)
+    );
     assert_eq!(
         s.port_for_role("wireless-tether".into(), SocketRole::Event),
         None
     );
-    assert!(s.socket_bindings("wireless-tether".into()).is_empty());
+    assert_eq!(s.socket_bindings("wireless-tether".into()).len(), 1);
 
     // Transport-close resolves the named sentinel to the 8-byte keep-AP frame.
     let tc = s
@@ -991,6 +996,41 @@ fn socket_bindings_and_transport_close_surface_through_ffi() {
     assert_eq!(tc.when.as_deref(), Some("before-image-transfer-reopen"));
     // A connection without one → None.
     assert!(s.transport_close("wireless-tether".into()).is_none());
+}
+
+#[test]
+fn parse_data_phase_drives_a_compressed_transfer_loop() {
+    // The wireless-tether compressed channel: StartData(9) → Data(10) → EndData(12).
+    let start = protocol_primitives::fuji_framing::encode(&PtpIpPacket::StartData(StartData {
+        transaction_id: 42,
+        total_length: 10_485_760,
+    }))
+    .unwrap();
+    let s = parse_data_phase(PtpFraming::FujiCompressed, start).unwrap();
+    assert_eq!(s.kind, DataPhaseKind::Start);
+    assert_eq!(s.txn, 42);
+    assert_eq!(s.total_length, Some(10_485_760));
+    assert!(s.payload.is_empty());
+
+    let data = protocol_primitives::fuji_framing::encode(&PtpIpPacket::Data(DataBlock {
+        transaction_id: 42,
+        payload: vec![1, 2, 3, 4],
+    }))
+    .unwrap();
+    let d = parse_data_phase(PtpFraming::FujiCompressed, data).unwrap();
+    assert_eq!(d.kind, DataPhaseKind::Data);
+    assert_eq!(d.payload, vec![1, 2, 3, 4]);
+    assert_eq!(d.total_length, None);
+
+    // Type 12 (EndData) — the exact frame a fixed 1..4 Swift reader rejected.
+    let end = protocol_primitives::fuji_framing::encode(&PtpIpPacket::EndData(DataBlock {
+        transaction_id: 42,
+        payload: vec![0xff; 8],
+    }))
+    .unwrap();
+    let e = parse_data_phase(PtpFraming::FujiCompressed, end).unwrap();
+    assert_eq!(e.kind, DataPhaseKind::End);
+    assert_eq!(e.payload, vec![0xff; 8]);
 }
 
 #[test]
@@ -1013,4 +1053,17 @@ fn connection_wire_framing_is_declared_in_the_manifest() {
         build_command(app.command_framing.unwrap(), 0x1002, 1, vec![1]).unwrap(),
         vec![0x10, 0, 0, 0, 0x01, 0x00, 0x02, 0x10, 0x01, 0, 0, 0, 0x01, 0, 0, 0],
     );
+
+    // wireless-tether's command/data channel is compressed too (types 9/10/12); its
+    // poll-based delivery means no event socket, so no event framing.
+    let wt = s
+        .connections(Platform::Macos)
+        .into_iter()
+        .find(|c| c.id == "wireless-tether")
+        .expect("wireless-tether connection");
+    assert!(matches!(
+        wt.command_framing,
+        Some(PtpFraming::FujiCompressed)
+    ));
+    assert!(wt.event_framing.is_none());
 }

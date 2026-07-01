@@ -206,6 +206,59 @@ pub fn parse_data_payload(framing: PtpFraming, packet: Vec<u8>) -> Result<Vec<u8
     }
 }
 
+/// Which data-phase frame this is. A transfer is `Start` (announces the total
+/// length) → zero or more `Data` → `End`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum DataPhaseKind {
+    Start,
+    Data,
+    End,
+}
+
+/// One decoded data-phase frame. `total_length` is set only on `Start`; `payload`
+/// carries the bytes of a `Data`/`End`. The operation code is not in the data
+/// phase — a consumer correlates by `txn` with the preceding operation request.
+#[derive(Debug, uniffi::Record)]
+pub struct DataPhaseFrame {
+    pub kind: DataPhaseKind,
+    pub txn: u32,
+    pub total_length: Option<u64>,
+    pub payload: Vec<u8>,
+}
+
+/// Decode one data-phase frame, distinguishing `StartData`/`Data`/`EndData` so a
+/// consumer can drive a transfer loop (e.g. the wireless-tether compressed channel,
+/// whose types 9/10/12 a fixed-`1..4` reader rejects). Yields typed errors.
+#[uniffi::export]
+pub fn parse_data_phase(
+    framing: PtpFraming,
+    packet: Vec<u8>,
+) -> Result<DataPhaseFrame, CodecError> {
+    match frame_decode(framing, &packet)? {
+        ptp_core::PtpIpPacket::StartData(s) => Ok(DataPhaseFrame {
+            kind: DataPhaseKind::Start,
+            txn: s.transaction_id,
+            total_length: Some(s.total_length),
+            payload: Vec::new(),
+        }),
+        ptp_core::PtpIpPacket::Data(d) => Ok(DataPhaseFrame {
+            kind: DataPhaseKind::Data,
+            txn: d.transaction_id,
+            total_length: None,
+            payload: d.payload,
+        }),
+        ptp_core::PtpIpPacket::EndData(d) => Ok(DataPhaseFrame {
+            kind: DataPhaseKind::End,
+            txn: d.transaction_id,
+            total_length: None,
+            payload: d.payload,
+        }),
+        other => Err(CodecError::Decode(format!(
+            "expected a data-phase frame (start/data/end), got {other:?}"
+        ))),
+    }
+}
+
 /// A decoded PTP event packet.
 #[derive(Debug, uniffi::Record)]
 pub struct CameraEvent {
