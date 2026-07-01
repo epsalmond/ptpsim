@@ -55,8 +55,8 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
 | `value(key)` / `value_label(prop, value)` | value-policy resolution + human labels |
 
-Byte codecs (build/parse PTP packets, encode values) are exported functions —
-**partial today** (see §6).
+Byte codecs (build/parse PTP packets, decode datasets, encode values) are exported
+functions — the **G1–G3 set is complete** (see §6).
 
 ## 3. Generate bindings (uniffi 0.31, library mode — no UDL)
 
@@ -171,12 +171,16 @@ per-platform packaging:
   across **all five connections** (`app` WiFi-AP, `ble`, `wireless-tether` PCSS, `usb`,
   `xlv` HTTP); firmware-tier overlays via `ConfigStore.from_tiers(body, manufacturer,
   fw_overlays)` (e.g. `fw2.40.yaml` flips XLV to HTTPS).
-- **Codecs (§B):** `build_app_init` (G1, the 82-byte init), `validate_init_ack`, and
-  `encode_value(raw, width)` (G2 — the generic value encoder; per-value semantics live
-  in `descriptor.values`/`labels`) are **landed + in the bindings**. Plus existing
-  `fuji_framing` + liveview parse + `usb_ptp`. **Pending — G3 parse helpers**
-  (`parse_live_status` 0xd212, `parse_object_handle_list` 0xd621, Fuji `parse_object_info`,
-  `parse_event`): not built — they need byte-layout evidence. Flag what you need.
+- **Codecs (§B) — G1–G3 landed + in the bindings.** G1: `build_app_init` (the 82-byte
+  init) + `validate_init_ack` + `keep_ap_sentinel`. G2: `encode_value(raw, width)` (generic
+  value encoder; per-value semantics live in `descriptor.values`/`labels`). G3: packet
+  framing `build_command` / `build_data` / `parse_response` / `parse_data_payload` /
+  `parse_data_phase` (the `StartData`/`Data`/`EndData` transfer loop, e.g. wireless-tether)
+  / `parse_event`, plus dataset codecs `parse_object_info` / `parse_device_prop_desc` /
+  `parse_live_status` (0xd212) / `parse_object_handle_list` (0xd621). Framing is selected
+  per call by `PtpFraming { Standard | FujiCompressed | Usb }`, which you **read from the
+  manifest** (`ConnectionInfo.command_framing` / `event_framing`) — never a `kind→framing`
+  map in app source. Only follow-up: a byte-exact wireless-tether data-phase golden (#143).
 - **Sync only.** A stateful session driver (feed/poll) is a later phase; today's
   surface is synchronous pure queries.
 
