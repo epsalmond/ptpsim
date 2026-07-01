@@ -108,6 +108,15 @@ pub fn normalize_client_name(raw: String) -> String {
     protocol_primitives::normalize_client_name(&raw)
 }
 
+/// G1 — pack a normalized tap `(x, y)` (each `0.0..=1.0`) into the `0x9026`
+/// LockS1Lock AF-area u32 for a `columns`×`rows` grid (read from `focus_grid()`).
+/// Aspect comes from the prior `0xD17C` lock state, defaulting to 4:3. Replaces
+/// the app's `FujiFocusArea` so tap-to-focus carries no camera math (#135).
+#[uniffi::export]
+pub fn pack_af_area(x: f64, y: f64, columns: u32, rows: u32, prior_lock_state: Option<u32>) -> u32 {
+    protocol_primitives::pack_af_area(x, y, columns, rows, prior_lock_state)
+}
+
 /// G2 — encode a resolved value at its property width (the per-value semantics
 /// live in the manifest; this just writes the bytes). `value` is signed so signed
 /// widths (`I16`/`I32`) can carry negative exposure-bias / ISO auto sentinels.
@@ -621,6 +630,14 @@ pub struct CameraIdentityInfo {
     pub model: String,
     pub firmware: String,
     pub identities: Vec<KeyValue>,
+}
+
+/// The camera's AF grid for tap-to-focus (#135). The app reads these dims from
+/// data and feeds them to [`pack_af_area`] — it never hardcodes the grid.
+#[derive(uniffi::Record)]
+pub struct FocusGridInfo {
+    pub columns: u32,
+    pub rows: u32,
 }
 
 #[derive(uniffi::Record)]
@@ -1639,6 +1656,18 @@ impl ConfigStore {
                 })
                 .collect(),
         }
+    }
+
+    /// The camera's tap-to-focus AF grid (#135), or `None` if it declares none.
+    pub fn focus_grid(&self) -> Option<FocusGridInfo> {
+        self.inner
+            .manifest
+            .focus_grid
+            .as_ref()
+            .map(|g| FocusGridInfo {
+                columns: g.columns,
+                rows: g.rows,
+            })
     }
 
     /// Resolve a `values:` key to its fixed scalar string (`None` for non-fixed).

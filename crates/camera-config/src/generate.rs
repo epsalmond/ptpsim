@@ -264,6 +264,9 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
         properties,
         workflows: BTreeMap::new(),
         media: None,
+        // The AF grid (#135) is curated in the base manifest, merged via --enrich;
+        // it is not synthesized from probe evidence.
+        focus_grid: None,
         events: BTreeMap::new(),
         quirks: Vec::new(),
         // Bare nodes — existence is observed; establishment + entries (preludes/

@@ -38,6 +38,9 @@ pub struct CameraManifest {
     pub workflows: BTreeMap<String, Workflow>,
     #[serde(default)]
     pub media: Option<Media>,
+    /// AF grid for tap-to-focus (#135). Absent for cameras without app-driven AF.
+    #[serde(default)]
+    pub focus_grid: Option<FocusGrid>,
     #[serde(default)]
     pub events: BTreeMap<HexCode, Event>,
     #[serde(default)]
@@ -68,6 +71,17 @@ pub struct CameraIdentity {
     pub firmware: String,
     #[serde(default)]
     pub identities: BTreeMap<String, String>,
+}
+
+/// The camera's AF grid dimensions for tap-to-focus (#135). A screen tap maps to
+/// a 1-indexed cell of a `columns`×`rows` grid, packed into the `0x9026` param by
+/// [`crate::model`]'s consumer via `protocol_primitives::pack_af_area`. GFX100 II
+/// stills: 9×6. The app reads these dims from data — never hardcodes the grid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusGrid {
+    pub columns: u32,
+    pub rows: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

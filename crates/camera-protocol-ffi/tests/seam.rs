@@ -765,6 +765,25 @@ fn property_catalog_enumerates_through_ffi() {
 }
 
 #[test]
+fn focus_grid_and_af_packing_are_data_driven() {
+    let s = store();
+    // #135: the AF grid is manifest data, not a Swift constant.
+    let grid = s.focus_grid().expect("gfx100ii declares a focus grid");
+    assert_eq!((grid.columns, grid.rows), (9, 6));
+    // The app packs a live-view tap into the 0x9026 param using the manifest grid.
+    // A tap in cell (5,4) with default 4:3 aspect is the wire-confirmed 0x04030504.
+    assert_eq!(
+        pack_af_area(0.45, 0.5, grid.columns, grid.rows, None),
+        0x0403_0504
+    );
+    // A prior 0xD17C lock carries its aspect forward into the next pack.
+    assert_eq!(
+        pack_af_area(0.0, 0.0, grid.columns, grid.rows, Some(0x1009_0101)) >> 16,
+        0x1009
+    );
+}
+
+#[test]
 fn media_format_table_classifies_objects_through_ffi() {
     let s = store();
     let raf = s.media_format(0xb103).expect("RAF in the format table");

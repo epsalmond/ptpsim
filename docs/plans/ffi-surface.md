@@ -85,6 +85,10 @@ impl ConfigStore {
     pub fn value(&self, key: String) -> Option<ResolvedValue>;
 
     pub fn value_label(&self, prop: u16, value: i64) -> Option<String>;
+
+    /// The camera's tap-to-focus AF grid (#135) — the app reads dims from data
+    /// and packs a tap via `pack_af_area`, never hardcoding the grid.
+    pub fn focus_grid(&self) -> Option<FocusGridInfo>;
 }
 ```
 
@@ -191,6 +195,7 @@ payloads; only the header differs.
 #[uniffi::export] fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError>;
 #[uniffi::export] fn keep_ap_sentinel() -> Vec<u8>;  // 8-byte 0xffffffff keep-AP frame (#82)
 #[uniffi::export] fn normalize_client_name(raw: String) -> String;  // #139: canonical terminalName for BLE+PTP/IP (one value, #109)
+#[uniffi::export] fn pack_af_area(x: f64, y: f64, columns: u32, rows: u32, prior_lock_state: Option<u32>) -> u32;  // #135: tap → 0x9026 AF-area (grid from focus_grid())
 
 // G2 — value codec (per-value semantics are manifest data; this writes the bytes)
 #[uniffi::export] fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, CodecError>;

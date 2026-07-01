@@ -6319,6 +6319,9 @@ media:
       vendor: fuji
       isRaw: false
       isMovie: false
+focusGrid:
+  columns: 9
+  rows: 6
 events:
   '0x400d':
     name: CaptureComplete

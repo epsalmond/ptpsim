@@ -766,3 +766,11 @@ media:
     "0xb103": { name: raf,      vendor: fuji,     isRaw: true, embeddedJpeg: { magic: FUJIFILMCCD-RAW, offsetAt: 0x54, lengthAt: 0x58, endian: big } }
     "0xb105": { name: heif,     vendor: fuji }
     "0x300d": { name: mov,      vendor: standard, isMovie: true }
+
+# Tap-to-focus AF grid (#135): the app maps a live-view tap to a 1-indexed cell
+# of this grid and packs it for 0x9026 via the pack_af_area FFI — no grid dims in
+# Swift. 9×6 wire-confirmed for GFX100 II stills (0xD17C cells up to col=9,row=6;
+# FUJI_PTP_PROP_REFERENCE.md §5).
+focusGrid:
+  columns: 9
+  rows: 6
