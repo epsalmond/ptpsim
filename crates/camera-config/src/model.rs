@@ -345,6 +345,12 @@ pub struct Media {
     /// per-vendor format literals.
     #[serde(default)]
     pub formats: BTreeMap<HexCode, MediaFormat>,
+    /// Wireless transfer size ceiling (#136): an object whose compressed size is
+    /// `>=` this can't be pulled over the wireless transport and must come off the
+    /// memory card. Fuji reports such objects at `0xFFFFFFFF` (u32 max) — the
+    /// app reads this bound from data instead of hardcoding the sentinel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireless_transfer_ceiling: Option<u64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
 }
@@ -361,6 +367,12 @@ pub struct MediaFormat {
     pub is_raw: bool,
     #[serde(default)]
     pub is_movie: bool,
+    /// Whether this object format can be handed to the OS photo library (#136):
+    /// full stills (JPEG/HEIF/RAW) and movies, but not non-image PTP objects
+    /// (associations, scripts). The app checks this instead of its own
+    /// still/movie format tables.
+    #[serde(default)]
+    pub is_photos_compatible: bool,
     /// Where this RAW format's embedded full-size JPEG lives (#101). Absent for
     /// non-RAW formats and RAWs that don't embed a JPEG.
     #[serde(default, skip_serializing_if = "Option::is_none")]

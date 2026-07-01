@@ -695,6 +695,8 @@ pub struct MediaFormatInfo {
     pub vendor: Option<String>,
     pub is_raw: bool,
     pub is_movie: bool,
+    /// Whether the app may hand this format to the OS photo library (#136).
+    pub is_photos_compatible: bool,
     /// Where this RAW format's embedded full-size JPEG lives (#101), so the app
     /// can pull it with GetPartialObject. `None` for non-RAW / no embedded JPEG.
     pub embedded_jpeg: Option<EmbeddedJpegInfo>,
@@ -1761,6 +1763,7 @@ impl ConfigStore {
             vendor: f.vendor.clone(),
             is_raw: f.is_raw,
             is_movie: f.is_movie,
+            is_photos_compatible: f.is_photos_compatible,
             embedded_jpeg: f.embedded_jpeg.as_ref().map(|e| EmbeddedJpegInfo {
                 magic: e.magic.clone(),
                 offset_at: e.offset_at,
@@ -1768,6 +1771,17 @@ impl ConfigStore {
                 big_endian: matches!(e.endian, cc::model::Endian::Big),
             }),
         })
+    }
+
+    /// The wireless transfer size ceiling (#136): an object whose compressed size
+    /// is `>=` this must come off the memory card, not the wireless transport.
+    /// `None` if the camera declares no such bound.
+    pub fn wireless_transfer_ceiling(&self) -> Option<u64> {
+        self.inner
+            .manifest
+            .media
+            .as_ref()?
+            .wireless_transfer_ceiling
     }
 }
 

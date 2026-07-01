@@ -757,15 +757,21 @@ quirks:
 # offsets) is deferred — it needs a live RAF-download capture; the blind
 # JPEG-scan preview path works meanwhile.
 media:
+  # >4 GB objects (Fuji reports compressed size 0xFFFFFFFF) are memory-card-only
+  # over wireless (#136); the app reads this bound from data, not a Swift constant.
+  wirelessTransferCeiling: 0xffffffff
+  # isPhotosCompatible (#136): full stills + movies may go to the OS photo library;
+  # non-image PTP objects (associations/scripts) must not. All formats listed here
+  # are full assets, so all are photos-compatible.
   formats:
-    "0x3801": { name: exifJpeg, vendor: standard }
+    "0x3801": { name: exifJpeg, vendor: standard, isPhotosCompatible: true }
     # embeddedJpeg: RAF header layout per exiftool FujiFilm::ProcessRAF + dcraw
     # parse_fuji — magic FUJIFILMCCD-RAW @0, JPEG offset u32-BE @0x54, length @0x58.
     # The app reads these to GetPartialObject the embedded JPG; the sim just serves
     # bytes (#101).
-    "0xb103": { name: raf,      vendor: fuji,     isRaw: true, embeddedJpeg: { magic: FUJIFILMCCD-RAW, offsetAt: 0x54, lengthAt: 0x58, endian: big } }
-    "0xb105": { name: heif,     vendor: fuji }
-    "0x300d": { name: mov,      vendor: standard, isMovie: true }
+    "0xb103": { name: raf,      vendor: fuji,     isRaw: true, isPhotosCompatible: true, embeddedJpeg: { magic: FUJIFILMCCD-RAW, offsetAt: 0x54, lengthAt: 0x58, endian: big } }
+    "0xb105": { name: heif,     vendor: fuji,     isPhotosCompatible: true }
+    "0x300d": { name: mov,      vendor: standard, isMovie: true, isPhotosCompatible: true }
 
 # Tap-to-focus AF grid (#135): the app maps a live-view tap to a 1-indexed cell
 # of this grid and packs it for 0x9026 via the pack_af_area FFI — no grid dims in

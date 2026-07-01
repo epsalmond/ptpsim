@@ -6299,16 +6299,19 @@ media:
       vendor: standard
       isRaw: false
       isMovie: true
+      isPhotosCompatible: true
     '0x3801':
       name: exifJpeg
       vendor: standard
       isRaw: false
       isMovie: false
+      isPhotosCompatible: true
     '0xb103':
       name: raf
       vendor: fuji
       isRaw: true
       isMovie: false
+      isPhotosCompatible: true
       embeddedJpeg:
         magic: FUJIFILMCCD-RAW
         offsetAt: 84
@@ -6319,6 +6322,8 @@ media:
       vendor: fuji
       isRaw: false
       isMovie: false
+      isPhotosCompatible: true
+  wirelessTransferCeiling: 4294967295
 focusGrid:
   columns: 9
   rows: 6

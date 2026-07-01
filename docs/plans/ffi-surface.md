@@ -219,7 +219,9 @@ Records/enums: `ResponseFrame { response_code, txn, params }`, `CameraEvent { co
 `DataPhaseFrame { kind: DataPhaseKind (Start|Data|End), txn, total_length?, payload }` (total_length
 set only on `Start`; the Fuji compressed and USB channels use a single `Data` frame — see the
 byte-exact reconciliation in `fuji_framing`),
-`PtpObjectInfo` (the generic `ObjectInfo` fields; media classification is `media_format()` + #136),
+`PtpObjectInfo` (the generic `ObjectInfo` fields; media classification is `media_format()` — which
+carries `is_raw`/`is_movie`/`is_photos_compatible` (#136) — plus `wireless_transfer_ceiling()` for the
+memory-card-only size bound),
 `PtpDevicePropDesc { code, datatype, get_set, factory_default, current, form }` over
 `PtpValue { U8|U16|U32|U64|Str }` and `PtpPropForm { None | Range | Enum }`, `LiveStatus { records:
 Vec<PropObservation> }`. Notes: the Fuji compressed data phase is one length-prefixed type-2 frame

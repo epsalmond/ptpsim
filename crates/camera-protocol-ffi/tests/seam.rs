@@ -809,6 +809,14 @@ fn media_format_table_classifies_objects_through_ffi() {
     // A non-RAW format carries no embedded-JPEG locator.
     assert!(jpeg.embedded_jpeg.is_none());
 
+    // #136: photos-compatibility is data — JPEG/RAF/MOV are all full assets the
+    // app may hand to the OS photo library, without its own still/movie tables.
+    assert!(jpeg.is_photos_compatible);
+    assert!(raf.is_photos_compatible);
+    assert!(mov.is_photos_compatible);
+    // The wireless size ceiling is data, not a hardcoded 0xFFFFFFFF in Swift.
+    assert_eq!(s.wireless_transfer_ceiling(), Some(0xffff_ffff));
+
     // An unknown / unlisted format code → None.
     assert!(s.media_format(0x9999).is_none());
 }
