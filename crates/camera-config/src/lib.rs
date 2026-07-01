@@ -24,8 +24,9 @@ pub use model::{
     CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition, Control,
     Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
     LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, OpEffect,
-    Operation, Payload, PayloadForm, PostviewEvent, Property, RecordLayout, ShutterRecipe, Step,
-    StepParam, ValuePolicy, ValueSource, VersionCond, Workflow,
+    Operation, Payload, PayloadForm, PostviewEvent, Property, RecordLayout, ShutterRecipe,
+    SocketBindings, SocketRole, Step, StepParam, TransportClose, ValuePolicy, ValueSource,
+    VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};

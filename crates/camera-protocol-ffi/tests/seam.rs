@@ -769,3 +769,301 @@ fn media_format_table_classifies_objects_through_ffi() {
     // An unknown / unlisted format code → None.
     assert!(s.media_format(0x9999).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// G3 codec seam (#133) — PTP/IP framing + dataset codecs. Fixtures are built
+// with the same ptp-core / protocol-primitives primitives the FFI wraps, so
+// each test proves the exposed parser is the inverse of the real encoder.
+// ---------------------------------------------------------------------------
+
+use ptp_core::{
+    DataBlock, DevicePropDesc, EventPacket, ObjectInfo, OperationResponse, PropForm, PropValue,
+    PtpIpPacket, StartData, Writer,
+};
+
+#[test]
+fn build_command_is_byte_exact_per_framing() {
+    // Compressed OpenSession(0x1002), tid 1, param 1 — no DataPhaseInfo field.
+    assert_eq!(
+        build_command(PtpFraming::FujiCompressed, 0x1002, 1, vec![1]).unwrap(),
+        vec![0x10, 0, 0, 0, 0x01, 0x00, 0x02, 0x10, 0x01, 0, 0, 0, 0x01, 0, 0, 0],
+    );
+    // Standard framing carries DataPhaseInfo (=1) before the opcode.
+    assert_eq!(
+        build_command(PtpFraming::Standard, 0x1002, 1, vec![1]).unwrap(),
+        vec![
+            0x16, 0, 0, 0, // length 22
+            0x06, 0, 0, 0, // type OperationRequest
+            0x01, 0, 0, 0, // data phase info
+            0x02, 0x10, // op 0x1002
+            0x01, 0, 0, 0, // tid
+            0x01, 0, 0, 0, // param
+        ],
+    );
+    // USB container: GetDeviceInfo(0x1001), tid 0, no params.
+    assert_eq!(
+        build_command(PtpFraming::Usb, 0x1001, 0, vec![]).unwrap(),
+        vec![0x0c, 0, 0, 0, 0x01, 0x00, 0x01, 0x10, 0x00, 0x00, 0x00, 0x00],
+    );
+}
+
+#[test]
+fn build_data_round_trips_through_parse_data_payload() {
+    let payload = vec![0xde, 0xad, 0xbe, 0xef, 0x01];
+    // USB data phases are a bulk-transfer concern, not a re-emittable container,
+    // so build_data covers the two framings that model a Data block.
+    for framing in [PtpFraming::Standard, PtpFraming::FujiCompressed] {
+        let frame = build_data(framing, 9, payload.clone()).unwrap();
+        assert_eq!(parse_data_payload(framing, frame).unwrap(), payload);
+    }
+    // parse_data_payload still decodes a USB type-2 data container.
+    let usb_data = vec![
+        0x10, 0, 0, 0, 0x02, 0x00, 0x09, 0x10, 0x07, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,
+    ];
+    assert_eq!(
+        parse_data_payload(PtpFraming::Usb, usb_data).unwrap(),
+        vec![0xde, 0xad, 0xbe, 0xef],
+    );
+}
+
+#[test]
+fn parse_response_reads_a_compressed_operation_response() {
+    let frame = protocol_primitives::fuji_framing::encode(&PtpIpPacket::OperationResponse(
+        OperationResponse {
+            code: 0x2001,
+            transaction_id: 7,
+            params: vec![0x2a],
+        },
+    ))
+    .unwrap();
+    let r = parse_response(PtpFraming::FujiCompressed, frame).unwrap();
+    assert_eq!(r.response_code, 0x2001);
+    assert_eq!(r.txn, 7);
+    assert_eq!(r.params, vec![0x2a]);
+
+    // Truncated bytes → a decode error, not a panic.
+    assert!(matches!(
+        parse_response(PtpFraming::Standard, vec![0, 0]),
+        Err(CodecError::Decode(_))
+    ));
+}
+
+#[test]
+fn parse_event_reads_the_event_container_and_ignores_non_events() {
+    // USB/PIMA event container (type 4).
+    let frame = protocol_primitives::usb_ptp::encode(&PtpIpPacket::Event(EventPacket {
+        code: 0x4002,
+        transaction_id: 0,
+        params: vec![5],
+    }))
+    .unwrap();
+    let got = parse_event(PtpFraming::Usb, frame)
+        .unwrap()
+        .expect("an event");
+    assert_eq!(got.code, 0x4002);
+    assert_eq!(got.params, vec![5]);
+
+    // Standard PTP/IP event (packet-type 8) round-trips too.
+    let std_frame = ptp_core::encode(&PtpIpPacket::Event(EventPacket {
+        code: 0x4002,
+        transaction_id: 3,
+        params: vec![9],
+    }))
+    .unwrap();
+    assert_eq!(
+        parse_event(PtpFraming::Standard, std_frame)
+            .unwrap()
+            .unwrap()
+            .code,
+        0x4002,
+    );
+
+    // A response frame is not an event → None (not an error).
+    let resp =
+        protocol_primitives::usb_ptp::encode(&PtpIpPacket::OperationResponse(OperationResponse {
+            code: 0x2001,
+            transaction_id: 1,
+            params: vec![],
+        }))
+        .unwrap();
+    assert!(parse_event(PtpFraming::Usb, resp).unwrap().is_none());
+}
+
+#[test]
+fn parse_object_info_decodes_the_generic_fields() {
+    let oi = ObjectInfo {
+        storage_id: 0x0001_0001,
+        object_format: 0xb103, // RAF
+        object_compressed_size: 4_289_912,
+        image_pix_width: 8256,
+        image_pix_height: 6192,
+        filename: "DSCF1494.RAF".into(),
+        ..Default::default()
+    };
+    let mut w = Writer::new();
+    oi.encode(&mut w).unwrap();
+    let got = parse_object_info(w.into_vec()).unwrap();
+    assert_eq!(got.object_format, 0xb103);
+    assert_eq!(got.object_compressed_size, 4_289_912);
+    assert_eq!(got.image_pix_width, 8256);
+    assert_eq!(got.filename, "DSCF1494.RAF");
+}
+
+#[test]
+fn parse_device_prop_desc_decodes_value_and_enum_form() {
+    let desc = DevicePropDesc {
+        code: 0x5007,
+        datatype: 0x0004, // UINT16
+        get_set: 1,
+        factory_default: PropValue::U16(400),
+        current: PropValue::U16(560),
+        form: PropForm::Enum(vec![PropValue::U16(280), PropValue::U16(560)]),
+    };
+    let mut w = Writer::new();
+    desc.encode(&mut w).unwrap();
+    let got = parse_device_prop_desc(w.into_vec()).unwrap();
+    assert_eq!(got.code, 0x5007);
+    assert_eq!(got.datatype, 0x0004);
+    assert!(matches!(got.current, PtpValue::U16 { value: 560 }));
+    match got.form {
+        PtpPropForm::Enum { values } => {
+            assert_eq!(values.len(), 2);
+            assert!(matches!(values[0], PtpValue::U16 { value: 280 }));
+        }
+        other => panic!("expected an enum form, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_live_status_is_the_inverse_of_the_record_stream_encoder() {
+    let bytes = protocol_primitives::quirk::record_stream(&[(0x5007, 280), (0xd212, 1)]);
+    let ls = parse_live_status(bytes).unwrap();
+    assert_eq!(ls.records.len(), 2);
+    assert_eq!((ls.records[0].code, ls.records[0].value), (0x5007, 280));
+    assert_eq!((ls.records[1].code, ls.records[1].value), (0xd212, 1));
+}
+
+#[test]
+fn parse_object_handle_list_decodes_a_u32_array() {
+    let mut w = Writer::new();
+    w.ptp_array(&[7u32, 9, 11], |w, v| w.u32(*v));
+    assert_eq!(
+        parse_object_handle_list(w.into_vec()).unwrap(),
+        vec![7, 9, 11]
+    );
+}
+
+#[test]
+fn socket_bindings_and_transport_close_surface_through_ffi() {
+    let s = store();
+    // Resolved ports keyed by role — the app binds by role, not Fuji offsets (#140).
+    assert_eq!(
+        s.port_for_role("app".into(), SocketRole::Command),
+        Some(55740)
+    );
+    assert_eq!(
+        s.port_for_role("app".into(), SocketRole::Event),
+        Some(55741)
+    );
+    assert_eq!(
+        s.port_for_role("app".into(), SocketRole::LiveView),
+        Some(55742)
+    );
+    // socket_bindings lists the three roles in command → event → live-view order.
+    let binds = s.socket_bindings("app".into());
+    assert_eq!(binds.len(), 3);
+    assert_eq!(binds[0].role, SocketRole::Command);
+    assert_eq!(binds[0].port, 55740);
+    assert_eq!(binds[2].role, SocketRole::LiveView);
+
+    // wireless-tether binds only a command socket (PCSS DSPORT 15740); poll-based
+    // delivery means no event/live-view socket.
+    assert_eq!(
+        s.port_for_role("wireless-tether".into(), SocketRole::Command),
+        Some(15740)
+    );
+    assert_eq!(
+        s.port_for_role("wireless-tether".into(), SocketRole::Event),
+        None
+    );
+    assert_eq!(s.socket_bindings("wireless-tether".into()).len(), 1);
+
+    // Transport-close resolves the named sentinel to the 8-byte keep-AP frame.
+    let tc = s
+        .transport_close("app".into())
+        .expect("app declares a transport-close");
+    assert_eq!(tc.packet, keep_ap_sentinel());
+    assert_eq!(tc.when.as_deref(), Some("before-image-transfer-reopen"));
+    // A connection without one → None.
+    assert!(s.transport_close("wireless-tether".into()).is_none());
+}
+
+#[test]
+fn parse_data_phase_drives_a_compressed_transfer_loop() {
+    // The wireless-tether compressed channel: StartData(9) → Data(10) → EndData(12).
+    let start = protocol_primitives::fuji_framing::encode(&PtpIpPacket::StartData(StartData {
+        transaction_id: 42,
+        total_length: 10_485_760,
+    }))
+    .unwrap();
+    let s = parse_data_phase(PtpFraming::FujiCompressed, start).unwrap();
+    assert_eq!(s.kind, DataPhaseKind::Start);
+    assert_eq!(s.txn, 42);
+    assert_eq!(s.total_length, Some(10_485_760));
+    assert!(s.payload.is_empty());
+
+    let data = protocol_primitives::fuji_framing::encode(&PtpIpPacket::Data(DataBlock {
+        transaction_id: 42,
+        payload: vec![1, 2, 3, 4],
+    }))
+    .unwrap();
+    let d = parse_data_phase(PtpFraming::FujiCompressed, data).unwrap();
+    assert_eq!(d.kind, DataPhaseKind::Data);
+    assert_eq!(d.payload, vec![1, 2, 3, 4]);
+    assert_eq!(d.total_length, None);
+
+    // Type 12 (EndData) — the exact frame a fixed 1..4 Swift reader rejected.
+    let end = protocol_primitives::fuji_framing::encode(&PtpIpPacket::EndData(DataBlock {
+        transaction_id: 42,
+        payload: vec![0xff; 8],
+    }))
+    .unwrap();
+    let e = parse_data_phase(PtpFraming::FujiCompressed, end).unwrap();
+    assert_eq!(e.kind, DataPhaseKind::End);
+    assert_eq!(e.payload, vec![0xff; 8]);
+}
+
+#[test]
+fn connection_wire_framing_is_declared_in_the_manifest() {
+    let s = store();
+    let app = s
+        .connections(Platform::Macos)
+        .into_iter()
+        .find(|c| c.id == "app")
+        .expect("app connection");
+    // The app reads framing from data — it never maps kind→framing itself (#133).
+    assert!(matches!(
+        app.command_framing,
+        Some(PtpFraming::FujiCompressed)
+    ));
+    // Command vs event framing differ: the event socket is a PIMA type-4 container.
+    assert!(matches!(app.event_framing, Some(PtpFraming::Usb)));
+    // The manifest-declared command framing drives the codec: byte-exact compressed frame.
+    assert_eq!(
+        build_command(app.command_framing.unwrap(), 0x1002, 1, vec![1]).unwrap(),
+        vec![0x10, 0, 0, 0, 0x01, 0x00, 0x02, 0x10, 0x01, 0, 0, 0, 0x01, 0, 0, 0],
+    );
+
+    // wireless-tether's command/data channel is compressed too (types 9/10/12); its
+    // poll-based delivery means no event socket, so no event framing.
+    let wt = s
+        .connections(Platform::Macos)
+        .into_iter()
+        .find(|c| c.id == "wireless-tether")
+        .expect("wireless-tether connection");
+    assert!(matches!(
+        wt.command_framing,
+        Some(PtpFraming::FujiCompressed)
+    ));
+    assert!(wt.event_framing.is_none());
+}

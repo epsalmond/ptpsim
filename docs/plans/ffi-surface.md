@@ -47,6 +47,15 @@ impl ConfigStore {
     /// Returns the establishment plan as DATA; the app drives the actual GATT/UDP/TCP I/O.
     pub fn establishment(&self, connection: String) -> Option<EstablishmentPlan>;
 
+    // --- WHERE: socket binding roles + derived ports (#140) ---
+    /// The port to bind for `role` (command/event/live-view) — the app binds by role
+    /// instead of hardcoding the Fuji command port + `+1`/`+2` offsets. `None` = no such socket.
+    pub fn port_for_role(&self, connection: String, role: SocketRole) -> Option<u16>;
+    pub fn socket_bindings(&self, connection: String) -> Vec<SocketBindingInfo>; // command → event → live-view
+    /// The transport-close frame (manifest names the sentinel; resolved to bytes here)
+    /// sent before reopening an image-transfer session. On the Fuji `app` path = keep-AP sentinel.
+    pub fn transport_close(&self, connection: String) -> Option<TransportCloseInfo>;
+
     // --- WHERE: modes within a connection ---
     pub fn modes(&self, connection: String) -> Vec<ModeInfo>;             // hierarchical paths
     pub fn capabilities(&self, connection: String, mode: String) -> Vec<String>;
@@ -90,7 +99,19 @@ pub struct ConnectionInfo {
     pub kind: String,          // "ptpip-app" | "ble" | "usb-ptp" | "ptpip-direct" | "http-xlv"
     pub discovery: String,     // "ble" | "usb" | "pcss-knock" | "http-probe"
     pub auto_discoverable: bool,
+    // + per-connection traits (#81): init_shape, live_view_delivery, shutter_recipe;
+    //   wire framing (#133): command_framing, event_framing (Option<PtpFraming>);
+    //   and, via the accessors above, socket bindings (#140).
 }
+
+#[derive(uniffi::Enum)]  // #140 — bind by role, not by hardcoded Fuji offsets
+pub enum SocketRole { Command, Event, LiveView }
+
+#[derive(uniffi::Record)]
+pub struct SocketBindingInfo { pub role: SocketRole, pub port: u16 }
+
+#[derive(uniffi::Record)]
+pub struct TransportCloseInfo { pub packet: Vec<u8>, pub when: Option<String> } // named sentinel → bytes
 
 #[derive(uniffi::Record)]
 pub struct ModeInfo { pub path: String, pub capabilities: Vec<String> }
@@ -155,29 +176,50 @@ pub enum ConfigError {
 
 ## B. Codec functions (G1–G3 workstream — pure intents↔bytes)
 
-These flow bytes through the same FFI; partial today (`ptp-core` framing + `fuji_framing`
-+ liveview parse + `usb_ptp` exist; init variant / value codecs / Fuji parse helpers are
-the build). Sans-io: they return/consume `Vec<u8>`, the app does the socket/USB write.
+Sans-io: they return/consume `Vec<u8>`, the app does the socket/USB write. **G1–G3 landed
+(#133).** Codec errors surface as `CodecError { Encode | Decode }`. Framing is selected per
+call by `PtpFraming { Standard | FujiCompressed | Usb }`, which the consumer **reads from the
+manifest** — `ConnectionInfo.command_framing` / `event_framing` — so the connection→framing
+choice is data, never a `kind`-mapping in the app's own code (no manufacturer knowledge left in
+Swift). Command vs event can differ: the Fuji `app` command channel is `FujiCompressed` while its
+event socket is the PIMA type-4 container (`Usb`). All three share the `ptp-core` container
+payloads; only the header differs.
 
 ```rust
 // G1 — Fuji reference app 82-byte init (identity from value-policy, tail from manifest)
-#[uniffi::export] fn build_app_init(guid: Vec<u8>, friendly_name: String, tail_hex: String) -> Vec<u8>;
-#[uniffi::export] fn validate_init_ack(packet: Vec<u8>) -> Result<(), ConfigError>;
+#[uniffi::export] fn build_app_init(guid: Vec<u8>, friendly_name: String, tail: Vec<u8>) -> Result<Vec<u8>, CodecError>;
+#[uniffi::export] fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError>;
+#[uniffi::export] fn keep_ap_sentinel() -> Vec<u8>;  // 8-byte 0xffffffff keep-AP frame (#82)
 
-// PTP-IP command/data framing (compressed reference app channel byte-exact today)
-#[uniffi::export] fn build_command(op: u16, txn: u32, params: Vec<u32>) -> Vec<u8>;
-#[uniffi::export] fn parse_response(packet: Vec<u8>) -> Result<ResponseFrame, ConfigError>;
+// G2 — value codec (per-value semantics are manifest data; this writes the bytes)
+#[uniffi::export] fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, CodecError>;
 
-// G2 — Fuji value codecs (none exist in Rust yet)
-#[uniffi::export] fn encode_aperture(f_number_x100: u16) -> Vec<u8>;      // 280 = f/2.8
-#[uniffi::export] fn encode_iso(iso: u32, auto_ceiling: bool) -> Vec<u8>; // 0x80000000|ceiling
-#[uniffi::export] fn encode_shutter_speed(numer: u32, denom: u32) -> Vec<u8>;
+// G3 — PTP/IP packet framing (all framings via PtpFraming)
+#[uniffi::export] fn build_command(framing: PtpFraming, op: u16, txn: u32, params: Vec<u32>) -> Result<Vec<u8>, CodecError>;
+#[uniffi::export] fn build_data(framing: PtpFraming, txn: u32, payload: Vec<u8>) -> Result<Vec<u8>, CodecError>;
+#[uniffi::export] fn parse_response(framing: PtpFraming, packet: Vec<u8>) -> Result<ResponseFrame, CodecError>;
+#[uniffi::export] fn parse_data_payload(framing: PtpFraming, packet: Vec<u8>) -> Result<Vec<u8>, CodecError>;
+#[uniffi::export] fn parse_data_phase(framing: PtpFraming, packet: Vec<u8>) -> Result<DataPhaseFrame, CodecError>;  // Start/Data/End + total_length; drives a transfer loop (wireless-tether)
+#[uniffi::export] fn parse_event(framing: PtpFraming, packet: Vec<u8>) -> Result<Option<CameraEvent>, CodecError>;
 
-// G3 — Fuji parse helpers / quirks
-#[uniffi::export] fn parse_live_status(payload: Vec<u8>) -> LiveStatus;       // 0xd212 bundle
-#[uniffi::export] fn parse_object_handle_list(payload: Vec<u8>) -> Vec<u32>;  // 0xd621 quirk
-#[uniffi::export] fn parse_event(packet: Vec<u8>) -> Option<CameraEvent>;
+// G3 — dataset codecs (framing-independent payloads)
+#[uniffi::export] fn parse_object_info(payload: Vec<u8>) -> Result<PtpObjectInfo, CodecError>;       // generic ISO-15740 fields
+#[uniffi::export] fn parse_device_prop_desc(payload: Vec<u8>) -> Result<PtpDevicePropDesc, CodecError>; // PtpValue / PtpPropForm
+#[uniffi::export] fn parse_live_status(payload: Vec<u8>) -> Result<LiveStatus, CodecError>;          // 0xd212 record stream
+#[uniffi::export] fn parse_object_handle_list(payload: Vec<u8>) -> Result<Vec<u32>, CodecError>;     // 0xd621 quirk / GetObjectHandles
 ```
+
+Records/enums: `ResponseFrame { response_code, txn, params }`, `CameraEvent { code, txn, params }`,
+`DataPhaseFrame { kind: DataPhaseKind (Start|Data|End), txn, total_length?, payload }` (total_length
+set only on `Start`),
+`PtpObjectInfo` (the generic `ObjectInfo` fields; media classification is `media_format()` + #136),
+`PtpDevicePropDesc { code, datatype, get_set, factory_default, current, form }` over
+`PtpValue { U8|U16|U32|U64|Str }` and `PtpPropForm { None | Range | Enum }`, `LiveStatus { records:
+Vec<PropObservation> }`. Notes: `build_data` models a single `Data` block — USB data phases are a
+bulk-transfer concern and are not re-emittable, so `build_data(Usb, …)` errors (decode still works).
+`parse_event` on the Fuji compressed command channel rejects event frames (events ride a separate
+socket). The G2 sketch's per-value `encode_aperture/iso/shutter` was superseded by the single
+manifest-driven `encode_value`.
 
 ---
 

@@ -6423,7 +6423,16 @@ connections:
       kind: stream
       pollOp: null
     shutterRecipe: appPostview
+    commandFraming: fujiCompressed
+    eventFraming: usb
     commandListenerVolatile: true
+    bindings:
+      command: 55740
+      event: 55741
+      liveView: 55742
+    transportClose:
+      sentinel: keepApSentinel
+      when: before-image-transfer-reopen
     modes:
     - shooting/stills
     - image-transfer
@@ -7175,10 +7184,6 @@ connections:
         evidence:
         - docImageTransfer
     enables: []
-    bind:
-      command: 55740
-      event: 55741
-      liveview: 55742
     discovery:
       mechanism: ble
       announces: camera
@@ -7192,7 +7197,11 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandFraming: null
+    eventFraming: null
     commandListenerVolatile: false
+    bindings: null
+    transportClose: null
     modes:
     - remote-trigger
     entries: []
@@ -7226,7 +7235,11 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandFraming: null
+    eventFraming: null
     commandListenerVolatile: false
+    bindings: null
+    transportClose: null
     modes:
     - raw-conv-backup-restore
     - webcam
@@ -7260,7 +7273,14 @@ connections:
       kind: poll
       pollOp: '0x9018'
     shutterRecipe: wirelessTether3Beat
+    commandFraming: fujiCompressed
+    eventFraming: null
     commandListenerVolatile: false
+    bindings:
+      command: 15740
+      event: null
+      liveView: null
+    transportClose: null
     modes:
     - shooting/stills
     - remote-trigger
@@ -7473,7 +7493,11 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandFraming: null
+    eventFraming: null
     commandListenerVolatile: false
+    bindings: null
+    transportClose: null
     modes:
     - shooting/stills
     entries: []

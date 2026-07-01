@@ -64,6 +64,11 @@ connections:
     initShape: app82                    # the 82-byte reference app InitCommandRequest (#82)
     liveViewDelivery: { kind: stream }   # reference app delivers frames as a continuous stream
     shutterRecipe: appPostview           # 0x100E + 0x9022 postview take-cycle
+    # Wire framing per channel (#133) so the app picks the codec from data, not by
+    # mapping the connection kind in Swift. Command = the byte-exact fw0230 compressed
+    # channel; the event socket carries PIMA type-4 containers (Swift parsePTPEvent).
+    commandFraming: fujiCompressed
+    eventFraming: usb
     # The keep-AP sentinel holds the Wi-Fi AP up, but the camera tears down the
     # :55740 command-port listener on the transport-close — a reopenSession's
     # reconnect is refused, so mode switches stay in-session (#103, device 2026-06-28).
@@ -71,11 +76,15 @@ connections:
     discovery: { mechanism: ble, announces: camera }
     modes: [shooting/stills, image-transfer]
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
-    # live-view exercises both sockets, so this assignment is authoritative.
-    bind:
+    # live-view exercises both sockets, so this assignment is authoritative. Resolved
+    # ports (not offsets) so a consumer binds by role and deletes the Fuji +1/+2 math.
+    bindings:
       command: 55740                 # FujiPTPIP.defaultPort
-      event: 55741                   # liveViewEventPortOffset = 1
-      liveview: 55742                # liveViewThroughPortOffset = 2 (through-picture stream)
+      event: 55741                   # command + 1 (live-view event socket)
+      liveView: 55742                # command + 2 (through-picture stream)
+    # Before reopening an image-transfer session the app sends the 8-byte keep-AP
+    # sentinel (0xffffffff framed) instead of a TCP FIN, holding the Wi-Fi AP up (#82).
+    transportClose: { sentinel: keepApSentinel, when: before-image-transfer-reopen }
     # 82-byte InitCommandRequest = GUID(16) + uint32(0) + nameField(26) + tail(28).
     # Identity is manufacturer-tier (see fuji.yaml). Exact tail bytes come from the
     # pinned golden (FujiPTPIP.liveViewInitTail), NOT hand-transcribed here.
@@ -336,6 +345,12 @@ connections:
     initShape: pcssKnock                                  # PCSS init (not the 82-byte reference app)
     liveViewDelivery: { kind: poll, pollOp: "0x9018" }    # app polls 0x9018 for frames
     shutterRecipe: wirelessTether3Beat                    # 3-beat 0xD039 + 0x100E virtual shutter
+    # Command socket = the PCSS knock's DSPORT (default 15740; runtime confirms it). No
+    # event/live-view socket — delivery is the 0x9018 poll (capture: events ct=4 = 0).
+    bindings: { command: 15740 }
+    # The command/data channel is Fuji-compressed (data-phase types 9/10/12), same as the
+    # app path; only the InitCommandRequest is standard-framed (#133, PR feedback 2026-07-01).
+    commandFraming: fujiCompressed
     # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
     # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
     # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference-app's 82-byte init).

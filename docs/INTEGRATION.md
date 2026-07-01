@@ -47,6 +47,8 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `ConfigStore.from_tiers(body, manufacturer?, fw_overlays)` | as above, with firmware-tier overlays merged onto the body |
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
+| `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
+| `transport_close(connection)` | the frame to send before reopening an image-transfer session (Fuji `app`: the 8-byte keep-AP sentinel), or `None` |
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
 | `mode_entry(connection, from, to)` | the ordered wire-steps to enter a mode (or a `user_instruction` when it's a camera-menu / manual step) |
@@ -55,8 +57,8 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
 | `value(key)` / `value_label(prop, value)` | value-policy resolution + human labels |
 
-Byte codecs (build/parse PTP packets, encode values) are exported functions —
-**partial today** (see §6).
+Byte codecs (build/parse PTP packets, decode datasets, encode values) are exported
+functions — the **G1–G3 set is complete** (see §6).
 
 ## 3. Generate bindings (uniffi 0.31, library mode — no UDL)
 
@@ -149,8 +151,10 @@ per-platform packaging:
    the eventual Apache-licensed data repo will publish its own versioned
    releases.) OTA bundle loading lands later; bundled baseline for now.
 2. **Pick a connection.** `connections(platform)` → present what's actually available
-   here. Bring it up: `establishment(connection)` returns the recipe (knock ports,
-   GATT char UUIDs); **your code does the UDP/TCP/BLE/Wi-Fi**.
+   here. Bring it up: `connection_establishment(connection)` returns the recipe (knock
+   ports, GATT char UUIDs); **your code does the UDP/TCP/BLE/Wi-Fi**. Bind sockets by
+   role with `port_for_role(connection, role)` (`ConnectionInfo.command_framing` /
+   `event_framing` tell you which codec framing each channel uses).
 3. **Enter a mode.** `mode_entry(connection, from, to)` → execute the `steps`
    (`setProp`/`getProp`/`readEcho`/`sendOp`) via the codec functions over your
    transport, or surface the `user_instruction`. Each step may be `tolerant` (a
@@ -167,16 +171,22 @@ per-platform packaging:
 ## 6. Status — what's ready vs pending
 
 - **Ready:** the §A query surface (above) + `operation_available_explained`
-  (`GateExplanation` — the resolution trace for telemetry); the GFX100 II manifest
-  across **all five connections** (`app` WiFi-AP, `ble`, `wireless-tether` PCSS, `usb`,
-  `xlv` HTTP); firmware-tier overlays via `ConfigStore.from_tiers(body, manufacturer,
-  fw_overlays)` (e.g. `fw2.40.yaml` flips XLV to HTTPS).
-- **Codecs (§B):** `build_app_init` (G1, the 82-byte init), `validate_init_ack`, and
-  `encode_value(raw, width)` (G2 — the generic value encoder; per-value semantics live
-  in `descriptor.values`/`labels`) are **landed + in the bindings**. Plus existing
-  `fuji_framing` + liveview parse + `usb_ptp`. **Pending — G3 parse helpers**
-  (`parse_live_status` 0xd212, `parse_object_handle_list` 0xd621, Fuji `parse_object_info`,
-  `parse_event`): not built — they need byte-layout evidence. Flag what you need.
+  (`GateExplanation` — the resolution trace for telemetry); per-connection socket
+  bindings by role + wire framing (`port_for_role` / `transport_close` /
+  `command_framing`, #133/#140); the GFX100 II manifest across **all five connections**
+  (`app` WiFi-AP, `ble`, `wireless-tether` PCSS, `usb`, `xlv` HTTP); firmware-tier
+  overlays via `ConfigStore.from_tiers(body, manufacturer, fw_overlays)` (e.g.
+  `fw2.40.yaml` flips XLV to HTTPS).
+- **Codecs (§B) — G1–G3 landed + in the bindings.** G1: `build_app_init` (the 82-byte
+  init) + `validate_init_ack` + `keep_ap_sentinel`. G2: `encode_value(raw, width)` (generic
+  value encoder; per-value semantics live in `descriptor.values`/`labels`). G3: packet
+  framing `build_command` / `build_data` / `parse_response` / `parse_data_payload` /
+  `parse_data_phase` (the `StartData`/`Data`/`EndData` transfer loop, e.g. wireless-tether)
+  / `parse_event`, plus dataset codecs `parse_object_info` / `parse_device_prop_desc` /
+  `parse_live_status` (0xd212) / `parse_object_handle_list` (0xd621). Framing is selected
+  per call by `PtpFraming { Standard | FujiCompressed | Usb }`, which you **read from the
+  manifest** (`ConnectionInfo.command_framing` / `event_framing`) — never a `kind→framing`
+  map in app source. Only follow-up: a byte-exact wireless-tether data-phase golden (#143).
 - **Sync only.** A stateful session driver (feed/poll) is a later phase; today's
   surface is synchronous pure queries.
 
