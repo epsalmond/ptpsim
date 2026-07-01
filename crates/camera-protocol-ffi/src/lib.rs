@@ -98,6 +98,16 @@ pub fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError> {
     protocol_primitives::validate_init_ack(&packet).map_err(|e| CodecError::Encode(e.to_string()))
 }
 
+/// G1 — normalize a raw host device name into the canonical client name written
+/// to both the BLE `deviceNameString` and the PTP/IP friendly name. The host
+/// calls this once and feeds the result to the `terminalName` runtime slot, so
+/// the two channels are one value (the camera drops an init whose channels
+/// disagree, #109). Replaces the app's own name-normalization (#139).
+#[uniffi::export]
+pub fn normalize_client_name(raw: String) -> String {
+    protocol_primitives::normalize_client_name(&raw)
+}
+
 /// G2 — encode a resolved value at its property width (the per-value semantics
 /// live in the manifest; this just writes the bytes). `value` is signed so signed
 /// widths (`I16`/`I32`) can carry negative exposure-bias / ISO auto sentinels.

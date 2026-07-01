@@ -634,6 +634,30 @@ fn client_derived_friendly_name_defers_the_init_packet() {
 }
 
 #[test]
+fn normalize_client_name_produces_the_terminal_name_for_the_init() {
+    // #139: the host normalizes its raw device name once; the result is the single
+    // `terminalName` value driving BOTH the BLE deviceNameString and the PTP/IP
+    // friendly name, so the two channels agree (#109) with no name logic in Swift.
+    let name = normalize_client_name(" Eric's iPad Pro ".into());
+    assert_eq!(name, "eric-s-ipad");
+    // Fits the 26-byte UTF-16LE name field (chars * 2 + 2-byte NUL).
+    assert!(name.chars().count() * 2 + 2 <= 26);
+
+    let s = store();
+    let init = s
+        .connection_init_with_runtime(
+            "app".into(),
+            vec![KeyValue {
+                key: "terminalName".into(),
+                value: name.clone(),
+            }],
+        )
+        .expect("the normalized name assembles the app init packet");
+    assert_eq!(init.friendly_name, name);
+    assert_eq!(init.packet.len(), 82);
+}
+
+#[test]
 fn connection_info_carries_per_connection_traits() {
     let s = store();
     let conns = s.connections(Platform::Macos); // app + wireless-tether both visible

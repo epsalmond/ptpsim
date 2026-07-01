@@ -190,6 +190,7 @@ payloads; only the header differs.
 #[uniffi::export] fn build_app_init(guid: Vec<u8>, friendly_name: String, tail: Vec<u8>) -> Result<Vec<u8>, CodecError>;
 #[uniffi::export] fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError>;
 #[uniffi::export] fn keep_ap_sentinel() -> Vec<u8>;  // 8-byte 0xffffffff keep-AP frame (#82)
+#[uniffi::export] fn normalize_client_name(raw: String) -> String;  // #139: canonical terminalName for BLE+PTP/IP (one value, #109)
 
 // G2 — value codec (per-value semantics are manifest data; this writes the bytes)
 #[uniffi::export] fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, CodecError>;
