@@ -199,6 +199,7 @@ payloads; only the header differs.
 #[uniffi::export] fn build_data(framing: PtpFraming, txn: u32, payload: Vec<u8>) -> Result<Vec<u8>, CodecError>;
 #[uniffi::export] fn parse_response(framing: PtpFraming, packet: Vec<u8>) -> Result<ResponseFrame, CodecError>;
 #[uniffi::export] fn parse_data_payload(framing: PtpFraming, packet: Vec<u8>) -> Result<Vec<u8>, CodecError>;
+#[uniffi::export] fn parse_data_phase(framing: PtpFraming, packet: Vec<u8>) -> Result<DataPhaseFrame, CodecError>;  // Start/Data/End + total_length; drives a transfer loop (wireless-tether)
 #[uniffi::export] fn parse_event(framing: PtpFraming, packet: Vec<u8>) -> Result<Option<CameraEvent>, CodecError>;
 
 // G3 — dataset codecs (framing-independent payloads)
@@ -209,6 +210,8 @@ payloads; only the header differs.
 ```
 
 Records/enums: `ResponseFrame { response_code, txn, params }`, `CameraEvent { code, txn, params }`,
+`DataPhaseFrame { kind: DataPhaseKind (Start|Data|End), txn, total_length?, payload }` (total_length
+set only on `Start`),
 `PtpObjectInfo` (the generic `ObjectInfo` fields; media classification is `media_format()` + #136),
 `PtpDevicePropDesc { code, datatype, get_set, factory_default, current, form }` over
 `PtpValue { U8|U16|U32|U64|Str }` and `PtpPropForm { None | Range | Enum }`, `LiveStatus { records:
