@@ -777,8 +777,8 @@ fn media_format_table_classifies_objects_through_ffi() {
 // ---------------------------------------------------------------------------
 
 use ptp_core::{
-    DataBlock, DevicePropDesc, EventPacket, ObjectInfo, OperationResponse, PropForm, PropValue,
-    PtpIpPacket, StartData, Writer,
+    DevicePropDesc, EventPacket, ObjectInfo, OperationResponse, PropForm, PropValue, PtpIpPacket,
+    Writer,
 };
 
 #[test]
@@ -813,7 +813,7 @@ fn build_data_round_trips_through_parse_data_payload() {
     // USB data phases are a bulk-transfer concern, not a re-emittable container,
     // so build_data covers the two framings that model a Data block.
     for framing in [PtpFraming::Standard, PtpFraming::FujiCompressed] {
-        let frame = build_data(framing, 9, payload.clone()).unwrap();
+        let frame = build_data(framing, 0x1009, 9, payload.clone()).unwrap();
         assert_eq!(parse_data_payload(framing, frame).unwrap(), payload);
     }
     // parse_data_payload still decodes a USB type-2 data container.
@@ -999,38 +999,37 @@ fn socket_bindings_and_transport_close_surface_through_ffi() {
 }
 
 #[test]
-fn parse_data_phase_drives_a_compressed_transfer_loop() {
-    // The wireless-tether compressed channel: StartData(9) → Data(10) → EndData(12).
-    let start = protocol_primitives::fuji_framing::encode(&PtpIpPacket::StartData(StartData {
-        transaction_id: 42,
-        total_length: 10_485_760,
-    }))
-    .unwrap();
-    let s = parse_data_phase(PtpFraming::FujiCompressed, start).unwrap();
-    assert_eq!(s.kind, DataPhaseKind::Start);
-    assert_eq!(s.txn, 42);
-    assert_eq!(s.total_length, Some(10_485_760));
-    assert!(s.payload.is_empty());
-
-    let data = protocol_primitives::fuji_framing::encode(&PtpIpPacket::Data(DataBlock {
-        transaction_id: 42,
-        payload: vec![1, 2, 3, 4],
-    }))
-    .unwrap();
-    let d = parse_data_phase(PtpFraming::FujiCompressed, data).unwrap();
+fn parse_data_phase_decodes_a_compressed_single_frame() {
+    // The wireless-tether/reference app compressed channel delivers a whole data phase in
+    // one type-2 frame — no StartData/Data/EndData. Byte-exact golden from
+    // 2026-06-02-pcss-ptpip-fuji-original.pcapng: Data(0x1015) tid 2, value 5.
+    let golden = vec![
+        0x0e, 0, 0, 0, // length 14
+        0x02, 0x00, // type 2 = Data
+        0x15, 0x10, // opcode 0x1015 echoed in the code field
+        0x02, 0, 0, 0, // tid 2
+        0x05, 0x00, // payload: u16 value 5
+    ];
+    // build_data reproduces the captured frame byte-for-byte.
+    assert_eq!(
+        build_data(PtpFraming::FujiCompressed, 0x1015, 2, vec![0x05, 0x00]).unwrap(),
+        golden,
+    );
+    // parse_data_phase yields the entire payload in one Data frame — the app used
+    // to crash waiting for an EndData / type-12 that never arrives.
+    let d = parse_data_phase(PtpFraming::FujiCompressed, golden).unwrap();
     assert_eq!(d.kind, DataPhaseKind::Data);
-    assert_eq!(d.payload, vec![1, 2, 3, 4]);
+    assert_eq!(d.txn, 2);
+    assert_eq!(d.payload, vec![0x05, 0x00]);
     assert_eq!(d.total_length, None);
 
-    // Type 12 (EndData) — the exact frame a fixed 1..4 Swift reader rejected.
-    let end = protocol_primitives::fuji_framing::encode(&PtpIpPacket::EndData(DataBlock {
-        transaction_id: 42,
-        payload: vec![0xff; 8],
-    }))
-    .unwrap();
-    let e = parse_data_phase(PtpFraming::FujiCompressed, end).unwrap();
-    assert_eq!(e.kind, DataPhaseKind::End);
-    assert_eq!(e.payload, vec![0xff; 8]);
+    // A large transfer is still a single frame: on the wire a full GetObject(0x1009)
+    // arrives as one 14.5 MB type-2 Data frame. A stand-in payload round-trips whole.
+    let big = vec![0xabu8; 4096];
+    let frame = build_data(PtpFraming::FujiCompressed, 0x1009, 99, big.clone()).unwrap();
+    let bd = parse_data_phase(PtpFraming::FujiCompressed, frame).unwrap();
+    assert_eq!(bd.kind, DataPhaseKind::Data);
+    assert_eq!(bd.payload, big);
 }
 
 #[test]
@@ -1054,8 +1053,8 @@ fn connection_wire_framing_is_declared_in_the_manifest() {
         vec![0x10, 0, 0, 0, 0x01, 0x00, 0x02, 0x10, 0x01, 0, 0, 0, 0x01, 0, 0, 0],
     );
 
-    // wireless-tether's command/data channel is compressed too (types 9/10/12); its
-    // poll-based delivery means no event socket, so no event framing.
+    // wireless-tether's command/data channel is compressed too (single type-2 data
+    // frame); its poll-based delivery means no event socket, so no event framing.
     let wt = s
         .connections(Platform::Macos)
         .into_iter()

@@ -181,12 +181,14 @@ per-platform packaging:
   init) + `validate_init_ack` + `keep_ap_sentinel`. G2: `encode_value(raw, width)` (generic
   value encoder; per-value semantics live in `descriptor.values`/`labels`). G3: packet
   framing `build_command` / `build_data` / `parse_response` / `parse_data_payload` /
-  `parse_data_phase` (the `StartData`/`Data`/`EndData` transfer loop, e.g. wireless-tether)
-  / `parse_event`, plus dataset codecs `parse_object_info` / `parse_device_prop_desc` /
-  `parse_live_status` (0xd212) / `parse_object_handle_list` (0xd621). Framing is selected
-  per call by `PtpFraming { Standard | FujiCompressed | Usb }`, which you **read from the
-  manifest** (`ConnectionInfo.command_framing` / `event_framing`) — never a `kind→framing`
-  map in app source. Only follow-up: a byte-exact wireless-tether data-phase golden (#143).
+  `parse_data_phase` (standard framing streams `StartData`/`Data`/`EndData`; the Fuji
+  compressed and USB channels deliver the whole data phase in one type-2 `Data` frame —
+  reconciled byte-exact against the wire, #143) / `parse_event`, plus dataset codecs
+  `parse_object_info` / `parse_device_prop_desc` / `parse_live_status` (0xd212) /
+  `parse_object_handle_list` (0xd621). Framing is selected per call by
+  `PtpFraming { Standard | FujiCompressed | Usb }`, which you **read from the manifest**
+  (`ConnectionInfo.command_framing` / `event_framing`) — never a `kind→framing` map in app
+  source.
 - **Sync only.** A stateful session driver (feed/poll) is a later phase; today's
   surface is synchronous pure queries.
 

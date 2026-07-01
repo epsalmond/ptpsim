@@ -162,14 +162,29 @@ pub fn build_command(
     frame_encode(framing, &pkt)
 }
 
-/// Build a data-phase frame carrying `payload` for transaction `txn`.
+/// Build a data-phase frame carrying `payload` for transaction `txn` of operation
+/// `op`. Fuji's compressed framing puts the whole data phase in one type-2 frame
+/// whose code field echoes `op`; standard framing's `Data` frame carries no
+/// opcode, so `op` is unused there.
 #[uniffi::export]
-pub fn build_data(framing: PtpFraming, txn: u32, payload: Vec<u8>) -> Result<Vec<u8>, CodecError> {
-    let pkt = ptp_core::PtpIpPacket::Data(ptp_core::DataBlock {
-        transaction_id: txn,
-        payload,
-    });
-    frame_encode(framing, &pkt)
+pub fn build_data(
+    framing: PtpFraming,
+    op: u16,
+    txn: u32,
+    payload: Vec<u8>,
+) -> Result<Vec<u8>, CodecError> {
+    match framing {
+        PtpFraming::FujiCompressed => Ok(protocol_primitives::fuji_framing::encode_data(
+            op, txn, &payload,
+        )),
+        PtpFraming::Standard | PtpFraming::Usb => {
+            let pkt = ptp_core::PtpIpPacket::Data(ptp_core::DataBlock {
+                transaction_id: txn,
+                payload,
+            });
+            frame_encode(framing, &pkt)
+        }
+    }
 }
 
 /// A decoded PTP operation response.
@@ -206,8 +221,10 @@ pub fn parse_data_payload(framing: PtpFraming, packet: Vec<u8>) -> Result<Vec<u8
     }
 }
 
-/// Which data-phase frame this is. A transfer is `Start` (announces the total
-/// length) → zero or more `Data` → `End`.
+/// Which data-phase frame this is. Standard PTP/IP streams a transfer as `Start`
+/// (announces the total length) → zero or more `Data` → `End`. The Fuji
+/// compressed and USB container channels deliver the whole payload in a single
+/// `Data` frame (no `Start`/`End`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum DataPhaseKind {
     Start,
@@ -216,8 +233,9 @@ pub enum DataPhaseKind {
 }
 
 /// One decoded data-phase frame. `total_length` is set only on `Start`; `payload`
-/// carries the bytes of a `Data`/`End`. The operation code is not in the data
-/// phase — a consumer correlates by `txn` with the preceding operation request.
+/// carries the bytes of a `Data`/`End` (on a single-frame channel that one `Data`
+/// is the entire payload). The operation code is not in the data phase — a
+/// consumer correlates by `txn` with the preceding operation request.
 #[derive(Debug, uniffi::Record)]
 pub struct DataPhaseFrame {
     pub kind: DataPhaseKind,
@@ -226,9 +244,11 @@ pub struct DataPhaseFrame {
     pub payload: Vec<u8>,
 }
 
-/// Decode one data-phase frame, distinguishing `StartData`/`Data`/`EndData` so a
-/// consumer can drive a transfer loop (e.g. the wireless-tether compressed channel,
-/// whose types 9/10/12 a fixed-`1..4` reader rejects). Yields typed errors.
+/// Decode one data-phase frame. Standard framing distinguishes
+/// `StartData`/`Data`/`EndData` so a consumer can drive a streamed transfer; the
+/// Fuji compressed and USB channels deliver the whole payload in one `Data` frame.
+/// Either way the consumer accumulates `payload` until the operation response
+/// arrives — no framing-specific branching. Yields typed errors.
 #[uniffi::export]
 pub fn parse_data_phase(
     framing: PtpFraming,
