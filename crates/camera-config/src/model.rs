@@ -463,6 +463,16 @@ pub struct Connection {
     /// in `actions.shutter`.
     #[serde(default)]
     pub shutter_recipe: Option<ShutterRecipe>,
+    /// The PTP/IP wire framing of this connection's command channel (#133/#140):
+    /// so a consumer picks the codec from data instead of mapping the connection
+    /// kind to a framing in its own code.
+    #[serde(default)]
+    pub command_framing: Option<WireFraming>,
+    /// The wire framing of this connection's event socket, when it differs from
+    /// the command channel (the Fuji `app` event socket carries USB/PIMA type-4
+    /// event containers, not the compressed command framing).
+    #[serde(default)]
+    pub event_framing: Option<WireFraming>,
     /// The command-port (PTP/IP :55740) listener does NOT survive a transport-close
     /// on this connection: the keep-AP sentinel holds the Wi-Fi AP up, but the
     /// camera tears the listener down, so a `reopenSession`'s reconnect is refused
@@ -656,6 +666,20 @@ pub enum ShutterRecipe {
     AppPostview,
     /// `wireless-tether`: the 3-beat `0xD039` + `0x100E` virtual shutter.
     WirelessTether3Beat,
+}
+
+/// A PTP/IP wire framing (#133/#140). Declared per connection/channel so a
+/// consumer selects the byte codec from manifest data — never by mapping the
+/// connection kind to a framing in its own code. Closed vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WireFraming {
+    /// ISO-15740 standard PTP/IP framing (8-byte header, DataPhaseInfo present).
+    Standard,
+    /// Fuji's compressed reference app command framing (12-byte header, no DataPhaseInfo).
+    FujiCompressed,
+    /// The PIMA/USB container framing (12-byte header, type 4 = event).
+    Usb,
 }
 
 /// Declared side-effects an `Action` produces — the app reads `Action.triggers`

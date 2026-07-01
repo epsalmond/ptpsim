@@ -992,3 +992,25 @@ fn socket_bindings_and_transport_close_surface_through_ffi() {
     // A connection without one → None.
     assert!(s.transport_close("wireless-tether".into()).is_none());
 }
+
+#[test]
+fn connection_wire_framing_is_declared_in_the_manifest() {
+    let s = store();
+    let app = s
+        .connections(Platform::Macos)
+        .into_iter()
+        .find(|c| c.id == "app")
+        .expect("app connection");
+    // The app reads framing from data — it never maps kind→framing itself (#133).
+    assert!(matches!(
+        app.command_framing,
+        Some(PtpFraming::FujiCompressed)
+    ));
+    // Command vs event framing differ: the event socket is a PIMA type-4 container.
+    assert!(matches!(app.event_framing, Some(PtpFraming::Usb)));
+    // The manifest-declared command framing drives the codec: byte-exact compressed frame.
+    assert_eq!(
+        build_command(app.command_framing.unwrap(), 0x1002, 1, vec![1]).unwrap(),
+        vec![0x10, 0, 0, 0, 0x01, 0x00, 0x02, 0x10, 0x01, 0, 0, 0, 0x01, 0, 0, 0],
+    );
+}

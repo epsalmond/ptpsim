@@ -6423,6 +6423,8 @@ connections:
       kind: stream
       pollOp: null
     shutterRecipe: appPostview
+    commandFraming: fujiCompressed
+    eventFraming: usb
     commandListenerVolatile: true
     bindings:
       command: 55740
@@ -7195,6 +7197,8 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandFraming: null
+    eventFraming: null
     commandListenerVolatile: false
     bindings: null
     transportClose: null
@@ -7231,6 +7235,8 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandFraming: null
+    eventFraming: null
     commandListenerVolatile: false
     bindings: null
     transportClose: null
@@ -7267,6 +7273,8 @@ connections:
       kind: poll
       pollOp: '0x9018'
     shutterRecipe: wirelessTether3Beat
+    commandFraming: null
+    eventFraming: null
     commandListenerVolatile: false
     bindings: null
     transportClose: null
@@ -7482,6 +7490,8 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    commandFraming: null
+    eventFraming: null
     commandListenerVolatile: false
     bindings: null
     transportClose: null

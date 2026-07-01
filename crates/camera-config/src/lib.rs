@@ -26,7 +26,7 @@ pub use model::{
     LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, OpEffect,
     Operation, Payload, PayloadForm, PostviewEvent, Property, RecordLayout, ShutterRecipe,
     SocketBindings, SocketRole, Step, StepParam, TransportClose, ValuePolicy, ValueSource,
-    VersionCond, Workflow,
+    VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};

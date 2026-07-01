@@ -112,10 +112,10 @@ pub fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, CodecError
 // wire bytes over its own socket; these turn intents↔bytes. Sans-io.
 // ----------------------------------------------------------------------------
 
-/// Which PTP/IP wire framing to build or parse with. The app derives this from
-/// the connection kind: `ptpip-app` → `FujiCompressed`, `ptpip-direct` →
-/// `Standard`, `usb-ptp` → `Usb`. All three share the same logical packets; only
-/// the header differs.
+/// Which PTP/IP wire framing to build or parse with. The consumer reads this from
+/// the manifest — `ConnectionInfo.command_framing` / `event_framing` — so the
+/// connection→framing choice is data, never a mapping in the app's own code. All
+/// three share the same logical packets; only the header differs.
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum PtpFraming {
     Standard,
@@ -458,6 +458,23 @@ pub struct ConnectionInfo {
     pub init_shape: Option<String>,
     pub live_view_delivery: Option<FfiLiveViewDelivery>,
     pub shutter_recipe: Option<ShutterRecipe>,
+    /// The wire framing to pass the codecs for this connection's command channel
+    /// (#133) — declared in the manifest so the app never maps `kind` to a framing
+    /// itself. `None` → not modeled for this connection yet.
+    pub command_framing: Option<PtpFraming>,
+    /// The wire framing for this connection's event socket, when it differs from
+    /// the command channel (the Fuji `app` event socket is USB/PIMA type-4).
+    pub event_framing: Option<PtpFraming>,
+}
+
+impl From<cc::WireFraming> for PtpFraming {
+    fn from(f: cc::WireFraming) -> Self {
+        match f {
+            cc::WireFraming::Standard => PtpFraming::Standard,
+            cc::WireFraming::FujiCompressed => PtpFraming::FujiCompressed,
+            cc::WireFraming::Usb => PtpFraming::Usb,
+        }
+    }
 }
 
 /// Mirror of `cc::LiveViewDelivery` (#81): how live-view frames arrive over a
@@ -1220,6 +1237,8 @@ impl ConfigStore {
                 init_shape: c.init_shape.clone(),
                 live_view_delivery: c.live_view_delivery.as_ref().map(Into::into),
                 shutter_recipe: c.shutter_recipe.map(Into::into),
+                command_framing: c.command_framing.map(Into::into),
+                event_framing: c.event_framing.map(Into::into),
             })
             .collect()
     }

@@ -99,8 +99,9 @@ pub struct ConnectionInfo {
     pub kind: String,          // "ptpip-app" | "ble" | "usb-ptp" | "ptpip-direct" | "http-xlv"
     pub discovery: String,     // "ble" | "usb" | "pcss-knock" | "http-probe"
     pub auto_discoverable: bool,
-    // + per-connection traits (#81) and, via the accessors above, socket bindings
-    //   (#140): init_shape, live_view_delivery, shutter_recipe.
+    // + per-connection traits (#81): init_shape, live_view_delivery, shutter_recipe;
+    //   wire framing (#133): command_framing, event_framing (Option<PtpFraming>);
+    //   and, via the accessors above, socket bindings (#140).
 }
 
 #[derive(uniffi::Enum)]  // #140 — bind by role, not by hardcoded Fuji offsets
@@ -177,9 +178,12 @@ pub enum ConfigError {
 
 Sans-io: they return/consume `Vec<u8>`, the app does the socket/USB write. **G1–G3 landed
 (#133).** Codec errors surface as `CodecError { Encode | Decode }`. Framing is selected per
-call by `PtpFraming { Standard | FujiCompressed | Usb }` — the app derives it from the
-connection kind (`ptpip-app` → `FujiCompressed`, `ptpip-direct` → `Standard`, `usb-ptp` →
-`Usb`). All three share the `ptp-core` container payloads; only the header differs.
+call by `PtpFraming { Standard | FujiCompressed | Usb }`, which the consumer **reads from the
+manifest** — `ConnectionInfo.command_framing` / `event_framing` — so the connection→framing
+choice is data, never a `kind`-mapping in the app's own code (no manufacturer knowledge left in
+Swift). Command vs event can differ: the Fuji `app` command channel is `FujiCompressed` while its
+event socket is the PIMA type-4 container (`Usb`). All three share the `ptp-core` container
+payloads; only the header differs.
 
 ```rust
 // G1 — Fuji reference app 82-byte init (identity from value-policy, tail from manifest)
