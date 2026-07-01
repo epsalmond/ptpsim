@@ -145,15 +145,23 @@ When sources disagree about a protocol fact:
 
 ## Bootstrap on a clean start
 
+1. **Evaluate the host you're on — don't assume it from a doc.**
 
-   (or your agent's equivalent memory index). The index files name the
-   project arc, conventions, and references.
-2. **Check** `gh issue list` for open work. Pending operational tasks
+   macOS). Check the platform your harness reports before relying on
+   host-specific paths, tools, or capabilities; static host facts
+   written into docs go stale and have misled agents before.
+
+
+   the encoded path is the checkout's absolute path with `/` → `-`, so
+   it differs per host — e.g. `-home-eric-git-ptpsim` on the Linux
+   host). The index files name the project arc, conventions, and
+   references.
+3. **Check** `gh issue list` for open work. Pending operational tasks
    (CI, correctness, follow-ups) are filed there; this is the project
    backlog.
-3. **Skim** the last 10 entries of `git log --oneline` — recent commits
+4. **Skim** the last 10 entries of `git log --oneline` — recent commits
    are the highest-fidelity record of what just changed and why.
-4. **Don't** trust any old `RESUME.md`, `resume.sh`, or similar
+5. **Don't** trust any old `RESUME.md`, `resume.sh`, or similar
    session-state file. The one that existed has been deleted; if a new
    one appears, verify it against the repo before relying on it.
 
