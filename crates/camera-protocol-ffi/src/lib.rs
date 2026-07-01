@@ -108,6 +108,15 @@ pub fn normalize_client_name(raw: String) -> String {
     protocol_primitives::normalize_client_name(&raw)
 }
 
+/// G1 — pack a normalized tap `(x, y)` (each `0.0..=1.0`) into the `0x9026`
+/// LockS1Lock AF-area u32 for a `columns`×`rows` grid (read from `focus_grid()`).
+/// Aspect comes from the prior `0xD17C` lock state, defaulting to 4:3. Replaces
+/// the app's `FujiFocusArea` so tap-to-focus carries no camera math (#135).
+#[uniffi::export]
+pub fn pack_af_area(x: f64, y: f64, columns: u32, rows: u32, prior_lock_state: Option<u32>) -> u32 {
+    protocol_primitives::pack_af_area(x, y, columns, rows, prior_lock_state)
+}
+
 /// G2 — encode a resolved value at its property width (the per-value semantics
 /// live in the manifest; this just writes the bytes). `value` is signed so signed
 /// widths (`I16`/`I32`) can carry negative exposure-bias / ISO auto sentinels.
@@ -623,6 +632,14 @@ pub struct CameraIdentityInfo {
     pub identities: Vec<KeyValue>,
 }
 
+/// The camera's AF grid for tap-to-focus (#135). The app reads these dims from
+/// data and feeds them to [`pack_af_area`] — it never hardcodes the grid.
+#[derive(uniffi::Record)]
+pub struct FocusGridInfo {
+    pub columns: u32,
+    pub rows: u32,
+}
+
 #[derive(uniffi::Record)]
 pub struct ModeInfo {
     pub path: String,
@@ -678,6 +695,8 @@ pub struct MediaFormatInfo {
     pub vendor: Option<String>,
     pub is_raw: bool,
     pub is_movie: bool,
+    /// Whether the app may hand this format to the OS photo library (#136).
+    pub is_photos_compatible: bool,
     /// Where this RAW format's embedded full-size JPEG lives (#101), so the app
     /// can pull it with GetPartialObject. `None` for non-RAW / no embedded JPEG.
     pub embedded_jpeg: Option<EmbeddedJpegInfo>,
@@ -1641,6 +1660,18 @@ impl ConfigStore {
         }
     }
 
+    /// The camera's tap-to-focus AF grid (#135), or `None` if it declares none.
+    pub fn focus_grid(&self) -> Option<FocusGridInfo> {
+        self.inner
+            .manifest
+            .focus_grid
+            .as_ref()
+            .map(|g| FocusGridInfo {
+                columns: g.columns,
+                rows: g.rows,
+            })
+    }
+
     /// Resolve a `values:` key to its fixed scalar string (`None` for non-fixed).
     fn fixed_value(&self, key: &str) -> Option<String> {
         match self.inner.value(key)? {
@@ -1732,6 +1763,7 @@ impl ConfigStore {
             vendor: f.vendor.clone(),
             is_raw: f.is_raw,
             is_movie: f.is_movie,
+            is_photos_compatible: f.is_photos_compatible,
             embedded_jpeg: f.embedded_jpeg.as_ref().map(|e| EmbeddedJpegInfo {
                 magic: e.magic.clone(),
                 offset_at: e.offset_at,
@@ -1739,6 +1771,17 @@ impl ConfigStore {
                 big_endian: matches!(e.endian, cc::model::Endian::Big),
             }),
         })
+    }
+
+    /// The wireless transfer size ceiling (#136): an object whose compressed size
+    /// is `>=` this must come off the memory card, not the wireless transport.
+    /// `None` if the camera declares no such bound.
+    pub fn wireless_transfer_ceiling(&self) -> Option<u64> {
+        self.inner
+            .manifest
+            .media
+            .as_ref()?
+            .wireless_transfer_ceiling
     }
 }
 

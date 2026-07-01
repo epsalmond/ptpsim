@@ -765,6 +765,25 @@ fn property_catalog_enumerates_through_ffi() {
 }
 
 #[test]
+fn focus_grid_and_af_packing_are_data_driven() {
+    let s = store();
+    // #135: the AF grid is manifest data, not a Swift constant.
+    let grid = s.focus_grid().expect("gfx100ii declares a focus grid");
+    assert_eq!((grid.columns, grid.rows), (9, 6));
+    // The app packs a live-view tap into the 0x9026 param using the manifest grid.
+    // A tap in cell (5,4) with default 4:3 aspect is the wire-confirmed 0x04030504.
+    assert_eq!(
+        pack_af_area(0.45, 0.5, grid.columns, grid.rows, None),
+        0x0403_0504
+    );
+    // A prior 0xD17C lock carries its aspect forward into the next pack.
+    assert_eq!(
+        pack_af_area(0.0, 0.0, grid.columns, grid.rows, Some(0x1009_0101)) >> 16,
+        0x1009
+    );
+}
+
+#[test]
 fn media_format_table_classifies_objects_through_ffi() {
     let s = store();
     let raf = s.media_format(0xb103).expect("RAF in the format table");
@@ -789,6 +808,14 @@ fn media_format_table_classifies_objects_through_ffi() {
     assert!(!jpeg.is_raw && !jpeg.is_movie);
     // A non-RAW format carries no embedded-JPEG locator.
     assert!(jpeg.embedded_jpeg.is_none());
+
+    // #136: photos-compatibility is data — JPEG/RAF/MOV are all full assets the
+    // app may hand to the OS photo library, without its own still/movie tables.
+    assert!(jpeg.is_photos_compatible);
+    assert!(raf.is_photos_compatible);
+    assert!(mov.is_photos_compatible);
+    // The wireless size ceiling is data, not a hardcoded 0xFFFFFFFF in Swift.
+    assert_eq!(s.wireless_transfer_ceiling(), Some(0xffff_ffff));
 
     // An unknown / unlisted format code → None.
     assert!(s.media_format(0x9999).is_none());
