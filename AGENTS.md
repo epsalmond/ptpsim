@@ -38,7 +38,11 @@ list is for *this turn's* working memory, not the project backlog.
 1. **One agent session per worktree**, so sessions don't collide:
    `git worktree add ~/git/ptpsim-<slug> -b <branch>` off `main`. It's
    yours alone — multiple branches/PRs in it are fine, never a shared
-   checkout. `git worktree remove` when done.
+   checkout. `git worktree remove` when done. Do this **before your first
+   edit**, not at commit time — never work in `~/git/ptpsim` itself.
+   Enforced by `scripts/git-hooks/pre-commit` (blocks commits on `main`
+   and in the primary checkout); activate once per clone with
+   `git config core.hooksPath scripts/git-hooks`.
 2. **Close issues with Pull Requests.** An issue SHOULD precede the PR (see
    *Work tracking*); footer the PR `Closes #N`. A self-evident doc fix may
    skip the issue.
@@ -145,6 +149,10 @@ When sources disagree about a protocol fact:
 
 ## Bootstrap on a clean start
 
+1. **Create a worktree before touching anything** —
+   `git worktree add ~/git/ptpsim-<slug> -b <branch>` (SDLC above). The
+   primary checkout is read-only for agents; the pre-commit hook rejects
+   commits made there.
 
    (or your agent's equivalent memory index). The index files name the
    project arc, conventions, and references.
