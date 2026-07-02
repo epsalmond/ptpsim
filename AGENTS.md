@@ -66,15 +66,16 @@ copying RE narrative into ptpsim. The tool runs on nas; from any other host,
 prefix with `ssh nas`.
 
 - Discover routing with `fuji-ask-operator --list`.
-- Ask read-only questions with `fuji-ask-operator <op> "<question>"`.
+- Ask questions with `fuji-ask-operator <op> "<question>"`.
+  ASK mode runs with host access by default so operators can inspect local
+  captures, graph data, and sibling repos. The prompt contract still forbids
+  permanent changes: temporary scratch files are okay when needed, but repo
+  files, graph facts, devices, persistent config, and other durable state stay
+  untouched.
 - Delegate scoped work with `fuji-ask-operator --do <op> "<task>"`.
 - File async questions with `fuji-ask-operator --consult --as <role> <op> "<question>"`.
   Use the cohort role whose work you represent, for example `--as W3` when the
   question is on behalf of client application.
-- If the host Codex sandbox blocks local capture/graph reads, use
-  `fuji-ask-operator --unsafe-ask-bypass-sandbox <op> "<question>"` only with
-  human awareness. This preserves ASK instructions but removes the read-only
-  sandbox boundary.
 
 Before using `--do`, confirm scope with the human when the work drives
 hardware, takes a new capture, writes persistence, or is otherwise irreversible.
