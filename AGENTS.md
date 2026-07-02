@@ -71,6 +71,10 @@ prefix with `ssh nas`.
 - File async questions with `fuji-ask-operator --consult --as <role> <op> "<question>"`.
   Use the cohort role whose work you represent, for example `--as W3` when the
   question is on behalf of client application.
+- If the host Codex sandbox blocks local capture/graph reads, use
+  `fuji-ask-operator --unsafe-ask-bypass-sandbox <op> "<question>"` only with
+  human awareness. This preserves ASK instructions but removes the read-only
+  sandbox boundary.
 
 Before using `--do`, confirm scope with the human when the work drives
 hardware, takes a new capture, writes persistence, or is otherwise irreversible.
