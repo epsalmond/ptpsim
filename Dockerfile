@@ -21,9 +21,14 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
  && cargo install --locked cargo-chef cargo-zigbuild \
- && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+ && case "$(dpkg --print-architecture)" in \
+      amd64) zig_arch=x86_64 ;; \
+      arm64) zig_arch=aarch64 ;; \
+      *) echo "FATAL: unsupported build arch $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz" \
       | tar -xJ -C /opt \
- && ln -s "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
+ && ln -s "/opt/zig-${zig_arch}-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
 WORKDIR /build
 
 FROM chef AS planner
