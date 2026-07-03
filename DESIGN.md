@@ -14,7 +14,7 @@ PTP/IP camera for App Review, support real tethered-shooting workflows, let us i
 
 The central loop is:
 
-1. Probe a real camera from an app or tool. (camera-probe)
+1. Probe a real camera from an app or tool. (camera-protocol-mapper)
 2. Upload the observation bundle.
 3. Generate or update a camera manifest.
 4. Run a simulator from that manifest.
@@ -27,7 +27,7 @@ architecture.
 ptpsim is not only a fake camera for App Review — it is a protocol-exploration
 platform for unlocking behavior vendors never exposed. The origin goal was
 extracting IMU/gyro data for gyroflow stabilization; that is a probe-and-
-understand problem, and it is the reason `camera-probe` (the probe) is the heart
+understand problem, and it is the reason `camera-protocol-mapper` (the probe) is the heart
 of the project rather than an accessory. Whatever a probe can learn, the
 simulator can then reproduce and any client can build on.
 
@@ -200,7 +200,7 @@ pub trait PtpCodec: Sized {
 ```
 
 ```rust
-// camera-manifest
+// camera-config
 pub struct CameraManifest {
     pub camera: CameraIdentity,
     pub transports: BTreeMap<TransportId, TransportSpec>,
@@ -254,7 +254,7 @@ pub enum WorkflowReply {
 }
 ```
 
-The app-side client may use `ptp-core`, `camera-manifest`, and selected Fuji
+The app-side client may use `ptp-core`, `camera-config`, and selected Fuji
 value-formatting helpers. It must not depend on `camera-sim` or responder
 workflow handlers.
 
@@ -270,7 +270,7 @@ the community camera-behavior database, not private client application data.
 ```text
 crates/
   ptp-core/                 packet codecs, containers, object/property encoders
-  camera-manifest/          schemas, validation, compatibility queries
+  camera-config/          schemas, validation, compatibility queries
   camera-media-store/       filesystem/object handle model, thumbnails, RAF/MOV/JPG
   camera-sim/               generic responder engine + scripting runtime
   protocol-primitives/      concern-organized framing/quirk/establishment primitives
@@ -280,17 +280,21 @@ services/
   camera-sim-service/       Rust HTTP/control service plus PTP listeners
 
 packages/
-  protocol-spec/            schema, golden packets, captured camera manifests, captures
+  camera-config-data/       captured camera manifests + probe/label evidence
+  camera-protocol-python/   Python bindings for the FFI
   fixtures/                 small redistributable media fixtures
 
 tools/
   camera-simctl/            CLI wrapper for local and remote simulator control
-  camera-probe/            Python probe/exploration tool (seeded by fuji-remote)
+  golden/                   golden-packet capture fixtures for the codec tests
 ```
 
-`camera-probe` is intentionally Python and lives in `tools/`, not `crates/`:
-it must run with nothing but a stock interpreter in field conditions. Its only
-coupling to the Rust side is the JSONL observation bundle.
+`camera-protocol-mapper` — the Python probe/exploration tool (seeded by
+fuji-remote) — lives in its own repository,
+[`epsalmond/camera-protocol-mapper`](https://github.com/epsalmond/camera-protocol-mapper),
+not in this tree: it must run with nothing but a stock interpreter in field
+conditions. Its only coupling to the Rust side is the JSONL observation bundle,
+vendored here as evidence under `packages/camera-config-data/`.
 
 The internal crate names above are the workspace paths. Published crate names
 take a `ptpsim-` prefix (`ptpsim-core`, `ptpsim-manifest`, …) to avoid
@@ -333,7 +337,7 @@ Important rule: `ptp-core` is protocol syntax only. It does not know that Fuji
 live view requires a `0xdf01 = 22` prelude, that a camera has a DCIM folder, or that a
 session is in image-import mode.
 
-### `camera-manifest`
+### `camera-config`
 
 Responsibilities:
 
@@ -348,7 +352,7 @@ Responsibilities:
 - **Canonical manifest generation** from observation bundles. This is the one
   authoritative generator: it consumes the JSONL bundle and emits a reviewable
   manifest proposal. It lives here, next to the schema and validation it must
-  agree with, and it serves every bundle source (`camera-probe`, Wireshark/JSONL
+  agree with, and it serves every bundle source (`camera-protocol-mapper`, Wireshark/JSONL
   capture import, app-integrated probe), not just the Python prober. A stored
   bundle deterministically reproduces its proposal through this generator.
 
@@ -356,12 +360,12 @@ Manifests are append-friendly. A new probe should be able to add a property
 descriptor, operation variant, timing observation, or failure response without
 requiring a code change unless the underlying packet type is new.
 
-Generation deliberately does not live in `camera-probe`: keeping it behind the
+Generation deliberately does not live in `camera-protocol-mapper`: keeping it behind the
 bundle seam stops "what a valid manifest is" from being implemented twice and
 drifting. If the generator needs richer context (which plan ran, engaged mode,
-op risk), that goes into the bundle, not into a second generator. `camera-probe`
+op risk), that goes into the bundle, not into a second generator. `camera-protocol-mapper`
 may emit a best-effort **draft** proposal for field sanity-checks, explicitly
-marked non-canonical; only the `camera-manifest` proposal feeds review.
+marked non-canonical; only the `camera-config` proposal feeds review.
 
 ### `camera-media-store`
 
@@ -424,15 +428,16 @@ only for a genuinely new wire format or computed quirk, and it lands as a peer
 available to all, not in a per-brand crate. Do not push procedural quirks into a
 declarative DSL — data selects and parameterizes; these primitives implement.
 
-### `camera-probe`
+### `camera-protocol-mapper`
 
-`camera-probe` is the initiator-side probe and exploration tool — the
+`camera-protocol-mapper` is the initiator-side probe and exploration tool — the
 "run this against your camera, it probably won't break it" half of the loop that
 lets ptpsim, client application, and any other client add cameras nobody on the team owns.
 It is seeded by the existing `fuji-remote` work (fuji wireless tethering port-knocking,
 property sweeps, `firmware_settings.dat` save/receive).
 
-It is a **Python** tool under `tools/camera-probe/`, not a Rust crate.
+It is a **Python** tool in its own repository
+(`epsalmond/camera-protocol-mapper`), not part of this workspace.
 Python is deliberate: the probe often has to run in hostile field conditions —
 (a typical use case might be walking a photographer through the process over the phone) into a box next to the camera, or an unfamiliar Windows machine over remote
 desktop — with no build toolchain. A stock Python interpreter is the lowest
@@ -448,11 +453,11 @@ Responsibilities:
   with the Rust side — see Probe And Manifest Pipeline).
 - Capture import from Wireshark/JSONL traces where available.
 - Optional best-effort **draft** manifest proposal for field sanity-checks,
-  explicitly non-canonical. Canonical generation belongs to `camera-manifest`
-  (see there); `camera-probe`'s job is to produce a faithful bundle.
+  explicitly non-canonical. Canonical generation belongs to `camera-config`
+  (see there); `camera-protocol-mapper`'s job is to produce a faithful bundle.
 - Optional app-integrated probe mode.
 
-The observation bundle is the seam. `camera-probe` stays Python and portable;
+The observation bundle is the seam. `camera-protocol-mapper` stays Python and portable;
 the Rust side consumes bundles. Probe plans that prove stable can be ported into
 Rust over time without changing the contract, but there is no requirement to.
 
@@ -495,7 +500,7 @@ reviewability, with a generated JSON Schema.
 Minimal shape:
 
 ```yaml
-schema: camera-manifest/v1
+schema: camera-config/v1
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II
@@ -715,9 +720,9 @@ media:
 The probe pipeline has three artifacts:
 
 - Observation bundle: raw events from a real camera run. The only thing
-  `camera-probe` is required to produce; the contract for everything downstream.
+  `camera-protocol-mapper` is required to produce; the contract for everything downstream.
 - Manifest proposal: normalized behavior inferred from a bundle by the canonical
-  generator in `camera-manifest`. (`camera-probe` may emit a non-canonical draft
+  generator in `camera-config`. (`camera-protocol-mapper` may emit a non-canonical draft
   in the field, but only the canonical proposal feeds review.)
 - Accepted manifest: reviewed, versioned source of truth.
 
@@ -741,7 +746,7 @@ Content-Type: application/json
 {"observation_bundle_id":"uuid","base_manifest":"fuji/gfx100ii/fw0230"}
 ```
 
-Accepted proposals write a normal manifest file under `packages/protocol-spec`.
+Accepted proposals write a normal manifest file under `packages/camera-config-data`.
 The output must be reviewable as text and reproducible from the stored
 observation bundle.
 
@@ -917,7 +922,7 @@ Scriptability is required for tests, review support, demos, and protocol
 exploration.
 
 CLI examples (today's binaries are `camera-sim-service` and `camera-simctl`;
-the `camera-probe` / generator examples are aspirational shape sketches —
+the `camera-protocol-mapper` / generator examples are aspirational shape sketches —
 the current generator lives at `cargo run -p camera-config --bin camera-config-generate`):
 
 ```sh
@@ -940,7 +945,7 @@ camera-simctl smoke   --host    127.0.0.1:55740    # design gate #5
 # PLANNED (not implemented yet — paper shape for the script/fault surface):
 camera-simctl script run scenarios/fuji/image-import-happy.yaml
 camera-simctl fault set --op 0x101b --after-bytes 10485760 --action disconnect
-camera-probe probe --plan fuji/app/image-import --out observations/run.jsonl
+camera-protocol-mapper probe --plan fuji/app/image-import --out observations/run.jsonl
 ```
 
 Scenario script shape:
@@ -1151,7 +1156,7 @@ tether) live in [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md) — each lands as an
 adapter + manifest data, with the core crates unchanged.
 
 Out of scope for now (candidate later transport): a `ble` transport kind for
-discovery/pairing emulation. `camera-probe`'s script-driven BLE plus the TUI's
+discovery/pairing emulation. `camera-protocol-mapper`'s script-driven BLE plus the TUI's
 "already-paired" shortcut cover the current need. If emulation becomes
 necessary, BLE belongs in ptpsim as a data-driven transport for the same reason
 as PTP — per-model variance the app should not have to know.
@@ -1201,7 +1206,7 @@ pass-through *and the protocol behaves identically*, so it does not exist here.
 (Contrast the modes above, where the lower layer is also pass-through but the
 camera's behavior is not — those must be modeled.)
 
-This matrix is also a probe target: `camera-probe` plans are keyed by
+This matrix is also a probe target: `camera-protocol-mapper` plans are keyed by
 `(manufacturer, transport, mode)`, so "what does this camera allow, and mean, in
 USB webcam mode" is a probe you run, not an assumption.
 
@@ -1452,7 +1457,7 @@ The tethered-shooting product target is higher:
    runner.
 8. client application refactor: delete placeholder `camera-protocol-{core,fuji,ffi}`
    crates and depend on the published ptpsim crates; land the redacted GFX100 II
-   manifest in ptpsim's public `packages/protocol-spec`; reconcile client application's
+   manifest in ptpsim's public `packages/camera-config-data`; reconcile client application's
    `PROFILES` keys to ptpsim profile ids.
 9. Point the client application management sidecar at the ptpsim binary and have it build
    the `vcam_pool` inventory snapshot by polling `/healthz`.
@@ -1465,7 +1470,7 @@ The tethered-shooting product target is higher:
 | Requirement | Design evidence |
 |---|---|
 | `ptp-core` packet parsing/serialization and containers | `ptp-core` responsibilities and public `PtpIpPacket`/`PtpCodec` sketch |
-| ObjectInfo and property descriptors | `ptp-core`, `camera-manifest`, property schema, media policy |
+| ObjectInfo and property descriptors | `ptp-core`, `camera-config`, property schema, media policy |
 | Manifest-driven workflow state machines (generic `camera-sim` interpreter) | Fuji workflow sections for LiveView, ImageImport, CameraControls, Firmware |
 | Filesystem-backed media store | `camera-media-store` contract and media policy schema |
 | Symlink-safe traversal | media-store responsibilities and concrete test gate |
@@ -1492,7 +1497,7 @@ The tethered-shooting product target is higher:
   crates and deletes its placeholder `camera-protocol-*` crates. Monorepo
   rejected because a generic, community-contributable simulator should not carry
   client application's app/backend.
-- Crate names: ptpsim naming (`ptp-core`, `camera-sim`, `camera-manifest`, …)
+- Crate names: ptpsim naming (`ptp-core`, `camera-sim`, `camera-config`, …)
   wins over client application's `camera-protocol-*`; client application refactors to match.
   Published crates carry a `ptpsim-` prefix to avoid crates.io collisions.
 - No per-manufacturer crates. One generic `camera-sim` engine + a concern-organized
@@ -1515,8 +1520,8 @@ The tethered-shooting product target is higher:
   runtime in Rust (ptpsim).
 - TUI: orthogonal to ptpsim. TUI owns BLE/app-state injection (dev/test only);
   ptpsim owns the PTP/IP wire (dev/test/production-verification).
-- Probe tool: `camera-probe`, a Python tool under `tools/`
-  (not a Rust crate), seeded by fuji-remote. Python for field portability
+- Probe tool: `camera-protocol-mapper`, a Python tool in its own repository
+  (not part of this workspace), seeded by fuji-remote. Python for field portability
   (ssh/RDP, no toolchain). The JSONL observation bundle is the only seam; stable
   plans may be ported to Rust later but need not be. Probe plans declare an
   escalating risk class: `safe` (default, read-mostly) → `settings-write`
@@ -1530,10 +1535,10 @@ The tethered-shooting product target is higher:
   (USB raw-conversion / backup-restore / webcam / image; plus `http` = the
   camera webserver, ex-"XLV"). All data, not code. Wi-Fi AP vs infra is not
   modeled (OS pass-through *and* identical protocol behavior).
-- Canonical manifest generator: lives in `camera-manifest` (Rust), consuming the
-  observation bundle — not in `camera-probe`. One generator next to the schema
+- Canonical manifest generator: lives in `camera-config` (Rust), consuming the
+  observation bundle — not in `camera-protocol-mapper`. One generator next to the schema
   it validates against, serving all bundle sources, reproducible from a stored
-  bundle. `camera-probe` may emit a non-canonical field draft; needed context
+  bundle. `camera-protocol-mapper` may emit a non-canonical field draft; needed context
   goes into the bundle, not a second generator.
 - Manufacturer order: Fuji, then Nikon (and RED, Nikon-owned), then Canon.
 - PCSS: start as a sibling transport module under Fuji, not inside reference app AP
