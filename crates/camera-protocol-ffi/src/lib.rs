@@ -1100,10 +1100,9 @@ pub struct KeyValue {
 /// How to bring a known connection up (data only — the app drives the
 /// GATT/UDP/TCP I/O). Returned by [`ConfigStore::connection_establishment`].
 ///
-/// **Renamed in P1** (was `EstablishmentPlan`) — the manufacturer-index
-/// pull-model flow took the `EstablishmentPlan` name; this type covers the
-/// older single-connection query (`establishment("ble")` → "here are the
-/// GATT UUIDs and knock ports for the ble connection").
+/// Distinct from the manufacturer-index pull model's `EstablishmentPlan`:
+/// this type answers the single-connection query (`connection_establishment("ble")`
+/// → "here are the GATT UUIDs and knock ports for the ble connection").
 #[derive(uniffi::Record)]
 pub struct ConnectionEstablishmentInfo {
     pub target_connection: String,
@@ -1429,9 +1428,9 @@ impl ConfigStore {
     /// How to bring `connection` up: its establishment mechanism + params (knock
     /// ports, GATT char uuids) as DATA. Returns `None` for an unknown connection.
     ///
-    /// **Renamed in P1** (was `establishment(connection)`) — the
-    /// `establishment(model, connection, initial_scope)` name now belongs to
-    /// the manufacturer-index pull-model flow per plan §3.3.
+    /// Distinct from `establishment(model, connection, initial_scope)`, the
+    /// manufacturer-index pull-model flow (plan §3.3): this is the direct
+    /// per-connection lookup on an already-loaded body config.
     pub fn connection_establishment(
         &self,
         connection: String,
@@ -2069,7 +2068,6 @@ fn platform_ok(c: &cc::Connection, p: &Platform) -> bool {
     }
 }
 
-/// A scalar YAML value (string/int/bool) rendered to a string; `None` for compound.
 /// Decode an even-length hex string (optionally `0x`-prefixed) to bytes —
 /// matches `index::eval::yaml_literal_to_bytes`'s hex path, for the init GUID
 /// and vendor tail.
