@@ -12,6 +12,10 @@ camera:
   firmware: "2.30"
   identities:
     ptpDeviceName: GFX100 II
+    # Synthetic simulator serial, served as DeviceInfo.serial_number (#152). A
+    # real body reports its unit serial here, equal to the BLE full-serial
+    # characteristic — deliberately NOT a real unit's serial.
+    serialNumber: PTPSIM-GFX100II-0001
 
 evidence:
   iosFujiPTPIP:    { kind: ios-source, path: "client application/.../client applicationCore/FujiPTPIP.swift", date: "2026-05-26" }

@@ -116,6 +116,14 @@ fn believable_enumeration_from_the_rich_manifest() {
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None)); // OpenSession
     let di = DeviceInfo::decode(&data_of(e.on_operation(&req(0x1001, 2, vec![]), None))).unwrap();
     assert_eq!(di.model, "GFX100 II");
+    // The serial flows from the manifest identity to the wire (#152) — the app
+    // keys a saved camera on it, so an empty string would break auto-merge.
+    assert_eq!(
+        di.serial_number,
+        consolidated().camera.identities["serialNumber"],
+        "DeviceInfo.serial_number comes from camera.identities.serialNumber"
+    );
+    assert!(!di.serial_number.is_empty());
     // The consolidated carries the full probed surface — a believable camera, not a stub.
     assert!(
         di.operations_supported.len() >= 20,

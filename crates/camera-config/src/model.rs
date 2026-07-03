@@ -69,6 +69,11 @@ pub struct CameraIdentity {
     /// raw-compared against this field.
     #[serde(default)]
     pub firmware: String,
+    /// Named identity strings for this body. Known keys: `ptpDeviceName` (the
+    /// PTP-side friendly name — channel-prefixed because BLE adverts carry a
+    /// different name) and `serialNumber` (served as `DeviceInfo.serial_number`
+    /// in GetDeviceInfo; on real bodies it equals the BLE full-serial
+    /// characteristic, making it the channel-neutral saved-camera key, #152).
     #[serde(default)]
     pub identities: BTreeMap<String, String>,
 }
