@@ -6442,7 +6442,7 @@ connections:
       kind: stream
       pollOp: null
     shutterRecipe: appPostview
-    commandFraming: fujiCompressed
+    commandFraming: compressed
     eventFraming: usb
     commandListenerVolatile: true
     bindings:
@@ -7292,7 +7292,7 @@ connections:
       kind: poll
       pollOp: '0x9018'
     shutterRecipe: wirelessTether3Beat
-    commandFraming: fujiCompressed
+    commandFraming: compressed
     eventFraming: null
     commandListenerVolatile: false
     bindings:

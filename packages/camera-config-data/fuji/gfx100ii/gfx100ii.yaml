@@ -71,7 +71,7 @@ connections:
     # Wire framing per channel (#133) so the app picks the codec from data, not by
     # mapping the connection kind in Swift. Command = the byte-exact fw0230 compressed
     # channel; the event socket carries PIMA type-4 containers (Swift parsePTPEvent).
-    commandFraming: fujiCompressed
+    commandFraming: compressed
     eventFraming: usb
     # The keep-AP sentinel holds the Wi-Fi AP up, but the camera tears down the
     # :55740 command-port listener on the transport-close — a reopenSession's
@@ -354,7 +354,7 @@ connections:
     bindings: { command: 15740 }
     # The command/data channel is Fuji-compressed (data-phase types 9/10/12), same as the
     # app path; only the InitCommandRequest is standard-framed (#133, PR feedback 2026-07-01).
-    commandFraming: fujiCompressed
+    commandFraming: compressed
     # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
     # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
     # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference-app's 82-byte init).

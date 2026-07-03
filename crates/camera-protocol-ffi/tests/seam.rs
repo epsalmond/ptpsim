@@ -894,7 +894,7 @@ use ptp_core::{
 fn build_command_is_byte_exact_per_framing() {
     // Compressed OpenSession(0x1002), tid 1, param 1 — no DataPhaseInfo field.
     assert_eq!(
-        build_command(PtpFraming::FujiCompressed, 0x1002, 1, vec![1]).unwrap(),
+        build_command(PtpFraming::Compressed, 0x1002, 1, vec![1]).unwrap(),
         vec![0x10, 0, 0, 0, 0x01, 0x00, 0x02, 0x10, 0x01, 0, 0, 0, 0x01, 0, 0, 0],
     );
     // Standard framing carries DataPhaseInfo (=1) before the opcode.
@@ -921,7 +921,7 @@ fn build_data_round_trips_through_parse_data_payload() {
     let payload = vec![0xde, 0xad, 0xbe, 0xef, 0x01];
     // USB data phases are a bulk-transfer concern, not a re-emittable container,
     // so build_data covers the two framings that model a Data block.
-    for framing in [PtpFraming::Standard, PtpFraming::FujiCompressed] {
+    for framing in [PtpFraming::Standard, PtpFraming::Compressed] {
         let frame = build_data(framing, 0x1009, 9, payload.clone()).unwrap();
         assert_eq!(parse_data_payload(framing, frame).unwrap(), payload);
     }
@@ -945,7 +945,7 @@ fn parse_response_reads_a_compressed_operation_response() {
         },
     ))
     .unwrap();
-    let r = parse_response(PtpFraming::FujiCompressed, frame).unwrap();
+    let r = parse_response(PtpFraming::Compressed, frame).unwrap();
     assert_eq!(r.response_code, 0x2001);
     assert_eq!(r.txn, 7);
     assert_eq!(r.params, vec![0x2a]);
@@ -1186,12 +1186,12 @@ fn parse_data_phase_decodes_a_compressed_single_frame() {
     ];
     // build_data reproduces the captured frame byte-for-byte.
     assert_eq!(
-        build_data(PtpFraming::FujiCompressed, 0x1015, 2, vec![0x05, 0x00]).unwrap(),
+        build_data(PtpFraming::Compressed, 0x1015, 2, vec![0x05, 0x00]).unwrap(),
         golden,
     );
     // parse_data_phase yields the entire payload in one Data frame — the app used
     // to crash waiting for an EndData / type-12 that never arrives.
-    let d = parse_data_phase(PtpFraming::FujiCompressed, golden).unwrap();
+    let d = parse_data_phase(PtpFraming::Compressed, golden).unwrap();
     assert_eq!(d.kind, DataPhaseKind::Data);
     assert_eq!(d.txn, 2);
     assert_eq!(d.payload, vec![0x05, 0x00]);
@@ -1200,8 +1200,8 @@ fn parse_data_phase_decodes_a_compressed_single_frame() {
     // A large transfer is still a single frame: on the wire a full GetObject(0x1009)
     // arrives as one 14.5 MB type-2 Data frame. A stand-in payload round-trips whole.
     let big = vec![0xabu8; 4096];
-    let frame = build_data(PtpFraming::FujiCompressed, 0x1009, 99, big.clone()).unwrap();
-    let bd = parse_data_phase(PtpFraming::FujiCompressed, frame).unwrap();
+    let frame = build_data(PtpFraming::Compressed, 0x1009, 99, big.clone()).unwrap();
+    let bd = parse_data_phase(PtpFraming::Compressed, frame).unwrap();
     assert_eq!(bd.kind, DataPhaseKind::Data);
     assert_eq!(bd.payload, big);
 }
@@ -1215,10 +1215,7 @@ fn connection_wire_framing_is_declared_in_the_manifest() {
         .find(|c| c.id == "app")
         .expect("app connection");
     // The app reads framing from data — it never maps kind→framing itself (#133).
-    assert!(matches!(
-        app.command_framing,
-        Some(PtpFraming::FujiCompressed)
-    ));
+    assert!(matches!(app.command_framing, Some(PtpFraming::Compressed)));
     // Command vs event framing differ: the event socket is a PIMA type-4 container.
     assert!(matches!(app.event_framing, Some(PtpFraming::Usb)));
     // The manifest-declared command framing drives the codec: byte-exact compressed frame.
@@ -1234,9 +1231,6 @@ fn connection_wire_framing_is_declared_in_the_manifest() {
         .into_iter()
         .find(|c| c.id == "wireless-tether")
         .expect("wireless-tether connection");
-    assert!(matches!(
-        wt.command_framing,
-        Some(PtpFraming::FujiCompressed)
-    ));
+    assert!(matches!(wt.command_framing, Some(PtpFraming::Compressed)));
     assert!(wt.event_framing.is_none());
 }

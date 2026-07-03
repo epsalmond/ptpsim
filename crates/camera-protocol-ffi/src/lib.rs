@@ -111,7 +111,7 @@ pub fn normalize_client_name(raw: String) -> String {
 /// G1 — pack a normalized tap `(x, y)` (each `0.0..=1.0`) into the `0x9026`
 /// LockS1Lock AF-area u32 for a `columns`×`rows` grid (read from `focus_grid()`).
 /// Aspect comes from the prior `0xD17C` lock state, defaulting to 4:3. Replaces
-/// the app's `FujiFocusArea` so tap-to-focus carries no camera math (#135).
+/// the app's hand-rolled focus-area math so tap-to-focus carries no camera knowledge (#135).
 #[uniffi::export]
 pub fn pack_af_area(x: f64, y: f64, columns: u32, rows: u32, prior_lock_state: Option<u32>) -> u32 {
     protocol_primitives::pack_af_area(x, y, columns, rows, prior_lock_state)
@@ -138,14 +138,14 @@ pub fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, CodecError
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum PtpFraming {
     Standard,
-    FujiCompressed,
+    Compressed,
     Usb,
 }
 
 fn frame_encode(framing: PtpFraming, pkt: &ptp_core::PtpIpPacket) -> Result<Vec<u8>, CodecError> {
     match framing {
         PtpFraming::Standard => ptp_core::encode(pkt).map_err(codec_encode),
-        PtpFraming::FujiCompressed => {
+        PtpFraming::Compressed => {
             protocol_primitives::fuji_framing::encode(pkt).map_err(codec_encode)
         }
         PtpFraming::Usb => protocol_primitives::usb_ptp::encode(pkt).map_err(codec_encode),
@@ -156,7 +156,7 @@ fn frame_decode(framing: PtpFraming, bytes: &[u8]) -> Result<ptp_core::PtpIpPack
     use ptp_core::PtpCodec;
     match framing {
         PtpFraming::Standard => ptp_core::PtpIpPacket::decode(bytes),
-        PtpFraming::FujiCompressed => protocol_primitives::fuji_framing::decode(bytes),
+        PtpFraming::Compressed => protocol_primitives::fuji_framing::decode(bytes),
         PtpFraming::Usb => protocol_primitives::usb_ptp::decode(bytes),
     }
     .map_err(codec_decode)
@@ -193,7 +193,7 @@ pub fn build_data(
     payload: Vec<u8>,
 ) -> Result<Vec<u8>, CodecError> {
     match framing {
-        PtpFraming::FujiCompressed => Ok(protocol_primitives::fuji_framing::encode_data(
+        PtpFraming::Compressed => Ok(protocol_primitives::fuji_framing::encode_data(
             op, txn, &payload,
         )),
         PtpFraming::Standard | PtpFraming::Usb => {
@@ -310,7 +310,7 @@ pub struct CameraEvent {
 /// non-event packet; an error when the bytes don't decode in `framing`. Standard
 /// PTP/IP events are packet-type 8; the USB/PIMA event container is type 4. The
 /// Fuji compressed command channel carries no events (they ride a separate
-/// socket), so `FujiCompressed` will reject an event frame.
+/// socket), so `Compressed` will reject an event frame.
 #[uniffi::export]
 pub fn parse_event(
     framing: PtpFraming,
@@ -591,7 +591,7 @@ impl From<cc::WireFraming> for PtpFraming {
     fn from(f: cc::WireFraming) -> Self {
         match f {
             cc::WireFraming::Standard => PtpFraming::Standard,
-            cc::WireFraming::FujiCompressed => PtpFraming::FujiCompressed,
+            cc::WireFraming::Compressed => PtpFraming::Compressed,
             cc::WireFraming::Usb => PtpFraming::Usb,
         }
     }

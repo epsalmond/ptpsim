@@ -750,8 +750,11 @@ pub enum ShutterRecipe {
 pub enum WireFraming {
     /// ISO-15740 standard PTP/IP framing (8-byte header, DataPhaseInfo present).
     Standard,
-    /// Fuji's compressed reference app command framing (12-byte header, no DataPhaseInfo).
-    FujiCompressed,
+    /// The "compressed" command framing: a PIMA-style 12-byte container without the
+    /// standard PTP/IP wrapper — single-frame data phase, no event type. Named for
+    /// the narrower header, not actual compression; wire-verified on Fuji reference app
+    /// channels but a schema-generic framing kind.
+    Compressed,
     /// The PIMA/USB container framing (12-byte header, type 4 = event).
     Usb,
 }

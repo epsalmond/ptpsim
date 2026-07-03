@@ -188,7 +188,7 @@ per-platform packaging:
   reconciled byte-exact against the wire, #143) / `parse_event`, plus dataset codecs
   `parse_object_info` / `parse_device_prop_desc` / `parse_live_status` (0xd212) /
   `parse_object_handle_list` (0xd621). Framing is selected per call by
-  `PtpFraming { Standard | FujiCompressed | Usb }`, which you **read from the manifest**
+  `PtpFraming { Standard | Compressed | Usb }`, which you **read from the manifest**
   (`ConnectionInfo.command_framing` / `event_framing`) — never a `kind→framing` map in app
   source.
 - **Sync only.** A stateful session driver (feed/poll) is a later phase; today's
