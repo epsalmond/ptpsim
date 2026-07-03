@@ -7487,6 +7487,24 @@ connections:
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
+      readDeviceInfo:
+        mode: ''
+        params: []
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x1001'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        triggers: []
+        evidence:
+        - wireTetherCaps20260527
     enables: []
     discovery:
       mechanism: pcss-knock

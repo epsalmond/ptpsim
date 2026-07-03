@@ -382,6 +382,18 @@ connections:
     # transition capture (Q3) — when it lands, model it as a videoStillsFlip action
     # or as a `shooting/video` mode entry (TBD per the flip semantics).
     actions:
+      # Session-scoped identity read (#173): the actual body's unit serial (the
+      # saved-camera merge key) + supported ops, via parse_device_info on the
+      # data phase. Empty mode = not mode-gated. The 05-27 probe snapshots are
+      # per-(connection,mode) GetDeviceInfo captures on this connection. NOT
+      # authored on `app`: the reference app never sends 0x1001 on the reference app
+      # channel (v6 wire-level run has zero 0x1001 frames) — deferred pending
+      # a capture.
+      readDeviceInfo:
+        mode: ""
+        steps:
+          - { sendOp: "0x1001", params: [] }
+        evidence: [wireTetherCaps20260527]
       # 3-beat virtual-shutter sequence. Each beat is `setProp 0xD039 = <phase>` +
       # `0x100E InitiateCapture(0,0)`. Phase byte layout is `[lo0, lo1, hi0, hi1]`
       # — beats 1/2 set the high word (request: phase 1/2); beat 3 sets the low

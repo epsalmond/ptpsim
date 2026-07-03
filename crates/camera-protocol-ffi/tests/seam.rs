@@ -412,6 +412,41 @@ fn take_to_get_entry_switches_in_session_without_reopen() {
 }
 
 #[test]
+fn read_device_info_action_pairs_with_the_device_info_codec() {
+    // The #173 seam: opcode from the manifest action, layout from the FFI
+    // codec — the app spells neither.
+    let s = store();
+    let read = s
+        .action("wireless-tether".into(), ActionVerb::ReadDeviceInfo)
+        .expect("wireless-tether.actions.readDeviceInfo");
+    assert_eq!(read.mode, "", "identity read is not mode-gated");
+    assert!(matches!(
+        read.steps[0],
+        EntryStep::SendOp { op: 0x1001, .. }
+    ));
+    // NOT authored on `app`: the reference app never sends 0x1001 on the reference app
+    // channel (v6 wire-level run: zero 0x1001 frames) — evidence-deferred.
+    assert!(s.action("app".into(), ActionVerb::ReadDeviceInfo).is_none());
+
+    // Codec half: a real DeviceInfo dataset round-trips, serial included.
+    let di = ptp_core::DeviceInfo {
+        standard_version: 100,
+        manufacturer: "FUJIFILM".into(),
+        model: "GFX100 II".into(),
+        device_version: "2.30".into(),
+        serial_number: "PTPSIM-GFX100II-0001".into(),
+        operations_supported: vec![0x1001, 0x1002],
+        ..Default::default()
+    };
+    let mut w = Writer::new();
+    di.encode(&mut w).unwrap();
+    let parsed = parse_device_info(w.into_vec()).unwrap();
+    assert_eq!(parsed.serial_number, "PTPSIM-GFX100II-0001");
+    assert_eq!(parsed.model, "GFX100 II");
+    assert_eq!(parsed.operations_supported, vec![0x1001, 0x1002]);
+}
+
+#[test]
 fn action_returns_pcss_shutter_with_images_pushed_trigger() {
     // wireless-tether shutter — the wire-confirmed 3-beat virtual-shutter
     // (setProp 0xD039 phases + sendOp 0x100E). triggers: [ImagesPushed{1,3}]
