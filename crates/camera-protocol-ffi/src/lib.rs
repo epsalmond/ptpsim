@@ -428,6 +428,51 @@ pub struct PtpObjectInfo {
     pub keywords: String,
 }
 
+/// The standard PTP DeviceInfo dataset (0x1001 data phase). `serial_number`
+/// is the *actual body's* unit identity — the saved-camera merge key — as
+/// opposed to `ConfigStore::camera_identity()`, which is the manifest's
+/// *declared* (per-model, sim-synthetic) identity. Don't conflate them (#173).
+#[derive(uniffi::Record)]
+pub struct PtpDeviceInfo {
+    pub standard_version: u16,
+    pub vendor_extension_id: u32,
+    pub vendor_extension_version: u16,
+    pub vendor_extension_desc: String,
+    pub functional_mode: u16,
+    pub operations_supported: Vec<u16>,
+    pub events_supported: Vec<u16>,
+    pub device_properties_supported: Vec<u16>,
+    pub capture_formats: Vec<u16>,
+    pub image_formats: Vec<u16>,
+    pub manufacturer: String,
+    pub model: String,
+    pub device_version: String,
+    pub serial_number: String,
+}
+
+/// Parse a `GetDeviceInfo` (0x1001) data payload. The operation to send comes
+/// from the `readDeviceInfo` action — the app never spells the opcode.
+#[uniffi::export]
+pub fn parse_device_info(payload: Vec<u8>) -> Result<PtpDeviceInfo, CodecError> {
+    let d = ptp_core::DeviceInfo::decode(&payload).map_err(codec_decode)?;
+    Ok(PtpDeviceInfo {
+        standard_version: d.standard_version,
+        vendor_extension_id: d.vendor_extension_id,
+        vendor_extension_version: d.vendor_extension_version,
+        vendor_extension_desc: d.vendor_extension_desc,
+        functional_mode: d.functional_mode,
+        operations_supported: d.operations_supported,
+        events_supported: d.events_supported,
+        device_properties_supported: d.device_properties_supported,
+        capture_formats: d.capture_formats,
+        image_formats: d.image_formats,
+        manufacturer: d.manufacturer,
+        model: d.model,
+        device_version: d.device_version,
+        serial_number: d.serial_number,
+    })
+}
+
 /// Parse a `GetObjectInfo` data payload.
 #[uniffi::export]
 pub fn parse_object_info(payload: Vec<u8>) -> Result<PtpObjectInfo, CodecError> {
@@ -1057,6 +1102,7 @@ pub enum ActionVerb {
     AutofocusLock,
     AutofocusRelease,
     ImportObjects,
+    ReadDeviceInfo,
 }
 
 /// Declared post-conditions an action produces — the consumer plans UX
@@ -2036,6 +2082,7 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
         ActionVerb::AutofocusLock => cc::ActionVerb::AutofocusLock,
         ActionVerb::AutofocusRelease => cc::ActionVerb::AutofocusRelease,
         ActionVerb::ImportObjects => cc::ActionVerb::ImportObjects,
+        ActionVerb::ReadDeviceInfo => cc::ActionVerb::ReadDeviceInfo,
     }
 }
 

@@ -708,6 +708,11 @@ pub enum ActionVerb {
     /// handle { get size → chunk-download until exhausted } → idle. The loop
     /// lives in the manifest; the reference executor walks it end-to-end.
     ImportObjects,
+    /// Read the camera's DeviceInfo dataset (standard `0x1001`) — the actual
+    /// body's identity (unit serial = the saved-camera merge key, #173) plus
+    /// its supported-ops surface. Not mode-gated: valid whenever a session is
+    /// open.
+    ReadDeviceInfo,
 }
 
 /// How live-view frames are delivered over a connection (#81 per-connection
@@ -832,7 +837,8 @@ pub struct LiveViewStream {}
 #[serde(rename_all = "camelCase")]
 pub struct Action {
     /// Mode this action is valid in (gating; same path-prefix match as
-    /// `Operation.modes`).
+    /// `Operation.modes`). Empty = not mode-gated: valid in any mode while
+    /// the connection is up (e.g. `readDeviceInfo`).
     pub mode: String,
     /// Runtime slot names the caller binds; each must be referenced by at
     /// least one `StepParam::Runtime { runtime: <slot> }` in `steps`.
