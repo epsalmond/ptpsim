@@ -462,10 +462,38 @@ pub struct LiveStatus {
     pub records: Vec<PropObservation>,
 }
 
-/// Parse a live-status record-stream payload into its property observations.
+/// Parse a live-status record-stream payload into its property observations
+/// at the `0xD212` widths (u16 count / u16 code / u32 value). For a payload
+/// whose manifest declares other widths, use [`parse_record_stream`].
 #[uniffi::export]
 pub fn parse_live_status(payload: Vec<u8>) -> Result<LiveStatus, CodecError> {
-    let records = protocol_primitives::quirk::parse_record_stream(&payload)
+    parse_records_at(
+        &payload,
+        protocol_primitives::quirk::RecordStreamLayout::D212,
+    )
+}
+
+/// Parse a record-stream payload at the manifest-declared widths — pass the
+/// property's [`PayloadInfo`] from the catalog. Omitted widths take the schema
+/// defaults (2/2/4), mirroring `camera_config::Payload::record_widths` (a seam
+/// test guards the mirror). Widths the codec can't honor are a
+/// [`CodecError::Decode`], never a silent misread (#161).
+#[uniffi::export]
+pub fn parse_record_stream(payload: Vec<u8>, info: PayloadInfo) -> Result<LiveStatus, CodecError> {
+    let layout = protocol_primitives::quirk::RecordStreamLayout::new(
+        info.count_width.unwrap_or(2),
+        info.record.as_ref().map(|r| r.code_width).unwrap_or(2),
+        info.record.as_ref().map(|r| r.value_width).unwrap_or(4),
+    )
+    .map_err(codec_decode)?;
+    parse_records_at(&payload, layout)
+}
+
+fn parse_records_at(
+    payload: &[u8],
+    layout: protocol_primitives::quirk::RecordStreamLayout,
+) -> Result<LiveStatus, CodecError> {
+    let records = protocol_primitives::quirk::parse_record_stream(payload, &layout)
         .map_err(codec_decode)?
         .into_iter()
         .map(|(code, value)| PropObservation {

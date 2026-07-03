@@ -317,6 +317,21 @@ pub struct Payload {
     pub members: Vec<HexCode>,
 }
 
+impl Payload {
+    /// The `(count, code, value)` field widths, with the schema defaults
+    /// (`0xD212`'s 2/2/4) filled in for omitted declarations. The single
+    /// defaulting source — codecs must frame at THESE widths, never assume
+    /// the D212 shape (#161). The FFI's `parse_record_stream` mirrors this
+    /// defaulting; a seam test guards the mirror.
+    pub fn record_widths(&self) -> (u8, u8, u8) {
+        (
+            self.count_width.unwrap_or(2),
+            self.record.map(|r| r.code_width).unwrap_or(2),
+            self.record.map(|r| r.value_width).unwrap_or(4),
+        )
+    }
+}
+
 /// The framing of a composite payload. Only `recordStream` exists today; the
 /// closed enum reserves room for a future fixed-layout bundle without a break.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
