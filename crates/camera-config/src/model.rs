@@ -29,8 +29,6 @@ pub struct CameraManifest {
     #[serde(default)]
     pub evidence: BTreeMap<String, Evidence>,
     #[serde(default)]
-    pub transports: BTreeMap<String, Transport>,
-    #[serde(default)]
     pub operations: BTreeMap<HexCode, Operation>,
     #[serde(default)]
     pub properties: BTreeMap<HexCode, Property>,
@@ -97,17 +95,6 @@ pub struct Evidence {
     pub path: String,
     #[serde(default)]
     pub date: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Transport {
-    pub kind: String,
-    #[serde(default)]
-    pub status: Option<String>,
-    /// Free-form bind/port/init detail; structure varies by transport kind.
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

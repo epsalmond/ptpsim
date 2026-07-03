@@ -89,7 +89,6 @@ evidence:
     kind: wire-capture
     path: packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
     date: 2026-05-27
-transports: {}
 operations:
   '0x1001':
     name: GetDeviceInfo

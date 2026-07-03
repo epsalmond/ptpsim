@@ -261,7 +261,6 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
         schema: crate::SCHEMA_VERSION.to_string(),
         camera,
         evidence,
-        transports: BTreeMap::new(),
         operations,
         properties,
         workflows: BTreeMap::new(),
