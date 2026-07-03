@@ -493,6 +493,13 @@ impl Engine {
             model: self.manifest.camera.model.clone(),
             manufacturer: self.manifest.camera.manufacturer.clone(),
             device_version: self.manifest.camera.firmware.clone(),
+            serial_number: self
+                .manifest
+                .camera
+                .identities
+                .get("serialNumber")
+                .cloned()
+                .unwrap_or_default(),
             operations_supported: ops,
             device_properties_supported: props,
             ..Default::default()
