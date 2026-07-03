@@ -1,0 +1,28 @@
+#!/bin/sh
+# SDLC worktree discipline (AGENTS.md "SDLC — worktree → branch → PR").
+# Activate once per clone (cannot be committed as config):
+#   git config core.hooksPath scripts/git-hooks
+
+branch=$(git symbolic-ref --short -q HEAD)
+
+if [ "$branch" = "main" ]; then
+    echo "pre-commit: blocked — main only advances through merged PRs." >&2
+    echo "  git worktree add ~/git/ptpsim-<slug> -b <branch>" >&2
+    exit 1
+fi
+
+case "$(git rev-parse --absolute-git-dir)" in
+*/.git/worktrees/*)
+    # Linked worktree on a branch: the sanctioned path.
+    ;;
+*)
+    if [ -z "$PTPSIM_ALLOW_PRIMARY_COMMIT" ]; then
+        echo "pre-commit: blocked — this is the primary checkout; work happens in worktrees." >&2
+        echo "  git worktree add ~/git/ptpsim-<slug> -b <branch>" >&2
+        echo "  (humans: PTPSIM_ALLOW_PRIMARY_COMMIT=1 git commit ... to override)" >&2
+        exit 1
+    fi
+    ;;
+esac
+
+exit 0

@@ -38,7 +38,11 @@ list is for *this turn's* working memory, not the project backlog.
 1. **One agent session per worktree**, so sessions don't collide:
    `git worktree add ~/git/ptpsim-<slug> -b <branch>` off `main`. It's
    yours alone — multiple branches/PRs in it are fine, never a shared
-   checkout. `git worktree remove` when done.
+   checkout. `git worktree remove` when done. Do this **before your first
+   edit**, not at commit time — never work in `~/git/ptpsim` itself.
+   Enforced by `scripts/git-hooks/pre-commit` (blocks commits on `main`
+   and in the primary checkout); activate once per clone with
+   `git config core.hooksPath scripts/git-hooks`.
 2. **Close issues with Pull Requests.** An issue SHOULD precede the PR (see
    *Work tracking*); footer the PR `Closes #N`. A self-evident doc fix may
    skip the issue.
@@ -66,7 +70,12 @@ copying RE narrative into ptpsim. The tool runs on nas; from any other host,
 prefix with `ssh nas`.
 
 - Discover routing with `fuji-ask-operator --list`.
-- Ask read-only questions with `fuji-ask-operator <op> "<question>"`.
+- Ask questions with `fuji-ask-operator <op> "<question>"`.
+  ASK mode runs with host access by default so operators can inspect local
+  captures, graph data, and sibling repos. The prompt contract still forbids
+  permanent changes: temporary scratch files are okay when needed, but repo
+  files, graph facts, devices, persistent config, and other durable state stay
+  untouched.
 - Delegate scoped work with `fuji-ask-operator --do <op> "<task>"`.
 - File async questions with `fuji-ask-operator --consult --as <role> <op> "<question>"`.
   Use the cohort role whose work you represent, for example `--as W3` when the
@@ -145,7 +154,11 @@ When sources disagree about a protocol fact:
 
 ## Bootstrap on a clean start
 
-1. **Evaluate the host you're on — don't assume it from a doc.**
+1. **Create a worktree before touching anything** —
+   `git worktree add ~/git/ptpsim-<slug> -b <branch>` (SDLC above). The
+   primary checkout is read-only for agents; the pre-commit hook rejects
+   commits made there.
+2. **Evaluate the host you're on — don't assume it from a doc.**
 
    macOS). Check the platform your harness reports before relying on
    host-specific paths, tools, or capabilities; static host facts
@@ -156,12 +169,12 @@ When sources disagree about a protocol fact:
    it differs per host — e.g. `-home-eric-git-ptpsim` on the Linux
    host). The index files name the project arc, conventions, and
    references.
-3. **Check** `gh issue list` for open work. Pending operational tasks
+4. **Check** `gh issue list` for open work. Pending operational tasks
    (CI, correctness, follow-ups) are filed there; this is the project
    backlog.
-4. **Skim** the last 10 entries of `git log --oneline` — recent commits
+5. **Skim** the last 10 entries of `git log --oneline` — recent commits
    are the highest-fidelity record of what just changed and why.
-5. **Don't** trust any old `RESUME.md`, `resume.sh`, or similar
+6. **Don't** trust any old `RESUME.md`, `resume.sh`, or similar
    session-state file. The one that existed has been deleted; if a new
    one appears, verify it against the repo before relying on it.
 

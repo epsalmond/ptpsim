@@ -72,7 +72,8 @@ const HEADER: &str = "\
 # (camera-sim-service --manifest …/gfx100ii.consolidated.yaml). Reproduce with:
 #   cargo run -p camera-config --bin camera-config-generate -- \\
 #     --enrich packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml \\
-#     packages/camera-config-data/fuji/gfx100ii/evidence/probe/*.jsonl
+#     packages/camera-config-data/fuji/gfx100ii/evidence/probe/*.jsonl \\
+#     packages/camera-config-data/fuji/gfx100ii/evidence/labels/*.jsonl
 #
 # = curated gfx100ii.yaml (connections/modes/entries/establishment + curated names,
 #   labels, gating) ENRICHED with active-probe evidence (props/descriptors/ops).
