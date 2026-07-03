@@ -29,8 +29,6 @@ pub struct CameraManifest {
     #[serde(default)]
     pub evidence: BTreeMap<String, Evidence>,
     #[serde(default)]
-    pub transports: BTreeMap<String, Transport>,
-    #[serde(default)]
     pub operations: BTreeMap<HexCode, Operation>,
     #[serde(default)]
     pub properties: BTreeMap<HexCode, Property>,
@@ -97,17 +95,6 @@ pub struct Evidence {
     pub path: String,
     #[serde(default)]
     pub date: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Transport {
-    pub kind: String,
-    #[serde(default)]
-    pub status: Option<String>,
-    /// Free-form bind/port/init detail; structure varies by transport kind.
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +315,21 @@ pub struct Payload {
     /// allowlist). Each member's value width comes from its own property `type:`.
     #[serde(default)]
     pub members: Vec<HexCode>,
+}
+
+impl Payload {
+    /// The `(count, code, value)` field widths, with the schema defaults
+    /// (`0xD212`'s 2/2/4) filled in for omitted declarations. The single
+    /// defaulting source — codecs must frame at THESE widths, never assume
+    /// the D212 shape (#161). The FFI's `parse_record_stream` mirrors this
+    /// defaulting; a seam test guards the mirror.
+    pub fn record_widths(&self) -> (u8, u8, u8) {
+        (
+            self.count_width.unwrap_or(2),
+            self.record.map(|r| r.code_width).unwrap_or(2),
+            self.record.map(|r| r.value_width).unwrap_or(4),
+        )
+    }
 }
 
 /// The framing of a composite payload. Only `recordStream` exists today; the

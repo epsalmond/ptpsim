@@ -1045,11 +1045,76 @@ fn parse_device_prop_desc_decodes_value_and_enum_form() {
 
 #[test]
 fn parse_live_status_is_the_inverse_of_the_record_stream_encoder() {
-    let bytes = protocol_primitives::quirk::record_stream(&[(0x5007, 280), (0xd212, 1)]);
+    let bytes = protocol_primitives::quirk::record_stream(
+        &[(0x5007, 280), (0xd212, 1)],
+        &protocol_primitives::quirk::RecordStreamLayout::D212,
+    )
+    .unwrap();
     let ls = parse_live_status(bytes).unwrap();
     assert_eq!(ls.records.len(), 2);
     assert_eq!((ls.records[0].code, ls.records[0].value), (0x5007, 280));
     assert_eq!((ls.records[1].code, ls.records[1].value), (0xd212, 1));
+}
+
+#[test]
+fn parse_record_stream_honors_declared_widths_with_d212_defaults() {
+    // Omitted widths must mean exactly what parse_live_status assumes — the FFI
+    // defaults mirror camera_config::Payload::record_widths (#161).
+    let defaults = PayloadInfo {
+        form: PayloadForm::RecordStream,
+        count_width: None,
+        record: None,
+        members: vec![],
+    };
+    let cc_defaults = camera_config::Payload {
+        form: camera_config::PayloadForm::RecordStream,
+        count_width: None,
+        record: None,
+        members: vec![],
+    }
+    .record_widths();
+    assert_eq!(cc_defaults, (2, 2, 4), "schema defaults are the D212 shape");
+    let d212 = protocol_primitives::quirk::record_stream(
+        &[(0x5007, 280)],
+        &protocol_primitives::quirk::RecordStreamLayout::D212,
+    )
+    .unwrap();
+    let via_defaults = parse_record_stream(d212.clone(), defaults).unwrap();
+    let via_live_status = parse_live_status(d212).unwrap();
+    assert_eq!(via_defaults.records.len(), 1);
+    assert_eq!(
+        (via_defaults.records[0].code, via_defaults.records[0].value),
+        (
+            via_live_status.records[0].code,
+            via_live_status.records[0].value
+        )
+    );
+
+    // Declared non-default widths reframe the parse: u8 count, u8 code, u16 value.
+    let tight = PayloadInfo {
+        form: PayloadForm::RecordStream,
+        count_width: Some(1),
+        record: Some(RecordLayoutInfo {
+            code_width: 1,
+            value_width: 2,
+        }),
+        members: vec![],
+    };
+    let layout = protocol_primitives::quirk::RecordStreamLayout::new(1, 1, 2).unwrap();
+    let bytes =
+        protocol_primitives::quirk::record_stream(&[(0x07, 280), (0x09, 1)], &layout).unwrap();
+    let ls = parse_record_stream(bytes, tight).unwrap();
+    assert_eq!(ls.records.len(), 2);
+    assert_eq!((ls.records[0].code, ls.records[0].value), (0x07, 280));
+
+    // Widths the codec can't honor are a loud decode error, not a misread.
+    let bad = PayloadInfo {
+        form: PayloadForm::RecordStream,
+        count_width: Some(3),
+        record: None,
+        members: vec![],
+    };
+    assert!(parse_record_stream(vec![0, 0], bad).is_err());
 }
 
 #[test]

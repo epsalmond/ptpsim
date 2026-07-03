@@ -4,6 +4,9 @@ Status: **paper design**, not yet implemented. Covers the transports shipping
 soon — PTP/USB, XLV (HTTP/HTTPS), and wireless tether — for the Fuji GFX100 II
 first. These extend the design in [`../DESIGN.md`](../DESIGN.md); read its
 "Transport And Mode Matrix" and "Architecture: generic engine" sections first.
+NB: the YAML sketches below predate the `connections` schema that superseded
+the draft `transports:` block (#162); on implementation, this material lands
+as `connections.*` entries.
 
 USB captures are in progress; this doc is the target the captures + manifests
 land against.
@@ -16,7 +19,7 @@ USB PHY) and the **one generic engine's shared state** (`CameraState`,
 becoming "vcam per transport":
 
 1. **Descriptors, ports, security, and mode gating are manifest data**
-   (`transports.*`), never per-firmware/per-brand code.
+   (`connections.*`), never per-firmware/per-brand code.
 2. **The core is untouched.** `ptp-core`, the `camera-manifest` model shape, and
    `camera-sim`'s state model do not change to add a transport.
 3. New code is allowed only for: a new **wire framing** (→ `ptp-core` /

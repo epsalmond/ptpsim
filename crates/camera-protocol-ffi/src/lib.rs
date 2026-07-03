@@ -462,10 +462,38 @@ pub struct LiveStatus {
     pub records: Vec<PropObservation>,
 }
 
-/// Parse a live-status record-stream payload into its property observations.
+/// Parse a live-status record-stream payload into its property observations
+/// at the `0xD212` widths (u16 count / u16 code / u32 value). For a payload
+/// whose manifest declares other widths, use [`parse_record_stream`].
 #[uniffi::export]
 pub fn parse_live_status(payload: Vec<u8>) -> Result<LiveStatus, CodecError> {
-    let records = protocol_primitives::quirk::parse_record_stream(&payload)
+    parse_records_at(
+        &payload,
+        protocol_primitives::quirk::RecordStreamLayout::D212,
+    )
+}
+
+/// Parse a record-stream payload at the manifest-declared widths — pass the
+/// property's [`PayloadInfo`] from the catalog. Omitted widths take the schema
+/// defaults (2/2/4), mirroring `camera_config::Payload::record_widths` (a seam
+/// test guards the mirror). Widths the codec can't honor are a
+/// [`CodecError::Decode`], never a silent misread (#161).
+#[uniffi::export]
+pub fn parse_record_stream(payload: Vec<u8>, info: PayloadInfo) -> Result<LiveStatus, CodecError> {
+    let layout = protocol_primitives::quirk::RecordStreamLayout::new(
+        info.count_width.unwrap_or(2),
+        info.record.as_ref().map(|r| r.code_width).unwrap_or(2),
+        info.record.as_ref().map(|r| r.value_width).unwrap_or(4),
+    )
+    .map_err(codec_decode)?;
+    parse_records_at(&payload, layout)
+}
+
+fn parse_records_at(
+    payload: &[u8],
+    layout: protocol_primitives::quirk::RecordStreamLayout,
+) -> Result<LiveStatus, CodecError> {
+    let records = protocol_primitives::quirk::parse_record_stream(payload, &layout)
         .map_err(codec_decode)?
         .into_iter()
         .map(|(code, value)| PropObservation {
@@ -1072,10 +1100,9 @@ pub struct KeyValue {
 /// How to bring a known connection up (data only — the app drives the
 /// GATT/UDP/TCP I/O). Returned by [`ConfigStore::connection_establishment`].
 ///
-/// **Renamed in P1** (was `EstablishmentPlan`) — the manufacturer-index
-/// pull-model flow took the `EstablishmentPlan` name; this type covers the
-/// older single-connection query (`establishment("ble")` → "here are the
-/// GATT UUIDs and knock ports for the ble connection").
+/// Distinct from the manufacturer-index pull model's `EstablishmentPlan`:
+/// this type answers the single-connection query (`connection_establishment("ble")`
+/// → "here are the GATT UUIDs and knock ports for the ble connection").
 #[derive(uniffi::Record)]
 pub struct ConnectionEstablishmentInfo {
     pub target_connection: String,
@@ -1401,9 +1428,9 @@ impl ConfigStore {
     /// How to bring `connection` up: its establishment mechanism + params (knock
     /// ports, GATT char uuids) as DATA. Returns `None` for an unknown connection.
     ///
-    /// **Renamed in P1** (was `establishment(connection)`) — the
-    /// `establishment(model, connection, initial_scope)` name now belongs to
-    /// the manufacturer-index pull-model flow per plan §3.3.
+    /// Distinct from `establishment(model, connection, initial_scope)`, the
+    /// manufacturer-index pull-model flow (plan §3.3): this is the direct
+    /// per-connection lookup on an already-loaded body config.
     pub fn connection_establishment(
         &self,
         connection: String,
@@ -2041,7 +2068,6 @@ fn platform_ok(c: &cc::Connection, p: &Platform) -> bool {
     }
 }
 
-/// A scalar YAML value (string/int/bool) rendered to a string; `None` for compound.
 /// Decode an even-length hex string (optionally `0x`-prefixed) to bytes —
 /// matches `index::eval::yaml_literal_to_bytes`'s hex path, for the init GUID
 /// and vendor tail.

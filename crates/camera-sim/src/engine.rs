@@ -227,7 +227,12 @@ impl Engine {
                 // 0xd212 is a *computed* live-status bundle, not a stored value:
                 // assemble it from current state via the shared quirk primitive.
                 if code == 0xd212 {
-                    Self::data(tid, self.status_d212())
+                    match self.status_d212() {
+                        Ok(bytes) => Self::data(tid, bytes),
+                        // A manifest/codec width disagreement must be visible on
+                        // the wire, not served as misframed bytes (#161).
+                        Err(_) => Self::err(tid, resp::GENERAL_ERROR),
+                    }
                 } else if code == 0xd621 {
                     // The Fuji object-handle list property (#46): the manifest's
                     // enumerate/import actions read it as a u32 array. Serve the
@@ -446,32 +451,37 @@ impl Engine {
     }
 
     /// Assemble the `0xd212` live-status record stream from current state. The
-    /// member set and framing come from the property's payload descriptor
+    /// member set AND field widths come from the property's payload descriptor
     /// (manifest data, not a Fuji branch); each member's current value is
-    /// emitted u32-padded, 0 when unset. See operators `D212_TIGHT_FORMAT`.
-    fn status_d212(&self) -> Vec<u8> {
-        let records: Vec<(u16, u32)> = self
+    /// emitted at the declared value width, 0 when unset. A manifest declaring
+    /// widths the codec can't honor is an error, never a silent misread (#161).
+    /// See operators `D212_TIGHT_FORMAT`.
+    fn status_d212(&self) -> Result<Vec<u8>, protocol_primitives::quirk::RecordStreamError> {
+        use protocol_primitives::quirk::{record_stream, RecordStreamLayout};
+        let Some(payload) = self
             .manifest
             .property(0xd212)
             .and_then(|p| p.payload.as_ref())
-            .map(|payload| {
-                payload
-                    .members
-                    .iter()
-                    .filter_map(|m| parse_hex_code(m))
-                    .map(|code| {
-                        let value = self
-                            .state
-                            .props
-                            .get(&code)
-                            .and_then(value_to_i64)
-                            .unwrap_or(0) as u32;
-                        (code, value)
-                    })
-                    .collect()
+        else {
+            return record_stream(&[], &RecordStreamLayout::D212);
+        };
+        let (count_w, code_w, value_w) = payload.record_widths();
+        let layout = RecordStreamLayout::new(count_w, code_w, value_w)?;
+        let records: Vec<(u16, u32)> = payload
+            .members
+            .iter()
+            .filter_map(|m| parse_hex_code(m))
+            .map(|code| {
+                let value = self
+                    .state
+                    .props
+                    .get(&code)
+                    .and_then(value_to_i64)
+                    .unwrap_or(0) as u32;
+                (code, value)
             })
-            .unwrap_or_default();
-        protocol_primitives::quirk::record_stream(&records)
+            .collect();
+        record_stream(&records, &layout)
     }
 
     fn device_info_bytes(&self) -> Vec<u8> {

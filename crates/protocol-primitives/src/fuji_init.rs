@@ -8,7 +8,7 @@
 //! ```
 //! `nameField` = the friendly name as UTF-16LE + a NUL u16, then truncated or
 //! zero-padded to exactly 26 bytes. Identity (GUID/name) + `tail` come from the
-//! manifest (value-policy + `transports.init`) — this code only frames them.
+//! manifest (value-policy + `connections.*.init`) — this code only frames them.
 
 use crate::error::FramingError;
 use ptp_core::Writer;

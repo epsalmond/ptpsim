@@ -659,12 +659,6 @@ fn yaml_scalar_to_string(v: &Value) -> Option<String> {
     }
 }
 
-// Suppress "unused" warning for parse-only items the FFI side will consume.
-#[allow(dead_code)]
-fn _proves_step_value_compiles(v: &StepValue) -> &StepValue {
-    v
-}
-
 // ---------------------------------------------------------------------------
 // Custom Deserialize for shapes the default external tagging doesn't fit.
 // ---------------------------------------------------------------------------
