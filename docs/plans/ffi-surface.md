@@ -182,10 +182,10 @@ pub enum ConfigError {
 
 Sans-io: they return/consume `Vec<u8>`, the app does the socket/USB write. **G1–G3 landed
 (#133).** Codec errors surface as `CodecError { Encode | Decode }`. Framing is selected per
-call by `PtpFraming { Standard | FujiCompressed | Usb }`, which the consumer **reads from the
+call by `PtpFraming { Standard | Compressed | Usb }`, which the consumer **reads from the
 manifest** — `ConnectionInfo.command_framing` / `event_framing` — so the connection→framing
 choice is data, never a `kind`-mapping in the app's own code (no manufacturer knowledge left in
-Swift). Command vs event can differ: the Fuji `app` command channel is `FujiCompressed` while its
+Swift). Command vs event can differ: the Fuji `app` command channel is `Compressed` while its
 event socket is the PIMA type-4 container (`Usb`). All three share the `ptp-core` container
 payloads; only the header differs.
 
