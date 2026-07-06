@@ -754,6 +754,7 @@ pub struct PropertyInfo {
     pub name: String,
     pub ptype: Option<String>,
     pub access: Option<String>,
+    pub initial_value: Option<i64>,
     pub values: Vec<i64>,
     pub labels: Vec<KeyValue>,
     pub value_rows: Vec<PropertyValueInfo>,
@@ -872,8 +873,28 @@ impl From<&cc::SentinelMask> for SentinelMaskInfo {
 /// computed variable.
 #[derive(Debug, uniffi::Enum)]
 pub enum EntryParam {
-    Literal { value: u32 },
-    Runtime { slot: String },
+    Literal {
+        value: u32,
+    },
+    Runtime {
+        slot: String,
+        shift: u32,
+        mask: Option<u64>,
+    },
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CaptureInfo {
+    pub bind: String,
+    pub source: CaptureSourceInfo,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum CaptureSourceInfo {
+    ObjectInfoCompressedSize,
+    PropValue,
+    U32Le,
+    U64Le,
 }
 
 /// The PTP condition vocabulary (`cc::Predicate`) mirrored for the app: a
@@ -982,15 +1003,18 @@ pub enum EntryStep {
     },
     GetProp {
         prop: u16,
+        captures: Vec<CaptureInfo>,
         tolerant: bool,
     },
     ReadEcho {
         prop: u16,
+        captures: Vec<CaptureInfo>,
         tolerant: bool,
     },
     SendOp {
         op: u16,
         params: Vec<EntryParam>,
+        captures: Vec<CaptureInfo>,
         repeat: u32,
         tolerant: bool,
     },
@@ -1000,16 +1024,11 @@ pub enum EntryStep {
     /// and OpenSession again. Reuses the connection's cached identity, so
     /// the verb carries no parameters. Wire-confirmed for the reference app
     /// `app` → image-transfer (Take→Get) flow per MODE_CHANGES.md §5.
-    ReopenSession {
-        tolerant: bool,
-    },
+    ReopenSession { tolerant: bool },
     /// End the PTP/IP session. `keep_ap` emits the 8-byte `0xffffffff` keep-AP
     /// sentinel (`keep_ap_sentinel()`) instead of a TCP FIN, so the camera holds
     /// its Wi-Fi AP up across an in-place reopen (#82).
-    CloseSession {
-        keep_ap: bool,
-        tolerant: bool,
-    },
+    CloseSession { keep_ap: bool, tolerant: bool },
     /// Observe until `until` holds, running `on_each` each unsatisfied iteration —
     /// the PTP-IP await/poll-until verb (#29 postview, #42 AF), mirroring the BLE
     /// `bleAwaitUntil` contract (§11.16). [`source`](Self::AwaitUntil::source) is
@@ -1028,8 +1047,11 @@ pub enum EntryStep {
     /// element binds a runtime slot for `body`), or `Chunk` by fixed size (the
     /// dispatcher owns the offset/length cursor; `total` names the scope slot a
     /// preceding GetObjectInfo captured). The nested `body` crosses the seam.
-    Loop {
-        kind: FfiLoopKind,
+    Loop { kind: FfiLoopKind, tolerant: bool },
+    If {
+        slot: String,
+        equals: u64,
+        then_steps: Vec<EntryStep>,
         tolerant: bool,
     },
 }
@@ -1047,11 +1069,17 @@ pub enum FfiLoopKind {
     },
     Chunk {
         total: String,
-        size: u32,
+        size: FfiChunkSize,
         offset_bind: String,
         length_bind: String,
         body: Vec<EntryStep>,
     },
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum FfiChunkSize {
+    Literal { value: u32 },
+    Runtime { slot: String },
 }
 
 /// Where a PTP-IP `awaitUntil` observes (#54). Mirrors `cc::AwaitSource`. `Poll`
@@ -1887,6 +1915,7 @@ impl ConfigStore {
                     name: p.name.clone(),
                     ptype: p.ptype.clone(),
                     access: p.access.clone(),
+                    initial_value: p.initial_value,
                     values: p
                         .descriptor
                         .as_ref()
@@ -1936,15 +1965,20 @@ impl ConfigStore {
         })
     }
 
-    /// The wireless transfer size ceiling (#136): an object whose compressed size
-    /// is `>=` this must come off the memory card, not the wireless transport.
-    /// `None` if the camera declares no such bound.
-    pub fn wireless_transfer_ceiling(&self) -> Option<u64> {
+    /// Reported `ObjectInfo.ObjectCompressedSize` sentinel for oversized objects.
+    /// `None` if the camera declares no such sentinel.
+    pub fn object_info_size_sentinel(&self) -> Option<u64> {
         self.inner
             .manifest
             .media
             .as_ref()?
-            .wireless_transfer_ceiling
+            .object_info_size_sentinel
+    }
+
+    /// Deprecated compatibility alias for the former name. The value is a
+    /// reported-size sentinel, not a transfer prohibition.
+    pub fn wireless_transfer_ceiling(&self) -> Option<u64> {
+        self.object_info_size_sentinel()
     }
 }
 
@@ -1983,12 +2017,14 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
     if let Some(p) = &s.get_prop {
         return Some(EntryStep::GetProp {
             prop: parse_hex_code(p)?,
+            captures: s.captures.iter().map(map_capture).collect(),
             tolerant,
         });
     }
     if let Some(p) = &s.read_echo {
         return Some(EntryStep::ReadEcho {
             prop: parse_hex_code(p)?,
+            captures: s.captures.iter().map(map_capture).collect(),
             tolerant,
         });
     }
@@ -1996,6 +2032,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
         return Some(EntryStep::SendOp {
             op: parse_hex_code(o)?,
             params: s.params.iter().map(map_param).collect(),
+            captures: s.captures.iter().map(map_capture).collect(),
             repeat: s.repeat,
             tolerant,
         });
@@ -2054,7 +2091,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
                 body,
             } => FfiLoopKind::Chunk {
                 total: total.clone(),
-                size: *size,
+                size: map_chunk_size(size),
                 offset_bind: offset_bind.clone(),
                 length_bind: length_bind.clone(),
                 body: body.iter().filter_map(map_step).collect(),
@@ -2062,13 +2099,50 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
         };
         return Some(EntryStep::Loop { kind, tolerant });
     }
+    if let Some(cond) = &s.if_step {
+        return Some(EntryStep::If {
+            slot: cond.slot.clone(),
+            equals: cond.equals,
+            then_steps: cond.then_steps.iter().filter_map(map_step).collect(),
+            tolerant,
+        });
+    }
     None
 }
 
 fn map_param(p: &cc::StepParam) -> EntryParam {
     match p {
         cc::StepParam::Literal(v) => EntryParam::Literal { value: *v },
-        cc::StepParam::Runtime { runtime } => EntryParam::Runtime {
+        cc::StepParam::Runtime {
+            runtime,
+            shift,
+            mask,
+        } => EntryParam::Runtime {
+            slot: runtime.clone(),
+            shift: *shift,
+            mask: *mask,
+        },
+    }
+}
+
+fn map_capture(c: &cc::model::Capture) -> CaptureInfo {
+    CaptureInfo {
+        bind: c.bind.clone(),
+        source: match c.source {
+            cc::model::CaptureSource::ObjectInfoCompressedSize => {
+                CaptureSourceInfo::ObjectInfoCompressedSize
+            }
+            cc::model::CaptureSource::PropValue => CaptureSourceInfo::PropValue,
+            cc::model::CaptureSource::U32Le => CaptureSourceInfo::U32Le,
+            cc::model::CaptureSource::U64Le => CaptureSourceInfo::U64Le,
+        },
+    }
+}
+
+fn map_chunk_size(size: &cc::model::ChunkSize) -> FfiChunkSize {
+    match size {
+        cc::model::ChunkSize::Literal(value) => FfiChunkSize::Literal { value: *value },
+        cc::model::ChunkSize::Runtime { runtime } => FfiChunkSize::Runtime {
             slot: runtime.clone(),
         },
     }

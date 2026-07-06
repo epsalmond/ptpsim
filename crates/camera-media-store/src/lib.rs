@@ -25,7 +25,8 @@ pub mod fmt {
 }
 
 /// The PTP `ObjectInfo` 32-bit size field cannot represent ≥ 4 GiB. Objects at
-/// or beyond this are reported at the ceiling and flagged memory-card-only.
+/// or beyond this are reported at the ceiling; camera-specific transfer flows
+/// may expose the true size separately.
 pub const SIZE_CEILING: u64 = u32::MAX as u64;
 
 pub type ObjectHandle = u32;
@@ -301,9 +302,9 @@ impl MediaStore {
         })
     }
 
-    /// True if the object cannot be wirelessly transferred because its real size
-    /// exceeds the 32-bit `ObjectInfo` field (reported at the ceiling).
-    pub fn is_memory_card_only(&self, handle: ObjectHandle) -> Result<bool, MediaError> {
+    /// True if the object's real size is reported through the saturated 32-bit
+    /// `ObjectInfo` size field.
+    pub fn reports_size_sentinel(&self, handle: ObjectHandle) -> Result<bool, MediaError> {
         Ok(self.entry(handle)?.size >= SIZE_CEILING)
     }
 
@@ -782,7 +783,7 @@ mod tests {
             store.object_info(h).unwrap().object_compressed_size,
             0xffff_ffff
         );
-        assert!(store.is_memory_card_only(h).unwrap());
+        assert!(store.reports_size_sentinel(h).unwrap());
 
         // A partial read near the end works, allocating only the window.
         let src = store.read_range(h, five_gib - 8, 16).unwrap();

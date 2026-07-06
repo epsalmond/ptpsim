@@ -52,6 +52,7 @@ evidence:
   # curated wire-derived names hold per the precedence rule.
 
 
+
 # Connection-name convention (see docs/consults/2026-06-02-*-wireless-tether.md):
 #   `app`             = reference-app PTP/IP on :55740 (BLE → camera Wi-Fi AP → 82B WMB-tail init).
 #   `wireless-tether` = PCSS port-knock PTP/IP on :15740 (camera joins LAN, then knock+notify).
@@ -240,14 +241,9 @@ connections:
         steps:
           - { sendOp: "0x100a", params: [{ runtime: handle }] }
         evidence: [docImageTransfer]
-      # Chunked download. **Different params from PCSS's whole-object 0x1009.**
-      # reference-app uses 0x101B GetPartialObject in 12 MB chunks (v6: 1× small-file
-      # single-chunk + 30× chunked for a 356 MB file, per
-      # IMAGE_TRANSFER_FW230.md TL;DR). The chunk loop lives in the client:
-      # iterate offset += length until GetObjectInfo's ObjectCompressedSize
-      # is reached. Same verb name as PCSS's whole-object getObject; the
-      # differing params[] declares the per-connection control-flow
-      # contract (whole vs chunked) without splitting the vocab.
+      # Chunked download. reference app uses GetPartialObject(handle, offset_low, length,
+      # offset_high). For oversized MOV objects, ObjectInfo reports 0xffffffff
+      # and the true transfer size comes from 0x9803(handle, 0xdc04).
       getObject:
         mode: image-transfer
         params: [handle, offset, length]
@@ -255,9 +251,10 @@ connections:
           - sendOp: "0x101b"
             params:
               - { runtime: handle }
-              - { runtime: offset }
+              - { runtime: offset, mask: 0xffffffff }
               - { runtime: length }
-        evidence: [docImageTransfer]
+              - { runtime: offset, shift: 32 }
+        evidence: [docImageTransfer, docLargeMovObjectInfo]
       # #46: the FULL image-transfer choreography as ONE manifest-owned loop, so
       # the reference executor walks arm → enumerate → for-each handle
       # { getObjectInfo (sizes the object) → chunk-download until exhausted } end
@@ -286,28 +283,43 @@ connections:
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
           # --- enumerate (count sizes the 0xd621 handle list) ---
           - { getProp: "0xd620" }
-          # --- per-handle: learn size, then chunk-download until exhausted ---
+          # --- per-handle: learn reported/true size, then chunk-download until exhausted ---
           - loop:
               forEach:
                 in: "0xd621"          # descending handle list (array property)
                 bind: handle
                 body:
-                  # getObjectInfo binds `objectSize` (ObjectCompressedSize) for the chunk loop.
-                  - { sendOp: "0x1008", params: [{ runtime: handle }] }
+                  - sendOp: "0x1008"
+                    params: [{ runtime: handle }]
+                    captures:
+                      - { bind: objectReportedSize, as: objectInfoCompressedSize }
+                      - { bind: objectTransferSize, as: objectInfoCompressedSize }
+                  - if:
+                      slot: objectReportedSize
+                      equals: 0xffffffff
+                      then:
+                        - sendOp: "0x9803"
+                          params: [{ runtime: handle }, 0xdc04]
+                          captures:
+                            - { bind: objectTransferSize, as: u64Le }
+                  - getProp: "0xd235"
+                    captures:
+                      - { bind: chunkSize, as: propValue }
                   - loop:
                       chunk:
-                        total: objectSize
-                        size: 12582912        # 12 MiB windows (~30 for a 356 MiB file)
+                        total: objectTransferSize
+                        size: { runtime: chunkSize }
                         offsetBind: offset
                         lengthBind: length
                         body:
-                          - sendOp: "0x101b"  # GetPartialObject(handle, offset, length)
+                          - sendOp: "0x101b"  # GetPartialObject(handle, offset_low, length, offset_high)
                             params:
                               - { runtime: handle }
-                              - { runtime: offset }
+                              - { runtime: offset, mask: 0xffffffff }
                               - { runtime: length }
+                              - { runtime: offset, shift: 32 }
         triggers: []
-        evidence: [docImageTransfer]
+        evidence: [docImageTransfer, docLargeMovObjectInfo]
 
   ble:
     kind: ble
@@ -581,6 +593,18 @@ operations:
   "0x9055": { name: FujiImageImportCurrentObjectThumb, owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x9050": { name: FujiImageImportBegin,              owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x9053": { name: FujiImageImportPage,               owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
+  "0x9803":
+    name: FujiExtensionObjectSize
+    owner: fuji-vendor
+    modes: [image-transfer]
+    connections: [app]
+    handler: object.size
+    objectSize:
+      handleParam: 0
+      encoding: u64Le
+      requiredParams:
+        - { index: 1, equals: 0xdc04 }
+    evidence: [docLargeMovObjectInfo]
   # Gallery-filter triplet (image-transfer mode, reference-app `app` path). The 0x9051
   # data-out payload AND-combines per-axis constraints keyed by 0xD6xx codes:
   #   0xD600 GalleryCaptureDateAxis     (read-back only, returned by 0x9053)
@@ -659,6 +683,7 @@ properties:
   "0xd244": { name: imageImportD244,   type: u8a, access: readOnly,  evidence: [docImageTransfer] }
   "0xd620": { name: imageImportObjectCount,   type: u32, access: readOnly, evidence: [docImageTransfer] }
   "0xd621": { name: imageImportObjectHandles, type: u8a, access: readOnly, evidence: [docImageTransfer] }
+  "0xd235": { name: imageImportChunkSize, type: u32, access: readOnly, initialValue: 0x00bfffe0, evidence: [docLargeMovObjectInfo] }
   "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
   # Current App/AP controls. ISO/direct-list controls use SetDevicePropValue; ring/body controls
   # remain step-only or body-driven. WirelessTether exposes absolute big-three variants on the
@@ -785,9 +810,9 @@ quirks:
 # offsets) is deferred — it needs a live RAF-download capture; the blind
 # JPEG-scan preview path works meanwhile.
 media:
-  # >4 GB objects (Fuji reports compressed size 0xFFFFFFFF) are memory-card-only
-  # over wireless (#136); the app reads this bound from data, not a Swift constant.
-  wirelessTransferCeiling: 0xffffffff
+  # >4 GiB objects can report ObjectCompressedSize 0xffffffff while remaining
+  # transferable; reference app reads the true size through 0x9803(handle, 0xdc04).
+  objectInfoSizeSentinel: 0xffffffff
   # isPhotosCompatible (#136): full stills + movies may go to the OS photo library;
   # non-image PTP objects (associations/scripts) must not. All formats listed here
   # are full assets, so all are photos-compatible.

@@ -11,7 +11,7 @@
 //! to cover `[0, size)` with no over-read (`read_range` clamps, so a successful
 //! walk alone would not catch an over-read — the exact count does).
 
-use camera_config::model::{Loop, Step, StepParam};
+use camera_config::model::{ChunkSize, Loop, Step, StepParam};
 use camera_config::CameraManifest;
 use camera_media_store::MediaStore;
 use camera_sim::{walk_ptpip_in, Engine};
@@ -64,6 +64,8 @@ fn engine_with(files: &[(&str, usize)]) -> Engine {
 fn rt(slot: &str) -> StepParam {
     StepParam::Runtime {
         runtime: slot.into(),
+        shift: 0,
+        mask: None,
     }
 }
 
@@ -90,7 +92,7 @@ fn import_steps(window: u32, chunk_tolerant: bool) -> Vec<Step> {
     let chunk = loop_step(
         Loop::Chunk {
             total: "objectSize".into(),
-            size: window,
+            size: ChunkSize::literal(window),
             offset_bind: "offset".into(),
             length_bind: "length".into(),
             body: vec![send_op(

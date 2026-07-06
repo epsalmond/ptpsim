@@ -113,6 +113,8 @@ pub struct Operation {
     pub handler: Option<String>,
     #[serde(default)]
     pub property: Option<HexCode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_size: Option<ObjectSizeHandler>,
     /// Modes (by path) this operation is valid in; prefix-matched, so a
     /// `Shooting`-level entry covers `Shooting/Stills`. Empty = all modes.
     #[serde(default)]
@@ -151,6 +153,30 @@ pub struct Operation {
     pub emits: Vec<HexCode>,
     #[serde(default)]
     pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectSizeHandler {
+    pub handle_param: usize,
+    pub encoding: ScalarEncoding,
+    #[serde(default)]
+    pub required_params: Vec<ParamEquals>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParamEquals {
+    pub index: usize,
+    pub equals: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScalarEncoding {
+    #[serde(rename = "u32Le")]
+    U32Le,
+    #[serde(rename = "u64Le")]
+    U64Le,
 }
 
 /// A camera-side state mutation an operation produces (consumed by the
@@ -207,6 +233,8 @@ pub struct Property {
     pub ptype: Option<String>,
     #[serde(default)]
     pub access: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<i64>,
     /// Optional classification used by clients to filter what surfaces as a
     /// user setting. `kind: scaffold` marks props that LOOK settable on the
     /// wire but are actually protocol mechanics (keepalives, virtual-shutter
@@ -393,12 +421,15 @@ pub struct Media {
     /// per-vendor format literals.
     #[serde(default)]
     pub formats: BTreeMap<HexCode, MediaFormat>,
-    /// Wireless transfer size ceiling (#136): an object whose compressed size is
-    /// `>=` this can't be pulled over the wireless transport and must come off the
-    /// memory card. Fuji reports such objects at `0xFFFFFFFF` (u32 max) — the
-    /// app reads this bound from data instead of hardcoding the sentinel.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wireless_transfer_ceiling: Option<u64>,
+    /// Reported 32-bit `ObjectInfo.ObjectCompressedSize` sentinel. Some cameras
+    /// report oversized objects at this value while exposing a separate true
+    /// transfer size.
+    #[serde(
+        default,
+        alias = "wirelessTransferCeiling",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub object_info_size_sentinel: Option<u64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
 }
@@ -895,6 +926,10 @@ pub struct Step {
     /// I/O-owning client binds (e.g. the live-view open-capture txid for `0x1018`).
     #[serde(default)]
     pub params: Vec<StepParam>,
+    /// Bind scalar values from this step's successful data/response phase into
+    /// the PTP-IP action scope for later conditionals, loops, or params.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captures: Vec<Capture>,
     /// If true, a non-OK PTP *response* to this step is acceptable — the client
     /// logs it and continues (advisory setup like `0xdf28`/`0xd226`/`0x9054` that
     /// some bodies/responders reject). Only a *transport* failure aborts.
@@ -917,6 +952,37 @@ pub struct Step {
     /// not a scripting hook. Skipped when absent to keep the consolidated diff small.
     #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
     pub r#loop: Option<Loop>,
+    #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
+    pub if_step: Option<IfStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Capture {
+    pub bind: String,
+    #[serde(rename = "as")]
+    pub source: CaptureSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaptureSource {
+    #[serde(rename = "objectInfoCompressedSize")]
+    ObjectInfoCompressedSize,
+    #[serde(rename = "propValue")]
+    PropValue,
+    #[serde(rename = "u32Le")]
+    U32Le,
+    #[serde(rename = "u64Le")]
+    U64Le,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IfStep {
+    pub slot: String,
+    pub equals: u64,
+    #[serde(default, rename = "then")]
+    pub then_steps: Vec<Step>,
 }
 
 /// Where a PTP-IP `awaitUntil` observes (§11.16): a property `poll` or an `event`
@@ -1081,11 +1147,24 @@ pub enum Loop {
     /// real `0x1008` ObjectInfo — there is no author-written arithmetic.
     Chunk {
         total: String,
-        size: u32,
+        size: ChunkSize,
         offset_bind: String,
         length_bind: String,
         body: Vec<Step>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ChunkSize {
+    Literal(u32),
+    Runtime { runtime: String },
+}
+
+impl ChunkSize {
+    pub fn literal(value: u32) -> Self {
+        Self::Literal(value)
+    }
 }
 
 impl serde::Serialize for Loop {
@@ -1132,7 +1211,7 @@ impl serde::Serialize for Loop {
                 #[serde(rename_all = "camelCase")]
                 struct Body<'a> {
                     total: &'a str,
-                    size: u32,
+                    size: &'a ChunkSize,
                     offset_bind: &'a str,
                     length_bind: &'a str,
                     body: &'a [Step],
@@ -1141,7 +1220,7 @@ impl serde::Serialize for Loop {
                     "chunk",
                     &Body {
                         total: total.as_str(),
-                        size: *size,
+                        size,
                         offset_bind: offset_bind.as_str(),
                         length_bind: length_bind.as_str(),
                         body: body.as_slice(),
@@ -1198,7 +1277,7 @@ impl<'de> serde::Deserialize<'de> for Loop {
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
                 struct C {
                     total: String,
-                    size: u32,
+                    size: ChunkSize,
                     offset_bind: String,
                     length_bind: String,
                     #[serde(default)]
@@ -1274,11 +1353,21 @@ pub struct InitIdentity {
 #[serde(untagged)]
 pub enum StepParam {
     Literal(u32),
-    Runtime { runtime: String },
+    Runtime {
+        runtime: String,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        shift: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mask: Option<u64>,
+    },
 }
 
 fn one() -> u32 {
     1
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 impl Step {
@@ -1294,6 +1383,7 @@ impl Step {
             self.close_session.is_some(),
             self.await_until.is_some(),
             self.r#loop.is_some(),
+            self.if_step.is_some(),
         ]
         .into_iter()
         .filter(|b| *b)
@@ -1534,7 +1624,9 @@ connections:
         assert_eq!(
             steps[3].params,
             vec![StepParam::Runtime {
-                runtime: "openCaptureTxId".into()
+                runtime: "openCaptureTxId".into(),
+                shift: 0,
+                mask: None,
             }]
         );
         assert!(steps.iter().all(Step::is_well_formed));

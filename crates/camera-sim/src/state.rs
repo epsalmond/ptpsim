@@ -62,7 +62,9 @@ impl CameraState {
                 continue;
             };
             let datatype = datatype_of(prop.ptype.as_deref());
-            if let Some(desc) = &prop.descriptor {
+            if let Some(value) = prop.initial_value {
+                props.insert(code, typed(datatype, value));
+            } else if let Some(desc) = &prop.descriptor {
                 if let Some(first) = desc.values.first() {
                     props.insert(code, typed(datatype, *first));
                 }
