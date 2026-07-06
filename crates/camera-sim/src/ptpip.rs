@@ -604,7 +604,7 @@ impl Ctx<'_> {
                     // Loop-bound vars (forEach element, chunk offset/length) shadow
                     // caller-supplied runtime_params within a loop body (#46).
                     if let Some(b) = self.bindings.get(runtime) {
-                        let value = (*b >> shift) & mask.unwrap_or(u64::MAX);
+                        let value = transform_runtime_value(*b, *shift, *mask);
                         return u32::try_from(value).map_err(|_| {
                             format!("loop slot '{runtime}' value {value} out of u32 range")
                         });
@@ -616,7 +616,7 @@ impl Ctx<'_> {
                     let value = parse_u64(raw).ok_or_else(|| {
                         format!("runtime slot '{runtime}' value {raw:?} is not a u64")
                     })?;
-                    let value = (value >> shift) & mask.unwrap_or(u64::MAX);
+                    let value = transform_runtime_value(value, *shift, *mask);
                     u32::try_from(value).map_err(|_| {
                         format!("runtime slot '{runtime}' value {value} out of u32 range")
                     })
@@ -719,6 +719,10 @@ fn parse_u64(s: &str) -> Option<u64> {
     }
 }
 
+fn transform_runtime_value(value: u64, shift: u32, mask: Option<u64>) -> u64 {
+    value.checked_shr(shift).unwrap_or(0) & mask.unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,6 +791,20 @@ properties:
         assert_eq!(out.observed.get(0xdf00), Some(6));
         assert_eq!(out.steps_run, 3);
         assert!(out.await_iterations.is_empty());
+    }
+
+    #[test]
+    fn runtime_value_transform_does_not_overflow_shift() {
+        assert_eq!(transform_runtime_value(0x0000_0001_2345_6789, 32, None), 1);
+        assert_eq!(
+            transform_runtime_value(0x0000_0001_2345_6789, 0, Some(0xffff_ffff)),
+            0x2345_6789
+        );
+        assert_eq!(transform_runtime_value(0xffff_ffff_ffff_ffff, 64, None), 0);
+        assert_eq!(
+            transform_runtime_value(0xffff_ffff_ffff_ffff, 128, Some(0xffff_ffff)),
+            0
+        );
     }
 
     #[test]
