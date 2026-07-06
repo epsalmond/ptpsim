@@ -932,9 +932,13 @@ pub enum AwaitSource {
     /// `until` evaluates over the accumulated [`crate::predicate::PropView`].
     Poll { prop: HexCode },
     /// Await a completion/lifecycle event push (the camera's `0xC0xx` channel),
-    /// then do a SINGLE post-event value read of `then_poll` (#54 hybrid). The
-    /// event signals the value is ready; one read makes it visible. `then_poll:
-    /// None` = event arrival alone satisfies `until` over the existing scope.
+    /// then re-poll `then_poll` until `until` holds or the budget runs out
+    /// (#54 hybrid, re-poll semantics per #185). The event acknowledges the
+    /// operation but does NOT guarantee the value has settled — fw02.30 fires
+    /// 0xC005 ~100ms after LockS1Lock while 0xD209 still reads pre-settle
+    /// (client application#157) — so consumers pace post-event reads by `interval_ms`
+    /// within `timeout_ms`. `then_poll: None` = event arrival alone satisfies
+    /// `until` over the existing scope (nothing to re-read; single evaluation).
     Event {
         code: HexCode,
         then_poll: Option<HexCode>,
@@ -1046,7 +1050,8 @@ pub struct AwaitUntil {
     /// isn't met before it elapses. The reference executor models this as a
     /// deterministic iteration cap (the §11.15 analogue).
     pub timeout_ms: u32,
-    /// Poll cadence (the dispatcher sleeps between polls). 0 = dispatcher default.
+    /// Poll cadence (the dispatcher sleeps between polls), for both the Poll
+    /// source and Event-source post-event re-polls. 0 = dispatcher default.
     #[serde(default)]
     pub interval_ms: u32,
 }

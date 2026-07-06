@@ -111,6 +111,37 @@ fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
 }
 
 #[test]
+fn composite_read_ticks_member_settles_like_a_direct_read() {
+    // #185: client application observes 0xd209 through its payload container (0xd212),
+    // so a pending member transition must tick on composite reads too — else
+    // the AF settle armed by 0x9026 never resolves for container consumers
+    // and the awaitUntil re-poll spins to its cap.
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None)); // OpenSession
+    assert_ok(&e.on_operation(&req(0x9026, 2, vec![0x0906_0403]), None)); // arms settle=2
+
+    let d209 = |records: &[(u16, u32)]| {
+        records
+            .iter()
+            .find(|(c, _)| *c == 0xd209)
+            .map(|(_, v)| *v)
+            .expect("0xd209 present in the composite")
+    };
+    let first = decode_record_stream(&data_of(
+        e.on_operation(&req(0x1015, 3, vec![0xd212]), None),
+    ));
+    assert_eq!(d209(&first), 0, "first composite read is pre-settle");
+    let second = decode_record_stream(&data_of(
+        e.on_operation(&req(0x1015, 4, vec![0xd212]), None),
+    ));
+    assert_eq!(
+        d209(&second),
+        1,
+        "second composite read resolves the settle"
+    );
+}
+
+#[test]
 fn believable_enumeration_from_the_rich_manifest() {
     let mut e = engine();
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None)); // OpenSession
@@ -223,9 +254,11 @@ fn af_lock_round_trips_from_the_consolidated_manifest() {
 
     let out = walk_ptpip(&mut e, &steps, &BTreeMap::new())
         .expect("AF lock flow should round-trip via real gfx100ii manifest");
-    // 0x9026 now settles 0xd209 in 1 poll (event-coupling invariant, #42 —
-    // 0x9026 emits 0xc005, so the coupled effect must settle ≤1).
-    assert_eq!(out.await_iterations, vec![1]);
+    // 0x9026 settles 0xd209 in 2 polls — the manifest models the measured
+    // fw02.30 latency (0xC005 fires before 0xD209 latches; client application#157), and
+    // await sources re-poll instead of assuming a single post-event read (#185
+    // retired the old "settle ≤1 event-coupling" invariant from #42).
+    assert_eq!(out.await_iterations, vec![2]);
     assert_eq!(out.observed.get(0xd209), Some(1));
 }
 

@@ -224,6 +224,25 @@ impl Engine {
                 let code = p(0) as u16;
                 // A deferred op-effect transition settles on its scheduled poll.
                 self.state.resolve_pending(code);
+                // Reading a composite observes its members, so their pending
+                // transitions tick too — consumers that reach a member through
+                // its payload container (client application polls 0xd209 via 0xd212) must
+                // see the same settle behavior as a direct member read (#185).
+                let member_codes: Vec<u16> = self
+                    .manifest
+                    .property(code)
+                    .and_then(|prop| prop.payload.as_ref())
+                    .map(|payload| {
+                        payload
+                            .members
+                            .iter()
+                            .filter_map(|m| parse_hex_code(m))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for member in member_codes {
+                    self.state.resolve_pending(member);
+                }
                 // 0xd212 is a *computed* live-status bundle, not a stored value:
                 // assemble it from current state via the shared quirk primitive.
                 if code == 0xd212 {

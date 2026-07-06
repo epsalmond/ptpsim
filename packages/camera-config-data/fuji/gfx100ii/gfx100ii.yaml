@@ -196,6 +196,11 @@ connections:
                   - { prop: "0xd209", eq: 1 }   # 0xD209 S1LockColor: 1 = locked
                   - { prop: "0xd209", eq: 2 }   # 2 = AF failed, still a terminal focus result
               timeoutMs: 5000
+              # 0xC005 acknowledges the AF cycle, it does NOT carry the result:
+              # fw02.30 fires it ~100ms after 0x9026 while 0xD209 still reads
+              # pre-settle, so the post-event read re-polls at this cadence
+              # within timeoutMs (client application#157, #185).
+              intervalMs: 100
         evidence: [iosLiveControls, docLiveControls]
       autofocusRelease:
         mode: shooting/stills
@@ -541,14 +546,16 @@ operations:
     modes: [shooting/stills]
     connections: [app]
     # AF tap (§5.5): settle 0xD209 S1_LOCK_COLOR to locked, then emit the 0xC005
-    # AFCAPTUER completion event. settleAfterPolls MUST be ≤1 because the effect is
-    # event-coupled — an event-source await does ONE post-event read (the
-    # event-coupling invariant, model.rs). 0xD17C S1LockAreaState mirrors the packed
+    # AFCAPTUER completion event. settleAfterPolls: 2 models the measured fw02.30
+    # latency — 0xC005 fires before 0xD209 settles, so the first post-event read
+    # sees the old value and the event-source await re-polls (#185; the former
+    # "settle ≤1 event-coupling invariant" assumed a single post-event read and
+    # is retired, client application#157). 0xD17C S1LockAreaState mirrors the packed
     # AF-area (§5.5: high bytes aspect, low bytes tap col/row) straight from the
     # 0x9026 request param — fromParam identity copy, immediate (#96).
     emits: ["0xc005"]
     effects:
-      - { setProp: "0xd209", value: 1, settleAfterPolls: 1 }
+      - { setProp: "0xd209", value: 1, settleAfterPolls: 2 }
       - { setProp: "0xd17c", fromParam: { index: 0 } }
     evidence: [iosLiveControls, docLiveControls]
   # AF unlock/release companion to 0x9026 (PTP_PROPERTIES_REFERENCE.md §5.1: clears

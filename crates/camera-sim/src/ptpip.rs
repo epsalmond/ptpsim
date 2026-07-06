@@ -408,7 +408,7 @@ impl Ctx<'_> {
             AwaitSource::Event { code, then_poll } => {
                 let ev =
                     parse_hex_code(code).ok_or_else(|| err(format!("bad event code {code:?}")))?;
-                // Single-shot: there is no poll loop. By now the triggering op's
+                // The event wait itself is single-shot: by now the triggering op's
                 // `emits` has either queued this event or it never will (the same
                 // outcome BLE calls notify "source exhausted").
                 if !self.engine.take_event(ev) {
@@ -418,19 +418,40 @@ impl Ctx<'_> {
                     }
                     return Err(err(format!("awaited event {ev:#06x} was not emitted")));
                 }
-                // The event is the readiness signal: ONE post-event value read.
+                // The event acknowledges the operation, it does NOT guarantee the
+                // value has settled: fw02.30 fires 0xc005 ~100ms after LockS1Lock
+                // while 0xd209 still reads pre-settle (client application#157 wire capture),
+                // so `thenPoll` re-polls until `until` holds — wall-clock
+                // dispatchers pace by interval_ms within timeout_ms; this
+                // deterministic executor iterates like the Poll branch (#185).
                 if let Some(tp) = then_poll {
                     let pc = parse_hex_code(tp)
                         .ok_or_else(|| err(format!("bad thenPoll prop {tp:?}")))?;
-                    let v = self.poll_prop(pc).map_err(err)?;
-                    self.observed.set(pc, v);
+                    for iter in 1..=MAX_AWAIT_ITERS {
+                        let v = self.poll_prop(pc).map_err(err)?;
+                        self.observed.set(pc, v);
+                        if aw.until.eval(&self.observed) {
+                            self.await_iterations.push(iter);
+                            return Ok(());
+                        }
+                        self.walk_steps(&aw.on_each, &format!("{here}.onEach"))?;
+                    }
+                    if tolerant {
+                        self.await_iterations.push(MAX_AWAIT_ITERS);
+                        return Ok(());
+                    }
+                    return Err(err(format!(
+                        "`until` not satisfied re-polling {pc:#06x} after event {ev:#06x} within {MAX_AWAIT_ITERS} observations"
+                    )));
                 }
+                // Event-only source: the push already happened, so there is
+                // nothing to re-read — a single predicate evaluation.
                 if aw.until.eval(&self.observed) || tolerant {
                     self.await_iterations.push(1);
                     Ok(())
                 } else {
                     Err(err(format!(
-                        "`until` not satisfied after event {ev:#06x} + single read"
+                        "`until` not satisfied after event {ev:#06x} (no thenPoll to re-read)"
                     )))
                 }
             }
@@ -764,12 +785,14 @@ properties:
         assert!(e_err.message.contains("not satisfied"), "{e_err}");
     }
 
-    /// #54 hybrid round-trip: tap-to-AF (`0x9026`) emits the `0xC005` AFCAPTUER
-    /// completion AND arms a `0xd209` → 1 transition that settles in one poll.
-    /// The event-source `awaitUntil` takes the event, then does ONE post-event
-    /// read which resolves the pending value — proving push-then-read end to end.
+    /// #54 hybrid round-trip, #185 re-poll: tap-to-AF (`0x9026`) emits the
+    /// `0xC005` AFCAPTUER completion AND arms a `0xd209` → 1 transition that
+    /// settles AFTER the event (fw02.30 fires the event before the status
+    /// latches, client application#157). The event-source `awaitUntil` takes the event,
+    /// then re-polls `then_poll` until the predicate holds — the first read
+    /// sees pre-settle, the second resolves it.
     #[test]
-    fn af_capture_round_trips_via_event_source_then_single_read() {
+    fn af_capture_round_trips_via_event_source_then_repoll() {
         const AF_EVENT_MANIFEST: &str = r#"
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
@@ -777,7 +800,7 @@ operations:
   "0x9026":
     name: LockS1Lock
     effects:
-      - { setProp: "0xd209", value: 1, settleAfterPolls: 1 }
+      - { setProp: "0xd209", value: 1, settleAfterPolls: 2 }
     emits: ["0xc005"]
 properties:
   "0xd209": { name: s1LockColor, type: u16, access: readOnly }
@@ -798,15 +821,15 @@ properties:
                     until: leaf_eq("0xd209", 1),
                     on_each: vec![],
                     timeout_ms: 5000,
-                    interval_ms: 0,
+                    interval_ms: 100,
                 }),
                 ..Default::default()
             },
         ];
         let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("AF capture round-trips");
-        // Single-shot: one post-event read (not a poll loop).
-        assert_eq!(out.await_iterations, vec![1]);
-        // The single post-event read resolved the settle=1 transition.
+        // settle=2: the first post-event read sees pre-settle 0, the re-poll
+        // resolves the transition — two observations, not a single-shot.
+        assert_eq!(out.await_iterations, vec![2]);
         assert_eq!(out.observed.get(0xd209), Some(1));
     }
 

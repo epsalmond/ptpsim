@@ -1056,10 +1056,13 @@ pub enum FfiLoopKind {
 
 /// Where a PTP-IP `awaitUntil` observes (#54). Mirrors `cc::AwaitSource`. `Poll`
 /// is the #49 default (poll a property each iteration); `Event` awaits a
-/// completion push on the event socket then does one value read (`then_poll`).
-/// On the `Event` happy path the dispatcher: opens/reads the connection's event
-/// socket (55741), awaits an event packet with `code`, issues one
-/// `GetDevicePropValue(then_poll)`, then evaluates `until` once.
+/// completion push on the event socket then re-polls `then_poll` (#185). On the
+/// `Event` path the dispatcher: opens/reads the connection's event socket
+/// (55741), awaits an event packet with `code`, then re-issues
+/// `GetDevicePropValue(then_poll)` at `interval_ms` cadence until `until` holds
+/// or `timeout_ms` elapses — the event acknowledges the operation, it does not
+/// guarantee the polled value has settled (client application#157). `then_poll: None`
+/// evaluates `until` once on event arrival.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum FfiAwaitSource {
     Poll { prop: u16 },
