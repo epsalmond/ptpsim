@@ -569,9 +569,10 @@ fn af_tap_ops_and_props_are_ingested_from_the_wire_doc() {
     assert_eq!(lock.effects.len(), 2);
     assert_eq!(lock.effects[0].set_prop, "0xd209");
     assert_eq!(lock.effects[0].value, 1);
-    // #42: settle ≤1 because the effect is coupled with the 0xC005 emit (an
-    // event-source await does one post-event read — the event-coupling invariant).
-    assert_eq!(lock.effects[0].settle_after_polls, 1);
+    // #185: settle 2 models the measured fw02.30 latency — 0xC005 fires before
+    // 0xD209 latches, and the event-source await re-polls to absorb it (the
+    // former #42 "settle ≤1 event-coupling invariant" is retired; client application#157).
+    assert_eq!(lock.effects[0].settle_after_polls, 2);
     // #96: the second effect mirrors the packed AF-area request param into 0xD17C
     // (§5.5) — a param-derived value (fromParam index 0, identity copy, immediate).
     assert_eq!(lock.effects[1].set_prop, "0xd17c");

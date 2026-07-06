@@ -653,7 +653,7 @@ operations:
     effects:
     - setProp: '0xd209'
       value: 1
-      settleAfterPolls: 1
+      settleAfterPolls: 2
     - setProp: '0xd17c'
       value: 0
       settleAfterPolls: 0
@@ -6975,7 +6975,7 @@ connections:
                 eq: 2
             onEach: []
             timeoutMs: 5000
-            intervalMs: 0
+            intervalMs: 100
         triggers: []
         evidence:
         - iosLiveControls
