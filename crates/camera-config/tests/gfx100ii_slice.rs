@@ -479,7 +479,29 @@ fn getobject_params_differ_per_connection_same_verb() {
     assert_eq!(pcss.params.len(), 1, "PCSS getObject is whole-object");
     assert_eq!(app.params.len(), 3, "reference app getObject is chunked");
     assert_eq!(pcss.steps[0].send_op.as_deref(), Some("0x1009"));
+    assert_eq!(pcss.steps[0].params.len(), 1);
     assert_eq!(app.steps[0].send_op.as_deref(), Some("0x101b"));
+    assert_eq!(
+        app.steps[0].params.len(),
+        4,
+        "reference app derives offset_high from the logical offset slot for the wire call"
+    );
+    assert_eq!(
+        app.steps[0].params[1],
+        StepParam::Runtime {
+            runtime: "offset".into(),
+            shift: 0,
+            mask: Some(0xffff_ffff),
+        }
+    );
+    assert_eq!(
+        app.steps[0].params[3],
+        StepParam::Runtime {
+            runtime: "offset".into(),
+            shift: 32,
+            mask: None,
+        }
+    );
 }
 
 #[test]

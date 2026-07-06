@@ -525,11 +525,27 @@ fn action_getobject_params_differ_per_connection_same_verb() {
     );
     assert!(matches!(
         pcss.steps[0],
-        EntryStep::SendOp { op: 0x1009, .. }
+        EntryStep::SendOp {
+            op: 0x1009,
+            ref params,
+            ..
+        } if params.len() == 1
     ));
     assert!(matches!(
         app.steps[0],
-        EntryStep::SendOp { op: 0x101b, .. }
+        EntryStep::SendOp {
+            op: 0x101b,
+            ref params,
+            ..
+        } if matches!(
+            params.as_slice(),
+            [
+                EntryParam::Runtime { slot: h, shift: 0, mask: None },
+                EntryParam::Runtime { slot: o1, shift: 0, mask: Some(0xffff_ffff) },
+                EntryParam::Runtime { slot: l, shift: 0, mask: None },
+                EntryParam::Runtime { slot: o2, shift: 32, mask: None },
+            ] if h == "handle" && o1 == "offset" && l == "length" && o2 == "offset"
+        )
     ));
 }
 

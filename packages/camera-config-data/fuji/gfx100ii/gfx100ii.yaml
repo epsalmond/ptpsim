@@ -241,9 +241,12 @@ connections:
         steps:
           - { sendOp: "0x100a", params: [{ runtime: handle }] }
         evidence: [docImageTransfer]
-      # Chunked download. reference app uses GetPartialObject(handle, offset_low, length,
-      # offset_high). For oversized MOV objects, ObjectInfo reports 0xffffffff
-      # and the true transfer size comes from 0x9803(handle, 0xdc04).
+      # Chunked download. The action params are the logical caller inputs:
+      # handle plus a 64-bit offset and length. The wire step derives
+      # GetPartialObject(handle, offset_low, length, offset_high) from that
+      # single offset slot; offset_high is not a separate caller input. For
+      # oversized MOV objects, ObjectInfo reports 0xffffffff and the true
+      # transfer size comes from 0x9803(handle, 0xdc04).
       getObject:
         mode: image-transfer
         params: [handle, offset, length]
