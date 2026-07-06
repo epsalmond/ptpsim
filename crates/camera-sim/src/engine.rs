@@ -3,6 +3,7 @@
 //! exist, which properties have which forms, and which workflow they belong to
 //! are all manifest data. The handlers here are generic PTP semantics.
 
+use camera_config::model::ScalarEncoding;
 use camera_config::{parse_hex_code, CameraManifest};
 use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
@@ -125,12 +126,16 @@ impl Engine {
     }
 
     fn data_stream(tid: u32, source: ByteSource) -> Reply {
+        Self::data_stream_with_params(tid, source, vec![])
+    }
+
+    fn data_stream_with_params(tid: u32, source: ByteSource, params: Vec<u32>) -> Reply {
         Reply::DataStream {
             source,
             response: OperationResponse {
                 code: resp::OK,
                 transaction_id: tid,
-                params: vec![],
+                params,
             },
         }
     }
@@ -194,15 +199,21 @@ impl Engine {
                 Ok(source) => Self::data_stream(tid, source),
                 Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
             },
-            op::GET_PARTIAL_OBJECT => match self.store.read_range(p(0), p(1) as u64, p(2)) {
-                Ok(source) => Self::data_stream(tid, source),
-                Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
-            },
+            op::GET_PARTIAL_OBJECT => {
+                let offset = (p(1) as u64) | ((p(3) as u64) << 32);
+                match self.store.read_range(p(0), offset, p(2)) {
+                    Ok(source) => {
+                        let returned = source.len().min(u32::MAX as u64) as u32;
+                        Self::data_stream_with_params(tid, source, vec![returned])
+                    }
+                    Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
+                }
+            }
             op::GET_OBJECT => {
                 // The PTP `ObjectInfo` size field is 32-bit (`SIZE_CEILING`);
-                // objects ≥ 4 GiB are memory-card-only on the wire. We clamp at
-                // the ceiling and stream chunks, so the request never allocates
-                // a multi-GB buffer even on the boundary case.
+                // this whole-object op is 32-bit-sized, while extension partial
+                // reads can use a separate true-size path. Clamp here so the
+                // request never allocates a multi-GB buffer.
                 let size = self.store.object_size(p(0)).unwrap_or(0);
                 let len = size.min(SIZE_CEILING) as u32;
                 match self.store.read_range(p(0), 0, len) {
@@ -398,8 +409,38 @@ impl Engine {
                 self.vendor_step(prop_code, direction);
                 Self::ok(tid)
             }
+            Some("object.size") => self.object_size_op(tid, opdef, params),
             _ => Self::ok(tid),
         }
+    }
+
+    fn object_size_op(
+        &self,
+        tid: u32,
+        opdef: &camera_config::model::Operation,
+        params: &[u32],
+    ) -> Reply {
+        let Some(handler) = &opdef.object_size else {
+            return Self::err(tid, resp::GENERAL_ERROR);
+        };
+        if handler
+            .required_params
+            .iter()
+            .any(|p| params.get(p.index).copied() != Some(p.equals))
+        {
+            return Self::err(tid, resp::INVALID_PARAMETER);
+        }
+        let Some(handle) = params.get(handler.handle_param).copied() else {
+            return Self::err(tid, resp::INVALID_PARAMETER);
+        };
+        let Ok(size) = self.store.object_size(handle) else {
+            return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
+        };
+        let data = match handler.encoding {
+            ScalarEncoding::U32Le => (size as u32).to_le_bytes().to_vec(),
+            ScalarEncoding::U64Le => size.to_le_bytes().to_vec(),
+        };
+        Self::data(tid, data)
     }
 
     /// Advance a property's current value within its enum descriptor. `direction`

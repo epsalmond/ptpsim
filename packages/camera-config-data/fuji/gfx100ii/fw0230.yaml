@@ -114,10 +114,10 @@ media:
     cameraFolderPattern: "[0-9]{3}_FUJI"
   transfer:
     maxWirelessObjectSize: 4294967295
-    oversizeBehavior: report-ceiling-and-reject-download
+    oversizeBehavior: report-ceiling-and-use-extension-size-when-available
 
 quirks:
-  - id: fuji-wireless-uint32-object-size-ceiling
+  - id: fuji-objectinfo-size-sentinel
     appliesTo: [imageImport]
-    behavior: objects reported at 0xffffffff are memory-card-only (32-bit ObjectInfo size field)
+    behavior: objects can report ObjectCompressedSize 0xffffffff while using an extension true-size path
     evidence: appWireCaptureFw0230

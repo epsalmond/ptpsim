@@ -558,10 +558,10 @@ properties:
       - 6400
 
 quirks:
-  - id: fuji-wireless-uint32-object-size-ceiling
+  - id: fuji-objectinfo-size-sentinel
     appliesTo: [imageImport]
-    behavior: mark objects reported at 0xffffffff as memory-card-only
-    evidence: "client application/apps/apple/docs/USER_FLOWS.md#file-download"
+    behavior: objects may report ObjectCompressedSize 0xffffffff and expose true transfer size separately
+
 ```
 
 Manifest codegen can produce Rust constants and Swift-facing compatibility
@@ -1344,7 +1344,8 @@ Supported behavior:
 - `0xd621` object handles.
 - Standard `GetObjectInfo`, `GetThumb`, `GetPartialObject`.
 - File-backed chunked downloads.
-- Oversize object response compatible with app's memory-card-only handling.
+- Oversize MOV import via reported-size sentinel, extension true-size lookup,
+  and high/low partial-read offsets.
 
 ### CameraControls
 

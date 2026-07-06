@@ -17,7 +17,9 @@
 
 use std::collections::BTreeMap;
 
-use camera_config::model::{AwaitSource, AwaitUntil, Loop, Step, StepParam};
+use camera_config::model::{
+    AwaitSource, AwaitUntil, Capture, CaptureSource, ChunkSize, Loop, Step, StepParam,
+};
 use camera_config::{parse_hex_code, PropView};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
@@ -140,7 +142,7 @@ struct Ctx<'a> {
     /// the executor advances, plus the `objectSize` captured from GetObjectInfo.
     /// Resolved by `StepParam::Runtime` ahead of `runtime_params` — loop vars
     /// shadow caller slots within a loop body.
-    bindings: BTreeMap<String, i64>,
+    bindings: BTreeMap<String, u64>,
     tid: u32,
     steps_run: usize,
     await_iterations: Vec<usize>,
@@ -196,24 +198,28 @@ impl Ctx<'_> {
             let code = parse_hex_code(p).ok_or_else(|| err(format!("bad prop code {p:?}")))?;
             let v = self.poll_prop(code).map_err(err)?;
             self.observed.set(code, v);
+            self.capture_prop_value(&step.captures, v).map_err(err)?;
             Ok(())
         } else if let Some(p) = &step.read_echo {
             // Read, then write the same value back (the live-view 0xdf2a echo).
             let code = parse_hex_code(p).ok_or_else(|| err(format!("bad prop code {p:?}")))?;
             let v = self.poll_prop(code).map_err(err)?;
             self.observed.set(code, v);
+            self.capture_prop_value(&step.captures, v).map_err(err)?;
             self.set_prop(code, v, step.tolerant).map_err(err)
         } else if let Some(o) = &step.send_op {
             let code = parse_hex_code(o).ok_or_else(|| err(format!("bad op code {o:?}")))?;
             let params = self.resolve_params(&step.params).map_err(err)?;
-            if code == op::GET_OBJECT_INFO {
-                // GetObjectInfo's purpose is to learn object metadata; capture the
-                // compressed size into `objectSize` so a following chunk loop knows
-                // its `total` — the same way a real client sizes its download (#46).
-                self.get_object_info(params, step.tolerant).map_err(err)
-            } else {
-                self.simple_op(code, params, step.tolerant).map_err(err)
+            let reply = self.issue_op(code, params);
+            if reply_ok(&reply) {
+                self.apply_captures(&step.captures, code, &reply)
+                    .map_err(err)?;
+                if code == op::GET_OBJECT_INFO && step.captures.is_empty() {
+                    self.capture_object_info(OBJECT_SIZE_SLOT, &reply)
+                        .map_err(err)?;
+                }
             }
+            check_ok(&reply, code, step.tolerant).map_err(err)
         } else if step.reopen_session.is_some() {
             if self.command_listener_volatile {
                 // The camera tore down the command-port listener on the transport-
@@ -234,6 +240,16 @@ impl Ctx<'_> {
             self.run_await_until(aw, step.tolerant, here)
         } else if let Some(lp) = &step.r#loop {
             self.run_loop(lp, step.tolerant, here)
+        } else if let Some(cond) = &step.if_step {
+            let actual = *self
+                .bindings
+                .get(&cond.slot)
+                .ok_or_else(|| err(format!("if slot '{}' unbound", cond.slot)))?;
+            if actual == cond.equals {
+                self.walk_steps(&cond.then_steps, &format!("{here}.then"))
+            } else {
+                Ok(())
+            }
         } else {
             Err(err("step sets no action verb".into()))
         }
@@ -284,8 +300,8 @@ impl Ctx<'_> {
                     err(format!(
                         "chunk total slot '{total}' unbound — a preceding getObjectInfo must capture it"
                     ))
-                })? as u64;
-                let window = (*size).max(1) as u64;
+                })?;
+                let window = self.resolve_chunk_size(size).map_err(err)?.max(1);
                 let mut offset: u64 = 0;
                 let mut iters = 0usize;
                 while offset < total_bytes {
@@ -299,8 +315,8 @@ impl Ctx<'_> {
                     }
                     // The executor owns the arithmetic — the manifest never sees it.
                     let length = (total_bytes - offset).min(window);
-                    let po = self.bindings.insert(offset_bind.clone(), offset as i64);
-                    let pl = self.bindings.insert(length_bind.clone(), length as i64);
+                    let po = self.bindings.insert(offset_bind.clone(), offset);
+                    let pl = self.bindings.insert(length_bind.clone(), length);
                     let res = self.walk_steps(body, &format!("{here}.chunk[{iters}]"));
                     restore(&mut self.bindings, offset_bind, po);
                     restore(&mut self.bindings, length_bind, pl);
@@ -314,35 +330,10 @@ impl Ctx<'_> {
         }
     }
 
-    /// GetObjectInfo (0x1008): issue it, and on success decode the returned
-    /// `ObjectInfo` to bind `objectSize` (the compressed size) for a following
-    /// chunk loop. Capture is best-effort; the OK/tolerant gate is unchanged.
-    fn get_object_info(&mut self, params: Vec<u32>, tolerant: bool) -> Result<(), String> {
-        let tid = self.next_tid();
-        let req = OperationRequest {
-            data_phase_info: 1,
-            code: op::GET_OBJECT_INFO,
-            transaction_id: tid,
-            params,
-        };
-        let reply = self.engine.on_operation(&req, None);
-        if let Reply::Data { data, response } = &reply {
-            if response.code == resp::OK {
-                if let Ok(oi) = ObjectInfo::decode(data) {
-                    self.bindings.insert(
-                        OBJECT_SIZE_SLOT.to_string(),
-                        oi.object_compressed_size as i64,
-                    );
-                }
-            }
-        }
-        check_ok(&reply, op::GET_OBJECT_INFO, tolerant)
-    }
-
     /// GetDevicePropValue for an array-valued property (e.g. `0xd621`, the handle
     /// list) → decode the count-prefixed `u32` array → `Vec<i64>`. The forEach
     /// source. A scalar/non-array reply is a hard error (tolerant-aware at the loop).
-    fn poll_collection(&mut self, code: u16) -> Result<Vec<i64>, String> {
+    fn poll_collection(&mut self, code: u16) -> Result<Vec<u64>, String> {
         let tid = self.next_tid();
         let req = OperationRequest {
             data_phase_info: 1,
@@ -357,7 +348,7 @@ impl Ctx<'_> {
                 let items = r
                     .ptp_array(|r| r.u32())
                     .map_err(|e| format!("decode array prop {code:#06x}: {e:?}"))?;
-                Ok(items.into_iter().map(|v| v as i64).collect())
+                Ok(items.into_iter().map(|v| v as u64).collect())
             }
             other => Err(format!(
                 "GetDevicePropValue({code:#06x}) -> {}",
@@ -507,6 +498,11 @@ impl Ctx<'_> {
     /// A no-data operation (send_op / session ops). `repeat` is applied by the
     /// caller; this fires exactly one request.
     fn simple_op(&mut self, code: u16, params: Vec<u32>, tolerant: bool) -> Result<(), String> {
+        let reply = self.issue_op(code, params);
+        check_ok(&reply, code, tolerant)
+    }
+
+    fn issue_op(&mut self, code: u16, params: Vec<u32>) -> Reply {
         let tid = self.next_tid();
         let req = OperationRequest {
             data_phase_info: 1,
@@ -514,8 +510,85 @@ impl Ctx<'_> {
             transaction_id: tid,
             params,
         };
-        let reply = self.engine.on_operation(&req, None);
-        check_ok(&reply, code, tolerant)
+        self.engine.on_operation(&req, None)
+    }
+
+    fn apply_captures(
+        &mut self,
+        captures: &[Capture],
+        code: u16,
+        reply: &Reply,
+    ) -> Result<(), String> {
+        for capture in captures {
+            let value = match capture.source {
+                CaptureSource::ObjectInfoCompressedSize => {
+                    if code != op::GET_OBJECT_INFO {
+                        return Err(
+                            "objectInfoCompressedSize capture requires GetObjectInfo".into()
+                        );
+                    }
+                    self.decode_object_info_size(reply)?
+                }
+                CaptureSource::PropValue => return Err("propValue capture requires getProp".into()),
+                CaptureSource::U32Le => {
+                    let Reply::Data { data, .. } = reply else {
+                        return Err("u32Le capture requires a data reply".into());
+                    };
+                    let mut r = Reader::new(data);
+                    r.u32()
+                        .map_err(|e| format!("decode captured u32Le: {e:?}"))?
+                        as u64
+                }
+                CaptureSource::U64Le => {
+                    let Reply::Data { data, .. } = reply else {
+                        return Err("u64Le capture requires a data reply".into());
+                    };
+                    let mut r = Reader::new(data);
+                    r.u64()
+                        .map_err(|e| format!("decode captured u64Le: {e:?}"))?
+                }
+            };
+            self.bindings.insert(capture.bind.clone(), value);
+        }
+        Ok(())
+    }
+
+    fn capture_object_info(&mut self, slot: &str, reply: &Reply) -> Result<(), String> {
+        let value = self.decode_object_info_size(reply)?;
+        self.bindings.insert(slot.to_string(), value);
+        Ok(())
+    }
+
+    fn decode_object_info_size(&self, reply: &Reply) -> Result<u64, String> {
+        if let Reply::Data { data, response } = reply {
+            if response.code == resp::OK {
+                let oi = ObjectInfo::decode(data)
+                    .map_err(|e| format!("decode ObjectInfo capture: {e:?}"))?;
+                return Ok(oi.object_compressed_size as u64);
+            }
+        }
+        Err("ObjectInfo capture requires an OK data reply".into())
+    }
+
+    fn capture_prop_value(&mut self, captures: &[Capture], value: i64) -> Result<(), String> {
+        for capture in captures {
+            if capture.source != CaptureSource::PropValue {
+                return Err("getProp captures only support propValue".into());
+            }
+            self.bindings.insert(capture.bind.clone(), value as u64);
+        }
+        Ok(())
+    }
+
+    fn resolve_chunk_size(&self, size: &ChunkSize) -> Result<u64, String> {
+        match size {
+            ChunkSize::Literal(v) => Ok(*v as u64),
+            ChunkSize::Runtime { runtime } => self
+                .bindings
+                .get(runtime)
+                .copied()
+                .ok_or_else(|| format!("chunk size slot '{runtime}' unbound")),
+        }
     }
 
     fn resolve_params(&self, params: &[StepParam]) -> Result<Vec<u32>, String> {
@@ -523,20 +596,29 @@ impl Ctx<'_> {
             .iter()
             .map(|p| match p {
                 StepParam::Literal(v) => Ok(*v),
-                StepParam::Runtime { runtime } => {
+                StepParam::Runtime {
+                    runtime,
+                    shift,
+                    mask,
+                } => {
                     // Loop-bound vars (forEach element, chunk offset/length) shadow
                     // caller-supplied runtime_params within a loop body (#46).
                     if let Some(b) = self.bindings.get(runtime) {
-                        return u32::try_from(*b).map_err(|_| {
-                            format!("loop slot '{runtime}' value {b} out of u32 range")
+                        let value = transform_runtime_value(*b, *shift, *mask);
+                        return u32::try_from(value).map_err(|_| {
+                            format!("loop slot '{runtime}' value {value} out of u32 range")
                         });
                     }
                     let raw = self
                         .runtime_params
                         .get(runtime)
                         .ok_or_else(|| format!("runtime slot '{runtime}' unbound"))?;
-                    parse_u32(raw).ok_or_else(|| {
-                        format!("runtime slot '{runtime}' value {raw:?} is not a u32")
+                    let value = parse_u64(raw).ok_or_else(|| {
+                        format!("runtime slot '{runtime}' value {raw:?} is not a u64")
+                    })?;
+                    let value = transform_runtime_value(value, *shift, *mask);
+                    u32::try_from(value).map_err(|_| {
+                        format!("runtime slot '{runtime}' value {value} out of u32 range")
                     })
                 }
             })
@@ -547,7 +629,7 @@ impl Ctx<'_> {
 /// Restore a loop-bound slot to its prior value after an iteration, so nested
 /// loops don't leak bindings (push/pop discipline). `prev` is the value the
 /// binding shadowed, if any.
-fn restore(bindings: &mut BTreeMap<String, i64>, slot: &str, prev: Option<i64>) {
+fn restore(bindings: &mut BTreeMap<String, u64>, slot: &str, prev: Option<u64>) {
     match prev {
         Some(v) => {
             bindings.insert(slot.to_string(), v);
@@ -576,6 +658,8 @@ fn verb_name(s: &Step) -> &'static str {
         "awaitUntil"
     } else if s.r#loop.is_some() {
         "loop"
+    } else if s.if_step.is_some() {
+        "if"
     } else {
         "?"
     }
@@ -598,6 +682,15 @@ fn check_ok(reply: &Reply, code: u16, tolerant: bool) -> Result<(), String> {
     }
 }
 
+fn reply_ok(reply: &Reply) -> bool {
+    match reply {
+        Reply::Response(r)
+        | Reply::Data { response: r, .. }
+        | Reply::DataStream { response: r, .. } => r.code == resp::OK,
+        Reply::Close => false,
+    }
+}
+
 fn describe_reply(reply: &Reply) -> String {
     match reply {
         Reply::Response(r) => format!("response {:#06x}", r.code),
@@ -617,13 +710,17 @@ fn prop_value_to_i64(v: &PropValue) -> Option<i64> {
     })
 }
 
-fn parse_u32(s: &str) -> Option<u32> {
+fn parse_u64(s: &str) -> Option<u64> {
     let t = s.trim();
     if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        u32::from_str_radix(hex, 16).ok()
+        u64::from_str_radix(hex, 16).ok()
     } else {
-        t.parse::<u32>().ok()
+        t.parse::<u64>().ok()
     }
+}
+
+fn transform_runtime_value(value: u64, shift: u32, mask: Option<u64>) -> u64 {
+    value.checked_shr(shift).unwrap_or(0) & mask.unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -694,6 +791,20 @@ properties:
         assert_eq!(out.observed.get(0xdf00), Some(6));
         assert_eq!(out.steps_run, 3);
         assert!(out.await_iterations.is_empty());
+    }
+
+    #[test]
+    fn runtime_value_transform_does_not_overflow_shift() {
+        assert_eq!(transform_runtime_value(0x0000_0001_2345_6789, 32, None), 1);
+        assert_eq!(
+            transform_runtime_value(0x0000_0001_2345_6789, 0, Some(0xffff_ffff)),
+            0x2345_6789
+        );
+        assert_eq!(transform_runtime_value(0xffff_ffff_ffff_ffff, 64, None), 0);
+        assert_eq!(
+            transform_runtime_value(0xffff_ffff_ffff_ffff, 128, Some(0xffff_ffff)),
+            0
+        );
     }
 
     #[test]

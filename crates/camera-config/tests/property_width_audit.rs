@@ -47,6 +47,10 @@ const OVERRIDES: &[(&str, &str)] = &[
         "0xd240",
         "u32 0x80000000|denom*1000 shutter despite degenerate u16 stub descriptor (client application UINT32 parser, live 0xD212)",
     ),
+    (
+        "0xd235",
+        "u32 reference app import chunk size despite undef descriptor (APP_LARGE_MOV_OBJECTINFO_2026-07-06.md)",
+    ),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

@@ -7,8 +7,8 @@ use camera_config::model::ReopenSession;
 use camera_config::{
     ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam,
 };
-use camera_media_store::MediaStore;
-use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Reply};
+use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
+use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Fault, Reply};
 use ptp_core::{DeviceInfo, OperationRequest, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -32,6 +32,27 @@ fn engine() -> Engine {
     let mut store = MediaStore::open(&root).unwrap();
     store.scan().unwrap();
     Engine::new(consolidated(), store)
+}
+
+fn engine_with_sparse_mov(size: u64) -> (Engine, u32) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("ptpsim-large-mov-{nanos}"));
+    let path = root.join("DCIM/100_FUJI/DSCF8476.MOV");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(size).unwrap();
+    drop(file);
+
+    let mut store = MediaStore::open(&root).unwrap();
+    store.scan().unwrap();
+    let handle = store.handles(ObjectQuery {
+        parent: None,
+        format: Some(fmt::MOV),
+    })[0];
+    (Engine::new(consolidated(), store), handle)
 }
 
 fn req(code: u16, tid: u32, params: Vec<u32>) -> OperationRequest {
@@ -63,6 +84,16 @@ fn data_of(reply: Reply) -> Vec<u8> {
             source.read().expect("realize stream")
         }
         other => panic!("expected Data, got {other:?}"),
+    }
+}
+
+fn stream_of(reply: Reply) -> (ByteSource, Vec<u32>) {
+    match reply {
+        Reply::DataStream { source, response } => {
+            assert_eq!(response.code, 0x2001, "OK expected");
+            (source, response.params)
+        }
+        other => panic!("expected DataStream, got {other:?}"),
     }
 }
 
@@ -108,6 +139,46 @@ fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
         Some(aperture),
         "aperture in the bundle matches its individual GetDevicePropValue"
     );
+}
+
+#[test]
+fn large_mov_wire_path_reports_sentinel_and_serves_true_size_with_high_offset() {
+    const TRUE_SIZE: u64 = 0x0000_0001_230c_a400;
+    const FINAL_LOW: u32 = 0x22ff_cf80;
+    const FINAL_LEN: u32 = 0x000c_d480;
+    const FINAL_HIGH: u32 = 0x1;
+    let (mut e, handle) = engine_with_sparse_mov(TRUE_SIZE);
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+
+    let object_info = ptp_core::ObjectInfo::decode(&data_of(
+        e.on_operation(&req(0x1008, 2, vec![handle]), None),
+    ))
+    .unwrap();
+    assert_eq!(object_info.object_format, fmt::MOV);
+    assert_eq!(object_info.object_compressed_size, 0xffff_ffff);
+
+    let true_size = data_of(e.on_operation(&req(0x9803, 3, vec![handle, 0xdc04]), None));
+    assert_eq!(u64::from_le_bytes(true_size.try_into().unwrap()), TRUE_SIZE);
+
+    let chunk_size = data_of(e.on_operation(&req(0x1015, 4, vec![0xd235]), None));
+    assert_eq!(
+        u32::from_le_bytes(chunk_size.try_into().unwrap()),
+        0x00bf_ffe0
+    );
+
+    let (source, response_params) = stream_of(e.on_operation(
+        &req(0x101b, 5, vec![handle, FINAL_LOW, FINAL_LEN, FINAL_HIGH]),
+        None,
+    ));
+    assert_eq!(response_params, vec![FINAL_LEN]);
+    assert_eq!(source.len(), FINAL_LEN as u64);
+    match source {
+        ByteSource::FileRange { offset, len, .. } => {
+            assert_eq!(offset, ((FINAL_HIGH as u64) << 32) | FINAL_LOW as u64);
+            assert_eq!(offset + len, TRUE_SIZE);
+        }
+        other => panic!("expected file range, got {other:?}"),
+    }
 }
 
 #[test]
@@ -357,6 +428,42 @@ fn import_objects_runs_the_full_transfer_from_the_consolidated() {
         outcome.loop_iterations,
         vec![1, 1, 1, 3],
         "one chunk per handle, then forEach visited all three handles",
+    );
+}
+
+#[test]
+fn import_objects_uses_extension_true_size_for_sentinel_mov() {
+    const TRUE_SIZE: u64 = 0x0000_0001_230c_a400;
+    let m = consolidated();
+    let action = m
+        .action("app", ActionVerb::ImportObjects)
+        .expect("app.actions.importObjects in the consolidated");
+    let (mut e, _) = engine_with_sparse_mov(TRUE_SIZE);
+    let outcome = walk_ptpip_in(&mut e, &action.steps, &BTreeMap::new(), Some("app"))
+        .expect("large MOV import walks through the true 64-bit size");
+    assert_eq!(
+        outcome.loop_iterations,
+        vec![389, 1],
+        "388 full 0x00bfffe0 chunks plus the final short chunk, then one handle",
+    );
+}
+
+#[test]
+fn import_objects_does_not_query_extension_size_below_sentinel() {
+    const BOUNDARY_SIZE: u64 = 4_053_173_760;
+    let m = consolidated();
+    let action = m.action("app", ActionVerb::ImportObjects).unwrap();
+    let (mut e, _) = engine_with_sparse_mov(BOUNDARY_SIZE);
+    e.install_fault(Fault::FailOperation {
+        code: 0x9803,
+        response: 0x2002,
+    });
+    let outcome = walk_ptpip_in(&mut e, &action.steps, &BTreeMap::new(), Some("app"))
+        .expect("sub-sentinel MOV import must not call the extension-size op");
+    assert_eq!(
+        outcome.loop_iterations,
+        vec![323, 1],
+        "sub-sentinel MOV uses ObjectInfo size directly",
     );
 }
 

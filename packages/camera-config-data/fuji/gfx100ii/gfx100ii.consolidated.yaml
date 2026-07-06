@@ -42,6 +42,10 @@ evidence:
     kind: doc
     path: evidence/IMAGE_TRANSFER_FW230.md
     date: ''
+  docLargeMovObjectInfo:
+    kind: wire-capture
+
+    date: 2026-07-06
   docLiveControls:
     kind: doc
     path: evidence/PTP_PROPERTIES_REFERENCE.md
@@ -931,23 +935,28 @@ operations:
     evidence:
     - activeProbe
   '0x9803':
-    name: raw_0x9803
-    owner: ''
+    name: FujiExtensionObjectSize
+    owner: fuji-vendor
     dataPhase: null
     params: []
     workflows: []
-    handler: null
+    handler: object.size
     property: null
+    objectSize:
+      handleParam: 0
+      encoding: u64Le
+      requiredParams:
+      - index: 1
+        equals: 56324
     modes:
-    - card-reader
-    - tether-auto
+    - image-transfer
     connections:
-    - usb
+    - app
     requires: null
     effects: []
     emits: []
     evidence:
-    - activeProbe
+    - docLargeMovObjectInfo
   '0x9805':
     name: raw_0x9805
     owner: ''
@@ -3737,10 +3746,11 @@ properties:
     evidence:
     - activeProbe
   '0xd235':
-    name: raw_0xd235
+    name: imageImportChunkSize
     ptpName: null
-    type: undef
-    access: readWrite
+    type: u32
+    access: readOnly
+    initialValue: 12582880
     descriptor:
       form: none
       values: []
@@ -3748,7 +3758,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docLargeMovObjectInfo
   '0xd236':
     name: raw_0xd236
     ptpName: null
@@ -6334,7 +6344,7 @@ media:
       isRaw: false
       isMovie: false
       isPhotosCompatible: true
-  wirelessTransferCeiling: 4294967295
+  objectInfoSizeSentinel: 4294967295
 focusGrid:
   columns: 9
   rows: 6
@@ -6928,13 +6938,17 @@ connections:
           params:
           - runtime: handle
           - runtime: offset
+            mask: 4294967295
           - runtime: length
+          - runtime: offset
+            shift: 32
           tolerant: false
           repeat: 1
           awaitUntil: null
         triggers: []
         evidence:
         - docImageTransfer
+        - docLargeMovObjectInfo
       autofocusLock:
         mode: shooting/stills
         params:
@@ -7164,6 +7178,56 @@ connections:
                 value: null
                 params:
                 - runtime: handle
+                captures:
+                - bind: objectReportedSize
+                  as: objectInfoCompressedSize
+                - bind: objectTransferSize
+                  as: objectInfoCompressedSize
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+                if:
+                  slot: objectReportedSize
+                  equals: 4294967295
+                  then:
+                  - setProp: null
+                    getProp: null
+                    readEcho: null
+                    sendOp: '0x9803'
+                    reopenSession: null
+                    closeSession: null
+                    value: null
+                    params:
+                    - runtime: handle
+                    - 56324
+                    captures:
+                    - bind: objectTransferSize
+                      as: u64Le
+                    tolerant: false
+                    repeat: 1
+                    awaitUntil: null
+              - setProp: null
+                getProp: '0xd235'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                captures:
+                - bind: chunkSize
+                  as: propValue
                 tolerant: false
                 repeat: 1
                 awaitUntil: null
@@ -7180,8 +7244,9 @@ connections:
                 awaitUntil: null
                 loop:
                   chunk:
-                    total: objectSize
-                    size: 12582912
+                    total: objectTransferSize
+                    size:
+                      runtime: chunkSize
                     offsetBind: offset
                     lengthBind: length
                     body:
@@ -7195,13 +7260,17 @@ connections:
                       params:
                       - runtime: handle
                       - runtime: offset
+                        mask: 4294967295
                       - runtime: length
+                      - runtime: offset
+                        shift: 32
                       tolerant: false
                       repeat: 1
                       awaitUntil: null
         triggers: []
         evidence:
         - docImageTransfer
+        - docLargeMovObjectInfo
     enables: []
     discovery:
       mechanism: ble

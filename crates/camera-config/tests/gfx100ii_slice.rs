@@ -302,7 +302,9 @@ fn wireless_tether_transfer_actions_bind_runtime_handle() {
         assert_eq!(
             a.steps[0].params,
             vec![StepParam::Runtime {
-                runtime: "handle".into()
+                runtime: "handle".into(),
+                shift: 0,
+                mask: None,
             }],
             "{verb:?} must bind `handle`"
         );
@@ -410,7 +412,9 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         assert_eq!(
             a.steps[0].params,
             vec![StepParam::Runtime {
-                runtime: "handle".into()
+                runtime: "handle".into(),
+                shift: 0,
+                mask: None,
             }]
         );
     }
@@ -435,13 +439,24 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         get.steps[0].params,
         vec![
             StepParam::Runtime {
-                runtime: "handle".into()
+                runtime: "handle".into(),
+                shift: 0,
+                mask: None,
             },
             StepParam::Runtime {
-                runtime: "offset".into()
+                runtime: "offset".into(),
+                shift: 0,
+                mask: Some(0xffff_ffff),
             },
             StepParam::Runtime {
-                runtime: "length".into()
+                runtime: "length".into(),
+                shift: 0,
+                mask: None,
+            },
+            StepParam::Runtime {
+                runtime: "offset".into(),
+                shift: 32,
+                mask: None,
             },
         ]
     );
@@ -451,7 +466,8 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
 fn getobject_params_differ_per_connection_same_verb() {
     // The closed ActionVerb vocabulary supports same-verb-different-shape
     // across transports: PCSS getObject is whole-object (`[handle]`),
-    // reference app getObject is chunked (`[handle, offset, length]`). Clients
+    // reference app getObject is chunked (`[handle, offset, length]`) and emits a
+    // four-param GetPartialObject with low/high offset words. Clients
     // introspect `.params` to know what to bind at the call site.
     let m = gfx();
     let pcss = m
@@ -463,7 +479,29 @@ fn getobject_params_differ_per_connection_same_verb() {
     assert_eq!(pcss.params.len(), 1, "PCSS getObject is whole-object");
     assert_eq!(app.params.len(), 3, "reference app getObject is chunked");
     assert_eq!(pcss.steps[0].send_op.as_deref(), Some("0x1009"));
+    assert_eq!(pcss.steps[0].params.len(), 1);
     assert_eq!(app.steps[0].send_op.as_deref(), Some("0x101b"));
+    assert_eq!(
+        app.steps[0].params.len(),
+        4,
+        "reference app derives offset_high from the logical offset slot for the wire call"
+    );
+    assert_eq!(
+        app.steps[0].params[1],
+        StepParam::Runtime {
+            runtime: "offset".into(),
+            shift: 0,
+            mask: Some(0xffff_ffff),
+        }
+    );
+    assert_eq!(
+        app.steps[0].params[3],
+        StepParam::Runtime {
+            runtime: "offset".into(),
+            shift: 32,
+            mask: None,
+        }
+    );
 }
 
 #[test]
@@ -745,7 +783,9 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
     assert_eq!(
         from.steps[0].params,
         vec![StepParam::Runtime {
-            runtime: "openCaptureTxId".into()
+            runtime: "openCaptureTxId".into(),
+            shift: 0,
+            mask: None,
         }]
     );
     // #103: the Take→Get switch stays IN-SESSION — no reopenSession. The camera
@@ -894,7 +934,9 @@ fn app_autofocus_actions_lock_await_and_release() {
     assert_eq!(
         lock.steps[0].params,
         vec![StepParam::Runtime {
-            runtime: "afArea".into()
+            runtime: "afArea".into(),
+            shift: 0,
+            mask: None,
         }]
     );
     let aw = lock.steps[1].await_until.as_ref().expect("AF await step");

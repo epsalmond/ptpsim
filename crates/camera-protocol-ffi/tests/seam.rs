@@ -525,20 +525,36 @@ fn action_getobject_params_differ_per_connection_same_verb() {
     );
     assert!(matches!(
         pcss.steps[0],
-        EntryStep::SendOp { op: 0x1009, .. }
+        EntryStep::SendOp {
+            op: 0x1009,
+            ref params,
+            ..
+        } if params.len() == 1
     ));
     assert!(matches!(
         app.steps[0],
-        EntryStep::SendOp { op: 0x101b, .. }
+        EntryStep::SendOp {
+            op: 0x101b,
+            ref params,
+            ..
+        } if matches!(
+            params.as_slice(),
+            [
+                EntryParam::Runtime { slot: h, shift: 0, mask: None },
+                EntryParam::Runtime { slot: o1, shift: 0, mask: Some(0xffff_ffff) },
+                EntryParam::Runtime { slot: l, shift: 0, mask: None },
+                EntryParam::Runtime { slot: o2, shift: 32, mask: None },
+            ] if h == "handle" && o1 == "offset" && l == "length" && o2 == "offset"
+        )
     ));
 }
 
 #[test]
 fn action_import_objects_surfaces_the_nested_transfer_loop() {
-    // #46: the full image-transfer choreography surfaces as ONE action whose steps
-    // nest a forEach(handle) loop over a chunk(objectSize) loop. Proves the new
-    // Loop construct + ImportObjects verb cross the FFI seam with the nested body
-    // intact — the hand-written-mirror silent-drop guard.
+    // #46/#187: the full image-transfer choreography surfaces as ONE action whose
+    // steps nest a forEach(handle) loop over true-size capture + chunk download.
+    // The hand-written FFI mirror must not silently drop captures, conditionals,
+    // runtime chunk size, or shifted params.
     let s = store();
     let plan = s
         .action("app".into(), ActionVerb::ImportObjects)
@@ -565,31 +581,68 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
     assert_eq!(for_each.0, 0xd621);
     assert_eq!(for_each.1, "handle");
 
-    // Its body sizes the object (GetObjectInfo) then nests the chunk download.
-    assert!(
-        for_each
-            .2
-            .iter()
-            .any(|st| matches!(st, EntryStep::SendOp { op: 0x1008, .. })),
-        "forEach body issues GetObjectInfo to size the object",
-    );
+    assert!(for_each.2.iter().any(|st| matches!(
+        st,
+        EntryStep::SendOp {
+            op: 0x1008,
+            captures,
+            ..
+        } if captures.iter().any(|c| c.bind == "objectReportedSize"
+            && matches!(c.source, CaptureSourceInfo::ObjectInfoCompressedSize))
+            && captures.iter().any(|c| c.bind == "objectTransferSize"
+            && matches!(c.source, CaptureSourceInfo::ObjectInfoCompressedSize))
+    )));
+    assert!(for_each.2.iter().any(|st| matches!(
+        st,
+        EntryStep::If {
+            slot,
+            equals: 0xffff_ffff,
+            then_steps,
+            ..
+        } if slot == "objectReportedSize"
+            && matches!(then_steps.as_slice(), [EntryStep::SendOp { op: 0x9803, captures, .. }]
+                if captures.iter().any(|c| c.bind == "objectTransferSize"
+                    && matches!(c.source, CaptureSourceInfo::U64Le)))
+    )));
+    assert!(for_each.2.iter().any(|st| matches!(
+        st,
+        EntryStep::GetProp {
+            prop: 0xd235,
+            captures,
+            ..
+        } if captures.iter().any(|c| c.bind == "chunkSize"
+            && matches!(c.source, CaptureSourceInfo::PropValue))
+    )));
     let chunk = for_each
         .2
         .iter()
         .find_map(|st| match st {
             EntryStep::Loop {
-                kind: FfiLoopKind::Chunk { total, body, .. },
+                kind:
+                    FfiLoopKind::Chunk {
+                        total, size, body, ..
+                    },
                 ..
-            } => Some((total.as_str(), body)),
+            } => Some((total.as_str(), size, body)),
             _ => None,
         })
         .expect("forEach body nests a chunk loop");
     assert_eq!(
-        chunk.0, "objectSize",
-        "chunk total names the captured size slot"
+        chunk.0, "objectTransferSize",
+        "chunk total names the true transfer size slot"
     );
     assert!(
-        matches!(chunk.1.as_slice(), [EntryStep::SendOp { op: 0x101b, .. }]),
+        matches!(chunk.1, FfiChunkSize::Runtime { slot } if slot == "chunkSize"),
+        "chunk size comes from the captured 0xd235 property",
+    );
+    assert!(
+        matches!(chunk.2.as_slice(), [EntryStep::SendOp { op: 0x101b, params, .. }]
+            if matches!(params.as_slice(), [
+                EntryParam::Runtime { slot: h, shift: 0, mask: None },
+                EntryParam::Runtime { slot: o1, shift: 0, mask: Some(0xffff_ffff) },
+                EntryParam::Runtime { slot: l, shift: 0, mask: None },
+                EntryParam::Runtime { slot: o2, shift: 32, mask: None },
+            ] if h == "handle" && o1 == "offset" && l == "length" && o2 == "offset")),
         "chunk body is the GetPartialObject download",
     );
 }
@@ -619,16 +672,16 @@ fn runtime_param_slot_surfaces_through_ffi() {
         )
         .expect("from-Stills image-import entry");
     match &plan.steps[0] {
-        EntryStep::SendOp {
-            op,
-            params,
-            tolerant: _,
-            repeat: _,
-        } => {
+        EntryStep::SendOp { op, params, .. } => {
             assert_eq!(*op, 0x1018);
-            assert!(
-                matches!(&params[0], EntryParam::Runtime { slot } if slot == "openCaptureTxId")
-            );
+            assert!(matches!(
+                &params[0],
+                EntryParam::Runtime {
+                    slot,
+                    shift: 0,
+                    mask: None,
+                } if slot == "openCaptureTxId"
+            ));
         }
         other => panic!("expected SendOp 0x1018, got {other:?}"),
     }
@@ -855,6 +908,12 @@ fn property_catalog_enumerates_through_ffi() {
     assert!(cat
         .iter()
         .any(|p| p.code == 0xd028 && p.name == "depthOfField"));
+    let chunk_size = cat
+        .iter()
+        .find(|p| p.code == 0xd235)
+        .expect("reference app import chunk-size property in the catalog");
+    assert_eq!(chunk_size.ptype.as_deref(), Some("u32"));
+    assert_eq!(chunk_size.initial_value, Some(0x00bf_ffe0));
 }
 
 #[test]
@@ -907,7 +966,8 @@ fn media_format_table_classifies_objects_through_ffi() {
     assert!(jpeg.is_photos_compatible);
     assert!(raf.is_photos_compatible);
     assert!(mov.is_photos_compatible);
-    // The wireless size ceiling is data, not a hardcoded 0xFFFFFFFF in Swift.
+    // The reported-size sentinel is data, not a hardcoded 0xFFFFFFFF in Swift.
+    assert_eq!(s.object_info_size_sentinel(), Some(0xffff_ffff));
     assert_eq!(s.wireless_transfer_ceiling(), Some(0xffff_ffff));
 
     // An unknown / unlisted format code → None.
