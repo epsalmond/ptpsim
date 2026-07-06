@@ -578,12 +578,25 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         other => panic!("expected Runtime launch value, got {other:?}"),
     }
 
-    // The await step surfaces with its apState capture + predicate field.
+    // The await step read-polls apState (#179) and surfaces its capture +
+    // predicate field. This must not regress to notify-only, which timed out
+    // when the AP was already launched before the walk subscribed.
     let until_field = plan
         .steps
         .iter()
         .find_map(|s| match s {
-            Step::BleAwaitUntil { capture, until, .. } => {
+            Step::BleAwaitUntil {
+                source,
+                capture,
+                until,
+                ..
+            } => {
+                match source {
+                    AwaitSource::Read { gatt } => {
+                        assert_eq!(gatt, "A68E3F66-0FCC-4395-8D4C-AA980B5877FA");
+                    }
+                    other => panic!("expected apState read source, got {other:?}"),
+                }
                 assert!(capture.iter().any(|c| c.name == "apState"));
                 Some(until.field.clone())
             }

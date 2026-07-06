@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use camera_config::index::{FamilyBleBlock, ModelView, ResolvedManufacturerIndex};
-use camera_sim::{walk_establishment, BleResponder};
+use camera_sim::{walk_establishment, BleEvent, BleResponder};
+
+const AP_STATE_UUID: &str = "A68E3F66-0FCC-4395-8D4C-AA980B5877FA";
 
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -47,6 +49,21 @@ fn walk_wifi_ap(
     ssid: &[u8],
     passphrase: Option<&[u8]>,
 ) -> (BTreeMap<String, String>, Vec<u8>) {
+    let outcome = walk_wifi_ap_with_ap_state_reads(
+        launch_mode,
+        ssid,
+        passphrase,
+        vec![vec![0x00, 0x80], vec![0x01, 0x80]],
+    );
+    (outcome.0, outcome.1)
+}
+
+fn walk_wifi_ap_with_ap_state_reads(
+    launch_mode: &str,
+    ssid: &[u8],
+    passphrase: Option<&[u8]>,
+    ap_state_reads: Vec<Vec<u8>>,
+) -> (BTreeMap<String, String>, Vec<u8>, Vec<BleEvent>) {
     let view = gfx100ii();
     let ble = view
         .ble
@@ -70,11 +87,10 @@ fn walk_wifi_ap(
     }
 
     let mut responder = BleResponder::new(catalog)
-        // apState notify source: Launching (0x8002, transitional — must NOT
-        // satisfy `until`) then Launched (0x8001). Wire bytes are little-endian,
-        // so the u16-le capture reads [01 80] = 0x8001 = 32769 (#84).
-        .queue_notification(&ap_state, &[0x02, 0x80])
-        .queue_notification(&ap_state, &[0x01, 0x80])
+        // apState read source: NotLaunched (0x8000) then Launched (0x8001).
+        // Wire bytes are little-endian, so the u16-le capture reads [01 80]
+        // = 0x8001 = 32769 (#84, #179).
+        .serve_read_sequence(&ap_state, ap_state_reads)
         .serve_read(&ssid_uuid, ssid);
     if let Some(pass) = passphrase {
         responder = responder.serve_read(&pass_uuid, pass);
@@ -96,7 +112,7 @@ fn walk_wifi_ap(
 
     let writes = responder.written(&launch);
     assert_eq!(writes.len(), 1, "launch request written exactly once");
-    (outcome.scope, writes[0].to_vec())
+    (outcome.scope, writes[0].to_vec(), responder.log().to_vec())
 }
 
 /// The happy path: a body that exposes both credentials, no padding.
@@ -109,8 +125,8 @@ fn establish_wifi_ap_binds_credentials_and_writes_launch_mode_4() {
     let (scope, launch_write) = run("4");
     // launchMode 4 (RemoteShooting) → u16-le [04 00].
     assert_eq!(launch_write, vec![0x04, 0x00]);
-    // apState observed until launched (0x8001 → 32769); the transitional
-    // Launching (0x8002) notification before it did not satisfy `until`.
+    // apState read-polled until launched (0x8001 → 32769); the initial
+    // NotLaunched (0x8000) read did not satisfy `until`.
     assert_eq!(scope.get("apState").map(String::as_str), Some("32769"));
     // Raw apState bytes preserved for the app's fallback parsing.
     assert!(scope.contains_key("apStateRaw"));
@@ -119,6 +135,36 @@ fn establish_wifi_ap_binds_credentials_and_writes_launch_mode_4() {
     assert_eq!(
         scope.get("passphrase").map(String::as_str),
         Some("hunter2pass")
+    );
+}
+
+#[test]
+fn establish_wifi_ap_reads_already_launched_apstate_without_notify() {
+    // #179: if the AP was already up before this walk started, the camera will
+    // not re-notify `Launched`. A plain AP_STATE read must recover the current
+    // state and let the handoff continue.
+    let (scope, _, events) = walk_wifi_ap_with_ap_state_reads(
+        "3",
+        b"FUJIFILM-GFX100II-0C3E",
+        Some(b"secret-pass"),
+        vec![vec![0x01, 0x80]],
+    );
+    assert_eq!(scope.get("apState").map(String::as_str), Some("32769"));
+    assert_eq!(
+        scope.get("ssid").map(String::as_str),
+        Some("FUJIFILM-GFX100II-0C3E"),
+    );
+
+    let ap_state_reads = events
+        .iter()
+        .filter(|e| matches!(e, BleEvent::Read { uuid } if uuid == AP_STATE_UUID))
+        .count();
+    assert_eq!(ap_state_reads, 1, "first read was already satisfying");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, BleEvent::Subscribe { uuid, .. } if uuid == AP_STATE_UUID)),
+        "AP_STATE handoff must not wait on a notify subscription",
     );
 }
 
