@@ -18,15 +18,33 @@ cd "$SCRIPT_DIR"
 # Overridable knobs. Defaults mirror the Dockerfile CMD + main.rs, repo-relative.
 PROFILE="${PTPSIM_PROFILE:-fuji/gfx100ii}"
 INSTANCE_ID="${PTPSIM_INSTANCE_ID:-local}"
+CONNECTION="${PTPSIM_CONNECTION:-app}"
 MANIFEST="${PTPSIM_MANIFEST:-$SCRIPT_DIR/packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml}"
 MEDIA_ROOT="${PTPSIM_MEDIA_ROOT:-$SCRIPT_DIR/packages/fixtures/gfx100ii}"
 LIVEVIEW_DIR="${PTPSIM_LIVEVIEW_DIR:-$SCRIPT_DIR/packages/fixtures/liveview/640x480}"
 
 # Binds. Loopback by default so a local simulator reaches them; override to [::]:…
 # / 0.0.0.0:… to expose to other hosts. Control stays loopback unless overridden.
-COMMAND_BIND="${PTPSIM_COMMAND_BIND:-127.0.0.1:55740}"
-EVENT_BIND="${PTPSIM_EVENT_BIND:-127.0.0.1:55741}"
-LIVEVIEW_BIND="${PTPSIM_LIVEVIEW_BIND:-127.0.0.1:55742}"
+case "$CONNECTION" in
+  app)
+    DEFAULT_COMMAND_BIND="127.0.0.1:55740"
+    DEFAULT_EVENT_BIND="127.0.0.1:55741"
+    DEFAULT_LIVEVIEW_BIND="127.0.0.1:55742"
+    ;;
+  wireless-tether)
+    DEFAULT_COMMAND_BIND="127.0.0.1:15740"
+    DEFAULT_EVENT_BIND=""
+    DEFAULT_LIVEVIEW_BIND=""
+    ;;
+  *)
+    DEFAULT_COMMAND_BIND=""
+    DEFAULT_EVENT_BIND=""
+    DEFAULT_LIVEVIEW_BIND=""
+    ;;
+esac
+COMMAND_BIND="${PTPSIM_COMMAND_BIND:-$DEFAULT_COMMAND_BIND}"
+EVENT_BIND="${PTPSIM_EVENT_BIND:-$DEFAULT_EVENT_BIND}"
+LIVEVIEW_BIND="${PTPSIM_LIVEVIEW_BIND:-$DEFAULT_LIVEVIEW_BIND}"
 CONTROL_BIND="${PTPSIM_CONTROL_BIND:-127.0.0.1:8080}"
 
 CARGO_PROFILE="${PTPSIM_CARGO_PROFILE:-debug}"  # debug | release
@@ -74,13 +92,20 @@ BIN="$SCRIPT_DIR/$bin_dir/camera-sim-service"
 run_args=(
   --profile "$PROFILE"
   --instance-id "$INSTANCE_ID"
+  --connection "$CONNECTION"
   --manifest "$MANIFEST"
   --media-root "$MEDIA_ROOT"
-  --command-bind "$COMMAND_BIND"
-  --event-bind "$EVENT_BIND"
-  --liveview-bind "$LIVEVIEW_BIND"
   --control-bind "$CONTROL_BIND"
 )
+if [[ -n "$COMMAND_BIND" ]]; then
+  run_args+=(--command-bind "$COMMAND_BIND")
+fi
+if [[ -n "$EVENT_BIND" ]]; then
+  run_args+=(--event-bind "$EVENT_BIND")
+fi
+if [[ -n "$LIVEVIEW_BIND" ]]; then
+  run_args+=(--liveview-bind "$LIVEVIEW_BIND")
+fi
 if [[ -d "$LIVEVIEW_DIR" ]]; then
   run_args+=(--liveview-dir "$LIVEVIEW_DIR")
 else
@@ -93,6 +118,7 @@ fi
 echo
 echo "Starting ptpsim camera simulator"
 echo "  profile:    $PROFILE"
+echo "  connection: $CONNECTION"
 echo "  manifest:   $MANIFEST"
 echo "  media-root: $MEDIA_ROOT"
 echo "  control:    $HEALTH_URL"

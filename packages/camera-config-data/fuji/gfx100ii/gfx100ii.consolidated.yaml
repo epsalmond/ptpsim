@@ -147,11 +147,13 @@ operations:
     modes: []
     connections:
     - app
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
     - iosStartupSeq
+    - wirePCSSShootDownload20260523
   '0x1003':
     name: CloseSession
     owner: standard-ptp
@@ -163,11 +165,13 @@ operations:
     modes: []
     connections:
     - app
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
     - iosStartupSeq
+    - wirePCSSShootDownload20260523
   '0x1004':
     name: GetStorageIDs
     owner: ''

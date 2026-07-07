@@ -83,6 +83,14 @@ def send_op(sock, code, tid, params):
     sock.sendall(op_frame(code, tid, params))
 
 
+def read_ok(sock, expected_tid):
+    typ, resp, resp_tid, params = read_comp_frame(sock)
+    assert typ == 3, f"expected response, got type {typ}"
+    assert resp == 0x2001, f"expected OK, got {resp:#x}"
+    assert resp_tid == expected_tid, f"response tid {resp_tid} != {expected_tid}"
+    assert params == [], params
+
+
 def read_data_reply(sock, expected_op, expected_tid, keep_head=False):
     header = read_exact(sock, 12)
     length, typ, code, tid = struct.unpack("<IHHI", header)
@@ -106,6 +114,22 @@ def read_data_reply(sock, expected_op, expected_tid, keep_head=False):
     assert resp == 0x2001, f"expected OK, got {resp:#x}"
     assert resp_tid == expected_tid, f"response tid {resp_tid} != {expected_tid}"
     return payload_len, params, bytes(head)
+
+
+def send_data_op(sock, code, tid, params, payload):
+    send_op(sock, code, tid, params)
+    sock.sendall(struct.pack("<IHHI", len(payload) + 12, 2, code, tid) + payload)
+    read_ok(sock, tid)
+
+
+def get_prop(sock, tid, prop):
+    send_op(sock, 0x1015, tid, [prop])
+    _, _, payload = read_data_reply(sock, 0x1015, tid, keep_head=True)
+    return payload
+
+
+def set_prop(sock, tid, prop, payload):
+    send_data_op(sock, 0x1016, tid, [prop], payload)
 
 
 def parse_u32_array(payload):
@@ -187,6 +211,8 @@ def main():
                 str(ROOT / "packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml"),
                 "--media-root",
                 str(tmp / "card"),
+                "--connection",
+                "app",
                 "--command-bind",
                 f"127.0.0.1:{command}",
                 "--event-bind",
@@ -219,11 +245,50 @@ def main():
 
                 tid = 1
                 send_op(sock, 0x1002, tid, [1])
-                assert read_comp_frame(sock)[:3] == (3, 0x2001, tid)
+                read_ok(sock, tid)
+
+                # App image-import entry. The real GFX100 II app path does not
+                # use 0x1007; it runs the vendor/bootstrap block, then reads
+                # D620/D621 for count + handles before chunking with 0x101B.
+                tid += 1
+                get_prop(sock, tid, 0xD212)
+                tid += 1
+                set_prop(sock, tid, 0xDF01, struct.pack("<H", 0x14))
+                tid += 1
+                get_prop(sock, tid, 0xDF28)
+                tid += 1
+                set_prop(sock, tid, 0xDF28, struct.pack("<I", 3))
+                tid += 1
+                set_prop(sock, tid, 0xD226, struct.pack("<H", 0))
+                tid += 1
+                set_prop(sock, tid, 0xD227, struct.pack("<H", 0))
+                tid += 1
+                get_prop(sock, tid, 0xD244)
+                tid += 1
+                send_op(sock, 0x9054, tid, [0x10000001])
+                read_ok(sock, tid)
+                tid += 1
+                send_op(sock, 0x9055, tid, [0x10000001])
+                read_ok(sock, tid)
+                tid += 1
+                send_op(sock, 0x9050, tid, [])
+                read_ok(sock, tid)
+                tid += 1
+                get_prop(sock, tid, 0xD212)
+                tid += 1
+                get_prop(sock, tid, 0xD22B)
+                tid += 1
+                send_op(sock, 0x9053, tid, [0, 0x7530])
+                read_ok(sock, tid)
+                tid += 1
+                get_prop(sock, tid, 0xD212)
 
                 tid += 1
-                send_op(sock, 0x1007, tid, [0x00010001, 0, 0])
-                _, _, handles_payload = read_data_reply(sock, 0x1007, tid, keep_head=True)
+                count_payload = get_prop(sock, tid, 0xD620)
+                count = struct.unpack("<I", count_payload[:4])[0]
+                assert count == 1, count
+                tid += 1
+                handles_payload = get_prop(sock, tid, 0xD621)
                 handles = parse_u32_array(handles_payload)
                 assert len(handles) == 1, handles
                 handle = handles[0]

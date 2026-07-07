@@ -932,11 +932,23 @@ camera-sim-service \
   --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
   --media-root <path/to/DCIM-root> \
   --profile fuji/gfx100ii \
+  --connection app \
   --command-bind  '[::]:55740' \
   --event-bind    '[::]:55741' \
   --liveview-bind '[::]:55742' \
   --liveview-dir  packages/fixtures/liveview/640x480 \
   --control-bind  '127.0.0.1:8080'
+
+# PCSS / infrastructure-mode direct responder shape. This binds the command
+# socket, but pcssKnock init/retry is still #171 and UDP knock discovery is #172;
+# until then an reference app InitCommandRequest is rejected rather than acknowledged.
+camera-sim-service \
+  --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
+  --media-root <path/to/DCIM-root> \
+  --profile fuji/gfx100ii \
+  --connection wireless-tether \
+  --command-bind '[::]:15740' \
+  --control-bind '127.0.0.1:8080'
 
 # IMPLEMENTED today (tools/camera-simctl):
 camera-simctl health  --control 127.0.0.1:8080
@@ -1217,10 +1229,11 @@ USB webcam mode" is a probe you run, not an assumption.
 
 Listener setup:
 
-1. Bind command socket to configured host/port, default `[::]:55740`.
-2. Bind live-view (through-picture) socket to configured host/port, default `[::]:55741`.
-3. Bind event socket to configured host/port, default `[::]:55742`.
-4. Accept command socket first. Event/live-view sockets may connect before or
+1. Select a manifest connection with `--connection` (`app` by default).
+2. Bind only the selected connection's declared socket roles.
+3. For `app`, the default roles are command `55740`, event `55741`, and live-view stream `55742`.
+4. For `wireless-tether`, the default role is command `15740`; live view is command-channel polling once the PCSS init path is implemented.
+5. Accept command socket first. Event/live-view sockets may connect before or
    after workflow startup, but the workflow decides when bytes are sent.
 
 Command session:
@@ -1280,8 +1293,8 @@ PTP/IP InitCommandRequest -> InitCommandAck -> OpenSession
 
 Simulator modes:
 
-- Responder mode for app review: simulator exposes `15740` directly when the app
-  already has a host from `/api/runtime`.
+- Responder mode for app review: simulator exposes the selected manifest
+  connection, defaulting to the app command/event/live-view sockets.
 - Full PCSS lab mode: simulator also implements UDP knock and callback behavior
   so desktop tether clients can be tested.
 

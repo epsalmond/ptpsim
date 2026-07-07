@@ -16,8 +16,16 @@ camera:
   manufacturer: FUJIFILM
   model: GFX100 II
   firmware: "2.30"
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings: { command: 55740, event: 55741, liveView: 55742 }
 operations:
-  "0x1002": { name: OpenSession }
+  "0x1002": { name: OpenSession, connections: [app] }
 properties: {}
 "#;
 
@@ -111,9 +119,13 @@ fn read_data_reply(s: &mut TcpStream) -> Vec<u8> {
 }
 
 fn read_ok(s: &mut TcpStream) {
+    assert_eq!(read_response_code(s), 0x2001);
+}
+
+fn read_response_code(s: &mut TcpStream) -> u16 {
     match fuji_framing::decode(&read_frame(s)).unwrap() {
-        PtpIpPacket::OperationResponse(r) => assert_eq!(r.code, 0x2001),
-        other => panic!("expected OK, got {other:?}"),
+        PtpIpPacket::OperationResponse(r) => r.code,
+        other => panic!("expected response, got {other:?}"),
     }
 }
 
@@ -125,18 +137,21 @@ fn service_drives_image_import_over_tcp() {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
             manifest_yaml: MANIFEST.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let lv = server.liveview_addr();
+        let lv = server
+            .liveview_addr_opt()
+            .expect("app connection has live-view socket");
         let ctl = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
@@ -207,11 +222,12 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
             manifest_yaml: real_gfx_manifest(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -228,6 +244,13 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
         .unwrap();
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
+
+    write_frame(&mut s, &op(0x1007, 20, vec![0x00010001, 0, 0]));
+    assert_eq!(
+        read_response_code(&mut s),
+        0x2005,
+        "app persona rejects GetObjectHandles; it enumerates through D620/D621"
+    );
 
     write_frame(&mut s, &op(0x1016, 2, vec![0xdf01]));
     write_frame(
@@ -278,6 +301,19 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
     let handles = r.ptp_array(|r| r.u32()).unwrap();
     assert_eq!(handles.len(), 1);
 
+    write_frame(&mut s, &op(0x1008, 21, vec![handles[0]]));
+    let info = read_data_reply(&mut s);
+    let oi = ptp_core::ObjectInfo::decode(&info).unwrap();
+    assert_eq!(oi.object_format, 0x3801);
+
+    write_frame(&mut s, &op(0x1015, 22, vec![0xd235]));
+    let chunk = read_data_reply(&mut s);
+    let mut r = ptp_core::Reader::new(&chunk);
+    assert_eq!(r.u32().unwrap(), 0x00bfffe0);
+
+    write_frame(&mut s, &op(0x101b, 23, vec![handles[0], 0, 7, 0]));
+    assert_eq!(read_data_reply(&mut s), b"\xFF\xD8HELLO");
+
     let _ = shutdown_tx.send(());
     rt.block_on(handle).unwrap();
     std::fs::remove_dir_all(&root).ok();
@@ -291,10 +327,19 @@ fn service_pushes_completion_event_on_event_socket() {
     const AF_EVENT_MANIFEST: &str = r#"
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings: { command: 55740, event: 55741, liveView: 55742 }
 operations:
-  "0x1002": { name: OpenSession }
+  "0x1002": { name: OpenSession, connections: [app] }
   "0x9026":
     name: LockS1Lock
+    connections: [app]
     emits: ["0xc005"]
 properties: {}
 "#;
@@ -304,18 +349,21 @@ properties: {}
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
             manifest_yaml: AF_EVENT_MANIFEST.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let evt = server.event_addr();
+        let evt = server
+            .event_addr_opt()
+            .expect("app connection has event socket");
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
         (cmd, evt, tx, h)
@@ -388,11 +436,12 @@ fn service_serves_a_large_object_in_a_single_frame() {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii".into(),
+            connection: "app".into(),
             manifest_yaml: MANIFEST.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -493,8 +542,16 @@ fn service_rejects_oversized_data_in() {
     let manifest = r#"
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings: { command: 55740, event: 55741, liveView: 55742 }
 operations:
-  "0x1002": { name: OpenSession }
+  "0x1002": { name: OpenSession, connections: [app] }
 properties:
   "0xdf01": { name: functionMode, type: u16, access: readWrite }
 "#;
@@ -503,11 +560,12 @@ properties:
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii".into(),
+            connection: "app".into(),
             manifest_yaml: manifest.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -585,46 +643,39 @@ camera:
 connections:
   wireless-tether:
     kind: ptpip-direct
+    initShape: app82
     liveViewDelivery: { kind: poll, pollOp: "0x9018" }
+    commandFraming: compressed
+    bindings: { command: 15740 }
 operations:
-  "0x1002": { name: OpenSession }
-  "0x9018": { name: PcssPollLiveViewData }
+  "0x1002": { name: OpenSession, connections: [wireless-tether] }
+  "0x9018": { name: PcssPollLiveViewData, connections: [wireless-tether] }
 properties: {}
 "#;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, liveview_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii".into(),
+            connection: "wireless-tether".into(),
             manifest_yaml: manifest.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: Some(lv_dir.clone()),
             state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let lv = server.liveview_addr();
+        assert!(server.liveview_addr_opt().is_none());
+        assert!(server.event_addr_opt().is_none());
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(async move { server.run(rx).await });
-        (cmd, lv, tx, h)
+        (cmd, tx, h)
     });
-
-    let mut lv = TcpStream::connect(liveview_addr).unwrap();
-    lv.set_read_timeout(Some(std::time::Duration::from_millis(150)))
-        .unwrap();
-    let mut probe = [0u8; 4];
-    match lv.read_exact(&mut probe) {
-        Err(e)
-            if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut => {}
-        Ok(_) => panic!("stream frames leaked without Phase::Streaming"),
-        Err(e) => panic!("unexpected live-view stream error: {e}"),
-    }
 
     let mut s = TcpStream::connect(command_addr).unwrap();
     let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
@@ -644,13 +695,131 @@ properties: {}
     let frame = read_data_reply(&mut s);
     assert_eq!(&frame[..], lv_jpeg, "poll op returns the fixture JPEG");
 
-    drop(lv);
     drop(s);
     rt.block_on(async {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
     std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn app_persona_does_not_serve_wireless_tether_poll_liveview() {
+    let root = tmp_card();
+    let lv_dir = root.join("liveview");
+    std::fs::create_dir_all(&lv_dir).unwrap();
+    std::fs::write(lv_dir.join("frame_001.jpg"), b"\xFF\xD8PCSS\xFF\xD9").unwrap();
+
+    let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings: { command: 55740, event: 55741, liveView: 55742 }
+  wireless-tether:
+    kind: ptpip-direct
+    initShape: app82
+    liveViewDelivery: { kind: poll, pollOp: "0x9018" }
+    commandFraming: compressed
+    bindings: { command: 15740 }
+operations:
+  "0x1002": { name: OpenSession, connections: [app, wireless-tether] }
+  "0x9018": { name: PcssPollLiveViewData, connections: [wireless-tether] }
+properties: {}
+"#;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii".into(),
+            connection: "app".into(),
+            manifest_yaml: manifest.into(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: Some(lv_dir.clone()),
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(async move { server.run(rx).await });
+        (cmd, tx, h)
+    });
+
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [0; 16],
+        friendly_name: "test".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
+        PtpIpPacket::InitCommandAck(_) => {}
+        other => panic!("expected InitCommandAck, got {other:?}"),
+    }
+    write_frame(&mut s, &op(0x1002, 1, vec![1]));
+    read_ok(&mut s);
+
+    write_frame(&mut s, &op(0x9018, 2, vec![]));
+    match fuji_framing::decode(&read_frame(&mut s)).unwrap() {
+        PtpIpPacket::OperationResponse(r) => assert_eq!(r.code, 0x2005),
+        other => panic!("expected unsupported response, got {other:?}"),
+    }
+
+    drop(s);
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn bind_rejects_absent_role_override_for_selected_connection() {
+    let root = tmp_card();
+    let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  wireless-tether:
+    kind: ptpip-direct
+    initShape: app82
+    commandFraming: compressed
+    bindings: { command: 15740 }
+operations: {}
+properties: {}
+"#;
+    let config = Config {
+        instance_id: "test".into(),
+        profile: "fuji/gfx100ii".into(),
+        connection: "wireless-tether".into(),
+        manifest_yaml: manifest.into(),
+        media_root: root.clone(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: None,
+        event_bind: Some("127.0.0.1:0".parse().unwrap()),
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+        state_callback: None,
+    };
+    let err = match Server::bind(config).await {
+        Err(err) => err,
+        Ok(_) => panic!("event override must fail when the selected connection has no event role"),
+    };
+    assert!(
+        err.to_string().contains("no event socket"),
+        "error should name the absent role: {err}"
+    );
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// Live-view smoke: gate-#4 at the TCP boundary. The simulator only emits
@@ -670,8 +839,16 @@ camera:
   manufacturer: FUJIFILM
   model: GFX100 II
   firmware: "2.30"
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings: { command: 55740, event: 55741, liveView: 55742 }
 operations:
-  "0x1002": { name: OpenSession }
+  "0x1002": { name: OpenSession, connections: [app] }
 properties:
   "0xdf01": { name: functionMode, type: u16, access: readWrite }
 "#;
@@ -681,18 +858,21 @@ properties:
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii".into(),
+            connection: "app".into(),
             manifest_yaml: manifest.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: Some(lv_dir.clone()),
             state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let lv = server.liveview_addr();
+        let lv = server
+            .liveview_addr_opt()
+            .expect("app connection has live-view socket");
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(async move { server.run(rx).await });
         (cmd, lv, tx, h)
@@ -760,11 +940,12 @@ async fn bind_rejects_unsupported_manifest_schema() {
     let config = Config {
         instance_id: "test".into(),
         profile: "fuji/gfx100ii".into(),
+        connection: "app".into(),
         manifest_yaml: MANIFEST.replace("camera-config/v1", "camera-config/v999"),
         media_root: root.clone(),
-        command_bind: "127.0.0.1:0".parse().unwrap(),
-        liveview_bind: "127.0.0.1:0".parse().unwrap(),
-        event_bind: "127.0.0.1:0".parse().unwrap(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+        event_bind: Some("127.0.0.1:0".parse().unwrap()),
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
         state_callback: None,
@@ -789,11 +970,12 @@ async fn idle_control_connection_does_not_block_healthz() {
     let config = Config {
         instance_id: "test".into(),
         profile: "fuji/gfx100ii".into(),
+        connection: "app".into(),
         manifest_yaml: MANIFEST.into(),
         media_root: root.clone(),
-        command_bind: "127.0.0.1:0".parse().unwrap(),
-        liveview_bind: "127.0.0.1:0".parse().unwrap(),
-        event_bind: "127.0.0.1:0".parse().unwrap(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+        event_bind: Some("127.0.0.1:0".parse().unwrap()),
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
         state_callback: None,
@@ -843,18 +1025,21 @@ async fn bind_teardown_loop_with_live_connections_is_clean() {
         let config = Config {
             instance_id: format!("cycle-{cycle}"),
             profile: "fuji/gfx100ii".into(),
+            connection: "app".into(),
             manifest_yaml: MANIFEST.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let lv = server.liveview_addr();
+        let lv = server
+            .liveview_addr_opt()
+            .expect("app connection has live-view socket");
         let ctl = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let run = tokio::spawn(server.run(rx));
@@ -902,17 +1087,20 @@ async fn idle_liveview_disconnects_are_reaped() {
     let config = Config {
         instance_id: "test".into(),
         profile: "fuji/gfx100ii".into(),
+        connection: "app".into(),
         manifest_yaml: MANIFEST.into(),
         media_root: root.clone(),
-        command_bind: "127.0.0.1:0".parse().unwrap(),
-        liveview_bind: "127.0.0.1:0".parse().unwrap(),
-        event_bind: "127.0.0.1:0".parse().unwrap(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+        event_bind: Some("127.0.0.1:0".parse().unwrap()),
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
         state_callback: None,
     };
     let server = Server::bind(config).await.unwrap();
-    let lv = server.liveview_addr();
+    let lv = server
+        .liveview_addr_opt()
+        .expect("app connection has live-view socket");
     let (tx, rx) = tokio::sync::oneshot::channel();
     let run = tokio::spawn(server.run(rx));
 
@@ -943,11 +1131,12 @@ fn unarmed_engine_drops_init_command_request() {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
             manifest_yaml: MANIFEST.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -996,11 +1185,12 @@ fn mismatched_friendly_name_is_dropped_a_matching_one_is_acked() {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
             manifest_yaml: MANIFEST.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -1103,11 +1293,12 @@ fn state_callback_posts_camera_state_on_change() {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
             manifest_yaml: MANIFEST.into(),
             media_root: root.clone(),
-            command_bind: "127.0.0.1:0".parse().unwrap(),
-            liveview_bind: "127.0.0.1:0".parse().unwrap(),
-            event_bind: "127.0.0.1:0".parse().unwrap(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: Some(format!("http://{recv_addr}/state")),

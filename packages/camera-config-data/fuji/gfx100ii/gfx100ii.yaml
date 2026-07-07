@@ -66,13 +66,13 @@ sequenceGates:
   imageImportBootstrap:
     evidence: [docFujiPtpPropReference, docImageTransfer]
 
-# Connection-name convention (see docs/consults/2026-06-02-*-wireless-tether.md):
-#   `app`             = reference-app PTP/IP on :55740 (BLE → camera Wi-Fi AP → 82B WMB-tail init).
-#   `wireless-tether` = PCSS port-knock PTP/IP on :15740 (camera joins LAN, then knock+notify).
-# These ride the same physical Wi-Fi but are DIFFERENT transports with different
-# supported-op sets, different InitCmdReq tails, and different live-view paths
-# (`0x101C`+stream vs `0x9018` polled). External wire docs that label "Wireless
-# tether" usually mean the `app` slot here — verify before transcribing.
+# Connection-name convention:
+#   `app`             = reference-app PTP/IP on :55740 (BLE -> camera Wi-Fi AP -> 82B WMB-tail init).
+#   `wireless-tether` = PCSS/infrastructure-mode PTP/IP on :15740 (camera joins LAN,
+#                       then the host reaches it through the PCSS knock/notify path).
+# These ride Wi-Fi but are different PTP/IP personas with different supported-op sets,
+# different InitCmdReq tails, and different live-view paths (`0x101C`+stream vs
+# `0x9018` polled).
 connections:
   app:
     kind: ptpip-app                 # WiFi-AP path (camera hosts the AP; app joins)
@@ -569,8 +569,8 @@ workflows:
   cameraSettings: { transport: ble, evidence: [iosFeatureMode] }   # eeprom up/download
 
 operations:
-  "0x1002": { name: OpenSession,          owner: standard-ptp, connections: [app], evidence: [iosStartupSeq] }
-  "0x1003": { name: CloseSession,         owner: standard-ptp, connections: [app], evidence: [iosStartupSeq] }
+  "0x1002": { name: OpenSession,          owner: standard-ptp, connections: [app, wireless-tether], evidence: [iosStartupSeq, wirePCSSShootDownload20260523] }
+  "0x1003": { name: CloseSession,         owner: standard-ptp, connections: [app, wireless-tether], evidence: [iosStartupSeq, wirePCSSShootDownload20260523] }
   # PCSS image-transfer triad (wireless-tether). Hyper-Utility's actual download path,
   # wire-confirmed: 0x1007(0xFFFFFFFF, 0) → 0x1008(handle) → 0x100A(handle, optional)
   # → 0x1009(handle) → 0x100B(handle, optional delete). No 0x101B chunking; whole

@@ -100,9 +100,9 @@ COPY packages/fixtures/liveview/640x480 /etc/ptpsim/liveview/640x480
 USER ptpsim:nogroup
 WORKDIR /var/lib/ptpsim
 
-# PTP/IP listeners (55740 command / 55741 event / 55742 live-view) + control HTTP.
-# All bind addresses are CLI-overridable; control defaults to 127.0.0.1:8080.
-EXPOSE 55740/tcp 55741/tcp 55742/tcp 8080/tcp
+# App persona listeners (55740 command / 55741 event / 55742 live-view), PCSS
+# command (15740), and control HTTP. Active sockets depend on --connection.
+EXPOSE 55740/tcp 55741/tcp 55742/tcp 15740/tcp 8080/tcp
 
 # Healthcheck hits /healthz on the default control bind. If you override
 # --control-bind, override this too (or pass --health-cmd= at docker run).
@@ -113,4 +113,5 @@ ENTRYPOINT ["camera-sim-service"]
 CMD ["--manifest", "/etc/ptpsim/gfx100ii.consolidated.yaml", \
      "--media-root", "/var/lib/ptpsim/media-root", \
      "--profile", "fuji/gfx100ii", \
+     "--connection", "app", \
      "--liveview-dir", "/etc/ptpsim/liveview/640x480"]
