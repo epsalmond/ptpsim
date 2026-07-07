@@ -56,6 +56,11 @@ struct Frag {
     /// app-catalog source can flow through the same evidence→generator pipeline.
     #[serde(default)]
     labels: Option<BTreeMap<String, String>>,
+    /// Scoped camera capability or write-walk rows. These are not always
+    /// standard `GetDevicePropDesc` descriptors; they fill body/mode-specific
+    /// value metadata when the camera path returns no list or too broad a list.
+    #[serde(default, alias = "valueProfiles")]
+    value_profiles: Option<Vec<PropertyValueProfile>>,
 }
 
 #[derive(Default)]
@@ -71,6 +76,8 @@ struct PropAgg {
     /// Set when a fragment supplied labels — drives the `appCatalog` (app-source)
     /// citation, so static labels aren't mis-cited as wire-capture.
     has_labels: bool,
+    value_profiles: Vec<PropertyValueProfile>,
+    has_value_profiles: bool,
 }
 
 const EVIDENCE_ID: &str = "activeProbe";
@@ -78,6 +85,7 @@ const EVIDENCE_ID: &str = "activeProbe";
 /// `FujiCameraPropertyCatalog`), distinct from the wire `activeProbe`. Wire
 /// labels would outrank this on conflict (see `enrich`'s per-value fill).
 const LABELS_EVIDENCE_ID: &str = "appCatalog";
+const VALUE_PROFILE_EVIDENCE_ID: &str = "valueCapability";
 
 /// Parse one or more concatenated `camera-config-evidence/v1` JSONL files and
 /// propose a manifest. Identity is read from the evidence itself (the format
@@ -143,6 +151,10 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                             agg.labels.entry(v).or_insert(l);
                         }
                     }
+                    if let Some(value_profiles) = frag.value_profiles {
+                        agg.has_value_profiles |= !value_profiles.is_empty();
+                        agg.value_profiles.extend(value_profiles);
+                    }
                 }
             }
             _ => {}
@@ -193,6 +205,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
         .collect();
 
     let any_labels = props.values().any(|a| a.has_labels);
+    let any_value_profiles = props.values().any(|a| a.has_value_profiles);
     let properties = props
         .into_iter()
         .map(|(code, agg)| {
@@ -213,6 +226,9 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
             if agg.has_labels {
                 evidence.push(LABELS_EVIDENCE_ID.to_string());
             }
+            if agg.has_value_profiles {
+                evidence.push(VALUE_PROFILE_EVIDENCE_ID.to_string());
+            }
             if evidence.is_empty() {
                 evidence.push(EVIDENCE_ID.to_string());
             }
@@ -232,6 +248,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     controls: BTreeMap::new(),
                     labels: agg.labels,
                     value_rows: Vec::new(),
+                    value_profiles: agg.value_profiles,
                     value_encoding: None,
                     evidence,
                 },
@@ -254,6 +271,16 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
             Evidence {
                 kind: "app-source".to_string(),
                 path: "evidence/labels/".to_string(),
+                date: String::new(),
+            },
+        );
+    }
+    if any_value_profiles {
+        evidence.insert(
+            VALUE_PROFILE_EVIDENCE_ID.to_string(),
+            Evidence {
+                kind: "body-capability".to_string(),
+                path: "evidence/value-profiles/".to_string(),
                 date: String::new(),
             },
         );
@@ -323,6 +350,18 @@ pub fn enrich(mut base: CameraManifest, proposal: CameraManifest) -> CameraManif
                         }
                     }
                 }
+                if !pp.value_profiles.is_empty() {
+                    for profile in pp.value_profiles.clone() {
+                        if !bp.value_profiles.contains(&profile) {
+                            bp.value_profiles.push(profile);
+                        }
+                    }
+                    for e in &pp.evidence {
+                        if !bp.evidence.contains(e) {
+                            bp.evidence.push(e.clone());
+                        }
+                    }
+                }
             })
             .or_insert(pp);
     }
@@ -365,6 +404,7 @@ mod tests {
 {"schema":"camera-config-evidence/v1","kind":"operation","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"usb","mode":"shooting/stills"},"code":"0x9999","supported":false}
 {"schema":"camera-config-evidence/v1","kind":"property","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"usb","mode":"shooting/stills"},"code":"0x5007","supported":true,"type":"u16","access":"readWrite","descriptor":{"form":"enum","values":[280,400,560]},"labels":{"280":"f/2.8","400":"f/4.0"}}
 {"schema":"camera-config-evidence/v1","kind":"property","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"usb","mode":"shooting/stills"},"code":"0xd240","supported":true,"labels":{"1000":"1/1000"}}
+{"schema":"camera-config-evidence/v1","kind":"property","scope":{"manufacturer":"FUJIFILM","model":"GFX100 II","firmware":"2.30","connection":"app","mode":"shooting/stills"},"code":"0xd02a","supported":true,"valueProfiles":[{"connection":"app","mode":"shooting/stills","rows":[{"label":"80","raw":80},{"label":"50","raw":50,"legal":false,"writeStoreRaw":80}],"evidence":["valueCapability"]}]}
 {"kind":"other","note":"ignored"}
 "#;
 
@@ -437,6 +477,21 @@ mod tests {
     }
 
     #[test]
+    fn generate_proposal_emits_value_profiles_with_body_capability_provenance() {
+        let m = generate_proposal(EVIDENCE);
+        let p = &m.properties["0xd02a"];
+        assert_eq!(p.value_profiles.len(), 1);
+        let profile = &p.value_profiles[0];
+        assert_eq!(profile.connection.as_deref(), Some("app"));
+        assert_eq!(profile.mode.as_deref(), Some("shooting/stills"));
+        assert!(profile.rows.iter().any(|row| row.raw == 80 && row.legal));
+        assert!(profile.rows.iter().any(|row| !row.legal));
+        assert!(p.evidence.iter().any(|e| e == "valueCapability"));
+        let evidence = &m.evidence["valueCapability"];
+        assert_eq!(evidence.kind, "body-capability");
+    }
+
+    #[test]
     fn enrich_fills_empty_label_keys_without_clobbering_curated() {
         let proposal = generate_proposal(EVIDENCE); // 0x5007 labels: 280→f/2.8, 400→f/4.0
         let curated = CameraManifest::from_yaml(
@@ -457,6 +512,25 @@ properties:
         );
         // The value the base did not label is filled from the proposal.
         assert_eq!(ap.labels.get("400").map(String::as_str), Some("f/4.0"));
+    }
+
+    #[test]
+    fn enrich_adds_value_profiles_without_clobbering_curated_property() {
+        let proposal = generate_proposal(EVIDENCE);
+        let curated = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+properties:
+  "0xd02a": { name: stillIso, type: u32, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let m = enrich(curated, proposal);
+        let iso = &m.properties["0xd02a"];
+        assert_eq!(iso.name, "stillIso");
+        assert_eq!(iso.value_profiles.len(), 1);
+        assert!(iso.evidence.iter().any(|e| e == "valueCapability"));
     }
 
     #[test]

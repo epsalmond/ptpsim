@@ -3,10 +3,11 @@
 #   cargo run -p camera-config --bin camera-config-generate -- \
 #     --enrich packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml \
 #     packages/camera-config-data/fuji/gfx100ii/evidence/probe/*.jsonl \
-#     packages/camera-config-data/fuji/gfx100ii/evidence/labels/*.jsonl
+#     packages/camera-config-data/fuji/gfx100ii/evidence/labels/*.jsonl \
+#     packages/camera-config-data/fuji/gfx100ii/evidence/value-profiles/*.jsonl
 #
 # = curated gfx100ii.yaml (connections/modes/entries/establishment + curated names,
-#   labels, gating) ENRICHED with active-probe evidence (props/descriptors/ops).
+#   labels, value profiles, gating) ENRICHED with active-probe evidence (props/descriptors/ops).
 # Mode-naming convention applied; standard PTP codes auto-named. Remaining curation:
 # ~306 vendor raw_0x props carry camera-sourced descriptors but still need names/labels.
 schema: camera-config/v1
@@ -42,6 +43,10 @@ evidence:
     kind: doc
     path: evidence/IMAGE_TRANSFER_FW230.md
     date: ''
+  docIsoModel20260707:
+    kind: wire-capture
+
+    date: 2026-07-07
   docLargeMovObjectInfo:
     kind: wire-capture
 
@@ -76,6 +81,10 @@ evidence:
     date: 2026-05-26
   staticRawStudio:
     path: evidence/RAW_CONVERSION.md
+    date: ''
+  valueCapability:
+    kind: body-capability
+    path: evidence/value-profiles/
     date: ''
   wirePCSSShootDownload20260523:
     kind: wire-capture
@@ -1838,16 +1847,245 @@ properties:
       raw: 6400
     - label: '12800'
       raw: 12800
+    - label: '25600'
+      raw: 1073767424
+    - label: '102400'
+      raw: 1073844224
+    valueProfiles:
+    - connection: app
+      mode: shooting/stills
+      rows:
+      - label: '80'
+        raw: 80
+        legal: true
+      - label: '100'
+        raw: 100
+        legal: true
+      - label: '125'
+        raw: 125
+        legal: true
+      - label: '160'
+        raw: 160
+        legal: true
+      - label: '200'
+        raw: 200
+        legal: true
+      - label: '250'
+        raw: 250
+        legal: true
+      - label: '320'
+        raw: 320
+        legal: true
+      - label: '400'
+        raw: 400
+        legal: true
+      - label: '500'
+        raw: 500
+        legal: true
+      - label: '640'
+        raw: 640
+        legal: true
+      - label: '800'
+        raw: 800
+        legal: true
+      - label: '1000'
+        raw: 1000
+        legal: true
+      - label: '1250'
+        raw: 1250
+        legal: true
+      - label: '1600'
+        raw: 1600
+        legal: true
+      - label: '2000'
+        raw: 2000
+        legal: true
+      - label: '2500'
+        raw: 2500
+        legal: true
+      - label: '3200'
+        raw: 3200
+        legal: true
+      - label: '4000'
+        raw: 4000
+        legal: true
+      - label: '5000'
+        raw: 5000
+        legal: true
+      - label: '6400'
+        raw: 6400
+        legal: true
+      - label: '8000'
+        raw: 8000
+        legal: true
+      - label: '10000'
+        raw: 10000
+        legal: true
+      - label: '12800'
+        raw: 12800
+        legal: true
+      - label: AUTO 200
+        raw: 2147483848
+        legal: true
+      - label: AUTO 250
+        raw: 2147483898
+        legal: true
+      - label: AUTO 320
+        raw: 2147483968
+        legal: true
+      - label: AUTO 400
+        raw: 2147484048
+        legal: true
+      - label: AUTO 500
+        raw: 2147484148
+        legal: true
+      - label: AUTO 640
+        raw: 2147484288
+        legal: true
+      - label: AUTO 800
+        raw: 2147484448
+        legal: true
+      - label: AUTO 1000
+        raw: 2147484648
+        legal: true
+      - label: AUTO 1250
+        raw: 2147484898
+        legal: true
+      - label: AUTO 1600
+        raw: 2147485248
+        legal: true
+      - label: AUTO 2000
+        raw: 2147485648
+        legal: true
+      - label: AUTO 2500
+        raw: 2147486148
+        legal: true
+      - label: AUTO 3200
+        raw: 2147486848
+        legal: true
+      - label: AUTO 4000
+        raw: 2147487648
+        legal: true
+      - label: AUTO 5000
+        raw: 2147488648
+        legal: true
+      - label: AUTO 6400
+        raw: 2147490048
+        legal: true
+      - label: AUTO 8000
+        raw: 2147491648
+        legal: true
+      - label: AUTO 10000
+        raw: 2147493648
+        legal: true
+      - label: AUTO 12800
+        raw: 2147496448
+        legal: true
+      - label: '25600'
+        raw: 1073767424
+        legal: true
+        aliases:
+        - 25600
+      - label: '102400'
+        raw: 1073844224
+        legal: true
+        aliases:
+        - 102400
+      - label: '50'
+        raw: 50
+        legal: false
+        writeStoreRaw: 80
+      - label: '60'
+        raw: 60
+        legal: false
+        writeStoreRaw: 80
+      - label: '64'
+        raw: 64
+        legal: false
+        writeStoreRaw: 80
+      - label: AUTO 50
+        raw: 2147483698
+        legal: false
+        writeStoreRaw: 2147483848
+      - label: AUTO 60
+        raw: 2147483708
+        legal: false
+        writeStoreRaw: 2147483848
+      - label: AUTO 64
+        raw: 2147483712
+        legal: false
+        writeStoreRaw: 2147483848
+      - label: AUTO 80
+        raw: 2147483728
+        legal: false
+        writeStoreRaw: 2147483848
+      - label: AUTO 100
+        raw: 2147483748
+        legal: false
+        writeStoreRaw: 2147483848
+      - label: AUTO 125
+        raw: 2147483773
+        legal: false
+        writeStoreRaw: 2147483848
+      - label: AUTO 160
+        raw: 2147483808
+        legal: false
+        writeStoreRaw: 2147483848
+      - label: AUTO 16000
+        raw: 2147499648
+        legal: false
+        writeStoreRaw: 2147496448
+      - label: AUTO 20000
+        raw: 2147503648
+        legal: false
+        writeStoreRaw: 2147496448
+      - label: AUTO 25600
+        raw: 2147509248
+        legal: false
+        writeStoreRaw: 2147496448
+      - label: AUTO 32000
+        raw: 2147515648
+        legal: false
+        writeStoreRaw: 2147496448
+      - label: AUTO 40000
+        raw: 2147523648
+        legal: false
+        writeStoreRaw: 2147496448
+      - label: AUTO 51200
+        raw: 2147534848
+        legal: false
+        writeStoreRaw: 2147496448
+      - label: AUTO 64000
+        raw: 2147547648
+        legal: false
+        writeStoreRaw: 2147496448
+      - label: AUTO 80000
+        raw: 2147563648
+        legal: false
+        writeStoreRaw: 2147496448
+      - label: AUTO 102400
+        raw: 2147586048
+        legal: false
+        writeStoreRaw: 2147496448
+      evidence:
+      - docIsoModel20260707
+      - valueCapability
     valueEncoding:
       sentinel:
         mask: 2147483648
         meaning: autoCeiling
         labelPrefix: AUTO
+      masks:
+      - mask: 1073741824
+        meaning: extendedSensitivity
+        labelPrefix: EXT
     evidence:
     - iosLiveControls
     - docLiveControls
+    - docIsoModel20260707
     - activeProbe
     - appCatalog
+    - valueCapability
   '0xd02b':
     name: movieIso
     ptpName: MovieISO
@@ -3941,8 +4179,8 @@ properties:
     evidence:
     - activeProbe
   '0xd242':
-    name: raw_0xd242
-    ptpName: null
+    name: movieSensitivity
+    ptpName: MovieISO
     type: i32
     access: readWrite
     descriptor:
@@ -3976,7 +4214,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - docIsoModel20260707
   '0xd243':
     name: raw_0xd243
     ptpName: null

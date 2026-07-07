@@ -19,6 +19,14 @@ fn store() -> std::sync::Arc<ConfigStore> {
     .expect("bundle loads")
 }
 
+fn consolidated_store() -> std::sync::Arc<ConfigStore> {
+    ConfigStore::from_bundle(
+        data("fuji/gfx100ii/gfx100ii.consolidated.yaml"),
+        Some(data("fuji/fuji.yaml")),
+    )
+    .expect("consolidated bundle loads")
+}
+
 fn ids(cs: &[ConnectionInfo]) -> Vec<&str> {
     cs.iter().map(|c| c.id.as_str()).collect()
 }
@@ -293,7 +301,7 @@ fn property_value_width_resolves_from_manifest_type() {
 
 #[test]
 fn property_value_codec_crosses_the_ffi_seam() {
-    let s = store();
+    let s = consolidated_store();
     let decoded = s
         .decode_property(0xd02a, 0x8000_1900)
         .expect("auto ISO decodes through the manifest");
@@ -313,11 +321,30 @@ fn property_value_codec_crosses_the_ffi_seam() {
     assert!(iso.value_rows.iter().any(|row| row.label == "6400"));
     let sentinel = iso
         .value_encoding
-        .and_then(|enc| enc.sentinel)
+        .as_ref()
+        .and_then(|enc| enc.sentinel.as_ref())
         .expect("sentinel metadata crosses the seam");
     assert_eq!(sentinel.mask, 0x8000_0000);
     assert_eq!(sentinel.meaning.as_deref(), Some("autoCeiling"));
     assert_eq!(sentinel.label_prefix, "AUTO");
+    let encoding = iso
+        .value_encoding
+        .expect("encoding metadata crosses the seam");
+    assert!(
+        encoding.masks.iter().any(|mask| mask.mask == 0x4000_0000
+            && mask.meaning.as_deref() == Some("extendedSensitivity")),
+        "extended-sensitivity mask must cross the FFI seam"
+    );
+    let profile = iso
+        .value_profiles
+        .iter()
+        .find(|profile| profile.connection.as_deref() == Some("app"))
+        .expect("still ISO app value profile crosses the seam");
+    assert!(profile.rows.iter().any(|row| row.raw == 80 && row.legal));
+    assert!(profile
+        .rows
+        .iter()
+        .any(|row| row.raw == 50 && !row.legal && row.write_store_raw == Some(80)));
 }
 
 #[test]

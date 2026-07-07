@@ -41,7 +41,7 @@ const OVERRIDES: &[(&str, &str)] = &[
     ),
     (
         "0xd02b",
-        "u32 movie ISO sharing 0xd02a's encoding+labels despite degenerate u16 stub descriptor (client application movieISO uint32/isoOptions, FUJI_PTP_PROP_REFERENCE D02B)",
+        "u32 movie live-view ISO despite degenerate u16 stub descriptor; shares encoding shape with 0xd02a but not still-mode legality",
     ),
     (
         "0xd240",

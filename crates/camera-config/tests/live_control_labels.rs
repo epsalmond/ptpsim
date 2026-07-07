@@ -37,20 +37,25 @@ fn iso_labels_resolve_as_u32_literals() {
 }
 
 #[test]
-fn movie_iso_mirrors_still_iso_as_u32_literals() {
+fn movie_iso_uses_the_same_u32_encoding_shape_but_separate_legality() {
     let m = consolidated();
-    // 0xD02B reuses 0xD02A's u32 table verbatim (client application movieISO -> isoOptions;
-    // wire ref "same value seen") — #106.
+    // 0xD02B uses the same u32 raw encoding shape. Its legal list is not
+    // inherited from 0xD02A; issue #195 keeps per-body legality scoped per prop.
     assert_eq!(m.value_label(0xd02b, 6400), Some("6400"));
     assert_eq!(m.value_label(0xd02b, 102400), Some("102400")); // overflows u16
+    assert!(
+        m.value_profile_for(0xd02b, "app", "shooting/video")
+            .is_none(),
+        "movie live-view ISO must not inherit still live-view legality"
+    );
 }
 
 #[test]
 fn iso_auto_ceiling_sentinels_label_as_auto_with_the_ceiling() {
     let m = consolidated();
     // 0x80000000 | ceiling is the auto form, distinguished from the manual literal
-    // that shares the low bytes (#107). Both still (0xD02A) and movie (0xD02B) ISO
-    // carry it. 0x80003200 = auto, ceiling 12800; 0x80001900 = auto, ceiling 6400.
+    // that shares the low bytes (#107). 0x80003200 = auto, ceiling 12800;
+    // 0x80001900 = auto, ceiling 6400.
     assert_eq!(m.value_label(0xd02a, 0x8000_3200), Some("AUTO 12800"));
     assert_eq!(m.value_label(0xd02b, 0x8000_1900), Some("AUTO 6400"));
 }
@@ -76,6 +81,23 @@ fn still_iso_exposes_value_rows_and_generic_sentinel_metadata() {
         m.encode_property_raw(0xd02a, "AUTO 6400"),
         Some(0x8000_1900)
     );
+    assert!(p
+        .value_encoding
+        .as_ref()
+        .expect("encoding")
+        .masks
+        .iter()
+        .any(|mask| mask.mask == 0x4000_0000
+            && mask.meaning.as_deref() == Some("extendedSensitivity")));
+    assert_eq!(m.value_label(0xd02a, 0x4000_6400), Some("25600"));
+    let profile = m
+        .value_profile_for(0xd02a, "app", "shooting/stills")
+        .expect("still ISO profile");
+    assert!(profile.rows.iter().any(|row| row.raw == 50 && !row.legal));
+    assert!(profile
+        .rows
+        .iter()
+        .any(|row| row.raw == 0x4000_6400 && row.aliases.contains(&25600)));
 }
 
 #[test]

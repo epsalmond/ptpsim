@@ -2,7 +2,8 @@
 //! parsed `u16` code so callers don't deal in hex strings.
 
 use crate::model::{
-    parse_hex_code, Action, ActionVerb, CameraManifest, Control, Operation, Property, Workflow,
+    parse_hex_code, Action, ActionVerb, CameraManifest, Control, Operation, Property,
+    PropertyValueProfile, PropertyValueProfileRow, SentinelMask, Workflow,
 };
 use crate::predicate::PropView;
 use crate::version::VersionScheme;
@@ -98,14 +99,16 @@ impl CameraManifest {
         if let Some(label) = p.static_value_label(raw) {
             return Some(label.to_string());
         }
-        let sentinel = p.value_encoding.as_ref()?.sentinel.as_ref()?;
-        let equals = sentinel.equals.unwrap_or(sentinel.mask);
-        if raw & sentinel.mask != equals {
-            return None;
+        for sentinel in p.encoding_masks() {
+            let equals = sentinel.equals.unwrap_or(sentinel.mask);
+            if raw & sentinel.mask != equals {
+                continue;
+            }
+            let base_raw = raw & !sentinel.mask;
+            let base_label = p.static_value_label(base_raw)?;
+            return Some(format!("{} {base_label}", sentinel.label_prefix));
         }
-        let base_raw = raw & !sentinel.mask;
-        let base_label = p.static_value_label(base_raw)?;
-        Some(format!("{} {base_label}", sentinel.label_prefix))
+        None
     }
 
     /// Encode a presentation label to its raw property value. Exact manifest
@@ -116,11 +119,36 @@ impl CameraManifest {
         if let Some(raw) = p.raw_for_label(label) {
             return Some(raw);
         }
-        let sentinel = p.value_encoding.as_ref()?.sentinel.as_ref()?;
-        let prefix = sentinel.label_prefix.as_str();
-        let base_label = label.strip_prefix(prefix)?.strip_prefix(' ')?;
-        let base_raw = p.raw_for_label(base_label)?;
-        Some(base_raw | sentinel.equals.unwrap_or(sentinel.mask))
+        let masks = p.encoding_masks();
+        for sentinel in &masks {
+            let prefix = sentinel.label_prefix.as_str();
+            let Some(base_label) = label.strip_prefix(prefix).and_then(|s| s.strip_prefix(' '))
+            else {
+                continue;
+            };
+            let base_raw = p.raw_for_label(base_label)?;
+            if masks
+                .iter()
+                .any(|mask| base_raw & mask.mask == mask.equals.unwrap_or(mask.mask))
+            {
+                continue;
+            }
+            return Some(base_raw | sentinel.equals.unwrap_or(sentinel.mask));
+        }
+        None
+    }
+
+    /// Resolve the scoped value profile for a property. Exact connection and
+    /// mode matches win; an empty axis is a wildcard, and a profile mode covers
+    /// child mode paths the same way operation gates do.
+    pub fn value_profile_for(
+        &self,
+        property_code: u16,
+        connection: &str,
+        mode: &str,
+    ) -> Option<&PropertyValueProfile> {
+        self.property(property_code)
+            .and_then(|p| p.value_profile_for(connection, mode))
     }
 
     pub fn workflow(&self, id: &str) -> Option<&Workflow> {
@@ -140,6 +168,54 @@ impl CameraManifest {
 }
 
 impl Property {
+    pub fn value_profile_for(&self, connection: &str, mode: &str) -> Option<&PropertyValueProfile> {
+        self.value_profiles
+            .iter()
+            .filter(|profile| {
+                profile.connection.as_ref().is_none_or(|c| c == connection)
+                    && profile
+                        .mode
+                        .as_ref()
+                        .is_none_or(|m| mode == m || mode.starts_with(&format!("{m}/")))
+            })
+            .max_by_key(|profile| {
+                (
+                    profile.connection.is_some(),
+                    profile.mode.as_ref().map(|m| m.len()).unwrap_or(0),
+                )
+            })
+    }
+
+    pub fn profile_row_for_write<'a>(
+        &'a self,
+        profile: &'a PropertyValueProfile,
+        raw: i64,
+    ) -> Option<&'a PropertyValueProfileRow> {
+        profile
+            .rows
+            .iter()
+            .find(|row| row.raw == raw || row.aliases.contains(&raw))
+    }
+
+    pub fn encoding_masks(&self) -> Vec<&SentinelMask> {
+        let Some(enc) = &self.value_encoding else {
+            return Vec::new();
+        };
+        let mut masks = Vec::new();
+        if let Some(sentinel) = &enc.sentinel {
+            masks.push(sentinel);
+        }
+        for mask in &enc.masks {
+            if !masks
+                .iter()
+                .any(|existing| existing.mask == mask.mask && existing.equals == mask.equals)
+            {
+                masks.push(mask);
+            }
+        }
+        masks
+    }
+
     fn static_value_label(&self, value: i64) -> Option<&str> {
         self.value_rows
             .iter()

@@ -25,8 +25,9 @@ pub use model::{
     Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
     LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, OpEffect,
     Operation, Payload, PayloadForm, PostviewEvent, Property, PropertyValueEncoding,
-    PropertyValueRow, RecordLayout, SentinelMask, ShutterRecipe, SocketBindings, SocketRole, Step,
-    StepParam, TransportClose, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, RecordLayout, SentinelMask,
+    ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, TransportClose, ValuePolicy,
+    ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
