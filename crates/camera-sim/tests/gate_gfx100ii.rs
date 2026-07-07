@@ -8,7 +8,7 @@ use camera_config::{
     ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam,
 };
 use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
-use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Fault, Reply};
+use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Fault, Phase, Reply};
 use ptp_core::{DeviceInfo, OperationRequest, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -336,15 +336,25 @@ fn af_lock_round_trips_from_the_consolidated_manifest() {
 #[test]
 fn reopen_session_is_refused_over_a_volatile_listener_connection() {
     // #103 negative oracle: the GFX100 II `app` Wi-Fi-AP path tears down the :55740
-    // command-port listener on the transport-close, so a reopenSession's reconnect
-    // is refused — the reference executor must error, matching the device.
+    // command-port listener on a live-view transport-close, so a reopenSession's
+    // reconnect from active streaming is refused — the reference executor must
+    // error, matching the device.
+    let m = consolidated();
+    let live = m.connections["app"]
+        .entries
+        .iter()
+        .find(|e| e.to == "shooting/stills" && e.from.is_none())
+        .expect("cold live-view entry");
     let reopen = vec![Step {
         reopen_session: Some(ReopenSession {}),
         ..Default::default()
     }];
 
-    // Over `app` (commandListenerVolatile: true) → refused.
+    // Over `app` (commandListenerVolatile: true) from streaming → refused.
     let mut e = engine();
+    walk_ptpip_in(&mut e, &live.steps, &BTreeMap::new(), Some("app"))
+        .expect("live-view entry reaches streaming");
+    assert!(matches!(e.phase(), Phase::Streaming));
     let err = walk_ptpip_in(&mut e, &reopen, &BTreeMap::new(), Some("app")).unwrap_err();
     assert!(
         err.message.contains("refused the reconnect"),
@@ -388,6 +398,84 @@ fn live_view_to_image_transfer_switches_in_session() {
     let params = BTreeMap::from([("openCaptureTxId".to_string(), "1".to_string())]);
     walk_ptpip_in(&mut e, &steps, &params, Some("app"))
         .expect("in-session live-view → image-transfer flow runs end-to-end");
+}
+
+#[test]
+fn image_transfer_to_live_view_reopens_then_streams() {
+    // #180 reverse edge: image-transfer has no open-capture stream, so the
+    // reference-app Get→Take path can re-establish the PTP/IP session and then
+    // bring live-view back up.
+    let m = consolidated();
+    let app = &m.connections["app"];
+    let xfer = app
+        .entries
+        .iter()
+        .find(|e| e.to == "image-transfer" && e.from.is_none())
+        .expect("cold image-transfer entry");
+    let live = app
+        .entries
+        .iter()
+        .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
+        .expect("image-transfer → live-view entry");
+    assert!(
+        live.steps[0].reopen_session.is_some(),
+        "Get→Take begins with the reconnect observed in reference app"
+    );
+
+    let mut e = engine();
+    walk_ptpip_in(&mut e, &xfer.steps, &BTreeMap::new(), Some("app"))
+        .expect("cold image-transfer entry runs");
+    assert!(matches!(e.phase(), Phase::ImageImport));
+
+    walk_ptpip_in(&mut e, &live.steps, &BTreeMap::new(), Some("app"))
+        .expect("image-transfer → live-view edge runs");
+    assert!(matches!(e.phase(), Phase::Streaming));
+}
+
+#[test]
+fn d246_stills_video_selector_keeps_live_view_streaming() {
+    // #180: the in-shooter stills/video selector is a property write, not a
+    // movie-record command, import bootstrap, reconnect, or live-view restart.
+    let m = consolidated();
+    let app = &m.connections["app"];
+    let live = app
+        .entries
+        .iter()
+        .find(|e| e.to == "shooting/stills" && e.from.is_none())
+        .expect("cold live-view entry");
+    let to_video = app
+        .entries
+        .iter()
+        .find(|e| e.to == "shooting/video" && e.from.as_deref() == Some("shooting/stills"))
+        .expect("stills → video entry");
+    let to_stills = app
+        .entries
+        .iter()
+        .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("shooting/video"))
+        .expect("video → stills entry");
+
+    let mut e = engine();
+    walk_ptpip_in(&mut e, &live.steps, &BTreeMap::new(), Some("app"))
+        .expect("live-view entry reaches streaming");
+    assert!(matches!(e.phase(), Phase::Streaming));
+
+    walk_ptpip_in(&mut e, &to_video.steps, &BTreeMap::new(), Some("app"))
+        .expect("D246 stills→video selector runs");
+    assert!(matches!(e.phase(), Phase::Streaming));
+    assert_eq!(
+        data_of(e.on_operation(&req(0x1015, 100, vec![0xd246]), None)),
+        vec![1],
+        "D246=1 after selecting video"
+    );
+
+    walk_ptpip_in(&mut e, &to_stills.steps, &BTreeMap::new(), Some("app"))
+        .expect("D246 video→stills selector runs");
+    assert!(matches!(e.phase(), Phase::Streaming));
+    assert_eq!(
+        data_of(e.on_operation(&req(0x1015, 101, vec![0xd246]), None)),
+        vec![0],
+        "D246=0 after selecting stills"
+    );
 }
 
 /// An engine whose card holds `count` small JPGs (each one 12 MiB chunk).

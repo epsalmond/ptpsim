@@ -700,6 +700,7 @@ operations:
     property: null
     modes:
     - shooting/stills
+    - shooting/video
     connections:
     - app
     requires: null
@@ -4031,21 +4032,19 @@ properties:
   '0xd246':
     name: appInShooterStillsVideo
     ptpName: null
-    type: u16
+    type: u8
     access: readWrite
+    initialValue: 0
     descriptor:
       form: enum
       values:
-      - 2
-      - 5
-      - 7
-      - 8
-      - 9
-      - 11
-      - 12
-      source: camera
+      - 0
+      - 1
+      source: null
     controls: {}
-    labels: {}
+    labels:
+      '0': stills
+      '1': video
     evidence:
     - docFujiPtpPropReference
   '0xd247':
@@ -6270,7 +6269,7 @@ properties:
   '0xdf2a':
     name: liveDf2a
     ptpName: null
-    type: u16
+    type: u32
     access: readWrite
     descriptor: null
     controls: {}
@@ -6464,6 +6463,7 @@ connections:
       when: before-image-transfer-reopen
     modes:
     - shooting/stills
+    - shooting/video
     - image-transfer
     entries:
     - to: shooting/stills
@@ -6520,6 +6520,109 @@ connections:
         reopenSession: null
         closeSession: null
         value: null
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      userInstruction: null
+      requires: null
+    - to: shooting/stills
+      from: image-transfer
+      steps:
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: {}
+        closeSession: null
+        value: null
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: '0xdf00'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 6
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: '0xdf01'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 22
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: '0xdf2a'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 2
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x902b'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: false
+        repeat: 4
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x101c'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      userInstruction: null
+      requires: null
+    - to: shooting/video
+      from: shooting/stills
+      steps:
+      - setProp: '0xd246'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 1
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      userInstruction: null
+      requires: null
+    - to: shooting/stills
+      from: shooting/video
+      steps:
+      - setProp: '0xd246'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 0
         params: []
         tolerant: false
         repeat: 1

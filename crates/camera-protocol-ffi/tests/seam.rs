@@ -412,6 +412,95 @@ fn take_to_get_entry_switches_in_session_without_reopen() {
 }
 
 #[test]
+fn get_to_take_entry_reopens_then_starts_live_view() {
+    let s = store();
+    let plan = s
+        .mode_entry(
+            "app".into(),
+            Some("image-transfer".into()),
+            "shooting/stills".into(),
+        )
+        .expect("from-image-transfer live-view entry");
+    assert!(matches!(
+        plan.steps[0],
+        EntryStep::ReopenSession { tolerant: false }
+    ));
+    assert!(plan.steps.iter().any(|st| matches!(
+        st,
+        EntryStep::SetProp {
+            prop: 0xdf01,
+            value: 0x16,
+            ..
+        }
+    )));
+    assert!(plan.steps.iter().any(|st| matches!(
+        st,
+        EntryStep::SetProp {
+            prop: 0xdf2a,
+            value: 2,
+            ..
+        }
+    )));
+    assert!(plan.steps.iter().any(|st| matches!(
+        st,
+        EntryStep::SendOp {
+            op: 0x902b,
+            repeat: 4,
+            ..
+        }
+    )));
+    assert!(matches!(
+        plan.steps.last(),
+        Some(EntryStep::SendOp { op: 0x101c, .. })
+    ));
+    assert!(
+        !plan
+            .steps
+            .iter()
+            .any(|st| matches!(st, EntryStep::SendOp { op: 0x1018, .. })),
+        "Get→Take must not terminate a non-existent live-view stream"
+    );
+}
+
+#[test]
+fn d246_stills_video_edges_surface_through_ffi() {
+    let s = store();
+    let to_video = s
+        .mode_entry(
+            "app".into(),
+            Some("shooting/stills".into()),
+            "shooting/video".into(),
+        )
+        .expect("stills→video selector");
+    assert_eq!(to_video.steps.len(), 1);
+    assert!(matches!(
+        to_video.steps[0],
+        EntryStep::SetProp {
+            prop: 0xd246,
+            value: 1,
+            tolerant: false,
+        }
+    ));
+
+    let to_stills = s
+        .mode_entry(
+            "app".into(),
+            Some("shooting/video".into()),
+            "shooting/stills".into(),
+        )
+        .expect("video→stills selector");
+    assert_eq!(to_stills.steps.len(), 1);
+    assert!(matches!(
+        to_stills.steps[0],
+        EntryStep::SetProp {
+            prop: 0xd246,
+            value: 0,
+            tolerant: false,
+        }
+    ));
+}
+
+#[test]
 fn read_device_info_action_pairs_with_the_device_info_codec() {
     // The #173 seam: opcode from the manifest action, layout from the FFI
     // codec — the app spells neither.

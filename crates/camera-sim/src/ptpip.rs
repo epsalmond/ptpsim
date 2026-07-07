@@ -26,7 +26,7 @@ use ptp_core::dataset::PropValue;
 use ptp_core::{ObjectInfo, OperationRequest, Reader, Writer};
 
 use crate::engine::{Engine, Reply};
-use crate::state::{datatype_of, typed};
+use crate::state::{datatype_of, typed, Phase};
 
 /// Reference-executor bound on an `awaitUntil` loop: the deterministic analogue
 /// of the dispatcher's wall-clock `timeout_ms` (§11.15). A condition that never
@@ -92,10 +92,10 @@ pub fn walk_ptpip(
 }
 
 /// Like [`walk_ptpip`], but bound to a named connection so its traits gate the
-/// walk. Specifically `command_listener_volatile` (#103): a `reopenSession` over
-/// a connection whose command-port listener does not survive a transport-close is
-/// refused — matching the GFX100 II `app` Wi-Fi-AP path, where the in-session
-/// switch is the only thing the camera accepts.
+/// walk. Specifically `command_listener_volatile` (#103): a `reopenSession`
+/// from active live-view is refused because the camera tears down the command
+/// listener on that transport-close. The image-import reverse edge can still
+/// reconnect because no open-capture stream owns the command listener there.
 pub fn walk_ptpip_in(
     engine: &mut Engine,
     steps: &[Step],
@@ -105,6 +105,7 @@ pub fn walk_ptpip_in(
     let command_listener_volatile = connection
         .and_then(|id| engine.manifest().connections.get(id))
         .is_some_and(|c| c.command_listener_volatile);
+    let session_already_open = engine.state().session_open;
     let mut ctx = Ctx {
         engine,
         observed: PropView::new(),
@@ -117,11 +118,13 @@ pub fn walk_ptpip_in(
         command_listener_volatile,
     };
     // Session bring-up (idempotent): the responder rejects most ops before it.
-    ctx.simple_op(op::OPEN_SESSION, vec![1], false)
-        .map_err(|message| PtpIpError {
-            step: "openSession".into(),
-            message,
-        })?;
+    if !session_already_open {
+        ctx.simple_op(op::OPEN_SESSION, vec![1], false)
+            .map_err(|message| PtpIpError {
+                step: "openSession".into(),
+                message,
+            })?;
+    }
     ctx.walk_steps(steps, "steps")?;
     Ok(PtpIpOutcome {
         observed: ctx.observed,
@@ -148,8 +151,8 @@ struct Ctx<'a> {
     await_iterations: Vec<usize>,
     loop_iterations: Vec<usize>,
     /// The active connection's `command_listener_volatile` trait (#103): when set,
-    /// a `reopenSession` is refused (the camera tears the command-port listener
-    /// down on a transport-close, so the reconnect gets "Connection refused").
+    /// a live-view `reopenSession` is refused because that transport-close tears
+    /// down the command-port listener, so the reconnect gets "Connection refused".
     command_listener_volatile: bool,
 }
 
@@ -221,12 +224,16 @@ impl Ctx<'_> {
             }
             check_ok(&reply, code, step.tolerant).map_err(err)
         } else if step.reopen_session.is_some() {
-            if self.command_listener_volatile {
+            if self.command_listener_volatile
+                && matches!(self.engine.phase(), Phase::LiveView | Phase::Streaming)
+            {
                 // The camera tore down the command-port listener on the transport-
-                // close, so the reconnect is refused — switch mode in-session (#103).
+                // close while live-view was active, so the reconnect is refused —
+                // switch live-view → image-transfer in-session (#103).
                 return Err(err(
                     "reopenSession: camera refused the reconnect — the command-port \
-                     listener does not survive a transport-close on this connection (#103)"
+                     listener does not survive a live-view transport-close on this \
+                     connection (#103)"
                         .into(),
                 ));
             }
