@@ -51,6 +51,9 @@ pub struct Config {
     pub knock_bind: Option<SocketAddr>,
     /// Number of PCSS InitFail packets to emit before InitCommandAck.
     pub pcss_init_fails: u32,
+    /// When nonzero, standard object queues start empty and enqueue this many
+    /// media handles after each manifest shutter action with imagesPushed.
+    pub pcss_shutter_enqueue_count: u32,
     pub control_bind: SocketAddr,
     /// Directory of JPEG frames to loop on the live-view socket (sorted by
     /// filename, gated on Phase::Streaming). None / empty dir => no frames.
@@ -222,6 +225,9 @@ impl Server {
         };
         let mut engine_value = Engine::new(manifest, store);
         engine_value.bind_connection(&config.connection);
+        engine_value
+            .configure_standard_object_queue(&config.connection, config.pcss_shutter_enqueue_count)
+            .map_err(invalid_config)?;
         let engine = Arc::new(Mutex::new(engine_value));
         let frame_bytes = load_liveview_frames(config.liveview_dir.as_deref())?;
         let frame_count = frame_bytes.len();

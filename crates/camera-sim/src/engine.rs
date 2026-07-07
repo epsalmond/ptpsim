@@ -3,8 +3,10 @@
 //! exist, which properties have which forms, and which workflow they belong to
 //! are all manifest data. The handlers here are generic PTP semantics.
 
-use camera_config::model::{ScalarEncoding, Step, StepParam};
-use camera_config::{parse_hex_code, CameraManifest};
+use std::collections::BTreeSet;
+
+use camera_config::model::{Action, ScalarEncoding, Step, StepParam};
+use camera_config::{parse_hex_code, ActionVerb, CameraManifest};
 use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
@@ -21,6 +23,71 @@ const STORAGE_ID: u32 = 0x0001_0001;
 struct GateSequence {
     name: String,
     steps: Vec<GateMatcher>,
+}
+
+#[derive(Debug, Clone)]
+struct TransferQueue {
+    handles: Vec<u32>,
+    available: BTreeSet<u32>,
+    next_index: usize,
+    enqueue_per_shutter: u32,
+    shutter_sequence: Option<Vec<GateMatcher>>,
+    shutter_progress: usize,
+}
+
+impl TransferQueue {
+    fn startup_seeded(handles: Vec<u32>) -> Self {
+        let available = handles.iter().copied().collect();
+        TransferQueue {
+            next_index: handles.len(),
+            handles,
+            available,
+            enqueue_per_shutter: 0,
+            shutter_sequence: None,
+            shutter_progress: 0,
+        }
+    }
+
+    fn shutter_seeded(
+        handles: Vec<u32>,
+        enqueue_per_shutter: u32,
+        shutter_sequence: Vec<GateMatcher>,
+    ) -> Self {
+        TransferQueue {
+            handles,
+            available: BTreeSet::new(),
+            next_index: 0,
+            enqueue_per_shutter,
+            shutter_sequence: Some(shutter_sequence),
+            shutter_progress: 0,
+        }
+    }
+
+    fn handles(&self) -> Vec<u32> {
+        self.handles
+            .iter()
+            .copied()
+            .filter(|handle| self.available.contains(handle))
+            .collect()
+    }
+
+    fn contains(&self, handle: u32) -> bool {
+        self.available.contains(&handle)
+    }
+
+    fn drain(&mut self, handle: u32) -> bool {
+        self.available.remove(&handle)
+    }
+
+    fn enqueue_next(&mut self) {
+        for _ in 0..self.enqueue_per_shutter {
+            let Some(handle) = self.handles.get(self.next_index).copied() else {
+                break;
+            };
+            self.available.insert(handle);
+            self.next_index += 1;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +125,7 @@ pub struct Engine {
     store: MediaStore,
     state: CameraState,
     connection: String,
+    transfer_queue: Option<TransferQueue>,
     faults: FaultSet,
     /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
     /// arms the session that function-launch brings up. Default armed (standalone).
@@ -76,6 +144,7 @@ impl Engine {
             store,
             state,
             connection: Self::DEFAULT_CONNECTION.to_string(),
+            transfer_queue: None,
             faults: FaultSet::default(),
             link: crate::link::SharedLink::default(),
         }
@@ -127,6 +196,77 @@ impl Engine {
 
     pub fn store(&self) -> &MediaStore {
         &self.store
+    }
+
+    /// Enable standard PTP object-queue behavior for a connection whose manifest
+    /// enumerates with `0x1007`. `shutter_enqueue_count == 0` seeds all media at
+    /// startup; nonzero starts empty and enqueues after the manifest shutter
+    /// action's literal wire sequence completes.
+    pub fn configure_standard_object_queue(
+        &mut self,
+        connection_id: &str,
+        shutter_enqueue_count: u32,
+    ) -> Result<(), String> {
+        let uses_standard_enumeration = {
+            let Some(connection) = self.manifest.connections.get(connection_id) else {
+                return Err(format!("connection '{connection_id}' is not present"));
+            };
+            connection
+                .actions
+                .get(&ActionVerb::EnumerateObjects)
+                .is_some_and(|action| action_sends_op(action, op::GET_OBJECT_HANDLES))
+        };
+        if !uses_standard_enumeration {
+            if shutter_enqueue_count == 0 {
+                return Ok(());
+            }
+            return Err(format!(
+                "selected connection '{connection_id}' does not enumerate objects with 0x1007"
+            ));
+        }
+
+        let handles = self.store_file_handles();
+        self.transfer_queue = Some(if shutter_enqueue_count == 0 {
+            TransferQueue::startup_seeded(handles)
+        } else {
+            let (max, steps) = {
+                let connection = self
+                    .manifest
+                    .connections
+                    .get(connection_id)
+                    .expect("connection checked above");
+                let shutter = connection
+                    .actions
+                    .get(&ActionVerb::Shutter)
+                    .ok_or_else(|| {
+                        format!("selected connection '{connection_id}' has no shutter action")
+                    })?;
+                let max = shutter
+                    .triggers
+                    .iter()
+                    .filter_map(|effect| effect.images_pushed)
+                    .map(|images| images.max)
+                    .max()
+                    .ok_or_else(|| {
+                        format!(
+                            "selected connection '{connection_id}' shutter action has no imagesPushed trigger"
+                        )
+                    })?;
+                (max, shutter.steps.clone())
+            };
+            if shutter_enqueue_count > max {
+                return Err(format!(
+                    "--pcss-shutter-enqueue-count {shutter_enqueue_count} exceeds selected connection '{connection_id}' imagesPushed max {max}"
+                ));
+            }
+            let shutter_sequence = matcher_sequence_for_steps(&steps).ok_or_else(|| {
+                format!(
+                    "selected connection '{connection_id}' shutter action cannot be matched as literal setProp/sendOp steps"
+                )
+            })?;
+            TransferQueue::shutter_seeded(handles, shutter_enqueue_count, shutter_sequence)
+        });
+        Ok(())
     }
 
     fn ok(tid: u32) -> Reply {
@@ -217,25 +357,37 @@ impl Engine {
                 Self::data(tid, w.into_vec())
             }
             op::GET_OBJECT_HANDLES => {
-                let handles = self.file_handles();
+                let handles = self.enumerated_object_handles();
                 let mut w = Writer::new();
                 w.ptp_array(&handles, |w, v| w.u32(*v));
                 Self::data(tid, w.into_vec())
             }
-            op::GET_OBJECT_INFO => match self.store.object_info(p(0)) {
-                Ok(oi) => {
-                    let mut w = Writer::new();
-                    if oi.encode(&mut w).is_err() {
-                        return Self::err(tid, resp::GENERAL_ERROR);
+            op::GET_OBJECT_INFO => {
+                if !self.object_handle_available(p(0)) {
+                    Self::err(tid, resp::INVALID_OBJECT_HANDLE)
+                } else {
+                    match self.store.object_info(p(0)) {
+                        Ok(oi) => {
+                            let mut w = Writer::new();
+                            if oi.encode(&mut w).is_err() {
+                                return Self::err(tid, resp::GENERAL_ERROR);
+                            }
+                            Self::data(tid, w.into_vec())
+                        }
+                        Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
                     }
-                    Self::data(tid, w.into_vec())
                 }
-                Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
-            },
-            op::GET_THUMB => match self.store.thumbnail(p(0)) {
-                Ok(source) => Self::data_stream(tid, source),
-                Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
-            },
+            }
+            op::GET_THUMB => {
+                if !self.object_handle_available(p(0)) {
+                    Self::err(tid, resp::INVALID_OBJECT_HANDLE)
+                } else {
+                    match self.store.thumbnail(p(0)) {
+                        Ok(source) => Self::data_stream(tid, source),
+                        Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
+                    }
+                }
+            }
             op::GET_PARTIAL_OBJECT => {
                 let offset = (p(1) as u64) | ((p(3) as u64) << 32);
                 match self.store.read_range(p(0), offset, p(2)) {
@@ -247,6 +399,9 @@ impl Engine {
                 }
             }
             op::GET_OBJECT => {
+                if !self.object_handle_available(p(0)) {
+                    return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
+                }
                 // The PTP `ObjectInfo` size field is 32-bit (`SIZE_CEILING`);
                 // this whole-object op is 32-bit-sized, while extension partial
                 // reads can use a separate true-size path. Clamp here so the
@@ -256,6 +411,19 @@ impl Engine {
                 match self.store.read_range(p(0), 0, len) {
                     Ok(source) => Self::data_stream(tid, source),
                     Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
+                }
+            }
+            op::DELETE_OBJECT => {
+                if let Some(queue) = &mut self.transfer_queue {
+                    if queue.drain(p(0)) {
+                        Self::ok(tid)
+                    } else {
+                        Self::err(tid, resp::INVALID_OBJECT_HANDLE)
+                    }
+                } else if self.store.object_info(p(0)).is_ok() {
+                    Self::ok(tid)
+                } else {
+                    Self::err(tid, resp::INVALID_OBJECT_HANDLE)
                 }
             }
             op::GET_DEVICE_PROP_DESC => {
@@ -313,12 +481,12 @@ impl Engine {
                     // real handles (same encoding as GetObjectHandles 0x1007) so
                     // the property-driven enumeration is believable, not a default.
                     let mut w = Writer::new();
-                    w.ptp_array(&self.file_handles(), |w, v| w.u32(*v));
+                    w.ptp_array(&self.store_file_handles(), |w, v| w.u32(*v));
                     Self::data(tid, w.into_vec())
                 } else if code == 0xd620 {
                     // The object count that sizes the 0xd621 list (declared u32).
                     let mut w = Writer::new();
-                    w.u32(self.file_handles().len() as u32);
+                    w.u32(self.store_file_handles().len() as u32);
                     Self::data(tid, w.into_vec())
                 } else {
                     // A manifest-declared prop always returns a value (current, else
@@ -362,6 +530,7 @@ impl Engine {
             self.advance_sequence_gates(req, data_in);
             self.apply_op_effects(req.code, &req.params);
             self.apply_op_emits(req.code);
+            self.advance_transfer_queue(req, data_in);
         }
         reply
     }
@@ -431,35 +600,45 @@ impl Engine {
         req: &OperationRequest,
         data_in: Option<&[u8]>,
     ) -> bool {
-        match matcher {
-            GateMatcher::GetProp { prop } => {
-                req.code == op::GET_DEVICE_PROP_VALUE && req.params.first() == Some(&(*prop as u32))
-            }
-            GateMatcher::SetProp { prop, value } => {
-                if req.code != op::SET_DEVICE_PROP_VALUE
-                    || req.params.first() != Some(&(*prop as u32))
-                {
-                    return false;
-                }
-                let Some(bytes) = data_in else {
-                    return false;
-                };
-                let Some(expected) = value else {
-                    return true;
-                };
-                let datatype = datatype_of(
-                    self.manifest
-                        .property(*prop)
-                        .and_then(|p| p.ptype.as_deref()),
-                );
-                let mut r = Reader::new(bytes);
-                PropValue::decode(&mut r, datatype)
-                    .ok()
-                    .and_then(|v| value_to_i64(&v))
-                    == Some(*expected)
-            }
-            GateMatcher::SendOp { op, params } => req.code == *op && req.params == *params,
+        gate_match_for_manifest(&self.manifest, matcher, req, data_in)
+    }
+
+    fn advance_transfer_queue(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) {
+        let Some(queue) = &mut self.transfer_queue else {
+            return;
+        };
+        let Some(sequence) = &queue.shutter_sequence else {
+            return;
+        };
+        let progress_match = sequence
+            .get(queue.shutter_progress)
+            .is_some_and(|matcher| gate_match_for_manifest(&self.manifest, matcher, req, data_in));
+        let first_match = sequence
+            .first()
+            .is_some_and(|matcher| gate_match_for_manifest(&self.manifest, matcher, req, data_in));
+        if progress_match {
+            queue.shutter_progress += 1;
+        } else {
+            queue.shutter_progress = usize::from(first_match);
         }
+        if queue.shutter_progress >= sequence.len() {
+            queue.shutter_progress = 0;
+            queue.enqueue_next();
+        }
+    }
+
+    fn object_handle_available(&self, handle: u32) -> bool {
+        self.transfer_queue
+            .as_ref()
+            .map(|queue| queue.contains(handle))
+            .unwrap_or(true)
+    }
+
+    fn enumerated_object_handles(&self) -> Vec<u32> {
+        self.transfer_queue
+            .as_ref()
+            .map(TransferQueue::handles)
+            .unwrap_or_else(|| self.store_file_handles())
     }
 
     fn apply_op_effects(&mut self, code: u16, params: &[u32]) {
@@ -663,7 +842,7 @@ impl Engine {
         crate::state::typed(datatype, store_raw)
     }
 
-    fn file_handles(&self) -> Vec<u32> {
+    fn store_file_handles(&self) -> Vec<u32> {
         use ptp_core::codes::format::ASSOCIATION;
         self.store
             .handles(ObjectQuery::default())
@@ -817,6 +996,50 @@ fn matcher_for_step(step: &Step) -> Option<GateMatcher> {
         });
     }
     None
+}
+
+fn matcher_sequence_for_steps(steps: &[Step]) -> Option<Vec<GateMatcher>> {
+    let sequence: Option<Vec<_>> = steps.iter().map(matcher_for_step).collect();
+    sequence.filter(|sequence| !sequence.is_empty())
+}
+
+fn action_sends_op(action: &Action, code: u16) -> bool {
+    action
+        .steps
+        .iter()
+        .any(|step| step.send_op.as_deref().and_then(parse_hex_code) == Some(code))
+}
+
+fn gate_match_for_manifest(
+    manifest: &CameraManifest,
+    matcher: &GateMatcher,
+    req: &OperationRequest,
+    data_in: Option<&[u8]>,
+) -> bool {
+    match matcher {
+        GateMatcher::GetProp { prop } => {
+            req.code == op::GET_DEVICE_PROP_VALUE && req.params.first() == Some(&(*prop as u32))
+        }
+        GateMatcher::SetProp { prop, value } => {
+            if req.code != op::SET_DEVICE_PROP_VALUE || req.params.first() != Some(&(*prop as u32))
+            {
+                return false;
+            }
+            let Some(bytes) = data_in else {
+                return false;
+            };
+            let Some(expected) = value else {
+                return true;
+            };
+            let datatype = datatype_of(manifest.property(*prop).and_then(|p| p.ptype.as_deref()));
+            let mut r = Reader::new(bytes);
+            PropValue::decode(&mut r, datatype)
+                .ok()
+                .and_then(|v| value_to_i64(&v))
+                == Some(*expected)
+        }
+        GateMatcher::SendOp { op, params } => req.code == *op && req.params == *params,
+    }
 }
 
 /// Whether a reply carries an OK response code (effects arm only on success).

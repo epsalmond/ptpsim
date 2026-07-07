@@ -50,6 +50,7 @@ EVENT_BIND="${PTPSIM_EVENT_BIND:-$DEFAULT_EVENT_BIND}"
 LIVEVIEW_BIND="${PTPSIM_LIVEVIEW_BIND:-$DEFAULT_LIVEVIEW_BIND}"
 KNOCK_BIND="${PTPSIM_KNOCK_BIND:-$DEFAULT_KNOCK_BIND}"
 PCSS_INIT_FAILS="${PTPSIM_PCSS_INIT_FAILS:-0}"
+PCSS_SHUTTER_ENQUEUE_COUNT="${PTPSIM_PCSS_SHUTTER_ENQUEUE_COUNT:-0}"
 CONTROL_BIND="${PTPSIM_CONTROL_BIND:-127.0.0.1:8080}"
 
 CARGO_PROFILE="${PTPSIM_CARGO_PROFILE:-debug}"  # debug | release
@@ -117,6 +118,9 @@ fi
 if [[ "$PCSS_INIT_FAILS" != "0" ]]; then
   run_args+=(--pcss-init-fails "$PCSS_INIT_FAILS")
 fi
+if [[ "$PCSS_SHUTTER_ENQUEUE_COUNT" != "0" ]]; then
+  run_args+=(--pcss-shutter-enqueue-count "$PCSS_SHUTTER_ENQUEUE_COUNT")
+fi
 if [[ -d "$LIVEVIEW_DIR" ]]; then
   run_args+=(--liveview-dir "$LIVEVIEW_DIR")
 else
@@ -135,6 +139,7 @@ echo "  media-root: $MEDIA_ROOT"
 echo "  control:    $HEALTH_URL"
 [[ -n "$KNOCK_BIND" ]] && echo "  pcss knock: $KNOCK_BIND"
 [[ "$PCSS_INIT_FAILS" != "0" ]] && echo "  init fails: $PCSS_INIT_FAILS"
+[[ "$PCSS_SHUTTER_ENQUEUE_COUNT" != "0" ]] && echo "  pcss queue: $PCSS_SHUTTER_ENQUEUE_COUNT per shutter"
 [[ -n "$STATE_CALLBACK" ]] && echo "  state →     $STATE_CALLBACK"
 echo "  >> Connect a PTP/IP network camera to ${COMMAND_HOST}:${COMMAND_PORT} <<"
 echo

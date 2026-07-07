@@ -43,6 +43,9 @@ struct Args {
     /// Number of PCSS InitFail packets to emit before InitCommandAck.
     #[arg(long, default_value_t = 0)]
     pcss_init_fails: u32,
+    /// PCSS handles to enqueue after each shutter sequence; 0 seeds all at startup.
+    #[arg(long, default_value_t = 0)]
+    pcss_shutter_enqueue_count: u32,
     /// Control HTTP bind (loopback by default).
     #[arg(long, default_value = "127.0.0.1:8080")]
     control_bind: SocketAddr,
@@ -83,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         event_bind: args.event_bind,
         knock_bind: args.knock_bind,
         pcss_init_fails: args.pcss_init_fails,
+        pcss_shutter_enqueue_count: args.pcss_shutter_enqueue_count,
         control_bind: args.control_bind,
         liveview_dir: args.liveview_dir,
         state_callback: args.state_callback,
