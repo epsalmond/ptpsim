@@ -33,7 +33,7 @@ evidence:
   # Authoritative for the wireless-tether supported-ops set (2026-05-27 wire capture).
   wireTetherCaps20260527: { kind: wire-capture, path: "packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
   # reference-app Take↔Get session-reopen wire trace (full byte trace + identity decode).
-  # Source for the `reopenSession` step in the `app` → image-transfer entry.
+  # Source for the `reopenSession` step in the image-transfer → shooting/stills entry.
 
   # Wire-decoded 0xD212 tight-format live-status snapshot stream (u16 count +
   # 6-byte <propCode u16><value u32> records) + the v6/v8/v9 member catalogs.
@@ -74,12 +74,14 @@ connections:
     # channel; the event socket carries PIMA type-4 containers (Swift parsePTPEvent).
     commandFraming: compressed
     eventFraming: usb
-    # The keep-AP sentinel holds the Wi-Fi AP up, but the camera tears down the
-    # :55740 command-port listener on the transport-close — a reopenSession's
-    # reconnect is refused, so mode switches stay in-session (#103, device 2026-06-28).
+    # The keep-AP sentinel holds the Wi-Fi AP up. A reconnect from active
+    # live-view is refused because that transport-close tears down the :55740
+    # command-port listener, so Take→Get stays in-session (#103, device
+    # 2026-06-28). Get→Take reopens after image-import because no open-capture
+    # stream owns the listener on that edge.
     commandListenerVolatile: true
     discovery: { mechanism: ble, announces: camera }
-    modes: [shooting/stills, image-transfer]
+    modes: [shooting/stills, shooting/video, image-transfer]
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
     # live-view exercises both sockets, so this assignment is authoritative. Resolved
     # ports (not offsets) so a consumer binds by role and deletes the Fuji +1/+2 math.
@@ -115,6 +117,27 @@ connections:
           - { readEcho: "0xdf2a" }               # read then write back
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
           - { sendOp: "0x101c" }                 # InitiateOpenCapture
+      - to: shooting/stills          # from image-import back to live-view
+        from: image-transfer
+        # Ground truth: MODE_CHANGES.md §5b. Get→Take reopens the PTP/IP
+        # session while the Wi-Fi AP stays up, then selects FunctionMode=Take
+        # and starts live-view. Unlike the #103 Take→Get regression, no live
+        # open-capture stream is active on this edge.
+        steps:
+          - { reopenSession: {} }
+          - { setProp: "0xdf00", value: 6, tolerant: true }  # functionModeMajor
+          - { setProp: "0xdf01", value: 0x16 }               # functionMode = 22 (live-view)
+          - { setProp: "0xdf2a", value: 2 }                  # Fpcsh_VersionRemoteEx
+          - { sendOp: "0x902b", repeat: 4 }                  # FujiVendor_902B startup ×4
+          - { sendOp: "0x101c" }                             # InitiateOpenCapture
+      - to: shooting/video          # in-live-view stills→video selector
+        from: shooting/stills
+        steps:
+          - { setProp: "0xd246", value: 1 }                  # 1 = video
+      - to: shooting/stills         # in-live-view video→stills selector
+        from: shooting/video
+        steps:
+          - { setProp: "0xd246", value: 0 }                  # 0 = stills
       - to: image-transfer            # cold entry to image-import (no live-view active)
         # Ground truth: FujiCameraAPISession.enterImageImportModeUnlocked + IMAGE_TRANSFER_FW230.
         steps:
@@ -588,7 +611,7 @@ operations:
     effects:
       - { setProp: "0xd209", value: 0 }
     evidence: [iosLiveControls, docLiveControls]
-  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [iosStartupSeq] }
+  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [shooting/stills, shooting/video], connections: [app], evidence: [iosStartupSeq] }
   "0x902c": { name: StepShutterspeed,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0xd240", evidence: [iosLiveControls, docLiveControls] }
   "0x902d": { name: StepFnumber,          owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5007", evidence: [iosLiveControls, docLiveControls] }
   "0x902e": { name: StepExposureBias,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5010", evidence: [iosLiveControls, docLiveControls] }
@@ -651,7 +674,7 @@ operations:
 properties:
   "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [iosStartupSeq] }
   "0xdf01": { name: functionMode,      type: u16, access: readWrite, evidence: [iosStartupSeq] }
-  "0xdf2a": { name: liveDf2a,          type: u16, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry
+  "0xdf2a": { name: liveDf2a,          type: u32, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry; Get→Take writes value 2
   "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }
   # Live-status snapshot (app connection). A self-describing record stream:
   # u16 count, then 6-byte records <propCode u16 LE><value u32 LE>. Members are
@@ -769,7 +792,7 @@ properties:
               evidence: [docFujiPtpPropReference] }
   # 0xD246 — reference-app Take in-screen toggle (`0`=stills, `1`=video). PCSS equivalent
   # is 0xD037 above. DevicePropDesc enum reports `[0x00, 0x00]` (Fuji bool quirk).
-  "0xd246": { name: appInShooterStillsVideo,
+  "0xd246": { name: appInShooterStillsVideo, type: u8, access: readWrite, initialValue: 0,
               evidence: [docFujiPtpPropReference] }
   # 0xD22B — read during Get-mode bootstrap, between 0x9050 and 0x9053
   # (see image-transfer entry sequence). Purpose unknown; treat as part of the

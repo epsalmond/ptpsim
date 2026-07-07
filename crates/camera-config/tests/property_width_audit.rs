@@ -48,6 +48,10 @@ const OVERRIDES: &[(&str, &str)] = &[
         "u32 0x80000000|denom*1000 shutter despite degenerate u16 stub descriptor (client application UINT32 parser, live 0xD212)",
     ),
     (
+        "0xd246",
+        "u8 reference app stills/video selector despite u16 probe descriptor (app-mode-flips MODE_CHANGES.md D246 data packet)",
+    ),
+    (
         "0xd235",
         "u32 reference app import chunk size despite undef descriptor (APP_LARGE_MOV_OBJECTINFO_2026-07-06.md)",
     ),

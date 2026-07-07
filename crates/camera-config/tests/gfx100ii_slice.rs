@@ -555,8 +555,19 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
     assert_eq!(focus.ptype.as_deref(), Some("u16"));
     assert_eq!(focus.access.as_deref(), Some("readWrite"));
 
+    assert!(m.connections["app"]
+        .modes
+        .iter()
+        .any(|mode| mode == "shooting/video"));
+    assert_eq!(m.properties["0xdf2a"].ptype.as_deref(), Some("u32"));
+    let d246 = &m.properties["0xd246"];
+    assert_eq!(d246.ptype.as_deref(), Some("u8"));
+    assert_eq!(d246.access.as_deref(), Some("readWrite"));
+    assert_eq!(d246.initial_value, Some(0));
+
     // Existing app operations are available over the app connection in their
-    // current modes, and do not imply the new video/transfer-back flows.
+    // current modes, and the live snapshot remains available after D246 enters
+    // shooting/video.
     assert_eq!(
         m.operation_available("app", "shooting/stills", 0x9026, &any),
         camera_config::Availability::Available
@@ -573,14 +584,10 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
         m.operation_available("app", "image-transfer", 0x101b, &any),
         camera_config::Availability::Available
     );
-    assert!(m.connections["app"]
-        .entries
-        .iter()
-        .all(|e| e.to != "Shooting/Video"));
-    assert!(m.connections["app"]
-        .entries
-        .iter()
-        .all(|e| !(e.from.as_deref() == Some("image-transfer") && e.to == "shooting/stills")));
+    assert_eq!(
+        m.operation_available("app", "shooting/video", 0x902b, &any),
+        camera_config::Availability::Available
+    );
 }
 
 #[test]
@@ -805,6 +812,81 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         .steps
         .iter()
         .any(|s| { s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0) && s.tolerant }));
+
+    // Get→Take is the reverse edge: reopen from image-import, select
+    // FunctionMode=Take, negotiate the live-view function version as u32, and
+    // restart open capture. It must not terminate an open-capture stream because
+    // image-transfer has none active.
+    let reverse = entries
+        .iter()
+        .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
+        .expect("image-transfer → shooting/stills entry");
+    assert!(
+        reverse.steps[0].reopen_session.is_some(),
+        "Get→Take re-establishes PTP/IP from image-import"
+    );
+    assert!(reverse
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xdf01") && s.value == Some(0x16) }));
+    assert!(reverse
+        .steps
+        .iter()
+        .any(|s| { s.set_prop.as_deref() == Some("0xdf2a") && s.value == Some(2) }));
+    assert!(reverse
+        .steps
+        .iter()
+        .any(|s| s.send_op.as_deref() == Some("0x902b") && s.repeat == 4));
+    assert_eq!(
+        reverse.steps.last().and_then(|s| s.send_op.as_deref()),
+        Some("0x101c")
+    );
+    assert!(
+        reverse
+            .steps
+            .iter()
+            .all(|s| s.send_op.as_deref() != Some("0x1018")),
+        "Get→Take must not terminate live-view before reopening it"
+    );
+}
+
+#[test]
+fn app_stills_video_mode_edges_are_lightweight_d246_writes() {
+    let m = gfx();
+    let entries = &m.connections["app"].entries;
+
+    let to_video = entries
+        .iter()
+        .find(|e| e.to == "shooting/video" && e.from.as_deref() == Some("shooting/stills"))
+        .expect("shooting/stills → shooting/video entry");
+    assert_eq!(to_video.steps.len(), 1);
+    assert_eq!(to_video.steps[0].set_prop.as_deref(), Some("0xd246"));
+    assert_eq!(to_video.steps[0].value, Some(1));
+
+    let to_stills = entries
+        .iter()
+        .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("shooting/video"))
+        .expect("shooting/video → shooting/stills entry");
+    assert_eq!(to_stills.steps.len(), 1);
+    assert_eq!(to_stills.steps[0].set_prop.as_deref(), Some("0xd246"));
+    assert_eq!(to_stills.steps[0].value, Some(0));
+
+    for entry in [to_video, to_stills] {
+        assert!(
+            entry.steps.iter().all(|s| {
+                s.reopen_session.is_none()
+                    && s.send_op.as_deref() != Some("0x100e")
+                    && s.send_op.as_deref() != Some("0x1018")
+                    && s.send_op.as_deref() != Some("0x9020")
+                    && s.send_op.as_deref() != Some("0x9021")
+                    && s.send_op.as_deref() != Some("0x9050")
+                    && s.send_op.as_deref() != Some("0x9053")
+                    && s.send_op.as_deref() != Some("0x9054")
+                    && s.send_op.as_deref() != Some("0x9055")
+            }),
+            "D246 mode edges must not import, capture, record, reconnect, or tear down"
+        );
+    }
 }
 
 #[test]

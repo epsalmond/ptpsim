@@ -1022,8 +1022,8 @@ pub enum EntryStep {
     /// socket, send the 8-byte `0xffffffff` sentinel, open a new socket to
     /// the connection's command port, replay the cached InitCommandRequest,
     /// and OpenSession again. Reuses the connection's cached identity, so
-    /// the verb carries no parameters. Wire-confirmed for the reference app
-    /// `app` → image-transfer (Take→Get) flow per MODE_CHANGES.md §5.
+    /// the verb carries no parameters. Wire-confirmed for reference app Get→Take,
+    /// while Take→Get stays in-session after #103/#108.
     ReopenSession { tolerant: bool },
     /// End the PTP/IP session. `keep_ap` emits the 8-byte `0xffffffff` keep-AP
     /// sentinel (`keep_ap_sentinel()`) instead of a TCP FIN, so the camera holds
