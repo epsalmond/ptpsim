@@ -687,6 +687,12 @@ pub struct Connection {
     /// `command_listener_volatile`.
     #[serde(default)]
     pub transport_close: Option<TransportClose>,
+    /// PCSS LAN discovery/callback parameters for wireless tethering.
+    #[serde(default)]
+    pub knock: Option<PcssKnock>,
+    /// InitFail retry tolerance observed on PCSS establishment.
+    #[serde(default)]
+    pub init_retries: Option<InitRetries>,
     #[serde(default)]
     pub modes: Vec<String>,
     /// Mode-graph edges reachable over this connection (decision #6, §3a). An edge
@@ -771,6 +777,22 @@ pub struct TransportClose {
     /// When the consumer sends it (e.g. `before-image-transfer-reopen`).
     #[serde(default)]
     pub when: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PcssKnock {
+    pub callback_port: u16,
+    pub knock_port: u16,
+    pub command_port: u16,
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InitRetries {
+    pub max: u32,
+    pub backoff_ms: u32,
 }
 
 /// An establishment edge: from one connection, bring up another. Carries a named

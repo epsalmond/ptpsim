@@ -22,6 +22,11 @@ pub struct InitCommandAck {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitFail {
+    pub reason: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationRequest {
     /// PTP/IP DataPhaseInfo (1 = no data or data-in, 2 = data-out).
     pub data_phase_info: u32,
@@ -109,6 +114,15 @@ impl InitCommandAck {
         w.ptp_string(&self.friendly_name)?;
         w.u32(self.protocol_version);
         Ok(())
+    }
+}
+
+impl InitFail {
+    pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
+        Ok(Self { reason: r.u32()? })
+    }
+    pub(crate) fn encode_body(&self, w: &mut Writer) {
+        w.u32(self.reason);
     }
 }
 

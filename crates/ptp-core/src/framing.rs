@@ -13,6 +13,7 @@ use crate::error::{DecodeError, EncodeError};
 pub enum PtpIpPacket {
     InitCommandRequest(InitCommandRequest),
     InitCommandAck(InitCommandAck),
+    InitFail(InitFail),
     OperationRequest(OperationRequest),
     OperationResponse(OperationResponse),
     Event(EventPacket),
@@ -33,6 +34,7 @@ impl PtpIpPacket {
         match self {
             PtpIpPacket::InitCommandRequest(_) => PacketType::InitCommandRequest,
             PtpIpPacket::InitCommandAck(_) => PacketType::InitCommandAck,
+            PtpIpPacket::InitFail(_) => PacketType::InitFail,
             PtpIpPacket::OperationRequest(_) => PacketType::OperationRequest,
             PtpIpPacket::OperationResponse(_) => PacketType::OperationResponse,
             PtpIpPacket::Event(_) => PacketType::Event,
@@ -46,6 +48,7 @@ impl PtpIpPacket {
         match self {
             PtpIpPacket::InitCommandRequest(p) => p.encode_body(w)?,
             PtpIpPacket::InitCommandAck(p) => p.encode_body(w)?,
+            PtpIpPacket::InitFail(p) => p.encode_body(w),
             PtpIpPacket::OperationRequest(p) => p.encode_body(w),
             PtpIpPacket::OperationResponse(p) => p.encode_body(w),
             PtpIpPacket::Event(p) => p.encode_body(w),
@@ -77,6 +80,7 @@ impl PtpCodec for PtpIpPacket {
             PacketType::InitCommandAck => {
                 PtpIpPacket::InitCommandAck(InitCommandAck::decode_body(&mut r)?)
             }
+            PacketType::InitFail => PtpIpPacket::InitFail(InitFail::decode_body(&mut r)?),
             PacketType::OperationRequest => {
                 PtpIpPacket::OperationRequest(OperationRequest::decode_body(&mut r)?)
             }
@@ -185,6 +189,23 @@ mod tests {
             friendly_name: "GFX100 II".into(),
             protocol_version: 0x0001_0000,
         }));
+    }
+
+    #[test]
+    fn init_fail_round_trips() {
+        let pkt = PtpIpPacket::InitFail(InitFail {
+            reason: resp::DEVICE_BUSY as u32,
+        });
+        let bytes = encode(&pkt).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x0c, 0, 0, 0, // length = 12
+                0x05, 0, 0, 0, // type = InitFail(5)
+                0x19, 0x20, 0, 0, // reason = DeviceBusy(0x2019)
+            ]
+        );
+        round_trip(pkt);
     }
 
     #[test]

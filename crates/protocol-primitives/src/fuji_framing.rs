@@ -65,6 +65,7 @@ pub fn encode(pkt: &PtpIpPacket) -> Result<Vec<u8>, FramingError> {
         | PtpIpPacket::EndData(_)
         | PtpIpPacket::InitCommandRequest(_)
         | PtpIpPacket::InitCommandAck(_)
+        | PtpIpPacket::InitFail(_)
         | PtpIpPacket::Event(_) => {
             // A data phase needs the opcode (use `encode_data`); Fuji has no
             // StartData/EndData; init is standard-framed; events ride their own

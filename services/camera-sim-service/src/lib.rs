@@ -12,15 +12,17 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use camera_config::{parse_hex_code, CameraManifest, LiveViewDeliveryKind};
+use camera_config::{parse_hex_code, CameraManifest, LiveViewDeliveryKind, PcssKnock};
 use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::{Engine, FrameSource, LoopingFrameSource, Phase, Reply};
-use protocol_primitives::fuji_framing;
+use protocol_primitives::{
+    fuji_framing, parse_pcss_discovery, parse_pcss_init, pcss_notify_message,
+};
 use ptp_core::codes::{op, resp};
-use ptp_core::{EventPacket, InitCommandAck, OperationRequest, PtpCodec, PtpIpPacket};
+use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpCodec, PtpIpPacket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
 
@@ -44,6 +46,11 @@ pub struct Config {
     /// Optional event socket bind. Must be absent when the selected manifest
     /// connection has no event socket role.
     pub event_bind: Option<SocketAddr>,
+    /// Optional PCSS UDP knock listener. Hosted direct-connect instances leave
+    /// this unset; LAN-fidelity tests opt in.
+    pub knock_bind: Option<SocketAddr>,
+    /// Number of PCSS InitFail packets to emit before InitCommandAck.
+    pub pcss_init_fails: u32,
     pub control_bind: SocketAddr,
     /// Directory of JPEG frames to loop on the live-view socket (sorted by
     /// filename, gated on Phase::Streaming). None / empty dir => no frames.
@@ -87,6 +94,8 @@ pub struct Server {
     command: TcpListener,
     liveview: Option<TcpListener>,
     event: Option<TcpListener>,
+    knock: Option<UdpSocket>,
+    knock_config: Option<PcssKnock>,
     poll_live_view_op: Option<u16>,
     disallowed_ops: Arc<HashSet<u16>>,
     control: TcpListener,
@@ -99,7 +108,8 @@ pub struct Server {
 
 #[derive(Clone)]
 struct CommandContext {
-    connection_id: String,
+    init_shape: String,
+    pcss_init_fails: u32,
     poll_live_view_op: Option<u16>,
     disallowed_ops: Arc<HashSet<u16>>,
 }
@@ -147,6 +157,20 @@ impl Server {
                 config.connection, connection.event_framing
             )));
         }
+        if config.pcss_init_fails > 0 {
+            let Some(retries) = &connection.init_retries else {
+                return Err(invalid_config(format!(
+                    "selected connection '{}' has no initRetries but --pcss-init-fails was supplied",
+                    config.connection
+                )));
+            };
+            if config.pcss_init_fails > retries.max {
+                return Err(invalid_config(format!(
+                    "--pcss-init-fails {} exceeds selected connection '{}' max {}",
+                    config.pcss_init_fails, config.connection, retries.max
+                )));
+            }
+        }
         let poll_live_view_op = connection
             .live_view_delivery
             .as_ref()
@@ -186,6 +210,16 @@ impl Server {
             bindings.port_for(SocketRole::LiveView),
             "live-view",
         )?;
+        let knock_config = if config.knock_bind.is_some() {
+            Some(connection.knock.clone().ok_or_else(|| {
+                invalid_config(format!(
+                    "--knock-bind was supplied, but selected connection '{}' has no PCSS knock block",
+                    config.connection
+                ))
+            })?)
+        } else {
+            None
+        };
         let mut engine_value = Engine::new(manifest, store);
         engine_value.bind_connection(&config.connection);
         let engine = Arc::new(Mutex::new(engine_value));
@@ -202,12 +236,18 @@ impl Server {
             Some(addr) => Some(TcpListener::bind(addr).await?),
             None => None,
         };
+        let knock = match config.knock_bind {
+            Some(addr) => Some(UdpSocket::bind(addr).await?),
+            None => None,
+        };
         let control = TcpListener::bind(config.control_bind).await?;
         Ok(Server {
             config,
             command,
             liveview,
             event,
+            knock,
+            knock_config,
             poll_live_view_op,
             disallowed_ops,
             control,
@@ -228,6 +268,10 @@ impl Server {
         self.event.as_ref().map(|l| l.local_addr().unwrap())
     }
 
+    pub fn knock_addr_opt(&self) -> Option<SocketAddr> {
+        self.knock.as_ref().map(|l| l.local_addr().unwrap())
+    }
+
     pub fn control_addr(&self) -> SocketAddr {
         self.control.local_addr().unwrap()
     }
@@ -246,6 +290,8 @@ impl Server {
             command,
             liveview,
             event,
+            knock,
+            knock_config,
             poll_live_view_op,
             disallowed_ops,
             control,
@@ -259,7 +305,16 @@ impl Server {
             media_root: config.media_root.display().to_string(),
         };
         let command_context = CommandContext {
-            connection_id: config.connection.clone(),
+            init_shape: {
+                let e = engine.lock().await;
+                e.manifest()
+                    .connections
+                    .get(&config.connection)
+                    .and_then(|c| c.init_shape.as_deref())
+                    .unwrap_or("app82")
+                    .to_string()
+            },
+            pcss_init_fails: config.pcss_init_fails,
             poll_live_view_op,
             disallowed_ops,
         };
@@ -284,6 +339,7 @@ impl Server {
         // still running when dropped — which happens when run()'s select!
         // drops the loop future on shutdown. In-flight connections being cut
         // on exit is the documented run() contract.
+        let command_port = command.local_addr().unwrap().port();
         let command_loop = {
             let engine = engine.clone();
             let frames = frames.clone();
@@ -398,6 +454,25 @@ impl Server {
             }
         };
 
+        let knock_loop = {
+            let camera_name = {
+                let e = engine.lock().await;
+                e.manifest().camera.model.clone()
+            };
+            let mut sub = shutdown_tx.subscribe();
+            async move {
+                let Some(knock) = knock else {
+                    let _ = sub.recv().await;
+                    return;
+                };
+                let Some(knock_config) = knock_config else {
+                    let _ = sub.recv().await;
+                    return;
+                };
+                run_knock_loop(knock, knock_config, camera_name, command_port, sub).await;
+            }
+        };
+
         // #126: spawn the single state-callback push task if a valid URL was
         // given. Parsed up front; an invalid URL is logged once and ignored
         // (never fatal). It ends on the shutdown broadcast like the loops.
@@ -423,6 +498,7 @@ impl Server {
             _ = control_loop => {}
             _ = liveview_loop => {}
             _ = event_loop => {}
+            _ = knock_loop => {}
         }
         let _ = shutdown_tx.send(());
     }
@@ -508,42 +584,48 @@ async fn handle_command_conn(
     context: CommandContext,
 ) -> std::io::Result<()> {
     // 1. Standard-framed init handshake.
-    let Some(first) = read_frame(&mut stream).await? else {
+    let Some(mut first) = read_frame(&mut stream).await? else {
         return Ok(());
     };
-    let Ok(PtpIpPacket::InitCommandRequest(init_req)) = PtpIpPacket::decode(&first) else {
-        return Ok(()); // not a PTP/IP initiator
-    };
-    let init_shape = {
-        let e = engine.lock().await;
-        e.manifest()
-            .connections
-            .get(&context.connection_id)
-            .and_then(|c| c.init_shape.as_deref())
-            .unwrap_or("app82")
-            .to_string()
-    };
-    if init_shape == "pcssKnock" {
-        // PCSS init/retry behavior is modeled in #171. Do not accept an reference app
-        // InitCommandRequest as if it were PCSS.
-        tracing::warn!(
-            connection = %context.connection_id,
-            "pcssKnock InitCommandRequest handling is not implemented; closing command connection"
-        );
-        return Ok(());
-    }
-    // The camera drops InitCommandRequest when a BLE AP handoff launched without
-    // the IMAGE_TRANSFER_SETTING arming prep write (#102): no ack, just hang up.
-    if !engine.lock().await.accepts_init() {
-        return Ok(());
-    }
-    // If a device name was registered over BLE during pairing, the PTP/IP friendly
-    // name MUST match it — the camera silently drops a mismatch (#109): no ack.
-    // Ungated when no name was registered (standalone init), so smoke paths pass.
-    let registered_name = engine.lock().await.link().device_name();
-    if let Some(registered) = registered_name {
-        if registered != init_req.friendly_name {
-            return Ok(());
+    match context.init_shape.as_str() {
+        "pcssKnock" => {
+            for _ in 0..context.pcss_init_fails {
+                if parse_pcss_init(&first).is_err() {
+                    return Ok(());
+                }
+                let fail = PtpIpPacket::InitFail(InitFail {
+                    reason: resp::DEVICE_BUSY as u32,
+                });
+                stream
+                    .write_all(&ptp_core::encode(&fail).map_err(to_io)?)
+                    .await?;
+                let Some(next) = read_frame(&mut stream).await? else {
+                    return Ok(());
+                };
+                first = next;
+            }
+            if parse_pcss_init(&first).is_err() {
+                return Ok(());
+            }
+        }
+        _ => {
+            let Ok(PtpIpPacket::InitCommandRequest(init_req)) = PtpIpPacket::decode(&first) else {
+                return Ok(()); // not a PTP/IP initiator
+            };
+            // The camera drops InitCommandRequest when a BLE AP handoff launched without
+            // the IMAGE_TRANSFER_SETTING arming prep write (#102): no ack, just hang up.
+            if !engine.lock().await.accepts_init() {
+                return Ok(());
+            }
+            // If a device name was registered over BLE during pairing, the PTP/IP friendly
+            // name MUST match it — the camera silently drops a mismatch (#109): no ack.
+            // Ungated when no name was registered (standalone init), so smoke paths pass.
+            let registered_name = engine.lock().await.link().device_name();
+            if let Some(registered) = registered_name {
+                if registered != init_req.friendly_name {
+                    return Ok(());
+                }
+            }
         }
     }
     let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
@@ -609,6 +691,40 @@ async fn handle_command_conn(
         write_reply(&mut stream, &req, reply).await?;
     }
     Ok(())
+}
+
+async fn run_knock_loop(
+    knock: UdpSocket,
+    knock_config: PcssKnock,
+    camera_name: String,
+    command_port: u16,
+    mut shutdown: broadcast::Receiver<()>,
+) {
+    let mut buf = vec![0u8; 2048];
+    loop {
+        tokio::select! {
+            received = knock.recv_from(&mut buf) => {
+                let Ok((n, _peer)) = received else {
+                    continue;
+                };
+                let Some(discovery) = parse_pcss_discovery(&buf[..n], &knock_config.protocol) else {
+                    continue;
+                };
+                let callback = format!("{}:{}", discovery.host, knock_config.callback_port);
+                let camera_name = camera_name.clone();
+                let protocol = knock_config.protocol.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut callback) = TcpStream::connect(callback).await {
+                        let notify = pcss_notify_message(&camera_name, command_port, &protocol);
+                        let _ = callback.write_all(&notify).await;
+                        let mut ack = [0u8; 256];
+                        let _ = callback.read(&mut ack).await;
+                    }
+                });
+            }
+            _ = shutdown.recv() => break,
+        }
+    }
 }
 
 async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSource>>) -> Reply {

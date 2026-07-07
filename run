@@ -30,21 +30,26 @@ case "$CONNECTION" in
     DEFAULT_COMMAND_BIND="127.0.0.1:55740"
     DEFAULT_EVENT_BIND="127.0.0.1:55741"
     DEFAULT_LIVEVIEW_BIND="127.0.0.1:55742"
+    DEFAULT_KNOCK_BIND=""
     ;;
   wireless-tether)
     DEFAULT_COMMAND_BIND="127.0.0.1:15740"
     DEFAULT_EVENT_BIND=""
     DEFAULT_LIVEVIEW_BIND=""
+    DEFAULT_KNOCK_BIND=""
     ;;
   *)
     DEFAULT_COMMAND_BIND=""
     DEFAULT_EVENT_BIND=""
     DEFAULT_LIVEVIEW_BIND=""
+    DEFAULT_KNOCK_BIND=""
     ;;
 esac
 COMMAND_BIND="${PTPSIM_COMMAND_BIND:-$DEFAULT_COMMAND_BIND}"
 EVENT_BIND="${PTPSIM_EVENT_BIND:-$DEFAULT_EVENT_BIND}"
 LIVEVIEW_BIND="${PTPSIM_LIVEVIEW_BIND:-$DEFAULT_LIVEVIEW_BIND}"
+KNOCK_BIND="${PTPSIM_KNOCK_BIND:-$DEFAULT_KNOCK_BIND}"
+PCSS_INIT_FAILS="${PTPSIM_PCSS_INIT_FAILS:-0}"
 CONTROL_BIND="${PTPSIM_CONTROL_BIND:-127.0.0.1:8080}"
 
 CARGO_PROFILE="${PTPSIM_CARGO_PROFILE:-debug}"  # debug | release
@@ -106,6 +111,12 @@ fi
 if [[ -n "$LIVEVIEW_BIND" ]]; then
   run_args+=(--liveview-bind "$LIVEVIEW_BIND")
 fi
+if [[ -n "$KNOCK_BIND" ]]; then
+  run_args+=(--knock-bind "$KNOCK_BIND")
+fi
+if [[ "$PCSS_INIT_FAILS" != "0" ]]; then
+  run_args+=(--pcss-init-fails "$PCSS_INIT_FAILS")
+fi
 if [[ -d "$LIVEVIEW_DIR" ]]; then
   run_args+=(--liveview-dir "$LIVEVIEW_DIR")
 else
@@ -122,6 +133,8 @@ echo "  connection: $CONNECTION"
 echo "  manifest:   $MANIFEST"
 echo "  media-root: $MEDIA_ROOT"
 echo "  control:    $HEALTH_URL"
+[[ -n "$KNOCK_BIND" ]] && echo "  pcss knock: $KNOCK_BIND"
+[[ "$PCSS_INIT_FAILS" != "0" ]] && echo "  init fails: $PCSS_INIT_FAILS"
 [[ -n "$STATE_CALLBACK" ]] && echo "  state →     $STATE_CALLBACK"
 echo "  >> Connect a PTP/IP network camera to ${COMMAND_HOST}:${COMMAND_PORT} <<"
 echo
