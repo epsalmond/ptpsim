@@ -736,7 +736,7 @@ properties:
   # hands back a degenerate single-value stub descriptor (probe enum = {0x8001}).
   # Real live-control encoding: native manual literal (6400 = 0x1900),
   # 0x80000000|ceiling for AUTO ceiling, or 0x40000000|iso for expanded sensitivity.
-  # This path is separate from SDK/PCSS still ISO 0x500F and SDK movie ISO 0xD242.
+  # This path is separate from PCSS still ISO 0x500F and movie-mode ISO 0xD242.
   # Writes apply only after InitiateOpenCapture(0x101C); D212 readback is source of truth.
   # Width override is documented in the #53 property-width-audit OVERRIDES table.
   "0xd02a": { name: stillIso, ptpName: ISO, type: u32, access: readWrite,
@@ -763,8 +763,8 @@ properties:
   # GetDevicePropDesc declares i32; the codec now models the signed datatype (#88).
   "0x500f": { name: iso, ptpName: ExposureIndex, type: i32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether, wirePCSSShootDownload20260523] }
-  # SDK movie sensitivity is a separate INT32 property. Do not reuse 0x500F
-  # still-SDK metadata or 0xD02B live-view movie metadata for this path.
+  # Movie-mode sensitivity is a separate INT32 property. Do not reuse 0x500F
+  # PCSS still metadata or 0xD02B live-view movie metadata for this path.
   "0xd242": { name: movieSensitivity, ptpName: MovieISO, type: i32, access: readWrite,
               evidence: [docIsoModel20260707] }
   "0x500d": { name: shutterSpeed, ptpName: ExposureTime, type: u32, access: readWrite,
