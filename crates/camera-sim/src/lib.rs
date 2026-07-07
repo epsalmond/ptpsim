@@ -93,6 +93,19 @@ properties:
           - { label: "50", raw: 50, legal: false, writeStoreRaw: 80 }
 "#;
 
+    const SIGNED_PROP_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: "2.30"
+properties:
+  "0x5010":
+    name: exposureBias
+    type: i16
+    access: readWrite
+"#;
+
     fn op(code: u16, tid: u32, params: Vec<u32>) -> OperationRequest {
         OperationRequest {
             data_phase_info: 1,
@@ -333,6 +346,50 @@ properties:
         let readback = expect_data(e.on_operation(&op(0x1015, 3, vec![0xd02a]), None));
         let mut r = Reader::new(&readback);
         assert_eq!(r.u32().unwrap(), 80);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn invalid_state_overlay_does_not_partially_mutate_state() {
+        let (mut e, root) = empty_engine(ISO_SLAM_MANIFEST);
+        assert_eq!(e.state().phase, Phase::Disconnected);
+        assert_eq!(e.state().props.get(&0xd02a), Some(&PropValue::U32(32769)));
+
+        let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
+            "phase": "streaming",
+            "session_open": true,
+            "props": {
+                "0xd02a": 2000,
+                "0xffff": 1
+            }
+        }))
+        .unwrap();
+
+        let err = e.apply_state_overlay(&overlay).unwrap_err();
+        assert!(
+            err.contains("property '0xffff' is not in the loaded manifest"),
+            "err: {err}"
+        );
+        assert_eq!(e.state().phase, Phase::Disconnected);
+        assert!(!e.state().session_open);
+        assert_eq!(e.state().props.get(&0xd02a), Some(&PropValue::U32(32769)));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn state_overlay_rejects_signed_property_types_explicitly() {
+        let (mut e, root) = empty_engine(SIGNED_PROP_MANIFEST);
+        let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
+            "props": { "0x5010": -333 }
+        }))
+        .unwrap();
+
+        let err = e.apply_state_overlay(&overlay).unwrap_err();
+        assert!(
+            err.contains("signed property type 'i16' is not supported"),
+            "err: {err}"
+        );
+        assert!(!e.state().props.contains_key(&0x5010));
         std::fs::remove_dir_all(&root).ok();
     }
 

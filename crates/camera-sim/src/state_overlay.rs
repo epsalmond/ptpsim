@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 
 use camera_config::{parse_hex_code, CameraManifest};
-use ptp_core::codes::datatype_code as dt;
 use ptp_core::dataset::PropValue;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{datatype_of, CameraState, Phase};
+use crate::state::{CameraState, Phase};
 
 const STARTUP_STATE_SCHEMA: &str = "ptpsim-startup-state/v1";
 const STATE_OVERLAY_SCHEMA: &str = "ptpsim-state-overlay/v1";
@@ -66,48 +65,82 @@ pub(crate) fn apply_overlay(
     state: &mut CameraState,
     overlay: &StateOverlay,
 ) -> Result<AppliedStateOverlay, String> {
-    let mut applied = AppliedStateOverlay::default();
+    let staged = StagedOverlay::from_overlay(manifest, overlay)?;
 
-    if let Some(phase) = overlay.phase.as_deref() {
-        let parsed = Phase::from_state_name(phase)
-            .ok_or_else(|| format!("unknown phase '{phase}' in state overlay"))?;
-        state.phase = parsed;
+    if let Some(phase) = staged.phase {
+        state.phase = phase;
         state.reset_gates();
-        applied.phase = true;
     }
-
-    if let Some(session_open) = overlay.session_open {
+    if let Some(session_open) = staged.session_open {
         state.session_open = session_open;
-        applied.session_open = true;
     }
-
-    for (code_key, raw) in &overlay.props {
-        let code = parse_hex_code(code_key)
-            .ok_or_else(|| format!("invalid property code '{code_key}' in state overlay"))?;
-        let prop = manifest
-            .property(code)
-            .ok_or_else(|| format!("property '{code_key}' is not in the loaded manifest"))?;
-        let datatype = datatype_of(prop.ptype.as_deref());
-        let value = prop_value_from_json(datatype, raw)
-            .map_err(|e| format!("property '{code_key}': {e}"))?;
+    for (code, value) in staged.props {
         state.props.insert(code, value);
-        applied.props += 1;
     }
 
-    Ok(applied)
+    Ok(staged.applied)
 }
 
-fn prop_value_from_json(datatype: u16, value: &serde_json::Value) -> Result<PropValue, String> {
-    match datatype {
-        dt::UINT8 => checked_numeric(value, u8::MAX as i128).map(|v| PropValue::U8(v as u8)),
-        dt::UINT16 => checked_numeric(value, u16::MAX as i128).map(|v| PropValue::U16(v as u16)),
-        dt::UINT32 => checked_numeric(value, u32::MAX as i128).map(|v| PropValue::U32(v as u32)),
-        dt::UINT64 => checked_numeric(value, u64::MAX as i128).map(|v| PropValue::U64(v as u64)),
-        dt::STR => value
+struct StagedOverlay {
+    phase: Option<Phase>,
+    session_open: Option<bool>,
+    props: Vec<(u16, PropValue)>,
+    applied: AppliedStateOverlay,
+}
+
+impl StagedOverlay {
+    fn from_overlay(manifest: &CameraManifest, overlay: &StateOverlay) -> Result<Self, String> {
+        let phase = match overlay.phase.as_deref() {
+            Some(phase) => Some(
+                Phase::from_state_name(phase)
+                    .ok_or_else(|| format!("unknown phase '{phase}' in state overlay"))?,
+            ),
+            None => None,
+        };
+        let mut props = Vec::with_capacity(overlay.props.len());
+        for (code_key, raw) in &overlay.props {
+            let code = parse_hex_code(code_key)
+                .ok_or_else(|| format!("invalid property code '{code_key}' in state overlay"))?;
+            let prop = manifest
+                .property(code)
+                .ok_or_else(|| format!("property '{code_key}' is not in the loaded manifest"))?;
+            let value = prop_value_from_json(prop.ptype.as_deref(), raw)
+                .map_err(|e| format!("property '{code_key}': {e}"))?;
+            props.push((code, value));
+        }
+
+        Ok(Self {
+            phase,
+            session_open: overlay.session_open,
+            applied: AppliedStateOverlay {
+                props: props.len(),
+                phase: phase.is_some(),
+                session_open: overlay.session_open.is_some(),
+            },
+            props,
+        })
+    }
+}
+
+fn prop_value_from_json(
+    prop_type: Option<&str>,
+    value: &serde_json::Value,
+) -> Result<PropValue, String> {
+    match prop_type {
+        Some(signed @ ("i8" | "i16" | "i32" | "i64")) => Err(format!(
+            "signed property type '{signed}' is not supported by simulator state overlays yet"
+        )),
+        Some("u8") => checked_numeric(value, u8::MAX as i128).map(|v| PropValue::U8(v as u8)),
+        Some("u16") | None => {
+            checked_numeric(value, u16::MAX as i128).map(|v| PropValue::U16(v as u16))
+        }
+        Some("u32") => checked_numeric(value, u32::MAX as i128).map(|v| PropValue::U32(v as u32)),
+        Some("u64") => checked_numeric(value, u64::MAX as i128).map(|v| PropValue::U64(v as u64)),
+        Some("str") => value
             .as_str()
             .map(|s| PropValue::Str(s.to_string()))
             .ok_or_else(|| "expected string value".to_string()),
-        other => Err(format!("unsupported property datatype 0x{other:04x}")),
+        Some(other) => Err(format!("unsupported property type '{other}'")),
     }
 }
 
