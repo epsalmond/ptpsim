@@ -103,8 +103,10 @@ fn the_real_establish_plan_arms_the_engine() {
 
     let mut responder = BleResponder::new([ap_state.clone(), ssid.clone(), pass.clone()])
         .link_arming(Arc::clone(&link), &arm, &launch)
-        .queue_notification(&ap_state, &[0x02, 0x80]) // Launching (transitional)
-        .queue_notification(&ap_state, &[0x01, 0x80]) // Launched (0x8001)
+        .serve_read_sequence(
+            &ap_state,
+            vec![vec![0x00, 0x80], vec![0x02, 0x80], vec![0x01, 0x80]],
+        )
         .serve_read(&ssid, b"GFX100II-1234")
         .serve_read(&pass, b"hunter2pass");
 

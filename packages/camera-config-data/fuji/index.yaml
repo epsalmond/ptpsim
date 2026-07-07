@@ -257,11 +257,14 @@ families:
                 gatt: functionLaunchRequest
                 value: { runtime: launchMode, encoding: u16-le }
 
-            # Await the camera AP reaching a launched state. apState parses as
-            # u16-le: launched = 0x0180 (modern → 384) or 0x0100 (legacy → 256).
-            # captureAs keeps the raw bytes for the app's fallback parsing.
+            # Read-poll the camera AP reaching a launched state. Live reference app/GFX100 II
+            # capture proved AP_STATE is plain-readable before and after launch
+
+            # #179), so a client that subscribes late or misses the notify can
+            # recover the current state. captureAs keeps the raw bytes for the
+            # app's fallback parsing.
             - bleAwaitUntil:
-                source: { notify: { gatt: apState } }
+                source: { read: apState }
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }
                 captureAs: apStateRaw
                 # 0x8001 Launched (live-view / RemoteShooting) + 0x8003
@@ -271,10 +274,10 @@ families:
                 # {384, 256} was these values byte-swapped, so it never matched.
                 until: { apState: { in: "32769, 32771" } }
                 # 20 s matches the camera's FUNCTION_LAUNCH_REQUEST timer: it
-                # brings up the AP autonomously and pushes apState within 20 s
-                # (operators APP_AP_HANDOVER_HANDSHAKE). 5 s timed out before any
-                # apState notify arrived on a real GFX100 II (#78).
+                # brings up the AP autonomously and reaches launched within 20 s
+                # (operators APP_AP_HANDOVER_HANDSHAKE).
                 timeoutMs: 20000
+                intervalMs: 250
 
             # AP is up — read the credentials the app joins the network with.
             # Both are fixed-width, NUL-padded GATT string fields: utf8-cstring
