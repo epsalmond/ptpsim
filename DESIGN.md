@@ -51,7 +51,8 @@ simulator can then reproduce and any client can build on.
   already the deployment/control-plane language or where integration tests are
   clearer as orchestration.
 - Build from captures and probes. Golden packets, wire captures, and black-box
-  smoke tests are the authority, not hand-written assumptions or SDK's with their own issues.
+  smoke tests are the authority, not hand-written assumptions or vendor helper
+  layers with their own issues.
 - Open source the whole simulator, including captured device behavior. The
   engine (codecs, manifest schema, media store, sim runtime, probe) and the
   captured camera manifests, captures, and fixtures are all public. The point is
@@ -472,7 +473,7 @@ escalating:
 1. `safe` (default) — read-mostly: DeviceInfo, descriptor sweeps, object
    enumeration, handshake/transport capture. No state change.
 2. `settings-write` — writes documented properties and settings blobs (the
-   SDK-listed fuzzing; checksums in the format catch gross errors, so this is
+   vendor-catalog fuzzing; checksums in the format catch gross errors, so this is
    generally safe and reversible). Persists user settings.
 3. `ram` — RAM read/write using manufacturer test modes. Volatile; 
    "probably fine after a reboot," recoverable by power cycle.
@@ -487,7 +488,7 @@ wipes user configuration, so it is `settings-write` at minimum and the probe
 must hold an explicit denylist so a blind opcode sweep can never fire it by
 accident. The probe knows this opcode precisely in order to avoid it.
 
-The aggressive tiers are valuable and stay (the SDK enumerates exactly which
+The aggressive tiers are valuable and stay (vendor catalogs enumerate exactly which
 properties to fuzz, and that is how new cameras get mapped); they are just gated
 behind escalating consent so the default experience matches the "probably won't
 break it" promise.
@@ -1153,7 +1154,7 @@ Phase 2b: PTP/USB and its modes.
 
 Phase 3: Other manufacturers.
 
-- Nikon next (and RED, which Nikon now owns) — their app/SDK situation is the
+- Nikon next (and RED, which Nikon now owns) — their app/tooling situation is the
   kind of gap ptpsim exists to close. Then Canon PTP/IP/EOS.
 - Each manufacturer is a manifest + captures, run by the same generic engine. New
   code only for a genuinely new wire format (→ `ptp-core`) or computed quirk (→
@@ -1562,7 +1563,7 @@ The tethered-shooting product target is higher:
 - Probe-to-manifest inference can overfit one capture. Mitigation: store raw
   observations, require evidence references, keep unknown semantic labels raw,
   and make generated proposals reviewable.
-- Official SDKs may use alternate workflows for the same apparent feature.
+- Official vendor tooling may use alternate workflows for the same apparent feature.
   Mitigation: transport/workflow is part of the manifest key, not only model
   name and firmware.
 - A simulator can become too forgiving and hide app bugs. Mitigation: strict

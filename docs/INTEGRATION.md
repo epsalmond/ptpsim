@@ -134,7 +134,7 @@ per-platform packaging:
   a Gradle file dependency (`implementation(files("libs/…​.aar"))`) plus the JNA
   `@aar`. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Built by
   `ci/build-android.sh` on the `ci-android` image (`kotlinc` + JNA; `android.jar`
-  from the cimg SDK).
+  from the cimg Android image).
 - **Linux / Python:** the `.so` + the generated `camera_protocol_ffi.py`. Consumed
   across a repo boundary by the standalone `epsalmond/camera-protocol-mapper` (probe
   tooling), which pulls the generated binding — it is no longer built, tested, or

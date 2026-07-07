@@ -69,8 +69,16 @@ fn assert_ok(reply: &Reply) {
         Reply::Response(r) => assert_eq!(r.code, 0x2001, "expected OK"),
         Reply::Data { response, .. } => assert_eq!(response.code, 0x2001, "expected OK"),
         Reply::DataStream { response, .. } => assert_eq!(response.code, 0x2001, "expected OK"),
+        Reply::NoResponse => panic!("unexpected NoResponse"),
         Reply::Close => panic!("unexpected Close"),
     }
+}
+
+fn assert_no_response(reply: Reply) {
+    assert!(
+        matches!(reply, Reply::NoResponse),
+        "expected NoResponse, got {reply:?}"
+    );
 }
 
 fn data_of(reply: Reply) -> Vec<u8> {
@@ -85,6 +93,25 @@ fn data_of(reply: Reply) -> Vec<u8> {
         }
         other => panic!("expected Data, got {other:?}"),
     }
+}
+
+fn write_u16(e: &mut Engine, tid: u32, code: u16, value: u16) {
+    assert_ok(&e.on_operation(
+        &req(0x1016, tid, vec![code as u32]),
+        Some(&value.to_le_bytes()),
+    ));
+}
+
+fn write_u32(e: &mut Engine, tid: u32, code: u16, value: u32) {
+    assert_ok(&e.on_operation(
+        &req(0x1016, tid, vec![code as u32]),
+        Some(&value.to_le_bytes()),
+    ));
+}
+
+fn read_u32(e: &mut Engine, tid: u32, code: u16) -> u32 {
+    let bytes = data_of(e.on_operation(&req(0x1015, tid, vec![code as u32]), None));
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
 fn stream_of(reply: Reply) -> (ByteSource, Vec<u32>) {
@@ -139,6 +166,77 @@ fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
         Some(aperture),
         "aperture in the bundle matches its individual GetDevicePropValue"
     );
+}
+
+#[test]
+fn still_iso_setprop_uses_scoped_value_profile_for_camera_readback() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    write_u16(&mut e, 2, 0xdf01, 0x16);
+    assert_ok(&e.on_operation(&req(0x101c, 3, vec![]), None));
+
+    for (tid, sent, expected) in [
+        (10, 6400, 6400),
+        (20, 25600, 0x4000_6400),
+        (30, 0x4001_9000, 0x4001_9000),
+        (40, 50, 80),
+        (50, 0x8000_00a0, 80),
+        (60, 0x8000_6400, 80),
+    ] {
+        write_u32(&mut e, tid, 0xd02a, sent);
+        assert_eq!(
+            read_u32(&mut e, tid + 1, 0xd02a),
+            expected,
+            "scalar readback after writing {sent:#010x}"
+        );
+        let d212 = data_of(e.on_operation(&req(0x1015, tid + 2, vec![0xd212]), None));
+        let records = decode_record_stream(&d212);
+        assert_eq!(
+            records.iter().find(|(c, _)| *c == 0xd02a).map(|(_, v)| *v),
+            Some(expected),
+            "D212 readback after writing {sent:#010x}"
+        );
+    }
+}
+
+#[test]
+fn neighboring_iso_property_without_value_profile_still_stores_verbatim() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    write_u16(&mut e, 2, 0xdf01, 0x16);
+    assert_ok(&e.on_operation(&req(0x101c, 3, vec![]), None));
+
+    write_u32(&mut e, 4, 0xd02b, 25600);
+    assert_eq!(read_u32(&mut e, 5, 0xd02b), 25600);
+}
+
+#[test]
+fn still_iso_profile_applies_after_open_session_before_live_view_selector() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+
+    write_u32(&mut e, 2, 0xd02a, 50);
+    assert_eq!(read_u32(&mut e, 3, 0xd02a), 80);
+}
+
+#[test]
+fn default_ptpip_walk_rebinds_app_connection_for_value_profiles() {
+    let mut e = engine();
+    e.bind_connection("wireless-tether");
+    let steps = vec![
+        Step {
+            set_prop: Some("0xd02a".into()),
+            value: Some(50),
+            ..Default::default()
+        },
+        Step {
+            get_prop: Some("0xd02a".into()),
+            ..Default::default()
+        },
+    ];
+
+    let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("walk ok");
+    assert_eq!(out.observed.get(0xd02a), Some(80));
 }
 
 #[test]
@@ -275,6 +373,104 @@ fn gate3_image_import_choreography_runs_from_the_manifest() {
     assert_ok(&e.on_operation(&req(0x1008, 21, vec![handles[0]]), None)); // GetObjectInfo
     let part = data_of(e.on_operation(&req(0x101b, 22, vec![handles[0], 0, 7]), None));
     assert_eq!(&part, b"\xFF\xD8HELLO");
+}
+
+#[test]
+fn image_import_count_and_handles_timeout_before_bootstrap_gate() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_ok(&e.on_operation(&req(0x1016, 2, vec![0xdf01]), Some(&0x14u16.to_le_bytes())));
+    assert_no_response(e.on_operation(&req(0x1015, 3, vec![0xd620]), None));
+    assert_no_response(e.on_operation(&req(0x1015, 4, vec![0xd621]), None));
+    assert_no_response(e.on_operation(&req(0x1014, 5, vec![0xd620]), None));
+    assert_no_response(e.on_operation(&req(0x1014, 6, vec![0xd621]), None));
+}
+
+#[test]
+fn image_import_gate_requires_the_manifest_declared_bootstrap_sequence() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    // A suffix that looks like the page tail is not enough: this intentionally
+    // omits the earlier manifest-declared prime block.
+    assert_ok(&e.on_operation(&req(0x1015, 2, vec![0xd212]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 3, vec![0xd22b]), None));
+    assert_ok(&e.on_operation(&req(0x9053, 4, vec![0, 0x7530]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 5, vec![0xd212]), None));
+    assert_no_response(e.on_operation(&req(0x1015, 6, vec![0xd620]), None));
+}
+
+#[test]
+fn image_import_gate_requires_d22b_in_the_manifest_sequence() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 2, vec![0xd212]), None));
+    assert_ok(&e.on_operation(&req(0x1016, 3, vec![0xdf01]), Some(&0x14u16.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x1015, 4, vec![0xdf28]), None));
+    assert_ok(&e.on_operation(&req(0x1016, 5, vec![0xdf28]), Some(&3u32.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x1016, 6, vec![0xd226]), Some(&0u16.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x1016, 7, vec![0xd227]), Some(&0u16.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x1015, 8, vec![0xd244]), None));
+    assert_ok(&e.on_operation(&req(0x9054, 9, vec![0x1000_0001]), None));
+    assert_ok(&e.on_operation(&req(0x9055, 10, vec![0x1000_0001]), None));
+    assert_ok(&e.on_operation(&req(0x9050, 11, vec![]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 12, vec![0xd212]), None));
+    // Omit D22B: this does not satisfy the manifest-declared bootstrap gate.
+    assert_ok(&e.on_operation(&req(0x9053, 13, vec![0, 0x7530]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 14, vec![0xd212]), None));
+    assert_no_response(e.on_operation(&req(0x1015, 15, vec![0xd620]), None));
+}
+
+#[test]
+fn image_import_gate_advances_only_on_successful_replies() {
+    let m = consolidated();
+    let cold = m
+        .connections
+        .get("app")
+        .unwrap()
+        .entries
+        .iter()
+        .find(|e| e.to == "image-transfer" && e.from.is_none())
+        .expect("cold image-transfer entry");
+    let mut e = engine();
+    e.install_fault(Fault::FailOperation {
+        code: 0x9054,
+        response: 0x2005,
+    });
+    walk_ptpip_in(&mut e, &cold.steps, &BTreeMap::new(), Some("app"))
+        .expect("tolerant 0x9054 failure does not abort the entry");
+    assert_no_response(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
+}
+
+#[test]
+fn image_import_full_bootstrap_unlocks_count_and_handle_properties() {
+    let m = consolidated();
+    let cold = m
+        .connections
+        .get("app")
+        .unwrap()
+        .entries
+        .iter()
+        .find(|e| e.to == "image-transfer" && e.from.is_none())
+        .expect("cold image-transfer entry");
+    let mut e = engine();
+    walk_ptpip_in(&mut e, &cold.steps, &BTreeMap::new(), Some("app"))
+        .expect("full bootstrap entry succeeds");
+
+    let count = data_of(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
+    let mut r = Reader::new(&count);
+    assert_eq!(r.u32().unwrap(), 1);
+    let handles_bytes = data_of(e.on_operation(&req(0x1015, 51, vec![0xd621]), None));
+    let mut r = Reader::new(&handles_bytes);
+    let handles = r.ptp_array(|r| r.u32()).unwrap();
+    assert_eq!(handles.len(), 1);
+
+    assert_ok(&e.on_operation(&req(0x1015, 52, vec![0xd212]), None));
+    let count = data_of(e.on_operation(&req(0x1015, 53, vec![0xd620]), None));
+    let mut r = Reader::new(&count);
+    assert_eq!(r.u32().unwrap(), 1);
+
+    assert_ok(&e.on_operation(&req(0x1016, 54, vec![0xdf01]), Some(&0x16u16.to_le_bytes())));
+    assert_no_response(e.on_operation(&req(0x1015, 55, vec![0xd620]), None));
 }
 
 #[test]

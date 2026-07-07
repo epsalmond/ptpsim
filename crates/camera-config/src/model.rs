@@ -45,6 +45,12 @@ pub struct CameraManifest {
     pub evidence: BTreeMap<String, Evidence>,
     #[serde(default)]
     pub sentinels: BTreeMap<String, SentinelFrame>,
+    /// Named ordered wire-precondition gates the simulator can enforce. A gate
+    /// is satisfied only after manifest steps marked with `startsGate` /
+    /// `completesGate` run successfully in order. Consumers still receive the
+    /// executable steps; the gate is simulator oracle metadata.
+    #[serde(default)]
+    pub sequence_gates: BTreeMap<String, SequenceGate>,
     #[serde(default)]
     pub operations: BTreeMap<HexCode, Operation>,
     #[serde(default)]
@@ -114,6 +120,28 @@ pub struct Evidence {
     pub date: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceGate {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateRequirement {
+    pub name: String,
+    #[serde(default)]
+    pub failure: GateFailure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum GateFailure {
+    #[default]
+    NoResponse,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Operation {
@@ -143,6 +171,10 @@ pub struct Operation {
     /// not-writing, …); evaluated by the engine, not a tree edge.
     #[serde(default)]
     pub requires: Option<Predicate>,
+    /// Ordered wire-precondition gate required before the simulator serves this
+    /// operation. Distinct from `requires`, which is predicate-state gating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_gate: Option<GateRequirement>,
     /// Camera-side state mutations this operation triggers — the simulator
     /// applies them so a poll-until (`awaitUntil`) flow round-trips (the §5.5 AF
     /// stub: `0x9026 LockS1Lock` → `0xd209 S1_LOCK_COLOR` flips to locked).
@@ -286,6 +318,10 @@ pub struct Property {
     /// shape; it does not bake manufacturer formulas into Rust.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_encoding: Option<PropertyValueEncoding>,
+    /// Ordered wire-precondition gate required before the simulator serves this
+    /// property. Distinct from `Operation.requires` predicate gating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_gate: Option<GateRequirement>,
     #[serde(default)]
     pub evidence: Vec<String>,
 }
@@ -994,6 +1030,15 @@ pub struct Step {
     /// the PTP-IP action scope for later conditionals, loops, or params.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub captures: Vec<Capture>,
+    /// Start tracking a named simulator sequence gate at this step. The marker
+    /// does not change what the consumer sends; the engine uses it to build a
+    /// negative oracle for order-sensitive preconditions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_gate: Option<String>,
+    /// Satisfy a named simulator sequence gate when this step and all steps
+    /// since the matching `startsGate` have succeeded in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completes_gate: Option<String>,
     /// If true, a non-OK PTP *response* to this step is acceptable — the client
     /// logs it and continues (advisory setup like `0xdf28`/`0xd226`/`0x9054` that
     /// some bodies/responders reject). Only a *transport* failure aborts.
@@ -1018,6 +1063,19 @@ pub struct Step {
     pub r#loop: Option<Loop>,
     #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
     pub if_step: Option<IfStep>,
+}
+
+impl Step {
+    pub fn is_sequence_gate_matchable(&self) -> bool {
+        if self.set_prop.is_some() || self.get_prop.is_some() {
+            return true;
+        }
+        self.send_op.is_some()
+            && self
+                .params
+                .iter()
+                .all(|p| matches!(p, StepParam::Literal(_)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

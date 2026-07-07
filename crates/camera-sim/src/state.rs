@@ -5,7 +5,7 @@
 use camera_config::CameraManifest;
 use ptp_core::codes::datatype_code as dt;
 use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Fuji function-mode selector properties.
 pub const PROP_DF00: u16 = 0xdf00;
@@ -43,6 +43,12 @@ pub struct CameraState {
     /// [`take_event`]: CameraState::take_event
     /// [`drain_events`]: CameraState::drain_events
     events: VecDeque<u16>,
+    /// Sequence gates satisfied in the current session. These are manifest-named
+    /// ordered bootstrap preconditions, not camera properties.
+    satisfied_gates: BTreeSet<String>,
+    /// Progress through each manifest-declared gate sequence, keyed by
+    /// `(gate_name, sequence_index)`.
+    gate_progress: BTreeMap<(String, usize), usize>,
 }
 
 /// A scheduled op-effect: the value `set_prop` settles to, and how many more
@@ -76,6 +82,8 @@ impl CameraState {
             props,
             pending: BTreeMap::new(),
             events: VecDeque::new(),
+            satisfied_gates: BTreeSet::new(),
+            gate_progress: BTreeMap::new(),
         }
     }
 
@@ -138,12 +146,56 @@ impl CameraState {
         self.events.drain(..).collect()
     }
 
+    pub fn gate_satisfied(&self, name: &str) -> bool {
+        self.satisfied_gates.contains(name)
+    }
+
+    pub fn satisfy_gate(&mut self, name: &str) {
+        self.satisfied_gates.insert(name.to_string());
+    }
+
+    pub fn clear_gate(&mut self, name: &str) {
+        self.satisfied_gates.remove(name);
+        self.gate_progress.retain(|(gate, _), _| gate != name);
+    }
+
+    pub fn reset_gates(&mut self) {
+        self.satisfied_gates.clear();
+        self.gate_progress.clear();
+    }
+
+    pub fn gate_progress(&self, name: &str, sequence: usize) -> usize {
+        self.gate_progress
+            .get(&(name.to_string(), sequence))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn set_gate_progress(&mut self, name: &str, sequence: usize, progress: usize) {
+        let key = (name.to_string(), sequence);
+        if progress == 0 {
+            self.gate_progress.remove(&key);
+        } else {
+            self.gate_progress.insert(key, progress);
+        }
+    }
+
     /// The manifest control-mode key matching the current phase, used to resolve
     /// "intent -> mechanism" the same way the app does.
     pub fn mode_key(&self) -> &'static str {
         match self.phase {
             Phase::LiveView | Phase::Streaming => "liveView",
             Phase::ImageImport => "imageImport",
+            _ => "",
+        }
+    }
+
+    /// The manifest mode path matching the current phase, used for scoped
+    /// property capability profiles.
+    pub fn manifest_mode_path(&self) -> &'static str {
+        match self.phase {
+            Phase::SessionOpen | Phase::LiveView | Phase::Streaming => "shooting/stills",
+            Phase::ImageImport => "image-transfer",
             _ => "",
         }
     }
