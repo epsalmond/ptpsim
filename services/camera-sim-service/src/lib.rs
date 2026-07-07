@@ -620,6 +620,7 @@ async fn write_reply(
                 )
                 .await?;
         }
+        Reply::NoResponse => {}
         Reply::Close => {}
     }
     Ok(())

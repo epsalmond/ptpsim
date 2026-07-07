@@ -194,6 +194,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     modes: modes.into_iter().collect(),
                     connections: conns.into_iter().collect(),
                     requires: None,
+                    requires_gate: None,
                     // Op-effects and emitted events are curated sim-behavior,
                     // never probe-derived.
                     effects: Vec::new(),
@@ -250,6 +251,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     value_rows: Vec::new(),
                     value_profiles: agg.value_profiles,
                     value_encoding: None,
+                    requires_gate: None,
                     evidence,
                 },
             )
@@ -291,6 +293,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
         camera,
         evidence,
         sentinels: BTreeMap::new(),
+        sequence_gates: BTreeMap::new(),
         operations,
         properties,
         workflows: BTreeMap::new(),

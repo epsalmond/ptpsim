@@ -67,6 +67,10 @@ isn't.)
    and optionally `requires: <predicate>` (a runtime prerequisite over observed
    props — e.g. card-inserted, not-writing-buffer). This avoids pseudo-mode
    explosion (`Stills/NoCard`, `Stills/Writing`).
+   Ordered wire rituals that must complete before later access use a separate
+   `sequenceGates` / `startsGate` / `completesGate` / `requiresGate` model. Do
+   not overload `requires`: it is predicate-state gating, while sequence gates
+   are simulator negative-oracle metadata for order-sensitive responders.
 6. **Modes are hierarchical paths** (`Shooting/Stills`) — for gate inheritance
    (prefix match), UI grouping, and `detect` attachment. A **mode graph** of
    action-bearing **mode-entry** edges (optionally `from`-qualified) describes
@@ -204,6 +208,8 @@ protocol:                            # ENGINE: wire facts + their gating
     StepFNumber:        { code: 0x902d, modes: [Shooting/Stills] }
     GetObjectHandles:   { code: 0x1007, modes: [ImageTransfer] }
     RawConvert:         { code: 0x91xx, modes: [RawConversion], connections: [USBTether] }
+  sequenceGates:
+    imageImportBootstrap: { mode: ImageTransfer, connections: [App] }
   properties: { "0x5007": {...}, "0xd02a": {...} }
   events: {...}
   quirks: {...}

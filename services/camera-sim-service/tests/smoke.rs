@@ -57,6 +57,45 @@ fn op(code: u16, tid: u32, params: Vec<u32>) -> Vec<u8> {
     .unwrap()
 }
 
+fn real_gfx_manifest() -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml");
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+}
+
+fn connect_ptpip(command_addr: std::net::SocketAddr, friendly_name: &str) -> TcpStream {
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [1; 16],
+        friendly_name: friendly_name.into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
+        PtpIpPacket::InitCommandAck(_) => {}
+        other => panic!("expected InitCommandAck, got {other:?}"),
+    }
+    s
+}
+
+fn set_prop(s: &mut TcpStream, tid: u32, prop: u16, data: &[u8]) {
+    write_frame(s, &op(0x1016, tid, vec![prop as u32]));
+    write_frame(s, &fuji_framing::encode_data(0x1016, tid, data));
+    read_ok(s);
+}
+
+fn assert_read_timeout(s: &mut TcpStream) {
+    let mut buf = [0u8; 4];
+    match s.read_exact(&mut buf) {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) => {}
+        other => panic!("expected read timeout/no-response, got {other:?}"),
+    }
+}
+
 /// Read a data reply: one type-2 `Data` frame (the whole payload) followed by
 /// `OperationResponse(OK)`. The compressed channel has no StartData/EndData.
 fn read_data_reply(s: &mut TcpStream) -> Vec<u8> {
@@ -157,6 +196,90 @@ fn service_drives_image_import_over_tcp() {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn service_times_out_d620_until_image_import_bootstrap_completes() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root.clone(),
+            command_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_bind: "127.0.0.1:0".parse().unwrap(),
+            event_bind: "127.0.0.1:0".parse().unwrap(),
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (cmd, tx, h)
+    });
+
+    let mut s = connect_ptpip(command_addr, "smoke");
+    s.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    write_frame(&mut s, &op(0x1002, 1, vec![1]));
+    read_ok(&mut s);
+
+    write_frame(&mut s, &op(0x1016, 2, vec![0xdf01]));
+    write_frame(
+        &mut s,
+        &fuji_framing::encode_data(0x1016, 2, &0x14u16.to_le_bytes()),
+    );
+    read_ok(&mut s);
+
+    s.set_read_timeout(Some(std::time::Duration::from_millis(250)))
+        .unwrap();
+    write_frame(&mut s, &op(0x1015, 3, vec![0xd620]));
+    assert_read_timeout(&mut s);
+    s.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+
+    write_frame(&mut s, &op(0x1015, 4, vec![0xd212]));
+    let _ = read_data_reply(&mut s); // D212 preamble starts the gate.
+    set_prop(&mut s, 5, 0xdf01, &0x14u16.to_le_bytes());
+    write_frame(&mut s, &op(0x1015, 6, vec![0xdf28]));
+    let _ = read_data_reply(&mut s);
+    set_prop(&mut s, 7, 0xdf28, &3u32.to_le_bytes());
+    set_prop(&mut s, 8, 0xd226, &0u16.to_le_bytes());
+    set_prop(&mut s, 9, 0xd227, &0u16.to_le_bytes());
+    write_frame(&mut s, &op(0x1015, 10, vec![0xd244]));
+    let _ = read_data_reply(&mut s);
+    write_frame(&mut s, &op(0x9054, 11, vec![0x1000_0001]));
+    read_ok(&mut s);
+    write_frame(&mut s, &op(0x9055, 12, vec![0x1000_0001]));
+    read_ok(&mut s);
+    write_frame(&mut s, &op(0x9050, 13, vec![]));
+    read_ok(&mut s);
+    write_frame(&mut s, &op(0x1015, 14, vec![0xd212]));
+    let _ = read_data_reply(&mut s);
+    write_frame(&mut s, &op(0x1015, 15, vec![0xd22b]));
+    let _ = read_data_reply(&mut s);
+    write_frame(&mut s, &op(0x9053, 16, vec![0, 0x7530]));
+    read_ok(&mut s);
+    write_frame(&mut s, &op(0x1015, 17, vec![0xd212]));
+    let _ = read_data_reply(&mut s);
+
+    write_frame(&mut s, &op(0x1015, 18, vec![0xd620]));
+    let count = read_data_reply(&mut s);
+    let mut r = ptp_core::Reader::new(&count);
+    assert_eq!(r.u32().unwrap(), 1);
+    write_frame(&mut s, &op(0x1015, 19, vec![0xd621]));
+    let handles_bytes = read_data_reply(&mut s);
+    let mut r = ptp_core::Reader::new(&handles_bytes);
+    let handles = r.ptp_array(|r| r.u32()).unwrap();
+    assert_eq!(handles.len(), 1);
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
     std::fs::remove_dir_all(&root).ok();
 }
 

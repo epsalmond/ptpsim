@@ -3,7 +3,7 @@
 //! exist, which properties have which forms, and which workflow they belong to
 //! are all manifest data. The handlers here are generic PTP semantics.
 
-use camera_config::model::ScalarEncoding;
+use camera_config::model::{ScalarEncoding, Step, StepParam};
 use camera_config::{parse_hex_code, CameraManifest};
 use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
@@ -16,6 +16,19 @@ use crate::state::{
 };
 
 const STORAGE_ID: u32 = 0x0001_0001;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GateSequence {
+    name: String,
+    steps: Vec<GateMatcher>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GateMatcher {
+    SetProp { prop: u16, value: i64 },
+    GetProp { prop: u16 },
+    SendOp { op: u16, params: Vec<u32> },
+}
 
 /// The engine's answer to one operation: a bare response, a data phase plus
 /// response, or a directive to close the connection. `Data` carries a small
@@ -33,6 +46,9 @@ pub enum Reply {
         source: ByteSource,
         response: OperationResponse,
     },
+    /// Write nothing and keep the command socket open, matching a camera-side
+    /// no-response / timeout. Distinct from `Close`, which drops the socket.
+    NoResponse,
     Close,
 }
 
@@ -162,13 +178,19 @@ impl Engine {
             return Self::err(tid, resp::SESSION_NOT_OPEN);
         }
 
+        if let Some(reply) = self.operation_gate_reply(req.code) {
+            return reply;
+        }
+
         let reply = match req.code {
             op::OPEN_SESSION => {
+                self.state.reset_gates();
                 self.state.session_open = true;
                 self.state.phase = Phase::SessionOpen;
                 Self::ok(tid)
             }
             op::CLOSE_SESSION => {
+                self.state.reset_gates();
                 self.state.session_open = false;
                 self.state.phase = Phase::Closed;
                 Self::ok(tid)
@@ -233,6 +255,9 @@ impl Engine {
             }
             op::GET_DEVICE_PROP_VALUE => {
                 let code = p(0) as u16;
+                if let Some(reply) = self.property_gate_reply(code) {
+                    return reply;
+                }
                 // A deferred op-effect transition settles on its scheduled poll.
                 self.state.resolve_pending(code);
                 // Reading a composite observes its members, so their pending
@@ -315,6 +340,7 @@ impl Engine {
         // arming immediate writes or deferred (poll-settled) transitions (§5.5
         // AF stub). Generic: the behavior is manifest data, not a brand branch.
         if reply_is_ok(&reply) {
+            self.advance_sequence_gates(req, data_in);
             self.apply_op_effects(req.code, &req.params);
             self.apply_op_emits(req.code);
         }
@@ -323,6 +349,170 @@ impl Engine {
 
     /// Arm the manifest-declared [`OpEffect`]s of operation `code` against state.
     /// No-op for ops without effects (the common case).
+    fn operation_gate_reply(&self, code: u16) -> Option<Reply> {
+        let req = self.manifest.operation(code)?.requires_gate.as_ref()?;
+        (!self.state.gate_satisfied(&req.name)).then_some(Reply::NoResponse)
+    }
+
+    fn property_gate_reply(&self, code: u16) -> Option<Reply> {
+        let req = self.manifest.property(code)?.requires_gate.as_ref()?;
+        (!self.state.gate_satisfied(&req.name)).then_some(Reply::NoResponse)
+    }
+
+    fn advance_sequence_gates(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) {
+        let sequences = self.gate_sequences();
+        for (sequence_index, sequence) in sequences.iter().enumerate() {
+            let progress = self.state.gate_progress(&sequence.name, sequence_index);
+            if progress > 0 {
+                if sequence
+                    .steps
+                    .get(progress)
+                    .is_some_and(|matcher| self.gate_match(matcher, req, data_in))
+                {
+                    self.advance_gate_progress(sequence, sequence_index, progress + 1);
+                    continue;
+                }
+                self.state
+                    .set_gate_progress(&sequence.name, sequence_index, 0);
+            }
+
+            if sequence
+                .steps
+                .first()
+                .is_some_and(|matcher| self.gate_match(matcher, req, data_in))
+            {
+                self.state.clear_gate(&sequence.name);
+                self.advance_gate_progress(sequence, sequence_index, 1);
+            }
+        }
+    }
+
+    fn advance_gate_progress(
+        &mut self,
+        sequence: &GateSequence,
+        sequence_index: usize,
+        progress: usize,
+    ) {
+        if progress >= sequence.steps.len() {
+            self.state.satisfy_gate(&sequence.name);
+            self.state
+                .set_gate_progress(&sequence.name, sequence_index, 0);
+        } else {
+            self.state
+                .set_gate_progress(&sequence.name, sequence_index, progress);
+        }
+    }
+
+    fn gate_sequences(&self) -> Vec<GateSequence> {
+        let mut out = Vec::new();
+        for connection in self.manifest.connections.values() {
+            for entry in &connection.entries {
+                self.collect_gate_sequences(&entry.steps, &mut out);
+            }
+            for action in connection.actions.values() {
+                self.collect_gate_sequences(&action.steps, &mut out);
+            }
+        }
+        out
+    }
+
+    fn collect_gate_sequences(&self, steps: &[Step], out: &mut Vec<GateSequence>) {
+        let mut active: std::collections::BTreeMap<String, Vec<GateMatcher>> =
+            std::collections::BTreeMap::new();
+        for step in steps {
+            let matcher = self.matcher_for_step(step);
+            let starts = step.starts_gate.clone();
+            for (gate, sequence) in active.iter_mut() {
+                if Some(gate) == starts.as_ref() {
+                    continue;
+                }
+                let Some(matcher) = matcher.clone() else {
+                    sequence.clear();
+                    continue;
+                };
+                sequence.push(matcher);
+            }
+            if let Some(gate) = starts {
+                match matcher.clone() {
+                    Some(matcher) => {
+                        active.insert(gate, vec![matcher]);
+                    }
+                    None => {
+                        active.insert(gate, Vec::new());
+                    }
+                }
+            }
+            if let Some(gate) = &step.completes_gate {
+                if let Some(sequence) = active.remove(gate) {
+                    if !sequence.is_empty() {
+                        let compiled = GateSequence {
+                            name: gate.clone(),
+                            steps: sequence,
+                        };
+                        if !out.contains(&compiled) {
+                            out.push(compiled);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn matcher_for_step(&self, step: &Step) -> Option<GateMatcher> {
+        if let Some(prop) = &step.set_prop {
+            return Some(GateMatcher::SetProp {
+                prop: parse_hex_code(prop)?,
+                value: step.value.unwrap_or(0),
+            });
+        }
+        if let Some(prop) = &step.get_prop {
+            return Some(GateMatcher::GetProp {
+                prop: parse_hex_code(prop)?,
+            });
+        }
+        if let Some(op) = &step.send_op {
+            return Some(GateMatcher::SendOp {
+                op: parse_hex_code(op)?,
+                params: literal_params(&step.params)?,
+            });
+        }
+        None
+    }
+
+    fn gate_match(
+        &self,
+        matcher: &GateMatcher,
+        req: &OperationRequest,
+        data_in: Option<&[u8]>,
+    ) -> bool {
+        match matcher {
+            GateMatcher::GetProp { prop } => {
+                req.code == op::GET_DEVICE_PROP_VALUE && req.params.first() == Some(&(*prop as u32))
+            }
+            GateMatcher::SetProp { prop, value } => {
+                if req.code != op::SET_DEVICE_PROP_VALUE
+                    || req.params.first() != Some(&(*prop as u32))
+                {
+                    return false;
+                }
+                let Some(bytes) = data_in else {
+                    return false;
+                };
+                let datatype = datatype_of(
+                    self.manifest
+                        .property(*prop)
+                        .and_then(|p| p.ptype.as_deref()),
+                );
+                let mut r = Reader::new(bytes);
+                PropValue::decode(&mut r, datatype)
+                    .ok()
+                    .and_then(|v| value_to_i64(&v))
+                    == Some(*value)
+            }
+            GateMatcher::SendOp { op, params } => req.code == *op && req.params == *params,
+        }
+    }
+
     fn apply_op_effects(&mut self, code: u16, params: &[u32]) {
         let Some(opdef) = self.manifest.operation(code) else {
             return;
@@ -490,6 +680,9 @@ impl Engine {
                     DF01_LIVE_VIEW => Phase::LiveView,
                     _ => self.state.phase,
                 };
+                if n as u32 != DF01_IMAGE_IMPORT {
+                    self.state.reset_gates();
+                }
             }
         }
         self.state.props.insert(code, value);
@@ -586,8 +779,18 @@ fn reply_is_ok(reply: &Reply) -> bool {
         Reply::Response(r)
         | Reply::Data { response: r, .. }
         | Reply::DataStream { response: r, .. } => r.code == resp::OK,
-        Reply::Close => false,
+        Reply::NoResponse | Reply::Close => false,
     }
+}
+
+fn literal_params(params: &[StepParam]) -> Option<Vec<u32>> {
+    params
+        .iter()
+        .map(|p| match p {
+            StepParam::Literal(v) => Some(*v),
+            StepParam::Runtime { .. } => None,
+        })
+        .collect()
 }
 
 fn value_to_i64(v: &PropValue) -> Option<i64> {

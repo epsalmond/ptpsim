@@ -25,6 +25,18 @@ fn consolidated() -> CameraManifest {
         .unwrap_or_else(|e| panic!("consolidated loads: {e}"))
 }
 
+fn loop_mechanics_manifest() -> CameraManifest {
+    let mut manifest = consolidated();
+    for prop in ["0xd620", "0xd621"] {
+        manifest
+            .properties
+            .get_mut(prop)
+            .unwrap_or_else(|| panic!("{prop} property exists"))
+            .requires_gate = None;
+    }
+    manifest
+}
+
 /// A JPEG of exactly `size` bytes (SOI … EOI, index-filled) so MediaStore scans
 /// it as a transferable image whose ObjectCompressedSize == `size`.
 fn jpeg(size: usize) -> Vec<u8> {
@@ -58,7 +70,7 @@ fn engine_with(files: &[(&str, usize)]) -> Engine {
     }
     let mut store = MediaStore::open(&root).unwrap();
     store.scan().unwrap();
-    Engine::new(consolidated(), store)
+    Engine::new(loop_mechanics_manifest(), store)
 }
 
 fn rt(slot: &str) -> StepParam {
@@ -86,8 +98,8 @@ fn loop_step(lp: Loop, tolerant: bool) -> Step {
 }
 
 /// enumerate → forEach handle { getObjectInfo → chunk(window) { getPartialObject } }.
-/// No arm block (the engine accepts the transfer ops without it here); the
-/// keystone covers the armed path from the real action.
+/// No arm block: these tests use a manifest clone with only the enumeration gate
+/// removed. The keystone covers the armed path from the real action.
 fn import_steps(window: u32, chunk_tolerant: bool) -> Vec<Step> {
     let chunk = loop_step(
         Loop::Chunk {

@@ -31,6 +31,36 @@ fn ids(cs: &[ConnectionInfo]) -> Vec<&str> {
     cs.iter().map(|c| c.id.as_str()).collect()
 }
 
+fn assert_bootstrap_tail_surfaces(steps: &[EntryStep]) {
+    let d22b = steps
+        .iter()
+        .position(|st| matches!(st, EntryStep::GetProp { prop: 0xd22b, .. }))
+        .expect("D22B bootstrap read crosses FFI");
+    let page = steps
+        .iter()
+        .position(|st| matches!(st, EntryStep::SendOp { op: 0x9053, .. }))
+        .expect("0x9053 page op crosses FFI");
+    let final_d212 = steps
+        .iter()
+        .enumerate()
+        .skip(page + 1)
+        .find_map(|(i, st)| matches!(st, EntryStep::GetProp { prop: 0xd212, .. }).then_some(i))
+        .expect("final D212 read crosses FFI after 0x9053");
+    assert!(d22b < page && page < final_d212);
+    match &steps[page] {
+        EntryStep::SendOp { params, .. } => {
+            assert!(matches!(
+                params.as_slice(),
+                [
+                    EntryParam::Literal { value: 0 },
+                    EntryParam::Literal { value: 0x7530 }
+                ]
+            ));
+        }
+        other => panic!("expected 0x9053 SendOp, got {other:?}"),
+    }
+}
+
 #[test]
 fn platform_filters_connections_macos_vs_ios() {
     let s = store();
@@ -420,6 +450,7 @@ fn take_to_get_entry_switches_in_session_without_reopen() {
         "0x1018 is followed by the in-session 0xd212 read, not a reopen: {:?}",
         plan.steps[1]
     );
+    assert_bootstrap_tail_surfaces(&plan.steps);
     assert!(
         !plan
             .steps
@@ -676,6 +707,7 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
         .action("app".into(), ActionVerb::ImportObjects)
         .expect("app.actions.importObjects");
     assert_eq!(plan.mode, "image-transfer");
+    assert_bootstrap_tail_surfaces(&plan.steps);
 
     // The forEach iterates the 0xd621 handle list, binding `handle`.
     let for_each = plan

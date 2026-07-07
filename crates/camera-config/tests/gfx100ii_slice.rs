@@ -19,6 +19,35 @@ fn gfx() -> CameraManifest {
     CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.yaml")).expect("gfx100ii.yaml loads")
 }
 
+fn assert_image_import_bootstrap_gate(steps: &[camera_config::Step]) {
+    let start = steps
+        .iter()
+        .position(|s| s.starts_gate.as_deref() == Some("imageImportBootstrap"))
+        .expect("bootstrap gate starts");
+    let complete = steps
+        .iter()
+        .position(|s| s.completes_gate.as_deref() == Some("imageImportBootstrap"))
+        .expect("bootstrap gate completes");
+    assert!(start < complete, "gate start precedes completion");
+    assert_eq!(steps[start].get_prop.as_deref(), Some("0xd212"));
+    assert_eq!(steps[complete].get_prop.as_deref(), Some("0xd212"));
+    let d22b = steps[start..=complete]
+        .iter()
+        .position(|s| s.get_prop.as_deref() == Some("0xd22b"))
+        .map(|i| start + i)
+        .expect("bootstrap reads D22B");
+    let page = steps[start..=complete]
+        .iter()
+        .position(|s| s.send_op.as_deref() == Some("0x9053"))
+        .map(|i| start + i)
+        .expect("bootstrap sends 0x9053");
+    assert!(d22b < page, "D22B read precedes 0x9053 page op");
+    assert_eq!(
+        steps[page].params,
+        vec![StepParam::Literal(0), StepParam::Literal(0x7530)]
+    );
+}
+
 #[test]
 fn app_slice_loads_and_schema_is_supported() {
     let m = gfx();
@@ -760,6 +789,7 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         .iter()
         .find(|e| e.to == "image-transfer" && e.from.is_none())
         .unwrap();
+    assert_image_import_bootstrap_gate(&cold.steps);
     assert!(cold
         .steps
         .iter()
@@ -795,6 +825,7 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         .iter()
         .find(|e| e.to == "image-transfer" && e.from.as_deref() == Some("shooting/stills"))
         .unwrap();
+    assert_image_import_bootstrap_gate(&from.steps);
     assert_eq!(from.steps[0].send_op.as_deref(), Some("0x1018"));
     assert_eq!(
         from.steps[0].params,
@@ -856,6 +887,43 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
             .iter()
             .all(|s| s.send_op.as_deref() != Some("0x1018")),
         "Get→Take must not terminate live-view before reopening it"
+    );
+}
+
+#[test]
+fn image_import_bootstrap_gate_covers_import_action_and_enumeration_props() {
+    let m = gfx();
+    assert!(m.sequence_gates.contains_key("imageImportBootstrap"));
+    let d620 = m.properties["0xd620"]
+        .requires_gate
+        .as_ref()
+        .expect("D620 is gated");
+    assert_eq!(d620.name, "imageImportBootstrap");
+    assert_eq!(d620.failure, camera_config::GateFailure::NoResponse);
+    let d621 = m.properties["0xd621"]
+        .requires_gate
+        .as_ref()
+        .expect("D621 is gated");
+    assert_eq!(d621.name, "imageImportBootstrap");
+    assert_eq!(d621.failure, camera_config::GateFailure::NoResponse);
+
+    let import = m
+        .action("app", ActionVerb::ImportObjects)
+        .expect("app importObjects action");
+    assert_image_import_bootstrap_gate(&import.steps);
+    let d620_pos = import
+        .steps
+        .iter()
+        .position(|s| s.get_prop.as_deref() == Some("0xd620"))
+        .expect("import action reads D620");
+    let complete = import
+        .steps
+        .iter()
+        .position(|s| s.completes_gate.as_deref() == Some("imageImportBootstrap"))
+        .expect("import action completes bootstrap");
+    assert!(
+        complete < d620_pos,
+        "gate completes before D620 enumeration"
     );
 }
 
