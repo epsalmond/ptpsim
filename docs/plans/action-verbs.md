@@ -186,8 +186,8 @@ name.
 
 1. **Schema (`crates/camera-config/src/model.rs`)**:
    - `pub enum ActionVerb { Shutter, EnumerateObjects, GetObjectInfo, GetThumb,
-     GetObject, DeleteObject }` — **closed vocabulary**. New verbs require a
-     schema PR (same fail-fast as Step verbs).
+     GetObject, DeleteObject, Keepalive, ... }` — **closed vocabulary**. New
+     verbs require a schema PR (same fail-fast as Step verbs).
    - `pub struct ActionEffect` — flat struct mirroring the `Step` pattern
      (one optional field per variant, `deny_unknown_fields`). Fields:
      `objects_available: Option<ObjectsAvailable { min: u32, max: u32 }>` (PCSS
@@ -200,8 +200,11 @@ name.
    - `CameraManifest::action(connection, verb)` query method returning
      `Option<&Action>`.
 2. **Data (`packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml`)**:
-   - `wireless-tether.actions.{shutter, enumerateObjects, getObjectInfo,
-     getThumb, getObject, deleteObject}` per the wire-confirmed D3 sequences.
+   - `wireless-tether.actions.{shutter, keepalive, enumerateObjects,
+     getObjectInfo, getThumb, getObject, deleteObject}` per the wire-confirmed
+     D3 sequences. `keepalive` is one caller-scheduled loop iteration; cadence
+     is intentionally not modeled because captures show bursts and variable
+     intervals.
    - `shutter.triggers: [{ objectsAvailable: { min: 1, max: 3 } }]` on
      wireless-tether — the camera makes 1-3 objects available depending on
      the user's JPEG / HEIF / RAW format selection.

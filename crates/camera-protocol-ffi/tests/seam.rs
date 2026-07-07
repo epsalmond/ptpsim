@@ -685,6 +685,34 @@ fn action_returns_pcss_shutter_with_objects_available_trigger() {
 }
 
 #[test]
+fn action_returns_pcss_keepalive_recipe() {
+    let s = store();
+    let keepalive = s
+        .action("wireless-tether".into(), ActionVerb::Keepalive)
+        .expect("wireless-tether.actions.keepalive");
+    assert_eq!(keepalive.mode, "");
+    assert!(keepalive.params.is_empty());
+    assert!(keepalive.triggers.is_empty());
+    assert_eq!(keepalive.steps.len(), 2);
+    assert!(matches!(
+        keepalive.steps[0],
+        EntryStep::SetProp {
+            prop: 0xd21c,
+            value: 0,
+            ..
+        }
+    ));
+    assert!(matches!(
+        keepalive.steps[1],
+        EntryStep::SetProp {
+            prop: 0xd207,
+            value: 1,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn action_returns_app_shutter_with_postview_event_trigger() {
     // Same verb, different connection — the reference app shutter take cycle (#29):
     // 0x100E → awaitUntil the 0xC001 PostviewComplete event → 0x9022 read.

@@ -180,6 +180,20 @@ fn read_handles(s: &mut TcpStream, tid: u32) -> Vec<u32> {
     r.ptp_array(|r| r.u32()).unwrap()
 }
 
+fn read_d620_count(s: &mut TcpStream, tid: u32) -> u32 {
+    write_frame(s, &op(0x1015, tid, vec![0xd620]));
+    let bytes = read_data_reply(s);
+    let mut r = ptp_core::Reader::new(&bytes);
+    r.u32().unwrap()
+}
+
+fn read_d621_handles(s: &mut TcpStream, tid: u32) -> Vec<u32> {
+    write_frame(s, &op(0x1015, tid, vec![0xd621]));
+    let bytes = read_data_reply(s);
+    let mut r = ptp_core::Reader::new(&bytes);
+    r.ptp_array(|r| r.u32()).unwrap()
+}
+
 fn pcss_shutter(s: &mut TcpStream, first_tid: u32) {
     let phases = [0x0001_0000u32, 0x0002_0000, 0x0000_0001];
     let mut tid = first_tid;
@@ -876,28 +890,32 @@ fn pcss_startup_queue_downloads_and_delete_drains() {
     let handles = read_handles(&mut s, 2);
     assert_eq!(handles.len(), 1);
     let handle_id = handles[0];
+    assert_eq!(read_d620_count(&mut s, 3), 1);
+    assert_eq!(read_d621_handles(&mut s, 4), handles);
 
-    write_frame(&mut s, &op(0x1008, 3, vec![handle_id]));
+    write_frame(&mut s, &op(0x1008, 5, vec![handle_id]));
     let info = read_data_reply(&mut s);
     let oi = ptp_core::ObjectInfo::decode(&info).unwrap();
     assert_eq!(oi.object_format, 0x3801);
 
-    write_frame(&mut s, &op(0x100a, 4, vec![handle_id]));
+    write_frame(&mut s, &op(0x100a, 6, vec![handle_id]));
     let thumb = read_data_reply(&mut s);
     assert!(thumb.starts_with(b"\xFF\xD8"));
 
-    write_frame(&mut s, &op(0x1009, 5, vec![handle_id]));
+    write_frame(&mut s, &op(0x1009, 7, vec![handle_id]));
     let object = read_data_reply(&mut s);
     assert_eq!(&object, b"\xFF\xD8HELLOJPEG\xFF\xD9");
 
-    write_frame(&mut s, &op(0x100b, 6, vec![handle_id]));
+    write_frame(&mut s, &op(0x100b, 8, vec![handle_id]));
     read_ok(&mut s);
-    assert!(read_handles(&mut s, 7).is_empty());
+    assert!(read_handles(&mut s, 9).is_empty());
+    assert_eq!(read_d620_count(&mut s, 10), 0);
+    assert!(read_d621_handles(&mut s, 11).is_empty());
 
-    write_frame(&mut s, &op(0x1008, 8, vec![handle_id]));
+    write_frame(&mut s, &op(0x1008, 12, vec![handle_id]));
     assert_eq!(read_response_code(&mut s), 0x2009);
 
-    write_frame(&mut s, &op(0x101b, 9, vec![handle_id, 0, 1, 0]));
+    write_frame(&mut s, &op(0x101b, 13, vec![handle_id, 0, 1, 0]));
     assert_eq!(
         read_response_code(&mut s),
         0x2005,

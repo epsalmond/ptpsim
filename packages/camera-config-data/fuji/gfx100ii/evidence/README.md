@@ -19,6 +19,17 @@ distilled into `fw0230.yaml` (or a richer manifest schema).
 
 | `IMAGE_TRANSFER_FW230.md` | Image-import (download) wire protocol for GFX100 II fw 2.30: mode-20 setup, `GetObjectInfo`/`GetThumb` enumeration, `GetPartialObject` 12 MB-chunk download, the `0xD620`/`0xD621` handle-list path, per-format (RAF/JPEG/MOV) ObjectInfo decode (1441-sample tally), and the fresh-session reconnect/sentinel choreography. Mobile Wi-Fi PTP/IP. The app-side reconnect contract is mirrored in the client application repo at `docs/IMAGE_IMPORT_RECONNECT.md`; narrative twin on nas `mobile/docs/captures/`. |
 
+## PCSS video snapshot limit
+
+The `probe/2026-05-27-ptp-evidence-wireless-stills.jsonl` and
+`probe/2026-05-27-ptp-evidence-wireless-video.jsonl` files are PCSS
+capability snapshots only. They prove the advertised operation/property surface
+for those camera states, not that desktop PCSS records movies or transfers MOV
+objects. Do not model PCSS MOV transfer, including >4 GiB MOV transfer, from
+these files alone; require a real PCSS MOV transfer capture. The `0xD037`
+stills/video label remains scaffold/hypothesis until an actual PCSS flip
+transition is captured.
+
 ## Note for the ptpsim agent
 
 `../fw0230.yaml`'s `evidence:` block currently points at two app-repo paths that

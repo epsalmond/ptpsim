@@ -437,6 +437,7 @@ operations:
     - image-transfer
     connections:
     - app
+    - wireless-tether
     requires: null
     effects: []
     emits: []
@@ -444,6 +445,8 @@ operations:
     - iosStartupSeq
     - iosLiveControls
     - docImageTransfer
+    - wireTetherCaps20260527
+    - wirePCSSShootDownload20260523
   '0x1016':
     name: SetDevicePropValue
     owner: standard-ptp
@@ -8054,6 +8057,35 @@ connections:
         triggers: []
         evidence:
         - wireTetherCaps20260527
+      keepalive:
+        mode: ''
+        params: []
+        steps:
+        - setProp: '0xd21c'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: 0
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        - setProp: '0xd207'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: 1
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        triggers: []
+        evidence:
+        - wirePCSSShootDownload20260523
     enables: []
     discovery:
       mechanism: pcss-knock

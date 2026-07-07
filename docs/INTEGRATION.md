@@ -223,6 +223,10 @@ per-platform packaging:
   keepalives) look writable on the wire but are protocol mechanics, NOT
   user-facing values. Don't surface them in settings UI; a generic
   set-prop-by-name path must skip them.
+- **Keepalives are actions.** For a connection that declares
+  `ActionVerb::Keepalive`, execute that action as the caller-scheduled session
+  maintenance iteration. The manifest names the wire writes; it does not encode
+  a fixed cadence.
 - **Secrets stay out of the bundle.** Access-gate material (the XLV bearer token, BLE
   pairing secrets) is **not** in `camera-config-data` and never comes over this surface
   — your app supplies it out-of-band (a private overlay). The manifest only says *that*

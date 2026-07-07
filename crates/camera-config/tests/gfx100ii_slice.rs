@@ -267,6 +267,11 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
         camera_config::Availability::WrongConnection,
         "0x101b GetPartialObject must NOT be authorized on wireless-tether"
     );
+    assert_eq!(
+        m.operation_available("wireless-tether", "shooting/stills", 0x1015, &any),
+        camera_config::Availability::Available,
+        "wireless-tether uses GetDevicePropValue for PCSS readbacks"
+    );
     // PCSS ISO is 0x500F, NOT 0xD02A (reference app path). Verify both controls land on
     // the right connection.
     assert!(
@@ -316,6 +321,24 @@ fn wireless_tether_shutter_action_is_the_3_beat_pcss_sequence() {
     );
     assert!(t.postview_event.is_none());
     assert!(t.live_view_stream.is_none());
+}
+
+#[test]
+fn wireless_tether_keepalive_action_is_session_scaffold_not_settings() {
+    let m = gfx();
+    let keepalive = m
+        .action("wireless-tether", ActionVerb::Keepalive)
+        .expect("wireless-tether.actions.keepalive must exist");
+    assert_eq!(keepalive.mode, "");
+    assert!(keepalive.params.is_empty());
+    assert!(keepalive.triggers.is_empty());
+    assert_eq!(keepalive.steps.len(), 2);
+    assert_eq!(keepalive.steps[0].set_prop.as_deref(), Some("0xd21c"));
+    assert_eq!(keepalive.steps[0].value, Some(0));
+    assert_eq!(keepalive.steps[1].set_prop.as_deref(), Some("0xd207"));
+    assert_eq!(keepalive.steps[1].value, Some(1));
+    assert_eq!(m.properties["0xd21c"].kind.as_deref(), Some("scaffold"));
+    assert_eq!(m.properties["0xd207"].kind.as_deref(), Some("scaffold"));
 }
 
 #[test]

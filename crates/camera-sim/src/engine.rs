@@ -442,6 +442,18 @@ impl Engine {
             }
             op::GET_DEVICE_PROP_VALUE => {
                 let code = p(0) as u16;
+                if self.transfer_queue.is_some() {
+                    if code == 0xd621 {
+                        let mut w = Writer::new();
+                        w.ptp_array(&self.enumerated_object_handles(), |w, v| w.u32(*v));
+                        return Self::data(tid, w.into_vec());
+                    }
+                    if code == 0xd620 {
+                        let mut w = Writer::new();
+                        w.u32(self.enumerated_object_handles().len() as u32);
+                        return Self::data(tid, w.into_vec());
+                    }
+                }
                 if let Some(reply) = self.property_gate_reply(code) {
                     return reply;
                 }

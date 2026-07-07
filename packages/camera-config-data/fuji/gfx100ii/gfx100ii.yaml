@@ -30,7 +30,8 @@ evidence:
   # STRONGEST tier: wire-confirmed over wired-gigabit + Wi-Fi infra PTP-IP tether.
   wireTether:      { kind: wire-capture, path: "https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/WIRED_TETHER_CONTROL.md", date: "2026-05-23" }
   # Per-(connection,mode) GetDeviceInfo + GetDevicePropDesc snapshots on PCSS/15740.
-  # Authoritative for the wireless-tether supported-ops set (2026-05-27 wire capture).
+  # Authoritative for the wireless-tether supported-ops set (2026-05-27 wire capture);
+  # stills and video snapshots had the same ops/props/events surface.
   wireTetherCaps20260527: { kind: wire-capture, path: "packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
   # reference-app Take↔Get session-reopen wire trace (full byte trace + identity decode).
   # Source for the `reopenSession` step in the image-transfer → shooting/stills entry.
@@ -444,8 +445,9 @@ connections:
     #     frames of active shooting — confirms PCSS is event-less mid-shoot.
     # Wire-confirmed SUPPORTED (wirePCSSShootDownload20260523) — recipes in `actions:`
     # below per docs/plans/action-verbs.md. Still open: 0xD037 stills↔video flip
-    # transition capture (Q3) — when it lands, model it as a videoStillsFlip action
-    # or as a `shooting/video` mode entry (TBD per the flip semantics).
+    # transition capture (Q3) — the 05-27 video evidence is a capability snapshot
+    # only, not proof of PCSS movie recording or MOV transfer. Keep PCSS MOV /
+    # >4 GiB MOV transfer unmodeled until a real PCSS MOV transfer capture lands.
     actions:
       # Session-scoped identity read (#173): the actual body's unit serial (the
       # saved-camera merge key) + supported ops, via parse_device_info on the
@@ -459,6 +461,15 @@ connections:
         steps:
           - { sendOp: "0x1001", params: [] }
         evidence: [wireTetherCaps20260527]
+      # One caller-scheduled PCSS session keepalive iteration. Captures show
+      # variable bursts/periodic intervals, so cadence is deliberately not
+      # modeled here; clients loop this recipe while the PCSS session is alive.
+      keepalive:
+        mode: ""
+        steps:
+          - { setProp: "0xd21c", value: 0 }
+          - { setProp: "0xd207", value: 1 }
+        evidence: [wirePCSSShootDownload20260523]
       # 3-beat virtual-shutter sequence. Each beat is `setProp 0xD039 = <phase>` +
       # `0x100E InitiateCapture(0,0)`. Phase byte layout is `[lo0, lo1, hi0, hi1]`
       # — beats 1/2 set the high word (request: phase 1/2); beat 3 sets the low
@@ -586,7 +597,7 @@ operations:
   # capture lands (see 2026-06-02 consult).
   "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], emits: ["0xc001"], evidence: [iosLiveControls, docLiveControls, wireTetherCaps20260527] }   # 0xC001 PostviewComplete (delivered on the app event socket; wireless-tether has no event channel)
   "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosLiveControls] }
-  "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer], connections: [app], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer] }
+  "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }
   "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireTether] }
   "0x101b": { name: GetPartialObject,     owner: standard-ptp, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosStartupSeq] }
@@ -819,8 +830,9 @@ properties:
   # FUJI_PTP_PROP_REFERENCE labels this as the PCSS-path stills/video toggle
   # (`0x0001`=stills, `0x0101`=video), but the flip-transition is UNTESTED on
   # wire and the values come from a 05-27 wireless-stills vs wireless-video
-  # capability-snapshot diff. Label as a hypothesis until a real flip is
-  # captured. Scaffold-classified so a generic settings-by-name path doesn't
+  # capability-snapshot diff. The video snapshot does not prove PCSS movie
+  # recording or MOV transfer behavior. Label as a hypothesis until a real flip
+  # is captured. Scaffold-classified so a generic settings-by-name path doesn't
   # reach it.
   "0xd037": { name: pcssStillsVideoToggleHypothesis, kind: scaffold,
               evidence: [docFujiPtpPropReference] }
