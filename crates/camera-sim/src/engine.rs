@@ -40,6 +40,7 @@ pub struct Engine {
     manifest: CameraManifest,
     store: MediaStore,
     state: CameraState,
+    connection: String,
     faults: FaultSet,
     /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
     /// arms the session that function-launch brings up. Default armed (standalone).
@@ -47,15 +48,26 @@ pub struct Engine {
 }
 
 impl Engine {
+    pub const DEFAULT_CONNECTION: &'static str = "app";
+
     pub fn new(manifest: CameraManifest, store: MediaStore) -> Self {
         let state = CameraState::from_manifest(&manifest);
         Engine {
             manifest,
             store,
             state,
+            connection: Self::DEFAULT_CONNECTION.to_string(),
             faults: FaultSet::default(),
             link: crate::link::SharedLink::default(),
         }
+    }
+
+    /// Bind the connection context for manifest-scoped behavior such as
+    /// connection/mode-specific value profiles. The default standalone engine
+    /// context is the app PTP/IP command channel.
+    pub fn bind_connection(&mut self, connection: &str) {
+        self.connection.clear();
+        self.connection.push_str(connection);
     }
 
     /// A clone of this engine's arming link (#102), to hand to the BLE responder so
@@ -492,8 +504,33 @@ impl Engine {
                 };
             }
         }
+        let value = self.normalized_property_write(code, prop, datatype, value);
         self.state.props.insert(code, value);
         Self::ok(tid)
+    }
+
+    fn normalized_property_write(
+        &self,
+        code: u16,
+        prop: &camera_config::model::Property,
+        datatype: u16,
+        value: PropValue,
+    ) -> PropValue {
+        let Some(raw) = value_to_i64(&value) else {
+            return value;
+        };
+        let Some(profile) = self.manifest.value_profile_for(
+            code,
+            &self.connection,
+            self.state.manifest_mode_path(),
+        ) else {
+            return value;
+        };
+        let Some(row) = prop.profile_row_for_write(profile, raw) else {
+            return value;
+        };
+        let store_raw = row.write_store_raw.unwrap_or(row.raw);
+        crate::state::typed(datatype, store_raw)
     }
 
     fn file_handles(&self) -> Vec<u32> {
