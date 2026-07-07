@@ -52,7 +52,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
 | `mode_entry(connection, from, to)` | the ordered wire-steps to enter a mode (or a `user_instruction` when it's a camera-menu / manual step) |
-| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `imagesPushed { min, max }` for PCSS shutter — camera auto-pushes images, register receiver first). See `docs/plans/action-verbs.md` |
+| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). See `docs/plans/action-verbs.md` |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
 | `value(key)` / `value_label(prop, value)` / `decode_property(prop, raw)` / `encode_property(prop, label)` | value-policy resolution, human labels, and manifest-backed property label↔wire-byte encoding |
@@ -215,7 +215,7 @@ per-platform packaging:
   the PCSS shutter is a 3-beat `0xD039 + 0x100E` dance, the reference app shutter is
   `0x100E + 0x9022` cleanup. Don't hardcode either; ask
   `action(connection, ActionVerb::<verb>)`. Read `.triggers` (e.g.
-  `[ImagePushed]`) to plan UX side-effects without per-transport knowledge —
+  `[ObjectsAvailable]`) to plan UX side-effects without per-transport knowledge —
   the camera-knowledge that's coming next stays out of your code.
   See `docs/plans/action-verbs.md`.
 - **Settings UI filters on `Property.kind`.** Props tagged `kind: scaffold`

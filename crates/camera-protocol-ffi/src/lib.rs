@@ -1174,7 +1174,7 @@ pub struct ModeEntryPlan {
 // ergonomics:
 //
 //     switch shutter.triggers[0] {
-//     case .imagesPushed(let min, let max): // wire up receive handler
+//     case .objectsAvailable(let min, let max): // poll the object queue
 //     case .postviewEvent:                  // wait via 0xD212 polling
 //     case .liveViewStream:                 // continuous frame delivery
 //     }
@@ -1202,11 +1202,10 @@ pub enum ActionVerb {
 /// triggers; pure declaration.
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum ActionEffect {
-    /// Camera auto-pushes between `min` and `max` images to the tether
-    /// endpoint after `Shutter`. Receiver MUST be wired up before invoking.
-    /// PCSS shutter: `min=1, max=3` depending on the user's JPEG/HEIF/RAW
-    /// selection.
-    ImagesPushed { min: u32, max: u32 },
+    /// Camera makes between `min` and `max` captured objects available after
+    /// `Shutter`. PCSS shutter: `min=1, max=3` depending on the user's
+    /// JPEG/HEIF/RAW selection.
+    ObjectsAvailable { min: u32, max: u32 },
     /// Camera emits a post-shutter state change the consumer polls for
     /// (reference app `app` path: `0xD212` clears the JPEG-saved flag, then `0x9022`).
     PostviewEvent,
@@ -2312,8 +2311,8 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
 /// malformed effects (no variant set) — `is_well_formed()` is the
 /// camera-config-side check that's expected to hold.
 fn map_action_effect(e: &cc::ActionEffect) -> Option<ActionEffect> {
-    if let Some(ip) = &e.images_pushed {
-        return Some(ActionEffect::ImagesPushed {
+    if let Some(ip) = &e.objects_available {
+        return Some(ActionEffect::ObjectsAvailable {
             min: ip.min,
             max: ip.max,
         });

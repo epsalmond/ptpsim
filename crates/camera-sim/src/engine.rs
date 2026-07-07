@@ -244,19 +244,19 @@ impl Engine {
                 let max = shutter
                     .triggers
                     .iter()
-                    .filter_map(|effect| effect.images_pushed)
+                    .filter_map(|effect| effect.objects_available)
                     .map(|images| images.max)
                     .max()
                     .ok_or_else(|| {
                         format!(
-                            "selected connection '{connection_id}' shutter action has no imagesPushed trigger"
+                            "selected connection '{connection_id}' shutter action has no objectsAvailable trigger"
                         )
                     })?;
                 (max, shutter.steps.clone())
             };
             if shutter_enqueue_count > max {
                 return Err(format!(
-                    "--pcss-shutter-enqueue-count {shutter_enqueue_count} exceeds selected connection '{connection_id}' imagesPushed max {max}"
+                    "--pcss-shutter-enqueue-count {shutter_enqueue_count} exceeds selected connection '{connection_id}' objectsAvailable max {max}"
                 ));
             }
             let shutter_sequence = matcher_sequence_for_steps(&steps).ok_or_else(|| {

@@ -661,10 +661,10 @@ fn read_device_info_action_pairs_with_the_device_info_codec() {
 }
 
 #[test]
-fn action_returns_pcss_shutter_with_images_pushed_trigger() {
+fn action_returns_pcss_shutter_with_objects_available_trigger() {
     // wireless-tether shutter — the wire-confirmed 3-beat virtual-shutter
-    // (setProp 0xD039 phases + sendOp 0x100E). triggers: [ImagesPushed{1,3}]
-    // because PCSS auto-pushes 1-3 images depending on user's JPEG/HEIF/RAW.
+    // (setProp 0xD039 phases + sendOp 0x100E). triggers: [ObjectsAvailable{1,3}]
+    // because PCSS exposes 1-3 queued objects depending on user's JPEG/HEIF/RAW.
     let s = store();
     let shutter = s
         .action("wireless-tether".into(), ActionVerb::Shutter)
@@ -677,9 +677,9 @@ fn action_returns_pcss_shutter_with_images_pushed_trigger() {
     assert!(
         matches!(
             shutter.triggers[0],
-            ActionEffect::ImagesPushed { min: 1, max: 3 }
+            ActionEffect::ObjectsAvailable { min: 1, max: 3 }
         ),
-        "expected ImagesPushed{{1,3}}, got {:?}",
+        "expected ObjectsAvailable{{1,3}}, got {:?}",
         shutter.triggers[0]
     );
 }

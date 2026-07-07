@@ -52,7 +52,7 @@ pub struct Config {
     /// Number of PCSS InitFail packets to emit before InitCommandAck.
     pub pcss_init_fails: u32,
     /// When nonzero, standard object queues start empty and enqueue this many
-    /// media handles after each manifest shutter action with imagesPushed.
+    /// media handles after each manifest shutter action with objectsAvailable.
     pub pcss_shutter_enqueue_count: u32,
     pub control_bind: SocketAddr,
     /// Directory of JPEG frames to loop on the live-view socket (sorted by

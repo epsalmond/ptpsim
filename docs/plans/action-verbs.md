@@ -125,7 +125,7 @@ connections:
           - { setProp: "0xd039", value: 0x00000001 }
           - { sendOp:  "0x100e", params: [0, 0] }
         triggers:                   # 1-3 images per press (JPEG / HEIF / RAW)
-          - imagesPushed: { min: 1, max: 3 }
+          - objectsAvailable: { min: 1, max: 3 }
       enumerateObjects:
         mode: image-transfer
         steps:
@@ -190,7 +190,7 @@ name.
      schema PR (same fail-fast as Step verbs).
    - `pub struct ActionEffect` — flat struct mirroring the `Step` pattern
      (one optional field per variant, `deny_unknown_fields`). Fields:
-     `images_pushed: Option<ImagesPushed { min: u32, max: u32 }>` (PCSS
+     `objects_available: Option<ObjectsAvailable { min: u32, max: u32 }>` (PCSS
      1-3 / burst-mode-N), `postview_event: Option<PostviewEvent>` (reference app
      0x9022 cleanup), `live_view_stream: Option<LiveViewStream>`.
      `is_well_formed()` asserts exactly one variant per effect.
@@ -202,11 +202,11 @@ name.
 2. **Data (`packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml`)**:
    - `wireless-tether.actions.{shutter, enumerateObjects, getObjectInfo,
      getThumb, getObject, deleteObject}` per the wire-confirmed D3 sequences.
-   - `shutter.triggers: [{ imagesPushed: { min: 1, max: 3 } }]` on
-     wireless-tether — camera auto-pushes 1-3 images depending on the
-     user's JPEG / HEIF / RAW format selection.
+   - `shutter.triggers: [{ objectsAvailable: { min: 1, max: 3 } }]` on
+     wireless-tether — the camera makes 1-3 objects available depending on
+     the user's JPEG / HEIF / RAW format selection.
 3. **Tests**: assert the 3-beat shutter values, the runtime-`handle` binding
-   in `getObject`, `triggers: [imagePushed]` on the PCSS shutter, and that
+   in `getObject`, `triggers: [objectsAvailable]` on the PCSS shutter, and that
    `action(wireless-tether, Shutter)` resolves.
 4. **INTEGRATION.md** §7 (Golden rules): a one-liner adding "no shutter
    sequences in app source — ask `action(connection, ActionVerb::Shutter)`;
@@ -239,10 +239,9 @@ step's param within one recipe.
 ### Q3 — Composability: **declared side-effects, not action-calling-action**
 
 Original framing was "should one action invoke another"; the reviewer
-sharpened it. On wireless-tether, the camera *necessarily* pushes the
-captured image to the tether after `shutter` — the app needs to wire up a
-receive handler / show a "downloading" indicator without knowing the
-connection-specific reason (PCSS auto-push vs. reference app Get-mode pull).
+sharpened it. On wireless-tether, the camera makes captured objects available
+after `shutter`; the app needs to poll/download and show progress without
+knowing the connection-specific transfer choreography.
 
 **Decision**: `Action.triggers: Vec<ActionEffect>` declares what arrives
 after the action completes. Engine does **not** act on it — pure declaration
@@ -250,7 +249,7 @@ for the client to plan UX:
 
 | connection | `Shutter.triggers` | app behavior |
 |---|---|---|
-| `wireless-tether` | `[{ imagesPushed: { min: 1, max: 3 } }]` | register the receive callback before calling `Shutter`; budget receive timeout / progress UI for up to `max` arrivals; early-exit when the app's own format-selection state predicts the exact count |
+| `wireless-tether` | `[{ objectsAvailable: { min: 1, max: 3 } }]` | poll the object queue after `Shutter`; budget download timeout / progress UI for up to `max` arrivals; early-exit when the app's own format-selection state predicts the exact count |
 | `app` | `[{ postviewEvent: {} }]` (when modeled) | wait for the event then prompt user to switch to Get |
 | `ble` (remote-trigger, when modeled) | `[]` | fire and forget |
 

@@ -991,7 +991,7 @@ async fn bind_rejects_pcss_shutter_enqueue_count_above_manifest_max() {
         Err(err) => err,
     };
     assert!(
-        err.to_string().contains("imagesPushed max 3"),
+        err.to_string().contains("objectsAvailable max 3"),
         "unexpected error: {err}"
     );
     std::fs::remove_dir_all(&root).ok();
