@@ -674,8 +674,8 @@ operations:
   # wireless-tether in image-transfer it returns the whole image. Same op, mode-
   # dependent payload semantics.
   "0x1009": { name: GetObject,               owner: standard-ptp, modes: [image-transfer, raw-conv-backup-restore], connections: [usb, wireless-tether], evidence: [staticRawStudio, wirePCSSShootDownload20260523] }
-  # WirelessTether live-view = vendor 0x9018 (vs the App connection's 0x101c+GetObject).
-  "0x9018": { name: SdkGetLiveViewData,      owner: fuji-vendor,  modes: [shooting/stills], connections: [wireless-tether], evidence: [wireTether] }
+  # PCSS live-view = vendor 0x9018 poll (vs the App connection's 0x101c+GetObject).
+  "0x9018": { name: PcssPollLiveViewData,    owner: fuji-vendor,  modes: [shooting/stills], connections: [wireless-tether], evidence: [wireTether] }
 
 properties:
   "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [iosStartupSeq] }

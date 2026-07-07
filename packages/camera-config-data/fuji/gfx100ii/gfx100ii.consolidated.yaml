@@ -564,7 +564,7 @@ operations:
     evidence:
     - staticRawStudio
   '0x9018':
-    name: SdkGetLiveViewData
+    name: PcssPollLiveViewData
     owner: fuji-vendor
     dataPhase: null
     params: []
