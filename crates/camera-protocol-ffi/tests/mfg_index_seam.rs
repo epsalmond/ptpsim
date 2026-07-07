@@ -634,16 +634,36 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
 }
 
 // ---------------------------------------------------------------------------
-// refine_establishment() — §11.5 graceful-degrade contract
+// refine_establishment() — §11.5 explicit no-change / error contract
 // ---------------------------------------------------------------------------
 
 #[test]
-fn refine_establishment_returns_none_when_no_overlay_matches() {
-    // MVP YAML has no firmware-branching `if:` blocks, so refine always
-    // returns None ("graceful degrade: use body's default sequence").
+fn refine_establishment_returns_no_change_when_no_overlay_matches() {
+    // Current YAML has no firmware-branching establishment overlays, so a valid
+    // refinement request keeps the existing tail instead of returning a silent
+    // optional None.
     let s = store();
     let tail = s.refine_establishment("gfx100ii:ble".into(), "2.30".into(), vec![], 2);
-    assert!(tail.is_none());
+    assert!(matches!(tail, Ok(EstablishmentRefinement::NoChange)));
+}
+
+#[test]
+fn refine_establishment_rejects_bad_handles_and_indices() {
+    let s = store();
+    let malformed = s.refine_establishment("gfx100ii".into(), "2.30".into(), vec![], 0);
+    assert!(matches!(
+        malformed,
+        Err(EstablishmentError::InvalidPlanHandle(_))
+    ));
+
+    let unknown = s.refine_establishment("gfx100ii:missing".into(), "2.30".into(), vec![], 0);
+    assert!(matches!(unknown, Err(EstablishmentError::UnknownPlan(_))));
+
+    let bad_index = s.refine_establishment("gfx100ii:ble".into(), "2.30".into(), vec![], 999);
+    assert!(matches!(
+        bad_index,
+        Err(EstablishmentError::InvalidNextStepIndex(_))
+    ));
 }
 
 // ---------------------------------------------------------------------------

@@ -1373,14 +1373,57 @@ fn socket_bindings_and_transport_close_surface_through_ffi() {
     );
     assert_eq!(s.socket_bindings("wireless-tether".into()).len(), 1);
 
-    // Transport-close resolves the named sentinel to the 8-byte keep-AP frame.
+    // Transport-close resolves the named sentinel through manifest data.
     let tc = s
         .transport_close("app".into())
+        .expect("transport-close query succeeds")
         .expect("app declares a transport-close");
-    assert_eq!(tc.packet, keep_ap_sentinel());
+    assert_eq!(tc.packet, vec![0x08, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
     assert_eq!(tc.when.as_deref(), Some("before-image-transfer-reopen"));
-    // A connection without one → None.
-    assert!(s.transport_close("wireless-tether".into()).is_none());
+    // A connection without one → Ok(None).
+    assert!(s
+        .transport_close("wireless-tether".into())
+        .expect("transport-close query succeeds")
+        .is_none());
+}
+
+#[test]
+fn transport_close_reports_bad_sentinel_data() {
+    let missing = ConfigStore::from_bundle(
+        r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  app:
+    transportClose: { sentinel: missing }
+"#
+        .into(),
+        None,
+    )
+    .expect("manifest loads");
+    assert!(matches!(
+        missing.transport_close("app".into()),
+        Err(TransportCloseError::UnknownSentinel(_))
+    ));
+
+    let malformed = ConfigStore::from_bundle(
+        r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+sentinels:
+  bad: { bytes: "0xz" }
+connections:
+  app:
+    transportClose: { sentinel: bad }
+"#
+        .into(),
+        None,
+    )
+    .expect("manifest loads");
+    assert!(matches!(
+        malformed.transport_close("app".into()),
+        Err(TransportCloseError::InvalidSentinelBytes(_))
+    ));
 }
 
 #[test]
