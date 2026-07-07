@@ -19,8 +19,8 @@ pub mod mfg_index;
 pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
     BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, EstablishmentPlan,
-    ModelMatch, NotifyCapture, Observation, Predicate, PredicateOp, Recognition, Step, StepOptions,
-    StepValue, Transform,
+    EstablishmentRefinement, ModelMatch, NotifyCapture, Observation, Predicate, PredicateOp,
+    Recognition, Step, StepOptions, StepValue, Transform,
 };
 
 uniffi::setup_scaffolding!();
@@ -84,13 +84,6 @@ pub fn build_app_init(
 ) -> Result<Vec<u8>, CodecError> {
     protocol_primitives::build_app_init(&guid, &friendly_name, &tail)
         .map_err(|e| CodecError::Encode(e.to_string()))
-}
-
-/// The 8-byte keep-AP sentinel (`0xffffffff` framed) the app sends instead of a
-/// TCP FIN to hold the camera's Wi-Fi AP up across an in-place reopen (#82).
-#[uniffi::export]
-pub fn keep_ap_sentinel() -> Vec<u8> {
-    protocol_primitives::keep_ap_sentinel()
 }
 
 #[uniffi::export]
@@ -569,6 +562,24 @@ pub enum ConfigError {
     Schema(String),
 }
 
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum EstablishmentError {
+    #[error("invalid plan handle: {0}")]
+    InvalidPlanHandle(String),
+    #[error("unknown establishment plan: {0}")]
+    UnknownPlan(String),
+    #[error("invalid next step index: {0}")]
+    InvalidNextStepIndex(String),
+}
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum TransportCloseError {
+    #[error("unknown transport-close sentinel: {0}")]
+    UnknownSentinel(String),
+    #[error("invalid bytes for transport-close sentinel: {0}")]
+    InvalidSentinelBytes(String),
+}
+
 /// The calling platform — used to hide connections it can't host (USB/tether on iOS).
 #[derive(uniffi::Enum)]
 pub enum Platform {
@@ -1019,15 +1030,15 @@ pub enum EntryStep {
         tolerant: bool,
     },
     /// Re-establish the PTP/IP session in-place — close the current TCP
-    /// socket, send the 8-byte `0xffffffff` sentinel, open a new socket to
-    /// the connection's command port, replay the cached InitCommandRequest,
-    /// and OpenSession again. Reuses the connection's cached identity, so
-    /// the verb carries no parameters. Wire-confirmed for reference app Get→Take,
-    /// while Take→Get stays in-session after #103/#108.
+    /// socket, send the connection's manifest-declared transport-close frame,
+    /// open a new socket to the connection's command port, replay the cached
+    /// InitCommandRequest, and OpenSession again. Reuses the connection's cached
+    /// identity, so the verb carries no parameters. Wire-confirmed for reference app
+    /// Get→Take, while Take→Get stays in-session after #103/#108.
     ReopenSession { tolerant: bool },
-    /// End the PTP/IP session. `keep_ap` emits the 8-byte `0xffffffff` keep-AP
-    /// sentinel (`keep_ap_sentinel()`) instead of a TCP FIN, so the camera holds
-    /// its Wi-Fi AP up across an in-place reopen (#82).
+    /// End the PTP/IP session. `keep_ap` means use the connection's
+    /// manifest-declared transport-close frame instead of a bare TCP close, so
+    /// the camera holds its Wi-Fi AP up across an in-place reopen (#82).
     CloseSession { keep_ap: bool, tolerant: bool },
     /// Observe until `until` holds, running `on_each` each unsatisfied iteration —
     /// the PTP-IP await/poll-until verb (#29 postview, #42 AF), mirroring the BLE
@@ -1453,29 +1464,62 @@ impl ConfigStore {
         mfg_index::build_ble_action(index, &model, &action)
     }
 
-    /// Per §11.5: returns ONLY the unwalked tail; the dispatcher splices it
-    /// onto its existing plan at `next_step_index`. When `None` is returned,
-    /// the dispatcher leaves the existing tail in place (graceful degrade —
-    /// no matching overlay → use body's default sequence).
+    /// Per §11.5: validate the plan handle and return either "keep the existing
+    /// tail" or a replacement unwalked tail for the dispatcher to splice at
+    /// `next_step_index`.
     ///
-    /// **MVP stub:** always returns `None`. The BLE-only YAML in
-    /// `packages/camera-config-data/fuji/index.yaml` has no firmware-
-    /// branching `if:` blocks, so there is no overlay to apply. The P2
-    /// expansion (FilmSimulation enum growth across fw 2.50, the GFX100 II's
-    /// fw 2.30→02.40 transport flip already modeled in
-    /// `gfx100ii/fw2.40.yaml`) wires real overlay resolution here.
+    /// Current manifests have no firmware-branching establishment overlays, so a
+    /// valid plan returns [`EstablishmentRefinement::NoChange`]. Bad handles and
+    /// impossible step indices are explicit errors instead of silent no-ops.
     pub fn refine_establishment(
         &self,
-        _plan_handle: String,
-        _firmware: String,
-        _scope: Vec<KeyValue>,
-        _next_step_index: u32,
-    ) -> Option<Vec<Step>> {
-        // TODO(P2): walk the family/model establishment.steps with the new
-        // firmware context, evaluate any `if:` predicates that resolve
-        // against `scope` ∪ {"firmware": firmware}, return the resulting
-        // tail from `next_step_index` onward.
-        None
+        plan_handle: String,
+        firmware: String,
+        scope: Vec<KeyValue>,
+        next_step_index: u32,
+    ) -> Result<EstablishmentRefinement, EstablishmentError> {
+        let (model, connection) = plan_handle
+            .split_once(':')
+            .ok_or_else(|| EstablishmentError::InvalidPlanHandle(plan_handle.clone()))?;
+        if model.is_empty() || connection.is_empty() || connection.contains(':') {
+            return Err(EstablishmentError::InvalidPlanHandle(plan_handle));
+        }
+
+        let Some(index) = &self.inner.index else {
+            return Err(EstablishmentError::UnknownPlan(format!(
+                "{model}:{connection}: store has no manufacturer index"
+            )));
+        };
+        let Some(body) = self.inner.body(model) else {
+            return Err(EstablishmentError::UnknownPlan(format!(
+                "{model}:{connection}: unknown model"
+            )));
+        };
+        let Some(mechanism) = body
+            .connections
+            .get(connection)
+            .and_then(|c| c.establishment.clone())
+        else {
+            return Err(EstablishmentError::UnknownPlan(format!(
+                "{model}:{connection}: connection has no establishment"
+            )));
+        };
+        let Some(plan) =
+            mfg_index::build_establishment(index, model, connection, &mechanism, &scope)
+        else {
+            return Err(EstablishmentError::UnknownPlan(format!(
+                "{model}:{connection}: missing mechanism {mechanism}"
+            )));
+        };
+        if next_step_index as usize > plan.steps.len() {
+            return Err(EstablishmentError::InvalidNextStepIndex(format!(
+                "{model}:{connection}: next_step_index {next_step_index} > plan length {}",
+                plan.steps.len()
+            )));
+        }
+
+        let _ = firmware;
+        Ok(EstablishmentRefinement::NoChange)
     }
 
     /// Connections valid on `platform` under the camera's firmware (instax filtered
@@ -1570,23 +1614,33 @@ impl ConfigStore {
     }
 
     /// The transport-close frame `connection` sends before reopening an
-    /// image-transfer session, with the named sentinel resolved to bytes (#140).
-    pub fn transport_close(&self, connection: String) -> Option<TransportCloseInfo> {
-        let tc = self
+    /// image-transfer session, with the named sentinel resolved through manifest
+    /// data (#140).
+    pub fn transport_close(
+        &self,
+        connection: String,
+    ) -> Result<Option<TransportCloseInfo>, TransportCloseError> {
+        let Some(tc) = self
             .inner
             .manifest
             .connections
-            .get(&connection)?
-            .transport_close
-            .as_ref()?;
-        let packet = match tc.sentinel.as_str() {
-            "keepApSentinel" => protocol_primitives::keep_ap_sentinel(),
-            _ => return None,
+            .get(&connection)
+            .and_then(|c| c.transport_close.as_ref())
+        else {
+            return Ok(None);
         };
-        Some(TransportCloseInfo {
+        let frame = self
+            .inner
+            .manifest
+            .sentinels
+            .get(&tc.sentinel)
+            .ok_or_else(|| TransportCloseError::UnknownSentinel(tc.sentinel.clone()))?;
+        let packet = cc::parse_hex_bytes(&frame.bytes)
+            .ok_or_else(|| TransportCloseError::InvalidSentinelBytes(tc.sentinel.clone()))?;
+        Ok(Some(TransportCloseInfo {
             packet,
             when: tc.when.clone(),
-        })
+        }))
     }
 
     /// Modes reachable over `connection`, with inherited capabilities.

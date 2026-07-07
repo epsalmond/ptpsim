@@ -21,6 +21,21 @@ pub fn parse_hex_code(s: &str) -> Option<u16> {
     u16::from_str_radix(hex, 16).ok()
 }
 
+/// Decode an even-length hex byte string, optionally `0x`-prefixed.
+pub fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
+    let p = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    if p.is_empty() || p.len() % 2 != 0 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..p.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&p[i..i + 2], 16).ok())
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CameraManifest {
@@ -28,6 +43,8 @@ pub struct CameraManifest {
     pub camera: CameraIdentity,
     #[serde(default)]
     pub evidence: BTreeMap<String, Evidence>,
+    #[serde(default)]
+    pub sentinels: BTreeMap<String, SentinelFrame>,
     #[serde(default)]
     pub operations: BTreeMap<HexCode, Operation>,
     #[serde(default)]
@@ -659,14 +676,24 @@ impl SocketBindings {
     }
 }
 
+/// A named byte frame the manifest can reference from other records.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentinelFrame {
+    /// Hex bytes of the frame, e.g. `08000000ffffffff`.
+    pub bytes: String,
+    /// Evidence id(s) backing this byte frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+}
+
 /// The transport-close frame a connection sends before reopening an image-transfer
-/// session (#140). The bytes are named (not inlined) so the frame stays defined in
-/// one place — on the Fuji `app` path `sentinel = keepApSentinel`, the 8-byte
-/// `0xffffffff` frame `keep_ap_sentinel()` returns.
+/// session (#140). The bytes are named (not inlined) and resolve through the
+/// manifest's top-level `sentinels` map.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TransportClose {
-    /// Names the frame bytes. `keepApSentinel` = the 8-byte `0xffffffff` frame.
+    /// Names a top-level `sentinels` entry.
     pub sentinel: String,
     /// When the consumer sends it (e.g. `before-image-transfer-reopen`).
     #[serde(default)]
@@ -1304,10 +1331,9 @@ impl<'de> serde::Deserialize<'de> for Loop {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReopenSession {}
 
-/// `closeSession` action: end the PTP/IP session. `keepAp: true` emits the
-/// 8-byte `0xffffffff` keep-AP sentinel instead of a TCP FIN, so the camera
-/// holds its Wi-Fi AP up across an in-place reopen (the graceful-close half of
-/// #82).
+/// `closeSession` action: end the PTP/IP session. `keepAp: true` uses the
+/// connection's manifest-declared transport-close frame instead of a bare TCP
+/// close, so the camera holds its Wi-Fi AP up across an in-place reopen (#82).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseSession {

@@ -47,7 +47,11 @@ fn port_roles_match_the_shipping_app() {
     assert_eq!(b.port_for(SocketRole::Command), Some(55740));
     assert_eq!(b.port_for(SocketRole::Event), Some(55741));
     assert_eq!(b.port_for(SocketRole::LiveView), Some(55742));
-    // The transport-close frame names the 8-byte keep-AP sentinel.
+    // The transport-close frame names a manifest-owned byte sentinel.
+    assert_eq!(
+        camera_config::parse_hex_bytes(&m.sentinels["keepApSentinel"].bytes),
+        Some(vec![0x08, 0, 0, 0, 0xff, 0xff, 0xff, 0xff])
+    );
     let tc = app
         .transport_close
         .as_ref()

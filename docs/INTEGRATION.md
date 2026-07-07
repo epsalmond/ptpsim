@@ -48,7 +48,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
 | `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
-| `transport_close(connection)` | the frame to send before reopening an image-transfer session (Fuji `app`: the 8-byte keep-AP sentinel), or `None` |
+| `transport_close(connection)` | the manifest-resolved frame to send before reopening an image-transfer session (Fuji `app`: the 8-byte keep-AP sentinel), `None` when absent; malformed sentinel data is an error |
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
 | `mode_entry(connection, from, to)` | the ordered wire-steps to enter a mode (or a `user_instruction` when it's a camera-menu / manual step) |
@@ -178,7 +178,8 @@ per-platform packaging:
   overlays via `ConfigStore.from_tiers(body, manufacturer, fw_overlays)` (e.g.
   `fw2.40.yaml` flips XLV to HTTPS).
 - **Codecs (§B) — G1–G3 landed + in the bindings.** G1: `build_app_init` (the 82-byte
-  init) + `validate_init_ack` + `keep_ap_sentinel`. G2: `encode_value(raw, width)` (generic
+  init) + `validate_init_ack`; transport-close frames come from `transport_close`. G2:
+  `encode_value(raw, width)` (generic
   width encoder) plus `ConfigStore.encode_property(prop, label)` /
   `decode_property(prop, raw)` for manifest-backed property value rows and generic
   sentinel/mask forms. Per-value semantics live in data, not app switch tables. G3: packet
@@ -265,7 +266,7 @@ is the bytes AFTER the 2-byte company id: split iOS
 Android `getManufacturerSpecificData(id)` is already the payload.
 CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
 | `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, steps: [Step] }`. `initialScope` is typically the `runtimeScope` from a `Candidate`. |
-| `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | the *unwalked tail* (steps from `nextStepIndex` onward) with firmware overlays applied — per §11.5. Returns `nil` when no overlay matched; dispatcher keeps existing plan (graceful degrade). MVP stub always returns `nil`. |
+| `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | validates the plan handle and returns `NoChange` or `ReplaceTail{steps}` per §11.5; invalid handles/indices are errors. Current manifests return `NoChange` because no establishment overlays exist yet. |
 | `connectionEstablishment(connection)` | (unchanged renamed §2 method — single-body connection bring-up) |
 
 ### 9.3 The 11-verb Step grammar

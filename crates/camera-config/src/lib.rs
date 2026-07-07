@@ -20,13 +20,14 @@ pub mod version;
 pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{enrich, generate_proposal};
 pub use model::{
-    parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource, AwaitUntil,
-    CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition, Control,
-    Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
-    LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, OpEffect,
-    Operation, Payload, PayloadForm, PostviewEvent, Property, PropertyValueEncoding,
-    PropertyValueRow, RecordLayout, SentinelMask, ShutterRecipe, SocketBindings, SocketRole, Step,
-    StepParam, TransportClose, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    parse_hex_bytes, parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource,
+    AwaitUntil, CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition,
+    Control, Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewDelivery,
+    LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode,
+    ModeEntry, OpEffect, Operation, Payload, PayloadForm, PostviewEvent, Property,
+    PropertyValueEncoding, PropertyValueRow, RecordLayout, SentinelFrame, SentinelMask,
+    ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, TransportClose, ValuePolicy,
+    ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
@@ -110,6 +111,14 @@ impl CameraManifest {
         for (code, op) in &self.operations {
             check(&op.evidence, &format!("operation {code}"), &mut lints);
         }
+        for (id, sentinel) in &self.sentinels {
+            check(&sentinel.evidence, &format!("sentinel {id}"), &mut lints);
+            if parse_hex_bytes(&sentinel.bytes).is_none() {
+                lints.push(Lint::warn(format!(
+                    "sentinel {id} has invalid hex bytes; transport-close resolution will fail"
+                )));
+            }
+        }
         for (code, prop) in &self.properties {
             check(&prop.evidence, &format!("property {code}"), &mut lints);
             if let Some(payload) = &prop.payload {
@@ -125,6 +134,17 @@ impl CameraManifest {
         }
         for (id, wf) in &self.workflows {
             check(&wf.evidence, &format!("workflow {id}"), &mut lints);
+        }
+        for (id, conn) in &self.connections {
+            if let Some(tc) = &conn.transport_close {
+                if !self.sentinels.contains_key(&tc.sentinel) {
+                    lints.push(Lint::warn(format!(
+                        "connection {id} transportClose references sentinel '{}' which is not \
+                         defined in this manifest",
+                        tc.sentinel
+                    )));
+                }
+            }
         }
         lints
     }
@@ -233,6 +253,53 @@ evidence:
         let lints = m.validate();
         assert!(!lints.is_empty(), "should warn about unresolved evidence");
         assert!(lints.iter().all(|l| l.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn sentinel_validation_lints_evidence_reference_and_bytes() {
+        let text = format!(
+            "{SAMPLE}\n{}",
+            r#"
+sentinels:
+  badFrame: { bytes: "0xz", evidence: [missingEvidence] }
+"#
+        );
+        let m = CameraManifest::from_yaml(&text).expect("sentinel manifest loads");
+        let messages: Vec<_> = m.validate().into_iter().map(|l| l.message).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("sentinel badFrame references evidence id 'missingEvidence'")),
+            "missing sentinel evidence lint; got {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("sentinel badFrame has invalid hex bytes")),
+            "missing sentinel bytes lint; got {messages:?}"
+        );
+    }
+
+    #[test]
+    fn transport_close_validation_lints_unknown_sentinel() {
+        let text = format!(
+            "{SAMPLE}\n{}",
+            r#"
+connections:
+  app:
+    transportClose: { sentinel: missingFrame }
+"#
+        );
+        let m = CameraManifest::from_yaml(&text).expect("transport-close manifest loads");
+        let messages: Vec<_> = m.validate().into_iter().map(|l| l.message).collect();
+        assert!(
+            messages.iter().any(|m| {
+                m.contains(
+                    "connection app transportClose references sentinel 'missingFrame' which is not defined",
+                )
+            }),
+            "missing unknown transport-close sentinel lint; got {messages:?}"
+        );
     }
 
     #[test]
