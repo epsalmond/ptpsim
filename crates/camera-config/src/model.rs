@@ -123,13 +123,6 @@ pub struct Evidence {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SequenceGate {
-    /// Optional mode scope for documentation / future engine context.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    /// Optional connection ids this gate is meaningful on. The current engine
-    /// evaluates gates globally because `on_operation` is connection-agnostic.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub connections: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
 }
@@ -1070,6 +1063,19 @@ pub struct Step {
     pub r#loop: Option<Loop>,
     #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
     pub if_step: Option<IfStep>,
+}
+
+impl Step {
+    pub fn is_sequence_gate_matchable(&self) -> bool {
+        if self.set_prop.is_some() || self.get_prop.is_some() {
+            return true;
+        }
+        self.send_op.is_some()
+            && self
+                .params
+                .iter()
+                .all(|p| matches!(p, StepParam::Literal(_)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

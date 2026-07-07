@@ -32,6 +32,7 @@ fn ids(cs: &[ConnectionInfo]) -> Vec<&str> {
 }
 
 fn assert_bootstrap_tail_surfaces(steps: &[EntryStep]) {
+    assert_no_gate_metadata_surfaces(steps);
     let d22b = steps
         .iter()
         .position(|st| matches!(st, EntryStep::GetProp { prop: 0xd22b, .. }))
@@ -58,6 +59,68 @@ fn assert_bootstrap_tail_surfaces(steps: &[EntryStep]) {
             ));
         }
         other => panic!("expected 0x9053 SendOp, got {other:?}"),
+    }
+}
+
+fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
+    for step in steps {
+        match step {
+            EntryStep::SetProp {
+                prop: _,
+                value: _,
+                tolerant: _,
+            }
+            | EntryStep::GetProp {
+                prop: _,
+                captures: _,
+                tolerant: _,
+            }
+            | EntryStep::ReadEcho {
+                prop: _,
+                captures: _,
+                tolerant: _,
+            }
+            | EntryStep::SendOp {
+                op: _,
+                params: _,
+                captures: _,
+                repeat: _,
+                tolerant: _,
+            }
+            | EntryStep::ReopenSession { tolerant: _ }
+            | EntryStep::CloseSession {
+                keep_ap: _,
+                tolerant: _,
+            } => {}
+            EntryStep::AwaitUntil {
+                source: _,
+                until: _,
+                on_each,
+                timeout_ms: _,
+                interval_ms: _,
+                tolerant: _,
+            } => assert_no_gate_metadata_surfaces(on_each),
+            EntryStep::Loop { kind, tolerant: _ } => match kind {
+                FfiLoopKind::ForEach {
+                    in_prop: _,
+                    bind: _,
+                    body,
+                }
+                | FfiLoopKind::Chunk {
+                    total: _,
+                    size: _,
+                    offset_bind: _,
+                    length_bind: _,
+                    body,
+                } => assert_no_gate_metadata_surfaces(body),
+            },
+            EntryStep::If {
+                slot: _,
+                equals: _,
+                then_steps,
+                tolerant: _,
+            } => assert_no_gate_metadata_surfaces(then_steps),
+        }
     }
 }
 

@@ -64,8 +64,6 @@ sequenceGates:
   # ritual has completed. The app sequence includes D212/D22B before 0x9053 and
   # a final D212 after it; D22B's value remains semantically opaque (#181).
   imageImportBootstrap:
-    mode: image-transfer
-    connections: [app]
     evidence: [docFujiPtpPropReference, docImageTransfer]
 
 # Connection-name convention (see docs/consults/2026-06-02-*-wireless-tether.md):

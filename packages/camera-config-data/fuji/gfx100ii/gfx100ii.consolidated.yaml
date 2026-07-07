@@ -109,9 +109,6 @@ sentinels:
     - docImageTransfer
 sequenceGates:
   imageImportBootstrap:
-    mode: image-transfer
-    connections:
-    - app
     evidence:
     - docFujiPtpPropReference
     - docImageTransfer

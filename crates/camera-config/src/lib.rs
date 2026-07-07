@@ -230,7 +230,7 @@ fn check_gate_steps(
         }
 
         for gate in active.keys() {
-            if !gate_step_matchable(step) {
+            if !step.is_sequence_gate_matchable() {
                 lints.push(Lint::warn(format!(
                     "{ctx}.steps[{i}] is inside sequence gate '{gate}' but is not a matchable setProp/getProp/sendOp step"
                 )));
@@ -250,22 +250,6 @@ fn check_gate_steps(
             }
         }
     }
-}
-
-fn gate_step_matchable(step: &Step) -> bool {
-    if step.set_prop.is_some() {
-        return true;
-    }
-    if step.get_prop.is_some() {
-        return true;
-    }
-    if step.send_op.is_some() {
-        return step
-            .params
-            .iter()
-            .all(|p| matches!(p, StepParam::Literal(_)));
-    }
-    false
 }
 
 #[cfg(test)]

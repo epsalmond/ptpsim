@@ -209,7 +209,7 @@ protocol:                            # ENGINE: wire facts + their gating
     GetObjectHandles:   { code: 0x1007, modes: [ImageTransfer] }
     RawConvert:         { code: 0x91xx, modes: [RawConversion], connections: [USBTether] }
   sequenceGates:
-    imageImportBootstrap: { mode: ImageTransfer, connections: [App] }
+    imageImportBootstrap: { evidence: [DocImageTransfer] }
   properties: { "0x5007": {...}, "0xd02a": {...} }
   events: {...}
   quirks: {...}

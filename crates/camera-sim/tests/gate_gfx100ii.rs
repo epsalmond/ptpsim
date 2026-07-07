@@ -292,6 +292,8 @@ fn image_import_count_and_handles_timeout_before_bootstrap_gate() {
     assert_ok(&e.on_operation(&req(0x1016, 2, vec![0xdf01]), Some(&0x14u16.to_le_bytes())));
     assert_no_response(e.on_operation(&req(0x1015, 3, vec![0xd620]), None));
     assert_no_response(e.on_operation(&req(0x1015, 4, vec![0xd621]), None));
+    assert_no_response(e.on_operation(&req(0x1014, 5, vec![0xd620]), None));
+    assert_no_response(e.on_operation(&req(0x1014, 6, vec![0xd621]), None));
 }
 
 #[test]
@@ -372,8 +374,13 @@ fn image_import_full_bootstrap_unlocks_count_and_handle_properties() {
     let handles = r.ptp_array(|r| r.u32()).unwrap();
     assert_eq!(handles.len(), 1);
 
-    assert_ok(&e.on_operation(&req(0x1016, 52, vec![0xdf01]), Some(&0x16u16.to_le_bytes())));
-    assert_no_response(e.on_operation(&req(0x1015, 53, vec![0xd620]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 52, vec![0xd212]), None));
+    let count = data_of(e.on_operation(&req(0x1015, 53, vec![0xd620]), None));
+    let mut r = Reader::new(&count);
+    assert_eq!(r.u32().unwrap(), 1);
+
+    assert_ok(&e.on_operation(&req(0x1016, 54, vec![0xdf01]), Some(&0x16u16.to_le_bytes())));
+    assert_no_response(e.on_operation(&req(0x1015, 55, vec![0xd620]), None));
 }
 
 #[test]

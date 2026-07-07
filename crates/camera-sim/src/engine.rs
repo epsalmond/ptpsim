@@ -25,7 +25,7 @@ struct GateSequence {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GateMatcher {
-    SetProp { prop: u16, value: i64 },
+    SetProp { prop: u16, value: Option<i64> },
     GetProp { prop: u16 },
     SendOp { op: u16, params: Vec<u32> },
 }
@@ -54,6 +54,7 @@ pub enum Reply {
 
 pub struct Engine {
     manifest: CameraManifest,
+    gate_sequences: Vec<GateSequence>,
     store: MediaStore,
     state: CameraState,
     faults: FaultSet,
@@ -65,8 +66,10 @@ pub struct Engine {
 impl Engine {
     pub fn new(manifest: CameraManifest, store: MediaStore) -> Self {
         let state = CameraState::from_manifest(&manifest);
+        let gate_sequences = compile_gate_sequences(&manifest);
         Engine {
             manifest,
+            gate_sequences,
             store,
             state,
             faults: FaultSet::default(),
@@ -244,7 +247,11 @@ impl Engine {
                 }
             }
             op::GET_DEVICE_PROP_DESC => {
-                match build_prop_desc(&self.manifest, &self.state, p(0) as u16) {
+                let code = p(0) as u16;
+                if let Some(reply) = self.property_gate_reply(code) {
+                    return reply;
+                }
+                match build_prop_desc(&self.manifest, &self.state, code) {
                     Some(desc) => {
                         let mut w = Writer::new();
                         let _ = desc.encode(&mut w);
@@ -360,8 +367,11 @@ impl Engine {
     }
 
     fn advance_sequence_gates(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) {
-        let sequences = self.gate_sequences();
-        for (sequence_index, sequence) in sequences.iter().enumerate() {
+        for sequence_index in 0..self.gate_sequences.len() {
+            let sequence = self.gate_sequences[sequence_index].clone();
+            if self.state.gate_satisfied(&sequence.name) {
+                continue;
+            }
             let progress = self.state.gate_progress(&sequence.name, sequence_index);
             if progress > 0 {
                 if sequence
@@ -369,7 +379,7 @@ impl Engine {
                     .get(progress)
                     .is_some_and(|matcher| self.gate_match(matcher, req, data_in))
                 {
-                    self.advance_gate_progress(sequence, sequence_index, progress + 1);
+                    self.advance_gate_progress(&sequence, sequence_index, progress + 1);
                     continue;
                 }
                 self.state
@@ -382,7 +392,7 @@ impl Engine {
                 .is_some_and(|matcher| self.gate_match(matcher, req, data_in))
             {
                 self.state.clear_gate(&sequence.name);
-                self.advance_gate_progress(sequence, sequence_index, 1);
+                self.advance_gate_progress(&sequence, sequence_index, 1);
             }
         }
     }
@@ -401,82 +411,6 @@ impl Engine {
             self.state
                 .set_gate_progress(&sequence.name, sequence_index, progress);
         }
-    }
-
-    fn gate_sequences(&self) -> Vec<GateSequence> {
-        let mut out = Vec::new();
-        for connection in self.manifest.connections.values() {
-            for entry in &connection.entries {
-                self.collect_gate_sequences(&entry.steps, &mut out);
-            }
-            for action in connection.actions.values() {
-                self.collect_gate_sequences(&action.steps, &mut out);
-            }
-        }
-        out
-    }
-
-    fn collect_gate_sequences(&self, steps: &[Step], out: &mut Vec<GateSequence>) {
-        let mut active: std::collections::BTreeMap<String, Vec<GateMatcher>> =
-            std::collections::BTreeMap::new();
-        for step in steps {
-            let matcher = self.matcher_for_step(step);
-            let starts = step.starts_gate.clone();
-            for (gate, sequence) in active.iter_mut() {
-                if Some(gate) == starts.as_ref() {
-                    continue;
-                }
-                let Some(matcher) = matcher.clone() else {
-                    sequence.clear();
-                    continue;
-                };
-                sequence.push(matcher);
-            }
-            if let Some(gate) = starts {
-                match matcher.clone() {
-                    Some(matcher) => {
-                        active.insert(gate, vec![matcher]);
-                    }
-                    None => {
-                        active.insert(gate, Vec::new());
-                    }
-                }
-            }
-            if let Some(gate) = &step.completes_gate {
-                if let Some(sequence) = active.remove(gate) {
-                    if !sequence.is_empty() {
-                        let compiled = GateSequence {
-                            name: gate.clone(),
-                            steps: sequence,
-                        };
-                        if !out.contains(&compiled) {
-                            out.push(compiled);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn matcher_for_step(&self, step: &Step) -> Option<GateMatcher> {
-        if let Some(prop) = &step.set_prop {
-            return Some(GateMatcher::SetProp {
-                prop: parse_hex_code(prop)?,
-                value: step.value.unwrap_or(0),
-            });
-        }
-        if let Some(prop) = &step.get_prop {
-            return Some(GateMatcher::GetProp {
-                prop: parse_hex_code(prop)?,
-            });
-        }
-        if let Some(op) = &step.send_op {
-            return Some(GateMatcher::SendOp {
-                op: parse_hex_code(op)?,
-                params: literal_params(&step.params)?,
-            });
-        }
-        None
     }
 
     fn gate_match(
@@ -498,6 +432,9 @@ impl Engine {
                 let Some(bytes) = data_in else {
                     return false;
                 };
+                let Some(expected) = value else {
+                    return true;
+                };
                 let datatype = datatype_of(
                     self.manifest
                         .property(*prop)
@@ -507,7 +444,7 @@ impl Engine {
                 PropValue::decode(&mut r, datatype)
                     .ok()
                     .and_then(|v| value_to_i64(&v))
-                    == Some(*value)
+                    == Some(*expected)
             }
             GateMatcher::SendOp { op, params } => req.code == *op && req.params == *params,
         }
@@ -771,6 +708,78 @@ impl Engine {
         let _ = di.encode(&mut w);
         w.into_vec()
     }
+}
+
+fn compile_gate_sequences(manifest: &CameraManifest) -> Vec<GateSequence> {
+    let mut out = Vec::new();
+    for connection in manifest.connections.values() {
+        for entry in &connection.entries {
+            collect_gate_sequences(&entry.steps, &mut out);
+        }
+        for action in connection.actions.values() {
+            collect_gate_sequences(&action.steps, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_gate_sequences(steps: &[Step], out: &mut Vec<GateSequence>) {
+    let mut active: std::collections::BTreeMap<String, Option<Vec<GateMatcher>>> =
+        std::collections::BTreeMap::new();
+    for step in steps {
+        let matcher = matcher_for_step(step);
+        let starts = step.starts_gate.clone();
+        for (gate, sequence) in active.iter_mut() {
+            if Some(gate) == starts.as_ref() {
+                continue;
+            }
+            match (sequence.as_mut(), matcher.clone()) {
+                (Some(sequence), Some(matcher)) => sequence.push(matcher),
+                (Some(_), None) => *sequence = None,
+                (None, _) => {}
+            }
+        }
+        if let Some(gate) = starts {
+            active.insert(gate, matcher.clone().map(|matcher| vec![matcher]));
+        }
+        if let Some(gate) = &step.completes_gate {
+            if let Some(Some(sequence)) = active.remove(gate) {
+                if !sequence.is_empty() {
+                    let compiled = GateSequence {
+                        name: gate.clone(),
+                        steps: sequence,
+                    };
+                    if !out.contains(&compiled) {
+                        out.push(compiled);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn matcher_for_step(step: &Step) -> Option<GateMatcher> {
+    if !step.is_sequence_gate_matchable() {
+        return None;
+    }
+    if let Some(prop) = &step.set_prop {
+        return Some(GateMatcher::SetProp {
+            prop: parse_hex_code(prop)?,
+            value: step.value,
+        });
+    }
+    if let Some(prop) = &step.get_prop {
+        return Some(GateMatcher::GetProp {
+            prop: parse_hex_code(prop)?,
+        });
+    }
+    if let Some(op) = &step.send_op {
+        return Some(GateMatcher::SendOp {
+            op: parse_hex_code(op)?,
+            params: literal_params(&step.params)?,
+        });
+    }
+    None
 }
 
 /// Whether a reply carries an OK response code (effects arm only on success).
