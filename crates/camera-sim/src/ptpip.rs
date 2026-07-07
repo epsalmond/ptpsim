@@ -673,8 +673,8 @@ fn verb_name(s: &Step) -> &'static str {
     }
 }
 
-/// OK unless a non-OK response (tolerated → skipped) or a transport-level
-/// failure (Close → always aborts, like a dropped socket).
+/// OK unless a non-OK response (tolerated -> skipped) or a transport-level
+/// failure (`NoResponse` timeout / `Close` dropped socket).
 fn check_ok(reply: &Reply, code: u16, tolerant: bool) -> Result<(), String> {
     match reply {
         Reply::Response(r)
@@ -686,6 +686,7 @@ fn check_ok(reply: &Reply, code: u16, tolerant: bool) -> Result<(), String> {
                 Err(format!("op {code:#06x} -> response {:#06x}", r.code))
             }
         }
+        Reply::NoResponse => Err(format!("op {code:#06x} timed out with no response")),
         Reply::Close => Err(format!("op {code:#06x} closed the connection")),
     }
 }
@@ -695,7 +696,7 @@ fn reply_ok(reply: &Reply) -> bool {
         Reply::Response(r)
         | Reply::Data { response: r, .. }
         | Reply::DataStream { response: r, .. } => r.code == resp::OK,
-        Reply::Close => false,
+        Reply::NoResponse | Reply::Close => false,
     }
 }
 
@@ -704,6 +705,7 @@ fn describe_reply(reply: &Reply) -> String {
         Reply::Response(r) => format!("response {:#06x}", r.code),
         Reply::Data { response, .. } => format!("data + response {:#06x}", response.code),
         Reply::DataStream { response, .. } => format!("stream + response {:#06x}", response.code),
+        Reply::NoResponse => "no response".into(),
         Reply::Close => "connection closed".into(),
     }
 }

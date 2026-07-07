@@ -69,8 +69,16 @@ fn assert_ok(reply: &Reply) {
         Reply::Response(r) => assert_eq!(r.code, 0x2001, "expected OK"),
         Reply::Data { response, .. } => assert_eq!(response.code, 0x2001, "expected OK"),
         Reply::DataStream { response, .. } => assert_eq!(response.code, 0x2001, "expected OK"),
+        Reply::NoResponse => panic!("unexpected NoResponse"),
         Reply::Close => panic!("unexpected Close"),
     }
+}
+
+fn assert_no_response(reply: Reply) {
+    assert!(
+        matches!(reply, Reply::NoResponse),
+        "expected NoResponse, got {reply:?}"
+    );
 }
 
 fn data_of(reply: Reply) -> Vec<u8> {
@@ -365,6 +373,104 @@ fn gate3_image_import_choreography_runs_from_the_manifest() {
     assert_ok(&e.on_operation(&req(0x1008, 21, vec![handles[0]]), None)); // GetObjectInfo
     let part = data_of(e.on_operation(&req(0x101b, 22, vec![handles[0], 0, 7]), None));
     assert_eq!(&part, b"\xFF\xD8HELLO");
+}
+
+#[test]
+fn image_import_count_and_handles_timeout_before_bootstrap_gate() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_ok(&e.on_operation(&req(0x1016, 2, vec![0xdf01]), Some(&0x14u16.to_le_bytes())));
+    assert_no_response(e.on_operation(&req(0x1015, 3, vec![0xd620]), None));
+    assert_no_response(e.on_operation(&req(0x1015, 4, vec![0xd621]), None));
+    assert_no_response(e.on_operation(&req(0x1014, 5, vec![0xd620]), None));
+    assert_no_response(e.on_operation(&req(0x1014, 6, vec![0xd621]), None));
+}
+
+#[test]
+fn image_import_gate_requires_the_manifest_declared_bootstrap_sequence() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    // A suffix that looks like the page tail is not enough: this intentionally
+    // omits the earlier manifest-declared prime block.
+    assert_ok(&e.on_operation(&req(0x1015, 2, vec![0xd212]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 3, vec![0xd22b]), None));
+    assert_ok(&e.on_operation(&req(0x9053, 4, vec![0, 0x7530]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 5, vec![0xd212]), None));
+    assert_no_response(e.on_operation(&req(0x1015, 6, vec![0xd620]), None));
+}
+
+#[test]
+fn image_import_gate_requires_d22b_in_the_manifest_sequence() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 2, vec![0xd212]), None));
+    assert_ok(&e.on_operation(&req(0x1016, 3, vec![0xdf01]), Some(&0x14u16.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x1015, 4, vec![0xdf28]), None));
+    assert_ok(&e.on_operation(&req(0x1016, 5, vec![0xdf28]), Some(&3u32.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x1016, 6, vec![0xd226]), Some(&0u16.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x1016, 7, vec![0xd227]), Some(&0u16.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x1015, 8, vec![0xd244]), None));
+    assert_ok(&e.on_operation(&req(0x9054, 9, vec![0x1000_0001]), None));
+    assert_ok(&e.on_operation(&req(0x9055, 10, vec![0x1000_0001]), None));
+    assert_ok(&e.on_operation(&req(0x9050, 11, vec![]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 12, vec![0xd212]), None));
+    // Omit D22B: this does not satisfy the manifest-declared bootstrap gate.
+    assert_ok(&e.on_operation(&req(0x9053, 13, vec![0, 0x7530]), None));
+    assert_ok(&e.on_operation(&req(0x1015, 14, vec![0xd212]), None));
+    assert_no_response(e.on_operation(&req(0x1015, 15, vec![0xd620]), None));
+}
+
+#[test]
+fn image_import_gate_advances_only_on_successful_replies() {
+    let m = consolidated();
+    let cold = m
+        .connections
+        .get("app")
+        .unwrap()
+        .entries
+        .iter()
+        .find(|e| e.to == "image-transfer" && e.from.is_none())
+        .expect("cold image-transfer entry");
+    let mut e = engine();
+    e.install_fault(Fault::FailOperation {
+        code: 0x9054,
+        response: 0x2005,
+    });
+    walk_ptpip_in(&mut e, &cold.steps, &BTreeMap::new(), Some("app"))
+        .expect("tolerant 0x9054 failure does not abort the entry");
+    assert_no_response(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
+}
+
+#[test]
+fn image_import_full_bootstrap_unlocks_count_and_handle_properties() {
+    let m = consolidated();
+    let cold = m
+        .connections
+        .get("app")
+        .unwrap()
+        .entries
+        .iter()
+        .find(|e| e.to == "image-transfer" && e.from.is_none())
+        .expect("cold image-transfer entry");
+    let mut e = engine();
+    walk_ptpip_in(&mut e, &cold.steps, &BTreeMap::new(), Some("app"))
+        .expect("full bootstrap entry succeeds");
+
+    let count = data_of(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
+    let mut r = Reader::new(&count);
+    assert_eq!(r.u32().unwrap(), 1);
+    let handles_bytes = data_of(e.on_operation(&req(0x1015, 51, vec![0xd621]), None));
+    let mut r = Reader::new(&handles_bytes);
+    let handles = r.ptp_array(|r| r.u32()).unwrap();
+    assert_eq!(handles.len(), 1);
+
+    assert_ok(&e.on_operation(&req(0x1015, 52, vec![0xd212]), None));
+    let count = data_of(e.on_operation(&req(0x1015, 53, vec![0xd620]), None));
+    let mut r = Reader::new(&count);
+    assert_eq!(r.u32().unwrap(), 1);
+
+    assert_ok(&e.on_operation(&req(0x1016, 54, vec![0xdf01]), Some(&0x16u16.to_le_bytes())));
+    assert_no_response(e.on_operation(&req(0x1015, 55, vec![0xd620]), None));
 }
 
 #[test]

@@ -59,6 +59,13 @@ sentinels:
   # reopening image-transfer so the camera holds its Wi-Fi AP up (#82).
   keepApSentinel: { bytes: "08000000ffffffff", evidence: [docImageTransfer] }
 
+sequenceGates:
+  # Real fw02.30 does not answer D620/D621 until the image-import vendor/bootstrap
+  # ritual has completed. The app sequence includes D212/D22B before 0x9053 and
+  # a final D212 after it; D22B's value remains semantically opaque (#181).
+  imageImportBootstrap:
+    evidence: [docFujiPtpPropReference, docImageTransfer]
+
 # Connection-name convention (see docs/consults/2026-06-02-*-wireless-tether.md):
 #   `app`             = reference-app PTP/IP on :55740 (BLE → camera Wi-Fi AP → 82B WMB-tail init).
 #   `wireless-tether` = PCSS port-knock PTP/IP on :15740 (camera joins LAN, then knock+notify).
@@ -147,7 +154,7 @@ connections:
       - to: image-transfer            # cold entry to image-import (no live-view active)
         # Ground truth: FujiCameraAPISession.enterImageImportModeUnlocked + IMAGE_TRANSFER_FW230.
         steps:
-          - { getProp: "0xd212", tolerant: true }            # live-status preamble (best-effort)
+          - { getProp: "0xd212", tolerant: true, startsGate: imageImportBootstrap } # live-status preamble (best-effort)
           - { setProp: "0xdf01", value: 0x14 }               # functionMode = 20 (image-import)
           - { getProp: "0xdf28", tolerant: true }            # read-before-write (advisory negotiator)
           - { setProp: "0xdf28", value: 3, tolerant: true }   # feature version; uint32 width from the property type
@@ -159,7 +166,10 @@ connections:
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9050", tolerant: true }
+          - { getProp: "0xd212", tolerant: true }
+          - { getProp: "0xd22b", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
+          - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
       - to: image-transfer            # from live-view: terminate the open-capture first, then enter
         from: shooting/stills
         steps:
@@ -172,7 +182,7 @@ connections:
           # (the command-port listener is gone after the transport-close — see the `app`
           # connection's commandListenerVolatile trait), so the reopen self-destructs.
           # 0x9054 is accepted in-session and files download (device-confirmed 2026-06-28, #103).
-          - { getProp: "0xd212", tolerant: true }
+          - { getProp: "0xd212", tolerant: true, startsGate: imageImportBootstrap }
           - { setProp: "0xdf01", value: 0x14 }
           - { getProp: "0xdf28", tolerant: true }
           - { setProp: "0xdf28", value: 3, tolerant: true }
@@ -182,7 +192,10 @@ connections:
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9050", tolerant: true }
+          - { getProp: "0xd212", tolerant: true }
+          - { getProp: "0xd22b", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
+          - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
     actions:
       # reference-app shutter cycle. Wire-confirmed by MODE_CHANGES.md §3 (the 0x100E
       # trace) + §6b (the 0x9022 pairing): every 0x100E InitiateCapture in v6
@@ -302,7 +315,7 @@ connections:
         mode: image-transfer
         steps:
           # --- arm (mirrors the to:image-transfer mode-entry; idempotent, tolerant) ---
-          - { getProp: "0xd212", tolerant: true }
+          - { getProp: "0xd212", tolerant: true, startsGate: imageImportBootstrap }
           - { setProp: "0xdf01", value: 0x14 }
           - { getProp: "0xdf28", tolerant: true }
           - { setProp: "0xdf28", value: 3, tolerant: true }
@@ -312,7 +325,10 @@ connections:
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9050", tolerant: true }
+          - { getProp: "0xd212", tolerant: true }
+          - { getProp: "0xd22b", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
+          - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
           # --- enumerate (count sizes the 0xd621 handle list) ---
           - { getProp: "0xd620" }
           # --- per-handle: learn reported/true size, then chunk-download until exhausted ---
@@ -713,8 +729,12 @@ properties:
   "0xd226": { name: imageImportFilter, type: u16, access: readWrite, evidence: [docImageTransfer] }
   "0xd227": { name: imageImportSort,   type: u16, access: readWrite, evidence: [docImageTransfer] }
   "0xd244": { name: imageImportD244,   type: u8a, access: readOnly,  evidence: [docImageTransfer] }
-  "0xd620": { name: imageImportObjectCount,   type: u32, access: readOnly, evidence: [docImageTransfer] }
-  "0xd621": { name: imageImportObjectHandles, type: u8a, access: readOnly, evidence: [docImageTransfer] }
+  "0xd620": { name: imageImportObjectCount,   type: u32, access: readOnly,
+              requiresGate: { name: imageImportBootstrap, failure: noResponse },
+              evidence: [docImageTransfer] }
+  "0xd621": { name: imageImportObjectHandles, type: u8a, access: readOnly,
+              requiresGate: { name: imageImportBootstrap, failure: noResponse },
+              evidence: [docImageTransfer] }
   "0xd235": { name: imageImportChunkSize, type: u32, access: readOnly, initialValue: 0x00bfffe0, evidence: [docLargeMovObjectInfo] }
   "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
   # Current App/AP controls. ISO/direct-list controls use SetDevicePropValue; ring/body controls

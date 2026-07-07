@@ -107,6 +107,11 @@ sentinels:
     bytes: 08000000ffffffff
     evidence:
     - docImageTransfer
+sequenceGates:
+  imageImportBootstrap:
+    evidence:
+    - docFujiPtpPropReference
+    - docImageTransfer
 operations:
   '0x1001':
     name: GetDeviceInfo
@@ -6466,6 +6471,9 @@ properties:
     descriptor: null
     controls: {}
     labels: {}
+    requiresGate:
+      name: imageImportBootstrap
+      failure: noResponse
     evidence:
     - docImageTransfer
   '0xd621':
@@ -6476,6 +6484,9 @@ properties:
     descriptor: null
     controls: {}
     labels: {}
+    requiresGate:
+      name: imageImportBootstrap
+      failure: noResponse
     evidence:
     - docImageTransfer
   '0xdf00':
@@ -6883,6 +6894,7 @@ connections:
         closeSession: null
         value: null
         params: []
+        startsGate: imageImportBootstrap
         tolerant: true
         repeat: 1
         awaitUntil: null
@@ -6988,6 +7000,28 @@ connections:
         repeat: 1
         awaitUntil: null
       - setProp: null
+        getProp: '0xd212'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: '0xd22b'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
         getProp: null
         readEcho: null
         sendOp: '0x9053'
@@ -6997,6 +7031,18 @@ connections:
         params:
         - 0
         - 30000
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: '0xd212'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        completesGate: imageImportBootstrap
         tolerant: true
         repeat: 1
         awaitUntil: null
@@ -7025,6 +7071,7 @@ connections:
         closeSession: null
         value: null
         params: []
+        startsGate: imageImportBootstrap
         tolerant: true
         repeat: 1
         awaitUntil: null
@@ -7130,6 +7177,28 @@ connections:
         repeat: 1
         awaitUntil: null
       - setProp: null
+        getProp: '0xd212'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: '0xd22b'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
         getProp: null
         readEcho: null
         sendOp: '0x9053'
@@ -7139,6 +7208,18 @@ connections:
         params:
         - 0
         - 30000
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: '0xd212'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        completesGate: imageImportBootstrap
         tolerant: true
         repeat: 1
         awaitUntil: null
@@ -7371,6 +7452,7 @@ connections:
           closeSession: null
           value: null
           params: []
+          startsGate: imageImportBootstrap
           tolerant: true
           repeat: 1
           awaitUntil: null
@@ -7476,6 +7558,28 @@ connections:
           repeat: 1
           awaitUntil: null
         - setProp: null
+          getProp: '0xd212'
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: '0xd22b'
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
           getProp: null
           readEcho: null
           sendOp: '0x9053'
@@ -7485,6 +7589,18 @@ connections:
           params:
           - 0
           - 30000
+          tolerant: true
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: '0xd212'
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          completesGate: imageImportBootstrap
           tolerant: true
           repeat: 1
           awaitUntil: null

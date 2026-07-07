@@ -22,12 +22,13 @@ pub use generate::{enrich, generate_proposal};
 pub use model::{
     parse_hex_bytes, parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource,
     AwaitUntil, CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition,
-    Control, Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewDelivery,
-    LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode,
-    ModeEntry, OpEffect, Operation, Payload, PayloadForm, PostviewEvent, Property,
-    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
-    RecordLayout, SentinelFrame, SentinelMask, ShutterRecipe, SocketBindings, SocketRole, Step,
-    StepParam, TransportClose, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    Control, Descriptor, GateFailure, GateRequirement, ImagesPushed, InitIdentity, InitShape,
+    LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media,
+    MediaFormat, Mode, ModeEntry, OpEffect, Operation, Payload, PayloadForm, PostviewEvent,
+    Property, PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow,
+    PropertyValueRow, RecordLayout, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
+    SocketBindings, SocketRole, Step, StepParam, TransportClose, ValuePolicy, ValueSource,
+    VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
@@ -107,9 +108,20 @@ impl CameraManifest {
                 }
             }
         };
+        let defined_gates: std::collections::BTreeSet<&str> =
+            self.sequence_gates.keys().map(|s| s.as_str()).collect();
 
         for (code, op) in &self.operations {
             check(&op.evidence, &format!("operation {code}"), &mut lints);
+            check_gate_requirement(
+                op.requires_gate.as_ref(),
+                &format!("operation {code}"),
+                &defined_gates,
+                &mut lints,
+            );
+        }
+        for (id, gate) in &self.sequence_gates {
+            check(&gate.evidence, &format!("sequenceGate {id}"), &mut lints);
         }
         for (id, sentinel) in &self.sentinels {
             check(&sentinel.evidence, &format!("sentinel {id}"), &mut lints);
@@ -121,6 +133,12 @@ impl CameraManifest {
         }
         for (code, prop) in &self.properties {
             check(&prop.evidence, &format!("property {code}"), &mut lints);
+            check_gate_requirement(
+                prop.requires_gate.as_ref(),
+                &format!("property {code}"),
+                &defined_gates,
+                &mut lints,
+            );
             if let Some(payload) = &prop.payload {
                 for m in &payload.members {
                     if !self.properties.contains_key(m) {
@@ -145,6 +163,22 @@ impl CameraManifest {
                     )));
                 }
             }
+            for (i, entry) in conn.entries.iter().enumerate() {
+                check_gate_steps(
+                    &entry.steps,
+                    &format!("connection {id} entry {i}"),
+                    &defined_gates,
+                    &mut lints,
+                );
+            }
+            for (verb, action) in &conn.actions {
+                check_gate_steps(
+                    &action.steps,
+                    &format!("connection {id} action {verb:?}"),
+                    &defined_gates,
+                    &mut lints,
+                );
+            }
         }
         lints
     }
@@ -158,6 +192,63 @@ impl CameraManifest {
             });
         }
         Ok(())
+    }
+}
+
+fn check_gate_requirement(
+    req: Option<&GateRequirement>,
+    ctx: &str,
+    defined_gates: &std::collections::BTreeSet<&str>,
+    lints: &mut Vec<Lint>,
+) {
+    let Some(req) = req else {
+        return;
+    };
+    if !defined_gates.contains(req.name.as_str()) {
+        lints.push(Lint::warn(format!(
+            "{ctx} requiresGate references gate '{}' which is not defined in this manifest",
+            req.name
+        )));
+    }
+}
+
+fn check_gate_steps(
+    steps: &[Step],
+    ctx: &str,
+    defined_gates: &std::collections::BTreeSet<&str>,
+    lints: &mut Vec<Lint>,
+) {
+    let mut active: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (i, step) in steps.iter().enumerate() {
+        if let Some(gate) = &step.starts_gate {
+            if !defined_gates.contains(gate.as_str()) {
+                lints.push(Lint::warn(format!(
+                    "{ctx}.steps[{i}] startsGate references gate '{gate}' which is not defined in this manifest"
+                )));
+            }
+            active.insert(gate.clone(), i);
+        }
+
+        for gate in active.keys() {
+            if !step.is_sequence_gate_matchable() {
+                lints.push(Lint::warn(format!(
+                    "{ctx}.steps[{i}] is inside sequence gate '{gate}' but is not a matchable setProp/getProp/sendOp step"
+                )));
+            }
+        }
+
+        if let Some(gate) = &step.completes_gate {
+            if !defined_gates.contains(gate.as_str()) {
+                lints.push(Lint::warn(format!(
+                    "{ctx}.steps[{i}] completesGate references gate '{gate}' which is not defined in this manifest"
+                )));
+            }
+            if active.remove(gate).is_none() {
+                lints.push(Lint::warn(format!(
+                    "{ctx}.steps[{i}] completesGate '{gate}' has no preceding startsGate in this step sequence"
+                )));
+            }
+        }
     }
 }
 
