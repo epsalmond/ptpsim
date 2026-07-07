@@ -87,6 +87,25 @@ fn data_of(reply: Reply) -> Vec<u8> {
     }
 }
 
+fn write_u16(e: &mut Engine, tid: u32, code: u16, value: u16) {
+    assert_ok(&e.on_operation(
+        &req(0x1016, tid, vec![code as u32]),
+        Some(&value.to_le_bytes()),
+    ));
+}
+
+fn write_u32(e: &mut Engine, tid: u32, code: u16, value: u32) {
+    assert_ok(&e.on_operation(
+        &req(0x1016, tid, vec![code as u32]),
+        Some(&value.to_le_bytes()),
+    ));
+}
+
+fn read_u32(e: &mut Engine, tid: u32, code: u16) -> u32 {
+    let bytes = data_of(e.on_operation(&req(0x1015, tid, vec![code as u32]), None));
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
 fn stream_of(reply: Reply) -> (ByteSource, Vec<u32>) {
     match reply {
         Reply::DataStream { source, response } => {
@@ -139,6 +158,48 @@ fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
         Some(aperture),
         "aperture in the bundle matches its individual GetDevicePropValue"
     );
+}
+
+#[test]
+fn still_iso_setprop_uses_scoped_value_profile_for_camera_readback() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    write_u16(&mut e, 2, 0xdf01, 0x16);
+    assert_ok(&e.on_operation(&req(0x101c, 3, vec![]), None));
+
+    for (tid, sent, expected) in [
+        (10, 6400, 6400),
+        (20, 25600, 0x4000_6400),
+        (30, 0x4001_9000, 0x4001_9000),
+        (40, 50, 80),
+        (50, 0x8000_00a0, 80),
+        (60, 0x8000_6400, 80),
+    ] {
+        write_u32(&mut e, tid, 0xd02a, sent);
+        assert_eq!(
+            read_u32(&mut e, tid + 1, 0xd02a),
+            expected,
+            "scalar readback after writing {sent:#010x}"
+        );
+        let d212 = data_of(e.on_operation(&req(0x1015, tid + 2, vec![0xd212]), None));
+        let records = decode_record_stream(&d212);
+        assert_eq!(
+            records.iter().find(|(c, _)| *c == 0xd02a).map(|(_, v)| *v),
+            Some(expected),
+            "D212 readback after writing {sent:#010x}"
+        );
+    }
+}
+
+#[test]
+fn neighboring_iso_property_without_value_profile_still_stores_verbatim() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    write_u16(&mut e, 2, 0xdf01, 0x16);
+    assert_ok(&e.on_operation(&req(0x101c, 3, vec![]), None));
+
+    write_u32(&mut e, 4, 0xd02b, 25600);
+    assert_eq!(read_u32(&mut e, 5, 0xd02b), 25600);
 }
 
 #[test]

@@ -97,7 +97,30 @@ fn still_iso_exposes_value_rows_and_generic_sentinel_metadata() {
     assert!(profile
         .rows
         .iter()
+        .any(|row| row.raw == 0x8000_00a0 && !row.legal && row.write_store_raw == Some(80)));
+    assert!(profile
+        .rows
+        .iter()
+        .any(|row| row.raw == 0x8000_6400 && !row.legal && row.write_store_raw == Some(80)));
+    assert!(profile
+        .rows
+        .iter()
         .any(|row| row.raw == 0x4000_6400 && row.aliases.contains(&25600)));
+    assert!(
+        m.value_profile_for(0xd02b, "app", "shooting/stills")
+            .is_none(),
+        "movie ISO must not inherit still ISO legality"
+    );
+    assert!(
+        m.value_profile_for(0x500f, "wireless-tether", "shooting/stills")
+            .is_none(),
+        "PCSS ISO must not inherit still ISO legality"
+    );
+    assert!(
+        m.value_profile_for(0xd242, "app", "shooting/video")
+            .is_none(),
+        "movie-mode sensitivity must not inherit still ISO legality"
+    );
 }
 
 #[test]

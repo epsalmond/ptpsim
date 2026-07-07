@@ -102,6 +102,9 @@ pub fn walk_ptpip_in(
     runtime_params: &BTreeMap<String, String>,
     connection: Option<&str>,
 ) -> Result<PtpIpOutcome, PtpIpError> {
+    if let Some(connection) = connection {
+        engine.bind_connection(connection);
+    }
     let command_listener_volatile = connection
         .and_then(|id| engine.manifest().connections.get(id))
         .is_some_and(|c| c.command_listener_volatile);

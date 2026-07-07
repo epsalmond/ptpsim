@@ -2011,67 +2011,67 @@ properties:
       - label: AUTO 50
         raw: 2147483698
         legal: false
-        writeStoreRaw: 2147483848
+        writeStoreRaw: 80
       - label: AUTO 60
         raw: 2147483708
         legal: false
-        writeStoreRaw: 2147483848
+        writeStoreRaw: 80
       - label: AUTO 64
         raw: 2147483712
         legal: false
-        writeStoreRaw: 2147483848
+        writeStoreRaw: 80
       - label: AUTO 80
         raw: 2147483728
         legal: false
-        writeStoreRaw: 2147483848
+        writeStoreRaw: 80
       - label: AUTO 100
         raw: 2147483748
         legal: false
-        writeStoreRaw: 2147483848
+        writeStoreRaw: 80
       - label: AUTO 125
         raw: 2147483773
         legal: false
-        writeStoreRaw: 2147483848
+        writeStoreRaw: 80
       - label: AUTO 160
         raw: 2147483808
         legal: false
-        writeStoreRaw: 2147483848
+        writeStoreRaw: 80
       - label: AUTO 16000
         raw: 2147499648
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       - label: AUTO 20000
         raw: 2147503648
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       - label: AUTO 25600
         raw: 2147509248
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       - label: AUTO 32000
         raw: 2147515648
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       - label: AUTO 40000
         raw: 2147523648
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       - label: AUTO 51200
         raw: 2147534848
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       - label: AUTO 64000
         raw: 2147547648
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       - label: AUTO 80000
         raw: 2147563648
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       - label: AUTO 102400
         raw: 2147586048
         legal: false
-        writeStoreRaw: 2147496448
+        writeStoreRaw: 80
       evidence:
       - docIsoModel20260707
       - valueCapability
