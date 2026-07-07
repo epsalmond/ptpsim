@@ -49,13 +49,13 @@ fn walk_wifi_ap(
     ssid: &[u8],
     passphrase: Option<&[u8]>,
 ) -> (BTreeMap<String, String>, Vec<u8>) {
-    let outcome = walk_wifi_ap_with_ap_state_reads(
+    let (scope, launch_write, _events) = walk_wifi_ap_with_ap_state_reads(
         launch_mode,
         ssid,
         passphrase,
-        vec![vec![0x00, 0x80], vec![0x01, 0x80]],
+        vec![vec![0x00, 0x80], vec![0x02, 0x80], vec![0x01, 0x80]],
     );
-    (outcome.0, outcome.1)
+    (scope, launch_write)
 }
 
 fn walk_wifi_ap_with_ap_state_reads(
@@ -87,9 +87,9 @@ fn walk_wifi_ap_with_ap_state_reads(
     }
 
     let mut responder = BleResponder::new(catalog)
-        // apState read source: NotLaunched (0x8000) then Launched (0x8001).
-        // Wire bytes are little-endian, so the u16-le capture reads [01 80]
-        // = 0x8001 = 32769 (#84, #179).
+        // apState read source: NotLaunched (0x8000), Launching (0x8002),
+        // then Launched (0x8001). Wire bytes are little-endian, so the u16-le
+        // capture reads [01 80] = 0x8001 = 32769 (#84, #179).
         .serve_read_sequence(&ap_state, ap_state_reads)
         .serve_read(&ssid_uuid, ssid);
     if let Some(pass) = passphrase {
@@ -125,8 +125,9 @@ fn establish_wifi_ap_binds_credentials_and_writes_launch_mode_4() {
     let (scope, launch_write) = run("4");
     // launchMode 4 (RemoteShooting) → u16-le [04 00].
     assert_eq!(launch_write, vec![0x04, 0x00]);
-    // apState read-polled until launched (0x8001 → 32769); the initial
-    // NotLaunched (0x8000) read did not satisfy `until`.
+    // apState read-polled until launched (0x8001 → 32769); neither the initial
+    // NotLaunched (0x8000) nor transitional Launching (0x8002) reads satisfied
+    // `until`.
     assert_eq!(scope.get("apState").map(String::as_str), Some("32769"));
     // Raw apState bytes preserved for the app's fallback parsing.
     assert!(scope.contains_key("apStateRaw"));
