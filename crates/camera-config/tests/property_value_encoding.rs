@@ -19,6 +19,8 @@ properties:
         labelPrefix: AUTO
       masks:
         - { mask: 1073741824, meaning: extendedSensitivity, labelPrefix: EXT }
+        - { mask: 3221225472, meaning: combinedSensitivity, labelPrefix: COMBO }
+        - { mask: 2147483648, meaning: alternateAutoCeiling, labelPrefix: ALT_AUTO }
 "#;
 
 #[test]
@@ -52,6 +54,18 @@ fn property_value_rows_and_sentinel_codec_are_manifest_driven() {
         Some("EXT 6400")
     );
     assert_eq!(m.encode_property_raw(0xd02a, "EXT 6400"), Some(0x4000_1900));
+    assert_eq!(
+        m.decode_property_label(0xd02a, 0xc000_1900).as_deref(),
+        Some("COMBO 6400")
+    );
+    assert_eq!(
+        m.encode_property_raw(0xd02a, "COMBO 6400"),
+        Some(0xc000_1900)
+    );
+    assert_eq!(
+        m.encode_property_raw(0xd02a, "ALT_AUTO 6400"),
+        Some(0x8000_1900)
+    );
     assert_eq!(m.encode_property_raw(0xd02a, "AUTO 25600"), None);
 }
 

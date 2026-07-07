@@ -105,7 +105,9 @@ impl CameraManifest {
                 continue;
             }
             let base_raw = raw & !sentinel.mask;
-            let base_label = p.static_value_label(base_raw)?;
+            let Some(base_label) = p.static_value_label(base_raw) else {
+                continue;
+            };
             return Some(format!("{} {base_label}", sentinel.label_prefix));
         }
         None
@@ -126,7 +128,9 @@ impl CameraManifest {
             else {
                 continue;
             };
-            let base_raw = p.raw_for_label(base_label)?;
+            let Some(base_raw) = p.raw_for_label(base_label) else {
+                continue;
+            };
             if masks
                 .iter()
                 .any(|mask| base_raw & mask.mask == mask.equals.unwrap_or(mask.mask))
@@ -206,10 +210,11 @@ impl Property {
             masks.push(sentinel);
         }
         for mask in &enc.masks {
-            if !masks
-                .iter()
-                .any(|existing| existing.mask == mask.mask && existing.equals == mask.equals)
-            {
+            if !masks.iter().any(|existing| {
+                existing.mask == mask.mask
+                    && existing.equals == mask.equals
+                    && existing.label_prefix == mask.label_prefix
+            }) {
                 masks.push(mask);
             }
         }
