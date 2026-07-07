@@ -73,10 +73,11 @@ const HEADER: &str = "\
 #   cargo run -p camera-config --bin camera-config-generate -- \\
 #     --enrich packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml \\
 #     packages/camera-config-data/fuji/gfx100ii/evidence/probe/*.jsonl \\
-#     packages/camera-config-data/fuji/gfx100ii/evidence/labels/*.jsonl
+#     packages/camera-config-data/fuji/gfx100ii/evidence/labels/*.jsonl \\
+#     packages/camera-config-data/fuji/gfx100ii/evidence/value-profiles/*.jsonl
 #
 # = curated gfx100ii.yaml (connections/modes/entries/establishment + curated names,
-#   labels, gating) ENRICHED with active-probe evidence (props/descriptors/ops).
+#   labels, value profiles, gating) ENRICHED with active-probe evidence (props/descriptors/ops).
 # Mode-naming convention applied; standard PTP codes auto-named. Remaining curation:
 # ~306 vendor raw_0x props carry camera-sourced descriptors but still need names/labels.
 ";

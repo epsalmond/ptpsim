@@ -192,6 +192,13 @@ per-platform packaging:
   `PtpFraming { Standard | Compressed | Usb }`, which you **read from the manifest**
   (`ConnectionInfo.command_framing` / `event_framing`) — never a `kind→framing` map in app
   source.
+- **Property value capabilities are scoped.** `PropertyInfo.value_profiles` carries
+  connection/mode-specific legal rows when a camera path does not expose a useful
+  `DevicePropDesc` list, or when a descriptor is too broad for a body/mode. Clients should
+  filter UI/write choices from those profiles when present, use each row's `raw` as the
+  canonical write value, treat `aliases` as readback/input matches, and avoid sending rows
+  marked `legal: false`. `value_encoding.masks` carries additional flag/sentinel forms
+  alongside the legacy single `sentinel`.
 - **Sync only.** A stateful session driver (feed/poll) is a later phase; today's
   surface is synchronous pure queries.
 

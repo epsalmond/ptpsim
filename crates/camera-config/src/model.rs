@@ -276,6 +276,11 @@ pub struct Property {
     /// evidence/generator output; hand-authored manifests keep this small.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub value_rows: Vec<PropertyValueRow>,
+    /// Scoped value choices/capabilities for a property. Unlike `descriptor`,
+    /// these may come from a connection/mode-specific capability path or an
+    /// empirical write walk rather than standard `GetDevicePropDesc`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_profiles: Vec<PropertyValueProfile>,
     /// Generic value encoding hints for rows that share a bit-level form, such
     /// as a high-bit sentinel plus a low-bit literal. The descriptor names the
     /// shape; it does not bake manufacturer formulas into Rust.
@@ -294,9 +299,41 @@ pub struct PropertyValueRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PropertyValueProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<PropertyValueProfileRow>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropertyValueProfileRow {
+    pub label: String,
+    pub raw: i64,
+    #[serde(default = "default_legal")]
+    pub legal: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_store_raw: Option<i64>,
+}
+
+fn default_legal() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PropertyValueEncoding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sentinel: Option<SentinelMask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<SentinelMask>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

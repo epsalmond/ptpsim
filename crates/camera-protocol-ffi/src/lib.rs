@@ -769,6 +769,7 @@ pub struct PropertyInfo {
     pub values: Vec<i64>,
     pub labels: Vec<KeyValue>,
     pub value_rows: Vec<PropertyValueInfo>,
+    pub value_profiles: Vec<PropertyValueProfileInfo>,
     pub value_encoding: Option<PropertyValueEncodingInfo>,
 }
 
@@ -779,12 +780,33 @@ pub struct PropertyValueInfo {
     pub raw: i64,
 }
 
+/// A scoped property-value capability profile. These rows may represent an
+/// camera/body capability path or empirical write policy, not necessarily a
+/// standard PTP `DevicePropDesc`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PropertyValueProfileInfo {
+    pub connection: Option<String>,
+    pub mode: Option<String>,
+    pub rows: Vec<PropertyValueProfileRowInfo>,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PropertyValueProfileRowInfo {
+    pub label: String,
+    pub raw: i64,
+    pub legal: bool,
+    pub aliases: Vec<i64>,
+    pub write_store_raw: Option<i64>,
+}
+
 /// Generic property value encoding metadata. This is intentionally shape-based
 /// rather than camera-branded, so consumers can present grouped/sentinel values
 /// without carrying vendor formulas.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PropertyValueEncodingInfo {
     pub sentinel: Option<SentinelMaskInfo>,
+    pub masks: Vec<SentinelMaskInfo>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -860,10 +882,38 @@ impl From<&cc::PropertyValueRow> for PropertyValueInfo {
     }
 }
 
+impl From<&cc::PropertyValueProfile> for PropertyValueProfileInfo {
+    fn from(profile: &cc::PropertyValueProfile) -> Self {
+        PropertyValueProfileInfo {
+            connection: profile.connection.clone(),
+            mode: profile.mode.clone(),
+            rows: profile
+                .rows
+                .iter()
+                .map(PropertyValueProfileRowInfo::from)
+                .collect(),
+            evidence: profile.evidence.clone(),
+        }
+    }
+}
+
+impl From<&cc::PropertyValueProfileRow> for PropertyValueProfileRowInfo {
+    fn from(row: &cc::PropertyValueProfileRow) -> Self {
+        PropertyValueProfileRowInfo {
+            label: row.label.clone(),
+            raw: row.raw,
+            legal: row.legal,
+            aliases: row.aliases.clone(),
+            write_store_raw: row.write_store_raw,
+        }
+    }
+}
+
 impl From<&cc::PropertyValueEncoding> for PropertyValueEncodingInfo {
     fn from(enc: &cc::PropertyValueEncoding) -> Self {
         PropertyValueEncodingInfo {
             sentinel: enc.sentinel.as_ref().map(SentinelMaskInfo::from),
+            masks: enc.masks.iter().map(SentinelMaskInfo::from).collect(),
         }
     }
 }
@@ -1984,6 +2034,11 @@ impl ConfigStore {
                         })
                         .collect(),
                     value_rows: p.value_rows.iter().map(PropertyValueInfo::from).collect(),
+                    value_profiles: p
+                        .value_profiles
+                        .iter()
+                        .map(PropertyValueProfileInfo::from)
+                        .collect(),
                     value_encoding: p
                         .value_encoding
                         .as_ref()

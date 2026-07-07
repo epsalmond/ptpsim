@@ -53,6 +53,7 @@ evidence:
 
 
 
+
 sentinels:
   # PTP/IP length-8 frame with body 0xffffffff. Sent before the final FIN when
   # reopening image-transfer so the camera holds its Wi-Fi AP up (#82).
@@ -736,18 +737,22 @@ properties:
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   # 0xD212 live-status member; wire-decoded label DepthOfField, probe type u16 (#50).
   "0xd028": { name: depthOfField, type: u16, access: readWrite, evidence: [docD212TightFormat] }
-  # ISO is u32, NOT the u16 GetDevicePropDesc returns — fw2.30 hands back a
-  # degenerate single-value stub descriptor (probe enum = {0x8001}). Real encoding:
-  # literal ISO (6400 = 0x1900) OR 0x80000000|ceiling for auto, per the v6 ISO-write
-  # capture, FUJI_PTP_PROP_REFERENCE.md, and client application's UINT32 DevicePropDesc parser.
+  # Live-view still ISO is u32, NOT the u16 GetDevicePropDesc returns — fw2.30
+  # hands back a degenerate single-value stub descriptor (probe enum = {0x8001}).
+  # Real live-control encoding: native manual literal (6400 = 0x1900),
+  # 0x80000000|ceiling for AUTO ceiling, or 0x40000000|iso for expanded sensitivity.
+  # This path is separate from PCSS still ISO 0x500F and movie-mode ISO 0xD242.
+  # Writes apply only after InitiateOpenCapture(0x101C); D212 readback is source of truth.
   # Width override is documented in the #53 property-width-audit OVERRIDES table.
   "0xd02a": { name: stillIso, ptpName: ISO, type: u32, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016", readback: "0xd212" } },
               # Representative authored rows for the generic value codec. Bulk
               # ISO labels still come from evidence/labels via the generator.
-              valueRows: [{ label: "6400", raw: 6400 }, { label: "12800", raw: 12800 }],
-              valueEncoding: { sentinel: { mask: 2147483648, meaning: autoCeiling, labelPrefix: AUTO } },
-              evidence: [iosLiveControls, docLiveControls] }
+              valueRows: [{ label: "6400", raw: 6400 }, { label: "12800", raw: 12800 },
+                          { label: "25600", raw: 1073767424 }, { label: "102400", raw: 1073844224 }],
+              valueEncoding: { sentinel: { mask: 2147483648, meaning: autoCeiling, labelPrefix: AUTO },
+                               masks: [{ mask: 1073741824, meaning: extendedSensitivity, labelPrefix: EXT }] },
+              evidence: [iosLiveControls, docLiveControls, docIsoModel20260707] }
   "0xd02b": { name: movieIso, ptpName: MovieISO, type: u32, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   # Shutter readback is u32, NOT the u16 stub the degenerate descriptor reports.
@@ -763,6 +768,10 @@ properties:
   # GetDevicePropDesc declares i32; the codec now models the signed datatype (#88).
   "0x500f": { name: iso, ptpName: ExposureIndex, type: i32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether, wirePCSSShootDownload20260523] }
+  # Movie-mode sensitivity is a separate INT32 property. Do not reuse 0x500F
+  # PCSS still metadata or 0xD02B live-view movie metadata for this path.
+  "0xd242": { name: movieSensitivity, ptpName: MovieISO, type: i32, access: readWrite,
+              evidence: [docIsoModel20260707] }
   "0x500d": { name: shutterSpeed, ptpName: ExposureTime, type: u32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # microseconds
   "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [iosLiveControls, wireTether] }   # PASM / body dial
