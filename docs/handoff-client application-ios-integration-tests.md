@@ -57,14 +57,18 @@ WHAT PTPSIM PROVIDES:
   smoke-testable but unreachable from the host; override to 0.0.0.0 for tests.
 
 CONTROL PLANE (test setup/teardown):
-- GET  /healthz → 200 {"ok":true,instance_id,profile,bind,sessions,media_root}.
+- GET  /healthz → 200 {"ok":true,instance_id,profile,connection,bind,sessions,media_root}.
   Use as the readiness gate after spawn.
+- GET  /state → current simulator state snapshot for operator/debug inspection.
+- PATCH /state → apply a manifest-validated JSON state overlay (same shape as
+  `--startup-state`).
 - POST /shutdown → graceful drain. SIGTERM also drains.
-- That's the WHOLE current contract. /scenario/load, /faults etc. are designed
-  but NOT implemented — today the only way to vary behavior between tests is
-  RESTART-PER-SCENARIO with a different --media-root and/or manifest. Plan
-  scenarios as fresh-instance setups, not as live mutations. If you need live
-  scenario/fault control, request it upstream.
+- `--state-callback` remains push-first. The service POSTs an initial snapshot
+  after startup-state application, then debounced snapshots after state changes.
+  Do not build tests that poll `/state` to infer what changed.
+- `/scenario/load`, `/faults` etc. are still designed but NOT implemented. Use
+  RESTART-PER-SCENARIO with a different --media-root and/or `--startup-state`.
+  If you need live scenario/fault control, request it upstream.
 
 VALIDATED BEHAVIOR (the believable surface your tests can lean on):
 - DESIGN gates #3 ImageImport, #4 LiveView, #5 black-box smoke pass:

@@ -15,7 +15,8 @@ use std::sync::Arc;
 use camera_config::{parse_hex_code, CameraManifest, LiveViewDeliveryKind, PcssKnock};
 use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
-use camera_sim::{Engine, FrameSource, LoopingFrameSource, Phase, Reply};
+use camera_sim::StateOverlay;
+use camera_sim::{AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply};
 use protocol_primitives::{
     fuji_framing, parse_pcss_discovery, parse_pcss_init, pcss_notify_message,
 };
@@ -28,6 +29,7 @@ use tokio::sync::{Mutex, Notify};
 
 pub mod control;
 mod state_callback;
+mod state_json;
 
 #[derive(Clone)]
 pub struct Config {
@@ -288,6 +290,17 @@ impl Server {
         self.engine.lock().await.link()
     }
 
+    /// Apply a boot-time state overlay before `run()`. This uses the same engine
+    /// mutation path as the control API so startup files and live controls cannot
+    /// drift.
+    pub async fn apply_startup_state(
+        &self,
+        overlay: &StateOverlay,
+    ) -> Result<AppliedStateOverlay, String> {
+        overlay.validate_context(&self.config.profile, &self.config.connection)?;
+        self.engine.lock().await.apply_state_overlay(overlay)
+    }
+
     /// Serve until `shutdown` resolves (the `/shutdown` endpoint or a SIGTERM
     /// handler fires it). In-flight command connections are dropped on exit.
     pub async fn run(self, shutdown: tokio::sync::oneshot::Receiver<()>) {
@@ -307,6 +320,7 @@ impl Server {
         let health = control::Health {
             instance_id: config.instance_id.clone(),
             profile: config.profile.clone(),
+            connection: config.connection.clone(),
             command_addr: command.local_addr().unwrap(),
             media_root: config.media_root.display().to_string(),
         };
@@ -378,6 +392,7 @@ impl Server {
 
         let control_loop = {
             let engine = engine.clone();
+            let state_dirty = state_dirty.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -392,6 +407,7 @@ impl Server {
                                     stream,
                                     health.clone(),
                                     engine.clone(),
+                                    state_dirty.clone(),
                                     ctl_shutdown.clone(),
                                 ));
                             }

@@ -16,6 +16,7 @@ use crate::fault::{Fault, FaultSet};
 use crate::state::{
     build_prop_desc, datatype_of, CameraState, Phase, DF01_IMAGE_IMPORT, DF01_LIVE_VIEW, PROP_DF01,
 };
+use crate::state_overlay::{AppliedStateOverlay, StateOverlay};
 
 const STORAGE_ID: u32 = 0x0001_0001;
 
@@ -196,6 +197,13 @@ impl Engine {
 
     pub fn store(&self) -> &MediaStore {
         &self.store
+    }
+
+    pub fn apply_state_overlay(
+        &mut self,
+        overlay: &StateOverlay,
+    ) -> Result<AppliedStateOverlay, String> {
+        crate::state_overlay::apply_overlay(&self.manifest, &mut self.state, overlay)
     }
 
     /// Enable standard PTP object-queue behavior for a connection whose manifest

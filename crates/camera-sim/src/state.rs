@@ -23,6 +23,31 @@ pub enum Phase {
     Closed,
 }
 
+impl Phase {
+    pub fn state_name(self) -> &'static str {
+        match self {
+            Phase::Disconnected => "disconnected",
+            Phase::SessionOpen => "sessionOpen",
+            Phase::ImageImport => "imageImport",
+            Phase::LiveView => "liveView",
+            Phase::Streaming => "streaming",
+            Phase::Closed => "closed",
+        }
+    }
+
+    pub fn from_state_name(name: &str) -> Option<Self> {
+        match name {
+            "disconnected" => Some(Phase::Disconnected),
+            "sessionOpen" | "session_open" | "session-open" => Some(Phase::SessionOpen),
+            "imageImport" | "image_import" | "image-import" => Some(Phase::ImageImport),
+            "liveView" | "live_view" | "live-view" => Some(Phase::LiveView),
+            "streaming" => Some(Phase::Streaming),
+            "closed" => Some(Phase::Closed),
+            _ => None,
+        }
+    }
+}
+
 pub struct CameraState {
     pub session_open: bool,
     pub phase: Phase,

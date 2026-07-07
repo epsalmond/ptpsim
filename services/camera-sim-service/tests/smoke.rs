@@ -597,6 +597,19 @@ fn http_post(addr: std::net::SocketAddr, path: &str) -> String {
     out
 }
 
+fn http_patch(addr: std::net::SocketAddr, path: &str, body: &str) -> String {
+    let mut s = TcpStream::connect(addr).unwrap();
+    write!(
+        s,
+        "PATCH {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    out
+}
+
 #[test]
 fn service_rejects_oversized_data_in() {
     // Reproducer for the "no upper bound on data-in collection" finding: a
@@ -1745,25 +1758,27 @@ fn state_callback_posts_camera_state_on_change() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (body_tx, body_rx) = std::sync::mpsc::channel::<String>();
     let (command_addr, shutdown_tx, handle) = rt.block_on(async {
-        // Observer: accept one POST, hand its JSON body to the test thread.
+        // Observer: accept the initial snapshot plus the first mutation push.
         let receiver = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let recv_addr = receiver.local_addr().unwrap();
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            if let Ok((mut sock, _)) = receiver.accept().await {
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 1024];
-                while let Ok(n) = sock.read(&mut chunk).await {
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    if let Some(body) = http_body_if_complete(&buf) {
-                        let _ = sock
-                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                            .await;
-                        let _ = body_tx.send(body);
-                        break;
+            for _ in 0..2 {
+                if let Ok((mut sock, _)) = receiver.accept().await {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while let Ok(n) = sock.read(&mut chunk).await {
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(body) = http_body_if_complete(&buf) {
+                            let _ = sock
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                                .await;
+                            let _ = body_tx.send(body);
+                            break;
+                        }
                     }
                 }
             }
@@ -1804,7 +1819,15 @@ fn state_callback_posts_camera_state_on_change() {
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
 
-    // The push is debounced (~150ms); wait for the observer to receive it.
+    let first = body_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("observer should receive initial state POST");
+    assert!(
+        first.contains("\"phase\":\"disconnected\""),
+        "initial body: {first}"
+    );
+
+    // The mutation push is debounced (~150ms); wait for the observer to receive it.
     let body = body_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("observer should receive a state POST after OpenSession");
@@ -1816,6 +1839,53 @@ fn state_callback_posts_camera_state_on_change() {
     let di = ptp_core::DeviceInfo::decode(&read_data_reply(&mut s)).unwrap();
     assert_eq!(di.model, "GFX100 II");
 
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn control_patch_state_updates_shared_snapshot() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (control_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let ctl = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (ctl, tx, h)
+    });
+
+    let body = http_patch(
+        control_addr,
+        "/state",
+        r#"{"profile":"fuji/gfx100ii/fw0230","connection":"app","props":{"0xd02a":2000}}"#,
+    );
+    assert!(body.contains("\"ok\":true"), "patch body: {body}");
+    assert!(body.contains("\"props\":1"), "patch body: {body}");
+
+    let state = http_get(control_addr, "/state");
+    assert!(state.contains("\"0xd02a\":2000"), "state body: {state}");
+
+    let _ = http_post(control_addr, "/shutdown");
     rt.block_on(async {
         let _ = shutdown_tx.send(());
         let _ = handle.await;

@@ -10,6 +10,7 @@ pub mod framesource;
 pub mod link;
 pub mod ptpip;
 pub mod state;
+pub mod state_overlay;
 
 pub use ble::{walk_establishment, BleEvent, BleResponder, WalkOutcome};
 pub use engine::{Engine, Reply};
@@ -18,6 +19,7 @@ pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
 pub use link::{CameraLink, SharedLink};
 pub use ptpip::{walk_ptpip, walk_ptpip_in, PtpIpError, PtpIpOutcome};
 pub use state::{CameraState, Phase};
+pub use state_overlay::{AppliedStateOverlay, StateOverlay};
 
 #[cfg(test)]
 mod tests {
@@ -62,6 +64,33 @@ properties:
     descriptor: { form: enum, values: [280, 400, 560, 800, 1600] }
     controls:
       liveView: { setMethod: vendorStep, operation: "0x902d", readback: "0xd212" }
+"#;
+
+    const ISO_SLAM_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: "2.30"
+connections:
+  app: { kind: ptpip-app }
+operations:
+  "0x1002": { name: OpenSession, owner: standard-ptp }
+  "0x1015": { name: GetDevicePropValue, owner: standard-ptp }
+  "0x1016": { name: SetDevicePropValue, owner: standard-ptp }
+properties:
+  "0xd02a":
+    name: stillIso
+    type: u32
+    access: readWrite
+    descriptor: { form: enum, values: [32769] }
+    valueProfiles:
+      - connection: app
+        mode: shooting/stills
+        rows:
+          - { label: "80", raw: 80, legal: true }
+          - { label: "2000", raw: 2000, legal: true }
+          - { label: "50", raw: 50, legal: false, writeStoreRaw: 80 }
 "#;
 
     fn op(code: u16, tid: u32, params: Vec<u32>) -> OperationRequest {
@@ -158,6 +187,18 @@ properties:
         let mut store = MediaStore::open(root).unwrap();
         store.scan().unwrap();
         Engine::new(manifest, store)
+    }
+
+    fn empty_engine(manifest_yaml: &str) -> (Engine, PathBuf) {
+        let manifest = CameraManifest::from_yaml(manifest_yaml).unwrap();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ptpsim-empty-{nanos}"));
+        std::fs::create_dir_all(root.join("DCIM/100_FUJI")).unwrap();
+        let store = MediaStore::open(&root).unwrap();
+        (Engine::new(manifest, store), root)
     }
 
     fn expect_data(reply: Reply) -> Vec<u8> {
@@ -272,6 +313,26 @@ properties:
 
         // Frames still flowing after the control ops.
         assert!(frames.next_frame().is_some());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn state_overlay_seeded_iso_can_diverge_to_manifest_write_store_raw() {
+        let (mut e, root) = empty_engine(ISO_SLAM_MANIFEST);
+        let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
+            "props": { "0xd02a": 2000 }
+        }))
+        .unwrap();
+        let applied = e.apply_state_overlay(&overlay).unwrap();
+        assert_eq!(applied.props, 1);
+        assert_eq!(e.state().props.get(&0xd02a), Some(&PropValue::U32(2000)));
+
+        expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None)); // SessionOpen -> shooting/stills.
+        expect_ok(e.on_operation(&op(0x1016, 2, vec![0xd02a]), Some(&u32_data(50))));
+
+        let readback = expect_data(e.on_operation(&op(0x1015, 3, vec![0xd02a]), None));
+        let mut r = Reader::new(&readback);
+        assert_eq!(r.u32().unwrap(), 80);
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -11,3 +11,5 @@ ptp-core = { workspace = true }
 camera-config = { workspace = true }
 camera-media-store = { workspace = true }
 protocol-primitives = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
