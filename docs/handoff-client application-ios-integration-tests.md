@@ -47,6 +47,7 @@ WHAT PTPSIM PROVIDES:
         --media-root  /var/lib/ptpsim/media-root \
         --profile     fuji/gfx100ii \
         --instance-id <test-uuid> \
+        --connection  app \
         --command-bind  '[::]:55740' \
         --event-bind    '[::]:55741' \
         --liveview-bind '[::]:55742' \

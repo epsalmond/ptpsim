@@ -931,11 +931,21 @@ camera-sim-service \
   --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
   --media-root <path/to/DCIM-root> \
   --profile fuji/gfx100ii \
+  --connection app \
   --command-bind  '[::]:55740' \
   --event-bind    '[::]:55741' \
   --liveview-bind '[::]:55742' \
   --liveview-dir  packages/fixtures/liveview/640x480 \
   --control-bind  '127.0.0.1:8080'
+
+# PCSS / infrastructure-mode direct responder shape (UDP knock is #172):
+camera-sim-service \
+  --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
+  --media-root <path/to/DCIM-root> \
+  --profile fuji/gfx100ii \
+  --connection wireless-tether \
+  --command-bind '[::]:15740' \
+  --control-bind '127.0.0.1:8080'
 
 # IMPLEMENTED today (tools/camera-simctl):
 camera-simctl health  --control 127.0.0.1:8080
@@ -1216,9 +1226,10 @@ USB webcam mode" is a probe you run, not an assumption.
 
 Listener setup:
 
-1. Bind command socket to configured host/port, default `[::]:55740`.
-2. Bind live-view (through-picture) socket to configured host/port, default `[::]:55741`.
-3. Bind event socket to configured host/port, default `[::]:55742`.
+1. Select a manifest connection with `--connection` (`app` by default).
+2. Bind only the selected connection's declared socket roles.
+3. For `app`, the default roles are command `55740`, event `55741`, and live-view stream `55742`.
+4. For `wireless-tether`, the default role is command `15740`; live view is command-channel polling.
 4. Accept command socket first. Event/live-view sockets may connect before or
    after workflow startup, but the workflow decides when bytes are sent.
 

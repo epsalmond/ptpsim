@@ -12,6 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use camera_config::{parse_hex_code, CameraManifest, LiveViewDeliveryKind};
+use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::{Engine, FrameSource, LoopingFrameSource, Phase, Reply};
 use protocol_primitives::fuji_framing;
@@ -29,16 +30,19 @@ mod state_callback;
 pub struct Config {
     pub instance_id: String,
     pub profile: String,
+    /// Manifest connection id to serve. Defaults to `app` at the CLI/wrapper.
+    pub connection: String,
     pub manifest_yaml: String,
     pub media_root: std::path::PathBuf,
-    /// Bind address for the PTP command socket. Use port 0 for an OS-assigned
-    /// port (tests).
-    pub command_bind: SocketAddr,
-    /// Through-picture (live-view) stream socket. Per the shipping app this is
-    /// command+2 = 55742.
-    pub liveview_bind: SocketAddr,
-    /// Async event socket (command+1 = 55741).
-    pub event_bind: SocketAddr,
+    /// Optional bind address for the PTP command socket. When absent, the
+    /// selected manifest connection's command port is bound on `[::]`.
+    pub command_bind: Option<SocketAddr>,
+    /// Optional through-picture stream socket bind. Must be absent when the
+    /// selected manifest connection has no live-view socket role.
+    pub liveview_bind: Option<SocketAddr>,
+    /// Optional event socket bind. Must be absent when the selected manifest
+    /// connection has no event socket role.
+    pub event_bind: Option<SocketAddr>,
     pub control_bind: SocketAddr,
     /// Directory of JPEG frames to loop on the live-view socket (sorted by
     /// filename, gated on Phase::Streaming). None / empty dir => no frames.
@@ -80,8 +84,8 @@ fn load_liveview_frames(dir: Option<&std::path::Path>) -> std::io::Result<Vec<Ve
 pub struct Server {
     config: Config,
     command: TcpListener,
-    liveview: TcpListener,
-    event: TcpListener,
+    liveview: Option<TcpListener>,
+    event: Option<TcpListener>,
     control: TcpListener,
     engine: Arc<Mutex<Engine>>,
     /// Shared looping frame source (one cursor across all live-view clients —
@@ -104,14 +108,71 @@ impl Server {
         store
             .scan()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let connection = manifest
+            .connections
+            .get(&config.connection)
+            .ok_or_else(|| {
+                invalid_config(format!(
+                    "selected connection '{}' is not present in the manifest",
+                    config.connection
+                ))
+            })?;
+        let bindings = connection.bindings.as_ref().ok_or_else(|| {
+            invalid_config(format!(
+                "selected connection '{}' has no socket bindings",
+                config.connection
+            ))
+        })?;
+        if !matches!(
+            connection.command_framing,
+            None | Some(WireFraming::Compressed)
+        ) {
+            return Err(invalid_config(format!(
+                "selected connection '{}' uses unsupported command framing {:?}",
+                config.connection, connection.command_framing
+            )));
+        }
+        if !matches!(connection.event_framing, None | Some(WireFraming::Usb)) {
+            return Err(invalid_config(format!(
+                "selected connection '{}' uses unsupported event framing {:?}",
+                config.connection, connection.event_framing
+            )));
+        }
+        let command_bind = role_bind(
+            config.command_bind,
+            bindings.port_for(SocketRole::Command),
+            "command",
+        )?
+        .ok_or_else(|| {
+            invalid_config(format!(
+                "selected connection '{}' has no command socket binding",
+                config.connection
+            ))
+        })?;
+        let event_bind = role_bind(
+            config.event_bind,
+            bindings.port_for(SocketRole::Event),
+            "event",
+        )?;
+        let liveview_bind = role_bind(
+            config.liveview_bind,
+            bindings.port_for(SocketRole::LiveView),
+            "live-view",
+        )?;
         let engine = Arc::new(Mutex::new(Engine::new(manifest, store)));
         let frame_bytes = load_liveview_frames(config.liveview_dir.as_deref())?;
         let frame_count = frame_bytes.len();
         let frames = Arc::new(Mutex::new(LoopingFrameSource::new(frame_bytes)));
         tracing::info!(frame_count, "live-view frame source loaded");
-        let command = TcpListener::bind(config.command_bind).await?;
-        let liveview = TcpListener::bind(config.liveview_bind).await?;
-        let event = TcpListener::bind(config.event_bind).await?;
+        let command = TcpListener::bind(command_bind).await?;
+        let liveview = match liveview_bind {
+            Some(addr) => Some(TcpListener::bind(addr).await?),
+            None => None,
+        };
+        let event = match event_bind {
+            Some(addr) => Some(TcpListener::bind(addr).await?),
+            None => None,
+        };
         let control = TcpListener::bind(config.control_bind).await?;
         Ok(Server {
             config,
@@ -129,11 +190,27 @@ impl Server {
     }
 
     pub fn liveview_addr(&self) -> SocketAddr {
-        self.liveview.local_addr().unwrap()
+        self.liveview
+            .as_ref()
+            .expect("selected connection has no live-view socket")
+            .local_addr()
+            .unwrap()
+    }
+
+    pub fn liveview_addr_opt(&self) -> Option<SocketAddr> {
+        self.liveview.as_ref().map(|l| l.local_addr().unwrap())
     }
 
     pub fn event_addr(&self) -> SocketAddr {
-        self.event.local_addr().unwrap()
+        self.event
+            .as_ref()
+            .expect("selected connection has no event socket")
+            .local_addr()
+            .unwrap()
+    }
+
+    pub fn event_addr_opt(&self) -> Option<SocketAddr> {
+        self.event.as_ref().map(|l| l.local_addr().unwrap())
     }
 
     pub fn control_addr(&self) -> SocketAddr {
@@ -164,6 +241,7 @@ impl Server {
             command_addr: command.local_addr().unwrap(),
             media_root: config.media_root.display().to_string(),
         };
+        let connection_id = config.connection.clone();
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
         let ctl_shutdown = shutdown_tx.clone();
         // Completion/lifecycle event push (#54): the command loop drains the
@@ -190,6 +268,7 @@ impl Server {
             let frames = frames.clone();
             let event_tx = event_tx.clone();
             let state_dirty = state_dirty.clone();
+            let connection_id = connection_id.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -201,8 +280,9 @@ impl Server {
                                 let frames = frames.clone();
                                 let event_tx = event_tx.clone();
                                 let state_dirty = state_dirty.clone();
+                                let connection_id = connection_id.clone();
                                 conns.spawn(async move {
-                                    let _ = handle_command_conn(stream, engine, frames, event_tx, state_dirty).await;
+                                    let _ = handle_command_conn(stream, engine, frames, event_tx, state_dirty, connection_id).await;
                                 });
                             }
                         }
@@ -248,6 +328,10 @@ impl Server {
             let frames = frames.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
+                let Some(liveview) = liveview else {
+                    std::future::pending::<()>().await;
+                    return;
+                };
                 let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
@@ -272,6 +356,10 @@ impl Server {
         let event_loop = {
             let mut sub = shutdown_tx.subscribe();
             async move {
+                let Some(event) = event else {
+                    std::future::pending::<()>().await;
+                    return;
+                };
                 let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
@@ -394,6 +482,7 @@ async fn handle_command_conn(
     frames: Arc<Mutex<LoopingFrameSource>>,
     event_tx: broadcast::Sender<u16>,
     state_dirty: Arc<Notify>,
+    connection_id: String,
 ) -> std::io::Result<()> {
     // 1. Standard-framed init handshake.
     let Some(first) = read_frame(&mut stream).await? else {
@@ -402,6 +491,20 @@ async fn handle_command_conn(
     let Ok(PtpIpPacket::InitCommandRequest(init_req)) = PtpIpPacket::decode(&first) else {
         return Ok(()); // not a PTP/IP initiator
     };
+    let init_shape = {
+        let e = engine.lock().await;
+        e.manifest()
+            .connections
+            .get(&connection_id)
+            .and_then(|c| c.init_shape.as_deref())
+            .unwrap_or("app82")
+            .to_string()
+    };
+    if init_shape == "pcssKnock" {
+        // PCSS init/retry behavior is modeled in #171. Do not accept an reference app
+        // InitCommandRequest as if it were PCSS.
+        return Ok(());
+    }
     // The camera drops InitCommandRequest when a BLE AP handoff launched without
     // the IMAGE_TRANSFER_SETTING arming prep write (#102): no ack, just hang up.
     if !engine.lock().await.accepts_init() {
@@ -444,8 +547,8 @@ async fn handle_command_conn(
         };
         let (reply, events, is_poll_live_view) = {
             let mut e = engine.lock().await;
-            let is_poll_live_view = is_poll_live_view_op(e.manifest(), req.code);
-            let reply = e.on_operation(&req, data_in.as_deref());
+            let is_poll_live_view = is_poll_live_view_op(e.manifest(), &connection_id, req.code);
+            let reply = e.on_operation_for_connection(&connection_id, &req, data_in.as_deref());
             // Drain under the same lock so the queue is emptied atomically with
             // the op that produced it; forward (broadcast, non-blocking) outside.
             (reply, e.drain_events(), is_poll_live_view)
@@ -468,18 +571,19 @@ async fn handle_command_conn(
     Ok(())
 }
 
-fn is_poll_live_view_op(manifest: &CameraManifest, code: u16) -> bool {
-    manifest.connections.values().any(|connection| {
-        let Some(delivery) = &connection.live_view_delivery else {
-            return false;
-        };
-        delivery.kind == LiveViewDeliveryKind::Poll
-            && delivery
-                .poll_op
-                .as_deref()
-                .and_then(parse_hex_code)
-                .is_some_and(|poll_op| poll_op == code)
-    })
+fn is_poll_live_view_op(manifest: &CameraManifest, connection_id: &str, code: u16) -> bool {
+    let Some(connection) = manifest.connections.get(connection_id) else {
+        return false;
+    };
+    let Some(delivery) = &connection.live_view_delivery else {
+        return false;
+    };
+    delivery.kind == LiveViewDeliveryKind::Poll
+        && delivery
+            .poll_op
+            .as_deref()
+            .and_then(parse_hex_code)
+            .is_some_and(|poll_op| poll_op == code)
 }
 
 async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSource>>) -> Reply {
@@ -666,4 +770,25 @@ async fn stream_data_phase(
 
 fn to_io<E: std::fmt::Display>(e: E) -> std::io::Error {
     std::io::Error::other(e.to_string())
+}
+
+fn invalid_config<S: Into<String>>(msg: S) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, msg.into())
+}
+
+fn role_bind(
+    override_addr: Option<SocketAddr>,
+    manifest_port: Option<u16>,
+    role: &str,
+) -> std::io::Result<Option<SocketAddr>> {
+    match (override_addr, manifest_port) {
+        (Some(addr), Some(_)) => Ok(Some(addr)),
+        (Some(_), None) => Err(invalid_config(format!(
+            "--{role}-bind was supplied, but the selected connection has no {role} socket"
+        ))),
+        (None, Some(port)) => Ok(Some(format!("[::]:{port}").parse().map_err(|e| {
+            invalid_config(format!("invalid manifest {role} port {port}: {e}"))
+        })?)),
+        (None, None) => Ok(None),
+    }
 }

@@ -187,6 +187,8 @@ def main():
                 str(ROOT / "packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml"),
                 "--media-root",
                 str(tmp / "card"),
+                "--connection",
+                "app",
                 "--command-bind",
                 f"127.0.0.1:{command}",
                 "--event-bind",
