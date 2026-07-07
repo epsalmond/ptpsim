@@ -129,23 +129,6 @@ impl Engine {
         &self.store
     }
 
-    /// Dispatch one operation under the selected manifest connection. This keeps
-    /// the responder generic while letting app and PCSS personas expose their
-    /// own supported-op surfaces from manifest data.
-    pub fn on_operation_for_connection(
-        &mut self,
-        connection: &str,
-        req: &OperationRequest,
-        data_in: Option<&[u8]>,
-    ) -> Reply {
-        if let Some(opdef) = self.manifest.operation(req.code) {
-            if !opdef.connections.is_empty() && !opdef.connections.iter().any(|c| c == connection) {
-                return Self::err(req.transaction_id, resp::OPERATION_NOT_SUPPORTED);
-            }
-        }
-        self.on_operation(req, data_in)
-    }
-
     fn ok(tid: u32) -> Reply {
         Reply::Response(OperationResponse {
             code: resp::OK,

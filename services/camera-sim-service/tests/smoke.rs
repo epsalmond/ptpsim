@@ -119,9 +119,13 @@ fn read_data_reply(s: &mut TcpStream) -> Vec<u8> {
 }
 
 fn read_ok(s: &mut TcpStream) {
+    assert_eq!(read_response_code(s), 0x2001);
+}
+
+fn read_response_code(s: &mut TcpStream) -> u16 {
     match fuji_framing::decode(&read_frame(s)).unwrap() {
-        PtpIpPacket::OperationResponse(r) => assert_eq!(r.code, 0x2001),
-        other => panic!("expected OK, got {other:?}"),
+        PtpIpPacket::OperationResponse(r) => r.code,
+        other => panic!("expected response, got {other:?}"),
     }
 }
 
@@ -145,7 +149,9 @@ fn service_drives_image_import_over_tcp() {
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let lv = server.liveview_addr();
+        let lv = server
+            .liveview_addr_opt()
+            .expect("app connection has live-view socket");
         let ctl = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
@@ -239,6 +245,13 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
 
+    write_frame(&mut s, &op(0x1007, 20, vec![0x00010001, 0, 0]));
+    assert_eq!(
+        read_response_code(&mut s),
+        0x2005,
+        "app persona rejects GetObjectHandles; it enumerates through D620/D621"
+    );
+
     write_frame(&mut s, &op(0x1016, 2, vec![0xdf01]));
     write_frame(
         &mut s,
@@ -288,6 +301,19 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
     let handles = r.ptp_array(|r| r.u32()).unwrap();
     assert_eq!(handles.len(), 1);
 
+    write_frame(&mut s, &op(0x1008, 21, vec![handles[0]]));
+    let info = read_data_reply(&mut s);
+    let oi = ptp_core::ObjectInfo::decode(&info).unwrap();
+    assert_eq!(oi.object_format, 0x3801);
+
+    write_frame(&mut s, &op(0x1015, 22, vec![0xd235]));
+    let chunk = read_data_reply(&mut s);
+    let mut r = ptp_core::Reader::new(&chunk);
+    assert_eq!(r.u32().unwrap(), 0x00bfffe0);
+
+    write_frame(&mut s, &op(0x101b, 23, vec![handles[0], 0, 7, 0]));
+    assert_eq!(read_data_reply(&mut s), b"\xFF\xD8HELLO");
+
     let _ = shutdown_tx.send(());
     rt.block_on(handle).unwrap();
     std::fs::remove_dir_all(&root).ok();
@@ -335,7 +361,9 @@ properties: {}
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let evt = server.event_addr();
+        let evt = server
+            .event_addr_opt()
+            .expect("app connection has event socket");
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
         (cmd, evt, tx, h)
@@ -842,7 +870,9 @@ properties:
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let lv = server.liveview_addr();
+        let lv = server
+            .liveview_addr_opt()
+            .expect("app connection has live-view socket");
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(async move { server.run(rx).await });
         (cmd, lv, tx, h)
@@ -1007,7 +1037,9 @@ async fn bind_teardown_loop_with_live_connections_is_clean() {
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
-        let lv = server.liveview_addr();
+        let lv = server
+            .liveview_addr_opt()
+            .expect("app connection has live-view socket");
         let ctl = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let run = tokio::spawn(server.run(rx));
@@ -1066,7 +1098,9 @@ async fn idle_liveview_disconnects_are_reaped() {
         state_callback: None,
     };
     let server = Server::bind(config).await.unwrap();
-    let lv = server.liveview_addr();
+    let lv = server
+        .liveview_addr_opt()
+        .expect("app connection has live-view socket");
     let (tx, rx) = tokio::sync::oneshot::channel();
     let run = tokio::spawn(server.run(rx));
 

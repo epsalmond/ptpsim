@@ -8,6 +8,7 @@
 //! operations and data phases — matching `parse_v6_ptpip.py`. (Exact init
 //! payload bytes are reconciled against capture in the GFX100 II manifest work.)
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -86,12 +87,21 @@ pub struct Server {
     command: TcpListener,
     liveview: Option<TcpListener>,
     event: Option<TcpListener>,
+    poll_live_view_op: Option<u16>,
+    disallowed_ops: Arc<HashSet<u16>>,
     control: TcpListener,
     engine: Arc<Mutex<Engine>>,
     /// Shared looping frame source (one cursor across all live-view clients —
     /// the normal lease shape is one camera = one client; cursor sharing is
     /// harmless if a smoke client connects alongside the real one).
     frames: Arc<Mutex<LoopingFrameSource>>,
+}
+
+#[derive(Clone)]
+struct CommandContext {
+    connection_id: String,
+    poll_live_view_op: Option<u16>,
+    disallowed_ops: Arc<HashSet<u16>>,
 }
 
 impl Server {
@@ -123,21 +133,38 @@ impl Server {
                 config.connection
             ))
         })?;
-        if !matches!(
-            connection.command_framing,
-            None | Some(WireFraming::Compressed)
-        ) {
+        if !matches!(connection.command_framing, Some(WireFraming::Compressed)) {
             return Err(invalid_config(format!(
                 "selected connection '{}' uses unsupported command framing {:?}",
                 config.connection, connection.command_framing
             )));
         }
-        if !matches!(connection.event_framing, None | Some(WireFraming::Usb)) {
+        if bindings.port_for(SocketRole::Event).is_some()
+            && !matches!(connection.event_framing, Some(WireFraming::Usb))
+        {
             return Err(invalid_config(format!(
                 "selected connection '{}' uses unsupported event framing {:?}",
                 config.connection, connection.event_framing
             )));
         }
+        let poll_live_view_op = connection
+            .live_view_delivery
+            .as_ref()
+            .filter(|delivery| delivery.kind == LiveViewDeliveryKind::Poll)
+            .and_then(|delivery| delivery.poll_op.as_deref())
+            .and_then(parse_hex_code);
+        let disallowed_ops = Arc::new(
+            manifest
+                .operations
+                .iter()
+                .filter_map(|(code, opdef)| {
+                    (!opdef.connections.is_empty()
+                        && !opdef.connections.iter().any(|c| c == &config.connection))
+                    .then(|| parse_hex_code(code))
+                    .flatten()
+                })
+                .collect::<HashSet<_>>(),
+        );
         let command_bind = role_bind(
             config.command_bind,
             bindings.port_for(SocketRole::Command),
@@ -159,7 +186,9 @@ impl Server {
             bindings.port_for(SocketRole::LiveView),
             "live-view",
         )?;
-        let engine = Arc::new(Mutex::new(Engine::new(manifest, store)));
+        let mut engine_value = Engine::new(manifest, store);
+        engine_value.bind_connection(&config.connection);
+        let engine = Arc::new(Mutex::new(engine_value));
         let frame_bytes = load_liveview_frames(config.liveview_dir.as_deref())?;
         let frame_count = frame_bytes.len();
         let frames = Arc::new(Mutex::new(LoopingFrameSource::new(frame_bytes)));
@@ -179,6 +208,8 @@ impl Server {
             command,
             liveview,
             event,
+            poll_live_view_op,
+            disallowed_ops,
             control,
             engine,
             frames,
@@ -189,24 +220,8 @@ impl Server {
         self.command.local_addr().unwrap()
     }
 
-    pub fn liveview_addr(&self) -> SocketAddr {
-        self.liveview
-            .as_ref()
-            .expect("selected connection has no live-view socket")
-            .local_addr()
-            .unwrap()
-    }
-
     pub fn liveview_addr_opt(&self) -> Option<SocketAddr> {
         self.liveview.as_ref().map(|l| l.local_addr().unwrap())
-    }
-
-    pub fn event_addr(&self) -> SocketAddr {
-        self.event
-            .as_ref()
-            .expect("selected connection has no event socket")
-            .local_addr()
-            .unwrap()
     }
 
     pub fn event_addr_opt(&self) -> Option<SocketAddr> {
@@ -231,6 +246,8 @@ impl Server {
             command,
             liveview,
             event,
+            poll_live_view_op,
+            disallowed_ops,
             control,
             engine,
             frames,
@@ -241,7 +258,11 @@ impl Server {
             command_addr: command.local_addr().unwrap(),
             media_root: config.media_root.display().to_string(),
         };
-        let connection_id = config.connection.clone();
+        let command_context = CommandContext {
+            connection_id: config.connection.clone(),
+            poll_live_view_op,
+            disallowed_ops,
+        };
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
         let ctl_shutdown = shutdown_tx.clone();
         // Completion/lifecycle event push (#54): the command loop drains the
@@ -268,7 +289,7 @@ impl Server {
             let frames = frames.clone();
             let event_tx = event_tx.clone();
             let state_dirty = state_dirty.clone();
-            let connection_id = connection_id.clone();
+            let command_context = command_context.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -280,9 +301,9 @@ impl Server {
                                 let frames = frames.clone();
                                 let event_tx = event_tx.clone();
                                 let state_dirty = state_dirty.clone();
-                                let connection_id = connection_id.clone();
+                                let command_context = command_context.clone();
                                 conns.spawn(async move {
-                                    let _ = handle_command_conn(stream, engine, frames, event_tx, state_dirty, connection_id).await;
+                                    let _ = handle_command_conn(stream, engine, frames, event_tx, state_dirty, command_context).await;
                                 });
                             }
                         }
@@ -326,10 +347,11 @@ impl Server {
         let liveview_loop = {
             let engine = engine.clone();
             let frames = frames.clone();
-            let mut sub = shutdown_tx.subscribe();
+            let shutdown_tx = shutdown_tx.clone();
             async move {
+                let mut sub = shutdown_tx.subscribe();
                 let Some(liveview) = liveview else {
-                    std::future::pending::<()>().await;
+                    let _ = sub.recv().await;
                     return;
                 };
                 let mut conns = tokio::task::JoinSet::new();
@@ -354,10 +376,11 @@ impl Server {
         // accept arm so it only sees events emitted after it connected) and
         // writes the codes the command loop forwards.
         let event_loop = {
-            let mut sub = shutdown_tx.subscribe();
+            let shutdown_tx = shutdown_tx.clone();
             async move {
+                let mut sub = shutdown_tx.subscribe();
                 let Some(event) = event else {
-                    std::future::pending::<()>().await;
+                    let _ = sub.recv().await;
                     return;
                 };
                 let mut conns = tokio::task::JoinSet::new();
@@ -482,7 +505,7 @@ async fn handle_command_conn(
     frames: Arc<Mutex<LoopingFrameSource>>,
     event_tx: broadcast::Sender<u16>,
     state_dirty: Arc<Notify>,
-    connection_id: String,
+    context: CommandContext,
 ) -> std::io::Result<()> {
     // 1. Standard-framed init handshake.
     let Some(first) = read_frame(&mut stream).await? else {
@@ -495,7 +518,7 @@ async fn handle_command_conn(
         let e = engine.lock().await;
         e.manifest()
             .connections
-            .get(&connection_id)
+            .get(&context.connection_id)
             .and_then(|c| c.init_shape.as_deref())
             .unwrap_or("app82")
             .to_string()
@@ -503,6 +526,10 @@ async fn handle_command_conn(
     if init_shape == "pcssKnock" {
         // PCSS init/retry behavior is modeled in #171. Do not accept an reference app
         // InitCommandRequest as if it were PCSS.
+        tracing::warn!(
+            connection = %context.connection_id,
+            "pcssKnock InitCommandRequest handling is not implemented; closing command connection"
+        );
         return Ok(());
     }
     // The camera drops InitCommandRequest when a BLE AP handoff launched without
@@ -540,6 +567,19 @@ async fn handle_command_conn(
         let Ok(PtpIpPacket::OperationRequest(req)) = fuji_framing::decode(&frame) else {
             continue;
         };
+        if context.disallowed_ops.contains(&req.code) {
+            write_reply(
+                &mut stream,
+                &req,
+                Reply::Response(ptp_core::OperationResponse {
+                    code: resp::OPERATION_NOT_SUPPORTED,
+                    transaction_id: req.transaction_id,
+                    params: vec![],
+                }),
+            )
+            .await?;
+            continue;
+        }
         let data_in = if has_data_in(req.code) {
             collect_data_in(&mut stream, req.transaction_id).await?
         } else {
@@ -547,8 +587,8 @@ async fn handle_command_conn(
         };
         let (reply, events, is_poll_live_view) = {
             let mut e = engine.lock().await;
-            let is_poll_live_view = is_poll_live_view_op(e.manifest(), &connection_id, req.code);
-            let reply = e.on_operation_for_connection(&connection_id, &req, data_in.as_deref());
+            let is_poll_live_view = context.poll_live_view_op == Some(req.code);
+            let reply = e.on_operation(&req, data_in.as_deref());
             // Drain under the same lock so the queue is emptied atomically with
             // the op that produced it; forward (broadcast, non-blocking) outside.
             (reply, e.drain_events(), is_poll_live_view)
@@ -569,21 +609,6 @@ async fn handle_command_conn(
         write_reply(&mut stream, &req, reply).await?;
     }
     Ok(())
-}
-
-fn is_poll_live_view_op(manifest: &CameraManifest, connection_id: &str, code: u16) -> bool {
-    let Some(connection) = manifest.connections.get(connection_id) else {
-        return false;
-    };
-    let Some(delivery) = &connection.live_view_delivery else {
-        return false;
-    };
-    delivery.kind == LiveViewDeliveryKind::Poll
-        && delivery
-            .poll_op
-            .as_deref()
-            .and_then(parse_hex_code)
-            .is_some_and(|poll_op| poll_op == code)
 }
 
 async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSource>>) -> Reply {
