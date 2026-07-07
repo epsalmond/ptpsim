@@ -465,7 +465,7 @@ connections:
     liveViewDelivery: { kind: poll, pollOp: "0x9018" }
 operations:
   "0x1002": { name: OpenSession }
-  "0x9018": { name: SdkGetLiveViewData }
+  "0x9018": { name: PcssPollLiveViewData }
 properties: {}
 "#;
 
