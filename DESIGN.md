@@ -951,6 +951,9 @@ camera-sim-service \
 
 # Optional LAN-fidelity PCSS establishment: also listen for UDP DISCOVERY and
 # call back to the host's manifest-declared callback port with NOTIFY/DSCPORT.
+# By default the PCSS object queue is seeded from the media root at startup.
+# Add --pcss-shutter-enqueue-count N to start empty and enqueue N objects after
+# each manifest-described shutter sequence.
 camera-sim-service \
   --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
   --media-root <path/to/DCIM-root> \
@@ -959,6 +962,7 @@ camera-sim-service \
   --command-bind '[::]:15740' \
   --knock-bind  '[::]:51562' \
   --pcss-init-fails 1 \
+  --pcss-shutter-enqueue-count 2 \
   --control-bind '127.0.0.1:8080'
 
 # IMPLEMENTED today (tools/camera-simctl):
@@ -1309,6 +1313,10 @@ Simulator modes:
 - Full PCSS lab mode: simulator also implements UDP knock and callback behavior
   so desktop tether clients can be tested. It is opt-in via `--knock-bind`;
   hosted direct-connect instances do not bind the UDP listener by default.
+- PCSS object transfer is queue-shaped: `0x1007` lists queued handles,
+  `0x1008`/`0x100A`/`0x1009` inspect or pull them, and `0x100B` drains them.
+  The default queue is seeded at startup; `--pcss-shutter-enqueue-count N`
+  starts empty and adds media handles after each manifest shutter sequence.
 
 PCSS must live behind a manifest transport entry because ports, callback
 behavior, and one-shot-per-boot quirks can vary by model and firmware.

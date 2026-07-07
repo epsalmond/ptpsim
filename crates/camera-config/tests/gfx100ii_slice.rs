@@ -3,7 +3,7 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    ActionVerb, CameraManifest, ConfigStore, ImagesPushed, ManufacturerDefaults, Predicate,
+    ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, ObjectsAvailable, Predicate,
     PropView, StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
@@ -282,8 +282,8 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
 fn wireless_tether_shutter_action_is_the_3_beat_pcss_sequence() {
     // Wire-confirmed by wirePCSSShootDownload20260523 (Hyper-Utility capture). The
     // 3 D039 phase values are 0x00010000, 0x00020000, 0x00000001 — each followed
-    // by 0x100E(0, 0). triggers: [ImagePushed] tells the app to wire up the
-    // receive handler BEFORE invoking the action.
+    // by 0x100E(0, 0). triggers: [ObjectsAvailable] tells the app how many
+    // queued objects to expect after invoking the action.
     let m = gfx();
     let shutter = m
         .action("wireless-tether", ActionVerb::Shutter)
@@ -310,7 +310,10 @@ fn wireless_tether_shutter_action_is_the_3_beat_pcss_sequence() {
     assert_eq!(shutter.triggers.len(), 1);
     let t = &shutter.triggers[0];
     assert!(t.is_well_formed());
-    assert_eq!(t.images_pushed, Some(ImagesPushed { min: 1, max: 3 }));
+    assert_eq!(
+        t.objects_available,
+        Some(ObjectsAvailable { min: 1, max: 3 })
+    );
     assert!(t.postview_event.is_none());
     assert!(t.live_view_stream.is_none());
 }

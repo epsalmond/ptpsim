@@ -918,9 +918,8 @@ pub enum WireFraming {
 }
 
 /// Declared side-effects an `Action` produces — the app reads `Action.triggers`
-/// to plan UX (register receive handlers, show progress, etc.) without
-/// connection-specific knowledge. Engine does NOT act on this; pure
-/// declaration.
+/// to plan UX (poll object queues, show progress, etc.) without connection-
+/// specific knowledge. Engine does NOT act on this; pure declaration.
 ///
 /// Closed vocabulary: exactly one variant field is set per `ActionEffect`,
 /// and unknown fields fail to parse (`deny_unknown_fields`). Same shape as
@@ -930,16 +929,14 @@ pub enum WireFraming {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActionEffect {
-    /// Camera auto-pushes between `min` and `max` captured images to the
-    /// tether endpoint after `Shutter`. Cardinality is intrinsically variable:
-    /// PCSS tether produces 1-3 per press depending on the user's
-    /// JPEG / HEIF / RAW format selection; burst and bracket modes raise
-    /// the max further. The app reads `max` as the upper bound for its
-    /// receive timeout / progress UI, and may early-exit when it knows
-    /// the exact count from its own format-selection state. Receiver
-    /// MUST be wired up before invoking the action.
+    /// Camera makes between `min` and `max` captured objects available after
+    /// `Shutter`. Cardinality is intrinsically variable: PCSS tether produces
+    /// 1-3 per press depending on the user's JPEG / HEIF / RAW format selection;
+    /// burst and bracket modes raise the max further. The app reads `max` as
+    /// the upper bound for queue polling / progress UI, and may early-exit when
+    /// it knows the exact count from its own format-selection state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub images_pushed: Option<ImagesPushed>,
+    pub objects_available: Option<ObjectsAvailable>,
     /// Camera emits a postview / capture-complete event after `Shutter`
     /// (reference app `app` path: `0x9022` cleanup once `0xD212` clears). YAML body
     /// is the empty mapping: `postviewEvent: {}`.
@@ -957,7 +954,7 @@ impl ActionEffect {
     /// `Step::is_well_formed`).
     pub fn is_well_formed(&self) -> bool {
         let n = [
-            self.images_pushed.is_some(),
+            self.objects_available.is_some(),
             self.postview_event.is_some(),
             self.live_view_stream.is_some(),
         ]
@@ -968,11 +965,11 @@ impl ActionEffect {
     }
 }
 
-/// Parameters for the `ImagesPushed` effect: bounded count of images the
-/// camera will spontaneously send after `Shutter`.
+/// Parameters for the `ObjectsAvailable` effect: bounded count of captured
+/// objects the camera will make available after `Shutter`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ImagesPushed {
+pub struct ObjectsAvailable {
     pub min: u32,
     pub max: u32,
 }
