@@ -26,7 +26,8 @@ The `probe/2026-05-27-ptp-evidence-wireless-stills.jsonl` and
 capability snapshots only. They prove the advertised operation/property surface
 for those camera states, not that desktop PCSS records movies or transfers MOV
 objects. Do not model PCSS MOV transfer, including >4 GiB MOV transfer, from
-these files alone; require a real PCSS MOV transfer capture. The `0xD037`
+these files alone; require a real PCSS MOV transfer capture. The simulator's
+PCSS object queue excludes movie-formatted objects for this reason. The `0xD037`
 stills/video label remains scaffold/hypothesis until an actual PCSS flip
 transition is captured.
 

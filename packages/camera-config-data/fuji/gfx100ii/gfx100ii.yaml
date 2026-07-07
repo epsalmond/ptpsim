@@ -447,7 +447,8 @@ connections:
     # below per docs/plans/action-verbs.md. Still open: 0xD037 stills↔video flip
     # transition capture (Q3) — the 05-27 video evidence is a capability snapshot
     # only, not proof of PCSS movie recording or MOV transfer. Keep PCSS MOV /
-    # >4 GiB MOV transfer unmodeled until a real PCSS MOV transfer capture lands.
+    # >4 GiB MOV transfer unmodeled until a real PCSS MOV transfer capture lands;
+    # the simulator's PCSS object queue therefore excludes movie-formatted objects.
     actions:
       # Session-scoped identity read (#173): the actual body's unit serial (the
       # saved-camera merge key) + supported ops, via parse_device_info on the
@@ -818,7 +819,7 @@ properties:
   "0xd039": { name: pcssVirtualShutter, type: u32, access: readWrite, kind: scaffold,
               evidence: [wirePCSSShootDownload20260523] }   # 3-beat state machine paired with 0x100E on wireless-tether
   "0xd21c": { name: pcssKeepalive21c,   type: u16, access: readWrite, kind: scaffold,
-              evidence: [wirePCSSShootDownload20260523] }   # tethered-mode keepalive; write 0 every ~30-200ms
+              evidence: [wirePCSSShootDownload20260523] }   # tethered-mode keepalive; write 0 in the keepalive action
   "0xd207": { name: pcssKeepalive207,   type: u16, access: readWrite, kind: scaffold,
               evidence: [wirePCSSShootDownload20260523] }   # tethered-mode keepalive; write 1, paired with D21C
 
