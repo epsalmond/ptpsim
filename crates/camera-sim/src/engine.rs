@@ -48,13 +48,15 @@ pub struct Engine {
 }
 
 impl Engine {
+    pub const DEFAULT_CONNECTION: &'static str = "app";
+
     pub fn new(manifest: CameraManifest, store: MediaStore) -> Self {
         let state = CameraState::from_manifest(&manifest);
         Engine {
             manifest,
             store,
             state,
-            connection: "app".to_string(),
+            connection: Self::DEFAULT_CONNECTION.to_string(),
             faults: FaultSet::default(),
             link: crate::link::SharedLink::default(),
         }
@@ -106,14 +108,6 @@ impl Engine {
 
     pub fn store(&self) -> &MediaStore {
         &self.store
-    }
-
-    fn profile_mode(&self) -> &'static str {
-        match self.state.phase {
-            Phase::LiveView | Phase::Streaming => "shooting/stills",
-            Phase::ImageImport => "image-transfer",
-            _ => "",
-        }
     }
 
     fn ok(tid: u32) -> Reply {
@@ -525,10 +519,11 @@ impl Engine {
         let Some(raw) = value_to_i64(&value) else {
             return value;
         };
-        let Some(profile) =
-            self.manifest
-                .value_profile_for(code, &self.connection, self.profile_mode())
-        else {
+        let Some(profile) = self.manifest.value_profile_for(
+            code,
+            &self.connection,
+            self.state.manifest_mode_path(),
+        ) else {
             return value;
         };
         let Some(row) = prop.profile_row_for_write(profile, raw) else {

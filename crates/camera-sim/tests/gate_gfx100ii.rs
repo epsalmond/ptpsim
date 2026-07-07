@@ -203,6 +203,35 @@ fn neighboring_iso_property_without_value_profile_still_stores_verbatim() {
 }
 
 #[test]
+fn still_iso_profile_applies_after_open_session_before_live_view_selector() {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+
+    write_u32(&mut e, 2, 0xd02a, 50);
+    assert_eq!(read_u32(&mut e, 3, 0xd02a), 80);
+}
+
+#[test]
+fn default_ptpip_walk_rebinds_app_connection_for_value_profiles() {
+    let mut e = engine();
+    e.bind_connection("wireless-tether");
+    let steps = vec![
+        Step {
+            set_prop: Some("0xd02a".into()),
+            value: Some(50),
+            ..Default::default()
+        },
+        Step {
+            get_prop: Some("0xd02a".into()),
+            ..Default::default()
+        },
+    ];
+
+    let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("walk ok");
+    assert_eq!(out.observed.get(0xd02a), Some(80));
+}
+
+#[test]
 fn large_mov_wire_path_reports_sentinel_and_serves_true_size_with_high_offset() {
     const TRUE_SIZE: u64 = 0x0000_0001_230c_a400;
     const FINAL_LOW: u32 = 0x22ff_cf80;

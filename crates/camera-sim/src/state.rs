@@ -147,6 +147,16 @@ impl CameraState {
             _ => "",
         }
     }
+
+    /// The manifest mode path matching the current phase, used for scoped
+    /// property capability profiles.
+    pub fn manifest_mode_path(&self) -> &'static str {
+        match self.phase {
+            Phase::SessionOpen | Phase::LiveView | Phase::Streaming => "shooting/stills",
+            Phase::ImageImport => "image-transfer",
+            _ => "",
+        }
+    }
 }
 
 pub fn datatype_of(ty: Option<&str>) -> u16 {
