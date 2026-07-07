@@ -51,13 +51,18 @@ WHAT PTPSIM PROVIDES:
 
 CONTROL PLANE (the contract the sidecar polls):
 - GET /healthz → 200 with:
-    {"ok":true,"instance_id":…,"profile":…,"bind":"<command_addr>",
+    {"ok":true,"instance_id":…,"profile":…,"connection":…,"bind":"<command_addr>",
      "sessions":N,"media_root":…}
   `up` for the pool snapshot = HTTP 200 AND "ok":true.
+- GET /state → current simulator state snapshot for operator/debug inspection.
+- PATCH /state → apply a manifest-validated JSON state overlay.
 - POST /shutdown → graceful drain. SIGTERM also drains.
-- That is the WHOLE current contract. DESIGN.md lists future endpoints
-  (/scenario/load, /faults, …) under Scriptability — NOT implemented yet;
-  don't depend on them. If you need richer control, request it upstream.
+- `--state-callback` remains push-first and sends an initial snapshot after
+  startup-state application before debounced mutation snapshots.
+- DESIGN.md lists future endpoints (`/scenario/load`, `/faults`, …) under
+  Scriptability — NOT implemented yet; don't depend on them. Use
+  `--startup-state` for boot-time camera state and `PATCH /state` for explicit
+  local control mutations.
 
 VALIDATED ON THE PTPSIM SIDE:
 - Gates #3 ImageImport, #4 LiveView, #5 black-box smoke: green. The sim runs

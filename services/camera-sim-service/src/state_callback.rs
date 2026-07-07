@@ -11,58 +11,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use camera_media_store::ObjectQuery;
-use camera_sim::{Engine, Phase};
-use ptp_core::dataset::PropValue;
+use camera_sim::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, Notify};
+
+use crate::state_json::snapshot_json;
 
 /// Coalesce a burst of changes into one push; also caps push rate under heavy
 /// polling. Low enough to feel live in the dev panel.
 const DEBOUNCE: Duration = Duration::from_millis(150);
 /// A dead/slow observer must never let POST tasks pile up.
 const POST_TIMEOUT: Duration = Duration::from_secs(2);
-
-fn phase_str(p: Phase) -> &'static str {
-    match p {
-        Phase::Disconnected => "disconnected",
-        Phase::SessionOpen => "sessionOpen",
-        Phase::ImageImport => "imageImport",
-        Phase::LiveView => "liveView",
-        Phase::Streaming => "streaming",
-        Phase::Closed => "closed",
-    }
-}
-
-/// Build the camera-state JSON body. Snake_case + `serde_json::json!` to match
-/// `control.rs`'s `Health::json`. Returns the serialized String directly so the
-/// push loop can dedup by string compare (no `Serialize` derive needed). Keyed
-/// iteration (`BTreeMap`) makes the output deterministic for a given state.
-fn snapshot_json(engine: &Engine) -> String {
-    let state = engine.state();
-    let props: serde_json::Map<String, serde_json::Value> = state
-        .props
-        .iter()
-        .map(|(&code, val)| {
-            let v = match val {
-                PropValue::U8(x) => serde_json::json!(x),
-                PropValue::U16(x) => serde_json::json!(x),
-                PropValue::U32(x) => serde_json::json!(x),
-                PropValue::U64(x) => serde_json::json!(x),
-                PropValue::Str(s) => serde_json::json!(s),
-            };
-            (format!("0x{code:04x}"), v)
-        })
-        .collect();
-    serde_json::json!({
-        "phase": phase_str(state.phase),
-        "session_open": state.session_open,
-        "props": props,
-        "media": { "objects": engine.store().handles(ObjectQuery::default()).len() },
-    })
-    .to_string()
-}
 
 /// A parsed `http://host[:port][/path]` target. Parsed once at startup so the
 /// hot push path does no string work beyond the snapshot.
@@ -148,27 +108,32 @@ pub async fn state_callback_loop(
     mut shutdown: broadcast::Receiver<()>,
 ) {
     let mut last: Option<String> = None;
+    push_latest(&engine, &target, &mut last).await;
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
             _ = dirty.notified() => {
                 tokio::time::sleep(DEBOUNCE).await; // coalesce a burst
-                let body = {
-                    let e = engine.lock().await;
-                    snapshot_json(&e)
-                };
-                if last.as_deref() == Some(body.as_str()) {
-                    continue; // unchanged since last push (e.g. read-only ops)
-                }
-                match post_json(&target, &body).await {
-                    Ok(()) => {
-                        tracing::debug!(bytes = body.len(), "state-callback pushed");
-                        last = Some(body);
-                    }
-                    Err(e) => tracing::debug!(error = %e, "state-callback POST failed"),
-                }
+                push_latest(&engine, &target, &mut last).await;
             }
         }
+    }
+}
+
+async fn push_latest(engine: &Arc<Mutex<Engine>>, target: &Target, last: &mut Option<String>) {
+    let body = {
+        let e = engine.lock().await;
+        snapshot_json(&e)
+    };
+    if last.as_deref() == Some(body.as_str()) {
+        return; // unchanged since last push (e.g. read-only ops)
+    }
+    match post_json(target, &body).await {
+        Ok(()) => {
+            tracing::debug!(bytes = body.len(), "state-callback pushed");
+            *last = Some(body);
+        }
+        Err(e) => tracing::debug!(error = %e, "state-callback POST failed"),
     }
 }
 

@@ -933,6 +933,7 @@ camera-sim-service \
   --media-root <path/to/DCIM-root> \
   --profile fuji/gfx100ii \
   --connection app \
+  --startup-state scenarios/fuji/gfx100ii/iso-2000.yaml \
   --command-bind  '[::]:55740' \
   --event-bind    '[::]:55741' \
   --liveview-bind '[::]:55742' \
@@ -995,6 +996,35 @@ expect:
 Scripts can be strict for tests or permissive for App Review. Strict mode fails
 on unexpected operations. Permissive mode logs and returns realistic
 `OperationNotSupported`, `InvalidParameter`, or `AccessDenied` responses.
+
+Startup-state overlays are the boot-time counterpart to scenario scripts: they
+describe the physical/EEPROM-backed state this simulator instance starts in,
+without changing the manifest's model of the camera. The service applies the
+overlay after manifest/media/engine construction and before any PTP/control
+listener serves traffic. Unknown properties, bad datatypes, unsupported schema
+names, and profile/connection mismatches are fatal startup errors.
+
+```yaml
+schema: ptpsim-startup-state/v1
+profile: fuji/gfx100ii
+connection: app
+props:
+  "0xd02a": 2000
+```
+
+The same overlay shape is accepted by the local control API as JSON:
+
+```sh
+curl -X PATCH http://127.0.0.1:8080/state \
+  -H 'Content-Type: application/json' \
+  -d '{"props":{"0xd02a":2000}}'
+```
+
+State observation stays push-first. `--state-callback <http-url>` POSTs an
+initial state snapshot when the callback task starts, then POSTs debounced
+snapshots after state-changing operations or control mutations. `GET /state`
+exists for operator inspection and debug tooling; tests should not infer state
+transitions by polling it.
 
 Fault script examples:
 

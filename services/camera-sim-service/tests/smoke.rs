@@ -597,6 +597,19 @@ fn http_post(addr: std::net::SocketAddr, path: &str) -> String {
     out
 }
 
+fn http_patch(addr: std::net::SocketAddr, path: &str, body: &str) -> String {
+    let mut s = TcpStream::connect(addr).unwrap();
+    write!(
+        s,
+        "PATCH {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    out
+}
+
 #[test]
 fn service_rejects_oversized_data_in() {
     // Reproducer for the "no upper bound on data-in collection" finding: a
@@ -1736,20 +1749,15 @@ fn http_body_if_complete(buf: &[u8]) -> Option<String> {
     (body.len() >= clen).then(|| body[..clen].to_string())
 }
 
-/// #126: with `--state-callback` set, a state-changing op POSTs a JSON snapshot
-/// of camera state to the observer URL. Also confirms the responder keeps
-/// serving when the observer is the only HTTP party (fire-and-forget).
-#[test]
-fn state_callback_posts_camera_state_on_change() {
-    let root = tmp_card();
-    let rt = tokio::runtime::Runtime::new().unwrap();
+async fn state_observer(
+    expected_posts: usize,
+) -> (std::net::SocketAddr, std::sync::mpsc::Receiver<String>) {
     let (body_tx, body_rx) = std::sync::mpsc::channel::<String>();
-    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
-        // Observer: accept one POST, hand its JSON body to the test thread.
-        let receiver = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let recv_addr = receiver.local_addr().unwrap();
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let receiver = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let recv_addr = receiver.local_addr().unwrap();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for _ in 0..expected_posts {
             if let Ok((mut sock, _)) = receiver.accept().await {
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 1024];
@@ -1767,7 +1775,20 @@ fn state_callback_posts_camera_state_on_change() {
                     }
                 }
             }
-        });
+        }
+    });
+    (recv_addr, body_rx)
+}
+
+/// #126: with `--state-callback` set, a state-changing op POSTs a JSON snapshot
+/// of camera state to the observer URL. Also confirms the responder keeps
+/// serving when the observer is the only HTTP party (fire-and-forget).
+#[test]
+fn state_callback_posts_camera_state_on_change() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle, body_rx) = rt.block_on(async {
+        let (recv_addr, body_rx) = state_observer(2).await;
 
         let config = Config {
             instance_id: "test".into(),
@@ -1789,7 +1810,7 @@ fn state_callback_posts_camera_state_on_change() {
         let cmd = server.command_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
-        (cmd, tx, h)
+        (cmd, tx, h, body_rx)
     });
 
     // Drive: init handshake + OpenSession (flips session_open=true and the phase).
@@ -1804,7 +1825,15 @@ fn state_callback_posts_camera_state_on_change() {
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
 
-    // The push is debounced (~150ms); wait for the observer to receive it.
+    let first = body_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("observer should receive initial state POST");
+    assert!(
+        first.contains("\"phase\":\"disconnected\""),
+        "initial body: {first}"
+    );
+
+    // The mutation push is debounced (~150ms); wait for the observer to receive it.
     let body = body_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("observer should receive a state POST after OpenSession");
@@ -1816,6 +1845,162 @@ fn state_callback_posts_camera_state_on_change() {
     let di = ptp_core::DeviceInfo::decode(&read_data_reply(&mut s)).unwrap();
     assert_eq!(di.model, "GFX100 II");
 
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn control_patch_state_updates_shared_snapshot() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (control_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let ctl = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (ctl, tx, h)
+    });
+
+    let body = http_patch(
+        control_addr,
+        "/state",
+        r#"{"profile":"fuji/gfx100ii/fw0230","connection":"app","props":{"0xd02a":2000}}"#,
+    );
+    assert!(body.contains("\"ok\":true"), "patch body: {body}");
+    assert!(body.contains("\"props\":1"), "patch body: {body}");
+
+    let state = http_get(control_addr, "/state");
+    assert!(state.contains("\"0xd02a\":2000"), "state body: {state}");
+
+    let _ = http_post(control_addr, "/shutdown");
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn failed_control_patch_state_is_atomic() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (control_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let ctl = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (ctl, tx, h)
+    });
+
+    let body = http_patch(
+        control_addr,
+        "/state",
+        r#"{"phase":"streaming","session_open":true,"props":{"0xd02a":2000,"0xffff":1}}"#,
+    );
+    assert!(
+        body.contains("400 Bad Request") || body.contains("\"error\""),
+        "patch body: {body}"
+    );
+
+    let state = http_get(control_addr, "/state");
+    assert!(
+        state.contains("\"phase\":\"disconnected\""),
+        "state body: {state}"
+    );
+    assert!(
+        state.contains("\"session_open\":false"),
+        "state body: {state}"
+    );
+    assert!(state.contains("\"0xd02a\":32769"), "state body: {state}");
+
+    let _ = http_post(control_addr, "/shutdown");
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn control_patch_state_notifies_callback_observer() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (control_addr, shutdown_tx, handle, body_rx) = rt.block_on(async {
+        let (recv_addr, body_rx) = state_observer(2).await;
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: Some(format!("http://{recv_addr}/state")),
+        };
+        let server = Server::bind(config).await.unwrap();
+        let ctl = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(server.run(rx));
+        (ctl, tx, h, body_rx)
+    });
+
+    let first = body_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("observer should receive initial state POST");
+    assert!(
+        first.contains("\"phase\":\"disconnected\""),
+        "initial body: {first}"
+    );
+
+    let body = http_patch(control_addr, "/state", r#"{"props":{"0xd02a":2000}}"#);
+    assert!(body.contains("\"ok\":true"), "patch body: {body}");
+    let pushed = body_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("observer should receive state POST after PATCH /state");
+    assert!(pushed.contains("\"0xd02a\":2000"), "body: {pushed}");
+
+    let _ = http_post(control_addr, "/shutdown");
     rt.block_on(async {
         let _ = shutdown_tx.send(());
         let _ = handle.await;

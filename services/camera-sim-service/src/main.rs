@@ -4,8 +4,11 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use camera_sim::StateOverlay;
 use camera_sim_service::{Config, Server};
 use clap::Parser;
+
+mod logging;
 
 #[derive(Parser)]
 #[command(name = "camera-sim-service", about = "ptpsim camera simulator service")]
@@ -23,6 +26,10 @@ struct Args {
     /// Path to the camera manifest YAML.
     #[arg(long)]
     manifest: PathBuf,
+    /// Optional startup-state YAML/JSON overlay applied before any listener
+    /// serves traffic.
+    #[arg(long)]
+    startup_state: Option<PathBuf>,
     /// Media card root (contains DCIM/...).
     #[arg(long)]
     media_root: PathBuf,
@@ -61,20 +68,25 @@ struct Args {
     /// the responder. e.g. the client application dev panel: http://127.0.0.1:8770/state
     #[arg(long)]
     state_callback: Option<String>,
+    /// Log format. `auto` uses compact human logs on a terminal and JSON
+    /// otherwise.
+    #[arg(long, value_enum, default_value_t = logging::LogFormat::Auto)]
+    log_format: logging::LogFormat,
+    /// Color policy for compact logs. `auto` respects terminal detection and
+    /// NO_COLOR.
+    #[arg(long, value_enum, default_value_t = logging::ColorChoice::Auto)]
+    color: logging::ColorChoice,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .json()
-        .init();
-
     let args = Args::parse();
+    logging::init(args.log_format, args.color);
     let manifest_yaml = std::fs::read_to_string(&args.manifest)?;
+    let startup_state = match args.startup_state.as_deref() {
+        Some(path) => Some(load_startup_state(path)?),
+        None => None,
+    };
     let config = Config {
         instance_id: args.instance_id,
         profile: args.profile,
@@ -93,6 +105,18 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let server = Server::bind(config).await?;
+    if let Some(overlay) = startup_state.as_ref() {
+        let applied = server
+            .apply_startup_state(overlay)
+            .await
+            .map_err(|e| anyhow::anyhow!("startup state rejected: {e}"))?;
+        tracing::info!(
+            props = applied.props,
+            phase = applied.phase,
+            session_open = applied.session_open,
+            "startup state applied"
+        );
+    }
     tracing::info!(command = %server.command_addr(), control = %server.control_addr(), "ptpsim listening");
 
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -111,4 +135,10 @@ async fn main() -> anyhow::Result<()> {
     server.run(rx).await;
     tracing::info!("stopped");
     Ok(())
+}
+
+fn load_startup_state(path: &std::path::Path) -> anyhow::Result<StateOverlay> {
+    let raw = std::fs::read_to_string(path)?;
+    serde_yaml::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("parse startup state {}: {e}", path.display()))
 }
