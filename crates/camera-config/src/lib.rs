@@ -20,13 +20,14 @@ pub mod version;
 pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{enrich, generate_proposal};
 pub use model::{
-    parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource, AwaitUntil,
-    CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition, Control,
-    Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
-    LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, OpEffect,
-    Operation, Payload, PayloadForm, PostviewEvent, Property, PropertyValueEncoding,
-    PropertyValueRow, RecordLayout, SentinelMask, ShutterRecipe, SocketBindings, SocketRole, Step,
-    StepParam, TransportClose, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    parse_hex_bytes, parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource,
+    AwaitUntil, CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition,
+    Control, Descriptor, ImagesPushed, InitIdentity, InitShape, LiveViewDelivery,
+    LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode,
+    ModeEntry, OpEffect, Operation, Payload, PayloadForm, PostviewEvent, Property,
+    PropertyValueEncoding, PropertyValueRow, RecordLayout, SentinelFrame, SentinelMask,
+    ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, TransportClose, ValuePolicy,
+    ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};

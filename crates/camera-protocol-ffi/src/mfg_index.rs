@@ -10,7 +10,8 @@
 //!    (model, connection, initial_scope) → receives an [`EstablishmentPlan`]
 //!    whose `steps` the dispatcher walks.
 //! 4. Optional: [`crate::ConfigStore::refine_establishment`] when firmware is
-//!    discovered mid-walk.
+//!    discovered mid-walk. The result distinguishes "no change" from a replacement
+//!    tail and from invalid plan errors.
 //!
 //! Types here intentionally match plan §3.3 verbatim — they form the iOS
 //! contract. The conversion adapters from [`camera_config::index`] live in
@@ -146,6 +147,15 @@ pub struct EstablishmentPlan {
     /// `ble-reconnect` (#91). Empty for plans with nothing to cache.
     pub persist: Vec<String>,
     pub steps: Vec<Step>,
+}
+
+/// The result of refining a plan after firmware is discovered mid-walk.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum EstablishmentRefinement {
+    /// The existing unwalked tail remains valid.
+    NoChange,
+    /// Replace `plan.steps[next_step_index..]` with these steps.
+    ReplaceTail { steps: Vec<Step> },
 }
 
 /// Common per-step options (§11.6). The dispatcher's retry loop wraps every

@@ -53,6 +53,11 @@ evidence:
 
 
 
+sentinels:
+  # PTP/IP length-8 frame with body 0xffffffff. Sent before the final FIN when
+  # reopening image-transfer so the camera holds its Wi-Fi AP up (#82).
+  keepApSentinel: { bytes: "08000000ffffffff", evidence: [docImageTransfer] }
+
 # Connection-name convention (see docs/consults/2026-06-02-*-wireless-tether.md):
 #   `app`             = reference-app PTP/IP on :55740 (BLE → camera Wi-Fi AP → 82B WMB-tail init).
 #   `wireless-tether` = PCSS port-knock PTP/IP on :15740 (camera joins LAN, then knock+notify).
