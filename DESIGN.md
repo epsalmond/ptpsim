@@ -939,15 +939,26 @@ camera-sim-service \
   --liveview-dir  packages/fixtures/liveview/640x480 \
   --control-bind  '127.0.0.1:8080'
 
-# PCSS / infrastructure-mode direct responder shape. This binds the command
-# socket, but pcssKnock init/retry is still #171 and UDP knock discovery is #172;
-# until then an reference app InitCommandRequest is rejected rather than acknowledged.
+# PCSS / infrastructure-mode direct responder shape. This binds only the
+# command socket; live view is served by command-channel 0x9018 polling.
 camera-sim-service \
   --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
   --media-root <path/to/DCIM-root> \
   --profile fuji/gfx100ii \
   --connection wireless-tether \
   --command-bind '[::]:15740' \
+  --control-bind '127.0.0.1:8080'
+
+# Optional LAN-fidelity PCSS establishment: also listen for UDP DISCOVERY and
+# call back to the host's manifest-declared callback port with NOTIFY/DSCPORT.
+camera-sim-service \
+  --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
+  --media-root <path/to/DCIM-root> \
+  --profile fuji/gfx100ii \
+  --connection wireless-tether \
+  --command-bind '[::]:15740' \
+  --knock-bind  '[::]:51562' \
+  --pcss-init-fails 1 \
   --control-bind '127.0.0.1:8080'
 
 # IMPLEMENTED today (tools/camera-simctl):
@@ -1232,7 +1243,7 @@ Listener setup:
 1. Select a manifest connection with `--connection` (`app` by default).
 2. Bind only the selected connection's declared socket roles.
 3. For `app`, the default roles are command `55740`, event `55741`, and live-view stream `55742`.
-4. For `wireless-tether`, the default role is command `15740`; live view is command-channel polling once the PCSS init path is implemented.
+4. For `wireless-tether`, the default role is command `15740`; live view is command-channel polling.
 5. Accept command socket first. Event/live-view sockets may connect before or
    after workflow startup, but the workflow decides when bytes are sent.
 
@@ -1296,7 +1307,8 @@ Simulator modes:
 - Responder mode for app review: simulator exposes the selected manifest
   connection, defaulting to the app command/event/live-view sockets.
 - Full PCSS lab mode: simulator also implements UDP knock and callback behavior
-  so desktop tether clients can be tested.
+  so desktop tether clients can be tested. It is opt-in via `--knock-bind`;
+  hosted direct-connect instances do not bind the UDP listener by default.
 
 PCSS must live behind a manifest transport entry because ports, callback
 behavior, and one-shot-per-boot quirks can vary by model and firmware.

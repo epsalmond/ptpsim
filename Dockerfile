@@ -101,8 +101,9 @@ USER ptpsim:nogroup
 WORKDIR /var/lib/ptpsim
 
 # App persona listeners (55740 command / 55741 event / 55742 live-view), PCSS
-# command (15740), and control HTTP. Active sockets depend on --connection.
-EXPOSE 55740/tcp 55741/tcp 55742/tcp 15740/tcp 8080/tcp
+# command (15740), optional PCSS knock (51562/udp), and control HTTP. Active
+# sockets depend on --connection and --knock-bind.
+EXPOSE 55740/tcp 55741/tcp 55742/tcp 15740/tcp 51562/udp 8080/tcp
 
 # Healthcheck hits /healthz on the default control bind. If you override
 # --control-bind, override this too (or pass --health-cmd= at docker run).

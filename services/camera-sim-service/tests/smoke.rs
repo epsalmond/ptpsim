@@ -3,7 +3,7 @@
 //! service-level counterpart to design gates #5 and #6.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 
 use camera_sim_service::{Config, Server};
@@ -86,6 +86,33 @@ fn connect_ptpip(command_addr: std::net::SocketAddr, friendly_name: &str) -> Tcp
     s
 }
 
+fn pcss_init_frame(hostname: &str) -> Vec<u8> {
+    let mut bytes = vec![0u8; 82];
+    bytes[0..4].copy_from_slice(&82u32.to_le_bytes());
+    bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+    bytes[8..24].copy_from_slice(&[
+        0xf2, 0xe4, 0x53, 0x8f, 0xad, 0xa5, 0x48, 0x5d, 0x87, 0xb2, 0x7f, 0x0b, 0xd3, 0xd5, 0xde,
+        0xd0,
+    ]);
+    bytes[0x18..0x1c].copy_from_slice(&[0x31, 0x07, 0xa8, 0xc0]);
+    let mut off = 0x1c;
+    for unit in hostname.encode_utf16() {
+        bytes[off..off + 2].copy_from_slice(&unit.to_le_bytes());
+        off += 2;
+    }
+    bytes
+}
+
+fn connect_pcss(command_addr: std::net::SocketAddr, hostname: &str) -> TcpStream {
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    write_frame(&mut s, &pcss_init_frame(hostname));
+    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
+        PtpIpPacket::InitCommandAck(_) => {}
+        other => panic!("expected InitCommandAck, got {other:?}"),
+    }
+    s
+}
+
 fn set_prop(s: &mut TcpStream, tid: u32, prop: u16, data: &[u8]) {
     write_frame(s, &op(0x1016, tid, vec![prop as u32]));
     write_frame(s, &fuji_framing::encode_data(0x1016, tid, data));
@@ -143,6 +170,8 @@ fn service_drives_image_import_over_tcp() {
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -228,6 +257,8 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -355,6 +386,8 @@ properties: {}
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -442,6 +475,8 @@ fn service_serves_a_large_object_in_a_single_frame() {
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -566,6 +601,8 @@ properties:
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -643,7 +680,7 @@ camera:
 connections:
   wireless-tether:
     kind: ptpip-direct
-    initShape: app82
+    initShape: pcssKnock
     liveViewDelivery: { kind: poll, pollOp: "0x9018" }
     commandFraming: compressed
     bindings: { command: 15740 }
@@ -664,6 +701,8 @@ properties: {}
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: None,
             event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: Some(lv_dir.clone()),
             state_callback: None,
@@ -677,23 +716,236 @@ properties: {}
         (cmd, tx, h)
     });
 
-    let mut s = TcpStream::connect(command_addr).unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [0; 16],
-        friendly_name: "test".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
-    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
-        PtpIpPacket::InitCommandAck(_) => {}
-        other => panic!("expected InitCommandAck, got {other:?}"),
-    }
+    let mut s = connect_pcss(command_addr, "mbp");
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
 
     write_frame(&mut s, &op(0x9018, 2, vec![]));
     let frame = read_data_reply(&mut s);
     assert_eq!(&frame[..], lv_jpeg, "poll op returns the fixture JPEG");
+
+    drop(s);
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn pcss_init_fail_retries_then_accepts() {
+    let root = tmp_card();
+    let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  wireless-tether:
+    kind: ptpip-direct
+    initShape: pcssKnock
+    commandFraming: compressed
+    bindings: { command: 15740 }
+    initRetries: { max: 3, backoffMs: 250 }
+operations:
+  "0x1002": { name: OpenSession, connections: [wireless-tether] }
+properties: {}
+"#;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii".into(),
+            connection: "wireless-tether".into(),
+            manifest_yaml: manifest.into(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 2,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(async move { server.run(rx).await });
+        (cmd, tx, h)
+    });
+
+    let init = pcss_init_frame("mbp");
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    for _ in 0..2 {
+        write_frame(&mut s, &init);
+        match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
+            PtpIpPacket::InitFail(f) => assert_eq!(f.reason, 0x2019),
+            other => panic!("expected InitFail, got {other:?}"),
+        }
+    }
+    write_frame(&mut s, &init);
+    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
+        PtpIpPacket::InitCommandAck(_) => {}
+        other => panic!("expected InitCommandAck after retries, got {other:?}"),
+    }
+    write_frame(&mut s, &op(0x1002, 1, vec![1]));
+    read_ok(&mut s);
+
+    drop(s);
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn pcss_rejects_app_init_shape() {
+    let root = tmp_card();
+    let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  wireless-tether:
+    kind: ptpip-direct
+    initShape: pcssKnock
+    commandFraming: compressed
+    bindings: { command: 15740 }
+operations: {}
+properties: {}
+"#;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii".into(),
+            connection: "wireless-tether".into(),
+            manifest_yaml: manifest.into(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(async move { server.run(rx).await });
+        (cmd, tx, h)
+    });
+
+    let mut s = TcpStream::connect(command_addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+        .unwrap();
+    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+        initiator_guid: [1; 16],
+        friendly_name: "app".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    let mut buf = [0u8; 4];
+    if s.read_exact(&mut buf).is_ok() {
+        panic!("PCSS path accepted an reference app init packet");
+    }
+
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn pcss_knock_notifies_callback_with_command_port() {
+    let root = tmp_card();
+    let callback = TcpListener::bind("127.0.0.1:0").unwrap();
+    let callback_port = callback.local_addr().unwrap().port();
+    let manifest = format!(
+        r#"
+schema: camera-config/v1
+camera: {{ manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }}
+connections:
+  wireless-tether:
+    kind: ptpip-direct
+    initShape: pcssKnock
+    commandFraming: compressed
+    bindings: {{ command: 15740 }}
+    knock: {{ callbackPort: {callback_port}, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0" }}
+operations:
+  "0x1002": {{ name: OpenSession, connections: [wireless-tether] }}
+properties: {{}}
+"#
+    );
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, knock_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii".into(),
+            connection: "wireless-tether".into(),
+            manifest_yaml: manifest,
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: Some("127.0.0.1:0".parse().unwrap()),
+            pcss_init_fails: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let cmd = server.command_addr();
+        let knock = server.knock_addr_opt().expect("knock listener bound");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(async move { server.run(rx).await });
+        (cmd, knock, tx, h)
+    });
+
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.send_to(
+        b"DISCOVERY * HTTP/1.1\r\nHOST: 127.0.0.1\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0",
+        knock_addr,
+    )
+    .unwrap();
+    callback.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let (mut callback_stream, _) = loop {
+        match callback.accept() {
+            Ok(accepted) => break accepted,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for PCSS NOTIFY callback"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("callback accept failed: {e}"),
+        }
+    };
+    callback_stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    let mut notify = Vec::new();
+    let mut buf = [0u8; 256];
+    let n = callback_stream.read(&mut buf).unwrap();
+    notify.extend_from_slice(&buf[..n]);
+    callback_stream.write_all(b"HTTP/1.1 200 OK\r\n\0").unwrap();
+    let notify = String::from_utf8_lossy(&notify);
+    assert!(notify.starts_with("NOTIFY * HTTP/1.1\r\n"), "{notify}");
+    assert!(
+        notify.contains(&format!("DSCPORT:{}\r\n", command_addr.port())),
+        "{notify}"
+    );
+
+    let mut s = connect_pcss(command_addr, "mbp");
+    write_frame(&mut s, &op(0x1002, 1, vec![1]));
+    read_ok(&mut s);
 
     drop(s);
     rt.block_on(async {
@@ -744,6 +996,8 @@ properties: {}
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: Some(lv_dir.clone()),
             state_callback: None,
@@ -807,6 +1061,8 @@ properties: {}
         command_bind: Some("127.0.0.1:0".parse().unwrap()),
         liveview_bind: None,
         event_bind: Some("127.0.0.1:0".parse().unwrap()),
+        knock_bind: None,
+        pcss_init_fails: 0,
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
         state_callback: None,
@@ -864,6 +1120,8 @@ properties:
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: Some(lv_dir.clone()),
             state_callback: None,
@@ -946,6 +1204,8 @@ async fn bind_rejects_unsupported_manifest_schema() {
         command_bind: Some("127.0.0.1:0".parse().unwrap()),
         liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
         event_bind: Some("127.0.0.1:0".parse().unwrap()),
+        knock_bind: None,
+        pcss_init_fails: 0,
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
         state_callback: None,
@@ -976,6 +1236,8 @@ async fn idle_control_connection_does_not_block_healthz() {
         command_bind: Some("127.0.0.1:0".parse().unwrap()),
         liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
         event_bind: Some("127.0.0.1:0".parse().unwrap()),
+        knock_bind: None,
+        pcss_init_fails: 0,
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
         state_callback: None,
@@ -1031,6 +1293,8 @@ async fn bind_teardown_loop_with_live_connections_is_clean() {
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -1093,6 +1357,8 @@ async fn idle_liveview_disconnects_are_reaped() {
         command_bind: Some("127.0.0.1:0".parse().unwrap()),
         liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
         event_bind: Some("127.0.0.1:0".parse().unwrap()),
+        knock_bind: None,
+        pcss_init_fails: 0,
         control_bind: "127.0.0.1:0".parse().unwrap(),
         liveview_dir: None,
         state_callback: None,
@@ -1137,6 +1403,8 @@ fn unarmed_engine_drops_init_command_request() {
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -1191,6 +1459,8 @@ fn mismatched_friendly_name_is_dropped_a_matching_one_is_acked() {
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: None,
@@ -1299,6 +1569,8 @@ fn state_callback_posts_camera_state_on_change() {
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
             event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
             state_callback: Some(format!("http://{recv_addr}/state")),

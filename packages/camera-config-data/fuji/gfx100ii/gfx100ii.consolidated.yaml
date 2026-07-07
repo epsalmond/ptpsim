@@ -6719,6 +6719,8 @@ connections:
     transportClose:
       sentinel: keepApSentinel
       when: before-image-transfer-reopen
+    knock: null
+    initRetries: null
     modes:
     - shooting/stills
     - shooting/video
@@ -7756,6 +7758,8 @@ connections:
     commandListenerVolatile: false
     bindings: null
     transportClose: null
+    knock: null
+    initRetries: null
     modes:
     - remote-trigger
     entries: []
@@ -7794,6 +7798,8 @@ connections:
     commandListenerVolatile: false
     bindings: null
     transportClose: null
+    knock: null
+    initRetries: null
     modes:
     - raw-conv-backup-restore
     - webcam
@@ -7835,6 +7841,14 @@ connections:
       event: null
       liveView: null
     transportClose: null
+    knock:
+      callbackPort: 51560
+      knockPort: 51562
+      commandPort: 15740
+      protocol: PCSS/1.0
+    initRetries:
+      max: 3
+      backoffMs: 250
     modes:
     - shooting/stills
     - remote-trigger
@@ -8047,14 +8061,6 @@ connections:
       autoDiscoverable: false
     evidence:
     - wireTether
-    initRetries:
-      max: 3
-      backoffMs: 250
-    knock:
-      callbackPort: 51560
-      knockPort: 51562
-      commandPort: 15740
-      protocol: PCSS/1.0
   xlv:
     ref: null
     availableWhen: null
@@ -8070,6 +8076,8 @@ connections:
     commandListenerVolatile: false
     bindings: null
     transportClose: null
+    knock: null
+    initRetries: null
     modes:
     - shooting/stills
     entries: []

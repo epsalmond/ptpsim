@@ -1608,17 +1608,36 @@ impl ConfigStore {
     ) -> Option<ConnectionEstablishmentInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
         let mut params = Vec::new();
-        for block in ["knock", "gatt"] {
-            if let Some(serde_yaml::Value::Mapping(m)) = c.extra.get(block) {
-                for (k, v) in m {
-                    if let (Some(k), Some(v)) = (k.as_str(), yaml_scalar(v)) {
-                        params.push(KeyValue {
-                            key: k.to_string(),
-                            value: v,
-                        });
-                    }
-                }
-            }
+        if let Some(knock) = &c.knock {
+            params.push(KeyValue {
+                key: "callbackPort".into(),
+                value: knock.callback_port.to_string(),
+            });
+            params.push(KeyValue {
+                key: "knockPort".into(),
+                value: knock.knock_port.to_string(),
+            });
+            params.push(KeyValue {
+                key: "commandPort".into(),
+                value: knock.command_port.to_string(),
+            });
+            params.push(KeyValue {
+                key: "protocol".into(),
+                value: knock.protocol.clone(),
+            });
+        }
+        if let Some(retries) = &c.init_retries {
+            params.push(KeyValue {
+                key: "initRetriesMax".into(),
+                value: retries.max.to_string(),
+            });
+            params.push(KeyValue {
+                key: "initRetriesBackoffMs".into(),
+                value: retries.backoff_ms.to_string(),
+            });
+        }
+        for (k, v) in flattened_establishment_params(&c.extra) {
+            params.push(KeyValue { key: k, value: v });
         }
         Some(ConnectionEstablishmentInfo {
             target_connection: connection,
@@ -2089,6 +2108,22 @@ impl ConfigStore {
     pub fn wireless_transfer_ceiling(&self) -> Option<u64> {
         self.object_info_size_sentinel()
     }
+}
+
+fn flattened_establishment_params(
+    extra: &BTreeMap<String, serde_yaml::Value>,
+) -> Vec<(String, String)> {
+    let mut params = Vec::new();
+    for block in ["knock", "gatt"] {
+        if let Some(serde_yaml::Value::Mapping(m)) = extra.get(block) {
+            for (k, v) in m {
+                if let (Some(k), Some(v)) = (k.as_str(), yaml_scalar(v)) {
+                    params.push((k.to_string(), v));
+                }
+            }
+        }
+    }
+    params
 }
 
 // ----------------------------------------------------------------------------

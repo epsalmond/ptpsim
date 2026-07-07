@@ -11,6 +11,7 @@ pub mod focus_area;
 pub mod fuji_framing;
 pub mod fuji_init;
 pub mod liveview;
+pub mod pcss;
 pub mod quirk;
 pub mod usb_ptp;
 pub mod value_codec;
@@ -19,4 +20,7 @@ pub use client_identity::normalize_client_name;
 pub use error::FramingError;
 pub use focus_area::pack_af_area;
 pub use fuji_init::{build_app_init, validate_init_ack};
+pub use pcss::{
+    notify_message as pcss_notify_message, parse_discovery as parse_pcss_discovery, parse_pcss_init,
+};
 pub use value_codec::{encode_value, ValueWidth};

@@ -37,6 +37,12 @@ struct Args {
     /// connection has no live-view role.
     #[arg(long)]
     liveview_bind: Option<SocketAddr>,
+    /// Optional PCSS UDP knock listener bind for LAN-fidelity wireless tethering.
+    #[arg(long)]
+    knock_bind: Option<SocketAddr>,
+    /// Number of PCSS InitFail packets to emit before InitCommandAck.
+    #[arg(long, default_value_t = 0)]
+    pcss_init_fails: u32,
     /// Control HTTP bind (loopback by default).
     #[arg(long, default_value = "127.0.0.1:8080")]
     control_bind: SocketAddr,
@@ -75,6 +81,8 @@ async fn main() -> anyhow::Result<()> {
         command_bind: args.command_bind,
         liveview_bind: args.liveview_bind,
         event_bind: args.event_bind,
+        knock_bind: args.knock_bind,
+        pcss_init_fails: args.pcss_init_fails,
         control_bind: args.control_bind,
         liveview_dir: args.liveview_dir,
         state_callback: args.state_callback,
