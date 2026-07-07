@@ -793,6 +793,8 @@ properties:
   # 0xD246 — reference-app Take in-screen toggle (`0`=stills, `1`=video). PCSS equivalent
   # is 0xD037 above. DevicePropDesc enum reports `[0x00, 0x00]` (Fuji bool quirk).
   "0xd246": { name: appInShooterStillsVideo, type: u8, access: readWrite, initialValue: 0,
+              descriptor: { form: enum, values: [0, 1] },
+              labels: { "0": stills, "1": video },
               evidence: [docFujiPtpPropReference] }
   # 0xD22B — read during Get-mode bootstrap, between 0x9050 and 0x9053
   # (see image-transfer entry sequence). Purpose unknown; treat as part of the

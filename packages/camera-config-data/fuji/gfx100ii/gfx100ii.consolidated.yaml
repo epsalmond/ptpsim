@@ -4038,16 +4038,13 @@ properties:
     descriptor:
       form: enum
       values:
-      - 2
-      - 5
-      - 7
-      - 8
-      - 9
-      - 11
-      - 12
-      source: camera
+      - 0
+      - 1
+      source: null
     controls: {}
-    labels: {}
+    labels:
+      '0': stills
+      '1': video
     evidence:
     - docFujiPtpPropReference
   '0xd247':
