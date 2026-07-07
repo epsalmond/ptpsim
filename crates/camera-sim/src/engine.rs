@@ -207,9 +207,9 @@ impl Engine {
     }
 
     /// Enable standard PTP object-queue behavior for a connection whose manifest
-    /// enumerates with `0x1007`. `shutter_enqueue_count == 0` seeds all media at
-    /// startup; nonzero starts empty and enqueues after the manifest shutter
-    /// action's literal wire sequence completes.
+    /// enumerates with `0x1007`. `shutter_enqueue_count == 0` seeds transferable
+    /// non-movie media at startup; nonzero starts empty and enqueues after the
+    /// manifest shutter action's literal wire sequence completes.
     pub fn configure_standard_object_queue(
         &mut self,
         connection_id: &str,
@@ -233,7 +233,7 @@ impl Engine {
             ));
         }
 
-        let handles = self.store_file_handles();
+        let handles = self.standard_object_queue_handles();
         self.transfer_queue = Some(if shutter_enqueue_count == 0 {
             TransferQueue::startup_seeded(handles)
         } else {
@@ -450,6 +450,18 @@ impl Engine {
             }
             op::GET_DEVICE_PROP_VALUE => {
                 let code = p(0) as u16;
+                if self.transfer_queue.is_some() {
+                    if code == 0xd621 {
+                        let mut w = Writer::new();
+                        w.ptp_array(&self.enumerated_object_handles(), |w, v| w.u32(*v));
+                        return Self::data(tid, w.into_vec());
+                    }
+                    if code == 0xd620 {
+                        let mut w = Writer::new();
+                        w.u32(self.enumerated_object_handles().len() as u32);
+                        return Self::data(tid, w.into_vec());
+                    }
+                }
                 if let Some(reply) = self.property_gate_reply(code) {
                     return reply;
                 }
@@ -862,6 +874,32 @@ impl Engine {
                     .unwrap_or(false)
             })
             .collect()
+    }
+
+    fn standard_object_queue_handles(&self) -> Vec<u32> {
+        self.store_file_handles()
+            .into_iter()
+            .filter(|h| {
+                self.store
+                    .object_info(*h)
+                    .map(|oi| !self.object_format_is_movie(oi.object_format))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    fn object_format_is_movie(&self, format_code: u16) -> bool {
+        self.manifest
+            .media
+            .as_ref()
+            .and_then(|media| {
+                media
+                    .formats
+                    .iter()
+                    .find(|(code, _)| parse_hex_code(code.as_str()) == Some(format_code))
+                    .map(|(_, format)| format.is_movie)
+            })
+            .unwrap_or(false)
     }
 
     /// Assemble the `0xd212` live-status record stream from current state. The

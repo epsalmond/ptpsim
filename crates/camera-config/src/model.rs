@@ -866,6 +866,9 @@ pub enum ActionVerb {
     /// its supported-ops surface. Not mode-gated: valid whenever a session is
     /// open.
     ReadDeviceInfo,
+    /// One session-maintenance keepalive iteration. The caller owns cadence;
+    /// the manifest only names the wire writes that keep the session current.
+    Keepalive,
 }
 
 /// How live-view frames are delivered over a connection (#81 per-connection

@@ -1195,6 +1195,7 @@ pub enum ActionVerb {
     AutofocusRelease,
     ImportObjects,
     ReadDeviceInfo,
+    Keepalive,
 }
 
 /// Declared post-conditions an action produces — the consumer plans UX
@@ -2303,6 +2304,7 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
         ActionVerb::AutofocusRelease => cc::ActionVerb::AutofocusRelease,
         ActionVerb::ImportObjects => cc::ActionVerb::ImportObjects,
         ActionVerb::ReadDeviceInfo => cc::ActionVerb::ReadDeviceInfo,
+        ActionVerb::Keepalive => cc::ActionVerb::Keepalive,
     }
 }
 
