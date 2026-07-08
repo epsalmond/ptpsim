@@ -103,15 +103,15 @@ impl ThemeName {
             ThemeName::Cyberpunk => Theme {
                 bg: Color::Black,
                 panel: Color::Black,
-                panel_hi: Color::Rgb(0, 30, 26),
-                text: Color::Rgb(212, 255, 238),
-                muted: Color::Rgb(62, 92, 88),
-                cyan: Color::Rgb(0, 245, 255),
-                magenta: Color::Rgb(148, 64, 255),
-                green: Color::Rgb(111, 255, 0),
-                yellow: Color::Rgb(255, 184, 0),
-                red: Color::Rgb(255, 42, 85),
-                blue: Color::Rgb(0, 138, 255),
+                panel_hi: Color::Indexed(234),
+                text: Color::Indexed(252),
+                muted: Color::Indexed(239),
+                cyan: Color::Indexed(30),
+                magenta: Color::Indexed(91),
+                green: Color::Indexed(118),
+                yellow: Color::Indexed(178),
+                red: Color::Indexed(161),
+                blue: Color::Indexed(24),
             },
             ThemeName::Neon => Theme {
                 bg: Color::Black,
@@ -172,7 +172,7 @@ impl GlyphMode {
     fn glyphs(self) -> Glyphs {
         match self {
             GlyphMode::Unicode => Glyphs {
-                border: BorderType::Thick,
+                border: BorderType::LightDoubleDashed,
                 brand: "▰",
                 separator: "╱",
                 bullet: "◆",
@@ -616,22 +616,19 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Span::styled(
             format!(" {} ", glyphs.brand),
             Style::default()
-                .fg(theme.bg)
-                .bg(theme.green)
+                .fg(theme.yellow)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             " PTPSIM CYBERDECK ",
             Style::default()
-                .fg(theme.bg)
-                .bg(theme.cyan)
+                .fg(theme.green)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             " CAMERA OPS ",
             Style::default()
-                .fg(theme.bg)
-                .bg(theme.green)
+                .fg(theme.yellow)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -678,7 +675,13 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ]);
     frame.render_widget(
         Paragraph::new(vec![title, sub])
-            .block(panel_block(" uplink ", theme, theme.cyan, glyphs))
+            .block(panel_block(
+                " uplink ",
+                theme,
+                theme.muted,
+                glyphs,
+                Borders::TOP | Borders::BOTTOM,
+            ))
             .style(Style::default().bg(theme.panel)),
         area,
     );
@@ -763,7 +766,13 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(phase_lines)
             .alignment(Alignment::Center)
-            .block(panel_block(" camera core ", theme, phase_color, glyphs))
+            .block(panel_block(
+                " camera core ",
+                theme,
+                theme.muted,
+                glyphs,
+                Borders::TOP,
+            ))
             .style(Style::default().bg(theme.panel)),
         rows[0],
     );
@@ -771,7 +780,13 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let ratio = phase_ratio(&app.snapshot.phase);
     frame.render_widget(
         Gauge::default()
-            .block(panel_block(" phase charge ", theme, theme.yellow, glyphs))
+            .block(panel_block(
+                " phase charge ",
+                theme,
+                theme.muted,
+                glyphs,
+                Borders::TOP,
+            ))
             .gauge_style(
                 Style::default()
                     .fg(phase_color)
@@ -847,7 +862,13 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ];
     frame.render_widget(
         Paragraph::new(health_lines)
-            .block(panel_block(" telemetry ", theme, theme.green, glyphs))
+            .block(panel_block(
+                " telemetry ",
+                theme,
+                theme.muted,
+                glyphs,
+                Borders::TOP,
+            ))
             .style(Style::default().bg(theme.panel)),
         rows[2],
     );
@@ -917,7 +938,13 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ];
     frame.render_widget(
         Paragraph::new(status_lines)
-            .block(panel_block(" runtime ", theme, theme.blue, glyphs))
+            .block(panel_block(
+                " runtime ",
+                theme,
+                theme.muted,
+                glyphs,
+                Borders::TOP,
+            ))
             .style(Style::default().bg(theme.panel))
             .wrap(Wrap { trim: true }),
         rows[0],
@@ -955,8 +982,9 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .block(panel_block(
                 " exposure matrix ",
                 theme,
-                theme.yellow,
+                theme.muted,
                 glyphs,
+                Borders::TOP,
             ))
             .style(Style::default().bg(theme.panel))
             .wrap(Wrap { trim: true }),
@@ -984,7 +1012,13 @@ fn render_events_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .collect::<Vec<_>>();
     frame.render_widget(
         List::new(items)
-            .block(panel_block(" signal log ", theme, theme.blue, glyphs))
+            .block(panel_block(
+                " signal log ",
+                theme,
+                theme.muted,
+                glyphs,
+                Borders::TOP,
+            ))
             .style(Style::default().bg(theme.panel)),
         area,
     );
@@ -1004,11 +1038,10 @@ fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     glyphs.key_right
                 ),
                 Style::default()
-                    .fg(theme.bg)
-                    .bg(if action.is_quit() {
+                    .fg(if action.is_quit() {
                         theme.red
                     } else {
-                        theme.cyan
+                        theme.yellow
                     })
                     .add_modifier(Modifier::BOLD),
             ));
@@ -1024,18 +1057,25 @@ fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .block(panel_block(
                 " controls // GET /actions ",
                 theme,
-                theme.green,
+                theme.muted,
                 glyphs,
+                Borders::TOP,
             ))
             .style(Style::default().bg(theme.panel)),
         area,
     );
 }
 
-fn panel_block<'a>(title: &'a str, theme: Theme, color: Color, glyphs: Glyphs) -> Block<'a> {
+fn panel_block<'a>(
+    title: &'a str,
+    theme: Theme,
+    color: Color,
+    glyphs: Glyphs,
+    borders: Borders,
+) -> Block<'a> {
     Block::default()
         .title(title)
-        .borders(Borders::ALL)
+        .borders(borders)
         .border_type(glyphs.border)
         .border_style(Style::default().fg(color))
         .style(Style::default().bg(theme.panel).fg(theme.text))
@@ -1046,7 +1086,7 @@ fn line_kv(key: &str, value: Option<String>, theme: Theme, glyphs: Glyphs) -> Li
         Span::styled(format!("{key:<11}"), Style::default().fg(theme.muted)),
         Span::styled(
             format!("{} ", glyphs.kv_sep),
-            Style::default().fg(theme.cyan),
+            Style::default().fg(theme.muted),
         ),
         Span::styled(
             value.unwrap_or_else(|| "pending".to_string()),
@@ -1346,14 +1386,15 @@ mod tests {
         let theme = ThemeName::Cyberpunk.theme();
         assert_eq!(theme.bg, Color::Black);
         assert_eq!(theme.panel, Color::Black);
-        assert_eq!(theme.green, Color::Rgb(111, 255, 0));
-        assert_eq!(theme.yellow, Color::Rgb(255, 184, 0));
+        assert_eq!(theme.cyan, Color::Indexed(30));
+        assert_eq!(theme.green, Color::Indexed(118));
+        assert_eq!(theme.yellow, Color::Indexed(178));
     }
 
     #[test]
     fn unicode_glyphs_use_hard_terminal_symbols() {
         let glyphs = GlyphMode::Unicode.glyphs();
-        assert_eq!(glyphs.border, BorderType::Thick);
+        assert_eq!(glyphs.border, BorderType::LightDoubleDashed);
         assert_eq!(glyphs.key_left, "⟦");
         assert_eq!(glyphs.event_action, "▶");
     }
