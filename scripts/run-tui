@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Launch the ptpsim operator TUI with local development defaults.
+#
+# Defaults:
+#   - attach to an already-healthy camera-sim-service on PTPSIM_CONTROL_BIND
+#   - otherwise start the repo's ./run helper in the background
+#   - run camera-sim-tui against that service
+#
+# Useful overrides:
+#   PTPSIM_CONTROL_BIND=127.0.0.1:8080     service control bind / attach target
+#   PTPSIM_TUI_LISTEN=127.0.0.1:8770       TUI callback/action listener
+#   PTPSIM_TUI_START_SERVICE=0             do not auto-start ./run
+#   PTPSIM_CARGO_PROFILE=release           build/run release binaries
+#
+# Extra args are passed through to camera-sim-tui:
+#   scripts/run-tui --theme cyberpunk --glyphs unicode
+#   scripts/run-tui --glyphs ascii
+#   scripts/run-tui --theme mono
+#   scripts/run-tui --headless
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+CONTROL_BIND="${PTPSIM_CONTROL_BIND:-127.0.0.1:8080}"
+TUI_LISTEN="${PTPSIM_TUI_LISTEN:-127.0.0.1:8770}"
+CARGO_PROFILE="${PTPSIM_CARGO_PROFILE:-debug}" # debug | release
+START_SERVICE="${PTPSIM_TUI_START_SERVICE:-auto}"
+
+host_part() {
+  local addr="$1"
+  case "$addr" in
+    \[*\]:*) echo "${addr%]:*}" | sed 's/^\[//' ;;
+    *) echo "${addr%:*}" ;;
+  esac
+}
+
+port_part() {
+  local addr="$1"
+  case "$addr" in
+    \[*\]:*) echo "${addr##*:}" ;;
+    *) echo "${addr##*:}" ;;
+  esac
+}
+
+probe_host() {
+  case "$1" in
+    "::"|"0.0.0.0"|"") echo "127.0.0.1" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+CONTROL_HOST="$(host_part "$CONTROL_BIND")"
+CONTROL_PORT="$(port_part "$CONTROL_BIND")"
+CONTROL_TARGET="$(probe_host "$CONTROL_HOST"):$CONTROL_PORT"
+HEALTH_URL="http://$CONTROL_TARGET/healthz"
+
+healthcheck() {
+  curl -fsS --max-time 1 "$HEALTH_URL" >/dev/null 2>&1
+}
+
+build_tui() {
+  local -a build_args=(build -p camera-sim-tui)
+  BIN_DIR="target/debug"
+  if [[ "$CARGO_PROFILE" == "release" ]]; then
+    build_args+=(--release)
+    BIN_DIR="target/release"
+  fi
+  echo "Building camera-sim-tui ($CARGO_PROFILE)..."
+  cargo "${build_args[@]}"
+  TUI_BIN="$REPO_ROOT/$BIN_DIR/camera-sim-tui"
+  [[ -x "$TUI_BIN" ]] || { echo "Built binary not found: $TUI_BIN" >&2; exit 1; }
+}
+
+SERVICE_PID=""
+SERVICE_LOG=""
+cleanup() {
+  if [[ -n "$SERVICE_PID" ]]; then
+    kill "$SERVICE_PID" >/dev/null 2>&1 || true
+    wait "$SERVICE_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$SERVICE_LOG" ]]; then
+    rm -f "$SERVICE_LOG"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+build_tui
+
+if healthcheck; then
+  echo "Using existing ptpsim service at $HEALTH_URL"
+else
+  case "$START_SERVICE" in
+    0|false|no)
+      echo "No healthy ptpsim service at $HEALTH_URL and PTPSIM_TUI_START_SERVICE=$START_SERVICE" >&2
+      exit 1
+      ;;
+  esac
+
+  SERVICE_LOG="$(mktemp -t ptpsim-run-tui.XXXXXX.log)"
+  echo "Starting ptpsim service via ./run..."
+  ./run >"$SERVICE_LOG" 2>&1 &
+  SERVICE_PID="$!"
+
+  for _ in {1..80}; do
+    if healthcheck; then
+      break
+    fi
+    if ! kill -0 "$SERVICE_PID" >/dev/null 2>&1; then
+      echo "ptpsim service exited before becoming healthy. Log:" >&2
+      sed -n '1,200p' "$SERVICE_LOG" >&2 || true
+      exit 1
+    fi
+    sleep 0.25
+  done
+
+  if ! healthcheck; then
+    echo "Timed out waiting for ptpsim service at $HEALTH_URL. Log:" >&2
+    sed -n '1,200p' "$SERVICE_LOG" >&2 || true
+    exit 1
+  fi
+fi
+
+echo
+echo "Launching camera-sim-tui"
+echo "  control: $CONTROL_TARGET"
+echo "  listen:  $TUI_LISTEN"
+echo
+"$TUI_BIN" --control "$CONTROL_TARGET" --listen "$TUI_LISTEN" "$@"

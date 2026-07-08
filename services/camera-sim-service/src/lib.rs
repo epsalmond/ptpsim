@@ -28,8 +28,11 @@ use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
 
 pub mod control;
+mod metrics;
 mod state_callback;
 mod state_json;
+
+pub(crate) use metrics::Metrics;
 
 #[derive(Clone)]
 pub struct Config {
@@ -105,6 +108,7 @@ pub struct Server {
     disallowed_ops: Arc<HashSet<u16>>,
     control: TcpListener,
     engine: Arc<Mutex<Engine>>,
+    metrics: Metrics,
     /// Shared looping frame source (one cursor across all live-view clients —
     /// the normal lease shape is one camera = one client; cursor sharing is
     /// harmless if a smoke client connects alongside the real one).
@@ -249,6 +253,7 @@ impl Server {
             None => None,
         };
         let control = TcpListener::bind(config.control_bind).await?;
+        let metrics = Metrics::default();
         Ok(Server {
             config,
             command,
@@ -260,6 +265,7 @@ impl Server {
             disallowed_ops,
             control,
             engine,
+            metrics,
             frames,
         })
     }
@@ -315,6 +321,7 @@ impl Server {
             disallowed_ops,
             control,
             engine,
+            metrics,
             frames,
         } = self;
         let health = control::Health {
@@ -323,6 +330,7 @@ impl Server {
             connection: config.connection.clone(),
             command_addr: command.local_addr().unwrap(),
             media_root: config.media_root.display().to_string(),
+            metrics: metrics.clone(),
         };
         let command_context = CommandContext {
             init_shape: {
@@ -348,10 +356,11 @@ impl Server {
         // capture, so the subscriber is live when the completion fires.
         let (event_tx, _) = broadcast::channel::<u16>(16);
 
-        // #126 state-callback: one shared notify the command loop bumps after
-        // every op. Cheap when nobody listens; the single push task (spawned
-        // below only if --state-callback parses) consumes it, debounces, and POSTs.
+        // #126/#214 state-callback: one shared notify the command loop bumps
+        // after every op. Cheap when nobody listens; the single push task
+        // consumes it, debounces, and POSTs to startup and runtime subscribers.
         let state_dirty = Arc::new(Notify::new());
+        let state_callbacks = state_callback::Registry::default();
 
         // Per-connection tasks live in a JoinSet per accept loop (audit in
         // docs/internal-async-notes.md): the `Some(_) = join_next()` arm reaps
@@ -366,6 +375,7 @@ impl Server {
             let event_tx = event_tx.clone();
             let state_dirty = state_dirty.clone();
             let command_context = command_context.clone();
+            let metrics = metrics.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -378,8 +388,9 @@ impl Server {
                                 let event_tx = event_tx.clone();
                                 let state_dirty = state_dirty.clone();
                                 let command_context = command_context.clone();
+                                let metrics = metrics.clone();
                                 conns.spawn(async move {
-                                    let _ = handle_command_conn(stream, engine, frames, event_tx, state_dirty, command_context).await;
+                                    let _ = handle_command_conn(stream, engine, frames, event_tx, state_dirty, command_context, metrics).await;
                                 });
                             }
                         }
@@ -393,6 +404,8 @@ impl Server {
         let control_loop = {
             let engine = engine.clone();
             let state_dirty = state_dirty.clone();
+            let state_callbacks = state_callbacks.clone();
+            let metrics = metrics.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -408,6 +421,8 @@ impl Server {
                                     health.clone(),
                                     engine.clone(),
                                     state_dirty.clone(),
+                                    state_callbacks.clone(),
+                                    metrics.clone(),
                                     ctl_shutdown.clone(),
                                 ));
                             }
@@ -426,6 +441,7 @@ impl Server {
             let engine = engine.clone();
             let frames = frames.clone();
             let shutdown_tx = shutdown_tx.clone();
+            let metrics = metrics.clone();
             async move {
                 let mut sub = shutdown_tx.subscribe();
                 let Some(liveview) = liveview else {
@@ -439,7 +455,8 @@ impl Server {
                             if let Ok((stream, _)) = accepted {
                                 let engine = engine.clone();
                                 let frames = frames.clone();
-                                conns.spawn(stream_liveview(stream, engine, frames));
+                                let metrics = metrics.clone();
+                                conns.spawn(stream_liveview(stream, engine, frames, metrics));
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -455,6 +472,7 @@ impl Server {
         // writes the codes the command loop forwards.
         let event_loop = {
             let shutdown_tx = shutdown_tx.clone();
+            let metrics = metrics.clone();
             async move {
                 let mut sub = shutdown_tx.subscribe();
                 let Some(event) = event else {
@@ -466,7 +484,7 @@ impl Server {
                     tokio::select! {
                         accepted = event.accept() => {
                             if let Ok((stream, _)) = accepted {
-                                conns.spawn(handle_event_conn(stream, event_tx.subscribe()));
+                                conns.spawn(handle_event_conn(stream, event_tx.subscribe(), metrics.clone()));
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -495,24 +513,21 @@ impl Server {
             }
         };
 
-        // #126: spawn the single state-callback push task if a valid URL was
-        // given. Parsed up front; an invalid URL is logged once and ignored
-        // (never fatal). It ends on the shutdown broadcast like the loops.
+        // #126/#214: spawn one state-callback push task. Startup callbacks are
+        // registered up front; runtime callbacks join via POST /callbacks.
+        tokio::spawn(state_callback::state_callback_loop(
+            state_dirty.clone(),
+            engine.clone(),
+            state_callbacks.clone(),
+            metrics.clone(),
+            shutdown_tx.subscribe(),
+        ));
         if let Some(url) = config.state_callback.as_deref() {
-            match state_callback::parse_url(url) {
-                Some(target) => {
-                    tokio::spawn(state_callback::state_callback_loop(
-                        state_dirty.clone(),
-                        engine.clone(),
-                        target,
-                        shutdown_tx.subscribe(),
-                    ));
-                }
-                None => {
-                    tracing::warn!(url, "invalid --state-callback URL; state callback disabled")
-                }
+            if state_callbacks.add_url(url).await.is_err() {
+                tracing::warn!(url, "invalid --state-callback URL; state callback disabled")
             }
         }
+        state_dirty.notify_one();
 
         tokio::select! {
             _ = shutdown => {}
@@ -540,6 +555,7 @@ async fn stream_liveview(
     mut stream: TcpStream,
     engine: Arc<Mutex<Engine>>,
     frames: Arc<Mutex<LoopingFrameSource>>,
+    metrics: Metrics,
 ) {
     let (mut rd, mut wr) = stream.split();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_INTERVAL_MS));
@@ -559,11 +575,12 @@ async fn stream_liveview(
                 if wr.write_all(&packet).await.is_err() {
                     break;
                 }
+                metrics.record_liveview_frame(packet.len());
             }
             r = rd.read(&mut probe) => {
                 match r {
                     Ok(0) | Err(_) => break, // EOF / reset — client gone
-                    Ok(_) => {}              // unexpected bytes; ignore
+                    Ok(n) => metrics.record_read(n), // unexpected bytes; ignore
                 }
             }
         }
@@ -571,10 +588,10 @@ async fn stream_liveview(
 }
 
 /// Read one length-prefixed PTP/IP frame (`u32` total length including itself).
-async fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
+async fn read_frame(stream: &mut TcpStream, metrics: &Metrics) -> std::io::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
     match stream.read_exact(&mut len_buf).await {
-        Ok(_) => {}
+        Ok(_) => metrics.record_read(4),
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e),
     }
@@ -588,6 +605,8 @@ async fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> 
     let mut buf = vec![0u8; len];
     buf[0..4].copy_from_slice(&len_buf);
     stream.read_exact(&mut buf[4..]).await?;
+    metrics.record_read(len.saturating_sub(4));
+    metrics.touch();
     Ok(Some(buf))
 }
 
@@ -604,9 +623,10 @@ async fn handle_command_conn(
     event_tx: broadcast::Sender<u16>,
     state_dirty: Arc<Notify>,
     context: CommandContext,
+    metrics: Metrics,
 ) -> std::io::Result<()> {
     // 1. Standard-framed init handshake.
-    let Some(mut first) = read_frame(&mut stream).await? else {
+    let Some(mut first) = read_frame(&mut stream, &metrics).await? else {
         return Ok(());
     };
     match context.init_shape.as_str() {
@@ -618,10 +638,10 @@ async fn handle_command_conn(
                 let fail = PtpIpPacket::InitFail(InitFail {
                     reason: resp::DEVICE_BUSY as u32,
                 });
-                stream
-                    .write_all(&ptp_core::encode(&fail).map_err(to_io)?)
-                    .await?;
-                let Some(next) = read_frame(&mut stream).await? else {
+                let bytes = ptp_core::encode(&fail).map_err(to_io)?;
+                stream.write_all(&bytes).await?;
+                metrics.record_write(bytes.len());
+                let Some(next) = read_frame(&mut stream, &metrics).await? else {
                     return Ok(());
                 };
                 first = next;
@@ -659,13 +679,13 @@ async fn handle_command_conn(
         },
         protocol_version: 0x0001_0000,
     });
-    stream
-        .write_all(&ptp_core::encode(&ack).map_err(to_io)?)
-        .await?;
+    let ack_bytes = ptp_core::encode(&ack).map_err(to_io)?;
+    stream.write_all(&ack_bytes).await?;
+    metrics.record_write(ack_bytes.len());
 
     // 2. Compressed-framed operation loop.
     loop {
-        let Some(frame) = read_frame(&mut stream).await? else {
+        let Some(frame) = read_frame(&mut stream, &metrics).await? else {
             break;
         };
         let Ok(PtpIpPacket::OperationRequest(req)) = fuji_framing::decode(&frame) else {
@@ -680,12 +700,13 @@ async fn handle_command_conn(
                     transaction_id: req.transaction_id,
                     params: vec![],
                 }),
+                &metrics,
             )
             .await?;
             continue;
         }
         let data_in = if has_data_in(req.code) {
-            collect_data_in(&mut stream, req.transaction_id).await?
+            collect_data_in(&mut stream, req.transaction_id, &metrics).await?
         } else {
             None
         };
@@ -710,7 +731,7 @@ async fn handle_command_conn(
             // completion is only meaningful to a listening client).
             let _ = event_tx.send(code);
         }
-        write_reply(&mut stream, &req, reply).await?;
+        write_reply(&mut stream, &req, reply, &metrics).await?;
     }
     Ok(())
 }
@@ -767,7 +788,11 @@ async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSourc
 /// PTP/IP `Event` packet. Mirrors [`stream_liveview`]'s read-half watcher: event
 /// clients never send bytes, so a completed read means EOF/reset — the client is
 /// gone, and without watching it a never-emitting session would hang the task.
-async fn handle_event_conn(mut stream: TcpStream, mut events: broadcast::Receiver<u16>) {
+async fn handle_event_conn(
+    mut stream: TcpStream,
+    mut events: broadcast::Receiver<u16>,
+    metrics: Metrics,
+) {
     let (mut rd, mut wr) = stream.split();
     let mut probe = [0u8; 64];
     loop {
@@ -784,6 +809,8 @@ async fn handle_event_conn(mut stream: TcpStream, mut events: broadcast::Receive
                         if wr.write_all(&bytes).await.is_err() {
                             break; // client gone
                         }
+                        metrics.record_write(bytes.len());
+                        metrics.touch();
                     }
                     // Closed: the server is shutting down. Lagged: this slow
                     // client overflowed the buffer — drop it rather than send
@@ -794,7 +821,7 @@ async fn handle_event_conn(mut stream: TcpStream, mut events: broadcast::Receive
             r = rd.read(&mut probe) => {
                 match r {
                     Ok(0) | Err(_) => break, // EOF / reset — client gone
-                    Ok(_) => {}              // unexpected bytes; ignore
+                    Ok(n) => metrics.record_read(n), // unexpected bytes; ignore
                 }
             }
         }
@@ -816,8 +843,12 @@ fn data_in_err<S: Into<String>>(msg: S) -> std::io::Error {
 /// it to be a `Data` for this `tid`, and cap the payload at [`MAX_DATA_IN_BYTES`]
 /// (realistic data-in is a single property value). A transaction-id mismatch or
 /// any other packet type is a protocol error.
-async fn collect_data_in(stream: &mut TcpStream, tid: u32) -> std::io::Result<Option<Vec<u8>>> {
-    let Some(frame) = read_frame(stream).await? else {
+async fn collect_data_in(
+    stream: &mut TcpStream,
+    tid: u32,
+    metrics: &Metrics,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let Some(frame) = read_frame(stream, metrics).await? else {
         return Err(data_in_err("data-in: stream closed before the data frame"));
     };
     match fuji_framing::decode(&frame) {
@@ -853,39 +884,31 @@ async fn write_reply(
     stream: &mut TcpStream,
     req: &OperationRequest,
     reply: Reply,
+    metrics: &Metrics,
 ) -> std::io::Result<()> {
     match reply {
         Reply::Response(resp) => {
-            stream
-                .write_all(
-                    &fuji_framing::encode(&PtpIpPacket::OperationResponse(resp)).map_err(to_io)?,
-                )
-                .await?;
+            let bytes =
+                fuji_framing::encode(&PtpIpPacket::OperationResponse(resp)).map_err(to_io)?;
+            stream.write_all(&bytes).await?;
+            metrics.record_write(bytes.len());
         }
         Reply::Data { data, response } => {
             // The whole data phase is one type-2 frame whose code echoes the op.
-            stream
-                .write_all(&fuji_framing::encode_data(
-                    req.code,
-                    req.transaction_id,
-                    &data,
-                ))
-                .await?;
-            stream
-                .write_all(
-                    &fuji_framing::encode(&PtpIpPacket::OperationResponse(response))
-                        .map_err(to_io)?,
-                )
-                .await?;
+            let data_bytes = fuji_framing::encode_data(req.code, req.transaction_id, &data);
+            stream.write_all(&data_bytes).await?;
+            metrics.record_write(data_bytes.len());
+            let response_bytes =
+                fuji_framing::encode(&PtpIpPacket::OperationResponse(response)).map_err(to_io)?;
+            stream.write_all(&response_bytes).await?;
+            metrics.record_write(response_bytes.len());
         }
         Reply::DataStream { source, response } => {
-            stream_data_phase(stream, req.code, req.transaction_id, &source).await?;
-            stream
-                .write_all(
-                    &fuji_framing::encode(&PtpIpPacket::OperationResponse(response))
-                        .map_err(to_io)?,
-                )
-                .await?;
+            stream_data_phase(stream, req.code, req.transaction_id, &source, metrics).await?;
+            let response_bytes =
+                fuji_framing::encode(&PtpIpPacket::OperationResponse(response)).map_err(to_io)?;
+            stream.write_all(&response_bytes).await?;
+            metrics.record_write(response_bytes.len());
         }
         Reply::NoResponse => {}
         Reply::Close => {}
@@ -905,17 +928,14 @@ async fn stream_data_phase(
     op: u16,
     transaction_id: u32,
     source: &ByteSource,
+    metrics: &Metrics,
 ) -> std::io::Result<()> {
     let total_length = source.len();
     let payload_len = u32::try_from(total_length)
         .map_err(|_| std::io::Error::other("data-phase payload exceeds a single frame (u32)"))?;
-    stream
-        .write_all(&fuji_framing::data_frame_header(
-            op,
-            transaction_id,
-            payload_len,
-        ))
-        .await?;
+    let header = fuji_framing::data_frame_header(op, transaction_id, payload_len);
+    stream.write_all(&header).await?;
+    metrics.record_write(header.len());
 
     let mut offset: u64 = 0;
     while offset < total_length {
@@ -928,6 +948,7 @@ async fn stream_data_phase(
         }
         offset += chunk.len() as u64;
         stream.write_all(&chunk).await?;
+        metrics.record_write(chunk.len());
     }
     Ok(())
 }

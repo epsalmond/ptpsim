@@ -9,6 +9,7 @@ members = [
     "crates/camera-protocol-ffi",
     "services/camera-sim-service",
     "tools/camera-simctl",
+    "tools/camera-sim-tui",
 ]
 
 [workspace.package]
@@ -37,6 +38,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ratatui = "0.30.2"
+crossterm = "0.29"
 
 [profile.release]
 strip = true
