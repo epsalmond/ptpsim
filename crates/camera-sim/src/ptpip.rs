@@ -904,6 +904,101 @@ properties:
     }
 
     #[test]
+    fn send_op_capture_bindings_are_atomic_on_later_failure() {
+        let (mut e, handle) = engine_with_file(
+            MANIFEST,
+            b"\x01\x02\x03\x04\x05\x06\x07\x08stream-tail\xff\xd9",
+        );
+        let steps = vec![
+            Step {
+                send_op: Some("0x101b".into()),
+                params: vec![
+                    StepParam::Literal(handle),
+                    StepParam::Literal(0),
+                    StepParam::Literal(4),
+                ],
+                captures: vec![
+                    Capture {
+                        bind: "firstCapture".into(),
+                        source: CaptureSource::U32Le,
+                    },
+                    Capture {
+                        bind: "secondCapture".into(),
+                        source: CaptureSource::U64Le,
+                    },
+                ],
+                tolerant: true,
+                ..Default::default()
+            },
+            Step {
+                if_step: Some(camera_config::model::IfStep {
+                    slot: "firstCapture".into(),
+                    equals: 0x0403_0201,
+                    then_steps: vec![Step {
+                        set_prop: Some("0xdf00".into()),
+                        value: Some(13),
+                        ..Default::default()
+                    }],
+                }),
+                ..Default::default()
+            },
+            Step {
+                get_prop: Some("0xdf00".into()),
+                ..Default::default()
+            },
+        ];
+
+        let err = walk_ptpip(&mut e, &steps, &BTreeMap::new()).unwrap_err();
+        assert!(
+            err.message.contains("if slot 'firstCapture' unbound"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn tolerant_non_ok_send_op_skips_captures() {
+        let mut e = engine(MANIFEST);
+        let steps = vec![
+            Step {
+                send_op: Some("0x101b".into()),
+                params: vec![
+                    StepParam::Literal(0xfeed_beef),
+                    StepParam::Literal(0),
+                    StepParam::Literal(4),
+                ],
+                captures: vec![Capture {
+                    bind: "missingObjectHead".into(),
+                    source: CaptureSource::U32Le,
+                }],
+                tolerant: true,
+                ..Default::default()
+            },
+            Step {
+                if_step: Some(camera_config::model::IfStep {
+                    slot: "missingObjectHead".into(),
+                    equals: 0,
+                    then_steps: vec![Step {
+                        set_prop: Some("0xdf00".into()),
+                        value: Some(17),
+                        ..Default::default()
+                    }],
+                }),
+                ..Default::default()
+            },
+            Step {
+                get_prop: Some("0xdf00".into()),
+                ..Default::default()
+            },
+        ];
+
+        let err = walk_ptpip(&mut e, &steps, &BTreeMap::new()).unwrap_err();
+        assert!(
+            err.message.contains("if slot 'missingObjectHead' unbound"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn scalar_capture_can_decode_from_stream_reply_head() {
         let stream_head = 0x0807_0605_0403_0201u64;
         let (mut e, handle) = engine_with_file(
