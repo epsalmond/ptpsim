@@ -22,7 +22,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 const MAX_UPDATE_HZ: f64 = 60.0;
@@ -54,14 +54,24 @@ struct Args {
     #[arg(long)]
     no_subscribe: bool,
     /// Visual theme.
-    #[arg(long, value_enum, default_value_t = ThemeName::Neon)]
+    #[arg(long, value_enum, default_value_t = ThemeName::Cyberpunk)]
     theme: ThemeName,
+    /// Terminal glyph set.
+    #[arg(long, value_enum, default_value_t = GlyphMode::Unicode)]
+    glyphs: GlyphMode,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ThemeName {
+    Cyberpunk,
     Neon,
     Mono,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum GlyphMode {
+    Unicode,
+    Ascii,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -82,6 +92,19 @@ struct Theme {
 impl ThemeName {
     fn theme(self) -> Theme {
         match self {
+            ThemeName::Cyberpunk => Theme {
+                bg: Color::Black,
+                panel: Color::Black,
+                panel_hi: Color::Rgb(6, 16, 18),
+                text: Color::Rgb(218, 244, 234),
+                muted: Color::Rgb(80, 101, 103),
+                cyan: Color::Rgb(0, 245, 255),
+                magenta: Color::Rgb(148, 64, 255),
+                green: Color::Rgb(111, 255, 0),
+                yellow: Color::Rgb(255, 184, 0),
+                red: Color::Rgb(255, 42, 85),
+                blue: Color::Rgb(0, 138, 255),
+            },
             ThemeName::Neon => Theme {
                 bg: Color::Black,
                 panel: Color::Black,
@@ -107,6 +130,63 @@ impl ThemeName {
                 yellow: Color::Yellow,
                 red: Color::Red,
                 blue: Color::Blue,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Glyphs {
+    border: BorderType,
+    brand: &'static str,
+    separator: &'static str,
+    bullet: &'static str,
+    online: &'static str,
+    offline: &'static str,
+    signal: &'static str,
+    key_left: &'static str,
+    key_right: &'static str,
+    kv_sep: &'static str,
+    event_info: &'static str,
+    event_state: &'static str,
+    event_action: &'static str,
+    event_error: &'static str,
+}
+
+impl GlyphMode {
+    fn glyphs(self) -> Glyphs {
+        match self {
+            GlyphMode::Unicode => Glyphs {
+                border: BorderType::Thick,
+                brand: "▰",
+                separator: "╱",
+                bullet: "◆",
+                online: "●",
+                offline: "○",
+                signal: "▸",
+                key_left: "⟦",
+                key_right: "⟧",
+                kv_sep: "│",
+                event_info: "◇",
+                event_state: "◆",
+                event_action: "▶",
+                event_error: "▲",
+            },
+            GlyphMode::Ascii => Glyphs {
+                border: BorderType::Plain,
+                brand: "#",
+                separator: "//",
+                bullet: "*",
+                online: "ON",
+                offline: "--",
+                signal: ">",
+                key_left: "[",
+                key_right: "]",
+                kv_sep: ":",
+                event_info: "INFO",
+                event_state: "PUSH",
+                event_action: "ACT",
+                event_error: "ERR",
             },
         }
     }
@@ -145,6 +225,7 @@ struct App {
     registry: ActionRegistry,
     client: ControlClient,
     theme: Theme,
+    glyphs: Glyphs,
     listen_addr: SocketAddr,
     callback_url: String,
     health: Option<HealthSnapshot>,
@@ -170,6 +251,7 @@ impl App {
         registry: ActionRegistry,
         client: ControlClient,
         theme: Theme,
+        glyphs: Glyphs,
         listen_addr: SocketAddr,
         callback_url: String,
     ) -> Self {
@@ -178,6 +260,7 @@ impl App {
             registry,
             client,
             theme,
+            glyphs,
             listen_addr,
             callback_url,
             health: None,
@@ -284,6 +367,7 @@ fn main() -> Result<()> {
         registry,
         client.clone(),
         args.theme.theme(),
+        args.glyphs.glyphs(),
         listen_addr,
         callback_url.clone(),
     );
@@ -494,8 +578,16 @@ fn render(frame: &mut Frame<'_>, app: &App) {
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
+    let glyphs = app.glyphs;
     let health = app.health.as_ref();
     let title = Line::from(vec![
+        Span::styled(
+            format!(" {} ", glyphs.brand),
+            Style::default()
+                .fg(theme.bg)
+                .bg(theme.green)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             " PTPSIM ",
             Style::default()
@@ -506,10 +598,13 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Span::styled(
             " CAMERA OPERATOR ",
             Style::default()
-                .fg(theme.magenta)
+                .fg(theme.green)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("// ", Style::default().fg(theme.muted)),
+        Span::styled(
+            format!(" {} ", glyphs.separator),
+            Style::default().fg(theme.muted),
+        ),
         Span::styled(
             health
                 .map(|h| h.profile.as_str())
@@ -525,14 +620,20 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
     ]);
     let sub = Line::from(vec![
-        Span::styled("control ", Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("{} control ", glyphs.bullet),
+            Style::default().fg(theme.muted),
+        ),
         Span::styled(app.client.addr(), Style::default().fg(theme.green)),
-        Span::styled("  callback ", Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("  {} callback ", glyphs.bullet),
+            Style::default().fg(theme.muted),
+        ),
         Span::styled(app.callback_url.as_str(), Style::default().fg(theme.blue)),
     ]);
     frame.render_widget(
         Paragraph::new(vec![title, sub])
-            .block(panel_block(" operator link ", theme, theme.cyan))
+            .block(panel_block(" uplink ", theme, theme.cyan, glyphs))
             .style(Style::default().bg(theme.panel)),
         area,
     );
@@ -554,6 +655,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
+    let glyphs = app.glyphs;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -581,9 +683,9 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled("SESSION ", Style::default().fg(theme.muted)),
             Span::styled(
                 if app.snapshot.session_open {
-                    "OPEN"
+                    format!("{} OPEN", glyphs.online)
                 } else {
-                    "CLOSED"
+                    format!("{} CLOSED", glyphs.offline)
                 },
                 Style::default()
                     .fg(if app.snapshot.session_open {
@@ -616,7 +718,7 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(phase_lines)
             .alignment(Alignment::Center)
-            .block(panel_block(" camera face ", theme, phase_color))
+            .block(panel_block(" camera core ", theme, phase_color, glyphs))
             .style(Style::default().bg(theme.panel)),
         rows[0],
     );
@@ -624,14 +726,14 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let ratio = phase_ratio(&app.snapshot.phase);
     frame.render_widget(
         Gauge::default()
-            .block(panel_block(" state intensity ", theme, theme.magenta))
+            .block(panel_block(" phase charge ", theme, theme.yellow, glyphs))
             .gauge_style(
                 Style::default()
                     .fg(phase_color)
                     .bg(theme.panel_hi)
                     .add_modifier(Modifier::BOLD),
             )
-            .label(format!("{:.0}% active", ratio * 100.0))
+            .label(format!("{} {:.0}% ACTIVE", glyphs.signal, ratio * 100.0))
             .ratio(ratio),
         rows[1],
     );
@@ -639,29 +741,53 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let health = app.health.as_ref();
     let metrics = health.map(|h| &h.metrics);
     let health_lines = vec![
-        line_kv("instance", health.map(|h| h.instance_id.clone()), theme),
-        line_kv("command", health.map(|h| h.command_bind.clone()), theme),
-        line_kv("sessions", health.map(|h| h.sessions.to_string()), theme),
+        line_kv(
+            "instance",
+            health.map(|h| h.instance_id.clone()),
+            theme,
+            glyphs,
+        ),
+        line_kv(
+            "command",
+            health.map(|h| h.command_bind.clone()),
+            theme,
+            glyphs,
+        ),
+        line_kv(
+            "sessions",
+            health.map(|h| h.sessions.to_string()),
+            theme,
+            glyphs,
+        ),
         line_kv(
             "mem alloc",
             metrics.map(|m| format_bytes(m.memory_allocated_bytes)),
             theme,
+            glyphs,
         ),
         line_kv(
             "bytes xfer",
             metrics.map(|m| format_bytes(m.bytes_transferred)),
             theme,
+            glyphs,
         ),
-        line_kv("rate", Some(format_rate(app.rates.transfer_bps)), theme),
+        line_kv(
+            "rate",
+            Some(format_rate(app.rates.transfer_bps)),
+            theme,
+            glyphs,
+        ),
         line_kv(
             "uptime",
             metrics.map(|m| format_duration_ms(m.uptime_ms)),
             theme,
+            glyphs,
         ),
         line_kv(
             "idle",
             metrics.map(|m| format_duration_ms(m.idle_ms)),
             theme,
+            glyphs,
         ),
         line_kv(
             "update",
@@ -670,12 +796,13 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 app.rates.update_hz, MAX_UPDATE_HZ
             )),
             theme,
+            glyphs,
         ),
-        line_kv("listen", Some(app.listen_addr.to_string()), theme),
+        line_kv("listen", Some(app.listen_addr.to_string()), theme, glyphs),
     ];
     frame.render_widget(
         Paragraph::new(health_lines)
-            .block(panel_block(" health ", theme, theme.green))
+            .block(panel_block(" telemetry ", theme, theme.green, glyphs))
             .style(Style::default().bg(theme.panel)),
         rows[2],
     );
@@ -683,6 +810,7 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
+    let glyphs = app.glyphs;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(10), Constraint::Min(8)])
@@ -692,18 +820,26 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "profile",
             app.health.as_ref().map(|h| h.profile.clone()),
             theme,
+            glyphs,
         ),
         line_kv(
             "connection",
             app.health.as_ref().map(|h| h.connection.clone()),
             theme,
+            glyphs,
         ),
         line_kv(
             "media root",
             app.health.as_ref().map(|h| h.media_root.clone()),
             theme,
+            glyphs,
         ),
-        line_kv("props", Some(app.snapshot.props.len().to_string()), theme),
+        line_kv(
+            "props",
+            Some(app.snapshot.props.len().to_string()),
+            theme,
+            glyphs,
+        ),
         line_kv(
             "crate",
             Some(format!(
@@ -712,8 +848,9 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 env!("CARGO_PKG_VERSION")
             )),
             theme,
+            glyphs,
         ),
-        line_kv("rustc", Some(RUSTC_VERSION.to_string()), theme),
+        line_kv("rustc", Some(RUSTC_VERSION.to_string()), theme, glyphs),
         line_kv(
             "target",
             Some(format!(
@@ -722,6 +859,7 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 std::env::consts::OS
             )),
             theme,
+            glyphs,
         ),
         line_kv(
             "deps",
@@ -729,11 +867,12 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 "ratatui {RATATUI_VERSION}, crossterm {CROSSTERM_VERSION}"
             )),
             theme,
+            glyphs,
         ),
     ];
     frame.render_widget(
         Paragraph::new(status_lines)
-            .block(panel_block(" simulator ", theme, theme.blue))
+            .block(panel_block(" runtime ", theme, theme.blue, glyphs))
             .style(Style::default().bg(theme.panel))
             .wrap(Wrap { trim: true }),
         rows[0],
@@ -768,7 +907,12 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(prop_lines)
-            .block(panel_block(" selected properties ", theme, theme.yellow))
+            .block(panel_block(
+                " exposure matrix ",
+                theme,
+                theme.yellow,
+                glyphs,
+            ))
             .style(Style::default().bg(theme.panel))
             .wrap(Wrap { trim: true }),
         rows[1],
@@ -777,13 +921,17 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_events_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
+    let glyphs = app.glyphs;
     let items = app
         .events
         .iter()
         .take(area.height.saturating_sub(2) as usize)
         .map(|event| {
             ListItem::new(Line::from(vec![
-                Span::styled(event_prefix(event.kind), event_style(event.kind, theme)),
+                Span::styled(
+                    event_prefix(event.kind, glyphs),
+                    event_style(event.kind, theme),
+                ),
                 Span::raw(" "),
                 Span::styled(event.text.as_str(), Style::default().fg(theme.text)),
             ]))
@@ -791,7 +939,7 @@ fn render_events_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .collect::<Vec<_>>();
     frame.render_widget(
         List::new(items)
-            .block(panel_block(" recent events ", theme, theme.magenta))
+            .block(panel_block(" signal log ", theme, theme.blue, glyphs))
             .style(Style::default().bg(theme.panel)),
         area,
     );
@@ -799,11 +947,17 @@ fn render_events_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
+    let glyphs = app.glyphs;
     let mut spans = Vec::new();
     for action in app.registry.actions() {
         if let Some(key) = action.descriptor.hotkey {
             spans.push(Span::styled(
-                format!(" {} ", key.to_ascii_uppercase()),
+                format!(
+                    " {}{}{} ",
+                    glyphs.key_left,
+                    key.to_ascii_uppercase(),
+                    glyphs.key_right
+                ),
                 Style::default()
                     .fg(theme.bg)
                     .bg(if action.is_quit() {
@@ -823,26 +977,32 @@ fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(Line::from(spans))
             .alignment(Alignment::Center)
             .block(panel_block(
-                " hotkeys / HTTP parity at GET /actions ",
+                " controls // GET /actions ",
                 theme,
                 theme.green,
+                glyphs,
             ))
             .style(Style::default().bg(theme.panel)),
         area,
     );
 }
 
-fn panel_block<'a>(title: &'a str, theme: Theme, color: Color) -> Block<'a> {
+fn panel_block<'a>(title: &'a str, theme: Theme, color: Color, glyphs: Glyphs) -> Block<'a> {
     Block::default()
         .title(title)
         .borders(Borders::ALL)
+        .border_type(glyphs.border)
         .border_style(Style::default().fg(color))
         .style(Style::default().bg(theme.panel).fg(theme.text))
 }
 
-fn line_kv(key: &str, value: Option<String>, theme: Theme) -> Line<'static> {
+fn line_kv(key: &str, value: Option<String>, theme: Theme, glyphs: Glyphs) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{key:<11}"), Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("{} ", glyphs.kv_sep),
+            Style::default().fg(theme.cyan),
+        ),
         Span::styled(
             value.unwrap_or_else(|| "pending".to_string()),
             Style::default().fg(theme.text),
@@ -929,12 +1089,12 @@ fn phase_ratio(phase: &str) -> f64 {
     }
 }
 
-fn event_prefix(kind: LogKind) -> &'static str {
+fn event_prefix(kind: LogKind, glyphs: Glyphs) -> &'static str {
     match kind {
-        LogKind::Info => "INFO",
-        LogKind::State => "PUSH",
-        LogKind::Action => "ACT ",
-        LogKind::Error => "ERR ",
+        LogKind::Info => glyphs.event_info,
+        LogKind::State => glyphs.event_state,
+        LogKind::Action => glyphs.event_action,
+        LogKind::Error => glyphs.event_error,
     }
 }
 
@@ -1121,4 +1281,33 @@ fn write_json(stream: &mut TcpStream, status: &str, body: &str) -> Result<()> {
     )?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cyberpunk_unicode_is_the_default_console_style() {
+        let args = Args::parse_from(["camera-sim-tui"]);
+        assert!(matches!(args.theme, ThemeName::Cyberpunk));
+        assert!(matches!(args.glyphs, GlyphMode::Unicode));
+    }
+
+    #[test]
+    fn cyberpunk_theme_stays_black_and_acid() {
+        let theme = ThemeName::Cyberpunk.theme();
+        assert_eq!(theme.bg, Color::Black);
+        assert_eq!(theme.panel, Color::Black);
+        assert_eq!(theme.green, Color::Rgb(111, 255, 0));
+        assert_eq!(theme.yellow, Color::Rgb(255, 184, 0));
+    }
+
+    #[test]
+    fn unicode_glyphs_use_hard_terminal_symbols() {
+        let glyphs = GlyphMode::Unicode.glyphs();
+        assert_eq!(glyphs.border, BorderType::Thick);
+        assert_eq!(glyphs.key_left, "⟦");
+        assert_eq!(glyphs.event_action, "▶");
+    }
 }

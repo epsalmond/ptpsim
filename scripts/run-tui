@@ -13,6 +13,8 @@
 #   PTPSIM_CARGO_PROFILE=release           build/run release binaries
 #
 # Extra args are passed through to camera-sim-tui:
+#   scripts/run-tui --theme cyberpunk --glyphs unicode
+#   scripts/run-tui --glyphs ascii
 #   scripts/run-tui --theme mono
 #   scripts/run-tui --headless
 set -euo pipefail

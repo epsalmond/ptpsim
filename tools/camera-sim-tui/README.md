@@ -25,9 +25,14 @@ pushes later changes. The TUI also serves:
   matching hotkey.
 - `GET /state` — last state snapshot received by the TUI.
 
-The default theme uses a black background with bright operator-console accents.
-The dashboard shows process memory, transferred bytes, transfer rate, live-view
-FPS, update rate, uptime, idle time, Rust/toolchain versions, and
+The default visual style is `--theme cyberpunk --glyphs unicode`: true black
+background, cold cyan, acid green, amber warnings, thick Unicode panel borders,
+and compact operator-console markers. Use `--glyphs ascii` for terminals that
+do not render box drawing or symbols cleanly; `--theme neon` and `--theme mono`
+remain available.
+
+The dashboard shows process memory, transferred bytes, transfer rate,
+live-view FPS, update rate, uptime, idle time, Rust/toolchain versions, and
 manifest-backed property names as `label (0xcode)`. The draw loop caps visible
 updates at 60 Hz; idle CPU profiling/optimization is tracked separately in
 ptpsim #218.
