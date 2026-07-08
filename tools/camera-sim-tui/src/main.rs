@@ -103,15 +103,15 @@ impl ThemeName {
             ThemeName::Cyberpunk => Theme {
                 bg: Color::Black,
                 panel: Color::Black,
-                panel_hi: Color::Indexed(234),
-                text: Color::Indexed(252),
-                muted: Color::Indexed(239),
-                cyan: Color::Indexed(30),
-                magenta: Color::Indexed(91),
-                green: Color::Indexed(118),
-                yellow: Color::Indexed(178),
-                red: Color::Indexed(161),
-                blue: Color::Indexed(24),
+                panel_hi: Color::Indexed(236),
+                text: Color::LightCyan,
+                muted: Color::DarkGray,
+                cyan: Color::LightCyan,
+                magenta: Color::Indexed(179),
+                green: Color::Green,
+                yellow: Color::Yellow,
+                red: Color::LightRed,
+                blue: Color::Blue,
             },
             ThemeName::Neon => Theme {
                 bg: Color::Black,
@@ -173,7 +173,7 @@ impl GlyphMode {
         match self {
             GlyphMode::Unicode => Glyphs {
                 border: BorderType::LightDoubleDashed,
-                brand: "▰",
+                brand: "◢",
                 separator: "╱",
                 bullet: "◆",
                 online: "●",
@@ -615,15 +615,11 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let title = Line::from(vec![
         Span::styled(
             format!(" {} ", glyphs.brand),
-            Style::default()
-                .fg(theme.yellow)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             " PTPSIM CYBERDECK ",
-            Style::default()
-                .fg(theme.green)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             " CAMERA OPS ",
@@ -658,9 +654,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 glyphs.separator,
                 app.style.glyph_mode.as_str()
             ),
-            Style::default()
-                .fg(theme.yellow)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  {} control ", glyphs.bullet),
@@ -801,55 +795,63 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let health = app.health.as_ref();
     let metrics = health.map(|h| &h.metrics);
     let health_lines = vec![
-        line_kv(
+        line_kv_color(
             "instance",
             health.map(|h| h.instance_id.clone()),
             theme,
             glyphs,
+            theme.green,
         ),
-        line_kv(
+        line_kv_color(
             "command",
             health.map(|h| h.command_bind.clone()),
             theme,
             glyphs,
+            theme.text,
         ),
-        line_kv(
+        line_kv_color(
             "sessions",
             health.map(|h| h.sessions.to_string()),
             theme,
             glyphs,
+            theme.yellow,
         ),
-        line_kv(
+        line_kv_color(
             "mem alloc",
             metrics.map(|m| format_bytes(m.memory_allocated_bytes)),
             theme,
             glyphs,
+            theme.cyan,
         ),
-        line_kv(
+        line_kv_color(
             "bytes xfer",
             metrics.map(|m| format_bytes(m.bytes_transferred)),
             theme,
             glyphs,
+            theme.yellow,
         ),
-        line_kv(
+        line_kv_color(
             "rate",
             Some(format_rate(app.rates.transfer_bps)),
             theme,
             glyphs,
+            theme.yellow,
         ),
-        line_kv(
+        line_kv_color(
             "uptime",
             metrics.map(|m| format_duration_ms(m.uptime_ms)),
             theme,
             glyphs,
+            theme.green,
         ),
-        line_kv(
+        line_kv_color(
             "idle",
             metrics.map(|m| format_duration_ms(m.idle_ms)),
             theme,
             glyphs,
+            theme.green,
         ),
-        line_kv(
+        line_kv_color(
             "update",
             Some(format!(
                 "{:.1} Hz / {:.0}",
@@ -857,8 +859,15 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             )),
             theme,
             glyphs,
+            theme.cyan,
         ),
-        line_kv("listen", Some(app.listen_addr.to_string()), theme, glyphs),
+        line_kv_color(
+            "listen",
+            Some(app.listen_addr.to_string()),
+            theme,
+            glyphs,
+            theme.blue,
+        ),
     ];
     frame.render_widget(
         Paragraph::new(health_lines)
@@ -882,17 +891,19 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .constraints([Constraint::Length(10), Constraint::Min(8)])
         .split(area);
     let status_lines = vec![
-        line_kv(
+        line_kv_color(
             "profile",
             app.health.as_ref().map(|h| h.profile.clone()),
             theme,
             glyphs,
+            theme.green,
         ),
-        line_kv(
+        line_kv_color(
             "connection",
             app.health.as_ref().map(|h| h.connection.clone()),
             theme,
             glyphs,
+            theme.green,
         ),
         line_kv(
             "media root",
@@ -900,13 +911,14 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             theme,
             glyphs,
         ),
-        line_kv(
+        line_kv_color(
             "props",
             Some(app.snapshot.props.len().to_string()),
             theme,
             glyphs,
+            theme.yellow,
         ),
-        line_kv(
+        line_kv_color(
             "crate",
             Some(format!(
                 "{} {}",
@@ -915,9 +927,16 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             )),
             theme,
             glyphs,
+            theme.magenta,
         ),
-        line_kv("rustc", Some(RUSTC_VERSION.to_string()), theme, glyphs),
-        line_kv(
+        line_kv_color(
+            "rustc",
+            Some(RUSTC_VERSION.to_string()),
+            theme,
+            glyphs,
+            theme.cyan,
+        ),
+        line_kv_color(
             "target",
             Some(format!(
                 "{}-{}",
@@ -926,14 +945,16 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             )),
             theme,
             glyphs,
+            theme.blue,
         ),
-        line_kv(
+        line_kv_color(
             "deps",
             Some(format!(
                 "ratatui {RATATUI_VERSION}, crossterm {CROSSTERM_VERSION}"
             )),
             theme,
             glyphs,
+            theme.magenta,
         ),
     ];
     frame.render_widget(
@@ -1038,10 +1059,11 @@ fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     glyphs.key_right
                 ),
                 Style::default()
-                    .fg(if action.is_quit() {
+                    .fg(Color::Black)
+                    .bg(if action.is_quit() {
                         theme.red
                     } else {
-                        theme.yellow
+                        theme.cyan
                     })
                     .add_modifier(Modifier::BOLD),
             ));
@@ -1082,16 +1104,30 @@ fn panel_block<'a>(
 }
 
 fn line_kv(key: &str, value: Option<String>, theme: Theme, glyphs: Glyphs) -> Line<'static> {
+    line_kv_color(key, value, theme, glyphs, theme.text)
+}
+
+fn line_kv_color(
+    key: &str,
+    value: Option<String>,
+    theme: Theme,
+    glyphs: Glyphs,
+    value_color: Color,
+) -> Line<'static> {
+    let value_style = if value_color == theme.text {
+        Style::default().fg(value_color)
+    } else {
+        Style::default()
+            .fg(value_color)
+            .add_modifier(Modifier::BOLD)
+    };
     Line::from(vec![
         Span::styled(format!("{key:<11}"), Style::default().fg(theme.muted)),
         Span::styled(
             format!("{} ", glyphs.kv_sep),
             Style::default().fg(theme.muted),
         ),
-        Span::styled(
-            value.unwrap_or_else(|| "pending".to_string()),
-            Style::default().fg(theme.text),
-        ),
+        Span::styled(value.unwrap_or_else(|| "pending".to_string()), value_style),
     ])
 }
 
@@ -1386,9 +1422,9 @@ mod tests {
         let theme = ThemeName::Cyberpunk.theme();
         assert_eq!(theme.bg, Color::Black);
         assert_eq!(theme.panel, Color::Black);
-        assert_eq!(theme.cyan, Color::Indexed(30));
-        assert_eq!(theme.green, Color::Indexed(118));
-        assert_eq!(theme.yellow, Color::Indexed(178));
+        assert_eq!(theme.cyan, Color::LightCyan);
+        assert_eq!(theme.green, Color::Green);
+        assert_eq!(theme.yellow, Color::Yellow);
     }
 
     #[test]
@@ -1396,6 +1432,7 @@ mod tests {
         let glyphs = GlyphMode::Unicode.glyphs();
         assert_eq!(glyphs.border, BorderType::LightDoubleDashed);
         assert_eq!(glyphs.key_left, "⟦");
+        assert_eq!(glyphs.brand, "◢");
         assert_eq!(glyphs.event_action, "▶");
     }
 }

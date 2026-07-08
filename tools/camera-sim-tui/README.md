@@ -25,11 +25,12 @@ pushes later changes. The TUI also serves:
   matching hotkey.
 - `GET /state` — last state snapshot received by the TUI.
 
-The default visual style is `--theme cyberpunk --glyphs unicode`: true black
-background, muted teal/gray structure, acid green and amber accents, broken
-Unicode section lines, and compact operator-console markers. Use
-`--glyphs ascii` for terminals that do not render box drawing or symbols
-cleanly; `--theme neon` and `--theme mono` remain available.
+The default visual style is `--theme cyberpunk --glyphs unicode`: black
+operator-console background, client application fixture TUI-inspired ice-cyan text,
+green/yellow/red state color, reverse-video hotkeys, broken Unicode section
+lines, and compact operator markers. Use `--glyphs ascii` for terminals that
+do not render box drawing or symbols cleanly; `--theme neon` and `--theme mono`
+remain available.
 
 The dashboard shows process memory, transferred bytes, transfer rate,
 live-view FPS, update rate, uptime, idle time, Rust/toolchain versions, and
