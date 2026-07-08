@@ -20,6 +20,8 @@ CHUNK_SIZE = 0x00BFFFE0
 FINAL_LOW = 0x22FFCF80
 FINAL_LEN = 0x000CD480
 FINAL_HIGH = 0x1
+FINAL_OFFSET = (FINAL_HIGH << 32) | FINAL_LOW
+TAIL_MARKER = b"PTPSIM-64BIT-TAIL:" + struct.pack("<Q", FINAL_OFFSET)
 
 
 def free_port():
@@ -171,6 +173,10 @@ def make_sparse_mov(path):
     with path.open("ab") as f:
         f.write(struct.pack(">I4sQ", 1, b"free", remaining))
         f.truncate(TRUE_SIZE)
+    with path.open("r+b") as f:
+        f.seek(FINAL_OFFSET)
+        f.write(TAIL_MARKER)
+        f.truncate(TRUE_SIZE)
     subprocess.run(
         [
             "ffprobe",
@@ -317,6 +323,7 @@ def main():
                 requests = 0
                 saw_high = False
                 first_head = b""
+                final_head = b""
                 while total < true_size:
                     want = min(chunk_size, true_size - total)
                     low = total & 0xFFFFFFFF
@@ -325,13 +332,21 @@ def main():
                     requests += 1
                     tid += 1
                     send_op(sock, 0x101B, tid, [handle, low, want, high])
-                    got, params, head = read_data_reply(sock, 0x101B, tid, keep_head=(total == 0))
+                    got, params, head = read_data_reply(
+                        sock,
+                        0x101B,
+                        tid,
+                        keep_head=(total == 0 or total == FINAL_OFFSET),
+                    )
                     assert got == want, (got, want, total)
                     assert params == [want], params
                     if total == 0:
                         first_head = head
                         assert b"ftyp" in first_head[:64], "first chunk lacks ftyp"
                         assert b"moov" in first_head, "first chunk lacks faststart moov"
+                    if total == FINAL_OFFSET:
+                        final_head = head
+                        assert final_head.startswith(TAIL_MARKER), "final chunk lacks 64-bit tail marker"
                     total += got
                     if requests % 50 == 0:
                         print(f"downloaded {total}/{true_size} bytes in {requests} chunks", flush=True)
@@ -343,6 +358,7 @@ def main():
                     hex(high),
                     hex(want),
                 )
+                assert final_head.startswith(TAIL_MARKER), "never verified 64-bit tail marker"
                 assert total == true_size
                 print(f"large MOV acceptance OK: {total} bytes, {requests} chunks")
         finally:
