@@ -1,0 +1,28 @@
+# camera-sim-tui
+
+`camera-sim-tui` is the generic ptpsim operator console. It attaches to a
+running `camera-sim-service`, subscribes for pushed state snapshots, and renders
+the current simulator state with keyboard actions over the same HTTP controls
+that scripts can call.
+
+```sh
+cargo run -p camera-sim-tui -- \
+  --control 127.0.0.1:8080 \
+  --listen 127.0.0.1:8770
+```
+
+The TUI registers `POST /callbacks {"url":"http://127.0.0.1:8770/state"}` with
+the simulator. The service sends the current snapshot immediately and then
+pushes later changes. The TUI also serves:
+
+- `GET /actions` — self-describing action registry with hotkeys and HTTP paths.
+- `POST /actions/<id>` — invoke the same generic simulator mutation as the
+  matching hotkey.
+- `GET /state` — last state snapshot received by the TUI.
+
+For CI or agent-driven sessions, run the same attach/action surface without
+curses:
+
+```sh
+cargo run -p camera-sim-tui -- --headless
+```

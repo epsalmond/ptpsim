@@ -21,6 +21,7 @@ services/
   camera-sim-service    tokio service: PTP listeners + control HTTP
 tools/
   camera-simctl         CLI over the control API
+  camera-sim-tui        colorful terminal operator console over the control API
 packages/
   camera-config-data         manifest schema, golden packets, captured camera manifests
   fixtures              small redistributable media fixtures

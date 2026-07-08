@@ -11,6 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, Notify};
 
+use crate::state_callback::Registry;
 use crate::state_json::snapshot_json;
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -44,6 +45,7 @@ pub async fn handle(
     health: Health,
     engine: Arc<Mutex<Engine>>,
     state_notify: Arc<Notify>,
+    callbacks: Registry,
     shutdown: broadcast::Sender<()>,
 ) {
     let req = match read_request(&mut stream).await {
@@ -78,6 +80,13 @@ pub async fn handle(
             }
             Err(e) => Response::bad_request(e),
         },
+        ("POST", "/callbacks") => match subscribe_callback(&callbacks, &req.body).await {
+            Ok(body) => {
+                state_notify.notify_one();
+                Response::ok(body)
+            }
+            Err(e) => Response::bad_request(e),
+        },
         ("POST", "/shutdown") => {
             let _ = shutdown.send(());
             Response::ok(r#"{"shutting_down":true}"#.to_string())
@@ -98,6 +107,17 @@ async fn apply_state_patch(
     overlay.validate_context(&health.profile, &health.connection)?;
     let applied = engine.lock().await.apply_state_overlay(&overlay)?;
     Ok(serde_json::json!({ "ok": true, "applied": applied }).to_string())
+}
+
+async fn subscribe_callback(callbacks: &Registry, body: &[u8]) -> Result<String, String> {
+    let payload: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| format!("invalid JSON callback body: {e}"))?;
+    let url = payload
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "callback body must contain string field 'url'".to_string())?;
+    let callbacks = callbacks.add_url(url).await?;
+    Ok(serde_json::json!({ "ok": true, "callbacks": callbacks }).to_string())
 }
 
 struct Request {

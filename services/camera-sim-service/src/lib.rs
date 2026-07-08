@@ -348,10 +348,11 @@ impl Server {
         // capture, so the subscriber is live when the completion fires.
         let (event_tx, _) = broadcast::channel::<u16>(16);
 
-        // #126 state-callback: one shared notify the command loop bumps after
-        // every op. Cheap when nobody listens; the single push task (spawned
-        // below only if --state-callback parses) consumes it, debounces, and POSTs.
+        // #126/#214 state-callback: one shared notify the command loop bumps
+        // after every op. Cheap when nobody listens; the single push task
+        // consumes it, debounces, and POSTs to startup and runtime subscribers.
         let state_dirty = Arc::new(Notify::new());
+        let state_callbacks = state_callback::Registry::default();
 
         // Per-connection tasks live in a JoinSet per accept loop (audit in
         // docs/internal-async-notes.md): the `Some(_) = join_next()` arm reaps
@@ -393,6 +394,7 @@ impl Server {
         let control_loop = {
             let engine = engine.clone();
             let state_dirty = state_dirty.clone();
+            let state_callbacks = state_callbacks.clone();
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -408,6 +410,7 @@ impl Server {
                                     health.clone(),
                                     engine.clone(),
                                     state_dirty.clone(),
+                                    state_callbacks.clone(),
                                     ctl_shutdown.clone(),
                                 ));
                             }
@@ -495,24 +498,20 @@ impl Server {
             }
         };
 
-        // #126: spawn the single state-callback push task if a valid URL was
-        // given. Parsed up front; an invalid URL is logged once and ignored
-        // (never fatal). It ends on the shutdown broadcast like the loops.
+        // #126/#214: spawn one state-callback push task. Startup callbacks are
+        // registered up front; runtime callbacks join via POST /callbacks.
+        tokio::spawn(state_callback::state_callback_loop(
+            state_dirty.clone(),
+            engine.clone(),
+            state_callbacks.clone(),
+            shutdown_tx.subscribe(),
+        ));
         if let Some(url) = config.state_callback.as_deref() {
-            match state_callback::parse_url(url) {
-                Some(target) => {
-                    tokio::spawn(state_callback::state_callback_loop(
-                        state_dirty.clone(),
-                        engine.clone(),
-                        target,
-                        shutdown_tx.subscribe(),
-                    ));
-                }
-                None => {
-                    tracing::warn!(url, "invalid --state-callback URL; state callback disabled")
-                }
+            if state_callbacks.add_url(url).await.is_err() {
+                tracing::warn!(url, "invalid --state-callback URL; state callback disabled")
             }
         }
+        state_dirty.notify_one();
 
         tokio::select! {
             _ = shutdown => {}

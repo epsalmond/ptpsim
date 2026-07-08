@@ -33,6 +33,50 @@ pub struct Target {
     path: String,
 }
 
+#[derive(Clone, Default)]
+pub struct Registry {
+    inner: Arc<Mutex<RegistryInner>>,
+}
+
+#[derive(Default)]
+struct RegistryInner {
+    version: u64,
+    targets: Vec<Target>,
+}
+
+struct RegistrySnapshot {
+    version: u64,
+    targets: Vec<Target>,
+}
+
+struct LastPush {
+    version: u64,
+    body: String,
+}
+
+impl Registry {
+    pub async fn add_url(&self, url: &str) -> Result<usize, String> {
+        let target = parse_url(url)
+            .ok_or_else(|| "callback URL must be http://host[:port][/path]".to_string())?;
+        let mut inner = self.inner.lock().await;
+        if !inner.targets.contains(&target) {
+            inner.targets.push(target);
+        }
+        // Bump even for duplicate registrations so the subscriber receives a
+        // fresh snapshot after every successful POST /callbacks.
+        inner.version = inner.version.wrapping_add(1);
+        Ok(inner.targets.len())
+    }
+
+    async fn snapshot(&self) -> RegistrySnapshot {
+        let inner = self.inner.lock().await;
+        RegistrySnapshot {
+            version: inner.version,
+            targets: inner.targets.clone(),
+        }
+    }
+}
+
 /// Parse `http://host[:port][/path]`. Returns None for non-http or malformed
 /// input (the caller logs once and disables the callback). Handles bracketed
 /// IPv6 (`http://[::1]:8770/state`) and bare host / host:port.
@@ -104,37 +148,53 @@ async fn post_json(target: &Target, body: &str) -> std::io::Result<()> {
 pub async fn state_callback_loop(
     dirty: Arc<Notify>,
     engine: Arc<Mutex<Engine>>,
-    target: Target,
+    registry: Registry,
     mut shutdown: broadcast::Receiver<()>,
 ) {
-    let mut last: Option<String> = None;
-    push_latest(&engine, &target, &mut last).await;
+    let mut last: Option<LastPush> = None;
+    push_latest(&engine, &registry, &mut last).await;
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
             _ = dirty.notified() => {
                 tokio::time::sleep(DEBOUNCE).await; // coalesce a burst
-                push_latest(&engine, &target, &mut last).await;
+                push_latest(&engine, &registry, &mut last).await;
             }
         }
     }
 }
 
-async fn push_latest(engine: &Arc<Mutex<Engine>>, target: &Target, last: &mut Option<String>) {
+async fn push_latest(
+    engine: &Arc<Mutex<Engine>>,
+    registry: &Registry,
+    last: &mut Option<LastPush>,
+) {
+    let snapshot = registry.snapshot().await;
+    if snapshot.targets.is_empty() {
+        return;
+    }
     let body = {
         let e = engine.lock().await;
         snapshot_json(&e)
     };
-    if last.as_deref() == Some(body.as_str()) {
+    if last
+        .as_ref()
+        .is_some_and(|last| last.body == body && last.version == snapshot.version)
+    {
         return; // unchanged since last push (e.g. read-only ops)
     }
-    match post_json(target, &body).await {
-        Ok(()) => {
-            tracing::debug!(bytes = body.len(), "state-callback pushed");
-            *last = Some(body);
+    for target in &snapshot.targets {
+        match post_json(target, &body).await {
+            Ok(()) => {
+                tracing::debug!(bytes = body.len(), "state-callback pushed");
+            }
+            Err(e) => tracing::debug!(error = %e, "state-callback POST failed"),
         }
-        Err(e) => tracing::debug!(error = %e, "state-callback POST failed"),
     }
+    *last = Some(LastPush {
+        version: snapshot.version,
+        body,
+    });
 }
 
 #[cfg(test)]
