@@ -90,14 +90,22 @@ struct Theme {
 }
 
 impl ThemeName {
+    fn as_str(self) -> &'static str {
+        match self {
+            ThemeName::Cyberpunk => "cyberpunk",
+            ThemeName::Neon => "neon",
+            ThemeName::Mono => "mono",
+        }
+    }
+
     fn theme(self) -> Theme {
         match self {
             ThemeName::Cyberpunk => Theme {
                 bg: Color::Black,
                 panel: Color::Black,
-                panel_hi: Color::Rgb(6, 16, 18),
-                text: Color::Rgb(218, 244, 234),
-                muted: Color::Rgb(80, 101, 103),
+                panel_hi: Color::Rgb(0, 30, 26),
+                text: Color::Rgb(212, 255, 238),
+                muted: Color::Rgb(62, 92, 88),
                 cyan: Color::Rgb(0, 245, 255),
                 magenta: Color::Rgb(148, 64, 255),
                 green: Color::Rgb(111, 255, 0),
@@ -154,6 +162,13 @@ struct Glyphs {
 }
 
 impl GlyphMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            GlyphMode::Unicode => "unicode",
+            GlyphMode::Ascii => "ascii",
+        }
+    }
+
     fn glyphs(self) -> Glyphs {
         match self {
             GlyphMode::Unicode => Glyphs {
@@ -192,6 +207,25 @@ impl GlyphMode {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ConsoleStyle {
+    theme_name: ThemeName,
+    theme: Theme,
+    glyph_mode: GlyphMode,
+    glyphs: Glyphs,
+}
+
+impl ConsoleStyle {
+    fn new(theme_name: ThemeName, glyph_mode: GlyphMode) -> Self {
+        Self {
+            theme_name,
+            theme: theme_name.theme(),
+            glyph_mode,
+            glyphs: glyph_mode.glyphs(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum RuntimeEvent {
     State(CameraSnapshot),
@@ -224,8 +258,7 @@ struct Rates {
 struct App {
     registry: ActionRegistry,
     client: ControlClient,
-    theme: Theme,
-    glyphs: Glyphs,
+    style: ConsoleStyle,
     listen_addr: SocketAddr,
     callback_url: String,
     health: Option<HealthSnapshot>,
@@ -250,8 +283,7 @@ impl App {
     fn new(
         registry: ActionRegistry,
         client: ControlClient,
-        theme: Theme,
-        glyphs: Glyphs,
+        style: ConsoleStyle,
         listen_addr: SocketAddr,
         callback_url: String,
     ) -> Self {
@@ -259,8 +291,7 @@ impl App {
         Self {
             registry,
             client,
-            theme,
-            glyphs,
+            style,
             listen_addr,
             callback_url,
             health: None,
@@ -366,8 +397,7 @@ fn main() -> Result<()> {
     let mut app = App::new(
         registry,
         client.clone(),
-        args.theme.theme(),
-        args.glyphs.glyphs(),
+        ConsoleStyle::new(args.theme, args.glyphs),
         listen_addr,
         callback_url.clone(),
     );
@@ -421,6 +451,8 @@ fn run_headless(
         serde_json::json!({
             "ok": true,
             "mode": "headless",
+            "theme": app.style.theme_name.as_str(),
+            "glyphs": app.style.glyph_mode.as_str(),
             "listen": format!("http://{}", app.listen_addr),
             "callback_url": app.callback_url,
             "actions": app.registry.descriptors(),
@@ -558,7 +590,7 @@ fn perform_action(app: &mut App, shared: &Arc<SharedSurface>, action: Action) {
 fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
     frame.render_widget(
-        Block::default().style(Style::default().bg(app.theme.bg)),
+        Block::default().style(Style::default().bg(app.style.theme.bg)),
         area,
     );
 
@@ -577,8 +609,8 @@ fn render(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let theme = app.theme;
-    let glyphs = app.glyphs;
+    let theme = app.style.theme;
+    let glyphs = app.style.glyphs;
     let health = app.health.as_ref();
     let title = Line::from(vec![
         Span::styled(
@@ -589,16 +621,17 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            " PTPSIM ",
+            " PTPSIM CYBERDECK ",
             Style::default()
                 .fg(theme.bg)
                 .bg(theme.cyan)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            " CAMERA OPERATOR ",
+            " CAMERA OPS ",
             Style::default()
-                .fg(theme.green)
+                .fg(theme.bg)
+                .bg(theme.green)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -621,7 +654,19 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ]);
     let sub = Line::from(vec![
         Span::styled(
-            format!("{} control ", glyphs.bullet),
+            format!(
+                "{} style {}{}{} ",
+                glyphs.signal,
+                app.style.theme_name.as_str(),
+                glyphs.separator,
+                app.style.glyph_mode.as_str()
+            ),
+            Style::default()
+                .fg(theme.yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {} control ", glyphs.bullet),
             Style::default().fg(theme.muted),
         ),
         Span::styled(app.client.addr(), Style::default().fg(theme.green)),
@@ -654,8 +699,8 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let theme = app.theme;
-    let glyphs = app.glyphs;
+    let theme = app.style.theme;
+    let glyphs = app.style.glyphs;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -809,8 +854,8 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let theme = app.theme;
-    let glyphs = app.glyphs;
+    let theme = app.style.theme;
+    let glyphs = app.style.glyphs;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(10), Constraint::Min(8)])
@@ -920,8 +965,8 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_events_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let theme = app.theme;
-    let glyphs = app.glyphs;
+    let theme = app.style.theme;
+    let glyphs = app.style.glyphs;
     let items = app
         .events
         .iter()
@@ -946,8 +991,8 @@ fn render_events_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let theme = app.theme;
-    let glyphs = app.glyphs;
+    let theme = app.style.theme;
+    let glyphs = app.style.glyphs;
     let mut spans = Vec::new();
     for action in app.registry.actions() {
         if let Some(key) = action.descriptor.hotkey {
@@ -1292,6 +1337,8 @@ mod tests {
         let args = Args::parse_from(["camera-sim-tui"]);
         assert!(matches!(args.theme, ThemeName::Cyberpunk));
         assert!(matches!(args.glyphs, GlyphMode::Unicode));
+        assert_eq!(args.theme.as_str(), "cyberpunk");
+        assert_eq!(args.glyphs.as_str(), "unicode");
     }
 
     #[test]

@@ -37,6 +37,10 @@ manifest-backed property names as `label (0xcode)`. The draw loop caps visible
 updates at 60 Hz; idle CPU profiling/optimization is tracked separately in
 ptpsim #218.
 
+`--headless` does not render the visual theme; it serves the action/state HTTP
+surface and prints the selected `theme`/`glyphs` in its startup JSON so smoke
+checks can catch stale binaries or wrong flags.
+
 For CI or agent-driven sessions, run the same attach/action surface without
 curses:
 
