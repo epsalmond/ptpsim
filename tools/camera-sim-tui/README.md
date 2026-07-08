@@ -11,6 +11,11 @@ cargo run -p camera-sim-tui -- \
   --listen 127.0.0.1:8770
 ```
 
+From the workspace root, `scripts/run-tui` builds the TUI, attaches to an
+existing local service, or starts `./run` with the default fixture camera first.
+Override the default listener with `PTPSIM_TUI_LISTEN`; service defaults are the
+same `PTPSIM_*` knobs that `./run` already accepts.
+
 The TUI registers `POST /callbacks {"url":"http://127.0.0.1:8770/state"}` with
 the simulator. The service sends the current snapshot immediately and then
 pushes later changes. The TUI also serves:

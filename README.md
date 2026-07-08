@@ -33,6 +33,15 @@ packages/
 cargo test            # Rust workspace
 ```
 
+## Local TUI
+
+```sh
+scripts/run-tui
+```
+
+This attaches to an existing local `camera-sim-service`, or starts `./run` with
+the default GFX100 II fixture service before launching the operator console.
+
 ## CI
 
 Continuous integration runs via Woodpecker CI; see [`.woodpecker.yml`](.woodpecker.yml).
