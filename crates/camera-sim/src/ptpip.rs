@@ -215,15 +215,21 @@ impl Ctx<'_> {
             let code = parse_hex_code(o).ok_or_else(|| err(format!("bad op code {o:?}")))?;
             let params = self.resolve_params(&step.params).map_err(err)?;
             let reply = self.issue_op(code, params);
-            if reply_ok(&reply) {
-                self.apply_captures(&step.captures, code, &reply)
-                    .map_err(err)?;
-                if code == op::GET_OBJECT_INFO && step.captures.is_empty() {
-                    self.capture_object_info(OBJECT_SIZE_SLOT, &reply)
-                        .map_err(err)?;
+            check_ok(&reply, code, step.tolerant).map_err(err)?;
+            if response_code(&reply) == Some(resp::OK) {
+                if let Err(message) = self.apply_captures(&step.captures, code, &reply) {
+                    if !step.tolerant {
+                        return Err(err(message));
+                    }
+                } else if code == op::GET_OBJECT_INFO && step.captures.is_empty() {
+                    if let Err(message) = self.capture_object_info(OBJECT_SIZE_SLOT, &reply) {
+                        if !step.tolerant {
+                            return Err(err(message));
+                        }
+                    }
                 }
             }
-            check_ok(&reply, code, step.tolerant).map_err(err)
+            Ok(())
         } else if step.reopen_session.is_some() {
             if self.command_listener_volatile
                 && matches!(self.engine.phase(), Phase::LiveView | Phase::Streaming)
@@ -527,6 +533,7 @@ impl Ctx<'_> {
         code: u16,
         reply: &Reply,
     ) -> Result<(), String> {
+        let mut captured = Vec::with_capacity(captures.len());
         for capture in captures {
             let value = match capture.source {
                 CaptureSource::ObjectInfoCompressedSize => {
@@ -539,24 +546,23 @@ impl Ctx<'_> {
                 }
                 CaptureSource::PropValue => return Err("propValue capture requires getProp".into()),
                 CaptureSource::U32Le => {
-                    let Reply::Data { data, .. } = reply else {
-                        return Err("u32Le capture requires a data reply".into());
-                    };
-                    let mut r = Reader::new(data);
+                    let data = scalar_capture_head(reply, 4, "u32Le")?;
+                    let mut r = Reader::new(&data);
                     r.u32()
                         .map_err(|e| format!("decode captured u32Le: {e:?}"))?
                         as u64
                 }
                 CaptureSource::U64Le => {
-                    let Reply::Data { data, .. } = reply else {
-                        return Err("u64Le capture requires a data reply".into());
-                    };
-                    let mut r = Reader::new(data);
+                    let data = scalar_capture_head(reply, 8, "u64Le")?;
+                    let mut r = Reader::new(&data);
                     r.u64()
                         .map_err(|e| format!("decode captured u64Le: {e:?}"))?
                 }
             };
-            self.bindings.insert(capture.bind.clone(), value);
+            captured.push((capture.bind.clone(), value));
+        }
+        for (bind, value) in captured {
+            self.bindings.insert(bind, value);
         }
         Ok(())
     }
@@ -676,37 +682,49 @@ fn verb_name(s: &Step) -> &'static str {
 /// OK unless a non-OK response (tolerated -> skipped) or a transport-level
 /// failure (`NoResponse` timeout / `Close` dropped socket).
 fn check_ok(reply: &Reply, code: u16, tolerant: bool) -> Result<(), String> {
-    match reply {
-        Reply::Response(r)
-        | Reply::Data { response: r, .. }
-        | Reply::DataStream { response: r, .. } => {
-            if r.code == resp::OK || tolerant {
-                Ok(())
-            } else {
-                Err(format!("op {code:#06x} -> response {:#06x}", r.code))
-            }
+    if let Some(response) = response_code(reply) {
+        if response == resp::OK || tolerant {
+            return Ok(());
         }
+        return Err(format!("op {code:#06x} -> response {response:#06x}"));
+    }
+    match reply {
         Reply::NoResponse => Err(format!("op {code:#06x} timed out with no response")),
         Reply::Close => Err(format!("op {code:#06x} closed the connection")),
+        Reply::Response(_) | Reply::Data { .. } | Reply::DataStream { .. } => unreachable!(),
     }
 }
 
-fn reply_ok(reply: &Reply) -> bool {
+fn response_code(reply: &Reply) -> Option<u16> {
     match reply {
         Reply::Response(r)
         | Reply::Data { response: r, .. }
-        | Reply::DataStream { response: r, .. } => r.code == resp::OK,
-        Reply::NoResponse | Reply::Close => false,
+        | Reply::DataStream { response: r, .. } => Some(r.code),
+        Reply::NoResponse | Reply::Close => None,
     }
 }
 
 fn describe_reply(reply: &Reply) -> String {
     match reply {
-        Reply::Response(r) => format!("response {:#06x}", r.code),
-        Reply::Data { response, .. } => format!("data + response {:#06x}", response.code),
-        Reply::DataStream { response, .. } => format!("stream + response {:#06x}", response.code),
+        Reply::Response(_) => format!("response {:#06x}", response_code(reply).unwrap()),
+        Reply::Data { .. } => format!("data + response {:#06x}", response_code(reply).unwrap()),
+        Reply::DataStream { .. } => {
+            format!("stream + response {:#06x}", response_code(reply).unwrap())
+        }
         Reply::NoResponse => "no response".into(),
         Reply::Close => "connection closed".into(),
+    }
+}
+
+fn scalar_capture_head(reply: &Reply, width: usize, label: &str) -> Result<Vec<u8>, String> {
+    match reply {
+        Reply::Data { data, .. } => Ok(data[..data.len().min(width)].to_vec()),
+        Reply::DataStream { source, .. } => source
+            .read_chunk(0, width)
+            .map_err(|e| format!("read {label} capture stream head: {e}")),
+        Reply::Response(_) | Reply::NoResponse | Reply::Close => {
+            Err(format!("{label} capture requires a data or stream reply"))
+        }
     }
 }
 
@@ -737,7 +755,7 @@ fn transform_runtime_value(value: u64, shift: u32, mask: Option<u64>) -> u64 {
 mod tests {
     use super::*;
     use camera_config::{CameraManifest, Leaf, Predicate};
-    use camera_media_store::MediaStore;
+    use camera_media_store::{MediaStore, ObjectQuery};
 
     /// `{ prop: <hex>, eq: <val> }` as the PTP predicate (avoids a serde_yaml dep).
     fn leaf_eq(prop: &str, val: i64) -> Predicate {
@@ -765,6 +783,25 @@ mod tests {
     fn engine(yaml: &str) -> Engine {
         let manifest = CameraManifest::from_yaml(yaml).expect("manifest loads");
         Engine::new(manifest, empty_store())
+    }
+
+    fn engine_with_file(yaml: &str, bytes: &[u8]) -> (Engine, u32) {
+        let manifest = CameraManifest::from_yaml(yaml).expect("manifest loads");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ptpsim-ptpip-media-{nanos}"));
+        let path = root.join("DCIM/100_FUJI/DSCF0001.JPG");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let mut store = MediaStore::open(&root).unwrap();
+        store.scan().unwrap();
+        let handle = store.handles(ObjectQuery {
+            parent: None,
+            format: Some(ptp_core::codes::format::EXIF_JPEG),
+        })[0];
+        (Engine::new(manifest, store), handle)
     }
 
     const MANIFEST: &str = r#"
@@ -801,6 +838,112 @@ properties:
         assert_eq!(out.observed.get(0xdf00), Some(6));
         assert_eq!(out.steps_run, 3);
         assert!(out.await_iterations.is_empty());
+    }
+
+    #[test]
+    fn tolerant_send_op_capture_decode_failure_does_not_abort_walk() {
+        let (mut e, handle) = engine_with_file(
+            MANIFEST,
+            b"\xff\xd8\x01\x02\x03\x04\x05\x06\x07\x08\xff\xd9",
+        );
+        let steps = vec![
+            Step {
+                send_op: Some("0x101b".into()),
+                params: vec![
+                    StepParam::Literal(handle),
+                    StepParam::Literal(0),
+                    StepParam::Literal(4),
+                ],
+                captures: vec![Capture {
+                    bind: "tooWide".into(),
+                    source: CaptureSource::U64Le,
+                }],
+                tolerant: true,
+                ..Default::default()
+            },
+            Step {
+                set_prop: Some("0xdf00".into()),
+                value: Some(7),
+                ..Default::default()
+            },
+            Step {
+                get_prop: Some("0xdf00".into()),
+                ..Default::default()
+            },
+        ];
+
+        let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("tolerant capture skips");
+        assert_eq!(out.observed.get(0xdf00), Some(7));
+    }
+
+    #[test]
+    fn strict_send_op_capture_decode_failure_aborts_walk() {
+        let (mut e, handle) = engine_with_file(
+            MANIFEST,
+            b"\xff\xd8\x01\x02\x03\x04\x05\x06\x07\x08\xff\xd9",
+        );
+        let steps = vec![Step {
+            send_op: Some("0x101b".into()),
+            params: vec![
+                StepParam::Literal(handle),
+                StepParam::Literal(0),
+                StepParam::Literal(4),
+            ],
+            captures: vec![Capture {
+                bind: "tooWide".into(),
+                source: CaptureSource::U64Le,
+            }],
+            ..Default::default()
+        }];
+
+        let err = walk_ptpip(&mut e, &steps, &BTreeMap::new()).unwrap_err();
+        assert!(
+            err.message.contains("decode captured u64Le"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn scalar_capture_can_decode_from_stream_reply_head() {
+        let stream_head = 0x0807_0605_0403_0201u64;
+        let (mut e, handle) = engine_with_file(
+            MANIFEST,
+            b"\x01\x02\x03\x04\x05\x06\x07\x08stream-tail\xff\xd9",
+        );
+        let steps = vec![
+            Step {
+                send_op: Some("0x101b".into()),
+                params: vec![
+                    StepParam::Literal(handle),
+                    StepParam::Literal(0),
+                    StepParam::Literal(8),
+                ],
+                captures: vec![Capture {
+                    bind: "streamHead".into(),
+                    source: CaptureSource::U64Le,
+                }],
+                ..Default::default()
+            },
+            Step {
+                if_step: Some(camera_config::model::IfStep {
+                    slot: "streamHead".into(),
+                    equals: stream_head,
+                    then_steps: vec![Step {
+                        set_prop: Some("0xdf00".into()),
+                        value: Some(11),
+                        ..Default::default()
+                    }],
+                }),
+                ..Default::default()
+            },
+            Step {
+                get_prop: Some("0xdf00".into()),
+                ..Default::default()
+            },
+        ];
+
+        let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("stream capture binds");
+        assert_eq!(out.observed.get(0xdf00), Some(11));
     }
 
     #[test]
