@@ -17,6 +17,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::state_json::snapshot_json;
+use crate::Metrics;
 
 /// Coalesce a burst of changes into one push; also caps push rate under heavy
 /// polling. Low enough to feel live in the dev panel.
@@ -113,7 +114,7 @@ pub fn parse_url(url: &str) -> Option<Target> {
 /// Raw-TCP HTTP/1.1 POST of `body` to the target, bounded by `POST_TIMEOUT`.
 /// Connection: close, response drained best-effort. Mirrors `control.rs`'s
 /// hand-rolled request/response strings.
-async fn post_json(target: &Target, body: &str) -> std::io::Result<()> {
+async fn post_json(target: &Target, body: &str, metrics: &Metrics) -> std::io::Result<()> {
     tokio::time::timeout(POST_TIMEOUT, async {
         let mut stream = TcpStream::connect((target.host.as_str(), target.port)).await?;
         let req = format!(
@@ -126,10 +127,13 @@ async fn post_json(target: &Target, body: &str) -> std::io::Result<()> {
             body,
         );
         stream.write_all(req.as_bytes()).await?;
+        metrics.record_write(req.len());
         stream.flush().await?;
         // Best-effort drain so the receiver can flush its response before close.
         let mut sink = [0u8; 256];
-        let _ = stream.read(&mut sink).await;
+        if let Ok(n) = stream.read(&mut sink).await {
+            metrics.record_read(n);
+        }
         Ok::<(), std::io::Error>(())
     })
     .await
@@ -149,16 +153,17 @@ pub async fn state_callback_loop(
     dirty: Arc<Notify>,
     engine: Arc<Mutex<Engine>>,
     registry: Registry,
+    metrics: Metrics,
     mut shutdown: broadcast::Receiver<()>,
 ) {
     let mut last: Option<LastPush> = None;
-    push_latest(&engine, &registry, &mut last).await;
+    push_latest(&engine, &registry, &metrics, &mut last).await;
     loop {
         tokio::select! {
             _ = shutdown.recv() => break,
             _ = dirty.notified() => {
                 tokio::time::sleep(DEBOUNCE).await; // coalesce a burst
-                push_latest(&engine, &registry, &mut last).await;
+                push_latest(&engine, &registry, &metrics, &mut last).await;
             }
         }
     }
@@ -167,6 +172,7 @@ pub async fn state_callback_loop(
 async fn push_latest(
     engine: &Arc<Mutex<Engine>>,
     registry: &Registry,
+    metrics: &Metrics,
     last: &mut Option<LastPush>,
 ) {
     let snapshot = registry.snapshot().await;
@@ -184,7 +190,7 @@ async fn push_latest(
         return; // unchanged since last push (e.g. read-only ops)
     }
     for target in &snapshot.targets {
-        match post_json(target, &body).await {
+        match post_json(target, &body, metrics).await {
             Ok(()) => {
                 tracing::debug!(bytes = body.len(), "state-callback pushed");
             }

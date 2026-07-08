@@ -13,6 +13,7 @@ use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::state_callback::Registry;
 use crate::state_json::snapshot_json;
+use crate::Metrics;
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
@@ -23,10 +24,12 @@ pub struct Health {
     pub connection: String,
     pub command_addr: SocketAddr,
     pub media_root: String,
+    pub(crate) metrics: Metrics,
 }
 
 impl Health {
     fn json(&self, sessions: usize) -> String {
+        let metrics = self.metrics.snapshot();
         serde_json::json!({
             "ok": true,
             "instance_id": self.instance_id,
@@ -35,6 +38,15 @@ impl Health {
             "bind": self.command_addr.to_string(),
             "sessions": sessions,
             "media_root": self.media_root,
+            "metrics": {
+                "uptime_ms": metrics.uptime_ms,
+                "idle_ms": metrics.idle_ms,
+                "bytes_read": metrics.bytes_read,
+                "bytes_written": metrics.bytes_written,
+                "bytes_transferred": metrics.bytes_transferred,
+                "liveview_frames": metrics.liveview_frames,
+                "memory_allocated_bytes": metrics.memory_allocated_bytes,
+            },
         })
         .to_string()
     }
@@ -46,13 +58,14 @@ pub async fn handle(
     engine: Arc<Mutex<Engine>>,
     state_notify: Arc<Notify>,
     callbacks: Registry,
+    metrics: Metrics,
     shutdown: broadcast::Sender<()>,
 ) {
-    let req = match read_request(&mut stream).await {
+    let req = match read_request(&mut stream, &metrics).await {
         Ok(Some(req)) => req,
         Ok(None) => return,
         Err(resp) => {
-            write_response(&mut stream, &resp.status, &resp.body).await;
+            write_response(&mut stream, &resp.status, &resp.body, &metrics).await;
             return;
         }
     };
@@ -76,6 +89,7 @@ pub async fn handle(
         ("PATCH", "/state") => match apply_state_patch(&health, &engine, &req.body).await {
             Ok(body) => {
                 state_notify.notify_one();
+                metrics.touch();
                 Response::ok(body)
             }
             Err(e) => Response::bad_request(e),
@@ -83,6 +97,7 @@ pub async fn handle(
         ("POST", "/callbacks") => match subscribe_callback(&callbacks, &req.body).await {
             Ok(body) => {
                 state_notify.notify_one();
+                metrics.touch();
                 Response::ok(body)
             }
             Err(e) => Response::bad_request(e),
@@ -94,7 +109,7 @@ pub async fn handle(
         _ => Response::not_found(),
     };
 
-    write_response(&mut stream, &resp.status, &resp.body).await;
+    write_response(&mut stream, &resp.status, &resp.body, &metrics).await;
 }
 
 async fn apply_state_patch(
@@ -154,16 +169,21 @@ impl Response {
     }
 }
 
-async fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
+async fn write_response(stream: &mut TcpStream, status: &str, body: &str, metrics: &Metrics) {
     let resp = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    let _ = stream.write_all(resp.as_bytes()).await;
+    if stream.write_all(resp.as_bytes()).await.is_ok() {
+        metrics.record_write(resp.len());
+    }
     let _ = stream.flush().await;
 }
 
-async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>, Response> {
+async fn read_request(
+    stream: &mut TcpStream,
+    metrics: &Metrics,
+) -> Result<Option<Request>, Response> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
     loop {
@@ -174,6 +194,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>, Respons
         if n == 0 {
             return Ok(None);
         }
+        metrics.record_read(n);
         buf.extend_from_slice(&chunk[..n]);
         if buf.len() > MAX_REQUEST_BYTES {
             return Err(Response {

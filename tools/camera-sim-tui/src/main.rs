@@ -4,7 +4,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use camera_sim_tui::{
@@ -24,6 +24,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
+
+const MAX_UPDATE_HZ: f64 = 60.0;
+const MAX_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const RATATUI_VERSION: &str = "0.30.2";
+const CROSSTERM_VERSION: &str = "0.29";
+const RUSTC_VERSION: &str = env!("PTPSIM_TUI_RUSTC_VERSION");
 
 #[derive(Parser)]
 #[command(
@@ -76,9 +83,9 @@ impl ThemeName {
     fn theme(self) -> Theme {
         match self {
             ThemeName::Neon => Theme {
-                bg: Color::Rgb(5, 7, 14),
-                panel: Color::Rgb(13, 18, 34),
-                panel_hi: Color::Rgb(22, 30, 54),
+                bg: Color::Black,
+                panel: Color::Black,
+                panel_hi: Color::Rgb(22, 22, 28),
                 text: Color::Rgb(231, 244, 255),
                 muted: Color::Rgb(113, 130, 156),
                 cyan: Color::Rgb(0, 229, 255),
@@ -127,6 +134,13 @@ struct EventLine {
     text: String,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct Rates {
+    transfer_bps: f64,
+    liveview_fps: f64,
+    update_hz: f64,
+}
+
 struct App {
     registry: ActionRegistry,
     client: ControlClient,
@@ -137,7 +151,18 @@ struct App {
     snapshot: CameraSnapshot,
     events: VecDeque<EventLine>,
     quit: bool,
-    tick: u64,
+    rates: Rates,
+    last_health_sample: Option<HealthSample>,
+    last_health_refresh: Instant,
+    frame_window_started: Instant,
+    frames_in_window: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HealthSample {
+    at: Instant,
+    bytes_transferred: u64,
+    liveview_frames: u64,
 }
 
 impl App {
@@ -148,6 +173,7 @@ impl App {
         listen_addr: SocketAddr,
         callback_url: String,
     ) -> Self {
+        let now = Instant::now();
         Self {
             registry,
             client,
@@ -158,7 +184,11 @@ impl App {
             snapshot: CameraSnapshot::default(),
             events: VecDeque::new(),
             quit: false,
-            tick: 0,
+            rates: Rates::default(),
+            last_health_sample: None,
+            last_health_refresh: now,
+            frame_window_started: now,
+            frames_in_window: 0,
         }
     }
 
@@ -180,6 +210,45 @@ impl App {
             LogKind::State,
             format!("state push: phase={phase} objects={objects}"),
         );
+    }
+
+    fn set_health(&mut self, health: HealthSnapshot) {
+        let now = Instant::now();
+        if let Some(prev) = self.last_health_sample {
+            let elapsed = now.saturating_duration_since(prev.at).as_secs_f64();
+            if elapsed > 0.0 {
+                self.rates.transfer_bps = health
+                    .metrics
+                    .bytes_transferred
+                    .saturating_sub(prev.bytes_transferred)
+                    as f64
+                    / elapsed;
+                self.rates.liveview_fps = health
+                    .metrics
+                    .liveview_frames
+                    .saturating_sub(prev.liveview_frames)
+                    as f64
+                    / elapsed;
+            }
+        }
+        self.last_health_sample = Some(HealthSample {
+            at: now,
+            bytes_transferred: health.metrics.bytes_transferred,
+            liveview_frames: health.metrics.liveview_frames,
+        });
+        self.last_health_refresh = now;
+        self.health = Some(health);
+    }
+
+    fn record_frame(&mut self) {
+        self.frames_in_window = self.frames_in_window.saturating_add(1);
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.frame_window_started);
+        if elapsed >= Duration::from_secs(1) {
+            self.rates.update_hz = self.frames_in_window as f64 / elapsed.as_secs_f64();
+            self.frames_in_window = 0;
+            self.frame_window_started = now;
+        }
     }
 }
 
@@ -233,7 +302,7 @@ fn main() -> Result<()> {
                     health.connection.as_str()
                 ),
             );
-            app.health = Some(health);
+            app.set_health(health);
         }
         Err(e) => app.log(LogKind::Error, format!("health fetch failed: {e}")),
     }
@@ -292,13 +361,35 @@ fn run_tui(
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let mut dirty = true;
+    let mut next_frame = Instant::now();
 
     while !app.quit && !shared.quit.load(Ordering::Relaxed) {
-        drain_events(&mut app, &rx);
-        app.tick = app.tick.wrapping_add(1);
-        terminal.draw(|frame| render(frame, &app))?;
+        dirty |= drain_events(&mut app, &rx);
 
-        if event::poll(Duration::from_millis(80))? {
+        if app.last_health_refresh.elapsed() >= HEALTH_REFRESH_INTERVAL {
+            refresh_health(&mut app);
+            dirty = true;
+        }
+
+        if dirty && Instant::now() >= next_frame {
+            terminal.draw(|frame| render(frame, &app))?;
+            app.record_frame();
+            dirty = false;
+            next_frame = Instant::now() + MAX_FRAME_INTERVAL;
+        }
+
+        let now = Instant::now();
+        let poll_timeout = if dirty {
+            next_frame
+                .saturating_duration_since(now)
+                .min(Duration::from_millis(100))
+        } else {
+            HEALTH_REFRESH_INTERVAL
+                .saturating_sub(app.last_health_refresh.elapsed())
+                .min(Duration::from_millis(100))
+        };
+        if event::poll(poll_timeout)? {
             let Event::Key(key) = event::read()? else {
                 continue;
             };
@@ -309,6 +400,7 @@ fn run_tui(
                 KeyCode::Char(c) => {
                     if let Some(action) = app.registry.by_hotkey(c) {
                         perform_action(&mut app, &shared, action);
+                        dirty = true;
                     }
                 }
                 KeyCode::Esc => {
@@ -321,13 +413,25 @@ fn run_tui(
     Ok(())
 }
 
-fn drain_events(app: &mut App, rx: &mpsc::Receiver<RuntimeEvent>) {
+fn drain_events(app: &mut App, rx: &mpsc::Receiver<RuntimeEvent>) -> bool {
+    let mut changed = false;
     loop {
         match rx.try_recv() {
-            Ok(event) => apply_runtime_event(app, event),
+            Ok(event) => {
+                apply_runtime_event(app, event);
+                changed = true;
+            }
             Err(mpsc::TryRecvError::Empty) => break,
             Err(mpsc::TryRecvError::Disconnected) => break,
         }
+    }
+    changed
+}
+
+fn refresh_health(app: &mut App) {
+    match app.client.health() {
+        Ok(health) => app.set_health(health),
+        Err(e) => app.log(LogKind::Error, format!("health refresh failed: {e}")),
     }
 }
 
@@ -491,6 +595,17 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("LV FPS  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                if matches!(app.snapshot.phase.as_str(), "liveView" | "streaming") {
+                    format!("{:.1}", app.rates.liveview_fps)
+                } else {
+                    "inactive".to_string()
+                },
+                Style::default().fg(theme.green),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("MEDIA   ", Style::default().fg(theme.muted)),
             Span::styled(
                 format!("{} objects", app.snapshot.media.objects),
@@ -522,10 +637,40 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 
     let health = app.health.as_ref();
+    let metrics = health.map(|h| &h.metrics);
     let health_lines = vec![
         line_kv("instance", health.map(|h| h.instance_id.clone()), theme),
         line_kv("command", health.map(|h| h.command_bind.clone()), theme),
         line_kv("sessions", health.map(|h| h.sessions.to_string()), theme),
+        line_kv(
+            "mem alloc",
+            metrics.map(|m| format_bytes(m.memory_allocated_bytes)),
+            theme,
+        ),
+        line_kv(
+            "bytes xfer",
+            metrics.map(|m| format_bytes(m.bytes_transferred)),
+            theme,
+        ),
+        line_kv("rate", Some(format_rate(app.rates.transfer_bps)), theme),
+        line_kv(
+            "uptime",
+            metrics.map(|m| format_duration_ms(m.uptime_ms)),
+            theme,
+        ),
+        line_kv(
+            "idle",
+            metrics.map(|m| format_duration_ms(m.idle_ms)),
+            theme,
+        ),
+        line_kv(
+            "update",
+            Some(format!(
+                "{:.1} Hz / {:.0}",
+                app.rates.update_hz, MAX_UPDATE_HZ
+            )),
+            theme,
+        ),
         line_kv("listen", Some(app.listen_addr.to_string()), theme),
     ];
     frame.render_widget(
@@ -540,7 +685,7 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(8)])
+        .constraints([Constraint::Length(10), Constraint::Min(8)])
         .split(area);
     let status_lines = vec![
         line_kv(
@@ -559,6 +704,32 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             theme,
         ),
         line_kv("props", Some(app.snapshot.props.len().to_string()), theme),
+        line_kv(
+            "crate",
+            Some(format!(
+                "{} {}",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION")
+            )),
+            theme,
+        ),
+        line_kv("rustc", Some(RUSTC_VERSION.to_string()), theme),
+        line_kv(
+            "target",
+            Some(format!(
+                "{}-{}",
+                std::env::consts::ARCH,
+                std::env::consts::OS
+            )),
+            theme,
+        ),
+        line_kv(
+            "deps",
+            Some(format!(
+                "ratatui {RATATUI_VERSION}, crossterm {CROSSTERM_VERSION}"
+            )),
+            theme,
+        ),
     ];
     frame.render_widget(
         Paragraph::new(status_lines)
@@ -579,9 +750,15 @@ fn render_state_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .iter()
             .take(14)
             .map(|(key, value)| {
+                let label = app
+                    .snapshot
+                    .property_labels
+                    .get(key)
+                    .map(String::as_str)
+                    .unwrap_or("property");
                 Line::from(vec![
                     Span::styled(
-                        format!("{key:<8}"),
+                        format!("{label} ({key}) "),
                         Style::default().fg(theme.cyan).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(value_text(value), Style::default().fg(theme.text)),
@@ -677,6 +854,42 @@ fn value_text(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = UNITS[0];
+    for candidate in UNITS.iter().skip(1) {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = candidate;
+    }
+    if unit == "B" {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {unit}")
+    }
+}
+
+fn format_rate(bytes_per_second: f64) -> String {
+    format!("{}/s", format_bytes(bytes_per_second.max(0.0) as u64))
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    let seconds = ms / 1000;
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m {secs:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {secs:02}s")
+    } else {
+        format!("{secs}s")
     }
 }
 

@@ -21,10 +21,21 @@ pub(crate) fn snapshot_json(engine: &Engine) -> String {
             (format!("0x{code:04x}"), v)
         })
         .collect();
+    let property_labels: serde_json::Map<String, serde_json::Value> = state
+        .props
+        .keys()
+        .filter_map(|&code| {
+            engine
+                .manifest()
+                .property(code)
+                .map(|prop| (format!("0x{code:04x}"), serde_json::json!(prop.name)))
+        })
+        .collect();
     serde_json::json!({
         "phase": state.phase.state_name(),
         "session_open": state.session_open,
         "props": props,
+        "property_labels": property_labels,
         "media": { "objects": engine.store().handles(ObjectQuery::default()).len() },
     })
     .to_string()

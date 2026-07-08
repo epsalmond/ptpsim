@@ -22,6 +22,26 @@ pub struct HealthSnapshot {
     pub sessions: usize,
     #[serde(default)]
     pub media_root: String,
+    #[serde(default)]
+    pub metrics: ServiceMetrics,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ServiceMetrics {
+    #[serde(default)]
+    pub uptime_ms: u64,
+    #[serde(default)]
+    pub idle_ms: u64,
+    #[serde(default)]
+    pub bytes_read: u64,
+    #[serde(default)]
+    pub bytes_written: u64,
+    #[serde(default)]
+    pub bytes_transferred: u64,
+    #[serde(default)]
+    pub liveview_frames: u64,
+    #[serde(default)]
+    pub memory_allocated_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -32,6 +52,8 @@ pub struct CameraSnapshot {
     pub session_open: bool,
     #[serde(default)]
     pub props: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub property_labels: BTreeMap<String, String>,
     #[serde(default)]
     pub media: MediaSnapshot,
 }
@@ -329,7 +351,7 @@ pub fn callback_url_for(bound: SocketAddr) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ActionRegistry;
+    use super::{ActionRegistry, CameraSnapshot, HealthSnapshot};
     use std::collections::BTreeSet;
 
     #[test]
@@ -368,5 +390,40 @@ mod tests {
         assert!(json.contains("\"id\":\"streaming\""));
         assert!(json.contains("\"path\":\"/actions/streaming\""));
         assert!(json.contains("\"hotkey\":\"r\""));
+    }
+
+    #[test]
+    fn health_and_state_snapshots_accept_metrics_and_property_labels() {
+        let health: HealthSnapshot = serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "instance_id": "local",
+            "profile": "fuji/gfx100ii",
+            "connection": "app",
+            "bind": "127.0.0.1:55740",
+            "sessions": 1,
+            "media_root": "fixtures",
+            "metrics": {
+                "uptime_ms": 2000,
+                "idle_ms": 150,
+                "bytes_read": 10,
+                "bytes_written": 20,
+                "bytes_transferred": 30,
+                "liveview_frames": 60,
+                "memory_allocated_bytes": 4096
+            }
+        }))
+        .unwrap();
+        assert_eq!(health.metrics.bytes_transferred, 30);
+        assert_eq!(health.metrics.liveview_frames, 60);
+
+        let state: CameraSnapshot = serde_json::from_value(serde_json::json!({
+            "phase": "streaming",
+            "session_open": true,
+            "props": { "0xd02a": 2000 },
+            "property_labels": { "0xd02a": "stillIso" },
+            "media": { "objects": 3 }
+        }))
+        .unwrap();
+        assert_eq!(state.property_labels["0xd02a"], "stillIso");
     }
 }

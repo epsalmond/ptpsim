@@ -290,6 +290,27 @@ fn service_drives_image_import_over_tcp() {
         body.contains("\"sessions\":1"),
         "session should be open: {body}"
     );
+    let health_body = body.split("\r\n\r\n").nth(1).unwrap_or("");
+    let health: serde_json::Value =
+        serde_json::from_str(health_body).expect("healthz body is JSON");
+    assert!(
+        health["metrics"]["bytes_transferred"].as_u64().unwrap_or(0) > 0,
+        "health metrics should count transferred bytes: {body}"
+    );
+    assert!(
+        health["metrics"]["memory_allocated_bytes"]
+            .as_u64()
+            .is_some(),
+        "health metrics should include process memory: {body}"
+    );
+    assert!(
+        health["metrics"]["uptime_ms"].as_u64().is_some(),
+        "health metrics should include uptime: {body}"
+    );
+    assert!(
+        health["metrics"]["idle_ms"].as_u64().is_some(),
+        "health metrics should include idle time: {body}"
+    );
 
     // Shutdown via control plane.
     let _ = http_post(control_addr, "/shutdown");
@@ -2034,6 +2055,14 @@ fn control_patch_state_updates_shared_snapshot() {
 
     let state = http_get(control_addr, "/state");
     assert!(state.contains("\"0xd02a\":2000"), "state body: {state}");
+    assert!(
+        state.contains("\"property_labels\""),
+        "state should expose property labels: {state}"
+    );
+    assert!(
+        state.contains("\"0xd02a\":\"stillIso\""),
+        "state should expose manifest-backed property names: {state}"
+    );
 
     let _ = http_post(control_addr, "/shutdown");
     rt.block_on(async {

@@ -25,6 +25,13 @@ pushes later changes. The TUI also serves:
   matching hotkey.
 - `GET /state` — last state snapshot received by the TUI.
 
+The default theme uses a black background with bright operator-console accents.
+The dashboard shows process memory, transferred bytes, transfer rate, live-view
+FPS, update rate, uptime, idle time, Rust/toolchain versions, and
+manifest-backed property names as `label (0xcode)`. The draw loop caps visible
+updates at 60 Hz; idle CPU profiling/optimization is tracked separately in
+ptpsim #218.
+
 For CI or agent-driven sessions, run the same attach/action surface without
 curses:
 
