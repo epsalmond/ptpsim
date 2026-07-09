@@ -1,0 +1,4 @@
+[build]
+# Cargo 1.97 applies this only to local packages, keeping dependency warnings
+# visible without allowing them to break this workspace's builds.
+warnings = "deny"

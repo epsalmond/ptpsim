@@ -197,9 +197,13 @@ Run the full check sequence the CI linux lane gates on, in this order —
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets
 cargo test --workspace
 ```
+
+`.cargo/config.toml` sets Cargo's workspace-scoped warning policy to `deny`, so
+the clippy and test commands enforce warning-free local crates without denying
+warnings emitted by dependencies.
 
 CI: Woodpecker, `.woodpecker/`. Steps are path-filtered and heavily
 cached (#41): docs-only pushes run almost nothing; toolchain images come

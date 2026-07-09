@@ -105,7 +105,7 @@ fn payload_holds(p: &PayloadPredicate, bytes: &[u8]) -> bool {
     }
     for bits in &p.assert_bits {
         // Read the minimum LE width covering the mask, starting at offset.
-        let width = (64 - bits.mask.leading_zeros() as usize).div_ceil(8);
+        let width = (bits.mask.bit_width() as usize).div_ceil(8);
         let width = width.max(1);
         // checked_add: a huge `offset` would overflow `offset + width` and
         // panic under debug overflow-checks — but §11.14 requires a payload
@@ -328,7 +328,7 @@ pub fn yaml_literal_to_bytes(v: &serde_yaml::Value, encoding: Option<Encoding>) 
         serde_yaml::Value::String(s) => {
             let trimmed = s.trim();
             let payload = trimmed.strip_prefix("0x").unwrap_or(trimmed);
-            if payload.chars().all(|c| c.is_ascii_hexdigit()) && payload.len() % 2 == 0 {
+            if payload.chars().all(|c| c.is_ascii_hexdigit()) && payload.len().is_multiple_of(2) {
                 let mut out = Vec::with_capacity(payload.len() / 2);
                 let bytes = payload.as_bytes();
                 for chunk in bytes.chunks(2) {
@@ -401,7 +401,7 @@ pub fn scope_string_to_bytes(value: &str, encoding: Option<Encoding>) -> Option<
     let payload = value.strip_prefix("0x").unwrap_or(value);
     if !payload.is_empty()
         && payload.chars().all(|c| c.is_ascii_hexdigit())
-        && payload.len() % 2 == 0
+        && payload.len().is_multiple_of(2)
     {
         let mut out = Vec::with_capacity(payload.len() / 2);
         for chunk in payload.as_bytes().chunks(2) {
