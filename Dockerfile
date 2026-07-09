@@ -12,7 +12,7 @@
 # change recompiles workspace crates only and a docs/data change rebuilds nothing.
 # Base image + glibc floor (2.36) are pinned to match the bookworm runtime and
 # rust-toolchain.toml.
-FROM --platform=$BUILDPLATFORM rust:1.96.0-slim AS chef
+FROM --platform=$BUILDPLATFORM rust:1.97.0-slim AS chef
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG ZIG_VERSION=0.14.1
 # hadolint ignore=DL3008

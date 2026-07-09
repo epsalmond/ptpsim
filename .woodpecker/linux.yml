@@ -63,7 +63,7 @@ steps:
       # Size guard: wipe past 40 GiB rather than grow unbounded.
       - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - cargo fmt --all --check
-      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo clippy --workspace --all-targets
       - cargo test --workspace
 
 

@@ -24,8 +24,8 @@ For wire-protocol bugs, a minimal capture or transcript is the gold standard.
 
 ## Pull requests
 
-- Run `cargo fmt --all` and `cargo clippy --workspace -- -D warnings` before
-  pushing.
+- Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before
+  pushing. Workspace warnings are denied through `.cargo/config.toml`.
 - Run `cargo test --workspace` and make sure it passes.
 - Keep commits focused. A bug fix doesn't need surrounding cleanup; a one-shot
   doesn't need a helper. Three similar lines is better than a premature

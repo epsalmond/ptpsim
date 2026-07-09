@@ -27,7 +27,7 @@ pub fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
         .strip_prefix("0x")
         .or_else(|| s.strip_prefix("0X"))
         .unwrap_or(s);
-    if p.is_empty() || p.len() % 2 != 0 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if p.is_empty() || !p.len().is_multiple_of(2) || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     (0..p.len())
