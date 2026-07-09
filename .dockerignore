@@ -12,12 +12,9 @@
 **/.vscode
 **/.idea
 
-# Dev-only docs / tooling — not in the runtime image. tools/camera-simctl is
-# a workspace member, so cargo needs to see its Cargo.toml to evaluate the
-# workspace at all; let it through and let the Dockerfile decide what to COPY.
+# Dev-only docs are not part of the runtime image. Keep tools/ in the build
+# context because Cargo metadata requires every workspace member to exist.
 docs
-tools
-!tools/camera-simctl
 DESIGN.md
 README.md
 LICENSE*

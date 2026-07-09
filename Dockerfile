@@ -36,7 +36,7 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY services ./services
 COPY packages ./packages
-COPY tools/camera-simctl ./tools/camera-simctl
+COPY tools ./tools
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -65,9 +65,9 @@ RUN cargo chef cook --release --zigbuild \
 COPY crates ./crates
 COPY services ./services
 COPY packages ./packages
-# tools/camera-simctl is a workspace member — cargo needs it present even when
-# building -p camera-sim-service. Tiny (~20K), keeps the workspace evaluable.
-COPY tools/camera-simctl ./tools/camera-simctl
+# Cargo evaluates every workspace member even when building only the service.
+# Keep the full tools tree so new workspace tools cannot break metadata loading.
+COPY tools ./tools
 
 # No explicit strip: [profile.release] strip = true already covers it. Copy the
 # cross-built binary to a stable arch-independent path for the runtime COPY.
