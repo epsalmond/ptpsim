@@ -5,15 +5,15 @@
 #
 # Bump this deliberately: it costs exactly one intended cold rebuild instead of
 # a surprise one every ~6 weeks. Keep it in step with the Dockerfile builder
-# base image (`rust:1.96.0-slim`) so the image build, the macOS xcframework
+# base image (`rust:1.97.0-slim`) so the image build, the macOS xcframework
 # runner, and local dev all resolve to the same compiler.
 [toolchain]
-channel = "1.96.0"
+channel = "1.97.0"
 components = ["clippy", "rustfmt"]
 # Cross-compile targets the android-libs (Docker ci-android) and xcframework
 # (macOS runner) CI steps need. Pinned here so rustup installs them FOR the
 # pinned toolchain on every runner. Without this a runner that baked the targets
-# into `stable` still leaves 1.96.0 without them, and build-android.sh /
+# into `stable` still leaves 1.97.0 without them, and build-android.sh /
 # build-xcframework.sh fatal ("rustup target '…' not installed"). One change
 
 targets = [
