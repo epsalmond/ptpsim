@@ -79,10 +79,10 @@ at all ("UDL file does not appear to be inside a crate").
 #       iOS    → built per-target from ci/build-xcframework.sh
 cargo build -p camera-protocol-ffi --release
 
-# 2. Build the bindgen tool ONCE (avoids debug-rebuild on every invocation;
-#    also sidesteps the cargo-run-over-non-interactive-ssh hang).
-cargo build -p camera-protocol-ffi --release --bin uniffi-bindgen
-BINDGEN=target/release/uniffi-bindgen
+# 2. Build the host-only bindgen tool ONCE. It is a separate package so its
+#    CLI dependencies are never cross-compiled into an iOS/Android target.
+cargo build -p ptpsim-uniffi-bindgen --bin uniffi-bindgen
+BINDGEN=target/debug/uniffi-bindgen
 
 # 3. Pick the .a (or .so on Linux) and generate.
 LIB=target/release/libcamera_protocol_ffi.a   # .so on Linux; .a is canonical on macOS
@@ -110,23 +110,24 @@ automatically when on PATH; harmless warning if absent.
 | `UDL file does not appear to be inside a crate` | You're running bindgen against a path it can't resolve to a crate. Confirm you're in the workspace root (not a subdirectory), the `--release` build actually produced `target/release/libcamera_protocol_ffi.{a,so,dylib}`, and you're passing the staticlib (`.a` on macOS) rather than the rlib. |
 | Swift file is `camera_protocol_ffi.swift` (snake_case) instead of `CameraProtocolFFI.swift` | Same root cause as above — bindgen didn't find `crates/camera-protocol-ffi/uniffi.toml`, so the PascalCase override didn't apply. Re-run from the workspace root after `cargo clean -p camera-protocol-ffi`. |
 | `Warning: Unable to auto-format … using swiftformat` | Harmless. Install `swiftformat` to suppress, or pass `-n` / `--no-format` to skip the attempt. The `.swift` file is still produced. |
-| `cargo run --bin uniffi-bindgen` hangs over non-interactive SSH | Cargo's stdin forwarding to the child process misbehaves over headless ssh. Build the binary once (`cargo build --release --bin uniffi-bindgen`) and invoke `target/release/uniffi-bindgen` directly. |
+| `cargo run --bin uniffi-bindgen` hangs over non-interactive SSH | Cargo's stdin forwarding to the child process misbehaves over headless ssh. Build the binary once (`cargo build -p ptpsim-uniffi-bindgen --bin uniffi-bindgen`) and invoke `target/debug/uniffi-bindgen` directly. |
 
 ## 4. Build + package the native library (per platform)
 
 `camera-protocol-ffi` is `crate-type = ["lib", "staticlib", "cdylib"]`. Standard
 per-platform packaging:
 
-- **iOS / macOS:** build the **staticlib** (`.a`) for each target
-  (`aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-apple-darwin`,
-  `x86_64-apple-darwin`), `lipo`-combine the two macOS arches, then
+- **iOS:** build the **staticlib** (`.a`) for device arm64 plus arm64 and
+  x86_64 simulators, `lipo`-combine the simulator archives, then
   `xcodebuild -create-xcframework`. **Verified end-to-end recipe in
   `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` §11.11** — that's the recipe
-  Woodpecker ships from CI; reuse it for local builds. Each release
+  the explicit Woodpecker promotion workflow ships; reuse it for local builds.
+  Each promoted release
   publishes `CameraProtocolFFI-<sha8>.xcframework.zip` + a `.checksum`
   sibling for SPM `binaryTarget(url:, checksum:)`; consumer-side wiring
   is **`docs/SPM_INTEGRATION.md`** (one-line render via
-  `ci/spm-snippet.sh <sha-tag>`).
+  `ci/spm-snippet.sh <sha-tag>`). See `docs/APPLE_FFI_RELEASES.md` for the
+  supported-slice and pinning policy. macOS is not a current release target.
 - **Android:** build the **cdylib** (`.so`) per ABI (`aarch64-linux-android`,
   `armv7-linux-androideabi`, `x86_64-linux-android`), compile the uniffi `.kt`
   to a `classes.jar`, and wrap both (+ `AndroidManifest.xml` + `jni/<abi>/*.so`)

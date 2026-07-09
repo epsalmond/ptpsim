@@ -9,7 +9,7 @@ First Ansible work in the repo; will grow during the Docker → VM migration.
 | `ansible.cfg` | inventory pointer + sane defaults |
 | `inventory.yml` | hosts, grouped by role (`ci_macos` today) |
 | `requirements.yml` | `community.general` for `launchd` + `homebrew` |
-| `woodpecker-agent.yml` | provisions a macOS host as a Woodpecker CI agent (the `xcframework` job in `.woodpecker.yml`) |
+| `woodpecker-agent.yml` | provisions a macOS host as a Woodpecker CI agent for explicit Apple FFI promotions |
 | `templates/com.woodpecker.agent.plist.j2` | LaunchDaemon plist |
 
 ## Provisioning the macOS Woodpecker agent (one-time per host)
@@ -45,12 +45,12 @@ shows up in the Woodpecker UI (Admin → Agents) with labels
 
 ## Where the rest of the BLE-MVP CI lives
 
-- `ci/build-xcframework.sh` — the recipe the agent runs. macOS-only,
-  invoked from `.woodpecker.yml`'s `xcframework` step.
-- `.woodpecker.yml` — pipeline definition.
+- `ci/build-xcframework.sh` — the subcommand-based recipe the agent runs.
+- `.woodpecker/xcframework.yml` — explicit, timing-ratcheted promotion workflow.
+- `docs/APPLE_FFI_RELEASES.md` — supported slices and consumer policy.
 - `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` §11.11 — design rationale.
 
-The Woodpecker server side (agent registration token + the `github_token`
-repo secret) lives in **Terraform** alongside whatever else manages
-
-playbook.
+The Woodpecker server side supplies the `github_token` repository secret. The
+dependent NAS workflow uses Woodpecker's existing management-network notify
+publisher URL for timing-regression alerts; the macOS runner has no NATS
+credential or route.
