@@ -177,6 +177,11 @@ mode entry, read the chunk limit, and pull the fixed queue head. A head complete
 only after the full data phase and its final OK response arrive; neither socket
 close nor a transport sentinel is a queue-completion signal.
 
+The trigger is descriptive data, not a simulated Bluetooth peripheral. The
+current service exposes the PTP pull queue seeded from its media inputs; a
+consumer or test fixture must supply BLE/app-state transitions. A generic
+runtime control surface and any optional BLE adapter are tracked by issue #164.
+
 ## 6. Status — what's ready vs pending
 
 - **Ready:** the §A query surface (above) + `operation_available_explained`
