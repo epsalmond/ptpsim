@@ -58,6 +58,7 @@ evidence:
 
 
 
+
 sentinels:
   # PTP/IP length-8 frame with body 0xffffffff. Sent before the final FIN when
   # reopening image-transfer so the camera holds its Wi-Fi AP up (#82).
@@ -83,14 +84,16 @@ cameraInitiatedTransfer:
     functionLaunch: { gatt: functionLaunchRequest, value: "0300", required: false }
   receive:
     mode: reserved-photo-receive
+    # Pre-mode 0xd212 tight records reported 0xdf41=8 in the queued comparison
+    # capture and 0xdf41=1 in the successful one-object capture.
     count: { property: "0xd212", member: "0xdf41" }
     headIndex: 1
-    metadata: { operation: "0x1008", beforeModeEntry: true }
+    metadata: { operation: "0x1008", beforeModeEntry: false }
     data: { operation: "0x101b", chunkLimitProperty: "0xd235" }
     completion: readToEof
   # One-object drain is wire-confirmed. Reusing index 1 for the next head and
   # decrementing DF41 after EOF are inferred from reference app's static receive loop.
-  evidence: [wireAutoImageTransfer, wireBleAutoTransfer, staticAutoImageTransfer]
+  evidence: [wireAutoImageTransfer, wireAutoImageTransferQueued, wireBleAutoTransfer, staticAutoImageTransfer]
 
 # Connection-name convention:
 #   `app`             = reference-app PTP/IP on :55740 (BLE -> camera Wi-Fi AP -> 82B WMB-tail init).

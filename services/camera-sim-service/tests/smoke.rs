@@ -373,13 +373,13 @@ fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
     open_session(&mut stream);
     assert_eq!(read_reserved_count(&mut stream, 2), 2);
 
-    write_frame(&mut stream, &op(0x1008, 3, vec![1]));
+    set_prop(&mut stream, 3, 0xdf01, &21u16.to_le_bytes());
+    write_frame(&mut stream, &op(0x1015, 4, vec![0xdf29]));
+    assert_eq!(read_data_reply(&mut stream), 0u32.to_le_bytes());
+    set_prop(&mut stream, 5, 0xdf29, &3u32.to_le_bytes());
+    write_frame(&mut stream, &op(0x1008, 6, vec![1]));
     let first = ptp_core::ObjectInfo::decode(&read_data_reply(&mut stream)).unwrap();
     assert_eq!(first.filename, "DSCF0001.JPG");
-    set_prop(&mut stream, 4, 0xdf01, &21u16.to_le_bytes());
-    write_frame(&mut stream, &op(0x1015, 5, vec![0xdf29]));
-    assert_eq!(read_data_reply(&mut stream), 0u32.to_le_bytes());
-    set_prop(&mut stream, 6, 0xdf29, &3u32.to_le_bytes());
 
     write_frame(
         &mut stream,

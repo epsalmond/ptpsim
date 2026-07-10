@@ -172,10 +172,11 @@ per-platform packaging:
 
 For a camera-initiated transfer, retain the latest values for every returned BLE
 trigger state and act only when its match rule holds. Open the resolved endpoint,
-read the declared count, run any pre-mode metadata probe, execute the returned
-mode entry, read the chunk limit, and pull the fixed queue head. A head completes
-only after the full data phase and its final OK response arrive; neither socket
-close nor a transport sentinel is a queue-completion signal.
+read the declared count, and execute the returned mode entry. Run the metadata
+probe before that entry only when `metadata_before_mode_entry` is true; otherwise
+run it after the entry. Then read the chunk limit and pull the fixed queue head.
+A head completes only after the full data phase and its final OK response arrive;
+neither socket close nor a transport sentinel is a queue-completion signal.
 
 The trigger is descriptive data, not a simulated Bluetooth peripheral. The
 current service exposes the PTP pull queue seeded from its media inputs; a

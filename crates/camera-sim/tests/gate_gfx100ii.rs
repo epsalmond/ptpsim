@@ -191,14 +191,13 @@ fn camera_initiated_queue_reuses_head_only_after_acknowledged_eof() {
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
     assert_eq!(reserved_count(&mut e, 2), 2);
 
-    let first_info =
-        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 3, vec![1]), None))).unwrap();
-    assert_eq!(first_info.filename, "DSCF0001.JPG");
-
-    write_u16(&mut e, 4, 0xdf01, 21);
+    write_u16(&mut e, 3, 0xdf01, 21);
     assert_eq!(e.phase(), Phase::QueuedReceive);
-    assert_eq!(read_u32(&mut e, 5, 0xdf29), 0);
-    write_u32(&mut e, 6, 0xdf29, 3);
+    assert_eq!(read_u32(&mut e, 4, 0xdf29), 0);
+    write_u32(&mut e, 5, 0xdf29, 3);
+    let first_info =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 6, vec![1]), None))).unwrap();
+    assert_eq!(first_info.filename, "DSCF0001.JPG");
     assert_eq!(read_u32(&mut e, 7, 0xd235), 0x00bf_ffe0);
 
     let first_size = first_info.object_compressed_size;
@@ -250,9 +249,9 @@ fn camera_initiated_queue_reuses_head_only_after_acknowledged_eof() {
 fn camera_initiated_tail_only_read_does_not_dequeue() {
     let mut e = engine_with_two_jpegs();
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    write_u16(&mut e, 2, 0xdf01, 21);
     let info =
-        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 2, vec![1]), None))).unwrap();
-    write_u16(&mut e, 3, 0xdf01, 21);
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 3, vec![1]), None))).unwrap();
     let size = info.object_compressed_size;
     let (_, completion) =
         stream_with_completion(e.on_operation(&req(0x101b, 4, vec![1, size - 2, 2]), None));

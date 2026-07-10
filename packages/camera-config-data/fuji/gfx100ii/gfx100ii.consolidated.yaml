@@ -94,6 +94,10 @@ evidence:
     kind: wire-capture
 
     date: 2026-07-07
+  wireAutoImageTransferQueued:
+    kind: wire-capture
+
+    date: 2026-07-07
   wireBleAutoTransfer:
     kind: wire-capture
 
@@ -154,13 +158,14 @@ cameraInitiatedTransfer:
     headIndex: 1
     metadata:
       operation: '0x1008'
-      beforeModeEntry: true
+      beforeModeEntry: false
     data:
       operation: '0x101b'
       chunkLimitProperty: '0xd235'
     completion: readToEof
   evidence:
   - wireAutoImageTransfer
+  - wireAutoImageTransferQueued
   - wireBleAutoTransfer
   - staticAutoImageTransfer
 operations:
