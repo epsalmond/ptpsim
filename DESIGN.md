@@ -1032,6 +1032,12 @@ snapshots after state-changing operations or control mutations. `GET /state`
 exists for operator inspection and debug tooling; tests should not infer state
 transitions by polling it.
 
+State snapshots include `transfer_queues.standard` and
+`transfer_queues.camera_initiated` when those queues are configured. Each
+reports `queued`, `completed`, and `total`; completion means the queue's own
+acknowledgement boundary (`DeleteObject` for the standard queue, delivered EOF
+plus final OK for the camera-initiated queue).
+
 Fault script examples:
 
 ```yaml

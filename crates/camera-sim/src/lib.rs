@@ -13,7 +13,7 @@ pub mod state;
 pub mod state_overlay;
 
 pub use ble::{walk_establishment, BleEvent, BleResponder, WalkOutcome};
-pub use engine::{Engine, Reply, StreamCompletion};
+pub use engine::{Engine, QueueStats, Reply, StreamCompletion, TransferQueueStats};
 pub use fault::{Fault, FaultSet};
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
 pub use link::{CameraLink, SharedLink};

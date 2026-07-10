@@ -38,6 +38,7 @@ pub(crate) fn snapshot_json(engine: &Engine) -> String {
         "props": props,
         "property_labels": property_labels,
         "media": { "objects": engine.store().handles(ObjectQuery::default()).len() },
+        "transfer_queues": engine.transfer_queue_stats(),
     })
     .to_string()
 }

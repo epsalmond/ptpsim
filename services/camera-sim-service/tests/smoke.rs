@@ -376,6 +376,11 @@ fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
         r#"{"camera_initiated_transfer_active":true}"#,
     );
     assert!(activation.contains("\"ok\":true"), "body: {activation}");
+    let state = http_get(control_addr, "/state");
+    let state: serde_json::Value =
+        serde_json::from_str(state.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(state["transfer_queues"]["camera_initiated"]["queued"], 2);
+    assert_eq!(state["transfer_queues"]["camera_initiated"]["completed"], 0);
 
     let mut stream = connect_ptpip(command_addr, "smoke");
     open_session(&mut stream);
@@ -401,6 +406,11 @@ fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
         first.object_compressed_size as usize
     );
     assert_eq!(read_reserved_count(&mut stream, 9), 1);
+    let state = http_get(control_addr, "/state");
+    let state: serde_json::Value =
+        serde_json::from_str(state.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(state["transfer_queues"]["camera_initiated"]["queued"], 1);
+    assert_eq!(state["transfer_queues"]["camera_initiated"]["completed"], 1);
 
     write_frame(&mut stream, &op(0x1008, 10, vec![1]));
     let second = ptp_core::ObjectInfo::decode(&read_data_reply(&mut stream)).unwrap();
@@ -411,6 +421,11 @@ fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
     );
     read_data_reply(&mut stream);
     assert_eq!(read_reserved_count(&mut stream, 12), 0);
+    let state = http_get(control_addr, "/state");
+    let state: serde_json::Value =
+        serde_json::from_str(state.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(state["transfer_queues"]["camera_initiated"]["queued"], 0);
+    assert_eq!(state["transfer_queues"]["camera_initiated"]["completed"], 2);
 
     write_frame(&mut stream, &op(0x1003, 13, vec![]));
     read_ok(&mut stream);
@@ -1011,7 +1026,7 @@ properties: {}
 fn pcss_startup_queue_downloads_and_delete_drains() {
     let root = tmp_card();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
@@ -1030,10 +1045,17 @@ fn pcss_startup_queue_downloads_and_delete_drains() {
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
+        let control = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
-        (cmd, tx, h)
+        (cmd, control, tx, h)
     });
+
+    let state = http_get(control_addr, "/state");
+    let state: serde_json::Value =
+        serde_json::from_str(state.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(state["transfer_queues"]["standard"]["queued"], 1);
+    assert_eq!(state["transfer_queues"]["standard"]["completed"], 0);
 
     let mut s = connect_pcss(command_addr, "mbp");
     open_session(&mut s);
@@ -1062,6 +1084,11 @@ fn pcss_startup_queue_downloads_and_delete_drains() {
     assert!(read_handles(&mut s, 9).is_empty());
     assert_eq!(read_d620_count(&mut s, 10), 0);
     assert!(read_d621_handles(&mut s, 11).is_empty());
+    let state = http_get(control_addr, "/state");
+    let state: serde_json::Value =
+        serde_json::from_str(state.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(state["transfer_queues"]["standard"]["queued"], 0);
+    assert_eq!(state["transfer_queues"]["standard"]["completed"], 1);
 
     write_frame(&mut s, &op(0x1008, 12, vec![handle_id]));
     assert_eq!(read_response_code(&mut s), 0x2009);

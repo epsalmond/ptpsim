@@ -11,6 +11,7 @@ use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
 use ptp_core::{DeviceInfo, OperationRequest, OperationResponse, Reader, Writer};
+use serde::Serialize;
 
 use crate::fault::{Fault, FaultSet};
 use crate::state::{
@@ -34,6 +35,7 @@ struct TransferQueue {
     enqueue_per_shutter: u32,
     shutter_sequence: Option<Vec<GateMatcher>>,
     shutter_progress: usize,
+    completed: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +104,19 @@ pub struct StreamCompletion {
     object_size: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct QueueStats {
+    pub queued: usize,
+    pub completed: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TransferQueueStats {
+    pub standard: Option<QueueStats>,
+    pub camera_initiated: Option<QueueStats>,
+}
+
 #[derive(Clone, Copy)]
 enum CameraQueueTarget {
     None,
@@ -119,6 +134,7 @@ impl TransferQueue {
             enqueue_per_shutter: 0,
             shutter_sequence: None,
             shutter_progress: 0,
+            completed: 0,
         }
     }
 
@@ -134,6 +150,7 @@ impl TransferQueue {
             enqueue_per_shutter,
             shutter_sequence: Some(shutter_sequence),
             shutter_progress: 0,
+            completed: 0,
         }
     }
 
@@ -150,7 +167,11 @@ impl TransferQueue {
     }
 
     fn drain(&mut self, handle: u32) -> bool {
-        self.available.remove(&handle)
+        let drained = self.available.remove(&handle);
+        if drained {
+            self.completed += 1;
+        }
+        drained
     }
 
     fn enqueue_next(&mut self) {
@@ -303,6 +324,24 @@ impl Engine {
 
     pub fn camera_initiated_transfer_active(&self) -> bool {
         self.camera_initiated_transfer_active
+    }
+
+    pub fn transfer_queue_stats(&self) -> TransferQueueStats {
+        TransferQueueStats {
+            standard: self.transfer_queue.as_ref().map(|queue| QueueStats {
+                queued: queue.available.len(),
+                completed: queue.completed,
+                total: queue.handles.len(),
+            }),
+            camera_initiated: self
+                .camera_initiated_queue
+                .as_ref()
+                .map(|queue| QueueStats {
+                    queued: queue.remaining(),
+                    completed: queue.head,
+                    total: queue.handles.len(),
+                }),
+        }
     }
 
     /// Enable standard PTP object-queue behavior for a connection whose manifest
