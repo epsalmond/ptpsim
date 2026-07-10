@@ -288,12 +288,10 @@ pub struct Property {
     pub access: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_value: Option<i64>,
-    /// Optional classification used by clients to filter what surfaces as a
-    /// user setting. `kind: scaffold` marks props that LOOK settable on the
-    /// wire but are actually protocol mechanics (keepalives, virtual-shutter
-    /// state machines) — clients MUST NOT expose them as user-facing settings.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
+    /// Closed classification used by clients to filter what surfaces as a user
+    /// setting. Omitted manifests default to [`PropertyKind::Setting`].
+    #[serde(default, skip_serializing_if = "PropertyKind::is_setting")]
+    pub kind: PropertyKind,
     #[serde(default)]
     pub descriptor: Option<Descriptor>,
     /// Composite-payload layout for a byte-array property whose value is a
@@ -328,6 +326,20 @@ pub struct Property {
     pub requires_gate: Option<GateRequirement>,
     #[serde(default)]
     pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PropertyKind {
+    #[default]
+    Setting,
+    Scaffold,
+}
+
+impl PropertyKind {
+    fn is_setting(&self) -> bool {
+        *self == Self::Setting
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1766,6 +1778,28 @@ impl ManufacturerDefaults {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn property_kind_is_closed_and_defaults_to_setting() {
+        let setting: Property = serde_yaml::from_str("name: aperture\n").unwrap();
+        assert_eq!(setting.kind, PropertyKind::Setting);
+        let setting_yaml = serde_yaml::to_string(&setting).unwrap();
+        assert!(
+            !setting_yaml.contains("kind:"),
+            "default classification should stay implicit: {setting_yaml}"
+        );
+
+        let scaffold: Property = serde_yaml::from_str("name: keepalive\nkind: scaffold\n").unwrap();
+        assert_eq!(scaffold.kind, PropertyKind::Scaffold);
+        assert!(serde_yaml::to_string(&scaffold)
+            .unwrap()
+            .contains("kind: scaffold"));
+
+        let err = serde_yaml::from_str::<Property>("name: mystery\nkind: internal\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown variant `internal`"), "got: {err}");
+    }
 
     // A body manifest exercising the 2b vocabulary against the one body we own.
     const GROWN: &str = r#"

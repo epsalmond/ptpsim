@@ -766,11 +766,28 @@ pub struct PropertyInfo {
     pub ptype: Option<String>,
     pub access: Option<String>,
     pub initial_value: Option<i64>,
+    pub kind: PropertyKind,
     pub values: Vec<i64>,
     pub labels: Vec<KeyValue>,
     pub value_rows: Vec<PropertyValueInfo>,
     pub value_profiles: Vec<PropertyValueProfileInfo>,
     pub value_encoding: Option<PropertyValueEncodingInfo>,
+}
+
+/// Whether a manifest property is a user-facing setting or protocol machinery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PropertyKind {
+    Setting,
+    Scaffold,
+}
+
+impl From<cc::PropertyKind> for PropertyKind {
+    fn from(kind: cc::PropertyKind) -> Self {
+        match kind {
+            cc::PropertyKind::Setting => Self::Setting,
+            cc::PropertyKind::Scaffold => Self::Scaffold,
+        }
+    }
 }
 
 /// A manifest-backed property choice: label for UI, raw value for the camera.
@@ -2132,6 +2149,7 @@ impl ConfigStore {
                     ptype: p.ptype.clone(),
                     access: p.access.clone(),
                     initial_value: p.initial_value,
+                    kind: p.kind.into(),
                     values: p
                         .descriptor
                         .as_ref()

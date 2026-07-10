@@ -238,8 +238,9 @@ tracked by issue #164.
   `[ObjectsAvailable]`) to plan UX side-effects without per-transport knowledge —
   the camera-knowledge that's coming next stays out of your code.
   See `docs/plans/action-verbs.md`.
-- **Settings UI filters on `Property.kind`.** Props tagged `kind: scaffold`
-  (the wireless-tether `0xD039 / 0xD21C / 0xD207` virtual-shutter +
+- **Settings UI filters on `PropertyInfo.kind`.** The typed `PropertyKind`
+  resolves omitted manifest classifications to `setting`. Props classified as
+  `scaffold` (the wireless-tether `0xD039 / 0xD21C / 0xD207` virtual-shutter +
   keepalives) look writable on the wire but are protocol mechanics, NOT
   user-facing values. Don't surface them in settings UI; a generic
   set-prop-by-name path must skip them.

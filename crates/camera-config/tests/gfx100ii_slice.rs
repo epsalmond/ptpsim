@@ -4,7 +4,7 @@
 
 use camera_config::{
     ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, ObjectsAvailable, Predicate,
-    PropView, StepParam, ValuePolicy, VersionScheme,
+    PropView, PropertyKind, StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -375,8 +375,8 @@ fn wireless_tether_keepalive_action_is_session_scaffold_not_settings() {
     assert_eq!(keepalive.steps[0].value, Some(0));
     assert_eq!(keepalive.steps[1].set_prop.as_deref(), Some("0xd207"));
     assert_eq!(keepalive.steps[1].value, Some(1));
-    assert_eq!(m.properties["0xd21c"].kind.as_deref(), Some("scaffold"));
-    assert_eq!(m.properties["0xd207"].kind.as_deref(), Some("scaffold"));
+    assert_eq!(m.properties["0xd21c"].kind, PropertyKind::Scaffold);
+    assert_eq!(m.properties["0xd207"].kind, PropertyKind::Scaffold);
 }
 
 #[test]
@@ -614,20 +614,13 @@ fn scaffold_props_are_tagged_so_clients_can_filter_them_out_of_settings_ui() {
             .get(code)
             .unwrap_or_else(|| panic!("property {code} should exist"));
         assert_eq!(
-            p.kind.as_deref(),
-            Some("scaffold"),
+            p.kind,
+            PropertyKind::Scaffold,
             "{code} must carry kind: scaffold"
         );
     }
-    // Real settings should NOT be tagged scaffold.
-    assert!(
-        m.properties["0x5007"].kind.is_none(),
-        "aperture is a real setting"
-    );
-    assert!(
-        m.properties["0x500f"].kind.is_none(),
-        "PCSS ISO is a real setting"
-    );
+    assert_eq!(m.properties["0x5007"].kind, PropertyKind::Setting);
+    assert_eq!(m.properties["0x500f"].kind, PropertyKind::Setting);
 }
 
 #[test]
