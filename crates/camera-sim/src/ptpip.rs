@@ -21,6 +21,7 @@ use camera_config::model::{
     AwaitSource, AwaitUntil, Capture, CaptureSource, ChunkSize, Loop, Step, StepParam,
 };
 use camera_config::{parse_hex_code, PropView};
+use camera_media_store::ByteSource;
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
 use ptp_core::{ObjectInfo, OperationRequest, Reader, Writer};
@@ -217,10 +218,17 @@ impl Ctx<'_> {
             let reply = self.issue_op(code, params);
             check_ok(&reply, code, step.tolerant).map_err(err)?;
             let completion = match &reply {
-                Reply::DataStream { completion, .. } => completion.clone(),
+                Reply::DataStream {
+                    source,
+                    completion: Some(completion),
+                    ..
+                } => Some((source.clone(), completion.clone())),
                 _ => None,
             };
             if response_code(&reply) == Some(resp::OK) {
+                if let Some((source, _)) = completion.as_ref() {
+                    consume_stream(source).map_err(err)?;
+                }
                 if let Err(message) = self.apply_captures(&step.captures, code, &reply) {
                     if !step.tolerant {
                         return Err(err(message));
@@ -232,7 +240,7 @@ impl Ctx<'_> {
                         }
                     }
                 }
-                if let Some(completion) = completion {
+                if let Some((_, completion)) = completion {
                     self.engine.complete_stream(completion);
                 }
             }
@@ -735,6 +743,24 @@ fn scalar_capture_head(reply: &Reply, width: usize, label: &str) -> Result<Vec<u
     }
 }
 
+fn consume_stream(source: &ByteSource) -> Result<(), String> {
+    const CHUNK_BYTES: usize = 1024 * 1024;
+    let total = source.len();
+    let mut offset = 0;
+    while offset < total {
+        let chunk = source
+            .read_chunk(offset, CHUNK_BYTES)
+            .map_err(|error| format!("consume streamed reply: {error}"))?;
+        if chunk.is_empty() {
+            return Err(format!(
+                "consume streamed reply: source ended at {offset} of {total} bytes"
+            ));
+        }
+        offset += chunk.len() as u64;
+    }
+    Ok(())
+}
+
 fn prop_value_to_i64(v: &PropValue) -> Option<i64> {
     Some(match v {
         PropValue::U8(x) => *x as i64,
@@ -821,6 +847,48 @@ properties:
   "0xdf01": { name: functionMode,     type: u16, access: readWrite }
 "#;
 
+    const RESERVED_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: TEST, model: Reserved Queue }
+cameraInitiatedTransfers:
+  auto:
+    trigger:
+      match: all
+      states: [{ gatt: "00000000-0000-0000-0000-000000000001", triggerValues: ["01"] }]
+    handoff: { connection: app, socketRole: command }
+    receive:
+      mode: reserved-photo-receive
+      count: { property: "0xd212", member: "0xdf41" }
+      headIndex: 1
+      metadata: { operation: "0x1008", beforeModeEntry: true }
+      data: { operation: "0x101b", chunkLimitProperty: "0xd235" }
+      completion: readToEof
+connections:
+  app:
+    modes: [reserved-photo-receive]
+    bindings: { command: 55740 }
+modes:
+  reserved-photo-receive: { detect: { prop: "0xdf01", eq: 21 } }
+operations:
+  "0x1002": { name: OpenSession }
+  "0x1008": { name: GetObjectInfo }
+  "0x1015": { name: GetDevicePropValue }
+  "0x1016": { name: SetDevicePropValue }
+  "0x101b": { name: GetPartialObject }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+  "0xdf41": { name: reservedCount, type: u32, access: readOnly }
+  "0xd235": { name: chunkLimit, type: u32, access: readOnly, initialValue: 1024 }
+  "0xd212":
+    name: status
+    type: u8a
+    access: readOnly
+    payload: { form: recordStream, members: ["0xdf41"] }
+media:
+  formats:
+    "0x3801": { name: jpeg, isPhotosCompatible: true }
+"#;
+
     #[test]
     fn plain_set_get_sendop_sequence_round_trips() {
         let mut e = engine(MANIFEST);
@@ -845,6 +913,51 @@ properties:
         assert_eq!(out.observed.get(0xdf00), Some(6));
         assert_eq!(out.steps_run, 3);
         assert!(out.await_iterations.is_empty());
+    }
+
+    #[test]
+    fn completion_stream_read_failure_leaves_reserved_head_queued() {
+        let manifest = CameraManifest::from_yaml(RESERVED_MANIFEST).expect("manifest loads");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ptpsim-ptpip-missing-{nanos}"));
+        let path = root.join("DCIM/100_FUJI/DSCF0001.JPG");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"jpeg-body").unwrap();
+        let mut store = MediaStore::open(&root).unwrap();
+        store.scan().unwrap();
+        let mut engine = Engine::new(manifest, store);
+        std::fs::remove_file(&path).unwrap();
+
+        let steps = vec![
+            Step {
+                send_op: Some("0x1008".into()),
+                params: vec![StepParam::Literal(1)],
+                ..Default::default()
+            },
+            Step {
+                set_prop: Some("0xdf01".into()),
+                value: Some(21),
+                ..Default::default()
+            },
+            Step {
+                send_op: Some("0x101b".into()),
+                params: vec![
+                    StepParam::Literal(1),
+                    StepParam::Literal(0),
+                    StepParam::Literal(9),
+                ],
+                ..Default::default()
+            },
+        ];
+        let error = walk_ptpip(&mut engine, &steps, &BTreeMap::new()).unwrap_err();
+        assert!(
+            error.message.contains("consume streamed reply"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(engine.state().props.get(&0xdf41), Some(&PropValue::U32(1)));
     }
 
     #[test]

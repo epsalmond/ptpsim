@@ -184,6 +184,8 @@ fn reserved_count(e: &mut Engine, tid: u32) -> u32 {
 }
 
 #[test]
+// The single-object drain is wire-confirmed. Reusing index 1 and decrementing
+// the count across multiple objects are inferred from reference app's static receive loop.
 fn camera_initiated_queue_reuses_head_only_after_acknowledged_eof() {
     let mut e = engine_with_two_jpegs();
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));

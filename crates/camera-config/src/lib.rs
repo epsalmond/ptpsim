@@ -209,15 +209,17 @@ impl CameraManifest {
             }
 
             if transfer.receive.metadata.before_mode_entry {
-                let route = (
-                    transfer.handoff.connection.clone(),
-                    transfer.receive.metadata.operation.clone(),
-                    transfer.receive.head_index,
-                );
-                if let Some(previous) = pre_mode_routes.insert(route, id) {
-                    lints.push(Lint::warn(format!(
-                        "{ctx} has the same pre-mode metadata route as cameraInitiatedTransfer {previous}"
-                    )));
+                if let Some(operation) = parse_hex_code(&transfer.receive.metadata.operation) {
+                    let route = (
+                        transfer.handoff.connection.clone(),
+                        operation,
+                        transfer.receive.head_index,
+                    );
+                    if let Some(previous) = pre_mode_routes.insert(route, id) {
+                        lints.push(Lint::warn(format!(
+                            "{ctx} has the same pre-mode metadata route as cameraInitiatedTransfer {previous}"
+                        )));
+                    }
                 }
             }
         }
