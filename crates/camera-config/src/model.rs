@@ -51,10 +51,10 @@ pub struct CameraManifest {
     /// executable steps; the gate is simulator oracle metadata.
     #[serde(default)]
     pub sequence_gates: BTreeMap<String, SequenceGate>,
-    /// Camera-signalled private media queues that consumers pull over a declared
-    /// connection. Each id owns an independent queue namespace.
+    /// The camera-signalled private media queue that consumers pull over a
+    /// declared connection.
     #[serde(default)]
-    pub camera_initiated_transfers: BTreeMap<String, CameraInitiatedTransfer>,
+    pub camera_initiated_transfer: Option<CameraInitiatedTransfer>,
     #[serde(default)]
     pub operations: BTreeMap<HexCode, Operation>,
     #[serde(default)]

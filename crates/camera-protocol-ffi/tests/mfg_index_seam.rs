@@ -79,10 +79,9 @@ fn loader_requires_every_declared_model_body() {
 
 #[test]
 fn real_manifest_exposes_resolved_camera_initiated_transfer() {
-    let transfers = store().camera_initiated_transfers("gfx100ii".into());
-    assert_eq!(transfers.len(), 1);
-    let transfer = &transfers[0];
-    assert_eq!(transfer.id, "autoImageTransfer");
+    let transfer = store()
+        .camera_initiated_transfer("gfx100ii".into())
+        .expect("GFX100 II declares a camera-initiated transfer");
     assert!(matches!(
         transfer.trigger.match_mode,
         CameraInitiatedTriggerMatch::All
@@ -137,11 +136,9 @@ fn real_manifest_exposes_resolved_camera_initiated_transfer() {
 }
 
 #[test]
-fn single_body_store_has_no_resolved_camera_initiated_transfers() {
+fn single_body_store_has_no_resolved_camera_initiated_transfer() {
     let store = ConfigStore::from_bundle(data("fuji/gfx100ii/gfx100ii.yaml"), None).unwrap();
-    assert!(store
-        .camera_initiated_transfers("gfx100ii".into())
-        .is_empty());
+    assert!(store.camera_initiated_transfer("gfx100ii".into()).is_none());
 }
 
 // ---------------------------------------------------------------------------

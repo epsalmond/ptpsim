@@ -850,19 +850,18 @@ properties:
     const RESERVED_MANIFEST: &str = r#"
 schema: camera-config/v1
 camera: { manufacturer: TEST, model: Reserved Queue }
-cameraInitiatedTransfers:
-  auto:
-    trigger:
-      match: all
-      states: [{ gatt: "00000000-0000-0000-0000-000000000001", triggerValues: ["01"] }]
-    handoff: { connection: app, socketRole: command }
-    receive:
-      mode: reserved-photo-receive
-      count: { property: "0xd212", member: "0xdf41" }
-      headIndex: 1
-      metadata: { operation: "0x1008", beforeModeEntry: true }
-      data: { operation: "0x101b", chunkLimitProperty: "0xd235" }
-      completion: readToEof
+cameraInitiatedTransfer:
+  trigger:
+    match: all
+    states: [{ gatt: "00000000-0000-0000-0000-000000000001", triggerValues: ["01"] }]
+  handoff: { connection: app, socketRole: command }
+  receive:
+    mode: reserved-photo-receive
+    count: { property: "0xd212", member: "0xdf41" }
+    headIndex: 1
+    metadata: { operation: "0x1008", beforeModeEntry: true }
+    data: { operation: "0x101b", chunkLimitProperty: "0xd235" }
+    completion: readToEof
 connections:
   app:
     modes: [reserved-photo-receive]

@@ -31,15 +31,14 @@ pub struct ConfigStore {
     /// loads. On manufacturer-index loads, the primary body in `manifest` is
     /// also present here under its model id.
     pub bodies: BTreeMap<String, CameraManifest>,
-    /// Manufacturer-index-resolved camera-initiated transfers by model id and
-    /// transfer id. Empty for single-body stores, which lack a shared GATT catalog.
-    pub resolved_camera_initiated_transfers:
-        BTreeMap<String, BTreeMap<String, ResolvedCameraInitiatedTransfer>>,
+    /// Manufacturer-index-resolved camera-initiated transfer by model id. Empty
+    /// for single-body stores, which lack a shared GATT catalog.
+    pub resolved_camera_initiated_transfer_by_model:
+        BTreeMap<String, ResolvedCameraInitiatedTransfer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCameraInitiatedTransfer {
-    pub id: String,
     pub trigger_match: TriggerMatch,
     pub trigger_states: Vec<ResolvedBleStateTrigger>,
     pub connection: String,
@@ -82,7 +81,7 @@ impl ConfigStore {
             manufacturer: None,
             index: None,
             bodies: BTreeMap::new(),
-            resolved_camera_initiated_transfers: BTreeMap::new(),
+            resolved_camera_initiated_transfer_by_model: BTreeMap::new(),
         }
     }
 
@@ -134,7 +133,7 @@ impl ConfigStore {
             .get(&primary_id)
             .cloned()
             .expect("loop above inserted every model id");
-        let mut resolved_camera_initiated_transfers = BTreeMap::new();
+        let mut resolved_camera_initiated_transfer_by_model = BTreeMap::new();
         for model_view in &index.models {
             let body = bodies
                 .get(&model_view.id)
@@ -145,25 +144,18 @@ impl ConfigStore {
                 .map(|ble| &ble.gatt)
                 .cloned()
                 .unwrap_or_default();
-            let mut transfers = BTreeMap::new();
-            for (transfer_id, transfer) in &body.camera_initiated_transfers {
-                let resolved = resolve_camera_initiated_transfer(
-                    &model_view.id,
-                    transfer_id,
-                    transfer,
-                    &gatt,
-                    body,
-                )?;
-                transfers.insert(transfer_id.clone(), resolved);
+            if let Some(transfer) = &body.camera_initiated_transfer {
+                let resolved =
+                    resolve_camera_initiated_transfer(&model_view.id, transfer, &gatt, body)?;
+                resolved_camera_initiated_transfer_by_model.insert(model_view.id.clone(), resolved);
             }
-            resolved_camera_initiated_transfers.insert(model_view.id.clone(), transfers);
         }
         Ok(Arc::new(ConfigStore {
             manifest,
             manufacturer: None,
             index: Some(index),
             bodies,
-            resolved_camera_initiated_transfers,
+            resolved_camera_initiated_transfer_by_model,
         }))
     }
 
@@ -174,11 +166,12 @@ impl ConfigStore {
         self.bodies.get(model_id)
     }
 
-    pub fn camera_initiated_transfers(
+    pub fn camera_initiated_transfer(
         &self,
         model_id: &str,
-    ) -> Option<&BTreeMap<String, ResolvedCameraInitiatedTransfer>> {
-        self.resolved_camera_initiated_transfers.get(model_id)
+    ) -> Option<&ResolvedCameraInitiatedTransfer> {
+        self.resolved_camera_initiated_transfer_by_model
+            .get(model_id)
     }
 
     /// The version-ordering scheme this camera uses: the manufacturer's
@@ -222,12 +215,11 @@ impl ConfigStore {
 
 fn resolve_camera_initiated_transfer(
     model_id: &str,
-    transfer_id: &str,
     transfer: &crate::model::CameraInitiatedTransfer,
     gatt: &BTreeMap<String, String>,
     body: &CameraManifest,
 ) -> Result<ResolvedCameraInitiatedTransfer, ConfigError> {
-    let path = format!("models.{model_id}.cameraInitiatedTransfers.{transfer_id}");
+    let path = format!("models.{model_id}.cameraInitiatedTransfer");
     let resolve_gatt = |name: &str, suffix: &str| {
         crate::index::parse::resolve_one_gatt_name(name, gatt, &format!("{path}.{suffix}"))
     };
@@ -310,7 +302,6 @@ fn resolve_camera_initiated_transfer(
         .transpose()?;
 
     Ok(ResolvedCameraInitiatedTransfer {
-        id: transfer_id.to_string(),
         trigger_match: transfer.trigger.match_mode,
         trigger_states,
         connection: transfer.handoff.connection.clone(),

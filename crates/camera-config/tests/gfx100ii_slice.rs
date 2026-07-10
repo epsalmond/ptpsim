@@ -92,7 +92,10 @@ fn port_roles_match_the_shipping_app() {
 #[test]
 fn camera_initiated_transfer_references_are_complete() {
     let manifest = gfx();
-    let transfer = &manifest.camera_initiated_transfers["autoImageTransfer"];
+    let transfer = manifest
+        .camera_initiated_transfer
+        .as_ref()
+        .expect("camera declares its reserved transfer queue");
     assert_eq!(transfer.handoff.connection, "app");
     assert_eq!(transfer.receive.mode, "reserved-photo-receive");
     assert_eq!(transfer.receive.head_index, 1);

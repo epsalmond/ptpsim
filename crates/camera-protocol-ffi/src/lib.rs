@@ -1436,7 +1436,6 @@ pub struct CameraInitiatedReceiveInfo {
 
 #[derive(Debug, uniffi::Record)]
 pub struct CameraInitiatedTransferInfo {
-    pub id: String,
     pub trigger: CameraInitiatedTriggerInfo,
     pub handoff: CameraInitiatedHandoffInfo,
     pub receive: CameraInitiatedReceiveInfo,
@@ -1761,16 +1760,13 @@ impl ConfigStore {
         .collect()
     }
 
-    /// Camera-status-triggered private media pulls for a recognized model. The
+    /// The camera-status-triggered private media pull for a recognized model. The
     /// manufacturer-index loader has already resolved symbolic GATT names and
-    /// exact wire bytes. Single-body stores return an empty list.
-    pub fn camera_initiated_transfers(&self, model: String) -> Vec<CameraInitiatedTransferInfo> {
+    /// exact wire bytes. Single-body stores return `None`.
+    pub fn camera_initiated_transfer(&self, model: String) -> Option<CameraInitiatedTransferInfo> {
         self.inner
-            .camera_initiated_transfers(&model)
-            .into_iter()
-            .flat_map(|transfers| transfers.values())
+            .camera_initiated_transfer(&model)
             .map(map_camera_initiated_transfer)
-            .collect()
     }
 
     /// The transport-close frame `connection` sends before reopening an
@@ -2250,7 +2246,6 @@ fn map_camera_initiated_transfer(
         cc::TransferCompletion::ReadToEof => CameraInitiatedCompletion::ReadToEof,
     };
     CameraInitiatedTransferInfo {
-        id: transfer.id.clone(),
         trigger: CameraInitiatedTriggerInfo {
             match_mode,
             states: transfer

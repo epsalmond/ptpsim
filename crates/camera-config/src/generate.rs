@@ -294,7 +294,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
         evidence,
         sentinels: BTreeMap::new(),
         sequence_gates: BTreeMap::new(),
-        camera_initiated_transfers: BTreeMap::new(),
+        camera_initiated_transfer: None,
         operations,
         properties,
         workflows: BTreeMap::new(),

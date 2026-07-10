@@ -3,7 +3,7 @@
 //! exist, which properties have which forms, and which workflow they belong to
 //! are all manifest data. The handlers here are generic PTP semantics.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use camera_config::model::{Action, ScalarEncoding, Step, StepParam};
 use camera_config::{parse_hex_code, ActionVerb, CameraManifest};
@@ -95,7 +95,6 @@ impl CameraInitiatedQueue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamCompletion {
-    transfer_id: String,
     generation: u64,
     handle: u32,
     offset: u64,
@@ -105,7 +104,7 @@ pub struct StreamCompletion {
 
 enum CameraQueueTarget {
     None,
-    Head { transfer_id: String, handle: u32 },
+    Head { handle: u32 },
     Invalid,
 }
 
@@ -201,8 +200,7 @@ pub struct Engine {
     state: CameraState,
     connection: String,
     transfer_queue: Option<TransferQueue>,
-    camera_initiated_queues: BTreeMap<String, CameraInitiatedQueue>,
-    selected_camera_initiated_transfer: Option<String>,
+    camera_initiated_queue: Option<CameraInitiatedQueue>,
     faults: FaultSet,
     /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
     /// arms the session that function-launch brings up. Default armed (standalone).
@@ -222,16 +220,13 @@ impl Engine {
             state,
             connection: Self::DEFAULT_CONNECTION.to_string(),
             transfer_queue: None,
-            camera_initiated_queues: BTreeMap::new(),
-            selected_camera_initiated_transfer: None,
+            camera_initiated_queue: None,
             faults: FaultSet::default(),
             link: crate::link::SharedLink::default(),
         };
         let handles = engine.camera_initiated_media_handles();
-        for id in engine.manifest.camera_initiated_transfers.keys() {
-            engine
-                .camera_initiated_queues
-                .insert(id.clone(), CameraInitiatedQueue::new(handles.clone()));
+        if engine.manifest.camera_initiated_transfer.is_some() {
+            engine.camera_initiated_queue = Some(CameraInitiatedQueue::new(handles));
         }
         engine.sync_camera_initiated_counts();
         engine
@@ -436,7 +431,6 @@ impl Engine {
             op::OPEN_SESSION => {
                 self.state.reset_gates();
                 self.state.active_mode = None;
-                self.selected_camera_initiated_transfer = None;
                 self.state.session_open = true;
                 self.state.phase = Phase::SessionOpen;
                 Self::ok(tid)
@@ -444,7 +438,6 @@ impl Engine {
             op::CLOSE_SESSION => {
                 self.state.reset_gates();
                 self.state.active_mode = None;
-                self.selected_camera_initiated_transfer = None;
                 self.state.session_open = false;
                 self.state.phase = Phase::Closed;
                 Self::ok(tid)
@@ -463,13 +456,7 @@ impl Engine {
             }
             op::GET_OBJECT_INFO => {
                 let handle = match self.camera_initiated_metadata_target(req.code, p(0)) {
-                    CameraQueueTarget::Head {
-                        transfer_id,
-                        handle,
-                    } => {
-                        self.selected_camera_initiated_transfer = Some(transfer_id);
-                        handle
-                    }
+                    CameraQueueTarget::Head { handle } => handle,
                     CameraQueueTarget::Invalid => {
                         return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
                     }
@@ -503,22 +490,18 @@ impl Engine {
                 let offset = (p(1) as u64) | ((p(3) as u64) << 32);
                 let (handle, completion_context) =
                     match self.camera_initiated_data_target(req.code, p(0)) {
-                        CameraQueueTarget::Head {
-                            transfer_id,
-                            handle,
-                        } => (handle, Some(transfer_id)),
+                        CameraQueueTarget::Head { handle } => (handle, true),
                         CameraQueueTarget::Invalid => {
                             return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
                         }
-                        CameraQueueTarget::None => (p(0), None),
+                        CameraQueueTarget::None => (p(0), false),
                     };
                 match self.store.read_range(handle, offset, p(2)) {
                     Ok(source) => {
                         let returned = source.len().min(u32::MAX as u64) as u32;
-                        let completion = completion_context.and_then(|transfer_id| {
-                            let queue = self.camera_initiated_queues.get(&transfer_id)?;
+                        let completion = completion_context.then_some(()).and_then(|()| {
+                            let queue = self.camera_initiated_queue.as_ref()?;
                             Some(StreamCompletion {
-                                transfer_id,
                                 generation: queue.generation,
                                 handle,
                                 offset,
@@ -786,47 +769,38 @@ impl Engine {
     }
 
     fn camera_initiated_metadata_target(&self, operation: u16, index: u32) -> CameraQueueTarget {
+        let Some(transfer) = self.manifest.camera_initiated_transfer.as_ref() else {
+            return CameraQueueTarget::None;
+        };
         if self.state.phase == Phase::QueuedReceive {
-            let Some(id) = self.selected_camera_initiated_transfer.as_ref() else {
-                return CameraQueueTarget::Invalid;
-            };
-            let Some(transfer) = self.manifest.camera_initiated_transfers.get(id) else {
-                return CameraQueueTarget::Invalid;
-            };
             if parse_hex_code(&transfer.receive.metadata.operation) != Some(operation) {
                 return CameraQueueTarget::None;
             }
             if transfer.receive.head_index != index {
                 return CameraQueueTarget::Invalid;
             }
-            return self.camera_queue_head(id);
+            return self.camera_queue_head();
         }
 
         if self.state.phase != Phase::SessionOpen {
             return CameraQueueTarget::None;
         }
-        self.manifest
-            .camera_initiated_transfers
-            .iter()
-            .find(|(_, transfer)| {
-                transfer.handoff.connection == self.connection
-                    && transfer.receive.metadata.before_mode_entry
-                    && parse_hex_code(&transfer.receive.metadata.operation) == Some(operation)
-                    && transfer.receive.head_index == index
-            })
-            .map_or(CameraQueueTarget::None, |(id, _)| {
-                self.camera_queue_head(id)
-            })
+        if transfer.handoff.connection == self.connection
+            && transfer.receive.metadata.before_mode_entry
+            && parse_hex_code(&transfer.receive.metadata.operation) == Some(operation)
+            && transfer.receive.head_index == index
+        {
+            self.camera_queue_head()
+        } else {
+            CameraQueueTarget::None
+        }
     }
 
     fn camera_initiated_data_target(&self, operation: u16, index: u32) -> CameraQueueTarget {
         if self.state.phase != Phase::QueuedReceive {
             return CameraQueueTarget::None;
         }
-        let Some(id) = self.selected_camera_initiated_transfer.as_ref() else {
-            return CameraQueueTarget::Invalid;
-        };
-        let Some(transfer) = self.manifest.camera_initiated_transfers.get(id) else {
+        let Some(transfer) = self.manifest.camera_initiated_transfer.as_ref() else {
             return CameraQueueTarget::Invalid;
         };
         if parse_hex_code(&transfer.receive.data.operation) != Some(operation) {
@@ -835,18 +809,15 @@ impl Engine {
         if transfer.receive.head_index != index {
             return CameraQueueTarget::Invalid;
         }
-        self.camera_queue_head(id)
+        self.camera_queue_head()
     }
 
-    fn camera_queue_head(&self, id: &str) -> CameraQueueTarget {
-        self.camera_initiated_queues
-            .get(id)
+    fn camera_queue_head(&self) -> CameraQueueTarget {
+        self.camera_initiated_queue
+            .as_ref()
             .and_then(CameraInitiatedQueue::head)
             .map_or(CameraQueueTarget::Invalid, |handle| {
-                CameraQueueTarget::Head {
-                    transfer_id: id.to_string(),
-                    handle,
-                }
+                CameraQueueTarget::Head { handle }
             })
     }
 
@@ -854,10 +825,7 @@ impl Engine {
     /// data phase and final OK response. Returns true only when the queue head
     /// advanced; stale or duplicate tokens are ignored.
     pub fn complete_stream(&mut self, completion: StreamCompletion) -> bool {
-        let Some(queue) = self
-            .camera_initiated_queues
-            .get_mut(&completion.transfer_id)
-        else {
+        let Some(queue) = self.camera_initiated_queue.as_mut() else {
             return false;
         };
         if queue.generation != completion.generation || queue.head() != Some(completion.handle) {
@@ -871,18 +839,17 @@ impl Engine {
     }
 
     fn sync_camera_initiated_counts(&mut self) {
-        let counts: Vec<(u16, u32)> = self
-            .manifest
-            .camera_initiated_transfers
-            .iter()
-            .filter_map(|(id, transfer)| {
-                let code = parse_hex_code(&transfer.receive.count.member)?;
-                let count = u32::try_from(self.camera_initiated_queues.get(id)?.remaining())
-                    .unwrap_or(u32::MAX);
-                Some((code, count))
-            })
-            .collect();
-        for (code, count) in counts {
+        if let Some((code, count)) =
+            self.manifest
+                .camera_initiated_transfer
+                .as_ref()
+                .and_then(|transfer| {
+                    let code = parse_hex_code(&transfer.receive.count.member)?;
+                    let count = u32::try_from(self.camera_initiated_queue.as_ref()?.remaining())
+                        .unwrap_or(u32::MAX);
+                    Some((code, count))
+                })
+        {
             let datatype = datatype_of(
                 self.manifest
                     .property(code)
@@ -928,20 +895,17 @@ impl Engine {
             .collect();
         let detected = self.manifest.detect_mode(&observed).map(str::to_string);
         self.state.active_mode = detected.clone();
-        let transfer = detected.as_deref().and_then(|mode| {
+        let transfer_active = detected.as_deref().is_some_and(|mode| {
             self.manifest
-                .camera_initiated_transfers
-                .iter()
-                .find(|(_, transfer)| {
+                .camera_initiated_transfer
+                .as_ref()
+                .is_some_and(|transfer| {
                     transfer.handoff.connection == self.connection && transfer.receive.mode == mode
                 })
-                .map(|(id, _)| id.clone())
         });
-        if let Some(id) = transfer {
-            self.selected_camera_initiated_transfer = Some(id);
+        if transfer_active {
             self.state.phase = Phase::QueuedReceive;
         } else {
-            self.selected_camera_initiated_transfer = None;
             if self.state.phase == Phase::QueuedReceive {
                 self.state.phase = Phase::SessionOpen;
             }

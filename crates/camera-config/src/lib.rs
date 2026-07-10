@@ -116,10 +116,9 @@ impl CameraManifest {
         let defined_gates: std::collections::BTreeSet<&str> =
             self.sequence_gates.keys().map(|s| s.as_str()).collect();
 
-        let mut pre_mode_routes = std::collections::BTreeMap::new();
-        for (id, transfer) in &self.camera_initiated_transfers {
-            let ctx = format!("cameraInitiatedTransfer {id}");
-            check(&transfer.evidence, &ctx, &mut lints);
+        if let Some(transfer) = &self.camera_initiated_transfer {
+            let ctx = "cameraInitiatedTransfer";
+            check(&transfer.evidence, ctx, &mut lints);
 
             let connection = self.connections.get(&transfer.handoff.connection);
             if connection.is_none() {
@@ -153,7 +152,7 @@ impl CameraManifest {
             if transfer.receive.head_index == 0 {
                 lints.push(Lint::warn(format!("{ctx} headIndex must be non-zero")));
             }
-            validate_transfer_hex_values(transfer, &ctx, &mut lints);
+            validate_transfer_hex_values(transfer, ctx, &mut lints);
 
             let count_property = parse_hex_code(&transfer.receive.count.property);
             let count_member = parse_hex_code(&transfer.receive.count.member);
@@ -206,21 +205,6 @@ impl CameraManifest {
                     "{ctx} references unknown chunk-limit property '{}'",
                     transfer.receive.data.chunk_limit_property
                 )));
-            }
-
-            if transfer.receive.metadata.before_mode_entry {
-                if let Some(operation) = parse_hex_code(&transfer.receive.metadata.operation) {
-                    let route = (
-                        transfer.handoff.connection.clone(),
-                        operation,
-                        transfer.receive.head_index,
-                    );
-                    if let Some(previous) = pre_mode_routes.insert(route, id) {
-                        lints.push(Lint::warn(format!(
-                            "{ctx} has the same pre-mode metadata route as cameraInitiatedTransfer {previous}"
-                        )));
-                    }
-                }
             }
         }
 

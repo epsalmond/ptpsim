@@ -124,46 +124,45 @@ sequenceGates:
     evidence:
     - docFujiPtpPropReference
     - docImageTransfer
-cameraInitiatedTransfers:
-  autoImageTransfer:
-    trigger:
-      match: all
-      states:
-      - gatt: apState
-        triggerValues:
-        - '0380'
-        baselineValues:
-        - '0080'
-      - gatt: transferState
-        triggerValues:
-        - '0180'
-        baselineValues:
-        - '0080'
-    handoff:
-      connection: app
-      socketRole: command
-      cachedCredentialsAllowed: true
-      functionLaunch:
-        gatt: functionLaunchRequest
-        value: '0300'
-        required: false
-    receive:
-      mode: reserved-photo-receive
-      count:
-        property: '0xd212'
-        member: '0xdf41'
-      headIndex: 1
-      metadata:
-        operation: '0x1008'
-        beforeModeEntry: true
-      data:
-        operation: '0x101b'
-        chunkLimitProperty: '0xd235'
-      completion: readToEof
-    evidence:
-    - wireAutoImageTransfer
-    - wireBleAutoTransfer
-    - staticAutoImageTransfer
+cameraInitiatedTransfer:
+  trigger:
+    match: all
+    states:
+    - gatt: apState
+      triggerValues:
+      - '0380'
+      baselineValues:
+      - '0080'
+    - gatt: transferState
+      triggerValues:
+      - '0180'
+      baselineValues:
+      - '0080'
+  handoff:
+    connection: app
+    socketRole: command
+    cachedCredentialsAllowed: true
+    functionLaunch:
+      gatt: functionLaunchRequest
+      value: '0300'
+      required: false
+  receive:
+    mode: reserved-photo-receive
+    count:
+      property: '0xd212'
+      member: '0xdf41'
+    headIndex: 1
+    metadata:
+      operation: '0x1008'
+      beforeModeEntry: true
+    data:
+      operation: '0x101b'
+      chunkLimitProperty: '0xd235'
+    completion: readToEof
+  evidence:
+  - wireAutoImageTransfer
+  - wireBleAutoTransfer
+  - staticAutoImageTransfer
 operations:
   '0x1001':
     name: GetDeviceInfo
