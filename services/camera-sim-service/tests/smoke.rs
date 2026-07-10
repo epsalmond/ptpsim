@@ -373,35 +373,38 @@ fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
     open_session(&mut stream);
     assert_eq!(read_reserved_count(&mut stream, 2), 2);
 
-    set_prop(&mut stream, 3, 0xdf01, &21u16.to_le_bytes());
-    write_frame(&mut stream, &op(0x1015, 4, vec![0xdf29]));
+    write_frame(&mut stream, &op(0x1008, 3, vec![1]));
+    let before_mode = ptp_core::ObjectInfo::decode(&read_data_reply(&mut stream)).unwrap();
+    assert_eq!(before_mode.filename, "DSCF0001.JPG");
+    set_prop(&mut stream, 4, 0xdf01, &21u16.to_le_bytes());
+    write_frame(&mut stream, &op(0x1015, 5, vec![0xdf29]));
     assert_eq!(read_data_reply(&mut stream), 0u32.to_le_bytes());
-    set_prop(&mut stream, 5, 0xdf29, &3u32.to_le_bytes());
-    write_frame(&mut stream, &op(0x1008, 6, vec![1]));
+    set_prop(&mut stream, 6, 0xdf29, &3u32.to_le_bytes());
+    write_frame(&mut stream, &op(0x1008, 7, vec![1]));
     let first = ptp_core::ObjectInfo::decode(&read_data_reply(&mut stream)).unwrap();
-    assert_eq!(first.filename, "DSCF0001.JPG");
+    assert_eq!(first.filename, before_mode.filename);
 
     write_frame(
         &mut stream,
-        &op(0x101b, 7, vec![1, 0, first.object_compressed_size]),
+        &op(0x101b, 8, vec![1, 0, first.object_compressed_size]),
     );
     assert_eq!(
         read_data_reply(&mut stream).len(),
         first.object_compressed_size as usize
     );
-    assert_eq!(read_reserved_count(&mut stream, 8), 1);
+    assert_eq!(read_reserved_count(&mut stream, 9), 1);
 
-    write_frame(&mut stream, &op(0x1008, 9, vec![1]));
+    write_frame(&mut stream, &op(0x1008, 10, vec![1]));
     let second = ptp_core::ObjectInfo::decode(&read_data_reply(&mut stream)).unwrap();
     assert_eq!(second.filename, "DSCF0002.JPG");
     write_frame(
         &mut stream,
-        &op(0x101b, 10, vec![1, 0, second.object_compressed_size]),
+        &op(0x101b, 11, vec![1, 0, second.object_compressed_size]),
     );
     read_data_reply(&mut stream);
-    assert_eq!(read_reserved_count(&mut stream, 11), 0);
+    assert_eq!(read_reserved_count(&mut stream, 12), 0);
 
-    write_frame(&mut stream, &op(0x1003, 12, vec![]));
+    write_frame(&mut stream, &op(0x1003, 13, vec![]));
     read_ok(&mut stream);
 
     let _ = shutdown_tx.send(());

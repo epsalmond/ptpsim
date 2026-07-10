@@ -49,6 +49,21 @@ fn engine_with_two_jpegs() -> Engine {
     Engine::new(consolidated(), store)
 }
 
+fn engine_with_non_aliasing_reserved_head() -> Engine {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("ptpsim-reserved-alias-{nanos}"));
+    let dir = root.join("DCIM/100_FUJI");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("AAAA0001.MOV"), b"NOT-A-RESERVED-PHOTO").unwrap();
+    std::fs::write(dir.join("DSCF0001.JPG"), b"\xFF\xD8RESERVED-JPEG\xFF\xD9").unwrap();
+    let mut store = MediaStore::open(&root).unwrap();
+    store.scan().unwrap();
+    Engine::new(consolidated(), store)
+}
+
 fn engine_with_sparse_mov(size: u64) -> (Engine, u32) {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -181,6 +196,42 @@ fn reserved_count(e: &mut Engine, tid: u32) -> u32 {
         .into_iter()
         .find_map(|(code, value)| (code == 0xdf41).then_some(value))
         .expect("DF41 is present in D212")
+}
+
+#[test]
+fn camera_initiated_metadata_uses_reserved_head_in_both_phases() {
+    let mut e = engine_with_non_aliasing_reserved_head();
+    let public_handle_one = e.store().object_info(1).expect("public handle 1 exists");
+    assert_eq!(
+        public_handle_one.object_format,
+        ptp_core::codes::format::ASSOCIATION,
+        "fixture must make public handle 1 differ from the reserved photo head"
+    );
+
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    let ordinary =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 2, vec![1]), None))).unwrap();
+    assert_eq!(ordinary.object_format, ptp_core::codes::format::ASSOCIATION);
+
+    assert_eq!(reserved_count(&mut e, 3), 1);
+    let before =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 4, vec![1]), None))).unwrap();
+    assert_eq!(before.filename, "DSCF0001.JPG");
+
+    let after_consumption =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 5, vec![1]), None))).unwrap();
+    assert_eq!(
+        after_consumption.object_format,
+        ptp_core::codes::format::ASSOCIATION,
+        "the count-read arm is one-shot and must return to public lookup"
+    );
+
+    write_u16(&mut e, 6, 0xdf01, 21);
+    assert_eq!(read_u32(&mut e, 7, 0xdf29), 0);
+    write_u32(&mut e, 8, 0xdf29, 3);
+    let after =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 9, vec![1]), None))).unwrap();
+    assert_eq!(after.filename, before.filename);
 }
 
 #[test]

@@ -859,7 +859,7 @@ cameraInitiatedTransfer:
     mode: reserved-photo-receive
     count: { property: "0xd212", member: "0xdf41" }
     headIndex: 1
-    metadata: { operation: "0x1008", beforeModeEntry: false }
+    metadata: { operation: "0x1008", phases: [afterCountBeforeModeEntry, afterModeEntry] }
     data: { operation: "0x101b", chunkLimitProperty: "0xd235" }
     completion: readToEof
 connections:

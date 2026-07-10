@@ -22,16 +22,16 @@ pub use generate::{enrich, generate_proposal};
 pub use model::{
     parse_hex_bytes, parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource,
     AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
-    CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedReceive,
-    CameraInitiatedTransfer, CameraInitiatedTrigger, CameraManifest, CloseSession, Connection,
-    ConnectionTransition, Control, Descriptor, GateFailure, GateRequirement, InitIdentity,
-    InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop,
-    ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, ObjectsAvailable, OpEffect,
-    Operation, Payload, PayloadForm, PcssKnock, PostviewEvent, Property, PropertyValueEncoding,
-    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
-    SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe, SocketBindings, SocketRole, Step,
-    StepParam, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource,
-    VersionCond, WireFraming, Workflow,
+    CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
+    CameraInitiatedReceive, CameraInitiatedTransfer, CameraInitiatedTrigger, CameraManifest,
+    CloseSession, Connection, ConnectionTransition, Control, Descriptor, GateFailure,
+    GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
+    LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry,
+    ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssKnock, PostviewEvent,
+    Property, PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow,
+    PropertyValueRow, RecordLayout, RecordMemberRef, SentinelFrame, SentinelMask, SequenceGate,
+    ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, TransferCompletion, TransportClose,
+    TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
@@ -151,6 +151,18 @@ impl CameraManifest {
 
             if transfer.receive.head_index == 0 {
                 lints.push(Lint::warn(format!("{ctx} headIndex must be non-zero")));
+            }
+            if transfer.receive.metadata.phases.is_empty() {
+                lints.push(Lint::warn(format!(
+                    "{ctx} metadata must declare at least one phase"
+                )));
+            }
+            let unique_metadata_phases: std::collections::BTreeSet<_> =
+                transfer.receive.metadata.phases.iter().collect();
+            if unique_metadata_phases.len() != transfer.receive.metadata.phases.len() {
+                lints.push(Lint::warn(format!(
+                    "{ctx} metadata phases must not contain duplicates"
+                )));
             }
             validate_transfer_hex_values(transfer, ctx, &mut lints);
 

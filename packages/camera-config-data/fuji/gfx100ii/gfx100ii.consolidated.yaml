@@ -158,7 +158,9 @@ cameraInitiatedTransfer:
     headIndex: 1
     metadata:
       operation: '0x1008'
-      beforeModeEntry: false
+      phases:
+      - afterCountBeforeModeEntry
+      - afterModeEntry
     data:
       operation: '0x101b'
       chunkLimitProperty: '0xd235'

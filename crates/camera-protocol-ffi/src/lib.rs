@@ -1428,10 +1428,16 @@ pub struct CameraInitiatedReceiveInfo {
     pub count_member: u16,
     pub head_index: u32,
     pub metadata_operation: u16,
-    pub metadata_before_mode_entry: bool,
+    pub metadata_phases: Vec<CameraInitiatedMetadataPhase>,
     pub data_operation: u16,
     pub chunk_limit_property: u16,
     pub completion: CameraInitiatedCompletion,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum CameraInitiatedMetadataPhase {
+    AfterCountBeforeModeEntry,
+    AfterModeEntry,
 }
 
 #[derive(Debug, uniffi::Record)]
@@ -2279,7 +2285,18 @@ fn map_camera_initiated_transfer(
             count_member: transfer.count_member,
             head_index: transfer.head_index,
             metadata_operation: transfer.metadata_operation,
-            metadata_before_mode_entry: transfer.metadata_before_mode_entry,
+            metadata_phases: transfer
+                .metadata_phases
+                .iter()
+                .map(|phase| match phase {
+                    cc::model::CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry => {
+                        CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry
+                    }
+                    cc::model::CameraInitiatedMetadataPhase::AfterModeEntry => {
+                        CameraInitiatedMetadataPhase::AfterModeEntry
+                    }
+                })
+                .collect(),
             data_operation: transfer.data_operation,
             chunk_limit_property: transfer.chunk_limit_property,
             completion,

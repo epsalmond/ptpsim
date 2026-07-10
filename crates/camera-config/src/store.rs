@@ -14,8 +14,8 @@ use std::sync::Arc;
 use crate::error::ConfigError;
 use crate::index::ResolvedManufacturerIndex;
 use crate::model::{
-    parse_hex_bytes, parse_hex_code, CameraManifest, ManufacturerDefaults, SocketRole,
-    TransferCompletion, TriggerMatch, ValuePolicy,
+    parse_hex_bytes, parse_hex_code, CameraInitiatedMetadataPhase, CameraManifest,
+    ManufacturerDefaults, SocketRole, TransferCompletion, TriggerMatch, ValuePolicy,
 };
 use crate::version::VersionScheme;
 
@@ -52,7 +52,7 @@ pub struct ResolvedCameraInitiatedTransfer {
     pub count_member: u16,
     pub head_index: u32,
     pub metadata_operation: u16,
-    pub metadata_before_mode_entry: bool,
+    pub metadata_phases: Vec<CameraInitiatedMetadataPhase>,
     pub data_operation: u16,
     pub chunk_limit_property: u16,
     pub completion: TransferCompletion,
@@ -318,7 +318,7 @@ fn resolve_camera_initiated_transfer(
             &transfer.receive.metadata.operation,
             "receive.metadata.operation",
         )?,
-        metadata_before_mode_entry: transfer.receive.metadata.before_mode_entry,
+        metadata_phases: transfer.receive.metadata.phases.clone(),
         data_operation: parse_code(&transfer.receive.data.operation, "receive.data.operation")?,
         chunk_limit_property: parse_code(
             &transfer.receive.data.chunk_limit_property,

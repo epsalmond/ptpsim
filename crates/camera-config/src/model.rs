@@ -829,8 +829,14 @@ pub struct RecordMemberRef {
 #[serde(rename_all = "camelCase")]
 pub struct CameraInitiatedMetadata {
     pub operation: HexCode,
-    #[serde(default)]
-    pub before_mode_entry: bool,
+    pub phases: Vec<CameraInitiatedMetadataPhase>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CameraInitiatedMetadataPhase {
+    AfterCountBeforeModeEntry,
+    AfterModeEntry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

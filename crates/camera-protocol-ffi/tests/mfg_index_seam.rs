@@ -126,7 +126,13 @@ fn real_manifest_exposes_resolved_camera_initiated_transfer() {
     assert_eq!(transfer.receive.count_member, 0xdf41);
     assert_eq!(transfer.receive.head_index, 1);
     assert_eq!(transfer.receive.metadata_operation, 0x1008);
-    assert!(!transfer.receive.metadata_before_mode_entry);
+    assert!(matches!(
+        transfer.receive.metadata_phases.as_slice(),
+        [
+            CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry,
+            CameraInitiatedMetadataPhase::AfterModeEntry
+        ]
+    ));
     assert_eq!(transfer.receive.data_operation, 0x101b);
     assert_eq!(transfer.receive.chunk_limit_property, 0xd235);
     assert!(matches!(

@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 
 use camera_config::model::{Action, ScalarEncoding, Step, StepParam};
-use camera_config::{parse_hex_code, ActionVerb, CameraManifest};
+use camera_config::{parse_hex_code, ActionVerb, CameraInitiatedMetadataPhase, CameraManifest};
 use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
@@ -102,6 +102,7 @@ pub struct StreamCompletion {
     object_size: u64,
 }
 
+#[derive(Clone, Copy)]
 enum CameraQueueTarget {
     None,
     Head { handle: u32 },
@@ -201,6 +202,7 @@ pub struct Engine {
     connection: String,
     transfer_queue: Option<TransferQueue>,
     camera_initiated_queue: Option<CameraInitiatedQueue>,
+    camera_initiated_pre_mode_probe_armed: bool,
     faults: FaultSet,
     /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
     /// arms the session that function-launch brings up. Default armed (standalone).
@@ -221,6 +223,7 @@ impl Engine {
             connection: Self::DEFAULT_CONNECTION.to_string(),
             transfer_queue: None,
             camera_initiated_queue: None,
+            camera_initiated_pre_mode_probe_armed: false,
             faults: FaultSet::default(),
             link: crate::link::SharedLink::default(),
         };
@@ -423,6 +426,8 @@ impl Engine {
             return Self::err(tid, resp::SESSION_NOT_OPEN);
         }
 
+        self.update_camera_initiated_pre_mode_probe(req);
+
         if let Some(reply) = self.operation_gate_reply(req.code) {
             return reply;
         }
@@ -431,6 +436,7 @@ impl Engine {
             op::OPEN_SESSION => {
                 self.state.reset_gates();
                 self.state.active_mode = None;
+                self.camera_initiated_pre_mode_probe_armed = false;
                 self.state.session_open = true;
                 self.state.phase = Phase::SessionOpen;
                 Self::ok(tid)
@@ -438,6 +444,7 @@ impl Engine {
             op::CLOSE_SESSION => {
                 self.state.reset_gates();
                 self.state.active_mode = None;
+                self.camera_initiated_pre_mode_probe_armed = false;
                 self.state.session_open = false;
                 self.state.phase = Phase::Closed;
                 Self::ok(tid)
@@ -455,7 +462,13 @@ impl Engine {
                 Self::data(tid, w.into_vec())
             }
             op::GET_OBJECT_INFO => {
-                let handle = match self.camera_initiated_metadata_target(req.code, p(0)) {
+                let target = self.camera_initiated_metadata_target(req.code, p(0));
+                if self.state.phase == Phase::SessionOpen
+                    && !matches!(target, CameraQueueTarget::None)
+                {
+                    self.camera_initiated_pre_mode_probe_armed = false;
+                }
+                let handle = match target {
                     CameraQueueTarget::Head { handle } => handle,
                     CameraQueueTarget::Invalid => {
                         return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
@@ -772,27 +785,55 @@ impl Engine {
         let Some(transfer) = self.manifest.camera_initiated_transfer.as_ref() else {
             return CameraQueueTarget::None;
         };
-        if self.state.phase == Phase::QueuedReceive {
-            if parse_hex_code(&transfer.receive.metadata.operation) != Some(operation) {
-                return CameraQueueTarget::None;
-            }
-            if transfer.receive.head_index != index {
-                return CameraQueueTarget::Invalid;
-            }
-            return self.camera_queue_head();
-        }
-
-        if self.state.phase != Phase::SessionOpen {
+        if transfer.handoff.connection != self.connection
+            || parse_hex_code(&transfer.receive.metadata.operation) != Some(operation)
+        {
             return CameraQueueTarget::None;
         }
-        if transfer.handoff.connection == self.connection
-            && transfer.receive.metadata.before_mode_entry
-            && parse_hex_code(&transfer.receive.metadata.operation) == Some(operation)
-            && transfer.receive.head_index == index
-        {
+        let metadata_phase = match self.state.phase {
+            Phase::SessionOpen if self.camera_initiated_pre_mode_probe_armed => {
+                CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry
+            }
+            Phase::SessionOpen => return CameraQueueTarget::None,
+            Phase::QueuedReceive => CameraInitiatedMetadataPhase::AfterModeEntry,
+            _ => return CameraQueueTarget::None,
+        };
+        if transfer.receive.head_index != index {
+            return CameraQueueTarget::Invalid;
+        }
+        if transfer.receive.metadata.phases.contains(&metadata_phase) {
             self.camera_queue_head()
         } else {
-            CameraQueueTarget::None
+            CameraQueueTarget::Invalid
+        }
+    }
+
+    fn update_camera_initiated_pre_mode_probe(&mut self, req: &OperationRequest) {
+        let Some(transfer) = self.manifest.camera_initiated_transfer.as_ref() else {
+            self.camera_initiated_pre_mode_probe_armed = false;
+            return;
+        };
+        if self.state.phase != Phase::SessionOpen
+            || !transfer
+                .receive
+                .metadata
+                .phases
+                .contains(&CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry)
+        {
+            self.camera_initiated_pre_mode_probe_armed = false;
+            return;
+        }
+
+        let param = req.params.first().copied().unwrap_or(0);
+        let is_count_read = req.code == op::GET_DEVICE_PROP_VALUE
+            && parse_hex_code(&transfer.receive.count.property) == Some(param as u16);
+        let is_metadata_probe = parse_hex_code(&transfer.receive.metadata.operation)
+            == Some(req.code)
+            && transfer.receive.head_index == param;
+        if is_count_read {
+            self.camera_initiated_pre_mode_probe_armed = true;
+        } else if !is_metadata_probe {
+            self.camera_initiated_pre_mode_probe_armed = false;
         }
     }
 
