@@ -928,6 +928,11 @@ media:
         let mut store = MediaStore::open(&root).unwrap();
         store.scan().unwrap();
         let mut engine = Engine::new(manifest, store);
+        let activation: crate::StateOverlay = serde_json::from_value(serde_json::json!({
+            "camera_initiated_transfer_active": true
+        }))
+        .unwrap();
+        engine.apply_state_overlay(&activation).unwrap();
         std::fs::remove_file(&path).unwrap();
 
         let steps = vec![

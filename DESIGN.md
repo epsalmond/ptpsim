@@ -1005,11 +1005,15 @@ without changing the manifest's model of the camera. The service applies the
 overlay after manifest/media/engine construction and before any PTP/control
 listener serves traffic. Unknown properties, bad datatypes, unsupported schema
 names, and profile/connection mismatches are fatal startup errors.
+`camera_initiated_transfer_active` carries an externally observed trigger match;
+it defaults false so reserved-queue routing cannot intercept ordinary PTP object
+lookups before the consumer or test fixture supplies that transition.
 
 ```yaml
 schema: ptpsim-startup-state/v1
 profile: fuji/gfx100ii
 connection: app
+camera_initiated_transfer_active: true
 props:
   "0xd02a": 2000
 ```

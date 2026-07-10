@@ -202,6 +202,7 @@ pub struct Engine {
     connection: String,
     transfer_queue: Option<TransferQueue>,
     camera_initiated_queue: Option<CameraInitiatedQueue>,
+    camera_initiated_transfer_active: bool,
     camera_initiated_pre_mode_probe_armed: bool,
     faults: FaultSet,
     /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
@@ -223,6 +224,7 @@ impl Engine {
             connection: Self::DEFAULT_CONNECTION.to_string(),
             transfer_queue: None,
             camera_initiated_queue: None,
+            camera_initiated_transfer_active: false,
             camera_initiated_pre_mode_probe_armed: false,
             faults: FaultSet::default(),
             link: crate::link::SharedLink::default(),
@@ -287,7 +289,20 @@ impl Engine {
         &mut self,
         overlay: &StateOverlay,
     ) -> Result<AppliedStateOverlay, String> {
-        crate::state_overlay::apply_overlay(&self.manifest, &mut self.state, overlay)
+        let applied = crate::state_overlay::apply_overlay(
+            &self.manifest,
+            &mut self.state,
+            &mut self.camera_initiated_transfer_active,
+            overlay,
+        )?;
+        if !self.camera_initiated_transfer_active {
+            self.camera_initiated_pre_mode_probe_armed = false;
+        }
+        Ok(applied)
+    }
+
+    pub fn camera_initiated_transfer_active(&self) -> bool {
+        self.camera_initiated_transfer_active
     }
 
     /// Enable standard PTP object-queue behavior for a connection whose manifest
@@ -410,6 +425,8 @@ impl Engine {
         let tid = req.transaction_id;
         let p = |i: usize| req.params.get(i).copied().unwrap_or(0);
 
+        self.prepare_camera_initiated_pre_mode_probe(req);
+
         // Injected faults take precedence over normal handling.
         if let Some(fault) = self.faults.match_op(req.code) {
             return match fault {
@@ -426,9 +443,14 @@ impl Engine {
             return Self::err(tid, resp::SESSION_NOT_OPEN);
         }
 
-        self.update_camera_initiated_pre_mode_probe(req);
-
         if let Some(reply) = self.operation_gate_reply(req.code) {
+            return reply;
+        }
+
+        if let Some(reply) = self.camera_initiated_operation_reply(req) {
+            if reply_is_ok(&reply) {
+                self.apply_successful_operation(req, data_in);
+            }
             return reply;
         }
 
@@ -462,23 +484,10 @@ impl Engine {
                 Self::data(tid, w.into_vec())
             }
             op::GET_OBJECT_INFO => {
-                let target = self.camera_initiated_metadata_target(req.code, p(0));
-                if self.state.phase == Phase::SessionOpen
-                    && !matches!(target, CameraQueueTarget::None)
-                {
-                    self.camera_initiated_pre_mode_probe_armed = false;
+                if !self.object_handle_available(p(0)) {
+                    return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
                 }
-                let handle = match target {
-                    CameraQueueTarget::Head { handle } => handle,
-                    CameraQueueTarget::Invalid => {
-                        return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
-                    }
-                    CameraQueueTarget::None if self.object_handle_available(p(0)) => p(0),
-                    CameraQueueTarget::None => {
-                        return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
-                    }
-                };
-                match self.store.object_info(handle) {
+                match self.store.object_info(p(0)) {
                     Ok(oi) => {
                         let mut w = Writer::new();
                         if oi.encode(&mut w).is_err() {
@@ -501,27 +510,9 @@ impl Engine {
             }
             op::GET_PARTIAL_OBJECT => {
                 let offset = (p(1) as u64) | ((p(3) as u64) << 32);
-                let (handle, completion_context) =
-                    match self.camera_initiated_data_target(req.code, p(0)) {
-                        CameraQueueTarget::Head { handle } => (handle, true),
-                        CameraQueueTarget::Invalid => {
-                            return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
-                        }
-                        CameraQueueTarget::None => (p(0), false),
-                    };
-                match self.store.read_range(handle, offset, p(2)) {
+                match self.store.read_range(p(0), offset, p(2)) {
                     Ok(source) => {
                         let returned = source.len().min(u32::MAX as u64) as u32;
-                        let completion = completion_context.then_some(()).and_then(|()| {
-                            let queue = self.camera_initiated_queue.as_ref()?;
-                            Some(StreamCompletion {
-                                generation: queue.generation,
-                                handle,
-                                offset,
-                                len: source.len(),
-                                object_size: self.store.object_size(handle).ok()?,
-                            })
-                        });
                         Reply::DataStream {
                             source,
                             response: OperationResponse {
@@ -529,7 +520,7 @@ impl Engine {
                                 transaction_id: tid,
                                 params: vec![returned],
                             },
-                            completion,
+                            completion: None,
                         }
                     }
                     Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
@@ -681,12 +672,19 @@ impl Engine {
         // arming immediate writes or deferred (poll-settled) transitions (§5.5
         // AF stub). Generic: the behavior is manifest data, not a brand branch.
         if reply_is_ok(&reply) {
-            self.advance_sequence_gates(req, data_in);
-            self.apply_op_effects(req.code, &req.params);
-            self.apply_op_emits(req.code);
-            self.advance_transfer_queue(req, data_in);
+            self.apply_successful_operation(req, data_in);
         }
         reply
+    }
+
+    fn apply_successful_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) {
+        if self.is_camera_initiated_count_read(req) {
+            self.camera_initiated_pre_mode_probe_armed = true;
+        }
+        self.advance_sequence_gates(req, data_in);
+        self.apply_op_effects(req.code, &req.params);
+        self.apply_op_emits(req.code);
+        self.advance_transfer_queue(req, data_in);
     }
 
     /// Arm the manifest-declared [`OpEffect`]s of operation `code` against state.
@@ -781,11 +779,100 @@ impl Engine {
         }
     }
 
+    fn camera_initiated_operation_reply(&mut self, req: &OperationRequest) -> Option<Reply> {
+        let metadata_operation = self
+            .manifest
+            .camera_initiated_transfer
+            .as_ref()
+            .and_then(|transfer| parse_hex_code(&transfer.receive.metadata.operation));
+        if metadata_operation == Some(req.code) {
+            let index = req.params.first().copied().unwrap_or(0);
+            let target = self.camera_initiated_metadata_target(req.code, index);
+            if !matches!(target, CameraQueueTarget::None) {
+                if self.state.phase == Phase::SessionOpen {
+                    self.camera_initiated_pre_mode_probe_armed = false;
+                }
+                return Some(self.camera_initiated_metadata_reply(req.transaction_id, target));
+            }
+        }
+
+        let data_operation = self
+            .manifest
+            .camera_initiated_transfer
+            .as_ref()
+            .and_then(|transfer| parse_hex_code(&transfer.receive.data.operation));
+        if data_operation == Some(req.code) {
+            let index = req.params.first().copied().unwrap_or(0);
+            let target = self.camera_initiated_data_target(req.code, index);
+            if !matches!(target, CameraQueueTarget::None) {
+                return Some(self.camera_initiated_data_reply(req, target));
+            }
+        }
+        None
+    }
+
+    fn camera_initiated_metadata_reply(
+        &self,
+        transaction_id: u32,
+        target: CameraQueueTarget,
+    ) -> Reply {
+        let CameraQueueTarget::Head { handle } = target else {
+            return Self::err(transaction_id, resp::INVALID_OBJECT_HANDLE);
+        };
+        match self.store.object_info(handle) {
+            Ok(info) => {
+                let mut writer = Writer::new();
+                if info.encode(&mut writer).is_err() {
+                    return Self::err(transaction_id, resp::GENERAL_ERROR);
+                }
+                Self::data(transaction_id, writer.into_vec())
+            }
+            Err(_) => Self::err(transaction_id, resp::INVALID_OBJECT_HANDLE),
+        }
+    }
+
+    fn camera_initiated_data_reply(
+        &self,
+        req: &OperationRequest,
+        target: CameraQueueTarget,
+    ) -> Reply {
+        let CameraQueueTarget::Head { handle } = target else {
+            return Self::err(req.transaction_id, resp::INVALID_OBJECT_HANDLE);
+        };
+        let param = |index: usize| req.params.get(index).copied().unwrap_or(0);
+        let offset = (param(1) as u64) | ((param(3) as u64) << 32);
+        match self.store.read_range(handle, offset, param(2)) {
+            Ok(source) => {
+                let returned = source.len().min(u32::MAX as u64) as u32;
+                let completion = self.camera_initiated_queue.as_ref().and_then(|queue| {
+                    Some(StreamCompletion {
+                        generation: queue.generation,
+                        handle,
+                        offset,
+                        len: source.len(),
+                        object_size: self.store.object_size(handle).ok()?,
+                    })
+                });
+                Reply::DataStream {
+                    source,
+                    response: OperationResponse {
+                        code: resp::OK,
+                        transaction_id: req.transaction_id,
+                        params: vec![returned],
+                    },
+                    completion,
+                }
+            }
+            Err(_) => Self::err(req.transaction_id, resp::INVALID_OBJECT_HANDLE),
+        }
+    }
+
     fn camera_initiated_metadata_target(&self, operation: u16, index: u32) -> CameraQueueTarget {
         let Some(transfer) = self.manifest.camera_initiated_transfer.as_ref() else {
             return CameraQueueTarget::None;
         };
-        if transfer.handoff.connection != self.connection
+        if !self.camera_initiated_transfer_active
+            || transfer.handoff.connection != self.connection
             || parse_hex_code(&transfer.receive.metadata.operation) != Some(operation)
         {
             return CameraQueueTarget::None;
@@ -808,12 +895,14 @@ impl Engine {
         }
     }
 
-    fn update_camera_initiated_pre_mode_probe(&mut self, req: &OperationRequest) {
+    fn prepare_camera_initiated_pre_mode_probe(&mut self, req: &OperationRequest) {
         let Some(transfer) = self.manifest.camera_initiated_transfer.as_ref() else {
             self.camera_initiated_pre_mode_probe_armed = false;
             return;
         };
-        if self.state.phase != Phase::SessionOpen
+        if !self.camera_initiated_transfer_active
+            || transfer.handoff.connection != self.connection
+            || self.state.phase != Phase::SessionOpen
             || !transfer
                 .receive
                 .metadata
@@ -824,21 +913,32 @@ impl Engine {
             return;
         }
 
-        let param = req.params.first().copied().unwrap_or(0);
-        let is_count_read = req.code == op::GET_DEVICE_PROP_VALUE
-            && parse_hex_code(&transfer.receive.count.property) == Some(param as u16);
-        let is_metadata_probe = parse_hex_code(&transfer.receive.metadata.operation)
-            == Some(req.code)
-            && transfer.receive.head_index == param;
-        if is_count_read {
-            self.camera_initiated_pre_mode_probe_armed = true;
-        } else if !is_metadata_probe {
+        let is_metadata_probe =
+            parse_hex_code(&transfer.receive.metadata.operation) == Some(req.code);
+        if !is_metadata_probe {
             self.camera_initiated_pre_mode_probe_armed = false;
         }
     }
 
+    fn is_camera_initiated_count_read(&self, req: &OperationRequest) -> bool {
+        let Some(transfer) = self.manifest.camera_initiated_transfer.as_ref() else {
+            return false;
+        };
+        self.camera_initiated_transfer_active
+            && transfer.handoff.connection == self.connection
+            && self.state.phase == Phase::SessionOpen
+            && transfer
+                .receive
+                .metadata
+                .phases
+                .contains(&CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry)
+            && req.code == op::GET_DEVICE_PROP_VALUE
+            && parse_hex_code(&transfer.receive.count.property).map(u32::from)
+                == req.params.first().copied()
+    }
+
     fn camera_initiated_data_target(&self, operation: u16, index: u32) -> CameraQueueTarget {
-        if self.state.phase != Phase::QueuedReceive {
+        if !self.camera_initiated_transfer_active || self.state.phase != Phase::QueuedReceive {
             return CameraQueueTarget::None;
         }
         let Some(transfer) = self.manifest.camera_initiated_transfer.as_ref() else {

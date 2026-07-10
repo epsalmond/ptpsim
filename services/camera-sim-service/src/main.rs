@@ -114,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
             props = applied.props,
             phase = applied.phase,
             session_open = applied.session_open,
+            camera_initiated_transfer_active = applied.camera_initiated_transfer_active,
             "startup state applied"
         );
     }

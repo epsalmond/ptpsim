@@ -8,7 +8,9 @@ use camera_config::{
     ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam,
 };
 use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
-use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Fault, Phase, Reply, StreamCompletion};
+use camera_sim::{
+    walk_ptpip, walk_ptpip_in, Engine, Fault, Phase, Reply, StateOverlay, StreamCompletion,
+};
 use ptp_core::{DeviceInfo, ObjectInfo, OperationRequest, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -46,10 +48,16 @@ fn engine_with_two_jpegs() -> Engine {
     std::fs::write(dir.join("DSCF0002.JPG"), b"\xFF\xD8SECOND-JPEG\xFF\xD9").unwrap();
     let mut store = MediaStore::open(&root).unwrap();
     store.scan().unwrap();
-    Engine::new(consolidated(), store)
+    let mut engine = Engine::new(consolidated(), store);
+    activate_camera_initiated_transfer(&mut engine);
+    engine
 }
 
 fn engine_with_non_aliasing_reserved_head() -> Engine {
+    Engine::new(consolidated(), non_aliasing_reserved_store())
+}
+
+fn non_aliasing_reserved_store() -> MediaStore {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -61,7 +69,7 @@ fn engine_with_non_aliasing_reserved_head() -> Engine {
     std::fs::write(dir.join("DSCF0001.JPG"), b"\xFF\xD8RESERVED-JPEG\xFF\xD9").unwrap();
     let mut store = MediaStore::open(&root).unwrap();
     store.scan().unwrap();
-    Engine::new(consolidated(), store)
+    store
 }
 
 fn engine_with_sparse_mov(size: u64) -> (Engine, u32) {
@@ -92,6 +100,14 @@ fn req(code: u16, tid: u32, params: Vec<u32>) -> OperationRequest {
         transaction_id: tid,
         params,
     }
+}
+
+fn activate_camera_initiated_transfer(engine: &mut Engine) {
+    let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
+        "camera_initiated_transfer_active": true
+    }))
+    .unwrap();
+    engine.apply_state_overlay(&overlay).unwrap();
 }
 
 fn assert_ok(reply: &Reply) {
@@ -209,28 +225,35 @@ fn camera_initiated_metadata_uses_reserved_head_in_both_phases() {
     );
 
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_eq!(reserved_count(&mut e, 2), 1);
     let ordinary =
-        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 2, vec![1]), None))).unwrap();
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 3, vec![1]), None))).unwrap();
     assert_eq!(ordinary.object_format, ptp_core::codes::format::ASSOCIATION);
 
-    assert_eq!(reserved_count(&mut e, 3), 1);
+    activate_camera_initiated_transfer(&mut e);
+    assert_eq!(reserved_count(&mut e, 4), 1);
+    assert!(matches!(
+        e.on_operation(&req(0x1008, 5, vec![2]), None),
+        Reply::Response(ref response) if response.code == 0x2009
+    ));
+    assert_eq!(reserved_count(&mut e, 6), 1);
     let before =
-        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 4, vec![1]), None))).unwrap();
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 7, vec![1]), None))).unwrap();
     assert_eq!(before.filename, "DSCF0001.JPG");
 
     let after_consumption =
-        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 5, vec![1]), None))).unwrap();
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 8, vec![1]), None))).unwrap();
     assert_eq!(
         after_consumption.object_format,
         ptp_core::codes::format::ASSOCIATION,
         "the count-read arm is one-shot and must return to public lookup"
     );
 
-    write_u16(&mut e, 6, 0xdf01, 21);
-    assert_eq!(read_u32(&mut e, 7, 0xdf29), 0);
-    write_u32(&mut e, 8, 0xdf29, 3);
+    write_u16(&mut e, 9, 0xdf01, 21);
+    assert_eq!(read_u32(&mut e, 10, 0xdf29), 0);
+    write_u32(&mut e, 11, 0xdf29, 3);
     let after =
-        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 9, vec![1]), None))).unwrap();
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 12, vec![1]), None))).unwrap();
     assert_eq!(after.filename, before.filename);
 }
 
@@ -308,6 +331,50 @@ fn camera_initiated_tail_only_read_does_not_dequeue() {
         stream_with_completion(e.on_operation(&req(0x101b, 4, vec![1, size - 2, 2]), None));
     assert!(!e.complete_stream(completion.unwrap()));
     assert_eq!(reserved_count(&mut e, 5), 2);
+}
+
+#[test]
+fn failed_count_read_does_not_arm_reserved_metadata() {
+    let mut e = engine_with_non_aliasing_reserved_head();
+    activate_camera_initiated_transfer(&mut e);
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    e.install_fault(Fault::FailOperation {
+        code: 0x1015,
+        response: 0x2002,
+    });
+    assert!(matches!(
+        e.on_operation(&req(0x1015, 2, vec![0xd212]), None),
+        Reply::Response(ref response) if response.code == 0x2002
+    ));
+    e.clear_faults();
+
+    let info =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 3, vec![1]), None))).unwrap();
+    assert_eq!(info.object_format, ptp_core::codes::format::ASSOCIATION);
+}
+
+#[test]
+fn camera_initiated_queue_uses_manifest_declared_operations() {
+    let mut manifest = consolidated();
+    let transfer = manifest.camera_initiated_transfer.as_mut().unwrap();
+    transfer.receive.metadata.operation = "0x902b".into();
+    transfer.receive.data.operation = "0x902c".into();
+    let mut e = Engine::new(manifest, non_aliasing_reserved_store());
+    activate_camera_initiated_transfer(&mut e);
+
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_eq!(reserved_count(&mut e, 2), 1);
+    let info =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x902b, 3, vec![1]), None))).unwrap();
+    assert_eq!(info.filename, "DSCF0001.JPG");
+
+    write_u16(&mut e, 4, 0xdf01, 21);
+    assert_eq!(read_u32(&mut e, 5, 0xdf29), 0);
+    write_u32(&mut e, 6, 0xdf29, 3);
+    let (bytes, completion) =
+        stream_with_completion(e.on_operation(&req(0x902c, 7, vec![1, 0, 4]), None));
+    assert_eq!(bytes, b"\xFF\xD8RE");
+    assert!(completion.is_some());
 }
 
 #[test]

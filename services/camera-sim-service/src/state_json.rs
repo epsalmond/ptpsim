@@ -34,6 +34,7 @@ pub(crate) fn snapshot_json(engine: &Engine) -> String {
     serde_json::json!({
         "phase": state.phase.state_name(),
         "session_open": state.session_open,
+        "camera_initiated_transfer_active": engine.camera_initiated_transfer_active(),
         "props": props,
         "property_labels": property_labels,
         "media": { "objects": engine.store().handles(ObjectQuery::default()).len() },

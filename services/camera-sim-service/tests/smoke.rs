@@ -345,7 +345,7 @@ fn service_drives_image_import_over_tcp() {
 fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
     let root = tmp_card_with_jpegs(2);
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "reserved-transfer".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
@@ -364,10 +364,18 @@ fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
         };
         let server = Server::bind(config).await.unwrap();
         let command = server.command_addr();
+        let control = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(server.run(rx));
-        (command, tx, task)
+        (command, control, tx, task)
     });
+
+    let activation = http_patch(
+        control_addr,
+        "/state",
+        r#"{"camera_initiated_transfer_active":true}"#,
+    );
+    assert!(activation.contains("\"ok\":true"), "body: {activation}");
 
     let mut stream = connect_ptpip(command_addr, "smoke");
     open_session(&mut stream);

@@ -182,8 +182,11 @@ queue-completion signal.
 
 The trigger is descriptive data, not a simulated Bluetooth peripheral. The
 current service exposes the PTP pull queue seeded from its media inputs; a
-consumer or test fixture must supply BLE/app-state transitions. A generic
-runtime control surface and any optional BLE adapter are tracked by issue #164.
+consumer or test fixture supplies BLE/app-state transitions by patching
+`camera_initiated_transfer_active` through the generic state-overlay control
+surface. Reserved routing is disabled until that state is true, so an ordinary
+count read cannot redirect public object lookup. A generic BLE adapter remains
+tracked by issue #164.
 
 ## 6. Status — what's ready vs pending
 
