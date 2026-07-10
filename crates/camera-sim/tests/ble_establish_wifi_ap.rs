@@ -49,20 +49,22 @@ fn walk_wifi_ap(
     ssid: &[u8],
     passphrase: Option<&[u8]>,
 ) -> (BTreeMap<String, String>, Vec<u8>) {
-    let (scope, launch_write, _events) = walk_wifi_ap_with_ap_state_reads(
+    let (scope, launch_write, _events) = walk_wifi_ap_with_ap_state(
         launch_mode,
         ssid,
         passphrase,
-        vec![vec![0x00, 0x80], vec![0x02, 0x80], vec![0x01, 0x80]],
+        vec![0x02, 0x80],
+        vec![vec![0x01, 0x80]],
     );
     (scope, launch_write)
 }
 
-fn walk_wifi_ap_with_ap_state_reads(
+fn walk_wifi_ap_with_ap_state(
     launch_mode: &str,
     ssid: &[u8],
     passphrase: Option<&[u8]>,
-    ap_state_reads: Vec<Vec<u8>>,
+    ap_state_seed: Vec<u8>,
+    ap_state_notifications: Vec<Vec<u8>>,
 ) -> (BTreeMap<String, String>, Vec<u8>, Vec<BleEvent>) {
     let view = gfx100ii();
     let ble = view
@@ -87,11 +89,14 @@ fn walk_wifi_ap_with_ap_state_reads(
     }
 
     let mut responder = BleResponder::new(catalog)
-        // apState read source: NotLaunched (0x8000), Launching (0x8002),
-        // then Launched (0x8001). Wire bytes are little-endian, so the u16-le
-        // capture reads [01 80] = 0x8001 = 32769 (#84, #179).
-        .serve_read_sequence(&ap_state, ap_state_reads)
+        // apState seeded-notify source: one Launching (0x8002) read, then the
+        // terminal Launched (0x8001) notification. Wire bytes are little-endian,
+        // so [01 80] = 0x8001 = 32769 (#84, #202).
+        .serve_read(&ap_state, &ap_state_seed)
         .serve_read(&ssid_uuid, ssid);
+    for payload in ap_state_notifications {
+        responder = responder.queue_notification(&ap_state, &payload);
+    }
     if let Some(pass) = passphrase {
         responder = responder.serve_read(&pass_uuid, pass);
     }
@@ -125,9 +130,8 @@ fn establish_wifi_ap_binds_credentials_and_writes_launch_mode_4() {
     let (scope, launch_write) = run("4");
     // launchMode 4 (RemoteShooting) → u16-le [04 00].
     assert_eq!(launch_write, vec![0x04, 0x00]);
-    // apState read-polled until launched (0x8001 → 32769); neither the initial
-    // NotLaunched (0x8000) nor transitional Launching (0x8002) reads satisfied
-    // `until`.
+    // The transitional Launching seed (0x8002) did not satisfy `until`; the
+    // terminal Launched notification (0x8001 → 32769) did.
     assert_eq!(scope.get("apState").map(String::as_str), Some("32769"));
     // Raw apState bytes preserved for the app's fallback parsing.
     assert!(scope.contains_key("apStateRaw"));
@@ -140,15 +144,16 @@ fn establish_wifi_ap_binds_credentials_and_writes_launch_mode_4() {
 }
 
 #[test]
-fn establish_wifi_ap_reads_already_launched_apstate_without_notify() {
+fn establish_wifi_ap_seeds_already_launched_apstate_without_notify() {
     // #179: if the AP was already up before this walk started, the camera will
-    // not re-notify `Launched`. A plain AP_STATE read must recover the current
-    // state and let the handoff continue.
-    let (scope, _, events) = walk_wifi_ap_with_ap_state_reads(
+    // not re-notify `Launched`. The one AP_STATE seed read must recover the
+    // current state and let the handoff continue.
+    let (scope, _, events) = walk_wifi_ap_with_ap_state(
         "3",
         b"FUJIFILM-GFX100II-0C3E",
         Some(b"secret-pass"),
-        vec![vec![0x01, 0x80]],
+        vec![0x01, 0x80],
+        vec![],
     );
     assert_eq!(scope.get("apState").map(String::as_str), Some("32769"));
     assert_eq!(
@@ -161,12 +166,37 @@ fn establish_wifi_ap_reads_already_launched_apstate_without_notify() {
         .filter(|e| matches!(e, BleEvent::Read { uuid } if uuid == AP_STATE_UUID))
         .count();
     assert_eq!(ap_state_reads, 1, "first read was already satisfying");
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, BleEvent::Subscribe { uuid, .. } if uuid == AP_STATE_UUID)),
-        "AP_STATE handoff must not wait on a notify subscription",
+    let ap_state_subscriptions = events
+        .iter()
+        .filter(|e| matches!(e, BleEvent::Subscribe { uuid, .. } if uuid == AP_STATE_UUID))
+        .count();
+    assert_eq!(ap_state_subscriptions, 1, "subscribe before the seed read");
+}
+
+#[test]
+fn establish_wifi_ap_reads_once_then_accepts_the_terminal_notify() {
+    let (scope, _, events) = walk_wifi_ap_with_ap_state(
+        "4",
+        b"FUJIFILM-GFX100II-0C3E",
+        Some(b"secret-pass"),
+        vec![0x02, 0x80],
+        vec![vec![0x01, 0x80]],
     );
+    assert_eq!(scope.get("apState").map(String::as_str), Some("32769"));
+
+    let observations: Vec<&BleEvent> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                BleEvent::Subscribe { uuid, .. } | BleEvent::Read { uuid }
+                    if uuid == AP_STATE_UUID
+            )
+        })
+        .collect();
+    assert_eq!(observations.len(), 2, "one subscription and one seed read");
+    assert!(matches!(observations[0], BleEvent::Subscribe { .. }));
+    assert!(matches!(observations[1], BleEvent::Read { .. }));
 }
 
 #[test]

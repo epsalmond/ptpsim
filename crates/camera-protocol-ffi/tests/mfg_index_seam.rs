@@ -578,9 +578,8 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         other => panic!("expected Runtime launch value, got {other:?}"),
     }
 
-    // The await step read-polls apState (#179) and surfaces its capture +
-    // predicate field. This must not regress to notify-only, which timed out
-    // when the AP was already launched before the walk subscribed.
+    // The await step subscribes to apState and issues exactly one seed read
+    // (#202), closing the already-launched hole without a read-poll loop.
     let until_field = plan
         .steps
         .iter()
@@ -589,14 +588,19 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
                 source,
                 capture,
                 until,
+                interval_ms,
                 ..
             } => {
                 match source {
-                    AwaitSource::Read { gatt } => {
+                    AwaitSource::Notify {
+                        gatt, seed_read, ..
+                    } => {
                         assert_eq!(gatt, "A68E3F66-0FCC-4395-8D4C-AA980B5877FA");
+                        assert!(*seed_read, "apState notify carries one seed read");
                     }
-                    other => panic!("expected apState read source, got {other:?}"),
+                    other => panic!("expected seeded apState notify source, got {other:?}"),
                 }
+                assert_eq!(*interval_ms, 0, "notify sources do not carry poll cadence");
                 assert!(capture.iter().any(|c| c.name == "apState"));
                 Some(until.field.clone())
             }
@@ -1139,7 +1143,7 @@ families:
           steps:
             - bleConnect: {}
             - bleAwaitUntil:
-                source: { notify: { gatt: statusChar, mode: indicate } }
+                source: { notify: { gatt: statusChar, mode: indicate, seedRead: true } }
                 capture: { at: 0, length: 1, encoding: u8, name: status }
                 until: { status: { eq: 1 } }
                 onEach:
@@ -1174,9 +1178,14 @@ models:
             ..
         } => {
             match source {
-                AwaitSource::Notify { gatt, mode } => {
+                AwaitSource::Notify {
+                    gatt,
+                    mode,
+                    seed_read,
+                } => {
                     assert_eq!(gatt, "0000CC09-0000-1000-8000-00805F9B34FB");
                     assert!(matches!(mode, CccdMode::Indicate));
+                    assert!(*seed_read);
                 }
                 other => panic!("expected notify source, got {other:?}"),
             }

@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use camera_config::error::ConfigError;
 use camera_config::index::eval::{advert_matches, BleAdvertFacts};
 use camera_config::index::{
-    AdvertByteSource, AdvertPredicate, BleNotifyUntil, CccdMode, Confidence, Encoding, PredicateOp,
-    ResolvedManufacturerIndex, Signature, Step, StepValue, Transform,
+    AdvertByteSource, AdvertPredicate, AwaitSource, BleNotifyUntil, CccdMode, Confidence, Encoding,
+    PredicateOp, ResolvedManufacturerIndex, Signature, Step, StepValue, Transform,
 };
 use camera_config::ConfigStore;
 
@@ -1234,7 +1234,7 @@ models:
 fn ble_await_until_both_source_forms_parse_and_resolve_gatt() {
     // notify-source with onEach; gatt names in source + onEach resolve to UUIDs.
     let yaml = await_fixture(
-        r#"                source: { notify: { gatt: statusChar, mode: indicate } }
+        r#"                source: { notify: { gatt: statusChar, mode: indicate, seedRead: true } }
                 capture: { at: 0, length: 1, encoding: u8, name: status }
                 until: { status: { eq: 1 } }
                 onEach:
@@ -1253,12 +1253,17 @@ fn ble_await_until_both_source_forms_parse_and_resolve_gatt() {
     match &steps[1] {
         Step::BleAwaitUntil(s) => {
             match &s.source {
-                camera_config::index::AwaitSource::Notify { gatt, mode } => {
+                camera_config::index::AwaitSource::Notify {
+                    gatt,
+                    mode,
+                    seed_read,
+                } => {
                     assert_eq!(
                         gatt, "0000CC09-0000-1000-8000-00805F9B34FB",
                         "source gatt resolved"
                     );
                     assert_eq!(*mode, CccdMode::Indicate);
+                    assert!(*seed_read);
                 }
                 other => panic!("expected notify source, got {other:?}"),
             }
@@ -1304,6 +1309,34 @@ fn ble_await_until_both_source_forms_parse_and_resolve_gatt() {
         },
         other => panic!("expected bleAwaitUntil, got {other:?}"),
     }
+}
+
+#[test]
+fn ble_await_until_notify_seed_read_defaults_and_round_trips() {
+    let ordinary: AwaitSource =
+        serde_yaml::from_str("notify: { gatt: statusChar }").expect("ordinary notify parses");
+    assert!(matches!(
+        ordinary,
+        AwaitSource::Notify {
+            seed_read: false,
+            ..
+        }
+    ));
+    let ordinary_yaml = serde_yaml::to_string(&ordinary).expect("ordinary notify serializes");
+    assert!(
+        !ordinary_yaml.contains("seedRead"),
+        "false stays omitted: {ordinary_yaml}"
+    );
+
+    let seeded: AwaitSource =
+        serde_yaml::from_str("notify: { gatt: statusChar, mode: indicate, seedRead: true }")
+            .expect("seeded notify parses");
+    let seeded_yaml = serde_yaml::to_string(&seeded).expect("seeded notify serializes");
+    assert!(seeded_yaml.contains("seedRead: true"), "got: {seeded_yaml}");
+    assert_eq!(
+        serde_yaml::from_str::<AwaitSource>(&seeded_yaml).expect("seeded notify reparses"),
+        seeded
+    );
 }
 
 #[test]

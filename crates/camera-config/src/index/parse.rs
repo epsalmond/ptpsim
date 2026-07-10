@@ -979,10 +979,54 @@ impl<'de> serde::Deserialize<'de> for AcquireSource {
     }
 }
 
+impl serde::Serialize for super::types::AwaitSource {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use super::types::AwaitSource;
+        use serde::ser::SerializeMap;
+
+        let mut source = serializer.serialize_map(Some(1))?;
+        match self {
+            AwaitSource::Read { gatt } => source.serialize_entry("read", gatt)?,
+            AwaitSource::Notify {
+                gatt,
+                mode,
+                seed_read,
+            } => {
+                #[derive(serde::Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Notify<'a> {
+                    gatt: &'a str,
+                    mode: super::types::CccdMode,
+                    #[serde(skip_serializing_if = "is_false")]
+                    seed_read: bool,
+                }
+
+                fn is_false(value: &bool) -> bool {
+                    !*value
+                }
+
+                source.serialize_entry(
+                    "notify",
+                    &Notify {
+                        gatt,
+                        mode: *mode,
+                        seed_read: *seed_read,
+                    },
+                )?;
+            }
+        }
+        source.end()
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for super::types::AwaitSource {
     /// YAML form: a single-entry mapping — `read: <gatt>` (bare string) or
-    /// `notify: { gatt: <gatt>, mode: <notify|indicate>? }`. The gatt name is
-    /// resolved to a UUID by the loader's GATT pass before this typed decode.
+    /// `notify: { gatt: <gatt>, mode: <notify|indicate>?, seedRead: <bool>? }`.
+    /// The gatt name is resolved to a UUID by the loader's GATT pass before
+    /// this typed decode.
     fn deserialize<D>(d: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -1016,12 +1060,15 @@ impl<'de> serde::Deserialize<'de> for super::types::AwaitSource {
                     gatt: String,
                     #[serde(default)]
                     mode: super::types::CccdMode,
+                    #[serde(default)]
+                    seed_read: bool,
                 }
                 let r: R = serde_yaml::from_value(body)
                     .map_err(|e| D::Error::custom(format!("notify: {e}")))?;
                 Ok(AwaitSource::Notify {
                     gatt: r.gatt,
                     mode: r.mode,
+                    seed_read: r.seed_read,
                 })
             }
             other => Err(D::Error::custom(format!(

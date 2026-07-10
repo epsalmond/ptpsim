@@ -517,16 +517,21 @@ pub struct BleAwaitUntilStep {
 }
 
 /// Where `bleAwaitUntil` observes. Authored in YAML as a single-entry mapping
-/// (`read: <gatt>` / `notify: { gatt: <gatt>, mode: <notify|indicate>? }`);
+/// (`read: <gatt>` / `notify: { gatt: <gatt>, mode: <notify|indicate>?,
+/// seedRead: <bool>? }`);
 /// custom Deserialize dispatches on the key (see [`super::parse`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AwaitSource {
     /// Poll a readable characteristic; each iteration is a fresh read.
     Read { gatt: String },
     /// Consume a characteristic's notification stream (CCCD enabled with
-    /// `mode`); each iteration awaits the next notification.
-    Notify { gatt: String, mode: CccdMode },
+    /// `mode`). When `seed_read` is true, subscribe first, issue one read
+    /// through the same capture/predicate path, then remain notification-only.
+    Notify {
+        gatt: String,
+        mode: CccdMode,
+        seed_read: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
