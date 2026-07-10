@@ -257,14 +257,15 @@ families:
                 gatt: functionLaunchRequest
                 value: { runtime: launchMode, encoding: u16-le }
 
-            # Read-poll the camera AP reaching a launched state. Live reference app/GFX100 II
-            # capture proved AP_STATE is plain-readable before and after launch
+            # Subscribe for the terminal AP state, then issue one seed read through
+            # the same predicate. The seed recovers an AP that was already launched
+            # before subscription (#179); notifications carry the terminal value
+            # during a fresh launch without the BLE-contention regression caused by
+            # a 250 ms read poll (#202). Device evidence:
 
-            # #179), so a client that subscribes late or misses the notify can
-            # recover the current state. captureAs keeps the raw bytes for the
-            # app's fallback parsing.
+            # captureAs keeps the raw bytes for the app's fallback parsing.
             - bleAwaitUntil:
-                source: { read: apState }
+                source: { notify: { gatt: apState, seedRead: true } }
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }
                 captureAs: apStateRaw
                 # 0x8001 Launched (live-view / RemoteShooting) + 0x8003
@@ -277,7 +278,6 @@ families:
                 # brings up the AP autonomously and reaches launched within 20 s
                 # (operators APP_AP_HANDOVER_HANDSHAKE).
                 timeoutMs: 20000
-                intervalMs: 250
 
             # AP is up — read the credentials the app joins the network with.
             # Both are fixed-width, NUL-padded GATT string fields: utf8-cstring

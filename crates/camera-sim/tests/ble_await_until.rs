@@ -112,6 +112,88 @@ fn notify_observe_until_runs_on_each_then_exits_satisfied() {
 }
 
 #[test]
+fn seeded_notify_completes_from_one_already_satisfying_read() {
+    let idx = index_with_steps(
+        r#"          - bleAwaitUntil:
+              source: { notify: { gatt: launchState, seedRead: true } }
+              capture: { at: 0, length: 1, encoding: u8, name: wifiStatus }
+              until: { wifiStatus: { eq: 1 } }
+              timeoutMs: 5000
+"#,
+    );
+    let mut responder = BleResponder::new([CC09.to_string()]).serve_read(CC09, &[0x01]);
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("the seed read observes an already-launched state");
+
+    assert_eq!(
+        outcome.scope.get("wifiStatus").map(String::as_str),
+        Some("1")
+    );
+    let observations: Vec<&BleEvent> = responder
+        .log()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                BleEvent::Subscribe { uuid, .. } | BleEvent::Read { uuid } if uuid == CC09
+            )
+        })
+        .collect();
+    assert!(matches!(observations[0], BleEvent::Subscribe { .. }));
+    assert!(matches!(observations[1], BleEvent::Read { .. }));
+    assert_eq!(observations.len(), 2, "subscribe once, seed-read once");
+}
+
+#[test]
+fn seeded_notify_reads_once_then_waits_for_a_notification() {
+    let idx = index_with_steps(
+        r#"          - bleAwaitUntil:
+              source: { notify: { gatt: launchState, seedRead: true } }
+              capture: { at: 0, length: 1, encoding: u8, name: wifiStatus }
+              until: { wifiStatus: { eq: 1 } }
+              onEach:
+                - bleWrite: { gatt: launchRequest, value: { literal: "01" } }
+              timeoutMs: 5000
+"#,
+    );
+    let mut responder = BleResponder::new([CC09.to_string(), CC08.to_string()])
+        .serve_read(CC09, &[0x02])
+        .queue_notification(CC09, &[0x01]);
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("the terminal notification follows an unsatisfying seed");
+
+    assert_eq!(
+        outcome.scope.get("wifiStatus").map(String::as_str),
+        Some("1")
+    );
+    let reads = responder
+        .log()
+        .iter()
+        .filter(|event| matches!(event, BleEvent::Read { uuid } if uuid == CC09))
+        .count();
+    assert_eq!(reads, 1, "a seeded notify never becomes a read poll");
+    assert_eq!(
+        responder.written(CC08),
+        vec![&[0x01][..]],
+        "onEach runs once after the unsatisfying seed"
+    );
+}
+
+#[test]
 fn read_poll_until_exits_on_the_satisfying_read() {
     // Pure poll: read a color property until it flips to 1 (locked). Evolving
     // sequence [focusing, focusing, locked]; no onEach.

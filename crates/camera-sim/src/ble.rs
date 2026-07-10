@@ -595,26 +595,38 @@ fn run_await_until(
         message,
     };
     // CCCD-enable once up front for a notify source (the camera then streams).
-    if let AwaitSource::Notify { gatt, mode } = &s.source {
+    if let AwaitSource::Notify { gatt, mode, .. } = &s.source {
         ctx.responder
             .subscribe(gatt, *mode)
             .map_err(|e| err(e.to_string()))?;
     }
+    let mut seed_pending = matches!(
+        &s.source,
+        AwaitSource::Notify {
+            seed_read: true,
+            ..
+        }
+    );
     for _ in 0..MAX_AWAIT_ITERS {
         // Observe one value.
         let value = match &s.source {
             AwaitSource::Read { gatt } => {
                 ctx.responder.read(gatt).map_err(|e| err(e.to_string()))?
             }
-            AwaitSource::Notify { gatt, .. } => match ctx.responder.take_notification(gatt) {
-                Some(p) => p,
-                None => {
-                    return Err(err(
-                        "awaited notification never arrived (source exhausted before `until`)"
-                            .into(),
-                    ))
+            AwaitSource::Notify { gatt, .. } => {
+                if seed_pending {
+                    seed_pending = false;
+                    ctx.responder.read(gatt).map_err(|e| err(e.to_string()))?
+                } else {
+                    match ctx.responder.take_notification(gatt) {
+                        Some(p) => p,
+                        None => return Err(err(
+                            "awaited notification never arrived (source exhausted before `until`)"
+                                .into(),
+                        )),
+                    }
                 }
-            },
+            }
         };
         apply_value_captures(ctx, &value, &s.capture_as, &s.capture);
 

@@ -401,11 +401,18 @@ pub enum AcquireSource {
 }
 
 /// Where `bleAwaitUntil` observes (§11.15): poll a readable characteristic,
-/// or consume a characteristic's notification stream.
+/// or consume a characteristic's notification stream, optionally preceded by
+/// one seed read after the notification accept path is armed.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum AwaitSource {
-    Read { gatt: String },
-    Notify { gatt: String, mode: CccdMode },
+    Read {
+        gatt: String,
+    },
+    Notify {
+        gatt: String,
+        mode: CccdMode,
+        seed_read: bool,
+    },
 }
 
 /// CCCD subscription mode (§11.8): `ENABLE_NOTIFICATION_VALUE` vs
@@ -620,9 +627,14 @@ impl From<&ix::AwaitSource> for AwaitSource {
     fn from(s: &ix::AwaitSource) -> Self {
         match s {
             ix::AwaitSource::Read { gatt } => AwaitSource::Read { gatt: gatt.clone() },
-            ix::AwaitSource::Notify { gatt, mode } => AwaitSource::Notify {
+            ix::AwaitSource::Notify {
+                gatt,
+                mode,
+                seed_read,
+            } => AwaitSource::Notify {
                 gatt: gatt.clone(),
                 mode: (*mode).into(),
+                seed_read: *seed_read,
             },
         }
     }
