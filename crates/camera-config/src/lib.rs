@@ -21,18 +21,23 @@ pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{enrich, generate_proposal};
 pub use model::{
     parse_hex_bytes, parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource,
-    AwaitUntil, CameraIdentity, CameraManifest, CloseSession, Connection, ConnectionTransition,
-    Control, Descriptor, GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape,
-    LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media,
-    MediaFormat, Mode, ModeEntry, ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm,
-    PcssKnock, PostviewEvent, Property, PropertyValueEncoding, PropertyValueProfile,
-    PropertyValueProfileRow, PropertyValueRow, RecordLayout, SentinelFrame, SentinelMask,
-    SequenceGate, ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, TransportClose,
-    ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
+    CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedReceive,
+    CameraInitiatedTransfer, CameraInitiatedTrigger, CameraManifest, CloseSession, Connection,
+    ConnectionTransition, Control, Descriptor, GateFailure, GateRequirement, InitIdentity,
+    InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop,
+    ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, ObjectsAvailable, OpEffect,
+    Operation, Payload, PayloadForm, PcssKnock, PostviewEvent, Property, PropertyValueEncoding,
+    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
+    SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe, SocketBindings, SocketRole, Step,
+    StepParam, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource,
+    VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
-pub use store::ConfigStore;
+pub use store::{
+    ConfigStore, ResolvedBleLiteralWrite, ResolvedBleStateTrigger, ResolvedCameraInitiatedTransfer,
+};
 pub use trace::{LeafEval, PredicateOutcome, ResolutionTrace};
 pub use version::VersionScheme;
 
@@ -110,6 +115,112 @@ impl CameraManifest {
         };
         let defined_gates: std::collections::BTreeSet<&str> =
             self.sequence_gates.keys().map(|s| s.as_str()).collect();
+
+        let mut pre_mode_routes = std::collections::BTreeMap::new();
+        for (id, transfer) in &self.camera_initiated_transfers {
+            let ctx = format!("cameraInitiatedTransfer {id}");
+            check(&transfer.evidence, &ctx, &mut lints);
+
+            let connection = self.connections.get(&transfer.handoff.connection);
+            if connection.is_none() {
+                lints.push(Lint::warn(format!(
+                    "{ctx} references unknown connection '{}'",
+                    transfer.handoff.connection
+                )));
+            }
+            if !self.modes.contains_key(&transfer.receive.mode) {
+                lints.push(Lint::warn(format!(
+                    "{ctx} references unknown receive mode '{}'",
+                    transfer.receive.mode
+                )));
+            } else if connection.is_some_and(|c| !c.modes.contains(&transfer.receive.mode)) {
+                lints.push(Lint::warn(format!(
+                    "{ctx} receive mode '{}' is not available on connection '{}'",
+                    transfer.receive.mode, transfer.handoff.connection
+                )));
+            }
+            if connection
+                .and_then(|c| c.bindings.as_ref())
+                .and_then(|b| b.port_for(transfer.handoff.socket_role))
+                .is_none()
+            {
+                lints.push(Lint::warn(format!(
+                    "{ctx} socket role '{:?}' is not bound on connection '{}'",
+                    transfer.handoff.socket_role, transfer.handoff.connection
+                )));
+            }
+
+            if transfer.receive.head_index == 0 {
+                lints.push(Lint::warn(format!("{ctx} headIndex must be non-zero")));
+            }
+            validate_transfer_hex_values(transfer, &ctx, &mut lints);
+
+            let count_property = parse_hex_code(&transfer.receive.count.property);
+            let count_member = parse_hex_code(&transfer.receive.count.member);
+            match count_property.and_then(|code| self.property(code)) {
+                Some(prop) => {
+                    let contains_member = count_member.is_some_and(|member| {
+                        prop.payload.as_ref().is_some_and(|payload| {
+                            payload
+                                .members
+                                .iter()
+                                .any(|candidate| parse_hex_code(candidate) == Some(member))
+                        })
+                    });
+                    if !contains_member {
+                        lints.push(Lint::warn(format!(
+                            "{ctx} count member '{}' is absent from property '{}' record stream",
+                            transfer.receive.count.member, transfer.receive.count.property
+                        )));
+                    }
+                }
+                None => lints.push(Lint::warn(format!(
+                    "{ctx} references unknown count property '{}'",
+                    transfer.receive.count.property
+                ))),
+            }
+            if count_member.and_then(|code| self.property(code)).is_none() {
+                lints.push(Lint::warn(format!(
+                    "{ctx} references unknown count member property '{}'",
+                    transfer.receive.count.member
+                )));
+            }
+            for (label, code) in [
+                ("metadata operation", &transfer.receive.metadata.operation),
+                ("data operation", &transfer.receive.data.operation),
+            ] {
+                if parse_hex_code(code)
+                    .and_then(|code| self.operation(code))
+                    .is_none()
+                {
+                    lints.push(Lint::warn(format!(
+                        "{ctx} references unknown {label} '{code}'"
+                    )));
+                }
+            }
+            if parse_hex_code(&transfer.receive.data.chunk_limit_property)
+                .and_then(|code| self.property(code))
+                .is_none()
+            {
+                lints.push(Lint::warn(format!(
+                    "{ctx} references unknown chunk-limit property '{}'",
+                    transfer.receive.data.chunk_limit_property
+                )));
+            }
+
+            if transfer.receive.metadata.before_mode_entry {
+                let route = (
+                    transfer.handoff.connection.clone(),
+                    transfer.receive.metadata.operation.clone(),
+                    transfer.receive.head_index,
+                );
+                if let Some(previous) = pre_mode_routes.insert(route, id) {
+                    lints.push(Lint::warn(format!(
+                        "{ctx} has the same pre-mode metadata route as cameraInitiatedTransfer {previous}"
+                    )));
+                }
+            }
+        }
 
         for (code, op) in &self.operations {
             check(&op.evidence, &format!("operation {code}"), &mut lints);
@@ -192,6 +303,38 @@ impl CameraManifest {
             });
         }
         Ok(())
+    }
+}
+
+fn validate_transfer_hex_values(
+    transfer: &CameraInitiatedTransfer,
+    ctx: &str,
+    lints: &mut Vec<Lint>,
+) {
+    if transfer.trigger.states.is_empty() {
+        lints.push(Lint::warn(format!("{ctx} declares no trigger states")));
+    }
+    for (i, state) in transfer.trigger.states.iter().enumerate() {
+        if state.trigger_values.is_empty() {
+            lints.push(Lint::warn(format!(
+                "{ctx} trigger state {i} declares no triggerValues"
+            )));
+        }
+        for value in state.trigger_values.iter().chain(&state.baseline_values) {
+            if parse_hex_bytes(value).is_none() {
+                lints.push(Lint::warn(format!(
+                    "{ctx} trigger state {i} has invalid hex value '{value}'"
+                )));
+            }
+        }
+    }
+    if let Some(launch) = &transfer.handoff.function_launch {
+        if parse_hex_bytes(&launch.value).is_none() {
+            lints.push(Lint::warn(format!(
+                "{ctx} functionLaunch has invalid hex value '{}'",
+                launch.value
+            )));
+        }
     }
 }
 

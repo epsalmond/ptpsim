@@ -77,6 +77,73 @@ fn loader_requires_every_declared_model_body() {
     assert!(msg.contains("gfx100ii"), "got: {msg}");
 }
 
+#[test]
+fn real_manifest_exposes_resolved_camera_initiated_transfer() {
+    let transfers = store().camera_initiated_transfers("gfx100ii".into());
+    assert_eq!(transfers.len(), 1);
+    let transfer = &transfers[0];
+    assert_eq!(transfer.id, "autoImageTransfer");
+    assert!(matches!(
+        transfer.trigger.match_mode,
+        CameraInitiatedTriggerMatch::All
+    ));
+    assert_eq!(transfer.trigger.states.len(), 2);
+    assert_eq!(
+        transfer.trigger.states[0].gatt_uuid,
+        "A68E3F66-0FCC-4395-8D4C-AA980B5877FA"
+    );
+    assert_eq!(
+        transfer.trigger.states[0].trigger_values,
+        vec![vec![0x03, 0x80]]
+    );
+    assert_eq!(
+        transfer.trigger.states[0].baseline_values,
+        vec![vec![0x00, 0x80]]
+    );
+    assert_eq!(
+        transfer.trigger.states[1].gatt_uuid,
+        "BD17BA04-B76B-4892-A545-B73BA1F74DAE"
+    );
+    assert_eq!(
+        transfer.trigger.states[1].trigger_values,
+        vec![vec![0x01, 0x80]]
+    );
+
+    assert_eq!(transfer.handoff.connection, "app");
+    assert_eq!(transfer.handoff.socket_role, SocketRole::Command);
+    assert_eq!(
+        transfer.handoff.endpoint_host.as_deref(),
+        Some("192.168.0.1")
+    );
+    assert_eq!(transfer.handoff.endpoint_port, 55740);
+    assert!(transfer.handoff.cached_credentials_allowed);
+    let launch = transfer.handoff.function_launch.as_ref().unwrap();
+    assert_eq!(launch.gatt_uuid, "600655E6-3637-42F1-8FB2-44EFC5C63B13");
+    assert_eq!(launch.value, vec![0x03, 0x00]);
+    assert!(!launch.required);
+
+    assert_eq!(transfer.receive.mode, "reserved-photo-receive");
+    assert_eq!(transfer.receive.count_property, 0xd212);
+    assert_eq!(transfer.receive.count_member, 0xdf41);
+    assert_eq!(transfer.receive.head_index, 1);
+    assert_eq!(transfer.receive.metadata_operation, 0x1008);
+    assert!(transfer.receive.metadata_before_mode_entry);
+    assert_eq!(transfer.receive.data_operation, 0x101b);
+    assert_eq!(transfer.receive.chunk_limit_property, 0xd235);
+    assert!(matches!(
+        transfer.receive.completion,
+        CameraInitiatedCompletion::ReadToEof
+    ));
+}
+
+#[test]
+fn single_body_store_has_no_resolved_camera_initiated_transfers() {
+    let store = ConfigStore::from_bundle(data("fuji/gfx100ii/gfx100ii.yaml"), None).unwrap();
+    assert!(store
+        .camera_initiated_transfers("gfx100ii".into())
+        .is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // recognize() — BLE advert classification
 // ---------------------------------------------------------------------------
@@ -884,7 +951,7 @@ models:
         index_yaml.to_string(),
         vec![KeyValue {
             key: "tm1".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
+            value: tm1_body(),
         }],
     )
     .expect("synthetic index loads");

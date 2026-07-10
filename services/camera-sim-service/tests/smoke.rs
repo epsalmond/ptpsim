@@ -200,6 +200,26 @@ fn read_d621_handles(s: &mut TcpStream, tid: u32) -> Vec<u32> {
     r.ptp_array(|r| r.u32()).unwrap()
 }
 
+fn read_reserved_count(s: &mut TcpStream, tid: u32) -> u32 {
+    write_frame(s, &op(0x1015, tid, vec![0xd212]));
+    let bytes = read_data_reply(s);
+    let count = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+    (0..count)
+        .find_map(|i| {
+            let offset = 2 + i * 6;
+            let code = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+            (code == 0xdf41).then(|| {
+                u32::from_le_bytes([
+                    bytes[offset + 2],
+                    bytes[offset + 3],
+                    bytes[offset + 4],
+                    bytes[offset + 5],
+                ])
+            })
+        })
+        .expect("DF41 reserved count in D212")
+}
+
 fn pcss_shutter(s: &mut TcpStream, first_tid: u32) {
     let phases = [0x0001_0000u32, 0x0002_0000, 0x0000_0001];
     let mut tid = first_tid;
@@ -319,6 +339,73 @@ fn service_drives_image_import_over_tcp() {
         let _ = handle.await;
     });
     std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
+    let root = tmp_card_with_jpegs(2);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "reserved-transfer".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root,
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let command = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(server.run(rx));
+        (command, tx, task)
+    });
+
+    let mut stream = connect_ptpip(command_addr, "smoke");
+    open_session(&mut stream);
+    assert_eq!(read_reserved_count(&mut stream, 2), 2);
+
+    write_frame(&mut stream, &op(0x1008, 3, vec![1]));
+    let first = ptp_core::ObjectInfo::decode(&read_data_reply(&mut stream)).unwrap();
+    assert_eq!(first.filename, "DSCF0001.JPG");
+    set_prop(&mut stream, 4, 0xdf01, &21u16.to_le_bytes());
+    write_frame(&mut stream, &op(0x1015, 5, vec![0xdf29]));
+    assert_eq!(read_data_reply(&mut stream), 0u32.to_le_bytes());
+    set_prop(&mut stream, 6, 0xdf29, &3u32.to_le_bytes());
+
+    write_frame(
+        &mut stream,
+        &op(0x101b, 7, vec![1, 0, first.object_compressed_size]),
+    );
+    assert_eq!(
+        read_data_reply(&mut stream).len(),
+        first.object_compressed_size as usize
+    );
+    assert_eq!(read_reserved_count(&mut stream, 8), 1);
+
+    write_frame(&mut stream, &op(0x1008, 9, vec![1]));
+    let second = ptp_core::ObjectInfo::decode(&read_data_reply(&mut stream)).unwrap();
+    assert_eq!(second.filename, "DSCF0002.JPG");
+    write_frame(
+        &mut stream,
+        &op(0x101b, 10, vec![1, 0, second.object_compressed_size]),
+    );
+    read_data_reply(&mut stream);
+    assert_eq!(read_reserved_count(&mut stream, 11), 0);
+
+    write_frame(&mut stream, &op(0x1003, 12, vec![]));
+    read_ok(&mut stream);
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
 }
 
 #[test]

@@ -13,7 +13,7 @@ pub mod state;
 pub mod state_overlay;
 
 pub use ble::{walk_establishment, BleEvent, BleResponder, WalkOutcome};
-pub use engine::{Engine, Reply};
+pub use engine::{Engine, Reply, StreamCompletion};
 pub use fault::{Fault, FaultSet};
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
 pub use link::{CameraLink, SharedLink};
@@ -220,7 +220,9 @@ properties:
                 assert_eq!(response.code, 0x2001, "data reply should carry OK");
                 data
             }
-            Reply::DataStream { source, response } => {
+            Reply::DataStream {
+                source, response, ..
+            } => {
                 assert_eq!(response.code, 0x2001, "data-stream reply should carry OK");
                 source.read().expect("realize stream for assertion")
             }

@@ -3,7 +3,7 @@
 //! exist, which properties have which forms, and which workflow they belong to
 //! are all manifest data. The handlers here are generic PTP semantics.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camera_config::model::{Action, ScalarEncoding, Step, StepParam};
 use camera_config::{parse_hex_code, ActionVerb, CameraManifest};
@@ -34,6 +34,79 @@ struct TransferQueue {
     enqueue_per_shutter: u32,
     shutter_sequence: Option<Vec<GateMatcher>>,
     shutter_progress: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CameraInitiatedQueue {
+    handles: Vec<u32>,
+    head: usize,
+    generation: u64,
+    delivered: Vec<(u64, u64)>,
+}
+
+impl CameraInitiatedQueue {
+    fn new(handles: Vec<u32>) -> Self {
+        Self {
+            handles,
+            head: 0,
+            generation: 0,
+            delivered: Vec::new(),
+        }
+    }
+
+    fn head(&self) -> Option<u32> {
+        self.handles.get(self.head).copied()
+    }
+
+    fn remaining(&self) -> usize {
+        self.handles.len().saturating_sub(self.head)
+    }
+
+    fn acknowledge(&mut self, offset: u64, len: u64, object_size: u64) -> bool {
+        let end = offset.saturating_add(len).min(object_size);
+        if end > offset {
+            self.delivered.push((offset, end));
+            self.delivered.sort_unstable();
+            let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.delivered.len());
+            for (start, end) in self.delivered.drain(..) {
+                if let Some((_, previous_end)) = merged.last_mut() {
+                    if start <= *previous_end {
+                        *previous_end = (*previous_end).max(end);
+                        continue;
+                    }
+                }
+                merged.push((start, end));
+            }
+            self.delivered = merged;
+        }
+        let complete = object_size == 0
+            || self
+                .delivered
+                .first()
+                .is_some_and(|(start, end)| *start == 0 && *end >= object_size);
+        if complete {
+            self.head += 1;
+            self.generation = self.generation.wrapping_add(1);
+            self.delivered.clear();
+        }
+        complete
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamCompletion {
+    transfer_id: String,
+    generation: u64,
+    handle: u32,
+    offset: u64,
+    len: u64,
+    object_size: u64,
+}
+
+enum CameraQueueTarget {
+    None,
+    Head { transfer_id: String, handle: u32 },
+    Invalid,
 }
 
 impl TransferQueue {
@@ -113,6 +186,7 @@ pub enum Reply {
     DataStream {
         source: ByteSource,
         response: OperationResponse,
+        completion: Option<StreamCompletion>,
     },
     /// Write nothing and keep the command socket open, matching a camera-side
     /// no-response / timeout. Distinct from `Close`, which drops the socket.
@@ -127,6 +201,8 @@ pub struct Engine {
     state: CameraState,
     connection: String,
     transfer_queue: Option<TransferQueue>,
+    camera_initiated_queues: BTreeMap<String, CameraInitiatedQueue>,
+    selected_camera_initiated_transfer: Option<String>,
     faults: FaultSet,
     /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
     /// arms the session that function-launch brings up. Default armed (standalone).
@@ -139,16 +215,26 @@ impl Engine {
     pub fn new(manifest: CameraManifest, store: MediaStore) -> Self {
         let state = CameraState::from_manifest(&manifest);
         let gate_sequences = compile_gate_sequences(&manifest);
-        Engine {
+        let mut engine = Engine {
             manifest,
             gate_sequences,
             store,
             state,
             connection: Self::DEFAULT_CONNECTION.to_string(),
             transfer_queue: None,
+            camera_initiated_queues: BTreeMap::new(),
+            selected_camera_initiated_transfer: None,
             faults: FaultSet::default(),
             link: crate::link::SharedLink::default(),
+        };
+        let handles = engine.camera_initiated_media_handles();
+        for id in engine.manifest.camera_initiated_transfers.keys() {
+            engine
+                .camera_initiated_queues
+                .insert(id.clone(), CameraInitiatedQueue::new(handles.clone()));
         }
+        engine.sync_camera_initiated_counts();
+        engine
     }
 
     /// Bind the connection context for manifest-scoped behavior such as
@@ -316,6 +402,7 @@ impl Engine {
                 transaction_id: tid,
                 params,
             },
+            completion: None,
         }
     }
 
@@ -348,12 +435,16 @@ impl Engine {
         let reply = match req.code {
             op::OPEN_SESSION => {
                 self.state.reset_gates();
+                self.state.active_mode = None;
+                self.selected_camera_initiated_transfer = None;
                 self.state.session_open = true;
                 self.state.phase = Phase::SessionOpen;
                 Self::ok(tid)
             }
             op::CLOSE_SESSION => {
                 self.state.reset_gates();
+                self.state.active_mode = None;
+                self.selected_camera_initiated_transfer = None;
                 self.state.session_open = false;
                 self.state.phase = Phase::Closed;
                 Self::ok(tid)
@@ -371,19 +462,31 @@ impl Engine {
                 Self::data(tid, w.into_vec())
             }
             op::GET_OBJECT_INFO => {
-                if !self.object_handle_available(p(0)) {
-                    Self::err(tid, resp::INVALID_OBJECT_HANDLE)
-                } else {
-                    match self.store.object_info(p(0)) {
-                        Ok(oi) => {
-                            let mut w = Writer::new();
-                            if oi.encode(&mut w).is_err() {
-                                return Self::err(tid, resp::GENERAL_ERROR);
-                            }
-                            Self::data(tid, w.into_vec())
-                        }
-                        Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
+                let handle = match self.camera_initiated_metadata_target(req.code, p(0)) {
+                    CameraQueueTarget::Head {
+                        transfer_id,
+                        handle,
+                    } => {
+                        self.selected_camera_initiated_transfer = Some(transfer_id);
+                        handle
                     }
+                    CameraQueueTarget::Invalid => {
+                        return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
+                    }
+                    CameraQueueTarget::None if self.object_handle_available(p(0)) => p(0),
+                    CameraQueueTarget::None => {
+                        return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
+                    }
+                };
+                match self.store.object_info(handle) {
+                    Ok(oi) => {
+                        let mut w = Writer::new();
+                        if oi.encode(&mut w).is_err() {
+                            return Self::err(tid, resp::GENERAL_ERROR);
+                        }
+                        Self::data(tid, w.into_vec())
+                    }
+                    Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
                 }
             }
             op::GET_THUMB => {
@@ -398,10 +501,40 @@ impl Engine {
             }
             op::GET_PARTIAL_OBJECT => {
                 let offset = (p(1) as u64) | ((p(3) as u64) << 32);
-                match self.store.read_range(p(0), offset, p(2)) {
+                let (handle, completion_context) =
+                    match self.camera_initiated_data_target(req.code, p(0)) {
+                        CameraQueueTarget::Head {
+                            transfer_id,
+                            handle,
+                        } => (handle, Some(transfer_id)),
+                        CameraQueueTarget::Invalid => {
+                            return Self::err(tid, resp::INVALID_OBJECT_HANDLE);
+                        }
+                        CameraQueueTarget::None => (p(0), None),
+                    };
+                match self.store.read_range(handle, offset, p(2)) {
                     Ok(source) => {
                         let returned = source.len().min(u32::MAX as u64) as u32;
-                        Self::data_stream_with_params(tid, source, vec![returned])
+                        let completion = completion_context.and_then(|transfer_id| {
+                            let queue = self.camera_initiated_queues.get(&transfer_id)?;
+                            Some(StreamCompletion {
+                                transfer_id,
+                                generation: queue.generation,
+                                handle,
+                                offset,
+                                len: source.len(),
+                                object_size: self.store.object_size(handle).ok()?,
+                            })
+                        });
+                        Reply::DataStream {
+                            source,
+                            response: OperationResponse {
+                                code: resp::OK,
+                                transaction_id: tid,
+                                params: vec![returned],
+                            },
+                            completion,
+                        }
                     }
                     Err(_) => Self::err(tid, resp::INVALID_OBJECT_HANDLE),
                 }
@@ -486,10 +619,15 @@ impl Engine {
                 for member in member_codes {
                     self.state.resolve_pending(member);
                 }
-                // 0xd212 is a *computed* live-status bundle, not a stored value:
-                // assemble it from current state via the shared quirk primitive.
-                if code == 0xd212 {
-                    match self.status_d212() {
+                // Composite properties are computed record streams assembled
+                // from current member state, never opaque stored byte arrays.
+                if self
+                    .manifest
+                    .property(code)
+                    .and_then(|prop| prop.payload.as_ref())
+                    .is_some()
+                {
+                    match self.record_stream_property(code) {
                         Ok(bytes) => Self::data(tid, bytes),
                         // A manifest/codec width disagreement must be visible on
                         // the wire, not served as misframed bytes (#161).
@@ -644,6 +782,169 @@ impl Engine {
         if queue.shutter_progress >= sequence.len() {
             queue.shutter_progress = 0;
             queue.enqueue_next();
+        }
+    }
+
+    fn camera_initiated_metadata_target(&self, operation: u16, index: u32) -> CameraQueueTarget {
+        if self.state.phase == Phase::QueuedReceive {
+            let Some(id) = self.selected_camera_initiated_transfer.as_ref() else {
+                return CameraQueueTarget::Invalid;
+            };
+            let Some(transfer) = self.manifest.camera_initiated_transfers.get(id) else {
+                return CameraQueueTarget::Invalid;
+            };
+            if parse_hex_code(&transfer.receive.metadata.operation) != Some(operation) {
+                return CameraQueueTarget::None;
+            }
+            if transfer.receive.head_index != index {
+                return CameraQueueTarget::Invalid;
+            }
+            return self.camera_queue_head(id);
+        }
+
+        if self.state.phase != Phase::SessionOpen {
+            return CameraQueueTarget::None;
+        }
+        self.manifest
+            .camera_initiated_transfers
+            .iter()
+            .find(|(_, transfer)| {
+                transfer.handoff.connection == self.connection
+                    && transfer.receive.metadata.before_mode_entry
+                    && parse_hex_code(&transfer.receive.metadata.operation) == Some(operation)
+                    && transfer.receive.head_index == index
+            })
+            .map_or(CameraQueueTarget::None, |(id, _)| {
+                self.camera_queue_head(id)
+            })
+    }
+
+    fn camera_initiated_data_target(&self, operation: u16, index: u32) -> CameraQueueTarget {
+        if self.state.phase != Phase::QueuedReceive {
+            return CameraQueueTarget::None;
+        }
+        let Some(id) = self.selected_camera_initiated_transfer.as_ref() else {
+            return CameraQueueTarget::Invalid;
+        };
+        let Some(transfer) = self.manifest.camera_initiated_transfers.get(id) else {
+            return CameraQueueTarget::Invalid;
+        };
+        if parse_hex_code(&transfer.receive.data.operation) != Some(operation) {
+            return CameraQueueTarget::None;
+        }
+        if transfer.receive.head_index != index {
+            return CameraQueueTarget::Invalid;
+        }
+        self.camera_queue_head(id)
+    }
+
+    fn camera_queue_head(&self, id: &str) -> CameraQueueTarget {
+        self.camera_initiated_queues
+            .get(id)
+            .and_then(CameraInitiatedQueue::head)
+            .map_or(CameraQueueTarget::Invalid, |handle| {
+                CameraQueueTarget::Head {
+                    transfer_id: id.to_string(),
+                    handle,
+                }
+            })
+    }
+
+    /// Acknowledge a streamed range after the transport has written the entire
+    /// data phase and final OK response. Returns true only when the queue head
+    /// advanced; stale or duplicate tokens are ignored.
+    pub fn complete_stream(&mut self, completion: StreamCompletion) -> bool {
+        let Some(queue) = self
+            .camera_initiated_queues
+            .get_mut(&completion.transfer_id)
+        else {
+            return false;
+        };
+        if queue.generation != completion.generation || queue.head() != Some(completion.handle) {
+            return false;
+        }
+        let advanced = queue.acknowledge(completion.offset, completion.len, completion.object_size);
+        if advanced {
+            self.sync_camera_initiated_counts();
+        }
+        advanced
+    }
+
+    fn sync_camera_initiated_counts(&mut self) {
+        let counts: Vec<(u16, u32)> = self
+            .manifest
+            .camera_initiated_transfers
+            .iter()
+            .filter_map(|(id, transfer)| {
+                let code = parse_hex_code(&transfer.receive.count.member)?;
+                let count = u32::try_from(self.camera_initiated_queues.get(id)?.remaining())
+                    .unwrap_or(u32::MAX);
+                Some((code, count))
+            })
+            .collect();
+        for (code, count) in counts {
+            let datatype = datatype_of(
+                self.manifest
+                    .property(code)
+                    .and_then(|property| property.ptype.as_deref()),
+            );
+            self.state
+                .props
+                .insert(code, crate::state::typed(datatype, count as i64));
+        }
+    }
+
+    fn camera_initiated_media_handles(&self) -> Vec<u32> {
+        use ptp_core::codes::format::ASSOCIATION;
+        self.store
+            .handles(ObjectQuery::default())
+            .into_iter()
+            .filter(|handle| {
+                let Ok(info) = self.store.object_info(*handle) else {
+                    return false;
+                };
+                if info.object_format == ASSOCIATION {
+                    return false;
+                }
+                self.manifest
+                    .media
+                    .as_ref()
+                    .and_then(|media| {
+                        media.formats.iter().find(|(code, _)| {
+                            parse_hex_code(code.as_str()) == Some(info.object_format)
+                        })
+                    })
+                    .is_some_and(|(_, format)| format.is_photos_compatible && !format.is_movie)
+            })
+            .collect()
+    }
+
+    fn refresh_detected_mode(&mut self) {
+        let observed: camera_config::PropView = self
+            .state
+            .props
+            .iter()
+            .filter_map(|(code, value)| value_to_i64(value).map(|value| (*code, value)))
+            .collect();
+        let detected = self.manifest.detect_mode(&observed).map(str::to_string);
+        self.state.active_mode = detected.clone();
+        let transfer = detected.as_deref().and_then(|mode| {
+            self.manifest
+                .camera_initiated_transfers
+                .iter()
+                .find(|(_, transfer)| {
+                    transfer.handoff.connection == self.connection && transfer.receive.mode == mode
+                })
+                .map(|(id, _)| id.clone())
+        });
+        if let Some(id) = transfer {
+            self.selected_camera_initiated_transfer = Some(id);
+            self.state.phase = Phase::QueuedReceive;
+        } else {
+            self.selected_camera_initiated_transfer = None;
+            if self.state.phase == Phase::QueuedReceive {
+                self.state.phase = Phase::SessionOpen;
+            }
         }
     }
 
@@ -835,6 +1136,7 @@ impl Engine {
         }
         let value = self.normalized_property_write(code, prop, datatype, value);
         self.state.props.insert(code, value);
+        self.refresh_detected_mode();
         Self::ok(tid)
     }
 
@@ -902,17 +1204,16 @@ impl Engine {
             .unwrap_or(false)
     }
 
-    /// Assemble the `0xd212` live-status record stream from current state. The
-    /// member set AND field widths come from the property's payload descriptor
-    /// (manifest data, not a Fuji branch); each member's current value is
-    /// emitted at the declared value width, 0 when unset. A manifest declaring
-    /// widths the codec can't honor is an error, never a silent misread (#161).
-    /// See operators `D212_TIGHT_FORMAT`.
-    fn status_d212(&self) -> Result<Vec<u8>, protocol_primitives::quirk::RecordStreamError> {
+    /// Assemble a manifest-declared record-stream property from current member
+    /// state. Field widths and members are data; no property code is special.
+    fn record_stream_property(
+        &self,
+        property: u16,
+    ) -> Result<Vec<u8>, protocol_primitives::quirk::RecordStreamError> {
         use protocol_primitives::quirk::{record_stream, RecordStreamLayout};
         let Some(payload) = self
             .manifest
-            .property(0xd212)
+            .property(property)
             .and_then(|p| p.payload.as_ref())
         else {
             return record_stream(&[], &RecordStreamLayout::D212);

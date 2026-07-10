@@ -13,7 +13,10 @@ use std::sync::Arc;
 
 use crate::error::ConfigError;
 use crate::index::ResolvedManufacturerIndex;
-use crate::model::{CameraManifest, ManufacturerDefaults, ValuePolicy};
+use crate::model::{
+    parse_hex_bytes, parse_hex_code, CameraManifest, ManufacturerDefaults, SocketRole,
+    TransferCompletion, TriggerMatch, ValuePolicy,
+};
 use crate::version::VersionScheme;
 
 #[derive(Debug, Clone)]
@@ -28,6 +31,47 @@ pub struct ConfigStore {
     /// loads. On manufacturer-index loads, the primary body in `manifest` is
     /// also present here under its model id.
     pub bodies: BTreeMap<String, CameraManifest>,
+    /// Manufacturer-index-resolved camera-initiated transfers by model id and
+    /// transfer id. Empty for single-body stores, which lack a shared GATT catalog.
+    pub resolved_camera_initiated_transfers:
+        BTreeMap<String, BTreeMap<String, ResolvedCameraInitiatedTransfer>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCameraInitiatedTransfer {
+    pub id: String,
+    pub trigger_match: TriggerMatch,
+    pub trigger_states: Vec<ResolvedBleStateTrigger>,
+    pub connection: String,
+    pub socket_role: SocketRole,
+    pub endpoint_host: Option<String>,
+    pub endpoint_port: u16,
+    pub cached_credentials_allowed: bool,
+    pub function_launch: Option<ResolvedBleLiteralWrite>,
+    pub mode: String,
+    pub count_property: u16,
+    pub count_member: u16,
+    pub head_index: u32,
+    pub metadata_operation: u16,
+    pub metadata_before_mode_entry: bool,
+    pub data_operation: u16,
+    pub chunk_limit_property: u16,
+    pub completion: TransferCompletion,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBleStateTrigger {
+    pub gatt_uuid: String,
+    pub trigger_values: Vec<Vec<u8>>,
+    pub baseline_values: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBleLiteralWrite {
+    pub gatt_uuid: String,
+    pub value: Vec<u8>,
+    pub required: bool,
 }
 
 impl ConfigStore {
@@ -38,6 +82,7 @@ impl ConfigStore {
             manufacturer: None,
             index: None,
             bodies: BTreeMap::new(),
+            resolved_camera_initiated_transfers: BTreeMap::new(),
         }
     }
 
@@ -89,11 +134,36 @@ impl ConfigStore {
             .get(&primary_id)
             .cloned()
             .expect("loop above inserted every model id");
+        let mut resolved_camera_initiated_transfers = BTreeMap::new();
+        for model_view in &index.models {
+            let body = bodies
+                .get(&model_view.id)
+                .expect("all indexed model bodies were loaded");
+            let gatt = model_view
+                .ble
+                .as_ref()
+                .map(|ble| &ble.gatt)
+                .cloned()
+                .unwrap_or_default();
+            let mut transfers = BTreeMap::new();
+            for (transfer_id, transfer) in &body.camera_initiated_transfers {
+                let resolved = resolve_camera_initiated_transfer(
+                    &model_view.id,
+                    transfer_id,
+                    transfer,
+                    &gatt,
+                    body,
+                )?;
+                transfers.insert(transfer_id.clone(), resolved);
+            }
+            resolved_camera_initiated_transfers.insert(model_view.id.clone(), transfers);
+        }
         Ok(Arc::new(ConfigStore {
             manifest,
             manufacturer: None,
             index: Some(index),
             bodies,
+            resolved_camera_initiated_transfers,
         }))
     }
 
@@ -102,6 +172,13 @@ impl ConfigStore {
     /// `bodies` map).
     pub fn body(&self, model_id: &str) -> Option<&CameraManifest> {
         self.bodies.get(model_id)
+    }
+
+    pub fn camera_initiated_transfers(
+        &self,
+        model_id: &str,
+    ) -> Option<&BTreeMap<String, ResolvedCameraInitiatedTransfer>> {
+        self.resolved_camera_initiated_transfers.get(model_id)
     }
 
     /// The version-ordering scheme this camera uses: the manufacturer's
@@ -141,6 +218,124 @@ impl ConfigStore {
             .map(|(id, _)| id.as_str())
             .collect()
     }
+}
+
+fn resolve_camera_initiated_transfer(
+    model_id: &str,
+    transfer_id: &str,
+    transfer: &crate::model::CameraInitiatedTransfer,
+    gatt: &BTreeMap<String, String>,
+    body: &CameraManifest,
+) -> Result<ResolvedCameraInitiatedTransfer, ConfigError> {
+    let path = format!("models.{model_id}.cameraInitiatedTransfers.{transfer_id}");
+    let resolve_gatt = |name: &str, suffix: &str| {
+        crate::index::parse::resolve_one_gatt_name(name, gatt, &format!("{path}.{suffix}"))
+    };
+    let parse_bytes = |value: &str, suffix: &str| {
+        parse_hex_bytes(value).ok_or_else(|| ConfigError::Validation {
+            path: format!("{path}.{suffix}"),
+            message: format!("invalid hex bytes '{value}'"),
+        })
+    };
+    let parse_code = |value: &str, suffix: &str| {
+        parse_hex_code(value).ok_or_else(|| ConfigError::Validation {
+            path: format!("{path}.{suffix}"),
+            message: format!("invalid PTP code '{value}'"),
+        })
+    };
+
+    let trigger_states = transfer
+        .trigger
+        .states
+        .iter()
+        .enumerate()
+        .map(|(i, state)| {
+            Ok(ResolvedBleStateTrigger {
+                gatt_uuid: resolve_gatt(&state.gatt, &format!("trigger.states[{i}]"))?,
+                trigger_values: state
+                    .trigger_values
+                    .iter()
+                    .enumerate()
+                    .map(|(j, value)| {
+                        parse_bytes(value, &format!("trigger.states[{i}].triggerValues[{j}]"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                baseline_values: state
+                    .baseline_values
+                    .iter()
+                    .enumerate()
+                    .map(|(j, value)| {
+                        parse_bytes(value, &format!("trigger.states[{i}].baselineValues[{j}]"))
+                    })
+                    .collect::<Result<_, _>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    let connection = body
+        .connections
+        .get(&transfer.handoff.connection)
+        .ok_or_else(|| ConfigError::Validation {
+            path: format!("{path}.handoff.connection"),
+            message: format!("unknown connection '{}'", transfer.handoff.connection),
+        })?;
+    let bindings = connection
+        .bindings
+        .as_ref()
+        .ok_or_else(|| ConfigError::Validation {
+            path: format!("{path}.handoff.socketRole"),
+            message: "connection has no socket bindings".to_string(),
+        })?;
+    let endpoint_port = bindings
+        .port_for(transfer.handoff.socket_role)
+        .ok_or_else(|| ConfigError::Validation {
+            path: format!("{path}.handoff.socketRole"),
+            message: format!(
+                "connection does not bind role '{:?}'",
+                transfer.handoff.socket_role
+            ),
+        })?;
+
+    let function_launch = transfer
+        .handoff
+        .function_launch
+        .as_ref()
+        .map(|launch| {
+            Ok(ResolvedBleLiteralWrite {
+                gatt_uuid: resolve_gatt(&launch.gatt, "handoff.functionLaunch")?,
+                value: parse_bytes(&launch.value, "handoff.functionLaunch.value")?,
+                required: launch.required,
+            })
+        })
+        .transpose()?;
+
+    Ok(ResolvedCameraInitiatedTransfer {
+        id: transfer_id.to_string(),
+        trigger_match: transfer.trigger.match_mode,
+        trigger_states,
+        connection: transfer.handoff.connection.clone(),
+        socket_role: transfer.handoff.socket_role,
+        endpoint_host: bindings.host.clone(),
+        endpoint_port,
+        cached_credentials_allowed: transfer.handoff.cached_credentials_allowed,
+        function_launch,
+        mode: transfer.receive.mode.clone(),
+        count_property: parse_code(&transfer.receive.count.property, "receive.count.property")?,
+        count_member: parse_code(&transfer.receive.count.member, "receive.count.member")?,
+        head_index: transfer.receive.head_index,
+        metadata_operation: parse_code(
+            &transfer.receive.metadata.operation,
+            "receive.metadata.operation",
+        )?,
+        metadata_before_mode_entry: transfer.receive.metadata.before_mode_entry,
+        data_operation: parse_code(&transfer.receive.data.operation, "receive.data.operation")?,
+        chunk_limit_property: parse_code(
+            &transfer.receive.data.chunk_limit_property,
+            "receive.data.chunkLimitProperty",
+        )?,
+        completion: transfer.receive.completion,
+        evidence: transfer.evidence.clone(),
+    })
 }
 
 #[cfg(test)]

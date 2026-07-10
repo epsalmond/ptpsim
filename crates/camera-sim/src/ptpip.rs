@@ -216,6 +216,10 @@ impl Ctx<'_> {
             let params = self.resolve_params(&step.params).map_err(err)?;
             let reply = self.issue_op(code, params);
             check_ok(&reply, code, step.tolerant).map_err(err)?;
+            let completion = match &reply {
+                Reply::DataStream { completion, .. } => completion.clone(),
+                _ => None,
+            };
             if response_code(&reply) == Some(resp::OK) {
                 if let Err(message) = self.apply_captures(&step.captures, code, &reply) {
                     if !step.tolerant {
@@ -227,6 +231,9 @@ impl Ctx<'_> {
                             return Err(err(message));
                         }
                     }
+                }
+                if let Some(completion) = completion {
+                    self.engine.complete_stream(completion);
                 }
             }
             Ok(())

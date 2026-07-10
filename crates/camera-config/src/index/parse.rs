@@ -295,7 +295,7 @@ fn resolve_gatt_field(
 }
 
 /// Resolve a single symbolic GATT name to its UUID (or accept an inline UUID).
-fn resolve_one_gatt_name(
+pub(crate) fn resolve_one_gatt_name(
     name: &str,
     gatt: &BTreeMap<String, String>,
     path_ctx: &str,

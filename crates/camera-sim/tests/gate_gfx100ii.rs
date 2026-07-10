@@ -8,8 +8,8 @@ use camera_config::{
     ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam,
 };
 use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
-use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Fault, Phase, Reply};
-use ptp_core::{DeviceInfo, OperationRequest, Reader};
+use camera_sim::{walk_ptpip, walk_ptpip_in, Engine, Fault, Phase, Reply, StreamCompletion};
+use ptp_core::{DeviceInfo, ObjectInfo, OperationRequest, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -29,6 +29,21 @@ fn engine() -> Engine {
     let dir = root.join("DCIM/100_FUJI");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("DSCF0001.JPG"), b"\xFF\xD8HELLOJPEG\xFF\xD9").unwrap();
+    let mut store = MediaStore::open(&root).unwrap();
+    store.scan().unwrap();
+    Engine::new(consolidated(), store)
+}
+
+fn engine_with_two_jpegs() -> Engine {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("ptpsim-reserved-{nanos}"));
+    let dir = root.join("DCIM/100_FUJI");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("DSCF0001.JPG"), b"\xFF\xD8FIRST-JPEG\xFF\xD9").unwrap();
+    std::fs::write(dir.join("DSCF0002.JPG"), b"\xFF\xD8SECOND-JPEG\xFF\xD9").unwrap();
     let mut store = MediaStore::open(&root).unwrap();
     store.scan().unwrap();
     Engine::new(consolidated(), store)
@@ -87,7 +102,9 @@ fn data_of(reply: Reply) -> Vec<u8> {
             assert_eq!(response.code, 0x2001, "OK expected");
             data
         }
-        Reply::DataStream { source, response } => {
+        Reply::DataStream {
+            source, response, ..
+        } => {
             assert_eq!(response.code, 0x2001, "OK expected");
             source.read().expect("realize stream")
         }
@@ -116,9 +133,25 @@ fn read_u32(e: &mut Engine, tid: u32, code: u16) -> u32 {
 
 fn stream_of(reply: Reply) -> (ByteSource, Vec<u32>) {
     match reply {
-        Reply::DataStream { source, response } => {
+        Reply::DataStream {
+            source, response, ..
+        } => {
             assert_eq!(response.code, 0x2001, "OK expected");
             (source, response.params)
+        }
+        other => panic!("expected DataStream, got {other:?}"),
+    }
+}
+
+fn stream_with_completion(reply: Reply) -> (Vec<u8>, Option<StreamCompletion>) {
+    match reply {
+        Reply::DataStream {
+            source,
+            response,
+            completion,
+        } => {
+            assert_eq!(response.code, 0x2001, "OK expected");
+            (source.read().expect("realize stream"), completion)
         }
         other => panic!("expected DataStream, got {other:?}"),
     }
@@ -140,6 +173,91 @@ fn decode_record_stream(b: &[u8]) -> Vec<(u16, u32)> {
         .collect()
 }
 
+fn reserved_count(e: &mut Engine, tid: u32) -> u32 {
+    let records = decode_record_stream(&data_of(
+        e.on_operation(&req(0x1015, tid, vec![0xd212]), None),
+    ));
+    records
+        .into_iter()
+        .find_map(|(code, value)| (code == 0xdf41).then_some(value))
+        .expect("DF41 is present in D212")
+}
+
+#[test]
+fn camera_initiated_queue_reuses_head_only_after_acknowledged_eof() {
+    let mut e = engine_with_two_jpegs();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_eq!(reserved_count(&mut e, 2), 2);
+
+    let first_info =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 3, vec![1]), None))).unwrap();
+    assert_eq!(first_info.filename, "DSCF0001.JPG");
+
+    write_u16(&mut e, 4, 0xdf01, 21);
+    assert_eq!(e.phase(), Phase::QueuedReceive);
+    assert_eq!(read_u32(&mut e, 5, 0xdf29), 0);
+    write_u32(&mut e, 6, 0xdf29, 3);
+    assert_eq!(read_u32(&mut e, 7, 0xd235), 0x00bf_ffe0);
+
+    let first_size = first_info.object_compressed_size;
+    let (prefix, prefix_completion) =
+        stream_with_completion(e.on_operation(&req(0x101b, 8, vec![1, 0, 4]), None));
+    assert_eq!(prefix.len(), 4);
+    assert!(!e.complete_stream(prefix_completion.unwrap()));
+    assert_eq!(reserved_count(&mut e, 9), 2);
+
+    let (suffix, suffix_completion) =
+        stream_with_completion(e.on_operation(&req(0x101b, 10, vec![1, 4, first_size - 4]), None));
+    assert_eq!(suffix.len(), (first_size - 4) as usize);
+    assert!(e.complete_stream(suffix_completion.unwrap()));
+    assert_eq!(reserved_count(&mut e, 11), 1);
+
+    let second_info =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 12, vec![1]), None))).unwrap();
+    assert_eq!(second_info.filename, "DSCF0002.JPG");
+    let second_size = second_info.object_compressed_size;
+    let (_, completion) =
+        stream_with_completion(e.on_operation(&req(0x101b, 13, vec![1, 0, second_size]), None));
+    let duplicate = completion.clone().unwrap();
+    assert!(e.complete_stream(completion.unwrap()));
+    assert!(!e.complete_stream(duplicate));
+    assert_eq!(reserved_count(&mut e, 14), 0);
+
+    assert!(matches!(
+        e.on_operation(&req(0x1008, 15, vec![1]), None),
+        Reply::Response(ref response) if response.code == 0x2009
+    ));
+    let public_files = e
+        .store()
+        .handles(ObjectQuery::default())
+        .into_iter()
+        .filter(|handle| {
+            e.store()
+                .object_info(*handle)
+                .is_ok_and(|info| info.object_format != ptp_core::codes::format::ASSOCIATION)
+        })
+        .count();
+    assert_eq!(
+        public_files, 2,
+        "reserved drains do not delete card objects"
+    );
+    assert_ok(&e.on_operation(&req(0x1003, 16, vec![]), None));
+}
+
+#[test]
+fn camera_initiated_tail_only_read_does_not_dequeue() {
+    let mut e = engine_with_two_jpegs();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    let info =
+        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 2, vec![1]), None))).unwrap();
+    write_u16(&mut e, 3, 0xdf01, 21);
+    let size = info.object_compressed_size;
+    let (_, completion) =
+        stream_with_completion(e.on_operation(&req(0x101b, 4, vec![1, size - 2, 2]), None));
+    assert!(!e.complete_stream(completion.unwrap()));
+    assert_eq!(reserved_count(&mut e, 5), 2);
+}
+
 #[test]
 fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
     let mut e = engine();
@@ -149,9 +267,9 @@ fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
     // hand-coded blob — its members come from the payload descriptor (#51).
     let bytes = data_of(e.on_operation(&req(0x1015, 2, vec![0xd212]), None));
     let records = decode_record_stream(&bytes);
-    assert_eq!(records.len(), 26, "all 26 descriptor members emitted");
+    assert_eq!(records.len(), 27, "all 27 descriptor members emitted");
     // The named sub-fields the bundle carries survive into the stream.
-    for code in [0x5007u16, 0xd17c, 0xd209, 0xd02a] {
+    for code in [0x5007u16, 0xd17c, 0xd209, 0xd02a, 0xdf41] {
         assert!(
             records.iter().any(|(c, _)| *c == code),
             "member {code:#06x} present in the stream"

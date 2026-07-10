@@ -401,8 +401,10 @@ Responsibilities:
   tables. Workflow states/gates are data; the interpreter is generic.
 - Generic operation handlers (GetDeviceInfo / handles / partial-object /
   propdesc / set-prop) bound to the manifest + media-store.
+- Camera-initiated pull queues keyed by manifest transfer id. These queues use
+  fixed external head indices and never alias public card enumeration handles.
 - A property engine including generic vendor-step ("advance within an ordered
-  value set") and manifest-defined readback (e.g. `0xd212`).
+  value set") and manifest-defined record-stream readback (e.g. `0xd212`).
 - Generic event emission (focus, capture, object-added, postview, teardown) from
   manifest `events` triggers.
 - Script execution; deterministic virtual clock; scenario load + reset;
@@ -1347,6 +1349,12 @@ Simulator modes:
   `0x1008`/`0x100A`/`0x1009` inspect or pull them, and `0x100B` drains them.
   The default queue is seeded at startup; `--pcss-shutter-enqueue-count N`
   starts empty and adds media handles after each manifest shutter sequence.
+- Camera-initiated media transfer is a separate pull queue. BLE only signals
+  availability and handoff state; the app opens the declared PTP/IP endpoint and
+  requests the fixed queue head. No image bytes are emitted unsolicited.
+- A streamed head advances only after the service writes all object bytes and
+  the final successful PTP response. Partial reads and transport failures remain
+  retryable and do not change the queue.
 
 PCSS must live behind a manifest transport entry because ports, callback
 behavior, and one-shot-per-boot quirks can vary by model and firmware.
@@ -1498,6 +1506,8 @@ Initial targets for cloud review instances:
 - Idle RSS under 50 MB per simulator instance.
 - Live-view streaming without buffering more than two frames per session.
 - File downloads use bounded chunk buffers.
+- Stream completion is acknowledged back to the engine only after the transport
+  writer successfully emits both the data phase and final response.
 - Five simultaneous reviewers on a 1 GB instance.
 - Structured log volume capped or sampled for long live-view runs.
 

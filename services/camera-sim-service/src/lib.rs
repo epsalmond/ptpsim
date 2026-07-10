@@ -16,13 +16,15 @@ use camera_config::{parse_hex_code, CameraManifest, LiveViewDeliveryKind, PcssKn
 use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::StateOverlay;
-use camera_sim::{AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply};
+use camera_sim::{
+    AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply, StreamCompletion,
+};
 use protocol_primitives::{
     fuji_framing, parse_pcss_discovery, parse_pcss_init, pcss_notify_message,
 };
 use ptp_core::codes::{op, resp};
 use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpCodec, PtpIpPacket};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
@@ -731,7 +733,11 @@ async fn handle_command_conn(
             // completion is only meaningful to a listening client).
             let _ = event_tx.send(code);
         }
-        write_reply(&mut stream, &req, reply, &metrics).await?;
+        if let Some(completion) = write_reply(&mut stream, &req, reply, &metrics).await? {
+            if engine.lock().await.complete_stream(completion) {
+                state_dirty.notify_one();
+            }
+        }
     }
     Ok(())
 }
@@ -880,12 +886,12 @@ async fn collect_data_in(
 /// bounded chunk buffers") even for a multi-GB object.
 const DATA_CHUNK_BYTES: usize = 1024 * 1024;
 
-async fn write_reply(
-    stream: &mut TcpStream,
+async fn write_reply<W: AsyncWrite + Unpin>(
+    stream: &mut W,
     req: &OperationRequest,
     reply: Reply,
     metrics: &Metrics,
-) -> std::io::Result<()> {
+) -> std::io::Result<Option<StreamCompletion>> {
     match reply {
         Reply::Response(resp) => {
             let bytes =
@@ -903,17 +909,22 @@ async fn write_reply(
             stream.write_all(&response_bytes).await?;
             metrics.record_write(response_bytes.len());
         }
-        Reply::DataStream { source, response } => {
+        Reply::DataStream {
+            source,
+            response,
+            completion,
+        } => {
             stream_data_phase(stream, req.code, req.transaction_id, &source, metrics).await?;
             let response_bytes =
                 fuji_framing::encode(&PtpIpPacket::OperationResponse(response)).map_err(to_io)?;
             stream.write_all(&response_bytes).await?;
             metrics.record_write(response_bytes.len());
+            return Ok(completion);
         }
         Reply::NoResponse => {}
         Reply::Close => {}
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Emit the data phase as a single type-2 `Data` frame — the whole payload
@@ -923,8 +934,8 @@ async fn write_reply(
 /// read at a time, so peak in-process allocation stays bounded regardless of
 /// `source.len()` even though the client sees a single frame. `op` is echoed in
 /// the frame's code field.
-async fn stream_data_phase(
-    stream: &mut TcpStream,
+async fn stream_data_phase<W: AsyncWrite + Unpin>(
+    stream: &mut W,
     op: u16,
     transaction_id: u32,
     source: &ByteSource,
@@ -949,6 +960,12 @@ async fn stream_data_phase(
         offset += chunk.len() as u64;
         stream.write_all(&chunk).await?;
         metrics.record_write(chunk.len());
+    }
+    if offset != total_length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "stream source ended before its declared length",
+        ));
     }
     Ok(())
 }
@@ -975,5 +992,65 @@ fn role_bind(
             invalid_config(format!("invalid manifest {role} port {port}: {e}"))
         })?)),
         (None, None) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use super::*;
+
+    struct FailAfter {
+        remaining: usize,
+    }
+
+    impl AsyncWrite for FailAfter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.remaining == 0 {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "injected writer failure",
+                )));
+            }
+            let written = self.remaining.min(buf.len());
+            self.remaining -= written;
+            Poll::Ready(Ok(written))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_stream_write_cannot_return_a_completion() {
+        let req = OperationRequest {
+            data_phase_info: 1,
+            code: op::GET_PARTIAL_OBJECT,
+            transaction_id: 7,
+            params: vec![1, 0, 32],
+        };
+        let reply = Reply::DataStream {
+            source: ByteSource::Memory(vec![0x5a; 32]),
+            response: ptp_core::OperationResponse {
+                code: resp::OK,
+                transaction_id: 7,
+                params: vec![32],
+            },
+            completion: None,
+        };
+        let mut writer = FailAfter { remaining: 14 };
+        let result = write_reply(&mut writer, &req, reply, &Metrics::default()).await;
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
     }
 }

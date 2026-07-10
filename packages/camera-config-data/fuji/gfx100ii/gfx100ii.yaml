@@ -55,6 +55,9 @@ evidence:
 
 
 
+
+
+
 sentinels:
   # PTP/IP length-8 frame with body 0xffffffff. Sent before the final FIN when
   # reopening image-transfer so the camera holds its Wi-Fi AP up (#82).
@@ -66,6 +69,29 @@ sequenceGates:
   # a final D212 after it; D22B's value remains semantically opaque (#181).
   imageImportBootstrap:
     evidence: [docFujiPtpPropReference, docImageTransfer]
+
+cameraInitiatedTransfers:
+  autoImageTransfer:
+    trigger:
+      match: all
+      states:
+        - { gatt: apState, triggerValues: ["0380"], baselineValues: ["0080"] }
+        - { gatt: transferState, triggerValues: ["0180"], baselineValues: ["0080"] }
+    handoff:
+      connection: app
+      socketRole: command
+      cachedCredentialsAllowed: true
+      functionLaunch: { gatt: functionLaunchRequest, value: "0300", required: false }
+    receive:
+      mode: reserved-photo-receive
+      count: { property: "0xd212", member: "0xdf41" }
+      headIndex: 1
+      metadata: { operation: "0x1008", beforeModeEntry: true }
+      data: { operation: "0x101b", chunkLimitProperty: "0xd235" }
+      completion: readToEof
+    # One-object drain is wire-confirmed. Reusing index 1 for the next head and
+    # decrementing DF41 after EOF are inferred from reference app's static receive loop.
+    evidence: [wireAutoImageTransfer, wireBleAutoTransfer, staticAutoImageTransfer]
 
 # Connection-name convention:
 #   `app`             = reference-app PTP/IP on :55740 (BLE -> camera Wi-Fi AP -> 82B WMB-tail init).
@@ -95,11 +121,12 @@ connections:
     # stream owns the listener on that edge.
     commandListenerVolatile: true
     discovery: { mechanism: ble, announces: camera }
-    modes: [shooting/stills, shooting/video, image-transfer]
+    modes: [shooting/stills, shooting/video, image-transfer, reserved-photo-receive]
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
     # live-view exercises both sockets, so this assignment is authoritative. Resolved
     # ports (not offsets) so a consumer binds by role and deletes the Fuji +1/+2 math.
     bindings:
+      host: 192.168.0.1
       command: 55740                 # FujiPTPIP.defaultPort
       event: 55741                   # command + 1 (live-view event socket)
       liveView: 55742                # command + 2 (through-picture stream)
@@ -152,6 +179,11 @@ connections:
         from: shooting/video
         steps:
           - { setProp: "0xd246", value: 0 }                  # 0 = stills
+      - to: reserved-photo-receive  # auto-transfer private queue, not card image import
+        steps:
+          - { setProp: "0xdf01", value: 21 }
+          - { getProp: "0xdf29" }
+          - { setProp: "0xdf29", value: 3 }
       - to: image-transfer            # cold entry to image-import (no live-view active)
         # Ground truth: FujiCameraAPISession.enterImageImportModeUnlocked + IMAGE_TRANSFER_FW230.
         steps:
@@ -557,6 +589,9 @@ modes:
   image-transfer:
     capabilities: [browse, download]
     detect: { prop: "0xdf01", eq: 0x14 }
+  reserved-photo-receive:
+    capabilities: [download]
+    detect: { prop: "0xdf01", eq: 21 }
   remote-trigger:                     # screen STAYS ON (vs shooting/stills screenTakeover).
     # Transport-independent: reached over BLE now, and over WirelessTether PTP/IP later
     # (same camera mode, different connection). No `detect`: over BLE the mode is
@@ -588,7 +623,7 @@ operations:
   # → 0x1009(handle) → 0x100B(handle, optional delete). No 0x101B chunking; whole
   # objects only on this connection. Evidence: wirePCSSShootDownload20260523.
   "0x1007": { name: GetObjectHandles,     owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
-  "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, raw-conv-backup-restore], connections: [app, usb, wireless-tether], evidence: [docImageTransfer, staticRawStudio, wirePCSSShootDownload20260523] }
+  "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, reserved-photo-receive, raw-conv-backup-restore], connections: [app, usb, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, staticAutoImageTransfer, staticRawStudio, wirePCSSShootDownload20260523] }
   "0x100a": { name: GetThumb,             owner: standard-ptp, modes: [image-transfer], connections: [app, wireless-tether], evidence: [docImageTransfer, wirePCSSShootDownload20260523] }
   "0x100b": { name: DeleteObject,         owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
   # 0x100e is advertised by wireless-tether (PCSS/15740) too — see the 05-27 capability
@@ -598,9 +633,9 @@ operations:
   # capture lands (see 2026-06-02 consult).
   "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], emits: ["0xc001"], evidence: [iosLiveControls, docLiveControls, wireTetherCaps20260527] }   # 0xC001 PostviewComplete (delivered on the app event socket; wireless-tether has no event channel)
   "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosLiveControls] }
-  "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }
-  "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireTether] }
-  "0x101b": { name: GetPartialObject,     owner: standard-ptp, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
+  "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireAutoImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }
+  "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireAutoImageTransfer, wireTether] }
+  "0x101b": { name: GetPartialObject,     owner: standard-ptp, modes: [image-transfer, reserved-photo-receive], connections: [app], evidence: [docImageTransfer, wireAutoImageTransfer] }
   "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosStartupSeq] }
   "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosStartupSeq] }
   "0x9022": { name: FujiVendor9022,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
@@ -727,7 +762,7 @@ properties:
                 "0xd001", "0xd018", "0xd028", "0xd02a", "0xd02b", "0xd17c",
                 "0xd209", "0xd21b", "0xd220", "0xd222", "0xd229", "0xd22a",
                 "0xd240", "0xd241", "0xd242", "0xd246", "0xd400", "0xd401",
-                "0xd52f", "0xdf00"]
+                "0xd52f", "0xdf00", "0xdf41"]
     evidence: [docImageTransfer, docD212TightFormat]
   # AF area state, carried as a sub-property in the 0xd212 poll bundle. Per
   # PTP_PROPERTIES_REFERENCE.md §5.1/§3.4 the u32 also encodes aspect ratio: high
@@ -740,6 +775,8 @@ properties:
   "0xd209": { name: s1LockColor,       type: u16, access: readOnly,  evidence: [iosLiveControls, docLiveControls] }  # sub-property carried in 0xd212
   "0xd226": { name: imageImportFilter, type: u16, access: readWrite, evidence: [docImageTransfer] }
   "0xd227": { name: imageImportSort,   type: u16, access: readWrite, evidence: [docImageTransfer] }
+  "0xdf29": { name: reservedPhotoReceiveVersion, type: u32, access: readWrite, evidence: [wireAutoImageTransfer, staticAutoImageTransfer] }
+  "0xdf41": { name: reservedPhotoObjectCount, type: u32, access: readOnly, evidence: [wireAutoImageTransfer] }
   "0xd244": { name: imageImportD244,   type: u8a, access: readOnly,  evidence: [docImageTransfer] }
   "0xd620": { name: imageImportObjectCount,   type: u32, access: readOnly,
               requiresGate: { name: imageImportBootstrap, failure: noResponse },
@@ -747,7 +784,7 @@ properties:
   "0xd621": { name: imageImportObjectHandles, type: u8a, access: readOnly,
               requiresGate: { name: imageImportBootstrap, failure: noResponse },
               evidence: [docImageTransfer] }
-  "0xd235": { name: imageImportChunkSize, type: u32, access: readOnly, initialValue: 0x00bfffe0, evidence: [docLargeMovObjectInfo] }
+  "0xd235": { name: imageImportChunkSize, type: u32, access: readOnly, initialValue: 0x00bfffe0, evidence: [docLargeMovObjectInfo, wireAutoImageTransfer] }
   "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
   # Current App/AP controls. ISO/direct-list controls use SetDevicePropValue; ring/body controls
   # remain step-only or body-driven. WirelessTether exposes absolute big-three variants on the

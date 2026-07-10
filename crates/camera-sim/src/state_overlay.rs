@@ -69,6 +69,7 @@ pub(crate) fn apply_overlay(
 
     if let Some(phase) = staged.phase {
         state.phase = phase;
+        state.active_mode = None;
         state.reset_gates();
     }
     if let Some(session_open) = staged.session_open {
