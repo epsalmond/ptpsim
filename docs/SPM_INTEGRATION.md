@@ -2,8 +2,8 @@
 
 `CameraProtocolFFI.xcframework` is published only for explicitly promoted,
 merged ptpsim commits. Do not depend on `main`, `release/auto`, or another
-moving branch. client application's supported production path is to vendor and review a
-specific archive as described in `docs/APPLE_FFI_RELEASES.md`.
+moving branch. Consumers should select and review a specific archive as
+described in `docs/APPLE_FFI_RELEASES.md`.
 
 Each promoted `sha-<8>` release contains:
 

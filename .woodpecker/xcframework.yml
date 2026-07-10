@@ -12,7 +12,7 @@ steps:
   - name: validate-promotion
     image: bash
     commands:
-      - 'python3 ci/timed-step.py --name validate-promotion --warn-seconds 30 -- git fetch origin main'
+      - git fetch origin main
       - 'test "$CI_COMMIT_TAG" = "apple-ffi-${CI_COMMIT_SHA:0:8}" || { echo "tag must be apple-ffi-${CI_COMMIT_SHA:0:8}" >&2; exit 1; }'
       - 'git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main || { echo "$CI_COMMIT_SHA is not merged to main" >&2; exit 1; }'
       - '[ "$(du -sk "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf "$CARGO_TARGET_DIR" || true'
@@ -26,7 +26,7 @@ steps:
   - name: build-ios-device
     image: bash
     commands:
-      - 'python3 ci/timed-step.py --name build-ios-device --warn-seconds 210 -- ./ci/build-xcframework.sh build aarch64-apple-ios'
+      - ./ci/build-xcframework.sh build aarch64-apple-ios
     environment:
       HOME: /Users/woodpecker
       CARGO_HOME: /Users/woodpecker/.cargo
@@ -37,7 +37,7 @@ steps:
   - name: build-ios-simulator-arm64
     image: bash
     commands:
-      - 'python3 ci/timed-step.py --name build-ios-simulator-arm64 --warn-seconds 180 -- ./ci/build-xcframework.sh build aarch64-apple-ios-sim'
+      - ./ci/build-xcframework.sh build aarch64-apple-ios-sim
     environment:
       HOME: /Users/woodpecker
       CARGO_HOME: /Users/woodpecker/.cargo
@@ -48,7 +48,7 @@ steps:
   - name: build-ios-simulator-x86_64
     image: bash
     commands:
-      - 'python3 ci/timed-step.py --name build-ios-simulator-x86_64 --warn-seconds 180 -- ./ci/build-xcframework.sh build x86_64-apple-ios'
+      - ./ci/build-xcframework.sh build x86_64-apple-ios
     environment:
       HOME: /Users/woodpecker
       CARGO_HOME: /Users/woodpecker/.cargo
@@ -59,7 +59,7 @@ steps:
   - name: generate-swift
     image: bash
     commands:
-      - 'python3 ci/timed-step.py --name generate-swift --warn-seconds 240 -- ./ci/build-xcframework.sh bindings'
+      - ./ci/build-xcframework.sh bindings
     environment:
       HOME: /Users/woodpecker
       CARGO_HOME: /Users/woodpecker/.cargo
@@ -70,7 +70,7 @@ steps:
   - name: package-xcframework
     image: bash
     commands:
-      - 'python3 ci/timed-step.py --name package-xcframework --warn-seconds 120 -- ./ci/build-xcframework.sh package'
+      - ./ci/build-xcframework.sh package
     environment:
       HOME: /Users/woodpecker
       CARGO_HOME: /Users/woodpecker/.cargo
@@ -82,14 +82,8 @@ steps:
     image: bash
     commands:
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
-      - >-
-        python3 ci/timed-step.py --name publish-xcframework --warn-seconds 180 --
-        bash -c 'gh release view "$TAG" >/dev/null 2>&1 ||
-        gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --generate-notes;
-        gh release upload "$TAG"
-        out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.tar.gz
-        out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.xcframework.zip
-        out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.checksum --clobber'
+      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --generate-notes'
+      - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.tar.gz" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.xcframework.zip" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.checksum" --clobber'
     environment:
       HOME: /Users/woodpecker
       CARGO_HOME: /Users/woodpecker/.cargo
