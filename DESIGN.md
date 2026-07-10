@@ -401,8 +401,10 @@ Responsibilities:
   tables. Workflow states/gates are data; the interpreter is generic.
 - Generic operation handlers (GetDeviceInfo / handles / partial-object /
   propdesc / set-prop) bound to the manifest + media-store.
+- Camera-initiated pull queues keyed by manifest transfer id. These queues use
+  fixed external head indices and never alias public card enumeration handles.
 - A property engine including generic vendor-step ("advance within an ordered
-  value set") and manifest-defined readback (e.g. `0xd212`).
+  value set") and manifest-defined record-stream readback (e.g. `0xd212`).
 - Generic event emission (focus, capture, object-added, postview, teardown) from
   manifest `events` triggers.
 - Script execution; deterministic virtual clock; scenario load + reset;
@@ -1003,11 +1005,15 @@ without changing the manifest's model of the camera. The service applies the
 overlay after manifest/media/engine construction and before any PTP/control
 listener serves traffic. Unknown properties, bad datatypes, unsupported schema
 names, and profile/connection mismatches are fatal startup errors.
+`camera_initiated_transfer_active` carries an externally observed trigger match;
+it defaults false so reserved-queue routing cannot intercept ordinary PTP object
+lookups before the consumer or test fixture supplies that transition.
 
 ```yaml
 schema: ptpsim-startup-state/v1
 profile: fuji/gfx100ii
 connection: app
+camera_initiated_transfer_active: true
 props:
   "0xd02a": 2000
 ```
@@ -1025,6 +1031,12 @@ initial state snapshot when the callback task starts, then POSTs debounced
 snapshots after state-changing operations or control mutations. `GET /state`
 exists for operator inspection and debug tooling; tests should not infer state
 transitions by polling it.
+
+State snapshots include `transfer_queues.standard` and
+`transfer_queues.camera_initiated` when those queues are configured. Each
+reports `queued`, `completed`, and `total`; completion means the queue's own
+acknowledgement boundary (`DeleteObject` for the standard queue, delivered EOF
+plus final OK for the camera-initiated queue).
 
 Fault script examples:
 
@@ -1347,6 +1359,12 @@ Simulator modes:
   `0x1008`/`0x100A`/`0x1009` inspect or pull them, and `0x100B` drains them.
   The default queue is seeded at startup; `--pcss-shutter-enqueue-count N`
   starts empty and adds media handles after each manifest shutter sequence.
+- Camera-initiated media transfer is a separate pull queue. BLE only signals
+  availability and handoff state; the app opens the declared PTP/IP endpoint and
+  requests the fixed queue head. No image bytes are emitted unsolicited.
+- A streamed head advances only after the service writes all object bytes and
+  the final successful PTP response. Partial reads and transport failures remain
+  retryable and do not change the queue.
 
 PCSS must live behind a manifest transport entry because ports, callback
 behavior, and one-shot-per-boot quirks can vary by model and firmware.
@@ -1498,6 +1516,8 @@ Initial targets for cloud review instances:
 - Idle RSS under 50 MB per simulator instance.
 - Live-view streaming without buffering more than two frames per session.
 - File downloads use bounded chunk buffers.
+- Stream completion is acknowledged back to the engine only after the transport
+  writer successfully emits both the data phase and final response.
 - Five simultaneous reviewers on a 1 GB instance.
 - Structured log volume capped or sampled for long live-view runs.
 

@@ -48,6 +48,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
 | `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
+| `camera_initiated_transfer(model)` | BLE trigger states, optional/cached handoff, resolved endpoint, reserved count/head, metadata/data operations, chunk limit, and completion policy for the camera-controlled pull queue. Requires a manufacturer-index store so symbolic GATT names resolve. |
 | `transport_close(connection)` | the manifest-resolved frame to send before reopening an image-transfer session (Fuji `app`: the 8-byte keep-AP sentinel), `None` when absent; malformed sentinel data is an error |
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
@@ -168,6 +169,24 @@ per-platform packaging:
    value: `control_for(...)` tells you the mechanism; the codec encodes the bytes.
 5. **Detect state.** Feed observed prop values to `detect_mode` / `operation_available`
    (the predicate `requires`) — you read them off the wire; the engine evaluates.
+
+For a camera-initiated transfer, retain the latest values for every returned BLE
+trigger state and act only when its match rule holds. Open the resolved endpoint,
+read the declared count, and execute the returned mode entry. Run the metadata
+probe immediately after the count read when `metadata_phases` contains
+`afterCountBeforeModeEntry`, and after the mode entry when it contains
+`afterModeEntry`; both may be declared. Then read the chunk limit and pull the
+fixed queue head. A head completes only after the full data phase and its final
+OK response arrive; neither socket close nor a transport sentinel is a
+queue-completion signal.
+
+The trigger is descriptive data, not a simulated Bluetooth peripheral. The
+current service exposes the PTP pull queue seeded from its media inputs; a
+consumer or test fixture supplies BLE/app-state transitions by patching
+`camera_initiated_transfer_active` through the generic state-overlay control
+surface. Reserved routing is disabled until that state is true, so an ordinary
+count read cannot redirect public object lookup. A generic BLE adapter remains
+tracked by issue #164.
 
 ## 6. Status — what's ready vs pending
 

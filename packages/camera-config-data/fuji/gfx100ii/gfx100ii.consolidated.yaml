@@ -79,6 +79,10 @@ evidence:
     kind: ios-source
     path: client application/.../client applicationApp/FujiCameraAPISession.swift
     date: 2026-05-26
+  staticAutoImageTransfer:
+    kind: app-source
+
+    date: 2026-07-07
   staticRawStudio:
     path: evidence/RAW_CONVERSION.md
     date: ''
@@ -86,6 +90,18 @@ evidence:
     kind: body-capability
     path: evidence/value-profiles/
     date: ''
+  wireAutoImageTransfer:
+    kind: wire-capture
+
+    date: 2026-07-07
+  wireAutoImageTransferQueued:
+    kind: wire-capture
+
+    date: 2026-07-07
+  wireBleAutoTransfer:
+    kind: wire-capture
+
+    date: 2026-07-06
   wirePCSSShootDownload20260523:
     kind: wire-capture
 
@@ -112,6 +128,48 @@ sequenceGates:
     evidence:
     - docFujiPtpPropReference
     - docImageTransfer
+cameraInitiatedTransfer:
+  trigger:
+    match: all
+    states:
+    - gatt: apState
+      triggerValues:
+      - '0380'
+      baselineValues:
+      - '0080'
+    - gatt: transferState
+      triggerValues:
+      - '0180'
+      baselineValues:
+      - '0080'
+  handoff:
+    connection: app
+    socketRole: command
+    cachedCredentialsAllowed: true
+    functionLaunch:
+      gatt: functionLaunchRequest
+      value: '0300'
+      required: false
+  receive:
+    mode: reserved-photo-receive
+    count:
+      property: '0xd212'
+      member: '0xdf41'
+    headIndex: 1
+    metadata:
+      operation: '0x1008'
+      phases:
+      - afterCountBeforeModeEntry
+      - afterModeEntry
+    data:
+      operation: '0x101b'
+      chunkLimitProperty: '0xd235'
+    completion: readToEof
+  evidence:
+  - wireAutoImageTransfer
+  - wireAutoImageTransferQueued
+  - wireBleAutoTransfer
+  - staticAutoImageTransfer
 operations:
   '0x1001':
     name: GetDeviceInfo
@@ -268,6 +326,7 @@ operations:
     property: null
     modes:
     - image-transfer
+    - reserved-photo-receive
     - raw-conv-backup-restore
     connections:
     - app
@@ -278,6 +337,8 @@ operations:
     emits: []
     evidence:
     - docImageTransfer
+    - wireAutoImageTransfer
+    - staticAutoImageTransfer
     - staticRawStudio
     - wirePCSSShootDownload20260523
   '0x1009':
@@ -435,6 +496,7 @@ operations:
     modes:
     - shooting
     - image-transfer
+    - reserved-photo-receive
     connections:
     - app
     - wireless-tether
@@ -445,6 +507,7 @@ operations:
     - iosStartupSeq
     - iosLiveControls
     - docImageTransfer
+    - wireAutoImageTransfer
     - wireTetherCaps20260527
     - wirePCSSShootDownload20260523
   '0x1016':
@@ -458,6 +521,7 @@ operations:
     modes:
     - shooting
     - image-transfer
+    - reserved-photo-receive
     connections:
     - app
     - wireless-tether
@@ -468,6 +532,7 @@ operations:
     - iosStartupSeq
     - iosLiveControls
     - docImageTransfer
+    - wireAutoImageTransfer
     - wireTether
   '0x1017':
     name: ResetDevicePropValue
@@ -517,6 +582,7 @@ operations:
     property: null
     modes:
     - image-transfer
+    - reserved-photo-receive
     connections:
     - app
     requires: null
@@ -524,6 +590,7 @@ operations:
     emits: []
     evidence:
     - docImageTransfer
+    - wireAutoImageTransfer
   '0x101c':
     name: InitiateOpenCapture
     owner: standard-ptp
@@ -3680,6 +3747,7 @@ properties:
       - '0xd401'
       - '0xd52f'
       - '0xdf00'
+      - '0xdf41'
     controls: {}
     labels: {}
     evidence:
@@ -4015,6 +4083,7 @@ properties:
     labels: {}
     evidence:
     - docLargeMovObjectInfo
+    - wireAutoImageTransfer
   '0xd236':
     name: raw_0xd236
     ptpName: null
@@ -6527,6 +6596,17 @@ properties:
     evidence:
     - iosStartupSeq
     - docImageTransfer
+  '0xdf29':
+    name: reservedPhotoReceiveVersion
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - wireAutoImageTransfer
+    - staticAutoImageTransfer
   '0xdf2a':
     name: liveDf2a
     ptpName: null
@@ -6537,6 +6617,16 @@ properties:
     labels: {}
     evidence:
     - iosStartupSeq
+  '0xdf41':
+    name: reservedPhotoObjectCount
+    ptpName: null
+    type: u32
+    access: readOnly
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - wireAutoImageTransfer
 workflows:
   cameraSettings:
     transport: ble
@@ -6668,6 +6758,12 @@ modes:
     - cameraSettings
     - screenOn
     detect: null
+  reserved-photo-receive:
+    capabilities:
+    - download
+    detect:
+      prop: '0xdf01'
+      eq: 21
   shooting:
     capabilities:
     - exposureControl
@@ -6716,6 +6812,7 @@ connections:
     eventFraming: usb
     commandListenerVolatile: true
     bindings:
+      host: 192.168.0.1
       command: 55740
       event: 55741
       liveView: 55742
@@ -6728,6 +6825,7 @@ connections:
     - shooting/stills
     - shooting/video
     - image-transfer
+    - reserved-photo-receive
     entries:
     - to: shooting/stills
       from: null
@@ -6886,6 +6984,44 @@ connections:
         reopenSession: null
         closeSession: null
         value: 0
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      userInstruction: null
+      requires: null
+    - to: reserved-photo-receive
+      from: null
+      steps:
+      - setProp: '0xdf01'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 21
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: '0xdf29'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: '0xdf29'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 3
         params: []
         tolerant: false
         repeat: 1
@@ -7840,6 +7976,7 @@ connections:
     eventFraming: null
     commandListenerVolatile: false
     bindings:
+      host: null
       command: 15740
       event: null
       liveView: null

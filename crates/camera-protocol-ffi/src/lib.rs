@@ -1363,11 +1363,89 @@ impl From<SocketRole> for cc::SocketRole {
     }
 }
 
+impl From<cc::SocketRole> for SocketRole {
+    fn from(r: cc::SocketRole) -> Self {
+        match r {
+            cc::SocketRole::Command => SocketRole::Command,
+            cc::SocketRole::Event => SocketRole::Event,
+            cc::SocketRole::LiveView => SocketRole::LiveView,
+        }
+    }
+}
+
 /// One bound socket for a connection: which role, on which port (#140).
 #[derive(Debug, uniffi::Record)]
 pub struct SocketBindingInfo {
     pub role: SocketRole,
+    pub host: Option<String>,
     pub port: u16,
+}
+
+#[derive(Debug, uniffi::Enum)]
+pub enum CameraInitiatedTriggerMatch {
+    All,
+}
+
+#[derive(Debug, uniffi::Enum)]
+pub enum CameraInitiatedCompletion {
+    ReadToEof,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct BleStateTriggerInfo {
+    pub gatt_uuid: String,
+    pub trigger_values: Vec<Vec<u8>>,
+    pub baseline_values: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CameraInitiatedTriggerInfo {
+    pub match_mode: CameraInitiatedTriggerMatch,
+    pub states: Vec<BleStateTriggerInfo>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct BleLiteralWriteInfo {
+    pub gatt_uuid: String,
+    pub value: Vec<u8>,
+    pub required: bool,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CameraInitiatedHandoffInfo {
+    pub connection: String,
+    pub socket_role: SocketRole,
+    pub endpoint_host: Option<String>,
+    pub endpoint_port: u16,
+    pub cached_credentials_allowed: bool,
+    pub function_launch: Option<BleLiteralWriteInfo>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CameraInitiatedReceiveInfo {
+    pub mode: String,
+    pub count_property: u16,
+    pub count_member: u16,
+    pub head_index: u32,
+    pub metadata_operation: u16,
+    pub metadata_phases: Vec<CameraInitiatedMetadataPhase>,
+    pub data_operation: u16,
+    pub chunk_limit_property: u16,
+    pub completion: CameraInitiatedCompletion,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum CameraInitiatedMetadataPhase {
+    AfterCountBeforeModeEntry,
+    AfterModeEntry,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct CameraInitiatedTransferInfo {
+    pub trigger: CameraInitiatedTriggerInfo,
+    pub handoff: CameraInitiatedHandoffInfo,
+    pub receive: CameraInitiatedReceiveInfo,
+    pub evidence: Vec<String>,
 }
 
 /// The transport-close frame a connection sends before an image-transfer reopen,
@@ -1678,8 +1756,23 @@ impl ConfigStore {
             (SocketRole::LiveView, b.live_view),
         ]
         .into_iter()
-        .filter_map(|(role, port)| port.map(|port| SocketBindingInfo { role, port }))
+        .filter_map(|(role, port)| {
+            port.map(|port| SocketBindingInfo {
+                role,
+                host: b.host.clone(),
+                port,
+            })
+        })
         .collect()
+    }
+
+    /// The camera-status-triggered private media pull for a recognized model. The
+    /// manufacturer-index loader has already resolved symbolic GATT names and
+    /// exact wire bytes. Single-body stores return `None`.
+    pub fn camera_initiated_transfer(&self, model: String) -> Option<CameraInitiatedTransferInfo> {
+        self.inner
+            .camera_initiated_transfer(&model)
+            .map(map_camera_initiated_transfer)
     }
 
     /// The transport-close frame `connection` sends before reopening an
@@ -2147,6 +2240,69 @@ fn build_store(
 
 fn prop_view(observed: &[PropObservation]) -> cc::PropView {
     observed.iter().map(|p| (p.code, p.value)).collect()
+}
+
+fn map_camera_initiated_transfer(
+    transfer: &cc::ResolvedCameraInitiatedTransfer,
+) -> CameraInitiatedTransferInfo {
+    let match_mode = match transfer.trigger_match {
+        cc::TriggerMatch::All => CameraInitiatedTriggerMatch::All,
+    };
+    let completion = match transfer.completion {
+        cc::TransferCompletion::ReadToEof => CameraInitiatedCompletion::ReadToEof,
+    };
+    CameraInitiatedTransferInfo {
+        trigger: CameraInitiatedTriggerInfo {
+            match_mode,
+            states: transfer
+                .trigger_states
+                .iter()
+                .map(|state| BleStateTriggerInfo {
+                    gatt_uuid: state.gatt_uuid.clone(),
+                    trigger_values: state.trigger_values.clone(),
+                    baseline_values: state.baseline_values.clone(),
+                })
+                .collect(),
+        },
+        handoff: CameraInitiatedHandoffInfo {
+            connection: transfer.connection.clone(),
+            socket_role: transfer.socket_role.into(),
+            endpoint_host: transfer.endpoint_host.clone(),
+            endpoint_port: transfer.endpoint_port,
+            cached_credentials_allowed: transfer.cached_credentials_allowed,
+            function_launch: transfer
+                .function_launch
+                .as_ref()
+                .map(|launch| BleLiteralWriteInfo {
+                    gatt_uuid: launch.gatt_uuid.clone(),
+                    value: launch.value.clone(),
+                    required: launch.required,
+                }),
+        },
+        receive: CameraInitiatedReceiveInfo {
+            mode: transfer.mode.clone(),
+            count_property: transfer.count_property,
+            count_member: transfer.count_member,
+            head_index: transfer.head_index,
+            metadata_operation: transfer.metadata_operation,
+            metadata_phases: transfer
+                .metadata_phases
+                .iter()
+                .map(|phase| match phase {
+                    cc::model::CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry => {
+                        CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry
+                    }
+                    cc::model::CameraInitiatedMetadataPhase::AfterModeEntry => {
+                        CameraInitiatedMetadataPhase::AfterModeEntry
+                    }
+                })
+                .collect(),
+            data_operation: transfer.data_operation,
+            chunk_limit_property: transfer.chunk_limit_property,
+            completion,
+        },
+        evidence: transfer.evidence.clone(),
+    }
 }
 
 fn map_step(s: &cc::Step) -> Option<EntryStep> {

@@ -22,6 +22,8 @@ pub struct StateOverlay {
     pub phase: Option<String>,
     #[serde(default, alias = "sessionOpen")]
     pub session_open: Option<bool>,
+    #[serde(default, alias = "cameraInitiatedTransferActive")]
+    pub camera_initiated_transfer_active: Option<bool>,
     #[serde(default)]
     pub props: BTreeMap<String, serde_json::Value>,
 }
@@ -31,6 +33,7 @@ pub struct AppliedStateOverlay {
     pub props: usize,
     pub phase: bool,
     pub session_open: bool,
+    pub camera_initiated_transfer_active: bool,
 }
 
 impl StateOverlay {
@@ -63,16 +66,21 @@ impl StateOverlay {
 pub(crate) fn apply_overlay(
     manifest: &CameraManifest,
     state: &mut CameraState,
+    camera_initiated_transfer_active: &mut bool,
     overlay: &StateOverlay,
 ) -> Result<AppliedStateOverlay, String> {
     let staged = StagedOverlay::from_overlay(manifest, overlay)?;
 
     if let Some(phase) = staged.phase {
         state.phase = phase;
+        state.active_mode = None;
         state.reset_gates();
     }
     if let Some(session_open) = staged.session_open {
         state.session_open = session_open;
+    }
+    if let Some(active) = staged.camera_initiated_transfer_active {
+        *camera_initiated_transfer_active = active;
     }
     for (code, value) in staged.props {
         state.props.insert(code, value);
@@ -84,6 +92,7 @@ pub(crate) fn apply_overlay(
 struct StagedOverlay {
     phase: Option<Phase>,
     session_open: Option<bool>,
+    camera_initiated_transfer_active: Option<bool>,
     props: Vec<(u16, PropValue)>,
     applied: AppliedStateOverlay,
 }
@@ -112,10 +121,14 @@ impl StagedOverlay {
         Ok(Self {
             phase,
             session_open: overlay.session_open,
+            camera_initiated_transfer_active: overlay.camera_initiated_transfer_active,
             applied: AppliedStateOverlay {
                 props: props.len(),
                 phase: phase.is_some(),
                 session_open: overlay.session_open.is_some(),
+                camera_initiated_transfer_active: overlay
+                    .camera_initiated_transfer_active
+                    .is_some(),
             },
             props,
         })

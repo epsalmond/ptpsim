@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use camera_sim_tui::{
     callback_url_for, Action, ActionKind, ActionRegistry, CameraSnapshot, ControlClient,
-    HealthSnapshot,
+    HealthSnapshot, QueueSnapshot,
 };
 use clap::{Parser, ValueEnum};
 use crossterm::cursor::{Hide, Show};
@@ -319,10 +319,14 @@ impl App {
     fn set_state(&mut self, state: CameraSnapshot) {
         let phase = state.phase.clone();
         let objects = state.media.objects;
+        let standard_queue = queue_text(state.transfer_queues.standard.as_ref());
+        let camera_queue = queue_text(state.transfer_queues.camera_initiated.as_ref());
         self.snapshot = state;
         self.log(
             LogKind::State,
-            format!("state push: phase={phase} objects={objects}"),
+            format!(
+                "state push: phase={phase} objects={objects} standard={standard_queue} camera={camera_queue}"
+            ),
         );
     }
 
@@ -720,7 +724,6 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-        Line::from(""),
         Line::from(vec![
             Span::styled("SESSION ", Style::default().fg(theme.muted)),
             Span::styled(
@@ -754,6 +757,20 @@ fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled(
                 format!("{} objects", app.snapshot.media.objects),
                 Style::default().fg(theme.yellow),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("STD Q   ", Style::default().fg(theme.muted)),
+            Span::styled(
+                queue_text(app.snapshot.transfer_queues.standard.as_ref()),
+                Style::default().fg(theme.yellow),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("CAM Q   ", Style::default().fg(theme.muted)),
+            Span::styled(
+                queue_text(app.snapshot.transfer_queues.camera_initiated.as_ref()),
+                Style::default().fg(theme.magenta),
             ),
         ]),
     ];
@@ -1086,6 +1103,18 @@ fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .style(Style::default().bg(theme.panel)),
         area,
     );
+}
+
+fn queue_text(queue: Option<&QueueSnapshot>) -> String {
+    queue.map_or_else(
+        || "not configured".to_string(),
+        |queue| {
+            format!(
+                "{}q {}done {}total",
+                queue.queued, queue.completed, queue.total
+            )
+        },
+    )
 }
 
 fn panel_block<'a>(
@@ -1434,5 +1463,16 @@ mod tests {
         assert_eq!(glyphs.key_left, "⟦");
         assert_eq!(glyphs.brand, "◢");
         assert_eq!(glyphs.event_action, "▶");
+    }
+
+    #[test]
+    fn queue_text_is_compact_and_distinguishes_absent_queues() {
+        let queue = QueueSnapshot {
+            queued: 2,
+            completed: 1,
+            total: 3,
+        };
+        assert_eq!(queue_text(Some(&queue)), "2q 1done 3total");
+        assert_eq!(queue_text(None), "not configured");
     }
 }

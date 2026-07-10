@@ -33,10 +33,10 @@ do not render box drawing or symbols cleanly; `--theme neon` and `--theme mono`
 remain available.
 
 The dashboard shows process memory, transferred bytes, transfer rate,
-live-view FPS, update rate, uptime, idle time, Rust/toolchain versions, and
-manifest-backed property names as `label (0xcode)`. The draw loop caps visible
-updates at 60 Hz; idle CPU profiling/optimization is tracked separately in
-ptpsim #218.
+live-view FPS, standard and camera-initiated queue depth/completions, update
+rate, uptime, idle time, Rust/toolchain versions, and manifest-backed property
+names as `label (0xcode)`. The draw loop caps visible updates at 60 Hz; idle CPU
+profiling/optimization is tracked separately in ptpsim #218.
 
 `--headless` does not render the visual theme; it serves the action/state HTTP
 surface and prints the selected `theme`/`glyphs` in its startup JSON so smoke

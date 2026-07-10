@@ -90,6 +90,44 @@ fn port_roles_match_the_shipping_app() {
 }
 
 #[test]
+fn camera_initiated_transfer_references_are_complete() {
+    let manifest = gfx();
+    let transfer = manifest
+        .camera_initiated_transfer
+        .as_ref()
+        .expect("camera declares its reserved transfer queue");
+    assert_eq!(transfer.handoff.connection, "app");
+    assert_eq!(transfer.receive.mode, "reserved-photo-receive");
+    assert_eq!(transfer.receive.head_index, 1);
+    assert_eq!(transfer.receive.count.property, "0xd212");
+    assert_eq!(transfer.receive.count.member, "0xdf41");
+    assert_eq!(
+        transfer.receive.metadata.phases,
+        vec![
+            camera_config::CameraInitiatedMetadataPhase::AfterCountBeforeModeEntry,
+            camera_config::CameraInitiatedMetadataPhase::AfterModeEntry,
+        ]
+    );
+    assert_eq!(transfer.receive.metadata.operation, "0x1008");
+    assert_eq!(transfer.receive.data.operation, "0x101b");
+    assert_eq!(transfer.receive.data.chunk_limit_property, "0xd235");
+    assert_eq!(
+        manifest.connections["app"]
+            .bindings
+            .as_ref()
+            .and_then(|bindings| bindings.host.as_deref()),
+        Some("192.168.0.1")
+    );
+    assert!(
+        manifest
+            .validate()
+            .iter()
+            .all(|lint| !lint.message.contains("cameraInitiatedTransfer")),
+        "camera-initiated transfer has no structural lints"
+    );
+}
+
+#[test]
 fn mode_detect_from_function_mode() {
     let m = gfx();
     assert_eq!(

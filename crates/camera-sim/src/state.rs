@@ -18,6 +18,7 @@ pub enum Phase {
     Disconnected,
     SessionOpen,
     ImageImport,
+    QueuedReceive,
     LiveView,
     Streaming,
     Closed,
@@ -29,6 +30,7 @@ impl Phase {
             Phase::Disconnected => "disconnected",
             Phase::SessionOpen => "sessionOpen",
             Phase::ImageImport => "imageImport",
+            Phase::QueuedReceive => "queuedReceive",
             Phase::LiveView => "liveView",
             Phase::Streaming => "streaming",
             Phase::Closed => "closed",
@@ -40,6 +42,7 @@ impl Phase {
             "disconnected" => Some(Phase::Disconnected),
             "sessionOpen" | "session_open" | "session-open" => Some(Phase::SessionOpen),
             "imageImport" | "image_import" | "image-import" => Some(Phase::ImageImport),
+            "queuedReceive" | "queued_receive" | "queued-receive" => Some(Phase::QueuedReceive),
             "liveView" | "live_view" | "live-view" => Some(Phase::LiveView),
             "streaming" => Some(Phase::Streaming),
             "closed" => Some(Phase::Closed),
@@ -51,6 +54,9 @@ impl Phase {
 pub struct CameraState {
     pub session_open: bool,
     pub phase: Phase,
+    /// Manifest mode path detected from current property state. This keeps
+    /// generic modes available without adding selector constants to the engine.
+    pub active_mode: Option<String>,
     /// Current property values, keyed by property code.
     pub props: BTreeMap<u16, PropValue>,
     /// Deferred op-effect transitions awaiting their settle poll (the §5.5 AF
@@ -104,6 +110,7 @@ impl CameraState {
         CameraState {
             session_open: false,
             phase: Phase::Disconnected,
+            active_mode: None,
             props,
             pending: BTreeMap::new(),
             events: VecDeque::new(),
@@ -217,12 +224,12 @@ impl CameraState {
 
     /// The manifest mode path matching the current phase, used for scoped
     /// property capability profiles.
-    pub fn manifest_mode_path(&self) -> &'static str {
-        match self.phase {
+    pub fn manifest_mode_path(&self) -> &str {
+        self.active_mode.as_deref().unwrap_or(match self.phase {
             Phase::SessionOpen | Phase::LiveView | Phase::Streaming => "shooting/stills",
             Phase::ImageImport => "image-transfer",
             _ => "",
-        }
+        })
     }
 }
 

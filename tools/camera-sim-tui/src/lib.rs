@@ -56,12 +56,32 @@ pub struct CameraSnapshot {
     pub property_labels: BTreeMap<String, String>,
     #[serde(default)]
     pub media: MediaSnapshot,
+    #[serde(default)]
+    pub transfer_queues: TransferQueuesSnapshot,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct MediaSnapshot {
     #[serde(default)]
     pub objects: usize,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TransferQueuesSnapshot {
+    #[serde(default)]
+    pub standard: Option<QueueSnapshot>,
+    #[serde(default)]
+    pub camera_initiated: Option<QueueSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct QueueSnapshot {
+    #[serde(default)]
+    pub queued: usize,
+    #[serde(default)]
+    pub completed: usize,
+    #[serde(default)]
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -421,9 +441,15 @@ mod tests {
             "session_open": true,
             "props": { "0xd02a": 2000 },
             "property_labels": { "0xd02a": "stillIso" },
-            "media": { "objects": 3 }
+            "media": { "objects": 3 },
+            "transfer_queues": {
+                "standard": { "queued": 2, "completed": 1, "total": 3 },
+                "camera_initiated": { "queued": 1, "completed": 2, "total": 3 }
+            }
         }))
         .unwrap();
         assert_eq!(state.property_labels["0xd02a"], "stillIso");
+        assert_eq!(state.transfer_queues.standard.unwrap().queued, 2);
+        assert_eq!(state.transfer_queues.camera_initiated.unwrap().completed, 2);
     }
 }

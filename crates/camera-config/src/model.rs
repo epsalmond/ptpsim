@@ -51,6 +51,10 @@ pub struct CameraManifest {
     /// executable steps; the gate is simulator oracle metadata.
     #[serde(default)]
     pub sequence_gates: BTreeMap<String, SequenceGate>,
+    /// The camera-signalled private media queue that consumers pull over a
+    /// declared connection.
+    #[serde(default)]
+    pub camera_initiated_transfer: Option<CameraInitiatedTransfer>,
     #[serde(default)]
     pub operations: BTreeMap<HexCode, Operation>,
     #[serde(default)]
@@ -734,6 +738,10 @@ pub enum SocketRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SocketBindings {
+    /// Static responder host when the connection establishes a known endpoint.
+    /// Absent for dynamically discovered peers such as PCSS cameras on a LAN.
+    #[serde(default)]
+    pub host: Option<String>,
     /// The PTP/IP command-port (control channel). Fuji default 55740.
     pub command: u16,
     /// The event socket, if this connection has one.
@@ -742,6 +750,106 @@ pub struct SocketBindings {
     /// The live-view through-picture stream socket, if this connection has one.
     #[serde(default)]
     pub live_view: Option<u16>,
+}
+
+/// A camera-status-triggered private media pull. BLE announces availability and
+/// handoff state; object bytes still move through request/response PTP operations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraInitiatedTransfer {
+    pub trigger: CameraInitiatedTrigger,
+    pub handoff: CameraInitiatedHandoff,
+    pub receive: CameraInitiatedReceive,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraInitiatedTrigger {
+    #[serde(rename = "match")]
+    pub match_mode: TriggerMatch,
+    pub states: Vec<BleStateTrigger>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TriggerMatch {
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleStateTrigger {
+    pub gatt: String,
+    pub trigger_values: Vec<String>,
+    #[serde(default)]
+    pub baseline_values: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraInitiatedHandoff {
+    pub connection: String,
+    pub socket_role: SocketRole,
+    #[serde(default)]
+    pub cached_credentials_allowed: bool,
+    #[serde(default)]
+    pub function_launch: Option<BleLiteralWrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleLiteralWrite {
+    pub gatt: String,
+    pub value: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraInitiatedReceive {
+    pub mode: String,
+    pub count: RecordMemberRef,
+    pub head_index: u32,
+    pub metadata: CameraInitiatedMetadata,
+    pub data: CameraInitiatedData,
+    pub completion: TransferCompletion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordMemberRef {
+    pub property: HexCode,
+    pub member: HexCode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraInitiatedMetadata {
+    pub operation: HexCode,
+    pub phases: Vec<CameraInitiatedMetadataPhase>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CameraInitiatedMetadataPhase {
+    AfterCountBeforeModeEntry,
+    AfterModeEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraInitiatedData {
+    pub operation: HexCode,
+    pub chunk_limit_property: HexCode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransferCompletion {
+    ReadToEof,
 }
 
 impl SocketBindings {
