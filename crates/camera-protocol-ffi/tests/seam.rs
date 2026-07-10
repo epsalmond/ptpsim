@@ -1147,6 +1147,14 @@ fn property_catalog_enumerates_through_ffi() {
     assert_eq!(aperture.name, "aperture");
     assert_eq!(aperture.ptype.as_deref(), Some("u16"));
     assert_eq!(aperture.access.as_deref(), Some("readWrite"));
+    assert_eq!(aperture.kind, PropertyKind::Setting);
+    for code in [0xd039, 0xd21c, 0xd207] {
+        let property = cat
+            .iter()
+            .find(|property| property.code == code)
+            .unwrap_or_else(|| panic!("scaffold property 0x{code:04x} in the catalog"));
+        assert_eq!(property.kind, PropertyKind::Scaffold);
+    }
     // The newly-declared 0xD212 member is enumerable.
     assert!(cat
         .iter()

@@ -28,7 +28,7 @@ pub use model::{
     GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
     LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry,
     ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssKnock, PostviewEvent,
-    Property, PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow,
+    Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow,
     PropertyValueRow, RecordLayout, RecordMemberRef, SentinelFrame, SentinelMask, SequenceGate,
     ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, TransferCompletion, TransportClose,
     TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,

@@ -243,7 +243,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     ptype: agg.ptype,
                     access: agg.access,
                     initial_value: None,
-                    kind: None,
+                    kind: PropertyKind::Setting,
                     descriptor,
                     payload: None,
                     controls: BTreeMap::new(),
