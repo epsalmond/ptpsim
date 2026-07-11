@@ -545,8 +545,9 @@ impl Server {
 
 /// Stream live-view frames to one connected client until it disconnects or the
 /// write fails. Each tick: if the engine is in Phase::Streaming, pull the next
-/// frame from the shared LoopingFrameSource and write [u32 len | JPEG] via the
-/// shared framing primitive. Otherwise idle (the connection stays open but no
+/// frame from the shared LoopingFrameSource and write the capture-compatible
+/// `[u32 total length | 14-byte stream header | JPEG]` packet via the shared
+/// framing primitive. Otherwise idle (the connection stays open but no
 /// bytes flow — matching a real camera between OpenCapture cycles).
 ///
 /// The read half is watched concurrently: liveview clients never send bytes,

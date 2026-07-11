@@ -717,19 +717,32 @@ fn service_serves_a_large_object_in_a_single_frame() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Read one live-view length-prefixed frame and return the JPEG payload.
-fn read_frame_lv(s: &mut TcpStream) -> Vec<u8> {
-    let mut len = [0u8; 4];
-    s.read_exact(&mut len).unwrap();
-    let total_len = u32::from_le_bytes(len) as usize;
-    assert!(total_len >= protocol_primitives::liveview::HEADER_LEN);
-    let mut packet = Vec::with_capacity(total_len);
-    packet.extend_from_slice(&len);
-    packet.resize(total_len, 0);
-    s.read_exact(&mut packet[4..]).unwrap();
-    protocol_primitives::liveview::parse_frame(&packet)
-        .expect("capture-compatible live-view packet")
-        .to_vec()
+struct LiveViewPacket {
+    total_len: u32,
+    reserved0: u32,
+    frame_index: u32,
+    reserved1: u32,
+    reserved_pad: u16,
+    jpeg: Vec<u8>,
+}
+
+/// Read the raw capture-compatible packet so service coverage verifies the header rather than
+/// round-tripping through the protocol primitive that produced it.
+fn read_frame_lv(s: &mut TcpStream) -> LiveViewPacket {
+    let mut header = [0u8; protocol_primitives::liveview::HEADER_LEN];
+    s.read_exact(&mut header).unwrap();
+    let total_len = u32::from_le_bytes(header[0..4].try_into().unwrap());
+    let jpeg_len = total_len as usize - header.len();
+    let mut jpeg = vec![0u8; jpeg_len];
+    s.read_exact(&mut jpeg).unwrap();
+    LiveViewPacket {
+        total_len,
+        reserved0: u32::from_le_bytes(header[4..8].try_into().unwrap()),
+        frame_index: u32::from_le_bytes(header[8..12].try_into().unwrap()),
+        reserved1: u32::from_le_bytes(header[12..16].try_into().unwrap()),
+        reserved_pad: u16::from_le_bytes(header[16..18].try_into().unwrap()),
+        jpeg,
+    }
 }
 
 fn http_get(addr: std::net::SocketAddr, path: &str) -> String {
@@ -1630,8 +1643,18 @@ properties:
         .unwrap();
     let frame0 = read_frame_lv(&mut lv);
     let frame1 = read_frame_lv(&mut lv);
-    assert_eq!(&frame0[..], lv_jpeg, "first frame matches the fixture JPEG");
-    assert_eq!(frame0, frame1, "single-frame loop repeats");
+    assert_eq!(frame0.total_len as usize, 18 + lv_jpeg.len());
+    assert_eq!(frame0.reserved0, 0);
+    assert_eq!(frame0.reserved1, 0);
+    assert_eq!(frame0.reserved_pad, 0);
+    assert_eq!(frame0.frame_index, 0);
+    assert_eq!(frame1.frame_index, 1);
+    assert_eq!(
+        &frame0.jpeg[..],
+        lv_jpeg,
+        "first frame matches the fixture JPEG"
+    );
+    assert_eq!(frame0.jpeg, frame1.jpeg, "single-frame loop repeats");
 
     drop(lv);
     drop(s);
