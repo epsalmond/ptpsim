@@ -2566,24 +2566,51 @@ fn project_selected_object_transfer(
                 matches!(
                     capture.source,
                     cc::model::CaptureSource::ObjectInfoCompressedSize
-                )
+                ) && capture.bind == transfer_size_slot
             })
         })
         .ok_or_else(|| {
             ConfigError::Contract(
-                "importObjects preparation has no ObjectInfo compressed-size capture".into(),
+                "importObjects preparation does not capture ObjectInfo size into the chunk total slot"
+                    .into(),
             )
         })?;
-    let preparation_steps = preparation
-        .iter()
-        .map(|step| {
-            map_step(step).ok_or_else(|| {
-                ConfigError::Contract(
-                    "importObjects preparation contains an unmappable step".into(),
+    let object_info_captures = &preparation[object_info_step_index].captures;
+    let has_true_size_fallback = preparation.iter().any(|step| {
+        step.if_step.as_ref().is_some_and(|condition| {
+            condition.equals == 0xffff_ffff
+                && object_info_captures.iter().any(|capture| {
+                    capture.bind == condition.slot
+                        && matches!(
+                            capture.source,
+                            cc::model::CaptureSource::ObjectInfoCompressedSize
+                        )
+                })
+                && steps_capture(
+                    &condition.then_steps,
+                    &transfer_size_slot,
+                    cc::model::CaptureSource::U64Le,
                 )
-            })
         })
-        .collect::<Result<Vec<_>, _>>()?;
+    });
+    if !has_true_size_fallback {
+        return Err(ConfigError::Contract(
+            "importObjects preparation has no sentinel-gated u64 true-size capture into the chunk total slot"
+                .into(),
+        ));
+    }
+    if !steps_capture(
+        preparation,
+        &chunk_size_slot,
+        cc::model::CaptureSource::PropValue,
+    ) {
+        return Err(ConfigError::Contract(
+            "importObjects preparation does not capture a property value into the runtime chunk-size slot"
+                .into(),
+        ));
+    }
+    let preparation_steps = try_map_steps(preparation, "importObjects preparation")?;
+    let read = try_map_action(read, "getObject")?;
 
     Ok(SelectedObjectTransferInfo {
         params: vec![handle_slot.clone()],
@@ -2591,8 +2618,76 @@ fn project_selected_object_transfer(
         object_info_step_index: object_info_step_index as u32,
         transfer_size_slot,
         chunk_size_slot,
-        read: map_action(read),
+        read,
     })
+}
+
+fn steps_capture(steps: &[cc::Step], bind: &str, source: cc::model::CaptureSource) -> bool {
+    steps.iter().any(|step| {
+        step.captures
+            .iter()
+            .any(|capture| capture.bind == bind && capture.source == source)
+            || step
+                .await_until
+                .as_ref()
+                .is_some_and(|await_until| steps_capture(&await_until.on_each, bind, source))
+            || step.r#loop.as_ref().is_some_and(|r#loop| match r#loop {
+                cc::Loop::ForEach { body, .. } | cc::Loop::Chunk { body, .. } => {
+                    steps_capture(body, bind, source)
+                }
+            })
+            || step
+                .if_step
+                .as_ref()
+                .is_some_and(|condition| steps_capture(&condition.then_steps, bind, source))
+    })
+}
+
+fn try_map_action(a: &cc::Action, context: &str) -> Result<Action, ConfigError> {
+    Ok(Action {
+        mode: a.mode.clone(),
+        params: a.params.clone(),
+        steps: try_map_steps(&a.steps, context)?,
+        triggers: a.triggers.iter().filter_map(map_action_effect).collect(),
+        evidence: a.evidence.clone(),
+    })
+}
+
+fn try_map_steps(steps: &[cc::Step], context: &str) -> Result<Vec<EntryStep>, ConfigError> {
+    for step in steps {
+        validate_step_mapping(step, context)?;
+    }
+    Ok(steps
+        .iter()
+        .map(|step| map_step(step).expect("validated step must map"))
+        .collect())
+}
+
+fn validate_step_mapping(step: &cc::Step, context: &str) -> Result<(), ConfigError> {
+    if map_step(step).is_none() {
+        return Err(ConfigError::Contract(format!(
+            "{context} contains an unmappable step"
+        )));
+    }
+    if let Some(await_until) = &step.await_until {
+        for nested in &await_until.on_each {
+            validate_step_mapping(nested, context)?;
+        }
+    }
+    if let Some(r#loop) = &step.r#loop {
+        let body = match r#loop {
+            cc::Loop::ForEach { body, .. } | cc::Loop::Chunk { body, .. } => body,
+        };
+        for nested in body {
+            validate_step_mapping(nested, context)?;
+        }
+    }
+    if let Some(condition) = &step.if_step {
+        for nested in &condition.then_steps {
+            validate_step_mapping(nested, context)?;
+        }
+    }
+    Ok(())
 }
 
 fn map_action(a: &cc::Action) -> Action {
@@ -2713,9 +2808,38 @@ mod tests {
     fn selected_transfer_actions() -> (cc::Action, cc::Action) {
         let object_info = cc::Step {
             send_op: Some("0x1008".into()),
+            captures: vec![
+                cc::model::Capture {
+                    bind: "objectReportedSize".into(),
+                    source: cc::model::CaptureSource::ObjectInfoCompressedSize,
+                },
+                cc::model::Capture {
+                    bind: "objectTransferSize".into(),
+                    source: cc::model::CaptureSource::ObjectInfoCompressedSize,
+                },
+            ],
+            ..Default::default()
+        };
+        let true_size = cc::Step {
+            if_step: Some(cc::model::IfStep {
+                slot: "objectReportedSize".into(),
+                equals: 0xffff_ffff,
+                then_steps: vec![cc::Step {
+                    send_op: Some("0x9803".into()),
+                    captures: vec![cc::model::Capture {
+                        bind: "objectTransferSize".into(),
+                        source: cc::model::CaptureSource::U64Le,
+                    }],
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        };
+        let chunk_size = cc::Step {
+            get_prop: Some("0xd235".into()),
             captures: vec![cc::model::Capture {
-                bind: "objectTransferSize".into(),
-                source: cc::model::CaptureSource::ObjectInfoCompressedSize,
+                bind: "chunkSize".into(),
+                source: cc::model::CaptureSource::PropValue,
             }],
             ..Default::default()
         };
@@ -2736,7 +2860,7 @@ mod tests {
                 r#loop: Some(cc::Loop::ForEach {
                     in_prop: "0xd621".into(),
                     bind: "handle".into(),
-                    body: vec![object_info, chunk],
+                    body: vec![object_info, true_size, chunk_size, chunk],
                 }),
                 ..Default::default()
             }],
@@ -2775,7 +2899,7 @@ mod tests {
         let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
             panic!("fixture forEach");
         };
-        let Some(cc::Loop::Chunk { size, .. }) = body[1].r#loop.as_mut() else {
+        let Some(cc::Loop::Chunk { size, .. }) = body[3].r#loop.as_mut() else {
             panic!("fixture chunk");
         };
         *size = cc::model::ChunkSize::Literal(1024);
@@ -2790,6 +2914,66 @@ mod tests {
         };
         body[0].captures.clear();
         assert_selected_transfer_contract_error(&import, "ObjectInfo");
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_mismatched_total_capture() {
+        let (mut import, _) = selected_transfer_actions();
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+            panic!("fixture forEach");
+        };
+        body[0].captures[1].bind = "differentSlot".into();
+        assert_selected_transfer_contract_error(&import, "chunk total slot");
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_missing_true_size_override() {
+        let (mut import, _) = selected_transfer_actions();
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+            panic!("fixture forEach");
+        };
+        body[1].if_step = None;
+        body[1].reopen_session = Some(cc::model::ReopenSession {});
+        assert_selected_transfer_contract_error(&import, "u64 true-size");
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_missing_chunk_size_capture() {
+        let (mut import, _) = selected_transfer_actions();
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+            panic!("fixture forEach");
+        };
+        body[2].captures.clear();
+        assert_selected_transfer_contract_error(&import, "chunk-size slot");
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_unmappable_nested_step() {
+        let (mut import, _) = selected_transfer_actions();
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+            panic!("fixture forEach");
+        };
+        let Some(condition) = body[1].if_step.as_mut() else {
+            panic!("fixture condition");
+        };
+        condition.then_steps[0].send_op = Some("not-a-hex-op".into());
+        assert_selected_transfer_contract_error(&import, "unmappable step");
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_unmappable_read_step() {
+        let (import, mut read) = selected_transfer_actions();
+        read.steps.push(cc::Step {
+            send_op: Some("not-a-hex-op".into()),
+            ..Default::default()
+        });
+        let error = project_selected_object_transfer(&import, &read)
+            .expect_err("malformed read action must fail");
+        assert!(matches!(
+            error,
+            ConfigError::Contract(ref message)
+                if message.contains("getObject") && message.contains("unmappable step")
+        ));
     }
 
     /// The hand-mirror seam: an `awaitUntil` step (with a nested `onEach` and a
