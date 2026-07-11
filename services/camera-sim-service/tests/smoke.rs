@@ -721,10 +721,15 @@ fn service_serves_a_large_object_in_a_single_frame() {
 fn read_frame_lv(s: &mut TcpStream) -> Vec<u8> {
     let mut len = [0u8; 4];
     s.read_exact(&mut len).unwrap();
-    let n = u32::from_le_bytes(len) as usize;
-    let mut buf = vec![0u8; n];
-    s.read_exact(&mut buf).unwrap();
-    buf
+    let total_len = u32::from_le_bytes(len) as usize;
+    assert!(total_len >= protocol_primitives::liveview::HEADER_LEN);
+    let mut packet = Vec::with_capacity(total_len);
+    packet.extend_from_slice(&len);
+    packet.resize(total_len, 0);
+    s.read_exact(&mut packet[4..]).unwrap();
+    protocol_primitives::liveview::parse_frame(&packet)
+        .expect("capture-compatible live-view packet")
+        .to_vec()
 }
 
 fn http_get(addr: std::net::SocketAddr, path: &str) -> String {
