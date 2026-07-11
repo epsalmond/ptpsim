@@ -359,7 +359,11 @@ modes: { "shooting/stills": {} }
 #[test]
 fn property_value_width_resolves_from_manifest_type() {
     let s = store();
-    // u16/u32/i16/i32 map to encoder widths; u8a (rawSettings) and unknown props → None.
+    // Scalar manifest types map to encoder widths; u8a (rawSettings) and unknown props → None.
+    assert!(matches!(
+        s.property_value_width(0xd246),
+        Some(ValueWidth::U8)
+    )); // stills/video selector u8
     assert!(matches!(
         s.property_value_width(0x5007),
         Some(ValueWidth::U16)
