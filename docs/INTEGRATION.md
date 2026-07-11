@@ -298,7 +298,7 @@ is the bytes AFTER the 2-byte company id: split iOS
 `CBAdvertisementDataManufacturerDataKey` into `(companyId LE, payload)`;
 Android `getManufacturerSpecificData(id)` is already the payload.
 CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
-| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, steps: [Step] }`. `initialScope` is typically the `runtimeScope` from a `Candidate`. |
+| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, postExitReadiness: [Step], steps: [Step] }`. `initialScope` is typically the `runtimeScope` from a `Candidate`. After an orderly feature exit, walk the optional `postExitReadiness` sequence before replaying `steps`; do not infer readiness by negating a launch predicate. |
 | `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | validates the plan handle and returns `NoChange` or `ReplaceTail{steps}` per §11.5; invalid handles/indices are errors. Current manifests return `NoChange` because no establishment overlays exist yet. |
 | `connectionEstablishment(connection)` | (unchanged renamed §2 method — single-body connection bring-up) |
 

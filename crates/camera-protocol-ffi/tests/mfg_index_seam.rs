@@ -609,6 +609,28 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         plan.persist,
         vec!["ssid".to_string(), "passphrase".to_string()]
     );
+    assert_eq!(plan.post_exit_readiness.len(), 2);
+    assert!(matches!(
+        plan.post_exit_readiness[0],
+        Step::BleConnect { .. }
+    ));
+    match &plan.post_exit_readiness[1] {
+        Step::BleAwaitUntil {
+            source: AwaitSource::Notify {
+                gatt, seed_read, ..
+            },
+            until,
+            timeout_ms,
+            ..
+        } => {
+            assert_eq!(gatt, "A68E3F66-0FCC-4395-8D4C-AA980B5877FA");
+            assert!(*seed_read);
+            assert_eq!(until.field, "apState");
+            assert_eq!(until.value, "32768");
+            assert_eq!(*timeout_ms, 20_000);
+        }
+        other => panic!("expected post-exit BleAwaitUntil, got {other:?}"),
+    }
 
     // Opens with bleConnect (the BLE link carried over from ble-pair), then arms the
     // AP handoff with the IMAGE_TRANSFER_SETTING prep write (#102) BEFORE the

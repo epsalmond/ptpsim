@@ -236,6 +236,20 @@ families:
           # The Wi-Fi creds read below are cached for reconnect (#91), alongside
           # the pairing identity ble-pair persists.
           persist: [ssid, passphrase]
+          # A successful PTP/TCP close completes before the camera returns its
+          # BLE AP state to the relaunchable baseline. Consumers walk this exact
+          # manifest-authored gate after an orderly feature exit; they must not
+          # treat every non-launched/transitional value as reusable readiness.
+          # 0x8000 NotLaunched is the same curated baseline declared by the
+          # camera-initiated-transfer AP-state trigger (wireBleAutoTransfer).
+          postExitReadiness:
+            - bleConnect: {}
+            - bleAwaitUntil:
+                source: { notify: { gatt: apState, seedRead: true } }
+                capture: { at: 0, length: 2, encoding: u16-le, name: apState }
+                captureAs: apStateRaw
+                until: { apState: { eq: "32768" } }
+                timeoutMs: 20000
           steps:
             # The BLE link from ble-pair is still open; bleConnect is a no-op
             # in that case but keeps the plan self-contained and walkable.
