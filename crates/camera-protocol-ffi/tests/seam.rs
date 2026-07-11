@@ -891,6 +891,78 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
 }
 
 #[test]
+fn selected_object_transfer_projects_the_canonical_per_handle_contract() {
+    let s = store();
+    let selected = s
+        .selected_object_transfer("app".into())
+        .expect("valid selected-object transfer contract")
+        .expect("app selected-object transfer contract");
+
+    assert_eq!(selected.params, ["handle"]);
+    assert_eq!(selected.object_info_step_index, 0);
+    assert_eq!(selected.transfer_size_slot, "objectTransferSize");
+    assert_eq!(selected.chunk_size_slot, "chunkSize");
+    assert!(selected.preparation_steps.iter().any(|step| matches!(
+        step,
+        EntryStep::SendOp { captures, .. }
+            if captures.iter().any(|capture|
+                capture.bind == selected.transfer_size_slot
+                    && matches!(capture.source, CaptureSourceInfo::ObjectInfoCompressedSize))
+    )));
+    assert!(selected.preparation_steps.iter().any(|step| matches!(
+        step,
+        EntryStep::If { equals: 0xffff_ffff, then_steps, .. }
+            if matches!(then_steps.as_slice(), [EntryStep::SendOp { captures, .. }]
+                if captures.iter().any(|capture|
+                    capture.bind == selected.transfer_size_slot
+                        && matches!(capture.source, CaptureSourceInfo::U64Le)))
+    )));
+    assert!(selected.preparation_steps.iter().any(|step| matches!(
+        step,
+        EntryStep::GetProp { captures, .. }
+            if captures.iter().any(|capture|
+                capture.bind == selected.chunk_size_slot
+                    && matches!(capture.source, CaptureSourceInfo::PropValue))
+    )));
+    assert!(selected.preparation_steps.iter().all(|step| !matches!(
+        step,
+        EntryStep::Loop {
+            kind: FfiLoopKind::Chunk { .. },
+            ..
+        }
+    )));
+
+    assert_eq!(selected.read.params, ["handle", "offset", "length"]);
+    assert!(matches!(
+        selected.read.steps.as_slice(),
+        [EntryStep::SendOp { params, .. }]
+            if matches!(params.as_slice(), [
+                EntryParam::Runtime { slot: h, shift: 0, mask: None },
+                EntryParam::Runtime { slot: lo, shift: 0, mask: Some(0xffff_ffff) },
+                EntryParam::Runtime { slot: len, shift: 0, mask: None },
+                EntryParam::Runtime { slot: hi, shift: 32, mask: None },
+            ] if h == "handle" && lo == "offset" && len == "length" && hi == "offset")
+    ));
+}
+
+#[test]
+fn selected_object_transfer_is_absent_without_the_canonical_actions() {
+    let s = store();
+    assert!(s
+        .selected_object_transfer("ble".into())
+        .expect("ble lookup")
+        .is_none());
+    assert!(s
+        .selected_object_transfer("wireless-tether".into())
+        .expect("wireless-tether lookup")
+        .is_none());
+    assert!(s
+        .selected_object_transfer("missing".into())
+        .expect("missing lookup")
+        .is_none());
+}
+
+#[test]
 fn action_misses_when_connection_does_not_declare_the_verb() {
     let s = store();
     // ble has no transfer actions.
