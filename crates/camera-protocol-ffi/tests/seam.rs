@@ -1131,6 +1131,7 @@ fn connection_info_carries_per_connection_traits() {
     let s = store();
     let conns = s.connections(Platform::Macos); // app + wireless-tether both visible
     let app = conns.iter().find(|c| c.id == "app").expect("app present");
+    assert!(app.command_listener_volatile);
     assert_eq!(app.init_shape.as_deref(), Some("app82"));
     assert!(matches!(
         app.shutter_recipe,
@@ -1155,9 +1156,11 @@ fn connection_info_carries_per_connection_traits() {
         wt.shutter_recipe,
         Some(ShutterRecipe::WirelessTether3Beat)
     ));
+    assert!(!wt.command_listener_volatile);
 
     // usb declares no traits → None (the app falls back, no negative list).
     let usb = conns.iter().find(|c| c.id == "usb").expect("usb on macOS");
+    assert!(!usb.command_listener_volatile);
     assert!(usb.shutter_recipe.is_none());
     assert!(usb.live_view_delivery.is_none());
 }

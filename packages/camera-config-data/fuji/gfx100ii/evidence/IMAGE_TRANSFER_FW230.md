@@ -19,29 +19,35 @@ In v6 we captured:
 - 30× chunked `GetPartialObject` for a 356 MB file (likely RAW or movie)
 
 
-> **Reconciled 2026-05-26 with the client application app copy.** The app's on-device-
-> verified "Confirmed enumeration" section (fresh-session reconnect, the 8-byte
-> transport-close sentinel, AP-hold mechanics, the authoritative mode-20 setup
-> sequence, and the `0x9054/0x9055/0x9050/0x9053`-before-`0xD620` requirement) is
-> folded in below. The 2026-05-26 RAF/JPEG/MOV 1441-sample decode and the empirical
-> field tallies are upstream's and are preserved unchanged. App-side contract lives
-> in the client application repo at `docs/IMAGE_IMPORT_RECONNECT.md`.
+> **Consumer correction (2026-07-11, ptpsim #103/#243).** This document records
+> reference app's captured fresh-session choreography, but that is not a safe generic
+> Take-to-Get requirement. Later client application validation on the same GFX100 II showed
+> that closing active live view tears down the `app` connection's command listener;
+> reconnecting to `:55740` is refused even when the AP remains up. The canonical
+> manifest therefore authors Take-to-Get in-session and exposes
+> `commandListenerVolatile: true` so consumers do not use close-and-reopen as a
+> fallback. The vendor-prime ordering and empirical payload facts below remain
+> authoritative; the reconnect prescription is retained only as historical reference app
+> capture context.
 
-## Confirmed enumeration (2026-05-21 re-parse of v6 + on-device verification)
+## Captured reference app enumeration and later consumer correction
 
 The original "Open questions" below (how reference app learns the handle range; whether
 `0x9054` is required) are now **resolved** by re-parsing the v6 outbound opcode
 stream and cross-checking against on-device behavior (client application on a real GFX100 II
-fw2.30 over the camera AP). **Image import requires a FRESH session — not an in-session function-mode switch.**
-The capture shows that immediately before the image-import `OpenSession`, reference app does
+fw2.30 over the camera AP). **The captured reference app flow uses a fresh session.**
+The capture shows that immediately before its image-import `OpenSession`, reference app does
 `TerminateOpenCapture` → `CloseSession` → a new `InitCommandRequest` (tid resets to 1)
 → `OpenSession`. Trying to switch a live-view session into mode 20 in place makes the
 camera reject `0x9054` (response code `0x9054`) — verified on device: byte-identical
 `0x9054` packets succeed from a fresh session but fail from a repurposed live-view
-session. So the iOS client must close any live-view session and open a brand-new
-PTP/IP session before running the mode-20 setup.
+session in those historical attempts. This did not establish a general client
+requirement: later validation for #103 found the in-session client application path working
+and the close-and-reopen path reliably refused because the command listener is
+volatile. Consumers must follow the canonical manifest rather than this captured
+reference app lifecycle.
 
-**This is a PTP-level reconnect on the SAME Wi-Fi/AP — do NOT relaunch the camera
+**In the captured reference app flow this is a PTP-level reconnect on the SAME Wi-Fi/AP — do NOT relaunch the camera
 AP.** The capture shows only `TerminateOpenCapture → CloseSession → InitCommandRequest
 → OpenSession`, all on the same TCP endpoint (192.168.0.1:55740); the camera AP /
 `NEHotspotConfiguration` association is untouched. Relaunching the BLE AP (the
@@ -50,7 +56,7 @@ the camera API time out / the AP drop (verified on device: full AP relaunch →
 "Camera Wi-Fi joined, but camera API did not respond" → AP state 0000). Reopen a new
 `NWConnection` to the same host:port and redo InitCommandRequest+OpenSession+setup.
 
-**Graceful teardown is required before reopening, including an 8-byte transport-close
+**Where a manifest-authored edge reopens, graceful teardown includes an 8-byte transport-close
 packet.** The v6 capture's exact teardown on the old socket is:
 `TerminateOpenCapture → CloseSession(0x1003)` → (read OK) → **`08 00 00 00 ff ff ff ff`**
 (an 8-byte PTP-IP transport-close control packet: length=8, payload=0xffffffff) → then
@@ -75,7 +81,7 @@ is to send the sentinel as `.finalMessage` with `isComplete: true` (queues bytes
 atomically), await `.contentProcessed`, brief pause, then `cancel()`. The camera does
 not reply to the sentinel and reference app does not read after it, so no drain is needed.
 
-The authoritative setup + enumeration sequence (on the fresh session) is:
+The captured setup + enumeration sequence (on reference app's fresh session) is:
 
 ```
 (prior session) TerminateOpenCapture(0x1018) → CloseSession(0x1003)

@@ -46,6 +46,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `ConfigStore.from_bundle(body, manufacturer?)` | the loaded store (single-body) |
 | `ConfigStore.from_tiers(body, manufacturer?, fw_overlays)` | as above, with firmware-tier overlays merged onto the body |
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
+| `ConnectionInfo.command_listener_volatile` | whether closing the active PTP/IP transport removes the command listener, making close-and-reopen an invalid mode-switch fallback |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
 | `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
 | `camera_initiated_transfer(model)` | BLE trigger states, optional/cached handoff, resolved endpoint, reserved count/head, metadata/data operations, chunk limit, and completion policy for the camera-controlled pull queue. Requires a manufacturer-index store so symbolic GATT names resolve. |
