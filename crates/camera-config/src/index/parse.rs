@@ -144,6 +144,19 @@ fn build_ble_block(
     {
         for (name, plan) in plans.iter_mut() {
             let mech = name.as_str().unwrap_or("?").to_string();
+            if let Some(steps) = plan
+                .get_mut("postExitReadiness")
+                .and_then(|s| s.as_sequence_mut())
+            {
+                resolve_gatt_names_in_steps(
+                    steps,
+                    &gatt_map,
+                    &format!(
+                        "models.{}.establishments.{mech}.postExitReadiness",
+                        model.id
+                    ),
+                )?;
+            }
             if let Some(steps) = plan.get_mut("steps").and_then(|s| s.as_sequence_mut()) {
                 resolve_gatt_names_in_steps(
                     steps,
@@ -358,6 +371,12 @@ fn validate_establishment(
     model_id: &str,
     mechanism: &str,
 ) -> Result<(), ConfigError> {
+    for (i, step) in est.post_exit_readiness.iter().enumerate() {
+        validate_step(
+            step,
+            &format!("models.{model_id}.establishments.{mechanism}.postExitReadiness[{i}]"),
+        )?;
+    }
     for (i, step) in est.steps.iter().enumerate() {
         validate_step(
             step,

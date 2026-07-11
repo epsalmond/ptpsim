@@ -168,6 +168,11 @@ pub struct EstablishmentBlock {
     /// creds. Declarative; the reference walker does not act on it.
     #[serde(default)]
     pub persist: Vec<String>,
+    /// Optional manifest-authored sequence that proves the camera has returned
+    /// to a state from which this establishment can be replayed after an orderly
+    /// feature exit. Empty means the connection declares no post-exit gate.
+    #[serde(default)]
+    pub post_exit_readiness: Vec<Step>,
     #[serde(default)]
     pub steps: Vec<Step>,
 }

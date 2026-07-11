@@ -146,6 +146,9 @@ pub struct EstablishmentPlan {
     /// Slot names the host should persist after this plan to replay on a later
     /// `ble-reconnect` (#91). Empty for plans with nothing to cache.
     pub persist: Vec<String>,
+    /// Manifest-authored gate to walk after an orderly feature exit and before
+    /// replaying `steps`. Empty means no post-exit readiness gate is declared.
+    pub post_exit_readiness: Vec<Step>,
     pub steps: Vec<Step>,
 }
 
@@ -864,6 +867,7 @@ pub fn build_establishment(
         on_demand: block.on_demand,
         params: block.params.clone(),
         persist: block.persist.clone(),
+        post_exit_readiness: block.post_exit_readiness.iter().map(Step::from).collect(),
         steps,
     })
 }
