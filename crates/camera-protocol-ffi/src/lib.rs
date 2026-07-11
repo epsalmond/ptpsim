@@ -1246,6 +1246,27 @@ pub struct Action {
     pub evidence: Vec<String>,
 }
 
+/// Typed view of the per-object prefix inside the manifest's canonical
+/// `ImportObjects` action. A gallery consumer prepares exactly one selected
+/// handle, then streams `read` repeatedly with the resolved u64 total/window.
+/// Slot names remain manifest data and are surfaced here so consumers never
+/// inspect the all-object action's nested AST.
+#[derive(Debug, uniffi::Record)]
+pub struct SelectedObjectTransferInfo {
+    /// Runtime slots required by `preparation_steps` (currently the selected handle).
+    pub params: Vec<String>,
+    /// Per-object steps before the canonical chunk loop.
+    pub preparation_steps: Vec<EntryStep>,
+    /// Index in the preparation action's collected data payloads containing ObjectInfo.
+    pub object_info_payload_index: u32,
+    /// Binding populated with the resolved transfer total (reported or extension u64).
+    pub transfer_size_slot: String,
+    /// Binding populated with the camera-declared chunk window.
+    pub chunk_size_slot: String,
+    /// Existing per-chunk read action, including manifest-derived offset splitting.
+    pub read: Action,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct KeyValue {
     pub key: String,
@@ -1887,12 +1908,74 @@ impl ConfigStore {
     pub fn action(&self, connection: String, verb: ActionVerb) -> Option<Action> {
         let cc_verb = ffi_to_cc_verb(verb);
         let a = self.inner.manifest.action(&connection, cc_verb)?;
-        Some(Action {
-            mode: a.mode.clone(),
-            params: a.params.clone(),
-            steps: a.steps.iter().filter_map(map_step).collect(),
-            triggers: a.triggers.iter().filter_map(map_action_effect).collect(),
-            evidence: a.evidence.clone(),
+        Some(map_action(a))
+    }
+
+    /// The manifest-owned preparation/read contract for one selected object.
+    ///
+    /// `ImportObjects` remains the canonical all-handles reference recipe. This
+    /// method projects its typed per-handle prefix (everything before the nested
+    /// chunk loop) plus the existing `GetObject` read action, so a lazy gallery
+    /// does not run every handle or depend on capture-slot names/AST nesting.
+    pub fn selected_object_transfer(
+        &self,
+        connection: String,
+    ) -> Option<SelectedObjectTransferInfo> {
+        let import = self
+            .inner
+            .manifest
+            .action(&connection, cc::ActionVerb::ImportObjects)?;
+        let read = self
+            .inner
+            .manifest
+            .action(&connection, cc::ActionVerb::GetObject)?;
+
+        let (handle_slot, body) = import.steps.iter().find_map(|step| match &step.r#loop {
+            Some(cc::Loop::ForEach { bind, body, .. }) => Some((bind, body)),
+            _ => None,
+        })?;
+        let chunk_index = body
+            .iter()
+            .position(|step| matches!(step.r#loop, Some(cc::Loop::Chunk { .. })))?;
+        let (transfer_size_slot, chunk_size_slot) = match body[chunk_index].r#loop.as_ref()? {
+            cc::Loop::Chunk { total, size, .. } => {
+                let cc::model::ChunkSize::Runtime { runtime } = size else {
+                    return None;
+                };
+                (total.clone(), runtime.clone())
+            }
+            cc::Loop::ForEach { .. } => return None,
+        };
+
+        let preparation = &body[..chunk_index];
+        let object_info_payload_index = preparation
+            .iter()
+            .scan(0_u32, |payload_index, step| {
+                let current = *payload_index;
+                if step.get_prop.is_some() || step.read_echo.is_some() || step.send_op.is_some() {
+                    *payload_index += 1;
+                }
+                Some((current, step))
+            })
+            .find_map(|(payload_index, step)| {
+                step.captures
+                    .iter()
+                    .any(|capture| {
+                        matches!(
+                            capture.source,
+                            cc::model::CaptureSource::ObjectInfoCompressedSize
+                        )
+                    })
+                    .then_some(payload_index)
+            })?;
+
+        Some(SelectedObjectTransferInfo {
+            params: vec![handle_slot.clone()],
+            preparation_steps: preparation.iter().filter_map(map_step).collect(),
+            object_info_payload_index,
+            transfer_size_slot,
+            chunk_size_slot,
+            read: map_action(read),
         })
     }
 
@@ -2479,6 +2562,16 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
         ActionVerb::ImportObjects => cc::ActionVerb::ImportObjects,
         ActionVerb::ReadDeviceInfo => cc::ActionVerb::ReadDeviceInfo,
         ActionVerb::Keepalive => cc::ActionVerb::Keepalive,
+    }
+}
+
+fn map_action(a: &cc::Action) -> Action {
+    Action {
+        mode: a.mode.clone(),
+        params: a.params.clone(),
+        steps: a.steps.iter().filter_map(map_step).collect(),
+        triggers: a.triggers.iter().filter_map(map_action_effect).collect(),
+        evidence: a.evidence.clone(),
     }
 }
 
