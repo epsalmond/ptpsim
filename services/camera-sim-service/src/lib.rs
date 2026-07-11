@@ -563,7 +563,7 @@ async fn stream_liveview(
     let (mut rd, mut wr) = stream.split();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_INTERVAL_MS));
     let mut probe = [0u8; 64];
-    let mut frame_index = 0u32;
+    let mut frame_counter = 0u32;
     loop {
         tokio::select! {
             _ = tick.tick() => {
@@ -575,8 +575,8 @@ async fn stream_liveview(
                 let Some(jpeg) = frames.lock().await.next_frame() else {
                     continue;
                 };
-                let packet = protocol_primitives::liveview::frame_packet(&jpeg, frame_index);
-                frame_index = frame_index.wrapping_add(1);
+                let packet = protocol_primitives::liveview::frame_packet(&jpeg, frame_counter);
+                frame_counter = frame_counter.wrapping_add(1);
                 if wr.write_all(&packet).await.is_err() {
                     break;
                 }

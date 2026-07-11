@@ -720,8 +720,8 @@ fn service_serves_a_large_object_in_a_single_frame() {
 struct LiveViewPacket {
     total_len: u32,
     reserved0: u32,
-    frame_index: u32,
-    reserved1: u32,
+    frame_counter: u32,
+    jpeg_body_offset_adjust: u32,
     reserved_pad: u16,
     jpeg: Vec<u8>,
 }
@@ -738,8 +738,8 @@ fn read_frame_lv(s: &mut TcpStream) -> LiveViewPacket {
     LiveViewPacket {
         total_len,
         reserved0: u32::from_le_bytes(header[4..8].try_into().unwrap()),
-        frame_index: u32::from_le_bytes(header[8..12].try_into().unwrap()),
-        reserved1: u32::from_le_bytes(header[12..16].try_into().unwrap()),
+        frame_counter: u32::from_le_bytes(header[8..12].try_into().unwrap()),
+        jpeg_body_offset_adjust: u32::from_le_bytes(header[12..16].try_into().unwrap()),
         reserved_pad: u16::from_le_bytes(header[16..18].try_into().unwrap()),
         jpeg,
     }
@@ -1645,10 +1645,10 @@ properties:
     let frame1 = read_frame_lv(&mut lv);
     assert_eq!(frame0.total_len as usize, 18 + lv_jpeg.len());
     assert_eq!(frame0.reserved0, 0);
-    assert_eq!(frame0.reserved1, 0);
+    assert_eq!(frame0.jpeg_body_offset_adjust, 0);
     assert_eq!(frame0.reserved_pad, 0);
-    assert_eq!(frame0.frame_index, 0);
-    assert_eq!(frame1.frame_index, 1);
+    assert_eq!(frame0.frame_counter, 0);
+    assert_eq!(frame1.frame_counter, 1);
     assert_eq!(
         &frame0.jpeg[..],
         lv_jpeg,
@@ -1657,6 +1657,16 @@ properties:
     assert_eq!(frame0.jpeg, frame1.jpeg, "single-frame loop repeats");
 
     drop(lv);
+    let mut reopened = TcpStream::connect(liveview_addr).unwrap();
+    reopened
+        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+        .unwrap();
+    let reopened_frame = read_frame_lv(&mut reopened);
+    assert_eq!(
+        reopened_frame.frame_counter, 0,
+        "a new stream resets the counter"
+    );
+    drop(reopened);
     drop(s);
     rt.block_on(async {
         let _ = shutdown_tx.send(());
