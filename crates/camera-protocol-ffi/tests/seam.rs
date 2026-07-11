@@ -895,10 +895,11 @@ fn selected_object_transfer_projects_the_canonical_per_handle_contract() {
     let s = store();
     let selected = s
         .selected_object_transfer("app".into())
+        .expect("valid selected-object transfer contract")
         .expect("app selected-object transfer contract");
 
     assert_eq!(selected.params, ["handle"]);
-    assert_eq!(selected.object_info_payload_index, 0);
+    assert_eq!(selected.object_info_step_index, 0);
     assert_eq!(selected.transfer_size_slot, "objectTransferSize");
     assert_eq!(selected.chunk_size_slot, "chunkSize");
     assert!(selected.preparation_steps.iter().any(|step| matches!(
@@ -947,11 +948,18 @@ fn selected_object_transfer_projects_the_canonical_per_handle_contract() {
 #[test]
 fn selected_object_transfer_is_absent_without_the_canonical_actions() {
     let s = store();
-    assert!(s.selected_object_transfer("ble".into()).is_none());
+    assert!(s
+        .selected_object_transfer("ble".into())
+        .expect("ble lookup")
+        .is_none());
     assert!(s
         .selected_object_transfer("wireless-tether".into())
+        .expect("wireless-tether lookup")
         .is_none());
-    assert!(s.selected_object_transfer("missing".into()).is_none());
+    assert!(s
+        .selected_object_transfer("missing".into())
+        .expect("missing lookup")
+        .is_none());
 }
 
 #[test]

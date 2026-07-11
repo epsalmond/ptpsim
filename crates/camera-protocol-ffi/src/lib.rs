@@ -560,6 +560,8 @@ pub enum ConfigError {
     Parse(String),
     #[error("unsupported schema: {0}")]
     Schema(String),
+    #[error("invalid manifest consumer contract: {0}")]
+    Contract(String),
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -1257,8 +1259,8 @@ pub struct SelectedObjectTransferInfo {
     pub params: Vec<String>,
     /// Per-object steps before the canonical chunk loop.
     pub preparation_steps: Vec<EntryStep>,
-    /// Index in the preparation action's collected data payloads containing ObjectInfo.
-    pub object_info_payload_index: u32,
+    /// Index of the preparation step whose data response contains ObjectInfo.
+    pub object_info_step_index: u32,
     /// Binding populated with the resolved transfer total (reported or extension u64).
     pub transfer_size_slot: String,
     /// Binding populated with the camera-declared chunk window.
@@ -1920,63 +1922,22 @@ impl ConfigStore {
     pub fn selected_object_transfer(
         &self,
         connection: String,
-    ) -> Option<SelectedObjectTransferInfo> {
-        let import = self
+    ) -> Result<Option<SelectedObjectTransferInfo>, ConfigError> {
+        let Some(import) = self
             .inner
             .manifest
-            .action(&connection, cc::ActionVerb::ImportObjects)?;
-        let read = self
-            .inner
-            .manifest
-            .action(&connection, cc::ActionVerb::GetObject)?;
-
-        let (handle_slot, body) = import.steps.iter().find_map(|step| match &step.r#loop {
-            Some(cc::Loop::ForEach { bind, body, .. }) => Some((bind, body)),
-            _ => None,
-        })?;
-        let chunk_index = body
-            .iter()
-            .position(|step| matches!(step.r#loop, Some(cc::Loop::Chunk { .. })))?;
-        let (transfer_size_slot, chunk_size_slot) = match body[chunk_index].r#loop.as_ref()? {
-            cc::Loop::Chunk { total, size, .. } => {
-                let cc::model::ChunkSize::Runtime { runtime } = size else {
-                    return None;
-                };
-                (total.clone(), runtime.clone())
-            }
-            cc::Loop::ForEach { .. } => return None,
+            .action(&connection, cc::ActionVerb::ImportObjects)
+        else {
+            return Ok(None);
         };
-
-        let preparation = &body[..chunk_index];
-        let object_info_payload_index = preparation
-            .iter()
-            .scan(0_u32, |payload_index, step| {
-                let current = *payload_index;
-                if step.get_prop.is_some() || step.read_echo.is_some() || step.send_op.is_some() {
-                    *payload_index += 1;
-                }
-                Some((current, step))
-            })
-            .find_map(|(payload_index, step)| {
-                step.captures
-                    .iter()
-                    .any(|capture| {
-                        matches!(
-                            capture.source,
-                            cc::model::CaptureSource::ObjectInfoCompressedSize
-                        )
-                    })
-                    .then_some(payload_index)
-            })?;
-
-        Some(SelectedObjectTransferInfo {
-            params: vec![handle_slot.clone()],
-            preparation_steps: preparation.iter().filter_map(map_step).collect(),
-            object_info_payload_index,
-            transfer_size_slot,
-            chunk_size_slot,
-            read: map_action(read),
-        })
+        let Some(read) = self
+            .inner
+            .manifest
+            .action(&connection, cc::ActionVerb::GetObject)
+        else {
+            return Ok(None);
+        };
+        project_selected_object_transfer(import, read).map(Some)
     }
 
     /// Is `op` usable over `connection` in `mode` given `observed`? Intersects the
@@ -2565,6 +2526,75 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
     }
 }
 
+fn project_selected_object_transfer(
+    import: &cc::Action,
+    read: &cc::Action,
+) -> Result<SelectedObjectTransferInfo, ConfigError> {
+    let (handle_slot, body) = import
+        .steps
+        .iter()
+        .find_map(|step| match &step.r#loop {
+            Some(cc::Loop::ForEach { bind, body, .. }) => Some((bind, body)),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            ConfigError::Contract("importObjects has no per-handle forEach loop".into())
+        })?;
+    let chunk_index = body
+        .iter()
+        .position(|step| matches!(step.r#loop, Some(cc::Loop::Chunk { .. })))
+        .ok_or_else(|| {
+            ConfigError::Contract("importObjects per-handle loop has no chunk loop".into())
+        })?;
+    let (transfer_size_slot, chunk_size_slot) = match body[chunk_index].r#loop.as_ref() {
+        Some(cc::Loop::Chunk { total, size, .. }) => {
+            let cc::model::ChunkSize::Runtime { runtime } = size else {
+                return Err(ConfigError::Contract(
+                    "importObjects chunk size is not a runtime slot".into(),
+                ));
+            };
+            (total.clone(), runtime.clone())
+        }
+        _ => unreachable!("chunk_index identifies a chunk loop"),
+    };
+
+    let preparation = &body[..chunk_index];
+    let object_info_step_index = preparation
+        .iter()
+        .position(|step| {
+            step.captures.iter().any(|capture| {
+                matches!(
+                    capture.source,
+                    cc::model::CaptureSource::ObjectInfoCompressedSize
+                )
+            })
+        })
+        .ok_or_else(|| {
+            ConfigError::Contract(
+                "importObjects preparation has no ObjectInfo compressed-size capture".into(),
+            )
+        })?;
+    let preparation_steps = preparation
+        .iter()
+        .map(|step| {
+            map_step(step).ok_or_else(|| {
+                ConfigError::Contract(
+                    "importObjects preparation contains an unmappable step".into(),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(SelectedObjectTransferInfo {
+        params: vec![handle_slot.clone()],
+        preparation_steps,
+        object_info_step_index: object_info_step_index as u32,
+        transfer_size_slot,
+        chunk_size_slot,
+        read: map_action(read),
+    })
+}
+
 fn map_action(a: &cc::Action) -> Action {
     Action {
         mode: a.mode.clone(),
@@ -2678,6 +2708,88 @@ mod tests {
             lt: None,
             gt: None,
         })
+    }
+
+    fn selected_transfer_actions() -> (cc::Action, cc::Action) {
+        let object_info = cc::Step {
+            send_op: Some("0x1008".into()),
+            captures: vec![cc::model::Capture {
+                bind: "objectTransferSize".into(),
+                source: cc::model::CaptureSource::ObjectInfoCompressedSize,
+            }],
+            ..Default::default()
+        };
+        let chunk = cc::Step {
+            r#loop: Some(cc::Loop::Chunk {
+                total: "objectTransferSize".into(),
+                size: cc::model::ChunkSize::Runtime {
+                    runtime: "chunkSize".into(),
+                },
+                offset_bind: "offset".into(),
+                length_bind: "length".into(),
+                body: vec![],
+            }),
+            ..Default::default()
+        };
+        let import = cc::Action {
+            steps: vec![cc::Step {
+                r#loop: Some(cc::Loop::ForEach {
+                    in_prop: "0xd621".into(),
+                    bind: "handle".into(),
+                    body: vec![object_info, chunk],
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        (import, cc::Action::default())
+    }
+
+    fn assert_selected_transfer_contract_error(import: &cc::Action, expected: &str) {
+        let error = project_selected_object_transfer(import, &cc::Action::default())
+            .expect_err("malformed projection must fail");
+        assert!(
+            matches!(error, ConfigError::Contract(ref message) if message.contains(expected)),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_missing_for_each() {
+        assert_selected_transfer_contract_error(&cc::Action::default(), "forEach");
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_missing_chunk() {
+        let (mut import, _) = selected_transfer_actions();
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+            panic!("fixture forEach");
+        };
+        body.pop();
+        assert_selected_transfer_contract_error(&import, "chunk loop");
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_literal_chunk_size() {
+        let (mut import, _) = selected_transfer_actions();
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+            panic!("fixture forEach");
+        };
+        let Some(cc::Loop::Chunk { size, .. }) = body[1].r#loop.as_mut() else {
+            panic!("fixture chunk");
+        };
+        *size = cc::model::ChunkSize::Literal(1024);
+        assert_selected_transfer_contract_error(&import, "runtime slot");
+    }
+
+    #[test]
+    fn selected_transfer_projection_rejects_missing_object_info_capture() {
+        let (mut import, _) = selected_transfer_actions();
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+            panic!("fixture forEach");
+        };
+        body[0].captures.clear();
+        assert_selected_transfer_contract_error(&import, "ObjectInfo");
     }
 
     /// The hand-mirror seam: an `awaitUntil` step (with a nested `onEach` and a
