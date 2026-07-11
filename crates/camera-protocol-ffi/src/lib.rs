@@ -2153,8 +2153,9 @@ impl ConfigStore {
     }
 
     /// The encoder width for a property, resolved from the manifest's `type`
-    /// (`u8`→U8, `u16`→U16, `u32`→U32). `None` for an unknown property or an unsupported
-    /// type (e.g. `u8a`) — pair with `encode_value(raw, width)`.
+    /// (`u8`→U8, `u16`→U16, `u32`→U32, `i16`→I16, `i32`→I32). `None` for an
+    /// unknown property or an unsupported type (e.g. `u8a`) — pair with
+    /// `encode_value(raw, width)`.
     pub fn property_value_width(&self, prop: u16) -> Option<ValueWidth> {
         match self.inner.manifest.property(prop)?.ptype.as_deref() {
             Some("u8") => Some(ValueWidth::U8),

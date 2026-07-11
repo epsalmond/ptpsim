@@ -364,6 +364,10 @@ fn property_value_width_resolves_from_manifest_type() {
         s.property_value_width(0xd246),
         Some(ValueWidth::U8)
     )); // stills/video selector u8
+    assert_eq!(
+        encode_value(1, ValueWidth::U8).expect("u8 encodes across the FFI seam"),
+        vec![0x01]
+    );
     assert!(matches!(
         s.property_value_width(0x5007),
         Some(ValueWidth::U16)

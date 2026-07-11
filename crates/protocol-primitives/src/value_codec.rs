@@ -1,11 +1,11 @@
 //! Property value encoding (concern: turning a resolved raw value into wire bytes).
 //!
-//! The Fuji app's encoder is **generic and table-driven** — it writes a `rawValue`
-//! at the property's declared width (u16/u32, little-endian); the per-value
+//! The consumer's encoder is **generic and table-driven** — it writes a `rawValue`
+//! at the property's declared scalar width (8, 16, or 32 bits, little-endian); the per-value
 //! semantics (f/2.8 → 280, ISO auto-ceiling → `0x80001900`, …) are precomputed
 //! `rawValue`s in a per-property options table. That table is pure manifest data
 //! (`descriptor.values` + `labels`), so the only *code* needed is this width
-//! encoder. Byte-exact parity target: `FujiCameraPropertyValueWidth.encode`.
+//! encoder.
 
 use crate::error::FramingError;
 use ptp_core::Writer;
