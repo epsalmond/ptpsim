@@ -57,6 +57,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `selected_object_transfer(connection)` | typed lazy-gallery projection of the canonical `importObjects` per-handle preparation plus the existing chunk-read action; exposes the preparation-step index whose response is ObjectInfo and manifest-owned u64 transfer-size/u32 chunk-size slots without requiring consumers to inspect nested action ASTs; returns a contract error when a connection declares the actions with an invalid shape |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
+| `property_value_width(prop)` | the manifest property's generic scalar encoder width (`u8`, `u16`, `u32`, `i16`, or `i32`), or `None` for non-scalar/unknown types |
 | `value(key)` / `value_label(prop, value)` / `decode_property(prop, raw)` / `encode_property(prop, label)` | value-policy resolution, human labels, and manifest-backed property label↔wire-byte encoding |
 
 Byte codecs (build/parse PTP packets, decode datasets, encode values) are exported
@@ -200,7 +201,7 @@ tracked by issue #164.
   `fw2.40.yaml` flips XLV to HTTPS).
 - **Codecs (§B) — G1–G3 landed + in the bindings.** G1: `build_app_init` (the 82-byte
   init) + `validate_init_ack`; transport-close frames come from `transport_close`. G2:
-  `encode_value(raw, width)` (generic
+  `encode_value(raw, width)` (generic 8-, 16-, and 32-bit scalar
   width encoder) plus `ConfigStore.encode_property(prop, label)` /
   `decode_property(prop, raw)` for manifest-backed property value rows and generic
   sentinel/mask forms. Per-value semantics live in data, not app switch tables. G3: packet

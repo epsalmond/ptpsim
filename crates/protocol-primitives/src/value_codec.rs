@@ -1,11 +1,11 @@
 //! Property value encoding (concern: turning a resolved raw value into wire bytes).
 //!
-//! The Fuji app's encoder is **generic and table-driven** — it writes a `rawValue`
-//! at the property's declared width (u16/u32, little-endian); the per-value
+//! The consumer's encoder is **generic and table-driven** — it writes a `rawValue`
+//! at the property's declared scalar width (8, 16, or 32 bits, little-endian); the per-value
 //! semantics (f/2.8 → 280, ISO auto-ceiling → `0x80001900`, …) are precomputed
 //! `rawValue`s in a per-property options table. That table is pure manifest data
 //! (`descriptor.values` + `labels`), so the only *code* needed is this width
-//! encoder. Byte-exact parity target: `FujiCameraPropertyValueWidth.encode`.
+//! encoder.
 
 use crate::error::FramingError;
 use ptp_core::Writer;
@@ -15,6 +15,7 @@ use ptp_core::Writer;
 /// standard ISO `i32`); signed values are written two's-complement, little-endian.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueWidth {
+    U8,
     U16,
     U32,
     I16,
@@ -24,6 +25,7 @@ pub enum ValueWidth {
 impl ValueWidth {
     pub fn bytes(self) -> u8 {
         match self {
+            ValueWidth::U8 => 1,
             ValueWidth::U16 | ValueWidth::I16 => 2,
             ValueWidth::U32 | ValueWidth::I32 => 4,
         }
@@ -47,6 +49,10 @@ pub fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, FramingErr
     };
     let mut w = Writer::new();
     match width {
+        ValueWidth::U8 => {
+            let v: u8 = u8::try_from(value).map_err(|_| too_wide())?;
+            w.u8(v);
+        }
         ValueWidth::U16 => {
             let v: u16 = u16::try_from(value).map_err(|_| too_wide())?;
             w.u16(v);
@@ -70,6 +76,19 @@ pub fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, FramingErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn u8_scalar_and_range_are_byte_exact() {
+        assert_eq!(encode_value(1, ValueWidth::U8).unwrap(), vec![0x01]);
+        assert!(matches!(
+            encode_value(0x100, ValueWidth::U8),
+            Err(FramingError::ValueTooWide {
+                value: 0x100,
+                width: 1,
+                signed: false,
+            })
+        ));
+    }
 
     #[test]
     fn u16_le_aperture() {

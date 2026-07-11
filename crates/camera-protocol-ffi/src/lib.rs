@@ -57,6 +57,7 @@ fn codec_decode<E: std::fmt::Display>(e: E) -> CodecError {
 /// encodes negative values (exposure-bias, ISO auto sentinels) two's-complement.
 #[derive(Debug, uniffi::Enum)]
 pub enum ValueWidth {
+    U8,
     U16,
     U32,
     I16,
@@ -66,6 +67,7 @@ pub enum ValueWidth {
 impl From<ValueWidth> for protocol_primitives::ValueWidth {
     fn from(w: ValueWidth) -> Self {
         match w {
+            ValueWidth::U8 => protocol_primitives::ValueWidth::U8,
             ValueWidth::U16 => protocol_primitives::ValueWidth::U16,
             ValueWidth::U32 => protocol_primitives::ValueWidth::U32,
             ValueWidth::I16 => protocol_primitives::ValueWidth::I16,
@@ -2151,10 +2153,12 @@ impl ConfigStore {
     }
 
     /// The encoder width for a property, resolved from the manifest's `type`
-    /// (`u16`→U16, `u32`→U32). `None` for an unknown property or an unsupported
-    /// type (e.g. `u8a`) — pair with `encode_value(raw, width)`.
+    /// (`u8`→U8, `u16`→U16, `u32`→U32, `i16`→I16, `i32`→I32). `None` for an
+    /// unknown property or an unsupported type (e.g. `u8a`) — pair with
+    /// `encode_value(raw, width)`.
     pub fn property_value_width(&self, prop: u16) -> Option<ValueWidth> {
         match self.inner.manifest.property(prop)?.ptype.as_deref() {
+            Some("u8") => Some(ValueWidth::U8),
             Some("u16") => Some(ValueWidth::U16),
             Some("u32") => Some(ValueWidth::U32),
             Some("i16") => Some(ValueWidth::I16),
