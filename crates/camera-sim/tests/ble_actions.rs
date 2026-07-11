@@ -82,6 +82,57 @@ fn remote_shutter_writes_the_s1_s2_release_sequence() {
 }
 
 #[test]
+fn auto_transfer_size_actions_keep_camera_values_in_the_manifest() {
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let setting = uuid(ble, "imageResizeSetting");
+    let rate = uuid(ble, "imageResizeRate");
+
+    let cases = [
+        (
+            "auto-transfer-size-original",
+            vec![(setting.clone(), vec![0x00])],
+        ),
+        (
+            "auto-transfer-size-s",
+            vec![
+                (rate.clone(), vec![0x01, 0x00]),
+                (setting.clone(), vec![0x01]),
+            ],
+        ),
+        (
+            "auto-transfer-size-xs",
+            vec![
+                (rate.clone(), vec![0x00, 0x00]),
+                (setting.clone(), vec![0x01]),
+            ],
+        ),
+    ];
+
+    for (action, expected_writes) in cases {
+        let mut responder = BleResponder::new(ble.gatt.values().cloned());
+        walk_establishment(
+            &mut responder,
+            &ble.action(action).unwrap().steps,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap_or_else(|error| panic!("{action} completes: {error}"));
+
+        let actual_writes: Vec<(String, Vec<u8>)> = responder
+            .log()
+            .iter()
+            .filter_map(|event| match event {
+                BleEvent::Write { uuid, value } => Some((uuid.clone(), value.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actual_writes, expected_writes, "{action}");
+    }
+}
+
+#[test]
 fn write_gps_writes_the_host_packed_payload() {
     let view = gfx100ii();
     let ble = view.ble.as_ref().unwrap();

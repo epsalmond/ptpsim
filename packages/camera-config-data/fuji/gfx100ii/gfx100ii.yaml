@@ -59,6 +59,7 @@ evidence:
 
 
 
+
 sentinels:
   # PTP/IP length-8 frame with body 0xffffffff. Sent before the final FIN when
   # reopening image-transfer so the camera holds its Wi-Fi AP up (#82).

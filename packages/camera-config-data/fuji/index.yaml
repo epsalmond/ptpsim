@@ -8,6 +8,8 @@
 
 #     (read first — corrects the brief; behavior observed in the reference app)
 
+
+#     § "Update 2026-05-26 (D3-wire): camera-side resize is controlled via BLE"
 #
 # Schema: plan docs/plans/ios-rewrite-p0-p1-ble-mvp.md §2.1 (BLE-only).
 # Loader: camera_config::ConfigStore::from_manufacturer_index.
@@ -362,6 +364,31 @@ families:
       # GPS payload wire-verified (operators 2026-05-01). The cameraSettings
       # backup/restore chunked transfer is settings-backup / settings-restore (#112).
       actions:
+        # Auto-transfer JPEG sizing (#239). The reference app exposes exactly
+        # Original (resize Off), S, and XS. Both settings are camera-side BLE
+        # state; consumers select these semantic plans and never carry UUIDs or
+        # value encodings. Source: IMAGE_TRANSFER_FW0230_2026-05-19.md § update
+        # 2026-05-26 (ImageResizeSettingValue / ImageResizeRateValue source RE).
+        auto-transfer-size-original:
+          evidence: [staticAutoTransferResize]
+          steps:
+            - bleConnect: {}
+            - bleWrite: { gatt: imageResizeSetting, value: { literal: "00" } }
+
+        auto-transfer-size-s:
+          evidence: [staticAutoTransferResize]
+          steps:
+            - bleConnect: {}
+            - bleWrite: { gatt: imageResizeRate, value: { literal: "0100" } }
+            - bleWrite: { gatt: imageResizeSetting, value: { literal: "01" } }
+
+        auto-transfer-size-xs:
+          evidence: [staticAutoTransferResize]
+          steps:
+            - bleConnect: {}
+            - bleWrite: { gatt: imageResizeRate, value: { literal: "0000" } }
+            - bleWrite: { gatt: imageResizeSetting, value: { literal: "01" } }
+
         # Remote shutter: an S1→S2→S1→S0 press sequence on SHOOTING_REQUEST.
         # client application paces the writes 100ms/500ms/100ms apart (host-side; the
         # plan declares the byte sequence — see FujiBLERemoteReleaseSequence).

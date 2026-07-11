@@ -474,6 +474,27 @@ fn ble_action_returns_the_remote_shutter_plan() {
 }
 
 #[test]
+fn ble_action_surfaces_semantic_auto_transfer_size_plans() {
+    let s = store();
+    for action in [
+        "auto-transfer-size-original",
+        "auto-transfer-size-s",
+        "auto-transfer-size-xs",
+    ] {
+        let plan = s
+            .ble_action("gfx100ii".into(), action.into())
+            .unwrap_or_else(|| panic!("{action} resolves"));
+        assert_eq!(plan.action, action);
+        assert!(
+            plan.steps
+                .iter()
+                .any(|step| matches!(step, Step::BleWrite { .. })),
+            "{action} includes a manifest-resolved BLE write"
+        );
+    }
+}
+
+#[test]
 fn ble_action_binary_writes_declare_bytes_raw_encoding() {
     // #114: write-gps/write-time write a host-packed BINARY payload (GPS/clock
     // bytes) supplied as a runtime hex string. The bleWrite value MUST declare

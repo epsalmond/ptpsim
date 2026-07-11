@@ -83,6 +83,10 @@ evidence:
     kind: app-source
 
     date: 2026-07-07
+  staticAutoTransferResize:
+    kind: app-source
+
+    date: 2026-05-26
   staticRawStudio:
     path: evidence/RAW_CONVERSION.md
     date: ''
