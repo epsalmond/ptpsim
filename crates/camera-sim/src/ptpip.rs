@@ -250,8 +250,8 @@ impl Ctx<'_> {
                 && matches!(self.engine.phase(), Phase::LiveView | Phase::Streaming)
             {
                 // The camera tore down the command-port listener on the transport-
-                // close while live-view was active, so the reconnect is refused —
-                // switch live-view → image-transfer in-session (#103).
+                // close while live-view was active, so an immediate reconnect is
+                // refused. The caller must use an outer re-establishment (#244).
                 return Err(err(
                     "reopenSession: camera refused the reconnect — the command-port \
                      listener does not survive a live-view transport-close on this \
@@ -264,6 +264,12 @@ impl Ctx<'_> {
             self.simple_op(op::CLOSE_SESSION, vec![], step.tolerant)
                 .map_err(err)?;
             self.simple_op(op::OPEN_SESSION, vec![1], step.tolerant)
+                .map_err(err)
+        } else if step.close_session.is_some() {
+            // Socket-role shutdown and the optional transport-close frame are
+            // host I/O responsibilities. The sans-I/O walker models the PTP
+            // CloseSession operation and resulting engine state.
+            self.simple_op(op::CLOSE_SESSION, vec![], step.tolerant)
                 .map_err(err)
         } else if let Some(aw) = &step.await_until {
             self.run_await_until(aw, step.tolerant, here)

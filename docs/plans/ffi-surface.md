@@ -137,8 +137,18 @@ pub struct ControlInfo {
 pub struct ModeEntryPlan {
     pub to: String,
     pub from: Option<String>,
-    pub steps: Vec<EntryStep>,             // wire actions, in order
-    pub user_instruction: Option<String>,  // when not app-driven (USB menu, connection switch)
+    pub execution: ModeEntryExecution,
+}
+
+#[derive(uniffi::Enum)]
+pub enum ModeEntryExecution {
+    Ptp { steps: Vec<EntryStep> },
+    ReestablishConnection {
+        connection: String,
+        exit_steps: Vec<EntryStep>,
+        establishment_params: Vec<KeyValue>,
+    },
+    UserInstruction { instruction: String },
 }
 
 #[derive(uniffi::Enum)]

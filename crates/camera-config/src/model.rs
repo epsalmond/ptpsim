@@ -712,8 +712,7 @@ pub struct Connection {
     #[serde(default)]
     pub modes: Vec<String>,
     /// Mode-graph edges reachable over this connection (decision #6, §3a). An edge
-    /// carries a wire-action `steps` sequence OR a `userInstruction`; optionally
-    /// `from`-qualified (a cheaper Shooting↔ImageTransfer switch vs a cold entry).
+    /// carries exactly one typed execution and may be `from`-qualified.
     #[serde(default)]
     pub entries: Vec<ModeEntry>,
     /// Named, parameterized step sequences that run *within* a mode (vs `entries`,
@@ -894,7 +893,7 @@ pub struct SentinelFrame {
 pub struct TransportClose {
     /// Names a top-level `sentinels` entry.
     pub sentinel: String,
-    /// When the consumer sends it (e.g. `before-image-transfer-reopen`).
+    /// When the consumer sends it (e.g. `before-image-transfer-reestablishment`).
     #[serde(default)]
     pub when: Option<String>,
 }
@@ -935,22 +934,128 @@ pub struct ConnectionTransition {
 }
 
 /// A mode-graph transition edge: how to get *into* mode `to`. `from` qualifies the
-/// source (None = cold/any entry; a Shooting→ImageTransfer edge can be cheaper than
-/// cold). Carries either a `steps` wire sequence or a `user_instruction` (some
-/// transitions — connection switches — can only be requested, not app-driven).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+/// source (`None` = cold entry). Execution is a closed choice so PTP steps cannot
+/// be accidentally combined with a manual or outer connection lifecycle.
+#[derive(Debug, Clone)]
 pub struct ModeEntry {
     pub to: String,
-    #[serde(default)]
     pub from: Option<String>,
-    #[serde(default)]
-    pub steps: Vec<Step>,
-    #[serde(default)]
-    pub user_instruction: Option<String>,
+    pub execution: ModeEntryExecution,
     /// Optional runtime prerequisite for taking this edge.
-    #[serde(default)]
     pub requires: Option<Predicate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModeEntryExecution {
+    /// Ordered PTP wire steps executed on the current session.
+    Ptp { steps: Vec<Step> },
+    /// Leave the current connection lifecycle, establish it again, then run the
+    /// target mode's cold PTP entry on a fresh session.
+    ReestablishConnection(ReestablishConnection),
+    /// A camera-menu or host action that cannot be driven by ptpsim.
+    UserInstruction { instruction: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReestablishConnection {
+    /// PTP steps that orderly leave the old session before host/network teardown.
+    pub exit_steps: Vec<Step>,
+    /// Fixed bindings for the connection's existing establishment plan.
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
+}
+
+impl ModeEntry {
+    pub fn ptp_steps(&self) -> Option<&[Step]> {
+        match &self.execution {
+            ModeEntryExecution::Ptp { steps } => Some(steps),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ModeEntryWire {
+    to: String,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    steps: Option<Vec<Step>>,
+    #[serde(default)]
+    reestablish_connection: Option<ReestablishConnection>,
+    #[serde(default)]
+    user_instruction: Option<String>,
+    #[serde(default)]
+    requires: Option<Predicate>,
+}
+
+impl<'de> Deserialize<'de> for ModeEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ModeEntryWire::deserialize(deserializer)?;
+        let variants = [
+            wire.steps.is_some(),
+            wire.reestablish_connection.is_some(),
+            wire.user_instruction.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        if variants != 1 {
+            return Err(serde::de::Error::custom(
+                "mode entry requires exactly one of steps, reestablishConnection, or userInstruction",
+            ));
+        }
+        let execution = if let Some(steps) = wire.steps {
+            ModeEntryExecution::Ptp { steps }
+        } else if let Some(reestablish) = wire.reestablish_connection {
+            ModeEntryExecution::ReestablishConnection(reestablish)
+        } else {
+            ModeEntryExecution::UserInstruction {
+                instruction: wire.user_instruction.expect("variant count checked"),
+            }
+        };
+        Ok(Self {
+            to: wire.to,
+            from: wire.from,
+            execution,
+            requires: wire.requires,
+        })
+    }
+}
+
+impl Serialize for ModeEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let fields = 2 + usize::from(self.from.is_some()) + usize::from(self.requires.is_some());
+        let mut out = serializer.serialize_struct("ModeEntry", fields)?;
+        out.serialize_field("to", &self.to)?;
+        if let Some(from) = &self.from {
+            out.serialize_field("from", from)?;
+        }
+        match &self.execution {
+            ModeEntryExecution::Ptp { steps } => out.serialize_field("steps", steps)?,
+            ModeEntryExecution::ReestablishConnection(reestablish) => {
+                out.serialize_field("reestablishConnection", reestablish)?;
+            }
+            ModeEntryExecution::UserInstruction { instruction } => {
+                out.serialize_field("userInstruction", instruction)?;
+            }
+        }
+        if let Some(requires) = &self.requires {
+            out.serialize_field("requires", requires)?;
+        }
+        out.end()
+    }
 }
 
 /// Named verbs the app invokes on a connection while in a mode. Closed
@@ -1151,14 +1256,15 @@ pub struct Step {
     /// Send operation `op` (e.g. `0x101c` InitiateOpenCapture).
     #[serde(default)]
     pub send_op: Option<HexCode>,
-    /// Re-establish the PTP/IP session in-place (reference app Take↔Get switch on `app`):
+    /// Re-establish the PTP/IP session in-place (reference app Get→Take switch on `app`):
     /// CloseSession 0x1003 → 8B `0xffffffff` sentinel → new TCP socket to the
     /// connection's command port → cached 82B InitCmdReq → InitCmdAck →
     /// OpenSession sid=1. Engine reuses the connection's cached identity, so
     /// the action carries no params — `reopenSession: {}`.
     #[serde(default)]
     pub reopen_session: Option<ReopenSession>,
-    /// End the PTP/IP session, optionally keeping the Wi-Fi AP up (#82).
+    /// End the PTP/IP session, optionally using the connection's declared
+    /// orderly transport-close frame (#82/#244).
     #[serde(default)]
     pub close_session: Option<CloseSession>,
     /// Value for `set_prop`.
@@ -1568,14 +1674,14 @@ impl<'de> serde::Deserialize<'de> for Loop {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReopenSession {}
 
-/// `closeSession` action: end the PTP/IP session. `keepAp: true` uses the
-/// connection's manifest-declared transport-close frame instead of a bare TCP
-/// close, so the camera holds its Wi-Fi AP up across an in-place reopen (#82).
+/// `closeSession` action: end the PTP/IP session. `transportClose: true` uses the
+/// connection's manifest-declared orderly transport-close frame instead of a
+/// bare TCP close. It does not promise that the endpoint remains redialable.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CloseSession {
     #[serde(default)]
-    pub keep_ap: bool,
+    pub transport_close: bool,
 }
 
 /// The PTP/IP InitCommandRequest wire shape as manifest data: identity slots
@@ -1873,12 +1979,13 @@ connections:
         let lv = &entries[0];
         assert_eq!(lv.to, "Shooting/Stills");
         assert!(lv.from.is_none(), "cold entry");
-        assert_eq!(lv.steps.len(), 5);
-        assert_eq!(lv.steps[0].set_prop.as_deref(), Some("0xdf00"));
-        assert_eq!(lv.steps[0].value, Some(6));
-        assert_eq!(lv.steps[3].repeat, 4); // 902B ×4
-        assert_eq!(lv.steps[4].send_op.as_deref(), Some("0x101c"));
-        assert!(lv.steps.iter().all(Step::is_well_formed));
+        let steps = lv.ptp_steps().expect("PTP execution");
+        assert_eq!(steps.len(), 5);
+        assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf00"));
+        assert_eq!(steps[0].value, Some(6));
+        assert_eq!(steps[3].repeat, 4); // 902B ×4
+        assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
+        assert!(steps.iter().all(Step::is_well_formed));
         // from-qualified switch (no full teardown path).
         assert_eq!(entries[1].from.as_deref(), Some("Shooting/Stills"));
     }
@@ -1899,7 +2006,9 @@ connections:
           - { sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] } # runtime-bound param
 "#;
         let m = CameraManifest::from_yaml(yaml).unwrap();
-        let steps = &m.connections["app"].entries[0].steps;
+        let steps = m.connections["app"].entries[0]
+            .ptp_steps()
+            .expect("PTP execution");
         assert!(steps[0].tolerant && steps[0].get_prop.as_deref() == Some("0xdf28"));
         assert_eq!(steps[1].set_prop.as_deref(), Some("0xdf28"));
         assert_eq!(
@@ -1938,7 +2047,9 @@ connections:
                 - { getProp: "0xd212", tolerant: true }
 "#;
         let m = CameraManifest::from_yaml(yaml).unwrap();
-        let steps = &m.connections["app"].entries[0].steps;
+        let steps = m.connections["app"].entries[0]
+            .ptp_steps()
+            .expect("PTP execution");
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].send_op.as_deref(), Some("0x9026"));
         let aw = steps[1].await_until.as_ref().expect("awaitUntil parsed");
@@ -1981,7 +2092,7 @@ connections:
               timeoutMs: 5000
 "#;
         let m = CameraManifest::from_yaml(yaml).unwrap();
-        let aw = m.connections["app"].entries[0].steps[1]
+        let aw = m.connections["app"].entries[0].ptp_steps().unwrap()[1]
             .await_until
             .as_ref()
             .expect("awaitUntil parsed");
@@ -2010,7 +2121,7 @@ connections:
         )
         .unwrap();
         assert_eq!(
-            bare.connections["app"].entries[0].steps[0]
+            bare.connections["app"].entries[0].ptp_steps().unwrap()[0]
                 .await_until
                 .as_ref()
                 .unwrap()

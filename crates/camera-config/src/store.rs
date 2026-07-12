@@ -15,7 +15,8 @@ use crate::error::ConfigError;
 use crate::index::ResolvedManufacturerIndex;
 use crate::model::{
     parse_hex_bytes, parse_hex_code, CameraInitiatedMetadataPhase, CameraManifest,
-    ManufacturerDefaults, SocketRole, TransferCompletion, TriggerMatch, ValuePolicy,
+    ManufacturerDefaults, ModeEntryExecution, SocketRole, TransferCompletion, TriggerMatch,
+    ValuePolicy,
 };
 use crate::version::VersionScheme;
 
@@ -114,6 +115,12 @@ impl ConfigStore {
                     id: id.clone(),
                     err,
                 })?;
+            body.require_valid_mode_entries()
+                .map_err(|err| ConfigError::Validation {
+                    path: format!("models.{id}.connections"),
+                    message: err.to_string(),
+                })?;
+            validate_reestablishment_params(id, &body, model_view)?;
             bodies.insert(id.clone(), body);
         }
         // Plan §3.1: "the primary manifest" semantics — the first declared
@@ -211,6 +218,47 @@ impl ConfigStore {
             .map(|(id, _)| id.as_str())
             .collect()
     }
+}
+
+fn validate_reestablishment_params(
+    model_id: &str,
+    body: &CameraManifest,
+    model_view: &crate::index::ModelView,
+) -> Result<(), ConfigError> {
+    for (connection_id, connection) in &body.connections {
+        for (index, entry) in connection.entries.iter().enumerate() {
+            let ModeEntryExecution::ReestablishConnection(reestablish) = &entry.execution else {
+                continue;
+            };
+            let path = format!(
+                "models.{model_id}.connections.{connection_id}.entries[{index}].reestablishConnection.params"
+            );
+            let mechanism = connection
+                .establishment
+                .as_deref()
+                .expect("manifest contract validation requires establishment");
+            let establishment = model_view
+                .ble
+                .as_ref()
+                .and_then(|ble| ble.establishment(mechanism))
+                .ok_or_else(|| ConfigError::Validation {
+                    path: path.clone(),
+                    message: format!("unknown establishment mechanism '{mechanism}'"),
+                })?;
+            let actual: Vec<&str> = reestablish.params.keys().map(String::as_str).collect();
+            let mut expected: Vec<&str> = establishment.params.iter().map(String::as_str).collect();
+            expected.sort_unstable();
+            if actual != expected {
+                return Err(ConfigError::Validation {
+                    path,
+                    message: format!(
+                        "parameter bindings {actual:?} do not exactly match establishment parameters {expected:?}"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn resolve_camera_initiated_transfer(

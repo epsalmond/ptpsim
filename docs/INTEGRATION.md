@@ -53,7 +53,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `transport_close(connection)` | the manifest-resolved frame plus its declared `when` context (Fuji `app`: the 8-byte sentinel before image-transfer re-establishment), `None` when absent; malformed sentinel data is an error. Use it only in the declared context; sending it does not by itself guarantee that the endpoint is immediately redialable. |
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
-| `mode_entry(connection, from, to)` | the ordered wire-steps to enter a mode (or a `user_instruction` when it's a camera-menu / manual step) |
+| `mode_entry(connection, from, to)` | a closed execution plan: PTP wire steps, a manual instruction, or an outer connection re-establishment that exits the old session and reuses the target mode's cold entry |
 | `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). See `docs/plans/action-verbs.md` |
 | `selected_object_transfer(connection)` | typed lazy-gallery projection of the canonical `importObjects` per-handle preparation plus the existing chunk-read action; exposes the preparation-step index whose response is ObjectInfo and manifest-owned u64 transfer-size/u32 chunk-size slots without requiring consumers to inspect nested action ASTs; returns a contract error when a connection declares the actions with an invalid shape |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
@@ -160,14 +160,33 @@ per-platform packaging:
    ports, GATT char UUIDs); **your code does the UDP/TCP/BLE/Wi-Fi**. Bind sockets by
    role with `port_for_role(connection, role)` (`ConnectionInfo.command_framing` /
    `event_framing` tell you which codec framing each channel uses).
-3. **Enter a mode.** `mode_entry(connection, from, to)` → execute the `steps`
-   (`setProp`/`getProp`/`readEcho`/`sendOp`) via the codec functions over your
-   transport, or surface the `user_instruction`. Each step may be `tolerant` (a
+3. **Enter a mode.** `mode_entry(connection, from, to)` returns one
+   `ModeEntryExecution`: execute `Ptp.steps` via the codec functions over the
+   current transport, surface `UserInstruction`, or orchestrate
+   `ReestablishConnection` as described below. Each PTP step may be `tolerant` (a
    non-OK PTP *response* is advisory — log + continue; only a transport failure
    aborts). `sendOp` `params` are literals **or** a named runtime slot
    (`EntryParam.Runtime { slot }`, e.g. `openCaptureTxId`) that **you** bind from
    your session state — ptpsim names which runtime value goes there; it never
    computes it.
+
+   `ReestablishConnection` is an outer lifecycle, not a PTP step. Execute its
+   `exitSteps` on the old session, including any orderly transport close; release
+   the current network association; obtain `establishment(model, connection, ...)`;
+   walk `postExitReadiness` and then `steps` with the supplied
+   `establishmentParams`; associate to the resulting network; open a fresh PTP/IP
+   session with reset transaction state; then execute the cold
+   `mode_entry(connection, None, to)`. Do not substitute an immediate redial when
+   `commandListenerVolatile` is true. A `CloseSession { transportClose: true }`
+   closes auxiliary socket roles normally, sends the resolved transport-close
+   frame on the command socket after the PTP CloseSession response, flushes it,
+   and closes the command socket cleanly.
+
+   Store construction fails closed when a re-establishment has no connection
+   establishment mechanism, no cold PTP entry, an incomplete UniFFI step mirror,
+   or (for manufacturer-index stores) parameter keys that do not exactly match
+   the resolved establishment plan. A consumer never receives a destructive
+   partial plan.
 4. **Drive controls, gated.** Before any op: `operation_available(...)`. To set a
    value: `control_for(...)` tells you the mechanism; the codec encodes the bytes.
 5. **Detect state.** Feed observed prop values to `detect_mode` / `operation_available`

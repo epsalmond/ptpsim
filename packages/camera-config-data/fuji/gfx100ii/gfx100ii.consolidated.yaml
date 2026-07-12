@@ -123,7 +123,7 @@ evidence:
     path: packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
     date: 2026-05-27
 sentinels:
-  keepApSentinel:
+  ptpipCloseSentinel:
     bytes: 08000000ffffffff
     evidence:
     - docImageTransfer
@@ -6821,8 +6821,8 @@ connections:
       event: 55741
       liveView: 55742
     transportClose:
-      sentinel: keepApSentinel
-      when: before-image-transfer-reopen
+      sentinel: ptpipCloseSentinel
+      when: before-image-transfer-reestablishment
     knock: null
     initRetries: null
     modes:
@@ -6832,7 +6832,6 @@ connections:
     - reserved-photo-receive
     entries:
     - to: shooting/stills
-      from: null
       steps:
       - setProp: '0xdf00'
         getProp: null
@@ -6889,8 +6888,6 @@ connections:
         tolerant: false
         repeat: 1
         awaitUntil: null
-      userInstruction: null
-      requires: null
     - to: shooting/stills
       from: image-transfer
       steps:
@@ -6960,8 +6957,6 @@ connections:
         tolerant: false
         repeat: 1
         awaitUntil: null
-      userInstruction: null
-      requires: null
     - to: shooting/video
       from: shooting/stills
       steps:
@@ -6976,8 +6971,6 @@ connections:
         tolerant: false
         repeat: 1
         awaitUntil: null
-      userInstruction: null
-      requires: null
     - to: shooting/stills
       from: shooting/video
       steps:
@@ -6992,10 +6985,7 @@ connections:
         tolerant: false
         repeat: 1
         awaitUntil: null
-      userInstruction: null
-      requires: null
     - to: reserved-photo-receive
-      from: null
       steps:
       - setProp: '0xdf01'
         getProp: null
@@ -7030,10 +7020,7 @@ connections:
         tolerant: false
         repeat: 1
         awaitUntil: null
-      userInstruction: null
-      requires: null
     - to: image-transfer
-      from: null
       steps:
       - setProp: null
         getProp: '0xd212'
@@ -7195,185 +7182,36 @@ connections:
         tolerant: true
         repeat: 1
         awaitUntil: null
-      userInstruction: null
-      requires: null
     - to: image-transfer
       from: shooting/stills
-      steps:
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x1018'
-        reopenSession: null
-        closeSession: null
-        value: null
+      reestablishConnection:
+        exitSteps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x1018'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params:
+          - runtime: openCaptureTxId
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession:
+            transportClose: true
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
         params:
-        - runtime: openCaptureTxId
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xd212'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        startsGate: imageImportBootstrap
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: '0xdf01'
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: 20
-        params: []
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xdf28'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: '0xdf28'
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: 3
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: '0xd226'
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: 0
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: '0xd227'
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: 0
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xd244'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x9054'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params:
-        - 268435457
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x9055'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params:
-        - 268435457
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x9050'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xd212'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xd22b'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x9053'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params:
-        - 0
-        - 30000
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xd212'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        completesGate: imageImportBootstrap
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      userInstruction: null
-      requires: null
+          launchMode: '3'
     actions:
       shutter:
         mode: shooting/stills
@@ -7948,10 +7786,7 @@ connections:
     - webcam
     entries:
     - to: raw-conv-backup-restore
-      from: null
-      steps: []
       userInstruction: Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB
-      requires: null
     actions: {}
     enables: []
     discovery:

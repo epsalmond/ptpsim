@@ -8,6 +8,8 @@ pub enum ManifestError {
     Yaml(#[from] serde_yaml::Error),
     #[error("unsupported schema {found:?}; this build understands {expected:?}")]
     Schema { found: String, expected: String },
+    #[error("manifest contract error: {0}")]
+    Contract(String),
 }
 
 /// Errors raised by [`crate::ConfigStore::from_manufacturer_index`] (the loader for

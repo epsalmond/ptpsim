@@ -3,8 +3,8 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, ObjectsAvailable, Predicate,
-    PropView, PropertyKind, StepParam, ValuePolicy, VersionScheme,
+    ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, ModeEntryExecution,
+    ObjectsAvailable, Predicate, PropView, PropertyKind, StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -78,15 +78,18 @@ fn port_roles_match_the_shipping_app() {
     assert_eq!(b.port_for(SocketRole::LiveView), Some(55742));
     // The transport-close frame names a manifest-owned byte sentinel.
     assert_eq!(
-        camera_config::parse_hex_bytes(&m.sentinels["keepApSentinel"].bytes),
+        camera_config::parse_hex_bytes(&m.sentinels["ptpipCloseSentinel"].bytes),
         Some(vec![0x08, 0, 0, 0, 0xff, 0xff, 0xff, 0xff])
     );
     let tc = app
         .transport_close
         .as_ref()
         .expect("app declares a transport-close");
-    assert_eq!(tc.sentinel, "keepApSentinel");
-    assert_eq!(tc.when.as_deref(), Some("before-image-transfer-reopen"));
+    assert_eq!(tc.sentinel, "ptpipCloseSentinel");
+    assert_eq!(
+        tc.when.as_deref(),
+        Some("before-image-transfer-reestablishment")
+    );
 }
 
 #[test]
@@ -149,7 +152,7 @@ fn live_view_entry_is_the_ground_truth_sequence() {
         .iter()
         .find(|e| e.to == "shooting/stills" && e.from.is_none())
         .unwrap();
-    let steps = &lv.steps;
+    let steps = lv.ptp_steps().expect("cold live-view PTP entry");
     assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf00"));
     assert_eq!(steps[0].value, Some(6));
     // Device-validated (#39): the GFX100 II rejects this advisory write
@@ -217,8 +220,10 @@ fn usb_mode_is_user_instruction_and_ops_gate_appropriately() {
         .iter()
         .find(|e| e.to == "raw-conv-backup-restore")
         .unwrap();
-    assert!(entry.user_instruction.is_some());
-    assert!(entry.steps.is_empty());
+    assert!(matches!(
+        entry.execution,
+        ModeEntryExecution::UserInstruction { .. }
+    ));
 
     let any = PropView::new();
     // raw-conv op (0x900c) is MODE-specific: available in raw-conv-backup-restore,
@@ -846,29 +851,24 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         .iter()
         .find(|e| e.to == "image-transfer" && e.from.is_none())
         .unwrap();
-    assert_image_import_bootstrap_gate(&cold.steps);
-    assert!(cold
-        .steps
+    let cold_steps = cold.ptp_steps().expect("cold image-transfer PTP entry");
+    assert_image_import_bootstrap_gate(cold_steps);
+    assert!(cold_steps
         .iter()
         .any(|s| s.get_prop.as_deref() == Some("0xd212") && s.tolerant));
-    assert!(cold
-        .steps
+    assert!(cold_steps
         .iter()
         .any(|s| { s.set_prop.as_deref() == Some("0xdf28") && s.value == Some(3) && s.tolerant }));
-    assert!(cold
-        .steps
+    assert!(cold_steps
         .iter()
         .any(|s| { s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0) && s.tolerant }));
-    assert!(cold
-        .steps
+    assert!(cold_steps
         .iter()
         .any(|s| { s.set_prop.as_deref() == Some("0xd227") && s.value == Some(0) && s.tolerant }));
-    assert!(cold
-        .steps
+    assert!(cold_steps
         .iter()
         .any(|s| s.get_prop.as_deref() == Some("0xd244") && s.tolerant));
-    let prime = cold
-        .steps
+    let prime = cold_steps
         .iter()
         .find(|s| s.send_op.as_deref() == Some("0x9053"))
         .unwrap();
@@ -882,33 +882,29 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         .iter()
         .find(|e| e.to == "image-transfer" && e.from.as_deref() == Some("shooting/stills"))
         .unwrap();
-    assert_image_import_bootstrap_gate(&from.steps);
-    assert_eq!(from.steps[0].send_op.as_deref(), Some("0x1018"));
+    let reestablish = match &from.execution {
+        ModeEntryExecution::ReestablishConnection(plan) => plan,
+        other => panic!("expected re-establishment, got {other:?}"),
+    };
     assert_eq!(
-        from.steps[0].params,
+        reestablish.params.get("launchMode").map(String::as_str),
+        Some("3")
+    );
+    assert_eq!(reestablish.exit_steps[0].send_op.as_deref(), Some("0x1018"));
+    assert_eq!(
+        reestablish.exit_steps[0].params,
         vec![StepParam::Runtime {
             runtime: "openCaptureTxId".into(),
             shift: 0,
             mask: None,
         }]
     );
-    // #103: the Take→Get switch stays IN-SESSION — no reopenSession. The camera
-    // refuses the reconnect after the transport-close (see `commandListenerVolatile`
-    // on `app`), so after 0x1018 it reads 0xd212 then sets DF01=0x14 on the existing
-    // socket, matching main's working flow.
-    assert!(
-        from.steps.iter().all(|s| s.reopen_session.is_none()),
-        "the from-LV image-transfer entry must switch in-session, not reopen (#103)"
-    );
-    assert_eq!(
-        from.steps[1].get_prop.as_deref(),
-        Some("0xd212"),
-        "0x1018 is followed by the in-session 0xd212 read, not a reopen"
-    );
-    assert!(from
-        .steps
-        .iter()
-        .any(|s| { s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0) && s.tolerant }));
+    let close = reestablish.exit_steps[1]
+        .close_session
+        .as_ref()
+        .expect("orderly CloseSession follows TerminateOpenCapture");
+    assert!(close.transport_close);
+    assert_eq!(reestablish.exit_steps.len(), 2);
 
     // Get→Take is the reverse edge: reopen from image-import, select
     // FunctionMode=Take, negotiate the live-view function version as u32, and
@@ -918,29 +914,26 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
         .iter()
         .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
         .expect("image-transfer → shooting/stills entry");
+    let reverse_steps = reverse.ptp_steps().expect("Get→Take PTP entry");
     assert!(
-        reverse.steps[0].reopen_session.is_some(),
+        reverse_steps[0].reopen_session.is_some(),
         "Get→Take re-establishes PTP/IP from image-import"
     );
-    assert!(reverse
-        .steps
+    assert!(reverse_steps
         .iter()
         .any(|s| { s.set_prop.as_deref() == Some("0xdf01") && s.value == Some(0x16) }));
-    assert!(reverse
-        .steps
+    assert!(reverse_steps
         .iter()
         .any(|s| { s.set_prop.as_deref() == Some("0xdf2a") && s.value == Some(2) }));
-    assert!(reverse
-        .steps
+    assert!(reverse_steps
         .iter()
         .any(|s| s.send_op.as_deref() == Some("0x902b") && s.repeat == 4));
     assert_eq!(
-        reverse.steps.last().and_then(|s| s.send_op.as_deref()),
+        reverse_steps.last().and_then(|s| s.send_op.as_deref()),
         Some("0x101c")
     );
     assert!(
-        reverse
-            .steps
+        reverse_steps
             .iter()
             .all(|s| s.send_op.as_deref() != Some("0x1018")),
         "Get→Take must not terminate live-view before reopening it"
@@ -993,21 +986,23 @@ fn app_stills_video_mode_edges_are_lightweight_d246_writes() {
         .iter()
         .find(|e| e.to == "shooting/video" && e.from.as_deref() == Some("shooting/stills"))
         .expect("shooting/stills → shooting/video entry");
-    assert_eq!(to_video.steps.len(), 1);
-    assert_eq!(to_video.steps[0].set_prop.as_deref(), Some("0xd246"));
-    assert_eq!(to_video.steps[0].value, Some(1));
+    let to_video_steps = to_video.ptp_steps().expect("stills→video PTP entry");
+    assert_eq!(to_video_steps.len(), 1);
+    assert_eq!(to_video_steps[0].set_prop.as_deref(), Some("0xd246"));
+    assert_eq!(to_video_steps[0].value, Some(1));
 
     let to_stills = entries
         .iter()
         .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("shooting/video"))
         .expect("shooting/video → shooting/stills entry");
-    assert_eq!(to_stills.steps.len(), 1);
-    assert_eq!(to_stills.steps[0].set_prop.as_deref(), Some("0xd246"));
-    assert_eq!(to_stills.steps[0].value, Some(0));
+    let to_stills_steps = to_stills.ptp_steps().expect("video→stills PTP entry");
+    assert_eq!(to_stills_steps.len(), 1);
+    assert_eq!(to_stills_steps[0].set_prop.as_deref(), Some("0xd246"));
+    assert_eq!(to_stills_steps[0].value, Some(0));
 
     for entry in [to_video, to_stills] {
         assert!(
-            entry.steps.iter().all(|s| {
+            entry.ptp_steps().unwrap().iter().all(|s| {
                 s.reopen_session.is_none()
                     && s.send_op.as_deref() != Some("0x100e")
                     && s.send_op.as_deref() != Some("0x1018")
@@ -1089,14 +1084,76 @@ fn app_init_shape_is_typed_and_carries_the_vendor_tail() {
 
 #[test]
 fn close_session_step_parses_and_is_well_formed() {
-    // #82: the graceful-close step kind, with the keep-AP flag, is expressible.
-    let step: camera_config::Step =
-        serde_yaml::from_str("closeSession: { keepAp: true }").expect("closeSession parses");
+    // #244: orderly transport close does not promise AP retention.
+    let step: camera_config::Step = serde_yaml::from_str("closeSession: { transportClose: true }")
+        .expect("closeSession parses");
     assert_eq!(
         step.close_session,
-        Some(camera_config::CloseSession { keep_ap: true })
+        Some(camera_config::CloseSession {
+            transport_close: true
+        })
     );
     assert!(step.is_well_formed(), "exactly one action field set");
+    assert!(
+        serde_yaml::from_str::<camera_config::Step>("closeSession: { keepAp: true }").is_err(),
+        "retired keepAp spelling must fail closed"
+    );
+}
+
+#[test]
+fn mode_entry_execution_is_mutually_exclusive() {
+    let mixed = r#"
+to: image-transfer
+steps: []
+reestablishConnection:
+  exitSteps: []
+  params: { launchMode: "3" }
+"#;
+    assert!(
+        serde_yaml::from_str::<camera_config::ModeEntry>(mixed).is_err(),
+        "a mode entry cannot combine execution variants"
+    );
+
+    let missing = "to: image-transfer\n";
+    assert!(
+        serde_yaml::from_str::<camera_config::ModeEntry>(missing).is_err(),
+        "a mode entry requires one execution variant"
+    );
+}
+
+#[test]
+fn destructive_reestablishment_requires_a_runnable_cold_path() {
+    let without_establishment = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    entries:
+      - { to: image-transfer, steps: [] }
+      - to: image-transfer
+        from: shooting/stills
+        reestablishConnection: { exitSteps: [], params: { launchMode: "3" } }
+"#;
+    assert!(
+        CameraManifest::from_yaml(without_establishment).is_err(),
+        "re-establishment without a connection mechanism must not load"
+    );
+
+    let without_cold_entry = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    establishment: test
+    entries:
+      - to: image-transfer
+        from: shooting/stills
+        reestablishConnection: { exitSteps: [], params: { launchMode: "3" } }
+"#;
+    assert!(
+        CameraManifest::from_yaml(without_cold_entry).is_err(),
+        "re-establishment without a cold PTP entry must not load"
+    );
 }
 
 #[test]

@@ -61,9 +61,9 @@ evidence:
 
 
 sentinels:
-  # PTP/IP length-8 frame with body 0xffffffff. Sent before the final FIN when
-  # reopening image-transfer so the camera holds its Wi-Fi AP up (#82).
-  keepApSentinel: { bytes: "08000000ffffffff", evidence: [docImageTransfer] }
+  # PTP/IP length-8 frame with body 0xffffffff. Sent and flushed before the
+  # command socket's clean shutdown/FIN during orderly teardown (#82/#244).
+  ptpipCloseSentinel: { bytes: "08000000ffffffff", evidence: [docImageTransfer] }
 
 sequenceGates:
   # Real fw02.30 does not answer D620/D621 until the image-import vendor/bootstrap
@@ -117,11 +117,10 @@ connections:
     # channel; the event socket carries PIMA type-4 containers (Swift parsePTPEvent).
     commandFraming: compressed
     eventFraming: usb
-    # The keep-AP sentinel holds the Wi-Fi AP up. A reconnect from active
-    # live-view is refused because that transport-close tears down the :55740
-    # command-port listener, so Take→Get stays in-session (#103, device
-    # 2026-06-28). Get→Take reopens after image-import because no open-capture
-    # stream owns the listener on that edge.
+    # Closing the active PTP/IP transport can remove the :55740 listener. A
+    # direct redial is therefore not generic recovery; Take→Get performs the
+    # manifest-authored outer BLE/AP re-establishment below (#244). Get→Take can
+    # still reopen in place because no open-capture stream owns that edge.
     commandListenerVolatile: true
     discovery: { mechanism: ble, announces: camera }
     modes: [shooting/stills, shooting/video, image-transfer, reserved-photo-receive]
@@ -133,9 +132,10 @@ connections:
       command: 55740                 # FujiPTPIP.defaultPort
       event: 55741                   # command + 1 (live-view event socket)
       liveView: 55742                # command + 2 (through-picture stream)
-    # Before reopening an image-transfer session the app sends the 8-byte keep-AP
-    # sentinel (0xffffffff framed) instead of a TCP FIN, holding the Wi-Fi AP up (#82).
-    transportClose: { sentinel: keepApSentinel, when: before-image-transfer-reopen }
+    # During image-transfer re-establishment the app sends this 8-byte orderly
+    # close frame, flushes it, and then closes the command socket with a clean FIN.
+    # It does not guarantee that the AP or listener remains immediately reusable.
+    transportClose: { sentinel: ptpipCloseSentinel, when: before-image-transfer-reestablishment }
     # 82-byte InitCommandRequest = GUID(16) + uint32(0) + nameField(26) + tail(28).
     # Identity is manufacturer-tier (see fuji.yaml). Exact tail bytes come from the
     # pinned golden (FujiPTPIP.liveViewInitTail), NOT hand-transcribed here.
@@ -206,32 +206,17 @@ connections:
           - { getProp: "0xd22b", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
           - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
-      - to: image-transfer            # from live-view: terminate the open-capture first, then enter
+      - to: image-transfer            # from live-view: exit, re-arm the AP through BLE, then enter cold
         from: shooting/stills
-        steps:
+        reestablishConnection:
+          params: { launchMode: "3" } # InCameraViewIng; resolved by ble-establish-wifi-ap
+          exitSteps:
           # 0x1018 needs the live-view InitiateOpenCapture transaction id — RUNTIME state the
           # app binds into the named slot (it owns transaction ids; sans-io).
-          - { sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }
-          # Switch functionMode IN-SESSION over the existing :55740 socket — main's working,
-          # reopen-free flow. The earlier `reopenSession` here was a misdiagnosis of the
-          # "image transfer downloads 0 files" bug: the real GFX100 II REFUSES the reconnect
-          # (the command-port listener is gone after the transport-close — see the `app`
-          # connection's commandListenerVolatile trait), so the reopen self-destructs.
-          # 0x9054 is accepted in-session and files download (device-confirmed 2026-06-28, #103).
-          - { getProp: "0xd212", tolerant: true, startsGate: imageImportBootstrap }
-          - { setProp: "0xdf01", value: 0x14 }
-          - { getProp: "0xdf28", tolerant: true }
-          - { setProp: "0xdf28", value: 3, tolerant: true }
-          - { setProp: "0xd226", value: 0, tolerant: true }
-          - { setProp: "0xd227", value: 0, tolerant: true }
-          - { getProp: "0xd244", tolerant: true }
-          - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
-          - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
-          - { sendOp: "0x9050", tolerant: true }
-          - { getProp: "0xd212", tolerant: true }
-          - { getProp: "0xd22b", tolerant: true }
-          - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
-          - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
+            - { sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }
+            # Consume CloseSession, close 55741/55742 normally, send+flush the
+            # declared close frame on 55740, then cleanly close the command socket.
+            - { closeSession: { transportClose: true } }
     actions:
       # reference-app shutter cycle. Wire-confirmed by MODE_CHANGES.md §3 (the 0x100E
       # trace) + §6b (the 0x9022 pairing): every 0x100E InitiateCapture in v6

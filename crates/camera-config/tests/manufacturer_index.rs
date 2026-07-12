@@ -37,6 +37,24 @@ fn store_for(vendor: &str, model_id: &str) -> std::sync::Arc<ConfigStore> {
         .unwrap_or_else(|e| panic!("{vendor}/{model_id} loads: {e:?}"))
 }
 
+#[test]
+fn reestablishment_bindings_must_match_the_resolved_plan() {
+    let original = data("fuji/gfx100ii/gfx100ii.yaml");
+    let body = original.replace(
+        "params: { launchMode: \"3\" }",
+        "params: { wrongLaunchMode: \"3\" }",
+    );
+    assert_ne!(body, original, "fixture replacement must find the binding");
+    let mut bodies = BTreeMap::new();
+    bodies.insert("gfx100ii".to_string(), body);
+    let error = ConfigStore::from_manufacturer_index(&data("fuji/index.yaml"), bodies)
+        .expect_err("mismatched establishment parameters must fail store loading");
+    assert!(
+        matches!(error, ConfigError::Validation { ref message, .. } if message.contains("do not exactly match")),
+        "got: {error}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // §11.9 inheritance
 // ---------------------------------------------------------------------------

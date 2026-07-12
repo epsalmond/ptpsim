@@ -1421,7 +1421,15 @@ fn compile_gate_sequences(manifest: &CameraManifest) -> Vec<GateSequence> {
     let mut out = Vec::new();
     for connection in manifest.connections.values() {
         for entry in &connection.entries {
-            collect_gate_sequences(&entry.steps, &mut out);
+            match &entry.execution {
+                camera_config::ModeEntryExecution::Ptp { steps } => {
+                    collect_gate_sequences(steps, &mut out);
+                }
+                camera_config::ModeEntryExecution::ReestablishConnection(reestablish) => {
+                    collect_gate_sequences(&reestablish.exit_steps, &mut out);
+                }
+                camera_config::ModeEntryExecution::UserInstruction { .. } => {}
+            }
         }
         for action in connection.actions.values() {
             collect_gate_sequences(&action.steps, &mut out);
