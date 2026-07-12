@@ -635,9 +635,10 @@ pub struct ConnectionInfo {
     pub auto_discoverable: bool,
     // --- #81 per-connection traits: the app selects behavior from these
     // instead of branching on `id`. `None` → the app falls back. ---
-    /// Closing the active PTP/IP transport tears down the camera's command-port
-    /// listener, so a consumer must not use close-and-reopen as mode-switch
-    /// recovery. False for connections whose listener survives a reconnect.
+    /// Closing the active command transport may remove its listener, so a
+    /// consumer must not assume it can immediately redial the same endpoint as
+    /// generic recovery. An outer connection re-establishment may create a new
+    /// listener. False means this restriction is not declared.
     pub command_listener_volatile: bool,
     pub init_shape: Option<String>,
     pub live_view_delivery: Option<FfiLiveViewDelivery>,

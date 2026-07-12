@@ -19,67 +19,46 @@ In v6 we captured:
 - 30× chunked `GetPartialObject` for a 356 MB file (likely RAW or movie)
 
 
-> **Consumer correction (2026-07-11, ptpsim #103/#243).** This document records
-> reference app's captured fresh-session choreography, but that is not a safe generic
-> Take-to-Get requirement. Later client application validation on the same GFX100 II showed
-> that closing active live view tears down the `app` connection's command listener;
-> reconnecting to `:55740` is refused even when the AP remains up. The canonical
-> manifest therefore authors Take-to-Get in-session and exposes
-> `commandListenerVolatile: true` so consumers do not use close-and-reopen as a
-> fallback. The vendor-prime ordering and empirical payload facts below remain
-> authoritative; the reconnect prescription is retained only as historical reference app
-> capture context.
+> **Lifecycle correction (2026-07-11, ptpsim #243/#244).** The earlier
+> PTP-only reading incorrectly inferred that reference app kept the same camera-Wi-Fi
+> association and merely redialed `:55740`. The complete v6 sidecar shows an
+> orderly PTP/IP close, disassociation from the camera AP, a later BLE-side image
+> import launch, camera-AP re-association and DHCP, then the fresh command
+> session documented below. The PTP bootstrap, vendor-prime payloads, enumeration
+> results, and transport teardown remain valid. The current manifest's
+> Take-to-Get edge is being reconciled separately in #244.
 
-## Captured reference app enumeration and later consumer correction
+## Captured cold-session enumeration and corrected outer lifecycle
 
 The original "Open questions" below (how reference app learns the handle range; whether
 `0x9054` is required) are now **resolved** by re-parsing the v6 outbound opcode
 stream and cross-checking against on-device behavior (client application on a real GFX100 II
-fw2.30 over the camera AP). **The captured reference app flow uses a fresh session.**
-The capture shows that immediately before its image-import `OpenSession`, reference app does
-`TerminateOpenCapture` → `CloseSession` → a new `InitCommandRequest` (tid resets to 1)
-→ `OpenSession`. Trying to switch a live-view session into mode 20 in place makes the
-camera reject `0x9054` (response code `0x9054`) — verified on device: byte-identical
-`0x9054` packets succeed from a fresh session but fail from a repurposed live-view
-session in those historical attempts. This did not establish a general client
-requirement: later validation for #103 found the in-session client application path working
-and the close-and-reopen path reliably refused because the command listener is
-volatile. Consumers must follow the canonical manifest rather than this captured
-reference app lifecycle.
+fw2.30 over the camera AP). The image-import PTP session is fresh: its
+`InitCommandRequest` is byte-identical to the earlier session, transaction ids
+restart at 1, and the cold mode-20 bootstrap follows `OpenSession`.
 
-**In the captured reference app flow this is a PTP-level reconnect on the SAME Wi-Fi/AP — do NOT relaunch the camera
-AP.** The capture shows only `TerminateOpenCapture → CloseSession → InitCommandRequest
-→ OpenSession`, all on the same TCP endpoint (192.168.0.1:55740); the camera AP /
-`NEHotspotConfiguration` association is untouched. Relaunching the BLE AP (the
-RemoteShooting `0x0400` write + rejoin) races the camera's ~7 s AP bring-up and makes
-the camera API time out / the AP drop (verified on device: full AP relaunch →
-"Camera Wi-Fi joined, but camera API did not respond" → AP state 0000). Reopen a new
-`NWConnection` to the same host:port and redo InitCommandRequest+OpenSession+setup.
+The full sidecar chronology resolves what the PTP stream alone could not. reference app
+finished the old transport teardown, left the camera network, later ran its
+BLE-to-Wi-Fi image-import establishment path, rejoined the camera AP, acquired
+network readiness, and only then opened the new command socket. The v6 BLE payload
+hooks did not capture the launch write itself; #244 records the supporting app
+control-flow evidence and that remaining validation gap. Directly redialing after
+the PTP close is therefore not a supported generic substitute for re-establishment.
 
-**Where a manifest-authored edge reopens, graceful teardown includes an 8-byte transport-close
+**The old PTP/IP transport still closes orderly, including an 8-byte transport-close
 packet.** The v6 capture's exact teardown on the old socket is:
 `TerminateOpenCapture → CloseSession(0x1003)` → (read OK) → **`08 00 00 00 ff ff ff ff`**
-(an 8-byte PTP-IP transport-close control packet: length=8, payload=0xffffffff) → then
-a new `InitCommandRequest` on a fresh fd. Skipping the `0xffffffff` packet leaves the
-camera's PTP-IP transport un-released, so the next connection RSTs (no transport close)
-or times out (CloseSession only) — both observed on device. Send CloseSession, then the
-8-byte 0xffffffff packet, then drop the socket and reconnect.
+(an 8-byte PTP-IP transport-close control packet: length=8, payload=0xffffffff).
+The auxiliary 55741/55742 sockets close before the sentinel, which is sent only on
+55740. These are transport teardown facts, not proof that the AP association or
+command listener remains continuously reusable afterward.
 
-**Full reconnect choreography is in `2026-05-21-live-view-to-image-import-reconnect-reply.md`**
-(wire-level RE reply). Key points beyond the above: close the 55741 event + 55742
-liveview sockets BEFORE the sentinel; the sentinel goes on 55740 only; the new
-`InitCommandRequest` MUST reuse the **same InitiatorGUID + friendlyName + vendor tail**
-as the original session (the camera's session-resume matcher keys on byte-identical
-identity to hold the AP and persist the outer function mode); wait ≥1-2s after teardown
-before reconnecting so the camera's AP-hold timer doesn't fire.
-
-**The AP-hold keys on sentinel + a clean TCP FIN.** reference app does `send(sentinel)` →
-`shutdown(SHUT_RDWR)` → `close()` (plain FIN, no SO_LINGER/RST). On iOS,
-`NWConnection.cancel()` alone can emit a RST and race the sentinel flush, which the
-camera reads as abnormal → AP drop (observed on device even with the sentinel). The fix
-is to send the sentinel as `.finalMessage` with `isComplete: true` (queues bytes + FIN
-atomically), await `.contentProcessed`, brief pause, then `cancel()`. The camera does
-not reply to the sentinel and reference app does not read after it, so no drain is needed.
+reference app sends the sentinel, then performs `shutdown(SHUT_RDWR)` → `close()`
+(plain FIN, no SO_LINGER/RST). On iOS, `NWConnection.cancel()` alone can emit a
+RST and race the sentinel flush, which the camera reads as abnormal. A caller
+reproducing this teardown must flush the final message and FIN before cancellation.
+The camera does not reply to the sentinel and reference app does not read after it, so no
+response drain is required.
 
 The captured setup + enumeration sequence (on reference app's fresh session) is:
 

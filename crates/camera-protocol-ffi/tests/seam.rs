@@ -1158,7 +1158,7 @@ fn connection_info_carries_per_connection_traits() {
     ));
     assert!(!wt.command_listener_volatile);
 
-    // usb declares no traits → None (the app falls back, no negative list).
+    // usb omits the listener trait, proving the schema default remains false.
     let usb = conns.iter().find(|c| c.id == "usb").expect("usb on macOS");
     assert!(!usb.command_listener_volatile);
     assert!(usb.shutter_recipe.is_none());

@@ -684,12 +684,11 @@ pub struct Connection {
     /// event containers, not the compressed command framing).
     #[serde(default)]
     pub event_framing: Option<WireFraming>,
-    /// The command-port (PTP/IP :55740) listener does NOT survive a transport-close
-    /// on this connection: the keep-AP sentinel holds the Wi-Fi AP up, but the
-    /// camera tears the listener down, so a `reopenSession`'s reconnect is refused
-    /// ("Connection refused"). Mode switches must stay in-session (#103). Device-
-    /// confirmed on the GFX100 II `app` Wi-Fi-AP path; default false (assume the
-    /// listener survives) keeps other connections' reopen behavior unchanged.
+    /// Closing the active command transport may remove its listener, so a caller
+    /// must not assume it can immediately redial the same endpoint as generic
+    /// recovery. A manifest-authored outer connection re-establishment may create
+    /// a new listener. Default false keeps reconnect behavior unchanged for
+    /// connections without this constraint (#243).
     #[serde(default)]
     pub command_listener_volatile: bool,
     /// The PTP/IP sockets a consumer binds for this connection, keyed by role
@@ -698,9 +697,9 @@ pub struct Connection {
     /// Fuji command port + `+1`/`+2` offsets.
     #[serde(default)]
     pub bindings: Option<SocketBindings>,
-    /// The transport-close frame this connection sends before reopening an
-    /// image-transfer session, if it needs one (#140). Companion to
-    /// `command_listener_volatile`.
+    /// The transport-close frame this connection sends before ending a command
+    /// transport, if it needs one (#140). Companion to
+    /// `command_listener_volatile`; it does not by itself guarantee redialability.
     #[serde(default)]
     pub transport_close: Option<TransportClose>,
     /// PCSS LAN discovery/callback parameters for wireless tethering.
