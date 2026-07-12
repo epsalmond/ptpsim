@@ -21,6 +21,26 @@ schema authority: §11 of
 
 ## Working conventions
 
+### Open-source hygiene — nothing private lands here
+
+This is a public repo. Repo content — docs, code comments, CI config, fixtures —
+must stand alone for an outside contributor with no access to the authors'
+machines. Never add:
+
+- Private hostnames, IPs, or registry/CI endpoints (internal registries,
+  `*.internal.*` hosts, tailnet names, dev-machine hostnames).
+
+
+- Cross-links into private issue trackers (`<consumer-repo>#123`) — restate the
+  durable fact in place instead of linking to where it came from.
+- A private consumer's internals (app source paths, backend/service topology).
+  Naming a consumer as a motivating example is fine where load-bearing; its
+  implementation details are not.
+
+The test: would the line make sense on a stranger's laptop? If not, it belongs
+in the consumer's repo or a private tree. Existing violations are tracked
+(#255, #160, #259) — do not add new ones while those burn down.
+
 ### Work tracking — GitHub issues, not in-process task lists
 
 **Work is tracked as GitHub issues.** Agent in-process task lists
@@ -32,6 +52,10 @@ remembering across sessions goes in `gh` so it's discoverable from
 This means: when you surface a follow-up, a deferred fix, a code-review
 finding, or a "we should do X later" — file an issue. The in-process
 list is for *this turn's* working memory, not the project backlog.
+
+**Priority labels:** `priority:P1` — on the active release or program critical
+path, pick these up first; `priority:P2` — consumers hit it soon, schedule next;
+`ready` — implementable without new protocol evidence; unlabeled — backlog.
 
 ### SDLC — worktree → branch → PR, review, merge
 
@@ -46,16 +70,21 @@ list is for *this turn's* working memory, not the project backlog.
 2. **Close issues with Pull Requests.** An issue SHOULD precede the PR (see
    *Work tracking*); footer the PR `Closes #N`. A self-evident doc fix may
    skip the issue.
-3. **Single-line commit messages.** Imperative (`Add logging for X`), no
+3. **Open a draft PR from the first commit.** The draft is the work's visible
+   home while in flight; don't wait for polish to push. Before marking it
+   ready: run the workspace checks (*Build + test*), then get a reviewer-agent
+
+   medium. Address or file every finding.
+4. **Single-line commit messages.** Imperative (`Add logging for X`), no
    body. The *why* goes in the PR description — or a durable `docs/*.md` if
    it's load-bearing past the merge. Commits should not have "and."
-4. **Push the branch, open the PR, a human merges it.** Don't merge your
+5. **Push the branch, mark the PR ready, a human merges it.** Don't merge your
    own PR unless the user asks — `main` only advances through merged PRs.
-5. **Write the PR for a human:** what was done and why it matters, in prose
+6. **Write the PR for a human:** what was done and why it matters, in prose
    a reviewer follows. No opcode/method dumps or
    change-by-change logs — reviewers can read the code for that. Shorter is easier to
    reason about.
-6. **Never** force-push, `git reset --hard` shared refs, amend published
+7. **Never** force-push, `git reset --hard` shared refs, amend published
    commits, or use `--no-verify`. A failing hook is signal — fix the cause.
 
 Documentation SHOULD precede the code change, not follow it.

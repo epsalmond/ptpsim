@@ -32,6 +32,10 @@ For wire-protocol bugs, a minimal capture or transcript is the gold standard.
   abstraction.
 - Match the surrounding style. New code goes into a script, not a one-off
   inline blob.
+- Comments say *why*, names say *what*. A comment that narrates the next line
+  should be deleted or replaced with an expressive name. Reserve comments for
+  facts the code cannot show: wire evidence, spec constraints, invariants owed
+  to another layer.
 
 ## Scope
 
@@ -40,10 +44,12 @@ ship per-manufacturer code paths. New cameras are added by authoring a manifest
 (see [`packages/camera-config-data/`](packages/camera-config-data/)), not by
 patching the engine.
 
-The probe toolkit lives in
-[`epsalmond/camera-protocol-mapper`](https://github.com/epsalmond/camera-protocol-mapper):
-it drives real cameras and emits JSONL observation bundles that feed the
-manifest-generation pipeline. Per-camera probe scripts belong there.
+Probing real cameras is folding into the shipping engine itself — a headless
+initiator built on the same crates and manifests (#252) — so probe results can
+never drift from what the engine actually does. The earlier standalone probe
+toolkit ([`epsalmond/camera-protocol-mapper`](https://github.com/epsalmond/camera-protocol-mapper))
+produced the JSONL observation bundles behind existing manifests but is no
+longer where new probe work should land.
 
 ## Security
 
