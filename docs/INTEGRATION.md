@@ -357,6 +357,15 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 | `runBleAction(store, model, action, transport, observer, initialScope, runtimeParams)` | a named BLE-native control action (#91) over an already-established link; no refinement. |
 | `runPostExitReadiness(store, planHandle, transport, observer, initialScope, initialEncodings, runtimeParams)` | the plan's `postExitReadiness` gate. Run it after an orderly feature exit, before replaying `runEstablishment`. A plan whose establishment declares no gate returns immediately with `stepsRun == 0` and touches no I/O; a handle with no establishment at all is `UnknownPlan`, same as `runEstablishment`. |
 
+`planHandle` has the stable form `<model>:<selector>`. Plans obtained through
+`establishment(model, connection, ...)` use the connection id as the selector;
+`Wake`/`Ready` plans returned by `reconnectDecision` use their establishment
+mechanism (`ble-wake`, `ble-reconnect`). Resolution is connection-first: when
+the selector names a declared body connection, that connection must declare an
+establishment; only a selector that is not a connection falls back to a direct
+mechanism lookup. Consumers treat the handle as opaque and echo it unchanged to
+`runEstablishment`, `runPostExitReadiness`, and `refineEstablishment`.
+
 Two transport contracts carry the correctness load:
 
 - **Notification buffering.** `subscribe` succeeds on the CCCD descriptor-write
@@ -374,6 +383,14 @@ Two transport contracts carry the correctness load:
   cancels the whole walk — the dropped Rust future cancels the corresponding
   foreign task through the generated bindings, so make each transport method
   cancellation-safe.
+
+A fatal step returns `ExecutorError::StepFailed { step, kind, message }`.
+`kind` is the stable `ExecutorStepFailureKind`: `DeadlineExceeded` covers
+executor-owned verb backstops, step-level notification/poll budgets, and a
+transport-reported timeout; `Other` covers every non-timeout failure. Consumers
+may map `DeadlineExceeded` from a readiness gate to retryable UI while keeping
+`message` for diagnostics only. Never string-match `message` for control flow.
+Tolerated failures remain step reports and do not escape as `ExecutorError`.
 
 ### 9.4 The 13-verb Step grammar (reference; legacy dispatcher)
 

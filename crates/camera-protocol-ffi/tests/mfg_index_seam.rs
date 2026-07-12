@@ -248,6 +248,7 @@ fn saved_reconnect_classifies_startup_and_awake_adverts_from_persisted_identity(
         legacy_scope.clone(),
     ) {
         ReconnectDecision::Wake { plan, .. } => {
+            assert_eq!(plan.plan_handle, "gfx100ii:ble-wake");
             assert_eq!(plan.mechanism, "ble-wake");
             assert!(matches!(
                 plan.steps.as_slice(),
@@ -271,6 +272,7 @@ fn saved_reconnect_classifies_startup_and_awake_adverts_from_persisted_identity(
             plan,
             runtime_scope,
         } => {
+            assert_eq!(plan.plan_handle, "gfx100ii:ble-reconnect");
             assert_eq!(plan.mechanism, "ble-reconnect");
             assert!(runtime_scope
                 .iter()
@@ -971,6 +973,14 @@ fn refine_establishment_returns_no_change_when_no_overlay_matches() {
     let s = store();
     let tail = s.refine_establishment("gfx100ii:ble".into(), "2.30".into(), vec![], 2);
     assert!(matches!(tail, Ok(EstablishmentRefinement::NoChange)));
+
+    for handle in ["gfx100ii:ble-wake", "gfx100ii:ble-reconnect"] {
+        let result = s.refine_establishment(handle.into(), "2.30".into(), vec![], 0);
+        assert!(
+            matches!(result, Ok(EstablishmentRefinement::NoChange)),
+            "mechanism-backed handle {handle} resolves"
+        );
+    }
 }
 
 #[test]
@@ -984,6 +994,13 @@ fn refine_establishment_rejects_bad_handles_and_indices() {
 
     let unknown = s.refine_establishment("gfx100ii:missing".into(), "2.30".into(), vec![], 0);
     assert!(matches!(unknown, Err(EstablishmentError::UnknownPlan(_))));
+
+    let connection_without_plan =
+        s.refine_establishment("gfx100ii:usb".into(), "2.30".into(), vec![], 0);
+    assert!(matches!(
+        connection_without_plan,
+        Err(EstablishmentError::UnknownPlan(_))
+    ));
 
     let bad_index = s.refine_establishment("gfx100ii:ble".into(), "2.30".into(), vec![], 999);
     assert!(matches!(

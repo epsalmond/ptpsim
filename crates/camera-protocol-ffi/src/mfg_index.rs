@@ -155,9 +155,10 @@ pub struct ModelMatch {
 // EstablishmentPlan + Step grammar (§3.3 + §11)
 // ---------------------------------------------------------------------------
 
-/// The output of [`crate::ConfigStore::establishment`]: a walkable step
-/// sequence. `plan_handle` is the opaque token the dispatcher echoes back to
-/// [`crate::ConfigStore::refine_establishment`] when firmware is discovered.
+/// A walkable establishment sequence. `plan_handle` is the stable
+/// `model:selector` token the dispatcher echoes to the executor/refiner:
+/// connection selector for ordinary establishment, mechanism selector for a
+/// reconnect decision.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct EstablishmentPlan {
     pub plan_handle: String,
@@ -910,7 +911,7 @@ pub fn reconnect_decision(
         let Some(plan) = build_establishment_mechanism(
             index,
             model,
-            "saved-reconnect",
+            &route.mechanism,
             &route.mechanism,
             persisted_scope,
         ) else {
@@ -987,7 +988,7 @@ pub fn build_establishment(
 fn build_establishment_mechanism(
     index: &ix::ResolvedManufacturerIndex,
     model: &str,
-    connection: &str,
+    handle_selector: &str,
     mechanism: &str,
     _initial_scope: &[KeyValue],
 ) -> Option<EstablishmentPlan> {
@@ -996,7 +997,7 @@ fn build_establishment_mechanism(
     let block = ble.establishment(mechanism)?;
     let steps = block.steps.iter().map(Step::from).collect();
     Some(EstablishmentPlan {
-        plan_handle: format!("{model}:{connection}"),
+        plan_handle: format!("{model}:{handle_selector}"),
         mechanism: block.mechanism.clone(),
         prerequisite: block.prerequisite.clone(),
         on_demand: block.on_demand,

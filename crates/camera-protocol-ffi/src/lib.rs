@@ -18,7 +18,8 @@ use std::sync::Arc;
 pub mod executor;
 pub use executor::{
     run_ble_action, run_establishment, run_post_exit_readiness, BleExecutorTransport,
-    ExecutionOutcome, ExecutorError, StepObserver, StepOutcome, StepReport, TransportError,
+    ExecutionOutcome, ExecutorError, ExecutorStepFailureKind, StepObserver, StepOutcome,
+    StepReport, TransportError,
 };
 pub mod mfg_index;
 pub use mfg_index::{
@@ -1721,42 +1722,40 @@ impl ConfigStore {
         scope: Vec<KeyValue>,
         next_step_index: u32,
     ) -> Result<EstablishmentRefinement, EstablishmentError> {
-        let (model, connection) = plan_handle
+        let (model, selector) = plan_handle
             .split_once(':')
             .ok_or_else(|| EstablishmentError::InvalidPlanHandle(plan_handle.clone()))?;
-        if model.is_empty() || connection.is_empty() || connection.contains(':') {
+        if model.is_empty() || selector.is_empty() || selector.contains(':') {
             return Err(EstablishmentError::InvalidPlanHandle(plan_handle));
         }
 
         let Some(index) = &self.inner.index else {
             return Err(EstablishmentError::UnknownPlan(format!(
-                "{model}:{connection}: store has no manufacturer index"
+                "{model}:{selector}: store has no manufacturer index"
             )));
         };
         let Some(body) = self.inner.body(model) else {
             return Err(EstablishmentError::UnknownPlan(format!(
-                "{model}:{connection}: unknown model"
+                "{model}:{selector}: unknown model"
             )));
         };
-        let Some(mechanism) = body
-            .connections
-            .get(connection)
-            .and_then(|c| c.establishment.clone())
-        else {
-            return Err(EstablishmentError::UnknownPlan(format!(
-                "{model}:{connection}: connection has no establishment"
-            )));
+        let mechanism = match body.connections.get(selector) {
+            Some(connection) => connection.establishment.clone().ok_or_else(|| {
+                EstablishmentError::UnknownPlan(format!(
+                    "{model}:{selector}: connection has no establishment"
+                ))
+            })?,
+            None => selector.to_string(),
         };
-        let Some(plan) =
-            mfg_index::build_establishment(index, model, connection, &mechanism, &scope)
+        let Some(plan) = mfg_index::build_establishment(index, model, selector, &mechanism, &scope)
         else {
             return Err(EstablishmentError::UnknownPlan(format!(
-                "{model}:{connection}: missing mechanism {mechanism}"
+                "{model}:{selector}: missing mechanism {mechanism}"
             )));
         };
         if next_step_index as usize > plan.steps.len() {
             return Err(EstablishmentError::InvalidNextStepIndex(format!(
-                "{model}:{connection}: next_step_index {next_step_index} > plan length {}",
+                "{model}:{selector}: next_step_index {next_step_index} > plan length {}",
                 plan.steps.len()
             )));
         }

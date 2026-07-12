@@ -12,8 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use camera_config::index::{CccdMode, FamilyBleBlock, ModelView, ResolvedManufacturerIndex};
 use camera_protocol_ffi::{
-    run_establishment, run_post_exit_readiness, BleManufacturerData, ConfigStore, KeyValue,
-    Observation, Recognition, StepObserver, StepOutcome, StepReport, TransportError,
+    run_establishment, run_post_exit_readiness, BleManufacturerData, ConfigStore,
+    EstablishmentRefinement, ExecutorError, ExecutorStepFailureKind, KeyValue, Observation,
+    Recognition, ReconnectDecision, StepObserver, StepOutcome, StepReport, TransportError,
 };
 use camera_sim::{BleEvent, BleResponder};
 use futures::executor::block_on;
@@ -34,6 +35,52 @@ fn store() -> Arc<ConfigStore> {
         }],
     )
     .expect("manufacturer index loads")
+}
+
+fn poll_timeout_store() -> Arc<ConfigStore> {
+    let index = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { state: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: {}
+      establishments:
+        poll:
+          mechanism: poll
+          postExitReadiness:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleAwaitUntil:
+                source: { read: state }
+                capture: { at: 0, length: 1, encoding: u8, name: state }
+                until: { state: { eq: "1" } }
+                intervalMs: 1
+                timeoutMs: 5
+models:
+  - id: tm1
+    displayName: "Test One"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let body = r#"
+schema: camera-config/v1
+camera:
+  manufacturer: TESTCO
+  model: TM1
+connections:
+  ble:
+    kind: ble
+    establishment: poll
+"#;
+    ConfigStore::from_manufacturer_index(
+        index.into(),
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: body.into(),
+        }],
+    )
+    .expect("poll-timeout fixture loads")
 }
 
 fn gfx100ii() -> ModelView {
@@ -156,6 +203,63 @@ impl camera_protocol_ffi::BleExecutorTransport for ResponderTransport {
     }
 }
 
+/// Clock seam transport: optionally stalls connect, serves one read, then
+/// parks. Its clock can either elapse normally or fail as a foreign transport.
+struct ClockTestTransport {
+    first_read: Mutex<Option<Vec<u8>>>,
+    clock_fails: bool,
+    stall_connect: bool,
+}
+
+#[async_trait::async_trait]
+impl camera_protocol_ffi::BleExecutorTransport for ClockTestTransport {
+    async fn connect(&self) -> Result<(), TransportError> {
+        if self.stall_connect {
+            std::future::pending().await
+        } else {
+            Ok(())
+        }
+    }
+    async fn await_disconnect(&self) -> Result<(), TransportError> {
+        std::future::pending().await
+    }
+    async fn request_mtu(&self, mtu: u16) -> Result<u16, TransportError> {
+        Ok(mtu)
+    }
+    async fn ensure_services_discovered(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
+    async fn read(&self, _characteristic: String) -> Result<Vec<u8>, TransportError> {
+        let first = self.first_read.lock().unwrap().take();
+        match first {
+            Some(value) => Ok(value),
+            None => std::future::pending().await,
+        }
+    }
+    async fn write(&self, _characteristic: String, _value: Vec<u8>) -> Result<(), TransportError> {
+        Ok(())
+    }
+    async fn subscribe(
+        &self,
+        _characteristic: String,
+        _mode: camera_protocol_ffi::CccdMode,
+    ) -> Result<(), TransportError> {
+        Ok(())
+    }
+    async fn next_notification(&self, _characteristic: String) -> Result<Vec<u8>, TransportError> {
+        std::future::pending().await
+    }
+    async fn sleep(&self, _ms: u32) -> Result<(), TransportError> {
+        if self.clock_fails {
+            Err(TransportError::Failed {
+                detail: "clock unavailable".into(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Default)]
 struct Recorder(Mutex<Vec<StepReport>>);
 impl StepObserver for Recorder {
@@ -217,6 +321,55 @@ fn red_advert(ble: &FamilyBleBlock) -> Observation {
         tx_power: None,
         ad_records: vec![],
     }
+}
+
+fn legacy_startup_advert(ble: &FamilyBleBlock) -> Observation {
+    Observation::BleAdvert {
+        service_uuids: vec![ble.advert.service_uuids["cameraStartupInformation"].clone()],
+        manufacturer_data: Some(BleManufacturerData {
+            company_id: ble.advert.manufacturer_company_id.expect("company id"),
+            payload: vec![0x02, 0x44, 0x73, 0x2a, 0x80, 0x00],
+        }),
+        service_data: vec![],
+        local_name: Some("0C3EGFX100II-0C3E".into()),
+        tx_power: None,
+        ad_records: vec![],
+    }
+}
+
+fn legacy_awake_advert(ble: &FamilyBleBlock) -> Observation {
+    Observation::BleAdvert {
+        service_uuids: vec![ble.advert.service_uuids["fileTransfer"].clone()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: Some("0C3EGFX100II-0C3E".into()),
+        tx_power: None,
+        ad_records: vec![],
+    }
+}
+
+fn persisted_legacy_scope() -> Vec<KeyValue> {
+    vec![
+        KeyValue {
+            key: "pairingKeyBytes".into(),
+            value: "44732a80".into(),
+        },
+        KeyValue {
+            key: "style".into(),
+            value: "legacy".into(),
+        },
+        KeyValue {
+            key: "shortSerial".into(),
+            value: "0C3E".into(),
+        },
+    ]
+}
+
+fn persisted_legacy_encodings() -> Vec<KeyValue> {
+    vec![KeyValue {
+        key: "pairingKeyBytes".into(),
+        value: "bytes-le".into(),
+    }]
 }
 
 fn responder_for(ble: &FamilyBleBlock) -> BleResponder {
@@ -307,6 +460,114 @@ fn scope_get<'a>(scope: &'a [KeyValue], key: &str) -> Option<&'a str> {
         .iter()
         .find(|kv| kv.key == key)
         .map(|kv| kv.value.as_str())
+}
+
+// ---------------------------------------------------------------------------
+// Saved reconnect handles (mechanism-backed plan selectors)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wake_decision_handle_runs_and_refines() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let persisted = persisted_legacy_scope();
+    let ReconnectDecision::Wake { plan, .. } = store.reconnect_decision(
+        "gfx100ii".into(),
+        legacy_startup_advert(ble),
+        persisted.clone(),
+    ) else {
+        panic!("startup advert must select Wake");
+    };
+    assert_eq!(plan.plan_handle, "gfx100ii:ble-wake");
+
+    let responder = BleResponder::new(ble.gatt.values().cloned()).queue_peer_disconnect();
+    let transport = Arc::new(ResponderTransport::new(responder));
+    let outcome = block_on(run_establishment(
+        store.clone(),
+        plan.plan_handle.clone(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        persisted.clone(),
+        persisted_legacy_encodings(),
+        vec![],
+    ))
+    .expect("the mechanism-backed wake handle resolves");
+    assert_eq!(outcome.steps_run, 2);
+
+    let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
+    assert_eq!(
+        transport.into_log(),
+        vec![BleEvent::Connect, BleEvent::PeerDisconnect]
+    );
+    assert!(matches!(
+        store.refine_establishment(plan.plan_handle, "2.30".into(), persisted, 2),
+        Ok(EstablishmentRefinement::NoChange)
+    ));
+}
+
+#[test]
+fn ready_decision_handle_runs_and_refines() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let persisted = persisted_legacy_scope();
+    let ReconnectDecision::Ready { plan, .. } = store.reconnect_decision(
+        "gfx100ii".into(),
+        legacy_awake_advert(ble),
+        persisted.clone(),
+    ) else {
+        panic!("awake advert must select Ready");
+    };
+    assert_eq!(plan.plan_handle, "gfx100ii:ble-reconnect");
+
+    let transport = Arc::new(ResponderTransport::new(responder_for(ble)));
+    let outcome = block_on(run_establishment(
+        store.clone(),
+        plan.plan_handle.clone(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        persisted.clone(),
+        persisted_legacy_encodings(),
+        runtime_params(),
+    ))
+    .expect("the mechanism-backed reconnect handle resolves");
+    assert!(outcome.steps_run > 0);
+
+    let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
+    let log = transport.into_log();
+    assert!(matches!(log.first(), Some(BleEvent::Connect)));
+    assert!(!log.iter().any(|event| {
+        matches!(event, BleEvent::Read { uuid: read } if read == &uuid(ble, "protectedSerialString"))
+    }));
+    assert!(matches!(
+        store.refine_establishment(plan.plan_handle, "2.30".into(), persisted, 0),
+        Ok(EstablishmentRefinement::NoChange)
+    ));
+}
+
+#[test]
+fn unknown_plan_handles_fail_before_io() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+
+    for handle in ["gfx100ii:missing", "gfx100ii:usb"] {
+        let transport = Arc::new(ResponderTransport::new(responder_for(ble)));
+        let error = block_on(run_establishment(
+            store.clone(),
+            handle.into(),
+            transport.clone(),
+            Arc::new(Recorder::default()),
+            vec![],
+            vec![],
+            vec![],
+        ))
+        .expect_err("unknown handles fail loud");
+        assert!(matches!(error, ExecutorError::UnknownPlan { .. }));
+        let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
+        assert!(transport.into_log().is_empty(), "resolver performs no I/O");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +817,164 @@ fn post_exit_readiness_gate_awaits_the_not_launched_baseline() {
         .collect();
     assert_eq!(terminal.len(), 3);
     assert!(terminal.iter().all(|r| r.outcome == StepOutcome::Succeeded));
+}
+
+#[test]
+fn post_exit_notification_timeout_crosses_ffi_with_deadline_kind() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let ap_state = uuid(ble, "apState");
+
+    // The seed read is still Launching and no terminal notification follows.
+    let responder = BleResponder::new([ap_state.clone()]).serve_read(&ap_state, &[0x02, 0x80]);
+    let error = block_on(run_post_exit_readiness(
+        store,
+        "gfx100ii:app".into(),
+        Arc::new(ResponderTransport::new(responder)),
+        Arc::new(Recorder::default()),
+        vec![],
+        vec![],
+        vec![],
+    ))
+    .expect_err("the notification budget lapses");
+
+    match error {
+        ExecutorError::StepFailed {
+            step,
+            kind,
+            message,
+        } => {
+            assert_eq!(step, "steps[2].bleAwaitUntil");
+            assert_eq!(kind, ExecutorStepFailureKind::DeadlineExceeded);
+            assert!(message.contains("within 20000ms"));
+        }
+        other => panic!("expected typed step failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn post_exit_poll_timeout_crosses_ffi_with_deadline_kind() {
+    let error = block_on(run_post_exit_readiness(
+        poll_timeout_store(),
+        "tm1:ble".into(),
+        Arc::new(ClockTestTransport {
+            first_read: Mutex::new(Some(vec![0x00])),
+            clock_fails: false,
+            stall_connect: false,
+        }),
+        Arc::new(Recorder::default()),
+        vec![],
+        vec![],
+        vec![],
+    ))
+    .expect_err("the poll budget lapses");
+
+    match error {
+        ExecutorError::StepFailed {
+            step,
+            kind,
+            message,
+        } => {
+            assert_eq!(step, "steps[2].bleAwaitUntil");
+            assert_eq!(kind, ExecutorStepFailureKind::DeadlineExceeded);
+            assert!(message.contains("within 5ms"));
+        }
+        other => panic!("expected typed step failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn per_verb_clock_failure_crosses_ffi_as_other() {
+    let error = block_on(run_post_exit_readiness(
+        poll_timeout_store(),
+        "tm1:ble".into(),
+        Arc::new(ClockTestTransport {
+            first_read: Mutex::new(None),
+            clock_fails: true,
+            stall_connect: true,
+        }),
+        Arc::new(Recorder::default()),
+        vec![],
+        vec![],
+        vec![],
+    ))
+    .expect_err("the foreign deadline clock fails");
+
+    match error {
+        ExecutorError::StepFailed {
+            step,
+            kind,
+            message,
+        } => {
+            assert_eq!(step, "steps[0].bleConnect");
+            assert_eq!(kind, ExecutorStepFailureKind::Other);
+            assert!(message.contains("clock unavailable"));
+        }
+        other => panic!("expected typed step failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn notification_budget_clock_failure_crosses_ffi_as_other() {
+    let error = block_on(run_post_exit_readiness(
+        store(),
+        "gfx100ii:app".into(),
+        Arc::new(ClockTestTransport {
+            first_read: Mutex::new(Some(vec![0x02, 0x80])),
+            clock_fails: true,
+            stall_connect: false,
+        }),
+        Arc::new(Recorder::default()),
+        vec![],
+        vec![],
+        vec![],
+    ))
+    .expect_err("the notification budget clock fails");
+
+    match error {
+        ExecutorError::StepFailed {
+            step,
+            kind,
+            message,
+        } => {
+            assert_eq!(step, "steps[2].bleAwaitUntil");
+            assert_eq!(kind, ExecutorStepFailureKind::Other);
+            assert!(message.contains("clock unavailable"));
+        }
+        other => panic!("expected typed step failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn poll_budget_clock_failure_crosses_ffi_as_other() {
+    let error = block_on(run_post_exit_readiness(
+        poll_timeout_store(),
+        "tm1:ble".into(),
+        Arc::new(ClockTestTransport {
+            first_read: Mutex::new(Some(vec![0x00])),
+            clock_fails: true,
+            stall_connect: false,
+        }),
+        Arc::new(Recorder::default()),
+        vec![],
+        vec![],
+        vec![],
+    ))
+    .expect_err("the poll budget clock fails");
+
+    match error {
+        ExecutorError::StepFailed {
+            step,
+            kind,
+            message,
+        } => {
+            assert_eq!(step, "steps[2].bleAwaitUntil");
+            assert_eq!(kind, ExecutorStepFailureKind::Other);
+            assert!(message.contains("clock unavailable"));
+        }
+        other => panic!("expected typed step failure, got {other:?}"),
+    }
 }
 
 #[test]

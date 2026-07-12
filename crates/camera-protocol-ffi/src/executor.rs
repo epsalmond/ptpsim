@@ -156,12 +156,24 @@ pub trait StepObserver: Send + Sync {
 // Entry points
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ExecutorStepFailureKind {
+    /// An executor-owned wall-clock budget or transport timeout elapsed.
+    DeadlineExceeded,
+    /// Any non-timeout transport, validation, transform, or plan-step failure.
+    Other,
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum ExecutorError {
     #[error("unknown plan: {detail}")]
     UnknownPlan { detail: String },
     #[error("{step}: {message}")]
-    StepFailed { step: String, message: String },
+    StepFailed {
+        step: String,
+        kind: ExecutorStepFailureKind,
+        message: String,
+    },
 }
 
 /// A completed walk: the final scope (recognition seed + step captures, §11.2
@@ -172,8 +184,8 @@ pub struct ExecutionOutcome {
     pub steps_run: u32,
 }
 
-/// Execute the establishment plan behind `plan_handle` (`model:connection`,
-/// as returned by [`ConfigStore::establishment`]) against a foreign transport.
+/// Execute the establishment plan behind `plan_handle` (`model:selector`,
+/// returned by establishment/reconnect decisions) against a foreign transport.
 /// `initial_scope` is the recognition `runtime_scope` and `initial_encodings`
 /// its `runtime_scope_encodings` — threading the real capture encodings from
 /// the matched signature so a `{ captured: … }` write-back re-encodes
@@ -260,14 +272,15 @@ pub async fn run_post_exit_readiness(
     Ok(outcome(ctx))
 }
 
-/// Resolve `plan_handle` (`model:connection`, as returned by
-/// [`ConfigStore::establishment`]) to its establishment block.
+/// Resolve `plan_handle` (`model:selector`) to its establishment block.
+/// Declared connections take precedence; a non-connection selector falls back
+/// to a direct establishment-mechanism key for reconnect plans.
 fn resolve_establishment(
     store: &ConfigStore,
     plan_handle: &str,
 ) -> Result<EstablishmentBlock, ExecutorError> {
     let unknown = |detail: String| ExecutorError::UnknownPlan { detail };
-    let (model, connection) = plan_handle
+    let (model, selector) = plan_handle
         .split_once(':')
         .filter(|(m, c)| !m.is_empty() && !c.is_empty() && !c.contains(':'))
         .ok_or_else(|| unknown(format!("bad plan handle {plan_handle:?}")))?;
@@ -279,11 +292,13 @@ fn resolve_establishment(
     let body = inner
         .body(model)
         .ok_or_else(|| unknown(format!("unknown model {model}")))?;
-    let mechanism = body
-        .connections
-        .get(connection)
-        .and_then(|c| c.establishment.clone())
-        .ok_or_else(|| unknown(format!("{plan_handle}: connection has no establishment")))?;
+    let mechanism = match body.connections.get(selector) {
+        Some(connection) => connection
+            .establishment
+            .clone()
+            .ok_or_else(|| unknown(format!("{plan_handle}: connection has no establishment")))?,
+        None => selector.to_string(),
+    };
     let view = index
         .models
         .iter()
@@ -380,14 +395,72 @@ struct ExecCtx<'a> {
 #[derive(Debug)]
 struct StepError {
     step: String,
+    kind: ExecutorStepFailureKind,
     message: String,
+}
+
+impl StepError {
+    fn other(step: &str, message: String) -> Self {
+        Self {
+            step: step.to_string(),
+            kind: ExecutorStepFailureKind::Other,
+            message,
+        }
+    }
+
+    fn deadline(step: &str, message: String) -> Self {
+        Self {
+            step: step.to_string(),
+            kind: ExecutorStepFailureKind::DeadlineExceeded,
+            message,
+        }
+    }
+
+    fn operation(step: &str, failure: OperationFailure) -> Self {
+        Self {
+            step: step.to_string(),
+            kind: failure.kind,
+            message: failure.message,
+        }
+    }
+
+    fn transport(step: &str, error: TransportError) -> Self {
+        Self::operation(step, OperationFailure::transport(error))
+    }
 }
 
 impl From<StepError> for ExecutorError {
     fn from(e: StepError) -> Self {
         ExecutorError::StepFailed {
             step: e.step,
+            kind: e.kind,
             message: e.message,
+        }
+    }
+}
+
+struct OperationFailure {
+    kind: ExecutorStepFailureKind,
+    message: String,
+}
+
+impl OperationFailure {
+    fn transport(error: TransportError) -> Self {
+        let kind = if matches!(error, TransportError::Timeout { .. }) {
+            ExecutorStepFailureKind::DeadlineExceeded
+        } else {
+            ExecutorStepFailureKind::Other
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+
+    fn deadline(what: &str, ms: u32) -> Self {
+        Self {
+            kind: ExecutorStepFailureKind::DeadlineExceeded,
+            message: format!("{what} timed out after {ms}ms"),
         }
     }
 }
@@ -532,17 +605,15 @@ async fn run_step_once(
     here: &str,
     top_next: u32,
 ) -> Result<RefinedTail, StepError> {
-    let err = |message: String| StepError {
-        step: here.to_string(),
-        message,
-    };
+    let err = |message: String| StepError::other(here, message);
+    let op_err = |failure: OperationFailure| StepError::operation(here, failure);
     match step {
         Step::BleConnect(_) => {
             deadline(ctx.transport, CONNECT_TIMEOUT_MS, "connect", async {
                 ctx.transport.connect().await
             })
             .await
-            .map_err(err)?;
+            .map_err(op_err)?;
             Ok(None)
         }
         Step::BleAwaitDisconnect(s) => {
@@ -550,7 +621,7 @@ async fn run_step_once(
                 ctx.transport.await_disconnect().await
             })
             .await
-            .map_err(err)?;
+            .map_err(op_err)?;
             Ok(None)
         }
         Step::BleRequestMtu(s) => {
@@ -558,7 +629,7 @@ async fn run_step_once(
                 ctx.transport.request_mtu(s.mtu).await
             })
             .await
-            .map_err(err)?;
+            .map_err(op_err)?;
             if negotiated < s.mtu {
                 return Err(err(format!(
                     "negotiated MTU {negotiated} < required {}",
@@ -575,7 +646,7 @@ async fn run_step_once(
                 async { ctx.transport.ensure_services_discovered().await },
             )
             .await
-            .map_err(err)?;
+            .map_err(op_err)?;
             Ok(None)
         }
         Step::BleRead(s) => {
@@ -583,7 +654,7 @@ async fn run_step_once(
                 ctx.transport.read(s.gatt.clone()).await
             })
             .await
-            .map_err(err)?;
+            .map_err(op_err)?;
             // §11.13 capture pipeline: bytes → transform chain → encoding.
             let bytes = eval::apply_transforms(&wire, &s.transform)
                 .ok_or_else(|| err("transform chain failed".into()))?;
@@ -599,7 +670,7 @@ async fn run_step_once(
                 ctx.transport.write(s.gatt.clone(), bytes).await
             })
             .await
-            .map_err(err)?;
+            .map_err(op_err)?;
             Ok(None)
         }
         Step::BleSubscribe(s) => {
@@ -612,7 +683,7 @@ async fn run_step_once(
                 ctx.transport.subscribe(s.gatt.clone(), s.mode.into()).await
             })
             .await
-            .map_err(err)?;
+            .map_err(op_err)?;
             Ok(None)
         }
         Step::BleNotify(s) => {
@@ -658,7 +729,7 @@ async fn run_step_once(
                         ctx.transport.read(gatt.clone()).await
                     })
                     .await
-                    .map_err(err)?;
+                    .map_err(op_err)?;
                     let value = eval::decode_bytes(&wire, *encoding)
                         .ok_or_else(|| err(format!("decode as {} failed", encoding.as_token())))?;
                     ctx.encodings.insert("firmware".to_string(), *encoding);
@@ -755,29 +826,30 @@ async fn run_step_once(
 /// non-matching payload keeps the wait alive (the app dispatcher's semantics;
 /// the deterministic walker fails on it instead).
 async fn run_notify(ctx: &mut ExecCtx<'_>, s: &BleNotifyStep, here: &str) -> Result<(), StepError> {
-    let err = |message: String| StepError {
-        step: here.to_string(),
-        message,
-    };
+    let err = |message: String| StepError::other(here, message);
     deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "subscribe", async {
         ctx.transport.subscribe(s.gatt.clone(), s.mode.into()).await
     })
     .await
-    .map_err(err)?;
+    .map_err(|failure| StepError::operation(here, failure))?;
 
     let mut budget = ctx.transport.sleep(s.timeout_ms).fuse();
     let mut observations: Vec<String> = Vec::new();
     for _ in 0..MAX_LOOP_ITERS {
         let payload = next_or_budget(ctx.transport, &s.gatt, &mut budget)
             .await
-            .map_err(|_| {
-                err(format!(
-                    "no accepted notification within {}ms (observed: {})",
-                    s.timeout_ms,
-                    summarize_observations(&observations)
-                ))
+            .map_err(|failure| match failure {
+                BudgetFailure::Lapsed => StepError::deadline(
+                    here,
+                    format!(
+                        "no accepted notification within {}ms (observed: {})",
+                        s.timeout_ms,
+                        summarize_observations(&observations)
+                    ),
+                ),
+                BudgetFailure::Clock(error) => StepError::transport(here, error),
             })?
-            .map_err(err)?;
+            .map_err(|error| StepError::transport(here, error))?;
         observations.push(eval::hex_lower(&payload));
         let accepted = match &s.until {
             BleNotifyUntil::Any => true,
@@ -809,10 +881,7 @@ async fn run_await_until(
     here: &str,
     top_next: u32,
 ) -> Result<RefinedTail, StepError> {
-    let err = |message: String| StepError {
-        step: here.to_string(),
-        message,
-    };
+    let err = |message: String| StepError::other(here, message);
     match &s.source {
         AwaitSource::Notify {
             gatt,
@@ -826,7 +895,7 @@ async fn run_await_until(
                 ctx.transport.subscribe(gatt.clone(), (*mode).into()).await
             })
             .await
-            .map_err(err)?;
+            .map_err(|failure| StepError::operation(here, failure))?;
 
             let mut budget = ctx.transport.sleep(s.timeout_ms).fuse();
             let mut observations: Vec<String> = Vec::new();
@@ -839,16 +908,22 @@ async fn run_await_until(
                     let read = ctx.transport.read(gatt.clone());
                     futures_util::pin_mut!(read);
                     match select(read, &mut budget).await {
-                        Either::Left((res, _)) => res.map_err(|e| err(e.to_string()))?,
-                        Either::Right(_) => {
-                            return Err(await_timeout_err(&err, s, &observations));
+                        Either::Left((res, _)) => {
+                            res.map_err(|error| StepError::transport(here, error))?
                         }
+                        Either::Right((clock, _)) => match clock {
+                            Ok(()) => return Err(await_timeout_err(here, s, &observations)),
+                            Err(error) => return Err(StepError::transport(here, error)),
+                        },
                     }
                 } else {
                     match next_or_budget(ctx.transport, gatt, &mut budget).await {
-                        Ok(res) => res.map_err(err)?,
-                        Err(BudgetLapsed) => {
-                            return Err(await_timeout_err(&err, s, &observations));
+                        Ok(res) => res.map_err(|error| StepError::transport(here, error))?,
+                        Err(BudgetFailure::Lapsed) => {
+                            return Err(await_timeout_err(here, s, &observations));
+                        }
+                        Err(BudgetFailure::Clock(error)) => {
+                            return Err(StepError::transport(here, error));
                         }
                     }
                 };
@@ -878,16 +953,24 @@ async fn run_await_until(
                 let read = ctx.transport.read(gatt.clone());
                 futures_util::pin_mut!(read);
                 let value = match select(read, &mut budget).await {
-                    Either::Left((res, _)) => res.map_err(|e| err(e.to_string()))?,
-                    Either::Right(_) => {
-                        return Err(err(format!(
-                            "`until` ({} {} {}) not satisfied within {}ms",
-                            s.until.field,
-                            s.until.op.as_token(),
-                            s.until.value,
-                            s.timeout_ms
-                        )));
+                    Either::Left((res, _)) => {
+                        res.map_err(|error| StepError::transport(here, error))?
                     }
+                    Either::Right((clock, _)) => match clock {
+                        Ok(()) => {
+                            return Err(StepError::deadline(
+                                here,
+                                format!(
+                                    "`until` ({} {} {}) not satisfied within {}ms",
+                                    s.until.field,
+                                    s.until.op.as_token(),
+                                    s.until.value,
+                                    s.timeout_ms
+                                ),
+                            ));
+                        }
+                        Err(error) => return Err(StepError::transport(here, error)),
+                    },
                 };
                 apply_value_captures(ctx, &value, &s.capture_as, &s.capture);
                 let satisfied = match ctx.scope.get(&s.until.field) {
@@ -905,14 +988,26 @@ async fn run_await_until(
                 }
                 let pause = ctx.transport.sleep(interval);
                 futures_util::pin_mut!(pause);
-                if let Either::Right(_) = select(pause, &mut budget).await {
-                    return Err(err(format!(
-                        "`until` ({} {} {}) not satisfied within {}ms",
-                        s.until.field,
-                        s.until.op.as_token(),
-                        s.until.value,
-                        s.timeout_ms
-                    )));
+                match select(pause, &mut budget).await {
+                    Either::Left((Ok(()), _)) => {}
+                    Either::Left((Err(error), _)) => {
+                        return Err(StepError::transport(here, error));
+                    }
+                    Either::Right((Ok(()), _)) => {
+                        return Err(StepError::deadline(
+                            here,
+                            format!(
+                                "`until` ({} {} {}) not satisfied within {}ms",
+                                s.until.field,
+                                s.until.op.as_token(),
+                                s.until.value,
+                                s.timeout_ms
+                            ),
+                        ));
+                    }
+                    Either::Right((Err(error), _)) => {
+                        return Err(StepError::transport(here, error));
+                    }
                 }
             }
             Err(err(format!(
@@ -922,38 +1017,41 @@ async fn run_await_until(
     }
 }
 
-fn await_timeout_err(
-    err: &dyn Fn(String) -> StepError,
-    s: &BleAwaitUntilStep,
-    observations: &[String],
-) -> StepError {
-    err(format!(
-        "awaited notification did not satisfy `until` ({} {} {}) within {}ms (observed: {})",
-        s.until.field,
-        s.until.op.as_token(),
-        s.until.value,
-        s.timeout_ms,
-        summarize_observations(observations)
-    ))
+fn await_timeout_err(here: &str, s: &BleAwaitUntilStep, observations: &[String]) -> StepError {
+    StepError::deadline(
+        here,
+        format!(
+            "awaited notification did not satisfy `until` ({} {} {}) within {}ms (observed: {})",
+            s.until.field,
+            s.until.op.as_token(),
+            s.until.value,
+            s.timeout_ms,
+            summarize_observations(observations)
+        ),
+    )
 }
 
-/// Marker: the wall-clock budget lapsed before the I/O resolved.
-struct BudgetLapsed;
+/// Why the shared wall-clock budget completed before the I/O resolved.
+enum BudgetFailure {
+    Lapsed,
+    Clock(TransportError),
+}
 
 /// Race the next notification against the (shared, fused) budget sleep.
 async fn next_or_budget<B>(
     transport: &Arc<dyn BleExecutorTransport>,
     gatt: &str,
     budget: &mut B,
-) -> Result<Result<Vec<u8>, String>, BudgetLapsed>
+) -> Result<Result<Vec<u8>, TransportError>, BudgetFailure>
 where
     B: std::future::Future<Output = Result<(), TransportError>> + Unpin,
 {
     let next = transport.next_notification(gatt.to_string());
     futures_util::pin_mut!(next);
     match select(next, budget).await {
-        Either::Left((res, _)) => Ok(res.map_err(|e| e.to_string())),
-        Either::Right(_) => Err(BudgetLapsed),
+        Either::Left((res, _)) => Ok(res),
+        Either::Right((Ok(()), _)) => Err(BudgetFailure::Lapsed),
+        Either::Right((Err(error), _)) => Err(BudgetFailure::Clock(error)),
     }
 }
 
@@ -973,10 +1071,7 @@ async fn run_write_chunk(
     s: &BleWriteChunkStep,
     here: &str,
 ) -> Result<(), StepError> {
-    let err = |message: String| StepError {
-        step: here.to_string(),
-        message,
-    };
+    let err = |message: String| StepError::other(here, message);
 
     // The host supplies the whole blob once as a bytes-raw hex param (#114);
     // a captured scope slot is accepted as the fallback source.
@@ -1042,7 +1137,7 @@ async fn run_write_chunk(
         ctx.transport.write(s.gatt.clone(), frame).await
     })
     .await
-    .map_err(err)?;
+    .map_err(|failure| StepError::operation(here, failure))?;
     Ok(())
 }
 
@@ -1057,13 +1152,14 @@ async fn deadline<T>(
     ms: u32,
     what: &str,
     io: impl std::future::Future<Output = Result<T, TransportError>>,
-) -> Result<T, String> {
+) -> Result<T, OperationFailure> {
     futures_util::pin_mut!(io);
     let clock = transport.sleep(ms);
     futures_util::pin_mut!(clock);
     match select(io, clock).await {
-        Either::Left((res, _)) => res.map_err(|e| e.to_string()),
-        Either::Right(_) => Err(format!("{what} timed out after {ms}ms")),
+        Either::Left((res, _)) => res.map_err(OperationFailure::transport),
+        Either::Right((Ok(()), _)) => Err(OperationFailure::deadline(what, ms)),
+        Either::Right((Err(error), _)) => Err(OperationFailure::transport(error)),
     }
 }
 
@@ -1245,6 +1341,7 @@ mod tests {
     enum Io {
         Value(Vec<u8>),
         Fail(&'static str),
+        Timeout(&'static str),
         /// Never resolves; sets the shared drop flag when the executor drops
         /// the in-flight future (deadline lost the race / walk cancelled).
         Stall,
@@ -1276,6 +1373,7 @@ mod tests {
             match io {
                 Some(Io::Value(v)) => Ok(v),
                 Some(Io::Fail(m)) => Err(TransportError::Failed { detail: m.into() }),
+                Some(Io::Timeout(m)) => Err(TransportError::Timeout { detail: m.into() }),
                 Some(Io::Stall) | None => {
                     let _guard = SetOnDrop(self.dropped_inflight.clone());
                     std::future::pending().await
@@ -1440,6 +1538,7 @@ mod tests {
             "got: {}",
             err.message
         );
+        assert_eq!(err.kind, ExecutorStepFailureKind::DeadlineExceeded);
         assert!(
             flag.load(Ordering::SeqCst),
             "the in-flight read future must be dropped (foreign cancellation)"
@@ -1487,6 +1586,7 @@ mod tests {
             "got: {}",
             err.message
         );
+        assert_eq!(err.kind, ExecutorStepFailureKind::DeadlineExceeded);
         assert_eq!(recorder.0.lock().unwrap()[1].outcome, StepOutcome::Failed);
     }
 
@@ -1587,6 +1687,24 @@ mod tests {
             "got: {}",
             err.message
         );
+        assert_eq!(err.kind, ExecutorStepFailureKind::DeadlineExceeded);
+    }
+
+    #[test]
+    fn transport_timeout_retains_deadline_kind() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([Io::Timeout("platform read timeout")])),
+            sleeps_fire: false,
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let err = block_on(walk_plan(
+            &mut ctx,
+            vec![read_step("v", StepOptions::default())],
+        ))
+        .expect_err("transport timeout is fatal");
+        assert_eq!(err.kind, ExecutorStepFailureKind::DeadlineExceeded);
+        assert!(err.message.contains("platform read timeout"));
     }
 
     #[test]
@@ -1628,6 +1746,7 @@ mod tests {
             opts: StepOptions::default(),
         })];
         let err = block_on(walk_plan(&mut ctx, steps)).expect_err("negotiated 158 < 517");
+        assert_eq!(err.kind, ExecutorStepFailureKind::Other);
         assert!(err.message.contains("negotiated MTU 158"));
     }
 
