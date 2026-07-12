@@ -320,6 +320,37 @@ fixtures are synthetic or redistribution-licensed. Captured manifests and
 contributions are data; pick a license (e.g. CC-BY or the project license for
 data) and a contribution agreement before the first external probe lands.
 
+Operating model — one engine, three consumer seams:
+
+ptpsim is the single home for camera behavior. Everything downstream is a
+consumer of a published artifact — never a fork, never a sibling
+implementation.
+
+- **Apps** consume the FFI: vendored bindings + manifests per platform
+  (Swift via the Apple FFI releases, Kotlin via the Android/Linux targets).
+- **Hosted simulators** consume the container image — the publishable
+  `camera-sim-service` artifact #247 defines, with `/healthz`, the control
+  endpoint, and mountable startup-state YAML. A deployment — e.g. a hosted
+  review/demo camera pool — is configuration around that image, pinned by
+  digest, never a patched build.
+- **Protocol discovery** consumes the crates themselves: probing a real camera
+  runs through the headless initiator built on the shipping engine and
+  manifests (#252, on the #250 executor), and observations flow back through
+  the in-repo generator intake. Standalone probe tools are explicitly
+  rejected: the predecessor mapper toolkit proved the concept but drifted from
+  the engine, and its results stopped transferring.
+
+Two standing rules fall out of this:
+
+1. **Upstream-first.** When a consumer needs camera behavior the engine lacks,
+   the fix is a consumer-neutral engine/manifest feature here — not a
+   workaround in the consumer. Consumers pick behavior from manifest traits;
+   a camera-specific branch in a consumer is a bug in this repo.
+2. **Probe work lands here first.** Any "drive a real camera to learn what it
+   does" effort starts in this repo, links the shipping crates, and ends as
+   manifest data plus evidence. If a result cannot round-trip into a manifest,
+   the schema gap is the work item.
+
 ## Core Crates
 
 ### `ptp-core`

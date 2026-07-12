@@ -9,8 +9,9 @@ takes precedence on anything ptpsim-specific.
 
 A scriptable, OSS camera-protocol simulator (PTP/IP responder). One generic
 engine, no per-manufacturer code; cameras are added as manifest **data**
-(`packages/camera-config-data/`) authored from external probe evidence such as
-`epsalmond/camera-protocol-mapper`. Dual-licensed MIT OR Apache-2.0.
+(`packages/camera-config-data/`) authored from probe evidence through the
+in-repo generator intake (see DESIGN.md "Operating model"; the predecessor
+standalone mapper toolkit is archived). Dual-licensed MIT OR Apache-2.0.
 
 Full design: [`DESIGN.md`](DESIGN.md). Consumer-facing FFI surface and
 verb grammar: [`docs/INTEGRATION.md`](docs/INTEGRATION.md). Manifest
