@@ -539,18 +539,15 @@ models:
     inherits: [fuji]
     manifest: gfx100ii/gfx100ii.yaml
 
-    # Signatures detect the advert's style and capture the pairing-key
-    # bytes into runtime_scope. A Fuji advert that matches either
-    # signature produces a Candidate; recognize() seeds runtime_scope
-    # with `style` and `pairingKeyBytes` (and `shortSerial` on RED) so
-    # the establishment plan above can write them without further
-    # app-side parsing.
+    # Pairing signatures detect the advert's style and capture pairing-key
+    # bytes into runtime_scope. Saved-camera startup/awake signatures are
+    # reconnect-only: bonded legacy bodies do not repeat the pairing-mode
+    # manufacturer data while awake (#264).
     #
-    # File declaration order is the signature precedence (§11.7): the
-    # legacy signature is tried first because legacy adverts are
-    # uniquely identifiable by the presence of SERVICE_FF_FILE_TRANSFER,
-    # while RED adverts are characterised by absence (which the legacy
-    # signature would have matched first).
+    # File declaration order is the signature precedence (§11.7): specific
+    # startup/awake reconnect states precede broad pairing discovery. Within
+    # pairing discovery, the legacy signature precedes RED because the
+    # file-transfer service uniquely identifies that legacy form.
     signatures:
       bleStartupLegacyAdvert:
         kind: bleAdvert
@@ -612,12 +609,35 @@ models:
           mechanism: ble-reconnect
           identity: [shortSerial]
 
+      bleAwakeLegacyAdvert:
+        kind: bleAdvert
+        # Idle bonded GFX100 II bodies advertise SERVICE_FF_FILE_TRANSFER and
+        # a name shaped like `<shortSerial>GFX100II-<shortSerial>`, with no
+        # Fuji manufacturer data (#264). Keep this reconnect-only signature
+        # ahead of pairing discovery so normal recognition stops here.
+        require:
+          all:
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.fileTransfer}" }
+            - localName: { contains: "GFX100II-" }
+            - not:
+                manufacturerData:
+                  companyId: "{ble.advert.manufacturerCompanyId}"
+        capture:
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope:
+          style: "legacy"
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: ready
+          mechanism: ble-reconnect
+          identity: [shortSerial]
+
       bleLegacyAdvert:
         kind: bleAdvert
-        # Per READ_THIS_FIRST §5 Detection point 1: legacy advert =
-        # Fuji company ID in mfg-data + SERVICE_FF_FILE_TRANSFER in the
-        # advertised service-UUID list. Mfg-data payload (post-company-id,
-        # §11.14): 5 bytes = type byte 0x02 + 4-byte LE pairing key.
+        # Pairing-mode legacy advert: Fuji company ID in mfg-data plus
+        # SERVICE_FF_FILE_TRANSFER. Mfg-data payload (post-company-id,
+        # §11.14) is 5 bytes = type byte 0x02 + 4-byte LE pairing key.
         require:
           all:
             - manufacturerData:
@@ -630,10 +650,6 @@ models:
         scope:
           style: "legacy"
         suggests: { connection: ble, confidence: high }
-        reconnect:
-          disposition: ready
-          mechanism: ble-reconnect
-          identity: [pairingKeyBytes]
 
       bleRedAdvert:
         kind: bleAdvert

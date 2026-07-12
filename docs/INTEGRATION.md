@@ -427,10 +427,12 @@ captures nor places in literal scope.
 
 For Fuji, startup-service routes select `ble-wake` (`bleConnect` followed by
 `bleAwaitDisconnect`) and awake-service routes select `ble-reconnect`. Both
-phases use the manifest's 60-second scan window. This service-level state
-machine is backed by
-
-clients do not add a post-registration power-property gate.
+phases use the manifest's 60-second scan window. A bonded legacy body's awake
+advert carries the file-transfer service UUID and a serial-bearing local name,
+but no Fuji manufacturer data; its reconnect identity is the captured
+`shortSerial`, while the cached `pairingKeyBytes` still seed the reconnect plan.
+The manufacturer-data form remains pairing-mode discovery. Clients do not add a
+post-registration power-property gate. See issue #264 for the wire evidence.
 
 ### 9.6 Zero camera knowledge in app source
 

@@ -151,9 +151,8 @@ fn single_body_store_has_no_resolved_camera_initiated_transfer() {
 // recognize() — BLE advert classification
 // ---------------------------------------------------------------------------
 
-/// A synthetic LEGACY advert in the GFX100 II / fw 2.30 shape observed during
-/// the 2026-05-16 test run. Mfg-data is `0x02 + 4-byte LE key`.
-fn synthetic_legacy_advert() -> Observation {
+/// Pairing-mode LEGACY advert. Mfg-data is `0x02 + 4-byte LE key`.
+fn synthetic_legacy_pairing_advert() -> Observation {
     ble_advert(
         &[
             "AF854C2E-B214-458E-97E2-912C4ECF2CB8", // SERVICE_FF_FILE_TRANSFER
@@ -164,6 +163,19 @@ fn synthetic_legacy_advert() -> Observation {
         &[0x02, 0x44, 0x73, 0x2a, 0x80],
         Some("GFX100 II"),
     )
+}
+
+/// Idle bonded GFX100 II / fw 2.30 advert observed for issue #264: the
+/// file-transfer UUID and serial-bearing local name, with no mfg-data.
+fn synthetic_legacy_awake_advert() -> Observation {
+    Observation::BleAdvert {
+        service_uuids: vec!["AF854C2E-B214-458E-97E2-912C4ECF2CB8".into()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: Some("0C3EGFX100II-0C3E".into()),
+        tx_power: None,
+        ad_records: vec![],
+    }
 }
 
 /// A synthetic RED advert: type=0x01 + 5 ASCII bytes (placeholder "ABCDE",
@@ -225,6 +237,10 @@ fn saved_reconnect_classifies_startup_and_awake_adverts_from_persisted_identity(
             key: "style".into(),
             value: "legacy".into(),
         },
+        KeyValue {
+            key: "shortSerial".into(),
+            value: "0C3E".into(),
+        },
     ];
     match s.reconnect_decision(
         "gfx100ii".into(),
@@ -246,10 +262,26 @@ fn saved_reconnect_classifies_startup_and_awake_adverts_from_persisted_identity(
         }
         other => panic!("expected wake, got {other:?}"),
     }
-    assert!(matches!(
-        s.reconnect_decision("gfx100ii".into(), synthetic_legacy_advert(), legacy_scope),
-        ReconnectDecision::Ready { plan, .. } if plan.mechanism == "ble-reconnect"
-    ));
+    match s.reconnect_decision(
+        "gfx100ii".into(),
+        synthetic_legacy_awake_advert(),
+        legacy_scope,
+    ) {
+        ReconnectDecision::Ready {
+            plan,
+            runtime_scope,
+        } => {
+            assert_eq!(plan.mechanism, "ble-reconnect");
+            assert!(runtime_scope
+                .iter()
+                .any(|kv| kv.key == "style" && kv.value == "legacy"));
+            assert!(runtime_scope
+                .iter()
+                .any(|kv| kv.key == "shortSerial" && kv.value == "0C3E"));
+            assert!(!runtime_scope.iter().any(|kv| kv.key == "pairingKeyBytes"));
+        }
+        other => panic!("expected ready, got {other:?}"),
+    }
 
     let red_scope = vec![KeyValue {
         key: "shortSerial".into(),
@@ -284,6 +316,10 @@ fn saved_reconnect_rejects_wrong_identity_and_startup_is_not_discoverable() {
         s.recognize(synthetic_red_advert()),
         Recognition::NoMatch
     ));
+    assert!(matches!(
+        s.recognize(synthetic_legacy_awake_advert()),
+        Recognition::NoMatch
+    ));
     let wrong = vec![KeyValue {
         key: "pairingKeyBytes".into(),
         value: "00000000".into(),
@@ -292,12 +328,62 @@ fn saved_reconnect_rejects_wrong_identity_and_startup_is_not_discoverable() {
         s.reconnect_decision("gfx100ii".into(), synthetic_legacy_startup_advert(), wrong),
         ReconnectDecision::NoMatch
     ));
+
+    let persisted_pairing_key = vec![KeyValue {
+        key: "pairingKeyBytes".into(),
+        value: "44732a80".into(),
+    }];
+    assert!(matches!(
+        s.reconnect_decision(
+            "gfx100ii".into(),
+            synthetic_legacy_pairing_advert(),
+            persisted_pairing_key,
+        ),
+        ReconnectDecision::NoMatch
+    ));
+
+    for persisted_scope in [
+        vec![],
+        vec![KeyValue {
+            key: "shortSerial".into(),
+            value: "FFFF".into(),
+        }],
+    ] {
+        assert!(matches!(
+            s.reconnect_decision(
+                "gfx100ii".into(),
+                synthetic_legacy_awake_advert(),
+                persisted_scope,
+            ),
+            ReconnectDecision::NoMatch
+        ));
+    }
+
+    let malformed_name = Observation::BleAdvert {
+        service_uuids: vec!["AF854C2E-B214-458E-97E2-912C4ECF2CB8".into()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: Some("GFX100 II".into()),
+        tx_power: None,
+        ad_records: vec![],
+    };
+    assert!(matches!(
+        s.reconnect_decision(
+            "gfx100ii".into(),
+            malformed_name,
+            vec![KeyValue {
+                key: "shortSerial".into(),
+                value: "GFX1".into(),
+            }],
+        ),
+        ReconnectDecision::NoMatch
+    ));
 }
 
 #[test]
 fn legacy_advert_recognised_as_gfx100ii_with_legacy_style() {
     let s = store();
-    match s.recognize(synthetic_legacy_advert()) {
+    match s.recognize(synthetic_legacy_pairing_advert()) {
         Recognition::Candidate {
             model,
             connection,
@@ -419,7 +505,7 @@ fn legacy_signature_wins_over_red_when_both_could_match_per_file_order() {
 #[test]
 fn establishment_returns_walkable_ble_plan() {
     let s = store();
-    let scope = match s.recognize(synthetic_legacy_advert()) {
+    let scope = match s.recognize(synthetic_legacy_pairing_advert()) {
         Recognition::Candidate { runtime_scope, .. } => runtime_scope,
         other => panic!("expected Candidate, got {other:?}"),
     };

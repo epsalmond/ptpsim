@@ -12,7 +12,8 @@ use camera_config::error::ConfigError;
 use camera_config::index::eval::{advert_matches, BleAdvertFacts};
 use camera_config::index::{
     AdvertByteSource, AdvertPredicate, AwaitSource, BleNotifyUntil, CccdMode, Confidence, Encoding,
-    PredicateOp, ResolvedManufacturerIndex, Signature, Step, StepValue, Transform,
+    PredicateOp, ReconnectDisposition, ResolvedManufacturerIndex, Signature, Step, StepValue,
+    Transform,
 };
 use camera_config::ConfigStore;
 
@@ -283,6 +284,63 @@ fn static_path_refs_substitute_in_signatures() {
 }
 
 #[test]
+fn awake_legacy_signature_uses_local_name_identity_without_fuji_mfg_data() {
+    let idx = real_index();
+    let gfx = idx.models.iter().find(|m| m.id == "gfx100ii").unwrap();
+    let Signature::BleAdvert(sig) = &gfx
+        .signatures
+        .iter()
+        .find(|(name, _)| name == "bleAwakeLegacyAdvert")
+        .unwrap()
+        .1;
+    let AdvertPredicate::All(children) = &sig.require else {
+        panic!("expected all-of predicate, got {:?}", sig.require);
+    };
+    assert_eq!(children.len(), 3);
+    assert!(matches!(
+        &children[0],
+        AdvertPredicate::ServiceUuids { contains }
+            if contains == "AF854C2E-B214-458E-97E2-912C4ECF2CB8"
+    ));
+    assert!(matches!(
+        &children[1],
+        AdvertPredicate::LocalName(name)
+            if name.contains.as_deref() == Some("GFX100II-")
+    ));
+    let AdvertPredicate::Not(no_fuji_mfg) = &children[2] else {
+        panic!("expected negated manufacturer-data predicate");
+    };
+    assert!(matches!(
+        &**no_fuji_mfg,
+        AdvertPredicate::ManufacturerData(mfg) if mfg.company_id == Some(0x04D8)
+    ));
+
+    assert!(!sig.discoverable);
+    assert_eq!(sig.capture.len(), 1);
+    let capture = &sig.capture[0];
+    assert_eq!(capture.source, AdvertByteSource::LocalName);
+    assert_eq!(capture.at, 0);
+    assert_eq!(capture.length, Some(4));
+    assert_eq!(capture.encoding, Encoding::Ascii);
+    assert_eq!(capture.name, "shortSerial");
+    assert_eq!(sig.scope.get("style").map(String::as_str), Some("legacy"));
+
+    let reconnect = sig.reconnect.as_ref().expect("awake route reconnects");
+    assert!(matches!(reconnect.disposition, ReconnectDisposition::Ready));
+    assert_eq!(reconnect.mechanism, "ble-reconnect");
+    assert_eq!(reconnect.identity, ["shortSerial"]);
+
+    let Signature::BleAdvert(pairing) = &gfx
+        .signatures
+        .iter()
+        .find(|(name, _)| name == "bleLegacyAdvert")
+        .unwrap()
+        .1;
+    assert!(pairing.discoverable);
+    assert!(pairing.reconnect.is_none());
+}
+
+#[test]
 fn unresolved_template_ref_is_a_load_error() {
     let yaml = r#"
 manufacturer: TESTCO
@@ -358,6 +416,7 @@ fn signatures_preserve_file_declaration_order() {
             "bleStartupLegacyAdvert",
             "bleStartupRedAdvert",
             "bleAwakeRedAdvert",
+            "bleAwakeLegacyAdvert",
             "bleLegacyAdvert",
             "bleRedAdvert",
         ],
