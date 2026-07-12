@@ -265,6 +265,12 @@ impl Ctx<'_> {
                 .map_err(err)?;
             self.simple_op(op::OPEN_SESSION, vec![1], step.tolerant)
                 .map_err(err)
+        } else if step.close_session.is_some() {
+            // Socket-role shutdown and the optional transport-close frame are
+            // host I/O responsibilities. The sans-I/O walker models the PTP
+            // CloseSession operation and resulting engine state.
+            self.simple_op(op::CLOSE_SESSION, vec![], step.tolerant)
+                .map_err(err)
         } else if let Some(aw) = &step.await_until {
             self.run_await_until(aw, step.tolerant, here)
         } else if let Some(lp) = &step.r#loop {

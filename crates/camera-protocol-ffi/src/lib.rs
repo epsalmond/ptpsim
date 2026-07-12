@@ -1110,12 +1110,15 @@ pub enum EntryStep {
     /// open a new socket to the connection's command port, replay the cached
     /// InitCommandRequest, and OpenSession again. Reuses the connection's cached
     /// identity, so the verb carries no parameters. Wire-confirmed for reference app
-    /// Get→Take, while Take→Get stays in-session after #103/#108.
+    /// Get→Take. Take→Get uses an outer connection re-establishment (#244).
     ReopenSession { tolerant: bool },
-    /// End the PTP/IP session. `keep_ap` means use the connection's
-    /// manifest-declared transport-close frame instead of a bare TCP close, so
-    /// the camera holds its Wi-Fi AP up across an in-place reopen (#82).
-    CloseSession { keep_ap: bool, tolerant: bool },
+    /// End the PTP/IP session. `transport_close` means use the connection's
+    /// manifest-declared orderly transport-close frame instead of a bare TCP
+    /// close. It does not promise immediate endpoint redialability.
+    CloseSession {
+        transport_close: bool,
+        tolerant: bool,
+    },
     /// Observe until `until` holds, running `on_each` each unsatisfied iteration —
     /// the PTP-IP await/poll-until verb (#29 postview, #42 AF), mirroring the BLE
     /// `bleAwaitUntil` contract (§11.16). [`source`](Self::AwaitUntil::source) is
@@ -1188,8 +1191,22 @@ pub enum FfiAwaitSource {
 pub struct ModeEntryPlan {
     pub to: String,
     pub from: Option<String>,
-    pub steps: Vec<EntryStep>,
-    pub user_instruction: Option<String>,
+    pub execution: ModeEntryExecution,
+}
+
+#[derive(Debug, uniffi::Enum)]
+pub enum ModeEntryExecution {
+    Ptp {
+        steps: Vec<EntryStep>,
+    },
+    ReestablishConnection {
+        connection: String,
+        exit_steps: Vec<EntryStep>,
+        establishment_params: Vec<KeyValue>,
+    },
+    UserInstruction {
+        instruction: String,
+    },
 }
 
 // ----------------------------------------------------------------------------
@@ -1501,7 +1518,7 @@ pub struct CameraInitiatedTransferInfo {
 pub struct TransportCloseInfo {
     /// The frame bytes to send.
     pub packet: Vec<u8>,
-    /// When to send it (e.g. `before-image-transfer-reopen`), if declared.
+    /// When to send it (e.g. `before-image-transfer-reestablishment`), if declared.
     pub when: Option<String>,
 }
 
@@ -1889,8 +1906,9 @@ impl ConfigStore {
             .map(String::from)
     }
 
-    /// The wire-action plan to enter `to` (optionally from a known mode — a cheaper
-    /// teardown-free switch). Steps, or a `user_instruction` when not app-driven.
+    /// The typed execution plan to enter `to`: current-session PTP steps, a manual
+    /// instruction, or an outer connection re-establishment followed by the cold
+    /// entry for `to`.
     pub fn mode_entry(
         &self,
         connection: String,
@@ -1899,11 +1917,34 @@ impl ConfigStore {
     ) -> Option<ModeEntryPlan> {
         let c = self.inner.manifest.connections.get(&connection)?;
         let e = c.entries.iter().find(|e| e.to == to && e.from == from)?;
+        let execution = match &e.execution {
+            cc::ModeEntryExecution::Ptp { steps } => ModeEntryExecution::Ptp {
+                steps: steps.iter().filter_map(map_step).collect(),
+            },
+            cc::ModeEntryExecution::ReestablishConnection(reestablish) => {
+                ModeEntryExecution::ReestablishConnection {
+                    connection,
+                    exit_steps: reestablish.exit_steps.iter().filter_map(map_step).collect(),
+                    establishment_params: reestablish
+                        .params
+                        .iter()
+                        .map(|(key, value)| KeyValue {
+                            key: key.clone(),
+                            value: value.clone(),
+                        })
+                        .collect(),
+                }
+            }
+            cc::ModeEntryExecution::UserInstruction { instruction } => {
+                ModeEntryExecution::UserInstruction {
+                    instruction: instruction.clone(),
+                }
+            }
+        };
         Some(ModeEntryPlan {
             to: e.to.clone(),
             from: e.from.clone(),
-            steps: e.steps.iter().filter_map(map_step).collect(),
-            user_instruction: e.user_instruction.clone(),
+            execution,
         })
     }
 
@@ -2414,7 +2455,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
     }
     if let Some(cs) = &s.close_session {
         return Some(EntryStep::CloseSession {
-            keep_ap: cs.keep_ap,
+            transport_close: cs.transport_close,
             tolerant,
         });
     }
@@ -2994,13 +3035,18 @@ mod tests {
         // An EntryStep that can't represent a step would silently DROP it; the
         // closeSession marker (#82) must survive map_step like reopenSession.
         let step = cc::Step {
-            close_session: Some(cc::CloseSession { keep_ap: true }),
+            close_session: Some(cc::CloseSession {
+                transport_close: true,
+            }),
             tolerant: true,
             ..Default::default()
         };
         match map_step(&step).expect("closeSession must not be dropped") {
-            EntryStep::CloseSession { keep_ap, tolerant } => {
-                assert!(keep_ap);
+            EntryStep::CloseSession {
+                transport_close,
+                tolerant,
+            } => {
+                assert!(transport_close);
                 assert!(tolerant);
             }
             _ => panic!("expected EntryStep::CloseSession"),

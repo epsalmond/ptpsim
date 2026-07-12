@@ -31,6 +31,13 @@ fn ids(cs: &[ConnectionInfo]) -> Vec<&str> {
     cs.iter().map(|c| c.id.as_str()).collect()
 }
 
+fn ptp_steps(plan: &ModeEntryPlan) -> &[EntryStep] {
+    match &plan.execution {
+        ModeEntryExecution::Ptp { steps } => steps,
+        other => panic!("expected PTP mode entry, got {other:?}"),
+    }
+}
+
 fn assert_bootstrap_tail_surfaces(steps: &[EntryStep]) {
     assert_no_gate_metadata_surfaces(steps);
     let d22b = steps
@@ -89,7 +96,7 @@ fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
             }
             | EntryStep::ReopenSession { tolerant: _ }
             | EntryStep::CloseSession {
-                keep_ap: _,
+                transport_close: _,
                 tolerant: _,
             } => {}
             EntryStep::AwaitUntil {
@@ -221,9 +228,9 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
     let plan = s
         .mode_entry("app".into(), None, "shooting/stills".into())
         .expect("live-view entry");
-    assert!(plan.user_instruction.is_none());
+    let steps = ptp_steps(&plan);
     // First step: SetProp 0xdf00 = 6 (the real live-view startup constant).
-    match &plan.steps[0] {
+    match &steps[0] {
         EntryStep::SetProp { prop, value, .. } => {
             assert_eq!(*prop, 0xdf00);
             assert_eq!(*value, 6);
@@ -231,7 +238,7 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
         other => panic!("expected SetProp, got {other:?}"),
     }
     // The 902B repeat survives the round-trip.
-    assert!(plan.steps.iter().any(|st| matches!(
+    assert!(steps.iter().any(|st| matches!(
         st,
         EntryStep::SendOp {
             op: 0x902b,
@@ -244,8 +251,10 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
     let usb = s
         .mode_entry("usb".into(), None, "raw-conv-backup-restore".into())
         .unwrap();
-    assert!(usb.user_instruction.is_some());
-    assert!(usb.steps.is_empty());
+    assert!(matches!(
+        usb.execution,
+        ModeEntryExecution::UserInstruction { .. }
+    ));
 }
 
 #[test]
@@ -501,13 +510,7 @@ fn property_payload_surfaces_d212_record_stream() {
 }
 
 #[test]
-fn take_to_get_entry_switches_in_session_without_reopen() {
-    // #103: the from-live-view image-transfer entry switches functionMode IN-SESSION
-    // — no reopenSession. The real GFX100 II refuses the reconnect after the
-    // transport-close (the `app` connection's commandListenerVolatile trait), so
-    // 0x1018 (TerminateOpenCapture) is followed by the 0xd212 read on the existing
-    // socket, then 0xDF01=0x14 (FunctionMode=Image-Import). The earlier reopen here
-    // was the misdiagnosed "image transfer downloads 0 files" bug.
+fn take_to_get_entry_reestablishes_with_image_import_launch() {
     let s = store();
     let plan = s
         .mode_entry(
@@ -516,32 +519,39 @@ fn take_to_get_entry_switches_in_session_without_reopen() {
             "image-transfer".into(),
         )
         .expect("from-Stills image-import entry");
+    let ModeEntryExecution::ReestablishConnection {
+        connection,
+        exit_steps,
+        establishment_params,
+    } = &plan.execution
+    else {
+        panic!("expected outer re-establishment, got {:?}", plan.execution);
+    };
+    assert_eq!(connection, "app");
+    assert_eq!(
+        establishment_params
+            .iter()
+            .find(|param| param.key == "launchMode")
+            .map(|param| param.value.as_str()),
+        Some("3")
+    );
     assert!(matches!(
-        plan.steps[0],
+        exit_steps[0],
         EntryStep::SendOp { op: 0x1018, .. }
     ));
-    assert!(
-        matches!(plan.steps[1], EntryStep::GetProp { prop: 0xd212, .. }),
-        "0x1018 is followed by the in-session 0xd212 read, not a reopen: {:?}",
-        plan.steps[1]
-    );
-    assert_bootstrap_tail_surfaces(&plan.steps);
-    assert!(
-        !plan
-            .steps
-            .iter()
-            .any(|st| matches!(st, EntryStep::ReopenSession { .. })),
-        "the take→get switch must stay in-session (#103)"
-    );
-    // The DF01=0x14 follow-up is still present (the prefix didn't get truncated).
-    assert!(plan.steps.iter().any(|st| matches!(
-        st,
-        EntryStep::SetProp {
-            prop: 0xdf01,
-            value: 0x14,
-            ..
+    assert!(matches!(
+        exit_steps[1],
+        EntryStep::CloseSession {
+            transport_close: true,
+            tolerant: false,
         }
-    )));
+    ));
+    assert_eq!(exit_steps.len(), 2);
+
+    let cold = s
+        .mode_entry("app".into(), None, "image-transfer".into())
+        .expect("cold image-transfer entry");
+    assert_bootstrap_tail_surfaces(ptp_steps(&cold));
 }
 
 #[test]
@@ -554,11 +564,12 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
             "shooting/stills".into(),
         )
         .expect("from-image-transfer live-view entry");
+    let steps = ptp_steps(&plan);
     assert!(matches!(
-        plan.steps[0],
+        steps[0],
         EntryStep::ReopenSession { tolerant: false }
     ));
-    assert!(plan.steps.iter().any(|st| matches!(
+    assert!(steps.iter().any(|st| matches!(
         st,
         EntryStep::SetProp {
             prop: 0xdf01,
@@ -566,7 +577,7 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
             ..
         }
     )));
-    assert!(plan.steps.iter().any(|st| matches!(
+    assert!(steps.iter().any(|st| matches!(
         st,
         EntryStep::SetProp {
             prop: 0xdf2a,
@@ -574,7 +585,7 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
             ..
         }
     )));
-    assert!(plan.steps.iter().any(|st| matches!(
+    assert!(steps.iter().any(|st| matches!(
         st,
         EntryStep::SendOp {
             op: 0x902b,
@@ -583,12 +594,11 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
         }
     )));
     assert!(matches!(
-        plan.steps.last(),
+        steps.last(),
         Some(EntryStep::SendOp { op: 0x101c, .. })
     ));
     assert!(
-        !plan
-            .steps
+        !steps
             .iter()
             .any(|st| matches!(st, EntryStep::SendOp { op: 0x1018, .. })),
         "Get→Take must not terminate a non-existent live-view stream"
@@ -605,9 +615,10 @@ fn d246_stills_video_edges_surface_through_ffi() {
             "shooting/video".into(),
         )
         .expect("stills→video selector");
-    assert_eq!(to_video.steps.len(), 1);
+    let to_video_steps = ptp_steps(&to_video);
+    assert_eq!(to_video_steps.len(), 1);
     assert!(matches!(
-        to_video.steps[0],
+        to_video_steps[0],
         EntryStep::SetProp {
             prop: 0xd246,
             value: 1,
@@ -622,9 +633,10 @@ fn d246_stills_video_edges_surface_through_ffi() {
             "shooting/stills".into(),
         )
         .expect("video→stills selector");
-    assert_eq!(to_stills.steps.len(), 1);
+    let to_stills_steps = ptp_steps(&to_stills);
+    assert_eq!(to_stills_steps.len(), 1);
     assert!(matches!(
-        to_stills.steps[0],
+        to_stills_steps[0],
         EntryStep::SetProp {
             prop: 0xd246,
             value: 0,
@@ -994,7 +1006,10 @@ fn runtime_param_slot_surfaces_through_ffi() {
             "image-transfer".into(),
         )
         .expect("from-Stills image-import entry");
-    match &plan.steps[0] {
+    let ModeEntryExecution::ReestablishConnection { exit_steps, .. } = &plan.execution else {
+        panic!("expected re-establishment, got {:?}", plan.execution);
+    };
+    match &exit_steps[0] {
         EntryStep::SendOp { op, params, .. } => {
             assert_eq!(*op, 0x1018);
             assert!(matches!(
@@ -1008,12 +1023,10 @@ fn runtime_param_slot_surfaces_through_ffi() {
         }
         other => panic!("expected SendOp 0x1018, got {other:?}"),
     }
-    // A tolerant vendor-prime op with literal params also round-trips.
-    assert!(plan.steps.iter().any(|st| matches!(
-        st,
+    assert!(exit_steps.iter().all(|step| !matches!(
+        step,
         EntryStep::SendOp {
-            op: 0x9053,
-            tolerant: true,
+            op: 0x9050 | 0x9053,
             ..
         }
     )));
@@ -1597,7 +1610,10 @@ fn socket_bindings_and_transport_close_surface_through_ffi() {
         .expect("transport-close query succeeds")
         .expect("app declares a transport-close");
     assert_eq!(tc.packet, vec![0x08, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
-    assert_eq!(tc.when.as_deref(), Some("before-image-transfer-reopen"));
+    assert_eq!(
+        tc.when.as_deref(),
+        Some("before-image-transfer-reestablishment")
+    );
     // A connection without one → Ok(None).
     assert!(s
         .transport_close("wireless-tether".into())

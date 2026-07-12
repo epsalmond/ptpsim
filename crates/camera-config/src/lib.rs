@@ -27,11 +27,12 @@ pub use model::{
     CloseSession, Connection, ConnectionTransition, Control, Descriptor, GateFailure,
     GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
     LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry,
-    ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssKnock, PostviewEvent,
-    Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow,
-    PropertyValueRow, RecordLayout, RecordMemberRef, SentinelFrame, SentinelMask, SequenceGate,
-    ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, TransferCompletion, TransportClose,
-    TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    ModeEntryExecution, ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssKnock,
+    PostviewEvent, Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile,
+    PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
+    ReestablishConnection, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
+    SocketBindings, SocketRole, Step, StepParam, TransferCompletion, TransportClose, TriggerMatch,
+    ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
@@ -273,12 +274,39 @@ impl CameraManifest {
                 }
             }
             for (i, entry) in conn.entries.iter().enumerate() {
-                check_gate_steps(
-                    &entry.steps,
-                    &format!("connection {id} entry {i}"),
-                    &defined_gates,
-                    &mut lints,
-                );
+                let ctx = format!("connection {id} entry {i}");
+                match &entry.execution {
+                    ModeEntryExecution::Ptp { steps } => {
+                        check_gate_steps(steps, &ctx, &defined_gates, &mut lints);
+                    }
+                    ModeEntryExecution::ReestablishConnection(reestablish) => {
+                        check_gate_steps(
+                            &reestablish.exit_steps,
+                            &format!("{ctx} exit"),
+                            &defined_gates,
+                            &mut lints,
+                        );
+                        if conn.establishment.is_none() {
+                            lints.push(Lint::warn(format!(
+                                "{ctx} reestablishes a connection with no establishment mechanism"
+                            )));
+                        }
+                        let cold = conn
+                            .entries
+                            .iter()
+                            .find(|candidate| candidate.to == entry.to && candidate.from.is_none());
+                        if !matches!(
+                            cold.map(|candidate| &candidate.execution),
+                            Some(ModeEntryExecution::Ptp { .. })
+                        ) {
+                            lints.push(Lint::warn(format!(
+                                "{ctx} requires a non-recursive cold PTP entry for '{}'",
+                                entry.to
+                            )));
+                        }
+                    }
+                    ModeEntryExecution::UserInstruction { .. } => {}
+                }
             }
             for (verb, action) in &conn.actions {
                 check_gate_steps(

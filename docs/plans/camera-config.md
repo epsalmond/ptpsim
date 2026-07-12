@@ -74,8 +74,12 @@ isn't.)
 6. **Modes are hierarchical paths** (`Shooting/Stills`) — for gate inheritance
    (prefix match), UI grouping, and `detect` attachment. A **mode graph** of
    action-bearing **mode-entry** edges (optionally `from`-qualified) describes
-   transitions; an edge carries **wire actions OR a user-instruction** (connection
-   switches usually can't be app-driven, only requested). A wire action is a closed
+   transitions; an edge carries exactly one typed execution: **PTP wire actions**,
+   a **user-instruction**, or an **outer connection re-establishment**. The last
+   form exits the old PTP session, replays the connection's existing establishment
+   plan with manifest-bound parameters, opens a fresh PTP session, and reuses the
+   target mode's cold entry; BLE and OS-network work never becomes a PTP step.
+   A wire action is a closed
    `Step` vocabulary — `setProp`/`getProp`/`readEcho`/`sendOp`, each with optional
    `tolerant` (a non-OK PTP *response* is logged + swallowed; only transport failure
    aborts) and `sendOp` `params` that are **literals or a named runtime slot**

@@ -5,7 +5,8 @@
 
 use camera_config::model::ReopenSession;
 use camera_config::{
-    ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, Predicate, Step, StepParam,
+    ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, ModeEntry, ModeEntryExecution,
+    Predicate, Step, StepParam,
 };
 use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
 use camera_sim::{
@@ -20,6 +21,10 @@ fn consolidated() -> CameraManifest {
         .join("../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml");
     CameraManifest::from_yaml(&std::fs::read_to_string(&p).unwrap())
         .unwrap_or_else(|e| panic!("consolidated loads: {e}"))
+}
+
+fn entry_steps(entry: &ModeEntry) -> &[Step] {
+    entry.ptp_steps().expect("PTP mode entry")
 }
 
 fn engine() -> Engine {
@@ -673,7 +678,7 @@ fn image_import_gate_advances_only_on_successful_replies() {
         code: 0x9054,
         response: 0x2005,
     });
-    walk_ptpip_in(&mut e, &cold.steps, &BTreeMap::new(), Some("app"))
+    walk_ptpip_in(&mut e, entry_steps(cold), &BTreeMap::new(), Some("app"))
         .expect("tolerant 0x9054 failure does not abort the entry");
     assert_no_response(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
 }
@@ -690,7 +695,7 @@ fn image_import_full_bootstrap_unlocks_count_and_handle_properties() {
         .find(|e| e.to == "image-transfer" && e.from.is_none())
         .expect("cold image-transfer entry");
     let mut e = engine();
-    walk_ptpip_in(&mut e, &cold.steps, &BTreeMap::new(), Some("app"))
+    walk_ptpip_in(&mut e, entry_steps(cold), &BTreeMap::new(), Some("app"))
         .expect("full bootstrap entry succeeds");
 
     let count = data_of(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
@@ -785,7 +790,7 @@ fn reopen_session_is_refused_over_a_volatile_listener_connection() {
 
     // Over `app` (commandListenerVolatile: true) from streaming → refused.
     let mut e = engine();
-    walk_ptpip_in(&mut e, &live.steps, &BTreeMap::new(), Some("app"))
+    walk_ptpip_in(&mut e, entry_steps(live), &BTreeMap::new(), Some("app"))
         .expect("live-view entry reaches streaming");
     assert!(matches!(e.phase(), Phase::Streaming));
     let err = walk_ptpip_in(&mut e, &reopen, &BTreeMap::new(), Some("app")).unwrap_err();
@@ -802,11 +807,7 @@ fn reopen_session_is_refused_over_a_volatile_listener_connection() {
 }
 
 #[test]
-fn live_view_to_image_transfer_switches_in_session() {
-    // #103 fix: the live-view → image-transfer transition runs over the existing
-    // :55740 socket with NO reopenSession — the only flow the camera accepts. If a
-    // reopen were (re-)added, the oracle above would refuse it over the `app`
-    // connection and this end-to-end walk would fail.
+fn live_view_to_image_transfer_reestablishes_then_runs_cold_entry() {
     let m = consolidated();
     let app = &m.connections["app"];
     let live = app
@@ -819,18 +820,40 @@ fn live_view_to_image_transfer_switches_in_session() {
         .iter()
         .find(|e| e.to == "image-transfer" && e.from.as_deref() == Some("shooting/stills"))
         .expect("live-view → image-transfer transition");
-    assert!(
-        xfer.steps.iter().all(|s| s.reopen_session.is_none()),
-        "the transition must switch in-session, not reopen (#103)"
+    let reestablish = match &xfer.execution {
+        ModeEntryExecution::ReestablishConnection(plan) => plan,
+        other => panic!("expected re-establishment, got {other:?}"),
+    };
+    assert_eq!(
+        reestablish.params.get("launchMode").map(String::as_str),
+        Some("3")
     );
 
-    // Run live-view bring-up then the transition as one in-session walk over `app`.
-    let mut steps = live.steps.clone();
-    steps.extend(xfer.steps.clone());
-    let mut e = engine();
+    // The old session only runs the exit plan; no cold vendor bootstrap is sent
+    // until a fresh PTP session exists.
+    let mut old = engine();
     let params = BTreeMap::from([("openCaptureTxId".to_string(), "1".to_string())]);
-    walk_ptpip_in(&mut e, &steps, &params, Some("app"))
-        .expect("in-session live-view → image-transfer flow runs end-to-end");
+    walk_ptpip_in(&mut old, entry_steps(live), &params, Some("app"))
+        .expect("live-view entry reaches streaming");
+    walk_ptpip_in(&mut old, &reestablish.exit_steps, &params, Some("app"))
+        .expect("old session exits orderly");
+    assert!(matches!(old.phase(), Phase::Closed));
+    assert!(reestablish
+        .exit_steps
+        .iter()
+        .all(|step| { !matches!(step.send_op.as_deref(), Some("0x9050" | "0x9053")) }));
+
+    let cold = app
+        .entries
+        .iter()
+        .find(|entry| entry.to == "image-transfer" && entry.from.is_none())
+        .expect("cold image-transfer entry");
+    let mut fresh = engine();
+    walk_ptpip_in(&mut fresh, entry_steps(cold), &BTreeMap::new(), Some("app"))
+        .expect("fresh session runs cold image-transfer bootstrap");
+    let handles = data_of(fresh.on_operation(&req(0x1015, 1, vec![0xd621]), None));
+    let mut reader = Reader::new(&handles);
+    assert!(!reader.ptp_array(|r| r.u32()).unwrap().is_empty());
 }
 
 #[test]
@@ -851,16 +874,16 @@ fn image_transfer_to_live_view_reopens_then_streams() {
         .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
         .expect("image-transfer → live-view entry");
     assert!(
-        live.steps[0].reopen_session.is_some(),
+        entry_steps(live)[0].reopen_session.is_some(),
         "Get→Take begins with the reconnect observed in reference app"
     );
 
     let mut e = engine();
-    walk_ptpip_in(&mut e, &xfer.steps, &BTreeMap::new(), Some("app"))
+    walk_ptpip_in(&mut e, entry_steps(xfer), &BTreeMap::new(), Some("app"))
         .expect("cold image-transfer entry runs");
     assert!(matches!(e.phase(), Phase::ImageImport));
 
-    walk_ptpip_in(&mut e, &live.steps, &BTreeMap::new(), Some("app"))
+    walk_ptpip_in(&mut e, entry_steps(live), &BTreeMap::new(), Some("app"))
         .expect("image-transfer → live-view edge runs");
     assert!(matches!(e.phase(), Phase::Streaming));
 }
@@ -888,11 +911,11 @@ fn d246_stills_video_selector_keeps_live_view_streaming() {
         .expect("video → stills entry");
 
     let mut e = engine();
-    walk_ptpip_in(&mut e, &live.steps, &BTreeMap::new(), Some("app"))
+    walk_ptpip_in(&mut e, entry_steps(live), &BTreeMap::new(), Some("app"))
         .expect("live-view entry reaches streaming");
     assert!(matches!(e.phase(), Phase::Streaming));
 
-    walk_ptpip_in(&mut e, &to_video.steps, &BTreeMap::new(), Some("app"))
+    walk_ptpip_in(&mut e, entry_steps(to_video), &BTreeMap::new(), Some("app"))
         .expect("D246 stills→video selector runs");
     assert!(matches!(e.phase(), Phase::Streaming));
     assert_eq!(
@@ -901,8 +924,13 @@ fn d246_stills_video_selector_keeps_live_view_streaming() {
         "D246=1 after selecting video"
     );
 
-    walk_ptpip_in(&mut e, &to_stills.steps, &BTreeMap::new(), Some("app"))
-        .expect("D246 video→stills selector runs");
+    walk_ptpip_in(
+        &mut e,
+        entry_steps(to_stills),
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("D246 video→stills selector runs");
     assert!(matches!(e.phase(), Phase::Streaming));
     assert_eq!(
         data_of(e.on_operation(&req(0x1015, 101, vec![0xd246]), None)),

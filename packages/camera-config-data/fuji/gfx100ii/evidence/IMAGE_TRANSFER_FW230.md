@@ -7,8 +7,8 @@
 
 ## TL;DR
 
-reference app's "Get" / Photo-View / image-import flow uses **standard PTP 1.1 opcodes** over the existing
-55740 control socket, after switching to **inner function mode 20** (image-import) with version 3
+reference app's "Get" / Photo-View / image-import flow uses **standard PTP 1.1 opcodes** over a fresh
+55740 control socket, after BLE relaunch and switching to **inner function mode 20** (image-import) with version 3
 (`Fpcsh_VersionRemotePhotoViewEx = 0xDF28`). Per image, reference app pairs a `GetObjectInfo (0x1008)` →
 `GetThumb (0x100A)` to enumerate. To actually download a selected image, it uses
 `GetPartialObject (0x101B)` in **12 MB chunks**.
@@ -27,7 +27,8 @@ In v6 we captured:
 > below. App control-flow evidence maps that interval to an image-import launch;
 > the raw BLE launch write was not captured. The PTP bootstrap, vendor-prime
 > payloads, enumeration results, and transport teardown remain valid. The current
-> manifest's Take-to-Get edge is being reconciled separately in #244.
+> manifest's Take-to-Get edge therefore models a full outer re-establishment in
+> #244 rather than replaying the cold bootstrap on the old session.
 
 ## Captured cold-session enumeration and corrected outer lifecycle
 
