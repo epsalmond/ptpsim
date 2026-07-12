@@ -697,9 +697,10 @@ pub struct Connection {
     /// Fuji command port + `+1`/`+2` offsets.
     #[serde(default)]
     pub bindings: Option<SocketBindings>,
-    /// The transport-close frame this connection sends before ending a command
-    /// transport, if it needs one (#140). Companion to
-    /// `command_listener_volatile`; it does not by itself guarantee redialability.
+    /// An optional transport-close frame for the lifecycle context named by
+    /// [`TransportClose::when`] (#140). It is not a generic teardown frame and
+    /// does not by itself guarantee redialability. Companion to
+    /// `command_listener_volatile`.
     #[serde(default)]
     pub transport_close: Option<TransportClose>,
     /// PCSS LAN discovery/callback parameters for wireless tethering.

@@ -21,12 +21,13 @@ In v6 we captured:
 
 > **Lifecycle correction (2026-07-11, ptpsim #243/#244).** The earlier
 > PTP-only reading incorrectly inferred that reference app kept the same camera-Wi-Fi
-> association and merely redialed `:55740`. The complete v6 sidecar shows an
-> orderly PTP/IP close, disassociation from the camera AP, a later BLE-side image
-> import launch, camera-AP re-association and DHCP, then the fresh command
-> session documented below. The PTP bootstrap, vendor-prime payloads, enumeration
-> results, and transport teardown remain valid. The current manifest's
-> Take-to-Get edge is being reconciled separately in #244.
+> association and merely redialed `:55740`. The complete v6 sidecar directly
+> shows an orderly PTP/IP close, camera-AP disassociation, later camera GATT
+> activity, AP re-association and DHCP, then the fresh command session documented
+> below. App control-flow evidence maps that interval to an image-import launch;
+> the raw BLE launch write was not captured. The PTP bootstrap, vendor-prime
+> payloads, enumeration results, and transport teardown remain valid. The current
+> manifest's Take-to-Get edge is being reconciled separately in #244.
 
 ## Captured cold-session enumeration and corrected outer lifecycle
 
