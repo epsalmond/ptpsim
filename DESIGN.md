@@ -947,9 +947,6 @@ polling each instance's `/healthz` instead of vcam's mechanism. The
 NATS/KV/lease contract is unchanged and stays in client application. The `/healthz`
 response shape below is the contract the sidecar depends on.
 
-The agent-paste handoff for that client application-side cutover lives at
-[`docs/handoff-client application-vcam-agent.md`](docs/handoff-client application-vcam-agent.md).
-
 ## Scriptability
 
 Scriptability is required for tests, review support, demos, and protocol
@@ -1145,11 +1142,9 @@ The app uses manifests for:
 The app must not share responder state machines. It may share parser/serializer
 tests and manifest compatibility queries.
 
-Agent-paste handoffs for the Apple-side tracks:
+Agent-paste handoff for the Apple-side track:
 [`docs/handoff-ios-agent.md`](docs/handoff-ios-agent.md) (production app
-adopting the manifest/FFI) and
-[`docs/handoff-client application-ios-integration-tests.md`](docs/handoff-client application-ios-integration-tests.md)
-(iOS integration tests against a local `camera-sim-service`).
+adopting the manifest/FFI).
 
 ## Relationship To The Fixture TUI
 

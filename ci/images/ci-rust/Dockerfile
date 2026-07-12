@@ -1,9 +1,9 @@
 # CI toolchain image for the rust workspace + python-wheel steps.
 # Bakes everything those steps previously installed per-run (rustfmt/clippy
 # components, gh, git, python venv with wheel build deps) so a pipeline step
-# starts compiling immediately. Rebuilt by .woodpecker/ci-images.yml when
-# ci/images/** changes, or via a manual pipeline trigger to pick up a new
-# rustc (which costs one cold cargo-cache run downstream).
+# starts compiling immediately. This repo defines only the portable recipe;
+# building and publishing it is the deployment owner's CI, which supplies the
+# result to .woodpecker/linux.yml via RUST_TOOLCHAIN_IMAGE.
 FROM rust:1-slim
 
 RUN rustup component add rustfmt clippy

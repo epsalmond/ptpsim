@@ -1,7 +1,8 @@
 # CI toolchain image for the android-libs step: cimg's Android SDK+NDK plus
 # the Rust cross-toolchain that step previously installed per-run (~7 min of
-# rustup + cargo-ndk on every pipeline). Rebuilt by .woodpecker/ci-images.yml
-# when ci/images/** changes, or via a manual pipeline trigger.
+# rustup + cargo-ndk on every pipeline). This repo defines only the portable
+# recipe; building and publishing it is the deployment owner's CI, which
+# supplies the result to .woodpecker/linux.yml via ANDROID_TOOLCHAIN_IMAGE.
 FROM cimg/android:2026.03.1-ndk
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
