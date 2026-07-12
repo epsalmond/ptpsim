@@ -1445,3 +1445,46 @@ fn ble_await_until_validation_rejects_bad_forms() {
         "got: {err}"
     );
 }
+
+#[test]
+fn post_exit_readiness_rejects_acquire_firmware() {
+    // The gate is a fixed sequence: §11.5 firmware tiering applies to `steps`
+    // only, and executors walk the gate without a refinement context — reject
+    // at parse time rather than silently skipping refinement at run time.
+    // Nested inside `if.then` to prove the guard recurses into branches.
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        statusChar: "0000CC09-0000-1000-8000-00805F9B34FB"
+      advert: { manufacturerCompanyId: 1 }
+      establishments:
+        test:
+          mechanism: test
+          postExitReadiness:
+            - if:
+                condition: { style: { eq: legacy } }
+                then:
+                  - acquireFirmware:
+                      from: { bleAdvert: { offset: 0, length: 1, encoding: u8 } }
+          steps:
+            - bleConnect: {}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let err = ResolvedManufacturerIndex::from_yaml(yaml).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("acquireFirmware is not allowed in postExitReadiness"),
+        "got: {msg}"
+    );
+    assert!(
+        msg.contains("postExitReadiness[0].then[0]"),
+        "path names the nested step: {msg}"
+    );
+}

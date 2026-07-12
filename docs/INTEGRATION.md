@@ -333,9 +333,53 @@ after `reconnectPolicy.scanTimeoutMs` and surface unavailable/retry UI. Startup 
 already-paired signatures can be reconnect-only, so they do not appear in normal
 `recognize` results.
 
-### 9.3 The 13-verb Step grammar
+### 9.3 Walking plans — the Rust executor
 
-You build a small dispatcher; the verbs come from the FFI. Each carries
+The engine walks its own plans (#246). Implement two small foreign traits and
+hand them to the executor entry points; Rust owns plan walking,
+capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
+`if`/`replaceTail`, and the per-step telemetry stream:
+
+- `BleExecutorTransport` (a `with_foreign` async trait) — raw I/O only:
+  `connect` / `awaitDisconnect` / `requestMtu` / `ensureServicesDiscovered` /
+  `read` / `write` / `subscribe` / `nextNotification` / `sleep`.
+  `awaitDisconnect` resolves when the connected peer drops the link and may
+  pend indefinitely — the executor races it against the step's manifest
+  `timeoutMs`.
+- `StepObserver` — receives the `StepReport` outcome stream: `Started` plus
+  exactly one terminal (`Succeeded` / `Tolerated` / `Failed`) per step at every
+  nesting level, with a `stepPath` position path (`steps[3].bleWrite`,
+  `steps[5].if.then[0].bleRead`). Map it onto your telemetry bus.
+
+| call | walks |
+|---|---|
+| `runEstablishment(store, planHandle, transport, observer, initialScope, initialEncodings, runtimeParams)` | the plan's `steps`, including §11.5 `acquireFirmware` refinement. `initialScope` / `initialEncodings` are the `Candidate`'s `runtimeScope` / `runtimeScopeEncodings` — thread both verbatim so a `{ captured: … }` write-back re-encodes with the capture's true encoding instead of an app-side guess (#43). |
+| `runBleAction(store, model, action, transport, observer, initialScope, runtimeParams)` | a named BLE-native control action (#91) over an already-established link; no refinement. |
+| `runPostExitReadiness(store, planHandle, transport, observer, initialScope, initialEncodings, runtimeParams)` | the plan's `postExitReadiness` gate. Run it after an orderly feature exit, before replaying `runEstablishment`. A plan whose establishment declares no gate returns immediately with `stepsRun == 0` and touches no I/O; a handle with no establishment at all is `UnknownPlan`, same as `runEstablishment`. |
+
+Two transport contracts carry the correctness load:
+
+- **Notification buffering.** `subscribe` succeeds on the CCCD descriptor-write
+  ack, and from that moment the transport must buffer every notification on
+  that characteristic (per-characteristic FIFO) until consumed via
+  `nextNotification`. Acceptance logic (until-predicates, seed-read routing)
+  lives in the executor — a payload arriving between subscribe and the first
+  `nextNotification` call must not be lost. `nextNotification` may stay pending
+  indefinitely; the executor owns every deadline (including a backstop on each
+  transport verb, so a silently-stalled transport cannot hang a walk).
+- **The host clock.** `sleep(ms)` resolves after `ms` milliseconds of
+  wall-clock time. The executor races I/O futures against it for timeouts and
+  retry backoff, so the library carries no async runtime of its own.
+  Cancellation propagates both ways: when a deadline lapses — or your app
+  cancels the whole walk — the dropped Rust future cancels the corresponding
+  foreign task through the generated bindings, so make each transport method
+  cancellation-safe.
+
+### 9.4 The 13-verb Step grammar (reference; legacy dispatcher)
+
+The executor implements this grammar for you — read this section as the verb
+reference. It is also the contract for the legacy alternative, a hand-built
+app-side dispatcher, if you cannot adopt the executor path. Each verb carries
 `StepOptions { tolerant, retries, retryDelayMs }` — wrap each verb body in one
 retry loop and the same code handles all of them.
 
@@ -355,7 +399,7 @@ retry loop and the same code handles all of them.
 | `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. |
 | `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |
 
-### 9.4 StepValue resolution
+### 9.5 StepValue resolution
 
 | variant | bytes by |
 |---|---|
@@ -388,13 +432,13 @@ machine is backed by
 
 clients do not add a post-registration power-property gate.
 
-### 9.5 Zero camera knowledge in app source
+### 9.6 Zero camera knowledge in app source
 
 If you find yourself hardcoding a UUID, byte literal, or Fuji-specific behaviour
 in app source, something's wrong on the ptpsim side — flag it. The whole point of
 the pull model is that the app source is identical with one manifest or fifty.
 
-### 9.6 Out of scope (queued for P2+)
+### 9.7 Out of scope (queued for P2+)
 
 USB / mDNS / TCP / UDP / WiFi-join verbs and their I/O primitives.
 `promptableModels()`. The `dev-direct` assertive PTP/IP flow. Full PTP session

@@ -15,6 +15,11 @@ use cc::parse_hex_code;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+pub mod executor;
+pub use executor::{
+    run_ble_action, run_establishment, run_post_exit_readiness, BleExecutorTransport,
+    ExecutionOutcome, ExecutorError, StepObserver, StepOutcome, StepReport, TransportError,
+};
 pub mod mfg_index;
 pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,

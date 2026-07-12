@@ -17,8 +17,15 @@ ptp-core = { workspace = true }
 uniffi = "0.31"
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+regex-lite = { workspace = true }
 
 [dev-dependencies]
 # The codec seam tests build byte fixtures with the same primitives the FFI wraps.
 ptp-core = { workspace = true }
 protocol-primitives = { workspace = true }
+# The executor seam tests drive the async plan-walker against the same
+# in-memory BLE responder the reference walker's acceptance tests use.
+camera-sim = { workspace = true }
+futures = { workspace = true }

@@ -1,5 +1,11 @@
 # G4 — `camera-protocol-ffi` surface design (the iOS/macOS seam)
 
+> **Partially superseded (2026-07-12, #246):** the app-side plan-walking this
+> sketch assumes ("app sends bytes" dispatcher loops) is now the legacy path —
+> the executor entry points (`runEstablishment` / `runBleAction` /
+> `runPostExitReadiness`) walk plans engine-side over foreign async traits.
+> See `docs/INTEGRATION.md` §9.3. The seam-shape decisions below still stand.
+
 Status: design sketch for review, 2026-05-26. The artifact whose job is **"design
 the seam so adding wireless-tether/USB later is data + app I/O, never a re-port."**
 Grounded in the `camera-config` query API (query.rs/store.rs) + the 5-connection

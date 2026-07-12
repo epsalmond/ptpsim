@@ -88,11 +88,20 @@ pub enum Recognition {
     /// Exactly one model + connection identified. `runtime_scope` carries
     /// every fact the signature derived (style, key bytes, etc.). App feeds
     /// it verbatim into `establishment(...)` as `initial_scope`.
+    /// `runtime_scope_encodings` names the encoding each advert *capture*
+    /// decoded with (`key` = capture name, `value` = encoding token) — the
+    /// executor threads it back through `run_establishment` so a later
+    /// `{ captured: … }` write-back re-encodes by the real encoding instead
+    /// of a scope-string guess (#43). The same capture name can carry a
+    /// different encoding per signature (legacy `pairingKeyBytes` is
+    /// `bytes-le`, RED's is `ascii`), so this rides with the match rather
+    /// than being derivable from the model.
     Candidate {
         model: String,
         connection: String,
         confidence: Confidence,
         runtime_scope: Vec<KeyValue>,
+        runtime_scope_encodings: Vec<KeyValue>,
     },
     /// Multiple models matched the same signature (e.g. an advert that
     /// fits several Fuji bodies). The FFI does NOT auto-pick — the app
@@ -804,11 +813,19 @@ pub fn recognize_ble(
                 .into_iter()
                 .map(|(key, value)| KeyValue { key, value })
                 .collect();
+            let runtime_scope_encodings = ix::eval::advert_capture_encodings(sig)
+                .into_iter()
+                .map(|(key, encoding)| KeyValue {
+                    key,
+                    value: encoding.as_token().to_string(),
+                })
+                .collect();
             Recognition::Candidate {
                 model: model_id.clone(),
                 connection: sig.suggests.connection.clone(),
                 confidence: confidence_from(sig.suggests.confidence),
                 runtime_scope,
+                runtime_scope_encodings,
             }
         }
         _ => {

@@ -741,6 +741,26 @@ pub enum Encoding {
 }
 
 impl Encoding {
+    /// Inverse of [`Self::as_token`] — resolve an authored token.
+    pub fn from_token(s: &str) -> Option<Self> {
+        match s {
+            "utf8" => Some(Encoding::Utf8),
+            "utf8-cstring" => Some(Encoding::Utf8Cstring),
+            "ascii" => Some(Encoding::Ascii),
+            "bytes" => Some(Encoding::Bytes),
+            "bytes-raw" => Some(Encoding::BytesRaw),
+            "bytes-le" => Some(Encoding::BytesLe),
+            "bytes-be" => Some(Encoding::BytesBe),
+            "u8" => Some(Encoding::U8),
+            "u32" => Some(Encoding::U32),
+            "u16-le" => Some(Encoding::U16Le),
+            "u16-be" => Some(Encoding::U16Be),
+            "u32-le" => Some(Encoding::U32Le),
+            "u32-be" => Some(Encoding::U32Be),
+            _ => None,
+        }
+    }
+
     /// Identifying token as authored in YAML.
     pub fn as_token(self) -> &'static str {
         match self {

@@ -303,6 +303,7 @@ fn legacy_advert_recognised_as_gfx100ii_with_legacy_style() {
             connection,
             confidence,
             runtime_scope,
+            ..
         } => {
             assert_eq!(model, "gfx100ii");
             assert_eq!(connection, "ble");

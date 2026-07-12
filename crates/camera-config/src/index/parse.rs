@@ -431,10 +431,9 @@ fn validate_establishment(
     mechanism: &str,
 ) -> Result<(), ConfigError> {
     for (i, step) in est.post_exit_readiness.iter().enumerate() {
-        validate_step(
-            step,
-            &format!("models.{model_id}.establishments.{mechanism}.postExitReadiness[{i}]"),
-        )?;
+        let path = format!("models.{model_id}.establishments.{mechanism}.postExitReadiness[{i}]");
+        validate_step(step, &path)?;
+        forbid_acquire_firmware(step, &path)?;
     }
     for (i, step) in est.steps.iter().enumerate() {
         validate_step(
@@ -490,6 +489,39 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
     // signature validation; nothing further here for steps in MVP.
     let _ = step.verb_name();
     Ok(())
+}
+
+/// `postExitReadiness` is a fixed replayability gate: §11.5 firmware tiering
+/// (`acquireFirmware` → `refineEstablishment` tail splice) applies to `steps`
+/// only, and executors walk the gate without a refinement context — an
+/// `acquireFirmware` here would bind firmware and then silently skip the
+/// refinement it exists to trigger. Reject it at parse time instead.
+fn forbid_acquire_firmware(step: &Step, path: &str) -> Result<(), ConfigError> {
+    match step {
+        Step::AcquireFirmware(_) => Err(ConfigError::Validation {
+            path: path.to_string(),
+            message: "acquireFirmware is not allowed in postExitReadiness \
+                      (firmware tiering applies to steps only)"
+                .to_string(),
+        }),
+        Step::Acquire(s) => forbid_acquire_firmware(&s.from, &format!("{path}.from")),
+        Step::If(s) => {
+            for (i, inner) in s.then.iter().enumerate() {
+                forbid_acquire_firmware(inner, &format!("{path}.then[{i}]"))?;
+            }
+            for (i, inner) in s.else_branch.iter().enumerate() {
+                forbid_acquire_firmware(inner, &format!("{path}.else[{i}]"))?;
+            }
+            Ok(())
+        }
+        Step::BleAwaitUntil(s) => {
+            for (i, inner) in s.on_each.iter().enumerate() {
+                forbid_acquire_firmware(inner, &format!("{path}.onEach[{i}]"))?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 // ---------------------------------------------------------------------------
