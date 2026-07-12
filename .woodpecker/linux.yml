@@ -1,6 +1,6 @@
 # Linux workflow — runs on Docker-backend Linux agents.
 # Pure-Rust workspace (no openssl/ring/native deps), so rust:1-slim suffices.
-# Image push and python wheel publish are gated on main+push.
+# Release artifact publication is gated on main+push.
 #
 # Without the platform label this workflow has no agent constraint and can
 # land on the macOS local-backend agent, which would fail at `git lfs`
@@ -65,59 +65,6 @@ steps:
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets
       - cargo test --workspace
-
-
-
-  # Reaches the registry via WOODPECKER_BACKEND_DOCKER_NETWORK on the agent
-  # (per-step network_mode was dropped in Woodpecker 3.x).
-  # depends_on: [workspace] keeps it from blocking python-wheel when local
-  # registry auth fails — they're independent artifacts.
-  - name: image
-    image: woodpeckerci/plugin-docker-buildx
-    privileged: true
-    # pull: a rebuilt plugin/base image is never shadowed by a stale local copy.
-    pull: true
-    depends_on: [workspace]
-    # Ephemeral dind (no persistent /dind volume): a force-killed run can't leave
-    # a stale buildx `builder` behind to wedge the next build's `buildx create`
-    # with "buildkitd.sock: connection refused" (the plugin takes no pre-step
-    # `docker buildx rm` command). Cross-run layer caching still comes from the
-    # registry cache_images below — the local /dind cache was only an extra on
-    # top, and it's what persisted the zombie builder across the kill.
-    settings:
-      registry: ${LOCAL_DOCKER_REGISTRY}
-      repo: ${LOCAL_DOCKER_REGISTRY}/ptpsim
-      # Registry resolution inside steps rides the traefik network alias on
-
-      # internal-dns serves only the internal zones, so pointing the inner
-      # dockerd at it breaks public pulls (docker.io SERVFAILs).
-      username:
-        from_secret: local_registry_username
-      password:
-        from_secret: local_registry_password
-      tags:
-        - latest
-        - sha-${CI_COMMIT_SHA:0:8}
-      platforms: linux/amd64,linux/arm64
-      # Registry layer cache (mode=max): with the cargo-chef dep layer in
-      # the Dockerfile, code-only changes recompile workspace crates only —
-      # including the arm64/QEMU build.
-      cache_images:
-        - ${LOCAL_DOCKER_REGISTRY}/ptpsim:buildcache
-    when:
-      branch: main
-      event: push
-      path:
-        - 'crates/**'
-        - 'services/**'
-        - 'tools/camera-simctl/**'
-        - 'packages/camera-config-data/**'
-        - 'packages/fixtures/**'
-        - 'Cargo.toml'
-        - 'Cargo.lock'
-        - 'rust-toolchain.toml'
-        - 'Dockerfile'
-        - '.woodpecker/linux.yml'
 
   # Tar packages/camera-config-data/ and attach to the same sha-<8> release
   # as the xcframework + wheel. Decouples manifest-data delivery from the

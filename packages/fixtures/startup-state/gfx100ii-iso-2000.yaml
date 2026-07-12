@@ -1,0 +1,5 @@
+schema: ptpsim-startup-state/v1
+profile: fuji/gfx100ii
+connection: app
+props:
+  "0xd02a": 2000

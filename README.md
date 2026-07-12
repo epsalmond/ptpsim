@@ -7,6 +7,9 @@ tooling such as `camera-protocol-mapper`.
 
 See [`DESIGN.md`](DESIGN.md) for the full design.
 
+The deployable `camera-sim-service` container contract is documented in
+[`docs/CONTAINER.md`](docs/CONTAINER.md).
+
 ## Layout
 
 ```

@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+host="${1:-127.0.0.1}"
+port="${2:-8080}"
+path="${3:-/healthz}"
+expected="${4:-\"ok\":true}"
+
+exec 3<>"/dev/tcp/$host/$port"
+printf 'GET %s HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' "$path" >&3
+response="$(cat <&3)"
+[[ "$response" == *' 200 '* && "$response" == *"$expected"* ]]

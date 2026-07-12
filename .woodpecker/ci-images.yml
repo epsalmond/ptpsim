@@ -15,9 +15,13 @@ labels:
   trust: unprivileged
 
 when:
-  - event: [push, manual]
+  - event: push
     branch: main
     path: ['ci/images/**', '.woodpecker/ci-images.yml']
+  # A maintainer may seed a new immutable toolchain tag from its feature branch
+  # before a Dockerfile starts consuming it. Manual runs still build every
+  # image, which also verifies that the existing recipes remain reproducible.
+  - event: manual
 
 steps:
   - name: ci-rust
