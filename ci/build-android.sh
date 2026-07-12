@@ -17,7 +17,8 @@
 #   - cargo-ndk (wraps cargo build with the right NDK toolchain per ABI)
 #   - Android NDK (ANDROID_NDK_HOME set, OR auto-discovered via cargo-ndk)
 #   - kotlinc + zip (compile the .kt to classes.jar, assemble the .aar)
-#   - a JNA jar ($JNA_JAR) + android.jar (from $ANDROID_HOME/$ANDROID_SDK_ROOT)
+#   - JNA ($JNA_JAR), kotlinx-coroutines ($KOTLINX_COROUTINES_JAR), and
+#     android.jar (from $ANDROID_HOME/$ANDROID_SDK_ROOT)
 #
 # The .aar (#74) wraps classes.jar + AndroidManifest.xml + jni/<abi>/*.so in an
 # Android-Archive zip. The ci-android image carries kotlinc + a JNA jar for this;
@@ -34,6 +35,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-${ROOT}/out}"
 PROFILE="${PROFILE:-release}"
+# Set to 1 for the PR seam: generate and compile host Kotlin bindings without
+# building Android native libraries or assembling a release AAR.
+KOTLIN_BINDINGS_CHECK_ONLY="${KOTLIN_BINDINGS_CHECK_ONLY:-0}"
 SHA8="$(cd "${ROOT}" && git rev-parse --short=8 HEAD 2>/dev/null || echo dev)"
 
 CRATE="camera-protocol-ffi"
@@ -58,23 +62,34 @@ require() {
     }
 }
 require cargo
-require rustup
-require cargo-ndk
 require kotlinc
-require zip
-require shasum
 
-for t in "${!ABIS[@]}"; do
-    if ! rustup target list --installed | grep -qx "${t}"; then
-        echo "FATAL: rustup target '${t}' not installed." >&2
-        echo "       Run: rustup target add ${!ABIS[*]}" >&2
+case "${KOTLIN_BINDINGS_CHECK_ONLY}" in
+    0 | 1) ;;
+    *)
+        echo "FATAL: KOTLIN_BINDINGS_CHECK_ONLY must be 0 or 1" >&2
         exit 1
-    fi
-done
+        ;;
+esac
 
-if [[ -z "${ANDROID_NDK_HOME:-}" && -z "${ANDROID_NDK_ROOT:-}" ]]; then
-    echo "WARN: ANDROID_NDK_HOME / ANDROID_NDK_ROOT not set — cargo-ndk will" >&2
-    echo "      try to auto-discover. If it can't, set ANDROID_NDK_HOME and rerun." >&2
+if [[ "${KOTLIN_BINDINGS_CHECK_ONLY}" == 0 ]]; then
+    require rustup
+    require cargo-ndk
+    require zip
+    require shasum
+
+    for t in "${!ABIS[@]}"; do
+        if ! rustup target list --installed | grep -qx "${t}"; then
+            echo "FATAL: rustup target '${t}' not installed." >&2
+            echo "       Run: rustup target add ${!ABIS[*]}" >&2
+            exit 1
+        fi
+    done
+
+    if [[ -z "${ANDROID_NDK_HOME:-}" && -z "${ANDROID_NDK_ROOT:-}" ]]; then
+        echo "WARN: ANDROID_NDK_HOME / ANDROID_NDK_ROOT not set — cargo-ndk will" >&2
+        echo "      try to auto-discover. If it can't, set ANDROID_NDK_HOME and rerun." >&2
+    fi
 fi
 
 # .aar wrapping needs a JNA jar to compile the JNA-based uniffi bindings against.
@@ -84,6 +99,26 @@ if [[ -z "${JNA_JAR:-}" || ! -f "${JNA_JAR:-}" ]]; then
 fi
 [[ -n "${JNA_JAR}" && -f "${JNA_JAR}" ]] || {
     echo "FATAL: no JNA jar found; set JNA_JAR to a jna-<ver>.jar" >&2
+    exit 1
+}
+# Kotlin's compiler distribution carries the coroutine runtime used by uniffi's
+# generated async glue. Prefer an explicit override, then locate that sibling of
+# kotlinc so the build remains compatible with the selected compiler.
+if [[ -z "${KOTLINX_COROUTINES_JAR:-}" || ! -f "${KOTLINX_COROUTINES_JAR:-}" ]]; then
+    KOTLINC_BIN="$(command -v kotlinc)"
+    while [[ -L "${KOTLINC_BIN}" ]]; do
+        KOTLINC_LINK="$(readlink "${KOTLINC_BIN}")"
+        if [[ "${KOTLINC_LINK}" == /* ]]; then
+            KOTLINC_BIN="${KOTLINC_LINK}"
+        else
+            KOTLINC_BIN="$(dirname "${KOTLINC_BIN}")/${KOTLINC_LINK}"
+        fi
+    done
+    KOTLIN_HOME="$(cd -P "$(dirname "${KOTLINC_BIN}")/.." && pwd)"
+    KOTLINX_COROUTINES_JAR="${KOTLIN_HOME}/lib/kotlinx-coroutines-core-jvm.jar"
+fi
+[[ -f "${KOTLINX_COROUTINES_JAR}" ]] || {
+    echo "FATAL: no kotlinx-coroutines jar found; set KOTLINX_COROUTINES_JAR" >&2
     exit 1
 }
 # android.jar is optional for these pure-JVM bindings — include it if the SDK
@@ -103,25 +138,27 @@ cd "${ROOT}"
 ANDROID_DIR="${OUT_DIR}/android"
 JNILIBS_DIR="${ANDROID_DIR}/jniLibs"
 rm -rf "${ANDROID_DIR}"
-mkdir -p "${JNILIBS_DIR}"
+if [[ "${KOTLIN_BINDINGS_CHECK_ONLY}" == 0 ]]; then
+    mkdir -p "${JNILIBS_DIR}"
 
-echo "==> Building ${CRATE} for ${#ABIS[@]} Android ABIs (profile: ${PROFILE})"
-# cargo-ndk does the per-target cargo build with the right NDK linker per ABI.
-# -o stages the .so files into <out>/<abi>/<so> exactly as jniLibs expects.
-cargo ndk \
-    -t arm64-v8a \
-    -t armeabi-v7a \
-    -t x86_64 \
-    -o "${JNILIBS_DIR}" \
-    build --"${PROFILE}" -p "${CRATE}"
+    echo "==> Building ${CRATE} for ${#ABIS[@]} Android ABIs (profile: ${PROFILE})"
+    # cargo-ndk does the per-target cargo build with the right NDK linker per ABI.
+    # -o stages the .so files into <out>/<abi>/<so> exactly as jniLibs expects.
+    cargo ndk \
+        -t arm64-v8a \
+        -t armeabi-v7a \
+        -t x86_64 \
+        -o "${JNILIBS_DIR}" \
+        build --"${PROFILE}" -p "${CRATE}"
 
-# Sanity-check: each ABI dir should contain the .so.
-for abi in "${ABIS[@]}"; do
-    if [[ ! -f "${JNILIBS_DIR}/${abi}/${SO_NAME}" ]]; then
-        echo "FATAL: missing ${JNILIBS_DIR}/${abi}/${SO_NAME}" >&2
-        exit 1
-    fi
-done
+    # Sanity-check: each ABI dir should contain the .so.
+    for abi in "${ABIS[@]}"; do
+        if [[ ! -f "${JNILIBS_DIR}/${abi}/${SO_NAME}" ]]; then
+            echo "FATAL: missing ${JNILIBS_DIR}/${abi}/${SO_NAME}" >&2
+            exit 1
+        fi
+    done
+fi
 
 # ---------------------------------------------------------------------------
 # Kotlin bindings
@@ -161,9 +198,21 @@ test -f "${KOTLIN_FILE}" || {
 echo "==> Compiling Kotlin bindings → classes.jar (kotlinc)"
 CLASSES_JAR="${ANDROID_DIR}/classes.jar"
 # uniffi 0.31 emits JNA-based bindings (import com.sun.jna.*), so JNA is on the
-# compile classpath; android.jar too when present. No -include-runtime: the
-# consumer app supplies kotlin-stdlib, so classes.jar holds only our classes.
-KOTLINC_CP="${JNA_JAR}${ANDROID_JAR:+:${ANDROID_JAR}}"
+# compile classpath; its async glue also imports kotlinx.coroutines. android.jar
+# is included when present. No -include-runtime: consumers supply these runtime
+# dependencies, so classes.jar holds only our generated classes.
+KOTLINC_CP="${JNA_JAR}:${KOTLINX_COROUTINES_JAR}${ANDROID_JAR:+:${ANDROID_JAR}}"
+
+if [[ "${KOTLIN_BINDINGS_CHECK_ONLY}" == 1 ]]; then
+    CHECK_JAR="${ANDROID_DIR}/kotlin-bindings-check.jar"
+    STUB="${ROOT}/ci/kotlin/ExecutorBindingsStub.kt"
+    test -f "${STUB}" || { echo "FATAL: ${STUB} not found" >&2; exit 1; }
+    kotlinc "${KOTLIN_FILE}" "${STUB}" -classpath "${KOTLINC_CP}" -d "${CHECK_JAR}"
+    test -f "${CHECK_JAR}" || { echo "FATAL: kotlinc did not produce ${CHECK_JAR}" >&2; exit 1; }
+    echo "Kotlin executor binding check complete: ${CHECK_JAR}"
+    exit 0
+fi
+
 kotlinc "${KOTLIN_FILE}" -classpath "${KOTLINC_CP}" -d "${CLASSES_JAR}"
 test -f "${CLASSES_JAR}" || { echo "FATAL: kotlinc did not produce ${CLASSES_JAR}" >&2; exit 1; }
 

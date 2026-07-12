@@ -36,7 +36,7 @@ steps:
     # Path filter: rust sources + the data/fixture packages the tests read.
     # Doc-only changes skip the whole build+test.
     # Must trigger whenever ANY step that `depends_on: [workspace]` triggers
-    # (android-libs / python-wheel) — else that step references a
+    # (android-libs / kotlin-bindings / python-wheel) — else that step references a
     # filtered-out `workspace` and Woodpecker aborts the whole pipeline with
     # "depends on unknown step 'workspace'". So this path set is the UNION of
     # the dependents' paths plus the test inputs.
@@ -45,6 +45,7 @@ steps:
           - 'crates/**'
           - 'services/**'
           - 'tools/camera-simctl/**'
+          - 'tools/uniffi-bindgen/**'
           - 'packages/camera-config-data/**'
           - 'packages/camera-protocol-python/**'
           - 'packages/fixtures/**'
@@ -53,6 +54,7 @@ steps:
           - 'rust-toolchain.toml'
           - 'Dockerfile'
           - 'ci/build-android.sh'
+          - 'ci/kotlin/**'
           - 'ci/build-python-wheel.sh'
           - '.woodpecker/linux.yml'
     volumes:
@@ -103,6 +105,47 @@ steps:
         - 'packages/camera-config-data/**'
         - '.woodpecker/linux.yml'
 
+  # Compile the generated Kotlin bindings plus a foreign executor seam on PRs.
+  # This is the host-only half of build-android.sh: no NDK or AAR work. The
+  # deployment image already carries Kotlin/JNA; the public Rust fallback
+  # downloads those two compile dependencies into the ephemeral step.
+  - name: kotlin-bindings
+    image: ${ANDROID_TOOLCHAIN_IMAGE:-rust:1.97.0-slim}
+    pull: true
+    depends_on: [workspace]
+    volumes:
+      - /data/ci-cache/ptpsim/kotlin:/ci-cache
+    environment:
+      CARGO_HOME: /ci-cache/cargo-home
+      CARGO_TARGET_DIR: /ci-cache/target
+      CARGO_INCREMENTAL: "0"
+    commands:
+      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
+      - |
+        if ! command -v kotlinc >/dev/null 2>&1; then
+          apt-get update -qq
+          apt-get install -qq -y --no-install-recommends ca-certificates curl default-jre-headless unzip
+          curl -fsSL https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip -o /tmp/kotlin.zip
+          unzip -q /tmp/kotlin.zip -d /tmp
+          export PATH="/tmp/kotlinc/bin:$PATH"
+        fi
+        if [ -z "${JNA_JAR:-}" ] || [ ! -f "$JNA_JAR" ]; then
+          curl -fsSL https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.14.0/jna-5.14.0.jar -o /tmp/jna.jar
+          export JNA_JAR=/tmp/jna.jar
+        fi
+        KOTLIN_BINDINGS_CHECK_ONLY=1 ./ci/build-android.sh
+    when:
+      event: pull_request
+      path:
+        - 'crates/camera-protocol-ffi/**'
+        - 'tools/uniffi-bindgen/**'
+        - 'Cargo.toml'
+        - 'Cargo.lock'
+        - 'rust-toolchain.toml'
+        - 'ci/build-android.sh'
+        - 'ci/kotlin/**'
+        - '.woodpecker/linux.yml'
+
   # Build CameraProtocolFFI for Android — three cdylib ABIs + uniffi Kotlin
   # bindings — and attach as a source-distribution tarball alongside the
   # xcframework. Consumers integrate by copying android/jniLibs and android/
@@ -142,6 +185,7 @@ steps:
       event: push
       path:
         - 'crates/**'
+        - 'tools/uniffi-bindgen/**'
         - 'Cargo.toml'
         - 'Cargo.lock'
         - 'rust-toolchain.toml'

@@ -384,12 +384,12 @@ Two transport contracts carry the correctness load:
   foreign task through the generated bindings, so make each transport method
   cancellation-safe.
 
-A fatal step returns `ExecutorError::StepFailed { step, kind, message }`.
+A fatal step returns `ExecutorError::StepFailed { step, kind, detail }`.
 `kind` is the stable `ExecutorStepFailureKind`: `DeadlineExceeded` covers
 executor-owned verb backstops, step-level notification/poll budgets, and a
 transport-reported timeout; `Other` covers every non-timeout failure. Consumers
 may map `DeadlineExceeded` from a readiness gate to retryable UI while keeping
-`message` for diagnostics only. Never string-match `message` for control flow.
+`detail` for diagnostics only. Never string-match `detail` for control flow.
 Tolerated failures remain step reports and do not escape as `ExecutorError`.
 
 ### 9.4 The 13-verb Step grammar (reference; legacy dispatcher)

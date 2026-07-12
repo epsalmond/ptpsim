@@ -840,14 +840,10 @@ fn post_exit_notification_timeout_crosses_ffi_with_deadline_kind() {
     .expect_err("the notification budget lapses");
 
     match error {
-        ExecutorError::StepFailed {
-            step,
-            kind,
-            message,
-        } => {
+        ExecutorError::StepFailed { step, kind, detail } => {
             assert_eq!(step, "steps[2].bleAwaitUntil");
             assert_eq!(kind, ExecutorStepFailureKind::DeadlineExceeded);
-            assert!(message.contains("within 20000ms"));
+            assert!(detail.contains("within 20000ms"));
         }
         other => panic!("expected typed step failure, got {other:?}"),
     }
@@ -871,14 +867,10 @@ fn post_exit_poll_timeout_crosses_ffi_with_deadline_kind() {
     .expect_err("the poll budget lapses");
 
     match error {
-        ExecutorError::StepFailed {
-            step,
-            kind,
-            message,
-        } => {
+        ExecutorError::StepFailed { step, kind, detail } => {
             assert_eq!(step, "steps[2].bleAwaitUntil");
             assert_eq!(kind, ExecutorStepFailureKind::DeadlineExceeded);
-            assert!(message.contains("within 5ms"));
+            assert!(detail.contains("within 5ms"));
         }
         other => panic!("expected typed step failure, got {other:?}"),
     }
@@ -902,14 +894,10 @@ fn per_verb_clock_failure_crosses_ffi_as_other() {
     .expect_err("the foreign deadline clock fails");
 
     match error {
-        ExecutorError::StepFailed {
-            step,
-            kind,
-            message,
-        } => {
+        ExecutorError::StepFailed { step, kind, detail } => {
             assert_eq!(step, "steps[0].bleConnect");
             assert_eq!(kind, ExecutorStepFailureKind::Other);
-            assert!(message.contains("clock unavailable"));
+            assert!(detail.contains("clock unavailable"));
         }
         other => panic!("expected typed step failure, got {other:?}"),
     }
@@ -933,14 +921,10 @@ fn notification_budget_clock_failure_crosses_ffi_as_other() {
     .expect_err("the notification budget clock fails");
 
     match error {
-        ExecutorError::StepFailed {
-            step,
-            kind,
-            message,
-        } => {
+        ExecutorError::StepFailed { step, kind, detail } => {
             assert_eq!(step, "steps[2].bleAwaitUntil");
             assert_eq!(kind, ExecutorStepFailureKind::Other);
-            assert!(message.contains("clock unavailable"));
+            assert!(detail.contains("clock unavailable"));
         }
         other => panic!("expected typed step failure, got {other:?}"),
     }
@@ -964,14 +948,10 @@ fn poll_budget_clock_failure_crosses_ffi_as_other() {
     .expect_err("the poll budget clock fails");
 
     match error {
-        ExecutorError::StepFailed {
-            step,
-            kind,
-            message,
-        } => {
+        ExecutorError::StepFailed { step, kind, detail } => {
             assert_eq!(step, "steps[2].bleAwaitUntil");
             assert_eq!(kind, ExecutorStepFailureKind::Other);
-            assert!(message.contains("clock unavailable"));
+            assert!(detail.contains("clock unavailable"));
         }
         other => panic!("expected typed step failure, got {other:?}"),
     }

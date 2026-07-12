@@ -168,11 +168,11 @@ pub enum ExecutorStepFailureKind {
 pub enum ExecutorError {
     #[error("unknown plan: {detail}")]
     UnknownPlan { detail: String },
-    #[error("{step}: {message}")]
+    #[error("{step}: {detail}")]
     StepFailed {
         step: String,
         kind: ExecutorStepFailureKind,
-        message: String,
+        detail: String,
     },
 }
 
@@ -434,7 +434,7 @@ impl From<StepError> for ExecutorError {
         ExecutorError::StepFailed {
             step: e.step,
             kind: e.kind,
-            message: e.message,
+            detail: e.message,
         }
     }
 }

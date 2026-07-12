@@ -38,7 +38,7 @@ gh release download "$TAG" \
     --dir path/to/your/app/libs
 ```
 
-### 2. `build.gradle` (or `build.gradle.kts`) — add the `.aar` + JNA
+### 2. `build.gradle` (or `build.gradle.kts`) — add runtime dependencies
 
 ```kotlin
 android {
@@ -49,6 +49,7 @@ android {
 dependencies {
     implementation(files("libs/CameraProtocolFFI-<sha8>.aar"))
     implementation("net.java.dev.jna:jna:5.14.0@aar")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4")
     // ... your other deps
 }
 ```
@@ -62,6 +63,13 @@ dependencies {
 > Android (`.aar`) artifacts; without the suffix Gradle picks the JVM one and
 > the JNI library is missing at runtime. `5.14.0` matches the JNA the bindings
 > were compiled against in CI.
+
+> **Kotlin coroutines are required.** Async Rust functions and foreign async
+> traits generate Kotlin `suspend` glue backed by `kotlinx.coroutines`. The
+> release is a file dependency, so it has no Maven metadata through which to
+> declare JNA or coroutines transitively. `1.6.4` is the compatibility baseline
+> compiled by CI; a consumer may use a newer version compatible with its Kotlin
+> toolchain.
 
 ### 3. Use the FFI
 
