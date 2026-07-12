@@ -39,6 +39,7 @@ families:
           mechanism: test
           steps:
             - bleConnect: {{}}
+            - bleDiscoverServices: {{}}
 {steps}
 models:
   - id: tm1
@@ -263,8 +264,8 @@ fn source_exhaustion_is_a_tolerant_aware_timeout() {
         &BTreeMap::new(),
     )
     .expect("tolerant await swallows the timeout");
-    // bleConnect + the tolerant await both count as run.
-    assert_eq!(outcome.steps_run, 2, "the tolerant await counts as run");
+    // connect + discovery + the tolerant await all count as run.
+    assert_eq!(outcome.steps_run, 3, "the tolerant await counts as run");
 }
 
 #[test]

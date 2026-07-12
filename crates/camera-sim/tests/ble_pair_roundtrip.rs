@@ -49,7 +49,7 @@ fn recognize(
 ) -> (BTreeMap<String, String>, BTreeMap<String, Encoding>) {
     for (_name, sig) in &view.signatures {
         let Signature::BleAdvert(sig) = sig;
-        if eval::advert_matches(sig, facts) {
+        if sig.discoverable && eval::advert_matches(sig, facts) {
             return (
                 eval::advert_scope(sig, facts).into_iter().collect(),
                 eval::advert_capture_encodings(sig).into_iter().collect(),
@@ -118,6 +118,7 @@ fn runtime_params() -> BTreeMap<String, String> {
 fn assert_app_order(ble: &FamilyBleBlock, log: &[BleEvent], red_exchange: bool) {
     let mut expected: Vec<BleEvent> = vec![
         BleEvent::Connect,
+        BleEvent::DiscoverServices,
         BleEvent::Read {
             uuid: uuid(ble, "protectedSerialString"),
         },

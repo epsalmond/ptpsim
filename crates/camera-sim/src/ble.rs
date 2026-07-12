@@ -35,6 +35,7 @@ const MAX_CHUNK_WINDOWS: usize = 4096;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BleEvent {
     Connect,
+    PeerDisconnect,
     RequestMtu { requested: u16, negotiated: u16 },
     DiscoverServices,
     Read { uuid: String },
@@ -45,6 +46,8 @@ pub enum BleEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BleError {
     NotConnected,
+    ServicesNotDiscovered,
+    PeerDisconnectNotObserved,
     /// The characteristic isn't in this body's exposed catalog (or, for a
     /// read, has no value policy) — the in-memory analogue of a GATT
     /// attribute-not-found error.
@@ -55,6 +58,8 @@ impl std::fmt::Display for BleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BleError::NotConnected => write!(f, "peripheral not connected"),
+            BleError::ServicesNotDiscovered => write!(f, "GATT services not discovered"),
+            BleError::PeerDisconnectNotObserved => write!(f, "peer disconnect not observed"),
             BleError::NotExposed(uuid) => write!(f, "characteristic {uuid} not exposed"),
         }
     }
@@ -80,6 +85,7 @@ pub struct BleResponder {
     mtu_cap: u16,
     connected: bool,
     services_discovered: bool,
+    peer_disconnect_pending: bool,
     log: Vec<BleEvent>,
     /// Cross-transport arming link (#102): a write to `arm_uuid`
     /// (`IMAGE_TRANSFER_SETTING`) notes the prep; a write to `launch_uuid`
@@ -104,6 +110,7 @@ impl BleResponder {
             mtu_cap: 247,
             connected: false,
             services_discovered: false,
+            peer_disconnect_pending: false,
             log: Vec::new(),
             arming: None,
             arm_uuid: None,
@@ -177,10 +184,28 @@ impl BleResponder {
 
     pub fn connect(&mut self) {
         self.connected = true;
-        // In-memory stack auto-discovers, like CoreBluetooth's connect path;
-        // bleDiscoverServices is then a checkpoint (§11.4a).
-        self.services_discovered = true;
+        self.services_discovered = false;
         self.log.push(BleEvent::Connect);
+    }
+
+    /// Script the camera dropping the active link (remote-boot lifecycle).
+    pub fn queue_peer_disconnect(mut self) -> Self {
+        self.peer_disconnect_pending = true;
+        self
+    }
+
+    pub fn await_disconnect(&mut self) -> Result<(), BleError> {
+        if !self.connected {
+            return Err(BleError::NotConnected);
+        }
+        if !self.peer_disconnect_pending {
+            return Err(BleError::PeerDisconnectNotObserved);
+        }
+        self.peer_disconnect_pending = false;
+        self.connected = false;
+        self.services_discovered = false;
+        self.log.push(BleEvent::PeerDisconnect);
+        Ok(())
     }
 
     pub fn request_mtu(&mut self, requested: u16) -> Result<u16, BleError> {
@@ -207,6 +232,9 @@ impl BleResponder {
     fn require_char(&self, uuid: &str) -> Result<(), BleError> {
         if !self.connected {
             return Err(BleError::NotConnected);
+        }
+        if !self.services_discovered {
+            return Err(BleError::ServicesNotDiscovered);
         }
         if !self.catalog.contains(uuid) {
             return Err(BleError::NotExposed(uuid.to_string()));
@@ -416,6 +444,10 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
             ctx.responder.connect();
             Ok(())
         }
+        Step::BleAwaitDisconnect(_) => ctx
+            .responder
+            .await_disconnect()
+            .map_err(|e| err(e.to_string())),
         Step::BleRequestMtu(s) => {
             let negotiated = ctx
                 .responder

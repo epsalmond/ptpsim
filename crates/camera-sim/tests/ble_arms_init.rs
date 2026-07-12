@@ -70,6 +70,7 @@ fn function_launch_without_the_prep_write_leaves_the_engine_unarmed() {
     // An AP handoff that function-launches WITHOUT the prep write → unarmed.
     let mut responder = BleResponder::new([]).link_arming(Arc::clone(&link), &arm, &launch);
     responder.connect();
+    responder.discover_services().unwrap();
     responder.write(&launch, &[0x04, 0x00]).unwrap();
     assert!(
         !engine.accepts_init(),
@@ -145,6 +146,7 @@ fn the_device_name_write_registers_on_the_link() {
 
     let mut responder = BleResponder::new([]).link_device_name(Arc::clone(&link), &name_uuid);
     responder.connect();
+    responder.discover_services().unwrap();
     responder.write(&name_uuid, b"iphone").unwrap();
 
     assert_eq!(

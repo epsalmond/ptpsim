@@ -45,6 +45,7 @@ families:
           mechanism: test
           steps:
             - bleConnect: {{}}
+            - bleDiscoverServices: {{}}
 {steps}
 models:
   - id: tm1

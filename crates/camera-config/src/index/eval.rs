@@ -448,6 +448,8 @@ mod tests {
                 connection: "ble".into(),
                 confidence: crate::index::types::Confidence::High,
             },
+            discoverable: true,
+            reconnect: None,
         }
     }
 

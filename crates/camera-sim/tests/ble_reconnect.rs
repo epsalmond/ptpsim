@@ -47,7 +47,7 @@ fn recognize(
 ) -> (BTreeMap<String, String>, BTreeMap<String, Encoding>) {
     for (_name, sig) in &view.signatures {
         let Signature::BleAdvert(sig) = sig;
-        if eval::advert_matches(sig, facts) {
+        if sig.discoverable && eval::advert_matches(sig, facts) {
             return (
                 eval::advert_scope(sig, facts).into_iter().collect(),
                 eval::advert_capture_encodings(sig).into_iter().collect(),
@@ -108,6 +108,7 @@ fn runtime_params() -> BTreeMap<String, String> {
 fn assert_reconnect_order(ble: &FamilyBleBlock, log: &[BleEvent], pairing_key: Vec<u8>) {
     let mut expected: Vec<BleEvent> = vec![
         BleEvent::Connect,
+        BleEvent::DiscoverServices,
         BleEvent::Write {
             uuid: uuid(ble, "pairingKey"),
             value: pairing_key,

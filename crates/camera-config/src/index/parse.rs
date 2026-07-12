@@ -93,6 +93,8 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
         signatures.push((sig_name.clone(), sig));
     }
 
+    validate_reconnect_contract(model, ble.as_ref(), &signatures)?;
+
     Ok(ModelView {
         id: model.id.clone(),
         display_name: model.display_name.clone(),
@@ -100,6 +102,63 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
         ble,
         signatures,
     })
+}
+
+fn validate_reconnect_contract(
+    model: &IndexedModel,
+    ble: Option<&FamilyBleBlock>,
+    signatures: &[(String, Signature)],
+) -> Result<(), ConfigError> {
+    let Some(ble) = ble else {
+        return Ok(());
+    };
+    if ble
+        .reconnect
+        .as_ref()
+        .is_some_and(|policy| policy.scan_timeout_ms == 0)
+    {
+        return Err(ConfigError::Validation {
+            path: format!("models.{}.ble.reconnect.scanTimeoutMs", model.id),
+            message: "must be greater than zero".into(),
+        });
+    }
+
+    for (name, signature) in signatures {
+        let Signature::BleAdvert(signature) = signature;
+        let Some(route) = &signature.reconnect else {
+            continue;
+        };
+        let path = format!("models.{}.signatures.{name}.reconnect", model.id);
+        if ble.reconnect.is_none() {
+            return Err(ConfigError::Validation {
+                path,
+                message: "requires a family reconnect policy".into(),
+            });
+        }
+        if route.identity.is_empty() {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.identity"),
+                message: "must declare at least one identity key".into(),
+            });
+        }
+        if !ble.establishments.contains_key(&route.mechanism) {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.mechanism"),
+                message: format!("unknown establishment '{}'", route.mechanism),
+            });
+        }
+        for key in &route.identity {
+            let available = signature.scope.contains_key(key)
+                || signature.capture.iter().any(|capture| &capture.name == key);
+            if !available {
+                return Err(ConfigError::Validation {
+                    path: format!("{path}.identity"),
+                    message: format!("identity key '{key}' is not captured or scoped"),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +283,7 @@ fn resolve_gatt_names_in_steps(
         let verb = verb_key.as_str().unwrap_or("");
         let here = format!("{path_ctx}[{i}].{verb}");
         match verb {
-            "bleConnect" | "bleRequestMtu" | "bleDiscoverServices" => {}
+            "bleConnect" | "bleAwaitDisconnect" | "bleRequestMtu" | "bleDiscoverServices" => {}
             "bleRead" | "bleWrite" | "bleSubscribe" | "bleNotify" | "bleWriteChunk" => {
                 resolve_gatt_field(body, gatt, &here)?;
             }
@@ -282,7 +341,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if)"),
+                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if)"),
                 });
             }
         }
@@ -417,6 +476,14 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
         }
         for (i, inner) in s.on_each.iter().enumerate() {
             validate_step(inner, &format!("{path}.onEach[{i}]"))?;
+        }
+    }
+    if let Step::BleAwaitDisconnect(s) = step {
+        if s.timeout_ms == 0 {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.timeoutMs"),
+                message: "bleAwaitDisconnect timeoutMs must be > 0".to_string(),
+            });
         }
     }
     // Mutually-exclusive length forms on mfg-data ranges live with the
@@ -710,6 +777,9 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleConnect" => Ok(Step::BleConnect(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleConnect", e))?,
             )),
+            "bleAwaitDisconnect" => Ok(Step::BleAwaitDisconnect(
+                serde_yaml::from_value(body).map_err(|e| dec_err("bleAwaitDisconnect", e))?,
+            )),
             "bleRequestMtu" => Ok(Step::BleRequestMtu(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleRequestMtu", e))?,
             )),
@@ -744,7 +814,7 @@ impl<'de> serde::Deserialize<'de> for Step {
                 serde_yaml::from_value(body).map_err(|e| dec_err("if", e))?,
             )),
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (allowlist: bleConnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if)"
             ))),
         }
     }

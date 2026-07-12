@@ -107,6 +107,27 @@ pub enum Recognition {
     },
 }
 
+/// Manifest-authored policy for one saved-camera reconnect scan.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReconnectPolicy {
+    pub scan_timeout_ms: u32,
+}
+
+/// Classification of one advertisement for a known saved camera. The
+/// manifest owns both identity matching and the plan selected for the state.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum ReconnectDecision {
+    NoMatch,
+    Wake {
+        plan: EstablishmentPlan,
+        runtime_scope: Vec<KeyValue>,
+    },
+    Ready {
+        plan: EstablishmentPlan,
+        runtime_scope: Vec<KeyValue>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum Confidence {
     High,
@@ -175,6 +196,12 @@ pub struct StepOptions {
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum Step {
     BleConnect {
+        opts: StepOptions,
+    },
+    /// Wait for the connected peripheral to drop the link. Remote-boot
+    /// plans use the peer disconnect as the transition into a fresh scan.
+    BleAwaitDisconnect {
+        timeout_ms: u32,
         opts: StepOptions,
     },
     /// Request an ATT MTU before GATT traffic. On platforms without an
@@ -649,6 +676,10 @@ impl From<&ix::Step> for Step {
             ix::Step::BleConnect(inner) => Step::BleConnect {
                 opts: (&inner.opts).into(),
             },
+            ix::Step::BleAwaitDisconnect(inner) => Step::BleAwaitDisconnect {
+                timeout_ms: inner.timeout_ms,
+                opts: (&inner.opts).into(),
+            },
             ix::Step::BleRequestMtu(inner) => Step::BleRequestMtu {
                 mtu: inner.mtu,
                 opts: (&inner.opts).into(),
@@ -755,9 +786,12 @@ pub fn recognize_ble(
             if !ix::eval::advert_matches(ble_sig, facts) {
                 continue;
             }
-            matches.push((model.id.clone(), model.display_name.clone(), ble_sig));
+            if ble_sig.discoverable {
+                matches.push((model.id.clone(), model.display_name.clone(), ble_sig));
+            }
             // §11.7: first matching signature for THIS model wins; do not
-            // try further signatures for the same model.
+            // fall through a reconnect-only state into a broader discovery
+            // signature for the same model.
             break;
         }
     }
@@ -809,6 +843,80 @@ pub fn recognize_ble(
     }
 }
 
+pub fn reconnect_policy(
+    index: &ix::ResolvedManufacturerIndex,
+    model: &str,
+) -> Option<ReconnectPolicy> {
+    let model = index
+        .models
+        .iter()
+        .find(|candidate| candidate.id == model)?;
+    let policy = model.ble.as_ref()?.reconnect.as_ref()?;
+    Some(ReconnectPolicy {
+        scan_timeout_ms: policy.scan_timeout_ms,
+    })
+}
+
+pub fn reconnect_decision(
+    index: &ix::ResolvedManufacturerIndex,
+    model: &str,
+    facts: &ix::eval::BleAdvertFacts,
+    persisted_scope: &[KeyValue],
+) -> ReconnectDecision {
+    let Some(model_view) = index.models.iter().find(|candidate| candidate.id == model) else {
+        return ReconnectDecision::NoMatch;
+    };
+    let persisted: std::collections::BTreeMap<&str, &str> = persisted_scope
+        .iter()
+        .map(|kv| (kv.key.as_str(), kv.value.as_str()))
+        .collect();
+    for (_name, signature) in &model_view.signatures {
+        let ix::Signature::BleAdvert(signature) = signature;
+        let Some(route) = &signature.reconnect else {
+            continue;
+        };
+        if !ix::eval::advert_matches(signature, facts) {
+            continue;
+        }
+        let scope = ix::eval::advert_scope(signature, facts);
+        let observed: std::collections::BTreeMap<&str, &str> = scope
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        if route.identity.is_empty()
+            || !route.identity.iter().all(|key| {
+                observed.get(key.as_str()).copied() == persisted.get(key.as_str()).copied()
+            })
+        {
+            continue;
+        }
+        let Some(plan) = build_establishment_mechanism(
+            index,
+            model,
+            "saved-reconnect",
+            &route.mechanism,
+            persisted_scope,
+        ) else {
+            return ReconnectDecision::NoMatch;
+        };
+        let runtime_scope = scope
+            .into_iter()
+            .map(|(key, value)| KeyValue { key, value })
+            .collect();
+        return match route.disposition {
+            ix::ReconnectDisposition::Wake => ReconnectDecision::Wake {
+                plan,
+                runtime_scope,
+            },
+            ix::ReconnectDisposition::Ready => ReconnectDecision::Ready {
+                plan,
+                runtime_scope,
+            },
+        };
+    }
+    ReconnectDecision::NoMatch
+}
+
 fn intersect_scope<'a>(
     sigs: impl Iterator<Item = &'a ix::BleAdvertSignature>,
 ) -> Vec<(String, String)> {
@@ -850,6 +958,16 @@ fn confidence_from(c: ix::Confidence) -> Confidence {
 /// Per §11.1 *establishment-call phase*, the plan is returned with
 /// structured `Captured` / `Runtime` / `Template` step values intact.
 pub fn build_establishment(
+    index: &ix::ResolvedManufacturerIndex,
+    model: &str,
+    connection: &str,
+    mechanism: &str,
+    _initial_scope: &[KeyValue],
+) -> Option<EstablishmentPlan> {
+    build_establishment_mechanism(index, model, connection, mechanism, _initial_scope)
+}
+
+fn build_establishment_mechanism(
     index: &ix::ResolvedManufacturerIndex,
     model: &str,
     connection: &str,

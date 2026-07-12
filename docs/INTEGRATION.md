@@ -309,6 +309,8 @@ YAML at any layer → `IndexParse` / `BodyParse`.
 | call | gives you |
 |---|---|
 | `recognize(observation)` | `Recognition::Candidate{model, connection, confidence, runtimeScope}` / `Disambiguate{family, candidates, runtimeScope, hint}` / `NoMatch`. `runtimeScope` is `Vec<KeyValue>` carrying the signature's derived facts (`style: "legacy"`, `pairingKeyBytes: "44732a80"`, …). |
+| `reconnectPolicy(model)` | The manifest-authored saved-camera scan window. `None` means the model has no automatic BLE reconnect contract. |
+| `reconnectDecision(model, observation, persistedScope)` | Classifies a fresh advert for one saved camera as `Wake{plan, runtimeScope}`, `Ready{plan, runtimeScope}`, or `NoMatch`. The manifest owns advert-state recognition, identity keys, and plan selection; callers must not infer readiness from a cached peripheral. |
 
 `Observation::BleAdvert` carries `{ serviceUuids, manufacturerData?:
 { companyId, payload }, serviceData: [{uuid, payload}], localName?,
@@ -323,7 +325,15 @@ CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
 | `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | validates the plan handle and returns `NoChange` or `ReplaceTail{steps}` per §11.5; invalid handles/indices are errors. Current manifests return `NoChange` because no establishment overlays exist yet. |
 | `connectionEstablishment(connection)` | (unchanged renamed §2 method — single-body connection bring-up) |
 
-### 9.3 The 11-verb Step grammar
+Saved-camera reconnect is a fresh-observation loop. For each advert, call
+`reconnectDecision` with the scope persisted from pairing. `Wake` means walk the
+returned wake plan, expect the peer to disconnect while booting, then resume the
+scan. `Ready` means walk the returned reconnect plan. `NoMatch` is ignored. Stop
+after `reconnectPolicy.scanTimeoutMs` and surface unavailable/retry UI. Startup and
+already-paired signatures can be reconnect-only, so they do not appear in normal
+`recognize` results.
+
+### 9.3 The 13-verb Step grammar
 
 You build a small dispatcher; the verbs come from the FFI. Each carries
 `StepOptions { tolerant, retries, retryDelayMs }` — wrap each verb body in one
@@ -332,10 +342,12 @@ retry loop and the same code handles all of them.
 | verb | what to do |
 |---|---|
 | `bleConnect` | connect to the peripheral your I/O primitive captured at recognize time. *No parameters* (§11.4 — peripheral binding is app-side). |
+| `bleAwaitDisconnect` | wait up to `timeoutMs` for the connected peer to disconnect. A disconnect is success; expiry is a step failure. Used by wake plans where connecting to a startup advertisement triggers camera boot. |
 | `bleRequestMtu` | request ATT MTU `mtu` before GATT traffic. If your platform has no request API (CoreBluetooth negotiates on its own), treat as a checkpoint: succeed when the negotiated MTU ≥ `mtu`. |
 | `bleDiscoverServices` | explicit service-discovery state transition. If your stack auto-discovers, complete when discovery has completed — don't re-trigger. Discovery timeout is your policy. |
 | `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13 — empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. |
+| `bleWriteChunk` | frame and write one manifest-declared window from a runtime blob, using the captured chunk index, frame fields, size, and sentinel index. |
 | `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate — CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
 | `bleNotify` | subscribe (`mode` as above) AND wait for `until` (Any / Equals / Matches); bind whole payload via `captureAs` and/or extract fields via `capture` (window → transform chain → encoding → scope; a failing capture is skipped, not a step failure). |
 | `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same predicate, then remain notification-only. Each observation applies `capture`/`captureAs`; if `until` is false, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
@@ -363,6 +375,18 @@ in the schema, not in your dispatcher logic — you just honour it.
 
 `runtimeParams` is a separate map you populate at walk start (terminal name, host
 IP, anything app-supplied), distinct from `scope` (recognize-seed + step captures).
+
+Saved-camera routes are fail-fast too. The loader rejects a reconnect route
+without a family policy, a zero scan timeout, an unknown establishment
+mechanism, an empty identity list, or an identity key the signature neither
+captures nor places in literal scope.
+
+For Fuji, startup-service routes select `ble-wake` (`bleConnect` followed by
+`bleAwaitDisconnect`) and awake-service routes select `ble-reconnect`. Both
+phases use the manifest's 60-second scan window. This service-level state
+machine is backed by
+
+clients do not add a post-registration power-property gate.
 
 ### 9.5 Zero camera knowledge in app source
 

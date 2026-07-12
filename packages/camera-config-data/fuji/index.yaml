@@ -103,6 +103,15 @@ families:
           # SERVICE_FF_FILE_TRANSFER — presence in the advert's service-UUID
           # list classifies the advert as LEGACY style (READ_THIS_FIRST §2).
           fileTransfer: "AF854C2E-B214-458E-97E2-912C4ECF2CB8"
+          connectedDeviceInformationRed: "123D8F06-62A1-4935-9322-833C531EE225"
+          cameraStartupInformation: "731893F9-744E-4899-B7E3-174106FF2B82"
+          cameraStartupInformationRed: "804DAA8E-FFEB-4AB3-8E75-6EDD7303208D"
+
+      reconnect:
+        # reference app bounds both the startup-service wake and the following awake
+        # re-scan at 60 seconds. Consumers never promote a retrieved peripheral
+        # without a matching route from a fresh advertisement.
+        scanTimeoutMs: 60000
 
       # Establishment plan. Walks the same path for both styles, with an
       # `if:` for the RED-only identification-number exchange. Style +
@@ -120,6 +129,7 @@ families:
             # Peripheral is already in app scope from recognition; the
             # dispatcher's BLE primitive holds the binding (plan §11.4).
             - bleConnect: {}
+            - bleDiscoverServices: {}
 
             # Trigger the iOS bond prompt by reading the standard protected
             # serial. Observed pattern: up to 20× retries 1s apart; intermediate
@@ -218,6 +228,15 @@ families:
             - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
             - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
 
+        # Connecting to a startup-service advertiser is itself the remote-boot
+        # trigger. Do not discover services: the expected next fact is the
+        # camera dropping the link while it boots.
+        ble-wake:
+          mechanism: ble-wake
+          steps:
+            - bleConnect: {}
+            - bleAwaitDisconnect: { timeoutMs: 60000 }
+
         # BLE-initiated Wi-Fi-AP / PTP-IP bring-up (issue #47). Runs after
         # ble-pair: write the function-launch request, await the camera AP
         # reaching a launched state, then read the SSID + passphrase to join.
@@ -246,6 +265,7 @@ families:
           # camera-initiated-transfer AP-state trigger (wireBleAutoTransfer).
           postExitReadiness:
             - bleConnect: {}
+            - bleDiscoverServices: {}
             - bleAwaitUntil:
                 source: { notify: { gatt: apState, seedRead: true } }
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }
@@ -256,6 +276,7 @@ families:
             # The BLE link from ble-pair is still open; bleConnect is a no-op
             # in that case but keeps the plan self-contained and walkable.
             - bleConnect: {}
+            - bleDiscoverServices: {}
 
             # IMAGE_TRANSFER_SETTING arms the AP handoff: the reference app writes
             # 0x01 here IMMEDIATELY BEFORE function-launch for ALL launch modes.
@@ -322,6 +343,7 @@ families:
           persist: [pairingKeyBytes, style, cameraSerial, ssid, passphrase]
           steps:
             - bleConnect: {}
+            - bleDiscoverServices: {}
 
             # Replay the cached pairing key (host re-seeds pairingKeyBytes from
             # persistence; the fresh advert is discarded on a warm resume).
@@ -373,12 +395,14 @@ families:
           evidence: [staticAutoTransferResize]
           steps:
             - bleConnect: {}
+            - bleDiscoverServices: {}
             - bleWrite: { gatt: imageResizeSetting, value: { literal: "00" } }
 
         auto-transfer-size-s:
           evidence: [staticAutoTransferResize]
           steps:
             - bleConnect: {}
+            - bleDiscoverServices: {}
             - bleWrite: { gatt: imageResizeRate, value: { literal: "0100" } }
             - bleWrite: { gatt: imageResizeSetting, value: { literal: "01" } }
 
@@ -386,6 +410,7 @@ families:
           evidence: [staticAutoTransferResize]
           steps:
             - bleConnect: {}
+            - bleDiscoverServices: {}
             - bleWrite: { gatt: imageResizeRate, value: { literal: "0000" } }
             - bleWrite: { gatt: imageResizeSetting, value: { literal: "01" } }
 
@@ -398,6 +423,7 @@ families:
             # Runs over the resting BLE link; bleConnect is a no-op when already
             # connected but keeps the action self-contained and walkable.
             - bleConnect: {}
+            - bleDiscoverServices: {}
             - bleWrite: { gatt: shootingRequest, value: { literal: "0100" } }   # S1 start
             - bleWrite: { gatt: shootingRequest, value: { literal: "0200" } }   # S2 hold
             - bleWrite: { gatt: shootingRequest, value: { literal: "0100" } }   # S1 return
@@ -411,6 +437,7 @@ families:
           evidence: [iosBLEReg]
           steps:
             - bleConnect: {}
+            - bleDiscoverServices: {}
             # bytes-raw: the host supplies the packed binary payload as a hex
             # string. Without an explicit encoding a consumer defaults to utf8
             # (client application `decode(raw, as: encoding ?? "utf8")`), which can't carry
@@ -425,6 +452,7 @@ families:
           evidence: [iosBLEReg]
           steps:
             - bleConnect: {}
+            - bleDiscoverServices: {}
             # bytes-raw — the packed binary payload as hex; see write-time (#114).
             - bleWrite: { gatt: locationAndSpeed, value: { runtime: locationSpeedPayload, encoding: bytes-raw } }
 
@@ -440,6 +468,7 @@ families:
           evidence: [iosBLEReg]
           steps:
             - bleConnect: {}
+            - bleDiscoverServices: {}
             # Hold the transfer session warm. The keep-alive cadence is
             # dispatcher-side (timed writes) — the deterministic walker only
             # models the subscription.
@@ -473,6 +502,7 @@ families:
           evidence: [iosBLEReg]
           steps:
             - bleConnect: {}
+            - bleDiscoverServices: {}
             - bleSubscribe: { gatt: settingsKeepAlive, timeoutMs: 3000, mode: indicate, tolerant: true }
             # [EVIDENCE-GAP] restore arm: CODE_MAP says writeRestoreRequest →
             # restoreRequest (RestoreRequestType u16-le), but the wire capture
@@ -522,6 +552,66 @@ models:
     # while RED adverts are characterised by absence (which the legacy
     # signature would have matched first).
     signatures:
+      bleStartupLegacyAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 5
+                assertByte: { index: 0, equals: 0x02 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraStartupInformation}" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+        scope:
+          style: "legacy"
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: wake
+          mechanism: ble-wake
+          identity: [pairingKeyBytes]
+
+      bleStartupRedAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 6
+                assertByte: { index: 0, equals: 0x01 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraStartupInformationRed}" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: shortSerial }
+        scope:
+          style: "red"
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: wake
+          mechanism: ble-wake
+          identity: [shortSerial]
+
+      bleAwakeRedAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 6
+                assertByte: { index: 0, equals: 0x01 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.connectedDeviceInformationRed}" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: shortSerial }
+        scope:
+          style: "red"
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: ready
+          mechanism: ble-reconnect
+          identity: [shortSerial]
+
       bleLegacyAdvert:
         kind: bleAdvert
         # Per READ_THIS_FIRST §5 Detection point 1: legacy advert =
@@ -540,6 +630,10 @@ models:
         scope:
           style: "legacy"
         suggests: { connection: ble, confidence: high }
+        reconnect:
+          disposition: ready
+          mechanism: ble-reconnect
+          identity: [pairingKeyBytes]
 
       bleRedAdvert:
         kind: bleAdvert

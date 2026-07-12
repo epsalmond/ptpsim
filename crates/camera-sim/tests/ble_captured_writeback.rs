@@ -31,6 +31,7 @@ families:
           mechanism: test
           steps:
             - bleConnect: {{}}
+            - bleDiscoverServices: {{}}
             - bleWrite: {{ gatt: keyChar, value: {{ captured: pairingKeyBytes }} }}
 models:
   - id: tm1

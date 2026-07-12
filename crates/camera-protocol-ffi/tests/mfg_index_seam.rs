@@ -179,6 +179,121 @@ fn synthetic_red_advert() -> Observation {
     )
 }
 
+fn synthetic_red_pairing_advert() -> Observation {
+    ble_advert(
+        &[],
+        0x04D8,
+        &[0x01, b'A', b'B', b'C', b'D', b'E'],
+        Some("GFX100 II"),
+    )
+}
+
+fn synthetic_legacy_startup_advert() -> Observation {
+    ble_advert(
+        &["731893F9-744E-4899-B7E3-174106FF2B82"],
+        0x04D8,
+        &[0x02, 0x44, 0x73, 0x2a, 0x80, 0x00],
+        Some("GFX100 II"),
+    )
+}
+
+fn synthetic_red_startup_advert() -> Observation {
+    ble_advert(
+        &["804DAA8E-FFEB-4AB3-8E75-6EDD7303208D"],
+        0x04D8,
+        &[0x01, b'A', b'B', b'C', b'D', b'E', 0x00],
+        Some("GFX100 II"),
+    )
+}
+
+#[test]
+fn saved_reconnect_classifies_startup_and_awake_adverts_from_persisted_identity() {
+    let s = store();
+    assert_eq!(
+        s.reconnect_policy("gfx100ii".into())
+            .unwrap()
+            .scan_timeout_ms,
+        60_000
+    );
+
+    let legacy_scope = vec![
+        KeyValue {
+            key: "pairingKeyBytes".into(),
+            value: "44732a80".into(),
+        },
+        KeyValue {
+            key: "style".into(),
+            value: "legacy".into(),
+        },
+    ];
+    match s.reconnect_decision(
+        "gfx100ii".into(),
+        synthetic_legacy_startup_advert(),
+        legacy_scope.clone(),
+    ) {
+        ReconnectDecision::Wake { plan, .. } => {
+            assert_eq!(plan.mechanism, "ble-wake");
+            assert!(matches!(
+                plan.steps.as_slice(),
+                [
+                    Step::BleConnect { .. },
+                    Step::BleAwaitDisconnect {
+                        timeout_ms: 60_000,
+                        ..
+                    }
+                ]
+            ));
+        }
+        other => panic!("expected wake, got {other:?}"),
+    }
+    assert!(matches!(
+        s.reconnect_decision("gfx100ii".into(), synthetic_legacy_advert(), legacy_scope),
+        ReconnectDecision::Ready { plan, .. } if plan.mechanism == "ble-reconnect"
+    ));
+
+    let red_scope = vec![KeyValue {
+        key: "shortSerial".into(),
+        value: "ABCDE".into(),
+    }];
+    assert!(matches!(
+        s.reconnect_decision(
+            "gfx100ii".into(),
+            synthetic_red_startup_advert(),
+            red_scope.clone()
+        ),
+        ReconnectDecision::Wake { .. }
+    ));
+    assert!(matches!(
+        s.reconnect_decision("gfx100ii".into(), synthetic_red_advert(), red_scope),
+        ReconnectDecision::Ready { .. }
+    ));
+}
+
+#[test]
+fn saved_reconnect_rejects_wrong_identity_and_startup_is_not_discoverable() {
+    let s = store();
+    assert!(matches!(
+        s.recognize(synthetic_legacy_startup_advert()),
+        Recognition::NoMatch
+    ));
+    assert!(matches!(
+        s.recognize(synthetic_red_startup_advert()),
+        Recognition::NoMatch
+    ));
+    assert!(matches!(
+        s.recognize(synthetic_red_advert()),
+        Recognition::NoMatch
+    ));
+    let wrong = vec![KeyValue {
+        key: "pairingKeyBytes".into(),
+        value: "00000000".into(),
+    }];
+    assert!(matches!(
+        s.reconnect_decision("gfx100ii".into(), synthetic_legacy_startup_advert(), wrong),
+        ReconnectDecision::NoMatch
+    ));
+}
+
 #[test]
 fn legacy_advert_recognised_as_gfx100ii_with_legacy_style() {
     let s = store();
@@ -212,7 +327,7 @@ fn legacy_advert_recognised_as_gfx100ii_with_legacy_style() {
 #[test]
 fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
     let s = store();
-    match s.recognize(synthetic_red_advert()) {
+    match s.recognize(synthetic_red_pairing_advert()) {
         Recognition::Candidate {
             model,
             connection,
@@ -329,8 +444,11 @@ fn establishment_returns_walkable_ble_plan() {
     // Step 0: bleConnect with no fields.
     assert!(matches!(plan.steps[0], Step::BleConnect { .. }));
 
-    // Step 1: bleRead protectedSerialString tolerant retries=20.
-    match &plan.steps[1] {
+    // Step 1: explicit service discovery; bleConnect is connection-only.
+    assert!(matches!(plan.steps[1], Step::BleDiscoverServices { .. }));
+
+    // Step 2: bleRead protectedSerialString tolerant retries=20.
+    match &plan.steps[2] {
         Step::BleRead {
             gatt,
             encoding,
@@ -349,8 +467,8 @@ fn establishment_returns_walkable_ble_plan() {
         other => panic!("expected BleRead, got {other:?}"),
     }
 
-    // Step 2: bleWrite pairingKey ← captured pairingKeyBytes.
-    match &plan.steps[2] {
+    // Step 3: bleWrite pairingKey ← captured pairingKeyBytes.
+    match &plan.steps[3] {
         Step::BleWrite { gatt, value, .. } => {
             assert_eq!(gatt, "ABA356EB-9633-4E60-B73F-F52516DBD671");
             match value {
@@ -361,8 +479,8 @@ fn establishment_returns_walkable_ble_plan() {
         other => panic!("expected BleWrite, got {other:?}"),
     }
 
-    // Step 3: bleWrite deviceNameString ← runtime terminalName utf8.
-    match &plan.steps[3] {
+    // Step 4: bleWrite deviceNameString ← runtime terminalName utf8.
+    match &plan.steps[4] {
         Step::BleWrite { gatt, value, .. } => {
             assert_eq!(gatt, "85B9163E-62D1-49FF-A6F5-054B4630D4A1");
             match value {
@@ -376,8 +494,8 @@ fn establishment_returns_walkable_ble_plan() {
         other => panic!("expected BleWrite, got {other:?}"),
     }
 
-    // Step 4: if style == red — RED identification number exchange.
-    match &plan.steps[4] {
+    // Step 5: if style == red — RED identification number exchange.
+    match &plan.steps[5] {
         Step::If {
             condition,
             then_branch,
@@ -630,12 +748,16 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         plan.persist,
         vec!["ssid".to_string(), "passphrase".to_string()]
     );
-    assert_eq!(plan.post_exit_readiness.len(), 2);
+    assert_eq!(plan.post_exit_readiness.len(), 3);
     assert!(matches!(
         plan.post_exit_readiness[0],
         Step::BleConnect { .. }
     ));
-    match &plan.post_exit_readiness[1] {
+    assert!(matches!(
+        plan.post_exit_readiness[1],
+        Step::BleDiscoverServices { .. }
+    ));
+    match &plan.post_exit_readiness[2] {
         Step::BleAwaitUntil {
             source: AwaitSource::Notify {
                 gatt, seed_read, ..

@@ -61,6 +61,7 @@ fn remote_shutter_writes_the_s1_s2_release_sequence() {
         r.log(),
         &[
             BleEvent::Connect,
+            BleEvent::DiscoverServices,
             BleEvent::Write {
                 uuid: sr.clone(),
                 value: vec![0x01, 0x00]
@@ -78,6 +79,32 @@ fn remote_shutter_writes_the_s1_s2_release_sequence() {
                 value: vec![0x00, 0x00]
             },
         ],
+    );
+}
+
+#[test]
+fn gatt_access_fails_when_a_plan_omits_service_discovery() {
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let mut steps = ble.action("remote-shutter").unwrap().steps.clone();
+    steps.remove(1); // deliberately remove bleDiscoverServices
+    let mut responder = BleResponder::new(ble.gatt.values().cloned());
+
+    let result = walk_establishment(
+        &mut responder,
+        &steps,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    );
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("GATT must remain unavailable until discovery completes"),
+    };
+
+    assert!(
+        error.message.contains("services not discovered"),
+        "{error:?}"
     );
 }
 

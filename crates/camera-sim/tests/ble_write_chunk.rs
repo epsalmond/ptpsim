@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use camera_config::index::{
-    BleConnectStep, BleWriteChunkStep, ChunkField, ChunkFrameField, Encoding, Step, StepOptions,
+    BleConnectStep, BleDiscoverServicesStep, BleWriteChunkStep, ChunkField, ChunkFrameField,
+    Encoding, Step, StepOptions,
 };
 use camera_sim::{walk_establishment, BleResponder};
 
@@ -17,6 +18,7 @@ const GATT: &str = "0000FFFF-0000-0000-0000-00000000DA7A";
 fn chunk_step(size: u32) -> Vec<Step> {
     vec![
         Step::BleConnect(BleConnectStep::default()),
+        Step::BleDiscoverServices(BleDiscoverServicesStep::default()),
         Step::BleWriteChunk(BleWriteChunkStep {
             source: "blob".into(),
             index: "idx".into(),

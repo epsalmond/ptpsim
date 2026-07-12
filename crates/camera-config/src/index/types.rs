@@ -106,11 +106,22 @@ pub struct FamilyBleBlock {
     /// mechanism selects one (§11). Resolve via [`Self::establishment`].
     #[serde(default)]
     pub establishments: BTreeMap<String, EstablishmentBlock>,
+    /// Saved-camera reconnect policy. Advert signatures opt into this policy
+    /// with a wake/ready route; consumers keep scanning for at most this
+    /// manifest-authored window before surfacing unavailable guidance.
+    #[serde(default)]
+    pub reconnect: Option<BleReconnectPolicy>,
     /// Named BLE-native control actions keyed by name (`remote-shutter`,
     /// `write-time`, `write-gps`) — runnable from the resting BLE link without
     /// Wi-Fi (#91). Resolve via [`Self::action`].
     #[serde(default)]
     pub actions: BTreeMap<String, BleActionBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleReconnectPolicy {
+    pub scan_timeout_ms: u32,
 }
 
 impl FamilyBleBlock {
@@ -211,6 +222,7 @@ pub struct BleActionBlock {
 #[serde(rename_all = "camelCase")]
 pub enum Step {
     BleConnect(BleConnectStep),
+    BleAwaitDisconnect(BleAwaitDisconnectStep),
     BleRequestMtu(BleRequestMtuStep),
     BleDiscoverServices(BleDiscoverServicesStep),
     BleRead(BleReadStep),
@@ -230,6 +242,7 @@ impl Step {
     pub fn verb_name(&self) -> &'static str {
         match self {
             Step::BleConnect(_) => "bleConnect",
+            Step::BleAwaitDisconnect(_) => "bleAwaitDisconnect",
             Step::BleRequestMtu(_) => "bleRequestMtu",
             Step::BleDiscoverServices(_) => "bleDiscoverServices",
             Step::BleRead(_) => "bleRead",
@@ -250,6 +263,7 @@ impl Step {
     pub fn options(&self) -> StepOptions {
         match self {
             Step::BleConnect(s) => s.opts.clone(),
+            Step::BleAwaitDisconnect(s) => s.opts.clone(),
             Step::BleRequestMtu(s) => s.opts.clone(),
             Step::BleDiscoverServices(s) => s.opts.clone(),
             Step::BleRead(s) => s.opts.clone(),
@@ -286,6 +300,17 @@ pub struct StepOptions {
 #[serde(rename_all = "camelCase", default)]
 pub struct BleConnectStep {
     #[serde(flatten)]
+    pub opts: StepOptions,
+}
+
+/// `bleAwaitDisconnect: { timeoutMs: 60000 }` — wait for the peer to drop
+/// the active BLE link. Used by manifest-authored remote-boot flows where the
+/// GATT connect is the wake trigger and the camera disconnects while booting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleAwaitDisconnectStep {
+    pub timeout_ms: u32,
+    #[serde(flatten, default)]
     pub opts: StepOptions,
 }
 
@@ -863,6 +888,37 @@ pub struct BleAdvertSignature {
     #[serde(default)]
     pub scope: BTreeMap<String, String>,
     pub suggests: SuggestsBlock,
+    /// Whether normal discovery may surface this signature as an Add Camera
+    /// candidate. Startup and already-paired advertisements remain available
+    /// to `reconnect_decision` without becoming pairing rows.
+    #[serde(default = "default_true")]
+    pub discoverable: bool,
+    /// Optional saved-camera route evaluated with the signature's captured
+    /// scope and the host's persisted scope.
+    #[serde(default)]
+    pub reconnect: Option<ReconnectSuggestion>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReconnectDisposition {
+    Wake,
+    Ready,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconnectSuggestion {
+    pub disposition: ReconnectDisposition,
+    /// Establishment registry key (`ble-wake`, `ble-reconnect`, ...).
+    pub mechanism: String,
+    /// Scope keys that must exist and compare equal in both the observed
+    /// signature scope and the persisted saved-camera scope.
+    pub identity: Vec<String>,
 }
 
 /// Predicate over an observed BLE advert (§11.14). Authored in YAML as a

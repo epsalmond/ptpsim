@@ -20,7 +20,7 @@ pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
     BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, EstablishmentPlan,
     EstablishmentRefinement, ModelMatch, NotifyCapture, Observation, Predicate, PredicateOp,
-    Recognition, Step, StepOptions, StepValue, Transform,
+    Recognition, ReconnectDecision, ReconnectPolicy, Step, StepOptions, StepValue, Transform,
 };
 
 uniffi::setup_scaffolding!();
@@ -1622,6 +1622,48 @@ impl ConfigStore {
                 mfg_index::recognize_ble(index, &facts)
             }
         }
+    }
+
+    /// Manifest-authored timeout for scanning one known saved camera.
+    pub fn reconnect_policy(&self, model: String) -> Option<ReconnectPolicy> {
+        let index = self.inner.index.as_ref()?;
+        mfg_index::reconnect_policy(index, &model)
+    }
+
+    /// Classify one advertisement for a known saved camera. Identity matching,
+    /// standby-vs-awake state, and plan selection all come from manifest data.
+    pub fn reconnect_decision(
+        &self,
+        model: String,
+        observation: Observation,
+        persisted_scope: Vec<KeyValue>,
+    ) -> ReconnectDecision {
+        let Some(index) = &self.inner.index else {
+            return ReconnectDecision::NoMatch;
+        };
+        let Observation::BleAdvert {
+            service_uuids,
+            manufacturer_data,
+            service_data,
+            local_name,
+            tx_power,
+            ad_records,
+        } = observation;
+        let facts = cc::index::eval::BleAdvertFacts {
+            service_uuids,
+            manufacturer_data: manufacturer_data.map(|m| (m.company_id, m.payload)),
+            service_data: service_data
+                .into_iter()
+                .map(|s| (s.uuid, s.payload))
+                .collect(),
+            local_name,
+            tx_power,
+            ad_records: ad_records
+                .into_iter()
+                .map(|r| (r.ad_type, r.payload))
+                .collect(),
+        };
+        mfg_index::reconnect_decision(index, &model, &facts, &persisted_scope)
     }
 
     /// Per-(model, connection) establishment plan with the given

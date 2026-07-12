@@ -103,6 +103,35 @@ fn family_ble_block_merges_into_gfx100ii_view() {
     );
 }
 
+#[test]
+fn reconnect_routes_fail_closed_at_index_load() {
+    let original = data("fuji/index.yaml");
+
+    let zero_timeout = original.replacen("scanTimeoutMs: 60000", "scanTimeoutMs: 0", 1);
+    let error = ResolvedManufacturerIndex::from_yaml(&zero_timeout)
+        .expect_err("a zero reconnect scan window must fail");
+    assert!(error.to_string().contains("must be greater than zero"));
+
+    let unknown_plan = original.replacen(
+        "mechanism: ble-wake\n          identity:",
+        "mechanism: missing-wake\n          identity:",
+        1,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&unknown_plan)
+        .expect_err("an unknown reconnect plan must fail");
+    assert!(error
+        .to_string()
+        .contains("unknown establishment 'missing-wake'"));
+
+    let unknown_identity =
+        original.replacen("identity: [pairingKeyBytes]", "identity: [notCaptured]", 1);
+    let error = ResolvedManufacturerIndex::from_yaml(&unknown_identity)
+        .expect_err("an identity absent from signature scope must fail");
+    assert!(error
+        .to_string()
+        .contains("identity key 'notCaptured' is not captured or scoped"));
+}
+
 // ---------------------------------------------------------------------------
 // §11.3 GATT-name → UUID at index-build
 // ---------------------------------------------------------------------------
@@ -227,7 +256,11 @@ models:
 fn static_path_refs_substitute_in_signatures() {
     let idx = real_index();
     let gfx = idx.models.iter().find(|m| m.id == "gfx100ii").unwrap();
-    let (name, sig) = &gfx.signatures[0];
+    let (name, sig) = gfx
+        .signatures
+        .iter()
+        .find(|(name, _)| name == "bleLegacyAdvert")
+        .unwrap();
     assert_eq!(name, "bleLegacyAdvert");
     let Signature::BleAdvert(sig) = sig;
     // The legacy require is all-of [manufacturerData, serviceUuids] with
@@ -321,8 +354,14 @@ fn signatures_preserve_file_declaration_order() {
     let names: Vec<&str> = gfx.signatures.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        vec!["bleLegacyAdvert", "bleRedAdvert"],
-        "legacy is declared first and must be tried first (§11.7)",
+        vec![
+            "bleStartupLegacyAdvert",
+            "bleStartupRedAdvert",
+            "bleAwakeRedAdvert",
+            "bleLegacyAdvert",
+            "bleRedAdvert",
+        ],
+        "startup/awake reconnect routes must precede broad pairing signatures (§11.7)",
     );
 }
 
@@ -620,7 +659,12 @@ models:
 fn signature_scope_carries_literal_facts() {
     let idx = real_index();
     let gfx = idx.models.iter().find(|m| m.id == "gfx100ii").unwrap();
-    let Signature::BleAdvert(legacy) = &gfx.signatures[0].1;
+    let Signature::BleAdvert(legacy) = &gfx
+        .signatures
+        .iter()
+        .find(|(name, _)| name == "bleLegacyAdvert")
+        .unwrap()
+        .1;
     assert_eq!(
         legacy.scope.get("style").map(String::as_str),
         Some("legacy")
@@ -628,7 +672,12 @@ fn signature_scope_carries_literal_facts() {
     assert!(matches!(legacy.suggests.confidence, Confidence::High));
     assert_eq!(legacy.suggests.connection, "ble");
 
-    let Signature::BleAdvert(red) = &gfx.signatures[1].1;
+    let Signature::BleAdvert(red) = &gfx
+        .signatures
+        .iter()
+        .find(|(name, _)| name == "bleRedAdvert")
+        .unwrap()
+        .1;
     assert_eq!(red.scope.get("style").map(String::as_str), Some("red"));
     // RED captures 5 ASCII bytes into pairingKeyBytes AND shortSerial,
     // both from the manufacturer-data payload.
