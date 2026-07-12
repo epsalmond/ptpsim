@@ -635,6 +635,11 @@ pub struct ConnectionInfo {
     pub auto_discoverable: bool,
     // --- #81 per-connection traits: the app selects behavior from these
     // instead of branching on `id`. `None` → the app falls back. ---
+    /// Closing the active command transport may remove its listener, so a
+    /// consumer must not assume it can immediately redial the same endpoint as
+    /// generic recovery. An outer connection re-establishment may create a new
+    /// listener. False means this restriction is not declared.
+    pub command_listener_volatile: bool,
     pub init_shape: Option<String>,
     pub live_view_delivery: Option<FfiLiveViewDelivery>,
     pub shutter_recipe: Option<ShutterRecipe>,
@@ -1707,6 +1712,7 @@ impl ConfigStore {
                 discovery: yaml_path_str(&c.extra, &["discovery", "mechanism"]).unwrap_or_default(),
                 auto_discoverable: yaml_path_bool(&c.extra, &["discovery", "autoDiscoverable"])
                     .unwrap_or(true),
+                command_listener_volatile: c.command_listener_volatile,
                 init_shape: c.init_shape.clone(),
                 live_view_delivery: c.live_view_delivery.as_ref().map(Into::into),
                 shutter_recipe: c.shutter_recipe.map(Into::into),
