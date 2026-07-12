@@ -1122,6 +1122,41 @@ reestablishConnection:
 }
 
 #[test]
+fn destructive_reestablishment_requires_a_runnable_cold_path() {
+    let without_establishment = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    entries:
+      - { to: image-transfer, steps: [] }
+      - to: image-transfer
+        from: shooting/stills
+        reestablishConnection: { exitSteps: [], params: { launchMode: "3" } }
+"#;
+    assert!(
+        CameraManifest::from_yaml(without_establishment).is_err(),
+        "re-establishment without a connection mechanism must not load"
+    );
+
+    let without_cold_entry = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    establishment: test
+    entries:
+      - to: image-transfer
+        from: shooting/stills
+        reestablishConnection: { exitSteps: [], params: { launchMode: "3" } }
+"#;
+    assert!(
+        CameraManifest::from_yaml(without_cold_entry).is_err(),
+        "re-establishment without a cold PTP entry must not load"
+    );
+}
+
+#[test]
 fn per_connection_traits_parse() {
     use camera_config::{LiveViewDeliveryKind, ShutterRecipe};
     let m = gfx();

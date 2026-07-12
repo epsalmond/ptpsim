@@ -181,6 +181,12 @@ per-platform packaging:
    closes auxiliary socket roles normally, sends the resolved transport-close
    frame on the command socket after the PTP CloseSession response, flushes it,
    and closes the command socket cleanly.
+
+   Store construction fails closed when a re-establishment has no connection
+   establishment mechanism, no cold PTP entry, an incomplete UniFFI step mirror,
+   or (for manufacturer-index stores) parameter keys that do not exactly match
+   the resolved establishment plan. A consumer never receives a destructive
+   partial plan.
 4. **Drive controls, gated.** Before any op: `operation_available(...)`. To set a
    value: `control_for(...)` tells you the mechanism; the codec encodes the bytes.
 5. **Detect state.** Feed observed prop values to `detect_mode` / `operation_available`

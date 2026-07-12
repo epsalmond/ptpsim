@@ -70,6 +70,7 @@ impl CameraManifest {
     /// call [`CameraManifest::validate`] for those lints.
     pub fn from_yaml(text: &str) -> Result<Self, ManifestError> {
         let m: CameraManifest = serde_yaml::from_str(text)?;
+        m.require_valid_mode_entries()?;
         Ok(m)
     }
 
@@ -88,7 +89,9 @@ impl CameraManifest {
             let ov: serde_yaml::Value = serde_yaml::from_str(ov)?;
             merged = merge_yaml(merged, ov);
         }
-        Ok(serde_yaml::from_value(merged)?)
+        let manifest: CameraManifest = serde_yaml::from_value(merged)?;
+        manifest.require_valid_mode_entries()?;
+        Ok(manifest)
     }
 
     /// Serialize back to YAML (used by the generator to write proposals).
@@ -286,24 +289,6 @@ impl CameraManifest {
                             &defined_gates,
                             &mut lints,
                         );
-                        if conn.establishment.is_none() {
-                            lints.push(Lint::warn(format!(
-                                "{ctx} reestablishes a connection with no establishment mechanism"
-                            )));
-                        }
-                        let cold = conn
-                            .entries
-                            .iter()
-                            .find(|candidate| candidate.to == entry.to && candidate.from.is_none());
-                        if !matches!(
-                            cold.map(|candidate| &candidate.execution),
-                            Some(ModeEntryExecution::Ptp { .. })
-                        ) {
-                            lints.push(Lint::warn(format!(
-                                "{ctx} requires a non-recursive cold PTP entry for '{}'",
-                                entry.to
-                            )));
-                        }
                     }
                     ModeEntryExecution::UserInstruction { .. } => {}
                 }
@@ -318,6 +303,42 @@ impl CameraManifest {
             }
         }
         lints
+    }
+
+    /// Fail closed on destructive outer transitions. A consumer must be able to
+    /// establish the connection and resolve a non-recursive cold PTP entry before
+    /// it executes the old session's exit steps.
+    pub fn require_valid_mode_entries(&self) -> Result<(), ManifestError> {
+        for (connection_id, connection) in &self.connections {
+            for (index, entry) in connection.entries.iter().enumerate() {
+                if !matches!(
+                    entry.execution,
+                    ModeEntryExecution::ReestablishConnection(_)
+                ) {
+                    continue;
+                }
+                let path = format!("connections.{connection_id}.entries[{index}]");
+                if connection.establishment.is_none() {
+                    return Err(ManifestError::Contract(format!(
+                        "{path} reestablishes a connection with no establishment mechanism"
+                    )));
+                }
+                let cold = connection
+                    .entries
+                    .iter()
+                    .find(|candidate| candidate.to == entry.to && candidate.from.is_none());
+                if !matches!(
+                    cold.map(|candidate| &candidate.execution),
+                    Some(ModeEntryExecution::Ptp { .. })
+                ) {
+                    return Err(ManifestError::Contract(format!(
+                        "{path} requires a non-recursive cold PTP entry for '{}'",
+                        entry.to
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Returns an error if the manifest's schema is not understood by this build.

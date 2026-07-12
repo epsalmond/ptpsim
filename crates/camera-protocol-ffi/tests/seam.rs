@@ -555,6 +555,34 @@ fn take_to_get_entry_reestablishes_with_image_import_launch() {
 }
 
 #[test]
+fn store_rejects_an_unmappable_reestablishment_exit_step() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    establishment: test
+    entries:
+      - { to: image-transfer, steps: [] }
+      - to: image-transfer
+        from: shooting/stills
+        reestablishConnection:
+          params: { launchMode: "3" }
+          exitSteps:
+            - { sendOp: not-a-hex-code }
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("unmappable exit step must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("mode entry app[1] exitSteps contains an unmappable step")
+    ));
+}
+
+#[test]
 fn get_to_take_entry_reopens_then_starts_live_view() {
     let s = store();
     let plan = s

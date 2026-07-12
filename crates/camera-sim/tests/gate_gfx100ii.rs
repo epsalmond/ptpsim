@@ -3,6 +3,7 @@
 //! "chords" — and enumerates believably. Engine-level (the service smoke test covers
 //! the TCP path). This is the vcam-replacement believability gate.
 
+use camera_config::index::ResolvedManufacturerIndex;
 use camera_config::model::ReopenSession;
 use camera_config::{
     ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, ModeEntry, ModeEntryExecution,
@@ -10,16 +11,22 @@ use camera_config::{
 };
 use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
 use camera_sim::{
-    walk_ptpip, walk_ptpip_in, Engine, Fault, Phase, Reply, StateOverlay, StreamCompletion,
+    walk_establishment, walk_ptpip, walk_ptpip_in, BleResponder, Engine, Fault, Phase, Reply,
+    StateOverlay, StreamCompletion,
 };
 use ptp_core::{DeviceInfo, ObjectInfo, OperationRequest, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-fn consolidated() -> CameraManifest {
+fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml");
-    CameraManifest::from_yaml(&std::fs::read_to_string(&p).unwrap())
+        .join("../../packages/camera-config-data")
+        .join(rel);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+}
+
+fn consolidated() -> CameraManifest {
+    CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml"))
         .unwrap_or_else(|e| panic!("consolidated loads: {e}"))
 }
 
@@ -842,6 +849,62 @@ fn live_view_to_image_transfer_reestablishes_then_runs_cold_entry() {
         .exit_steps
         .iter()
         .all(|step| { !matches!(step.send_op.as_deref(), Some("0x9050" | "0x9053")) }));
+
+    // Compose the real manufacturer-index establishment plan before creating
+    // the fresh PTP engine. This catches stale parameter names and BLE/AP drift.
+    let view = ResolvedManufacturerIndex::from_yaml(&data("fuji/index.yaml"))
+        .expect("Fuji index loads")
+        .models
+        .into_iter()
+        .find(|model| model.id == "gfx100ii")
+        .expect("GFX100 II model view");
+    let ble = view.ble.as_ref().expect("GFX100 II inherits BLE data");
+    let establishment = ble
+        .establishment("ble-establish-wifi-ap")
+        .expect("app establishment plan");
+    assert_eq!(
+        establishment.params,
+        reestablish.params.keys().cloned().collect::<Vec<_>>(),
+        "the mode edge binds every establishment parameter exactly"
+    );
+    let gatt = |name: &str| {
+        ble.gatt
+            .get(name)
+            .unwrap_or_else(|| panic!("GATT catalog contains {name}"))
+            .clone()
+    };
+    let ap_state = gatt("apState");
+    let launch = gatt("functionLaunchRequest");
+    let ssid = gatt("cameraSSIDNameString");
+    let passphrase = gatt("cameraWiFiPassphraseString");
+    let mut responder = BleResponder::new(vec![
+        ap_state.clone(),
+        launch.clone(),
+        ssid.clone(),
+        passphrase.clone(),
+        gatt("imageTransferSetting"),
+    ])
+    .serve_read(&ap_state, &[0x00, 0x80])
+    .queue_notification(&ap_state, &[0x01, 0x80])
+    .serve_read(&ssid, b"GFX100II-TEST")
+    .serve_read(&passphrase, b"test-passphrase");
+    let readiness = walk_establishment(
+        &mut responder,
+        &establishment.post_exit_readiness,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &reestablish.params,
+    )
+    .expect("post-exit readiness reaches the relaunchable baseline");
+    walk_establishment(
+        &mut responder,
+        &establishment.steps,
+        &readiness.scope,
+        &BTreeMap::new(),
+        &reestablish.params,
+    )
+    .expect("image-import BLE/AP establishment completes");
+    assert_eq!(responder.written(&launch), &[&[0x03, 0x00][..]]);
 
     let cold = app
         .entries

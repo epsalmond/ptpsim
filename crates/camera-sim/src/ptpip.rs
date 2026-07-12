@@ -250,8 +250,8 @@ impl Ctx<'_> {
                 && matches!(self.engine.phase(), Phase::LiveView | Phase::Streaming)
             {
                 // The camera tore down the command-port listener on the transport-
-                // close while live-view was active, so the reconnect is refused —
-                // switch live-view → image-transfer in-session (#103).
+                // close while live-view was active, so an immediate reconnect is
+                // refused. The caller must use an outer re-establishment (#244).
                 return Err(err(
                     "reopenSession: camera refused the reconnect — the command-port \
                      listener does not survive a live-view transport-close on this \

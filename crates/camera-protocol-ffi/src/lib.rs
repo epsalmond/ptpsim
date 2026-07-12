@@ -1577,6 +1577,10 @@ impl ConfigStore {
         // inner Arc is private to camera-config; here we own the FFI-level
         // Arc<ConfigStore>.
         let inner = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+        validate_mode_entry_mappings(&inner.manifest)?;
+        for body in inner.bodies.values() {
+            validate_mode_entry_mappings(body)?;
+        }
         Ok(Arc::new(ConfigStore { inner }))
     }
 
@@ -1919,12 +1923,19 @@ impl ConfigStore {
         let e = c.entries.iter().find(|e| e.to == to && e.from == from)?;
         let execution = match &e.execution {
             cc::ModeEntryExecution::Ptp { steps } => ModeEntryExecution::Ptp {
-                steps: steps.iter().filter_map(map_step).collect(),
+                steps: steps
+                    .iter()
+                    .map(|step| map_step(step).expect("mode entries validated at store load"))
+                    .collect(),
             },
             cc::ModeEntryExecution::ReestablishConnection(reestablish) => {
                 ModeEntryExecution::ReestablishConnection {
                     connection,
-                    exit_steps: reestablish.exit_steps.iter().filter_map(map_step).collect(),
+                    exit_steps: reestablish
+                        .exit_steps
+                        .iter()
+                        .map(|step| map_step(step).expect("mode entries validated at store load"))
+                        .collect(),
                     establishment_params: reestablish
                         .params
                         .iter()
@@ -2342,6 +2353,7 @@ fn build_store(
 ) -> Result<Arc<ConfigStore>, ConfigError> {
     m.require_supported_schema()
         .map_err(|e| ConfigError::Schema(e.to_string()))?;
+    validate_mode_entry_mappings(&m)?;
     let mut store = cc::ConfigStore::new(m);
     if let Some(my) = manufacturer_yaml {
         let d = cc::ManufacturerDefaults::from_yaml(&my)
@@ -2349,6 +2361,24 @@ fn build_store(
         store = store.with_manufacturer(d);
     }
     Ok(Arc::new(ConfigStore { inner: store }))
+}
+
+fn validate_mode_entry_mappings(manifest: &cc::CameraManifest) -> Result<(), ConfigError> {
+    for (connection, definition) in &manifest.connections {
+        for (index, entry) in definition.entries.iter().enumerate() {
+            let context = format!("mode entry {connection}[{index}]");
+            match &entry.execution {
+                cc::ModeEntryExecution::Ptp { steps } => {
+                    try_map_steps(steps, &context)?;
+                }
+                cc::ModeEntryExecution::ReestablishConnection(reestablish) => {
+                    try_map_steps(&reestablish.exit_steps, &format!("{context} exitSteps"))?;
+                }
+                cc::ModeEntryExecution::UserInstruction { .. } => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 fn prop_view(observed: &[PropObservation]) -> cc::PropView {
