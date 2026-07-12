@@ -5,8 +5,14 @@ set -eu
 : "${REGISTRY:?REGISTRY is required}"
 : "${REGISTRY_USERNAME:?REGISTRY_USERNAME is required}"
 : "${REGISTRY_PASSWORD:?REGISTRY_PASSWORD is required}"
-: "${CI_WORKSPACE:?CI_WORKSPACE is required}"
 : "${CI_COMMIT_SHA:?CI_COMMIT_SHA is required}"
+# An orchestrating repo builds a ptpsim revision that differs from its own
+# CI_COMMIT_SHA; it passes the built revision explicitly.
+expected_revision="${EXPECTED_REVISION:-$CI_COMMIT_SHA}"
+# Fixtures live in the ptpsim checkout, which an orchestrating repo places in
+# a subdirectory of its workspace — resolve them from this script's location,
+# not from CI_WORKSPACE.
+source_root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 
 container="ptpsim-smoke-${CI_PIPELINE_NUMBER:-local}"
 dockerd_log=/tmp/ptpsim-dockerd.log
@@ -43,12 +49,12 @@ printf 'image metadata: arch=%s user=%s revision=%s ports=%s\n' \
   "$architecture" "$runtime_user" "$revision" "$exposed_ports"
 [ "$architecture" = amd64 ]
 [ "$runtime_user" = 65532:65532 ]
-[ "$revision" = "$CI_COMMIT_SHA" ]
+[ "$revision" = "$expected_revision" ]
 case "$exposed_ports" in *'"55740/tcp"'*) ;; *) exit 1 ;; esac
 case "$exposed_ports" in *'"8080/tcp"'*) ;; *) exit 1 ;; esac
 
 docker run -d --name "$container" \
-  -v "$CI_WORKSPACE/packages/fixtures/startup-state/gfx100ii-iso-2000.yaml:/fixtures/startup.yaml:ro" \
+  -v "$source_root/packages/fixtures/startup-state/gfx100ii-iso-2000.yaml:/fixtures/startup.yaml:ro" \
   "$IMAGE_REF" \
     --manifest /etc/ptpsim/gfx100ii.consolidated.yaml \
     --media-root /var/lib/ptpsim/media-root \
