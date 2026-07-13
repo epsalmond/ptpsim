@@ -361,8 +361,12 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
   correlation. Map them onto your diagnostic telemetry bus.
 - `ConnectionActivityObserver` — receives the semantic activity stream from
   manifest-declared executor spans: `Started`, `Retrying`, and one terminal
-  `Succeeded`, `Failed`, or `Cancelled`. Host-checkpoint activities are driven
-  by the host and are never emitted by this executor.
+  `Succeeded`, `Failed`, or `Cancelled`. A retry carries its local attempt
+  ordinal/limit plus a typed failure whose context contains only
+  manifest-selected, decoded scope values. Terminal events carry an
+  activity-wide retry summary so consumers can aggregate retries without
+  reconstructing them from local ordinals. Host-checkpoint activities are
+  driven by the host and are never emitted by this executor.
 
 | call | walks |
 |---|---|
@@ -379,6 +383,17 @@ a measured guarantee, and MUST NOT be used as an execution deadline. The
 executor emits retry ordinals as total-attempt positions (`2` of `3`), keeps an
 activity alive across tolerated failures, and emits exactly one `Cancelled` if
 its future is dropped while an activity is active (§11.23).
+`ConnectionActivityRetry.ordinal` and `limit` apply to the retry primitive that
+emitted the event; they may reset when a later primitive retries within the same
+activity. `ConnectionActivityTerminalSummary.retryCount` counts every replay
+across the complete activity. Its optional `lastRetry` preserves the exact
+failure that triggered the most recent replay, including manifest-curated
+context captured before the scope advances on a recovered attempt. A terminal
+`Failed` event additionally carries the final failure; non-manifest retry paths
+have an empty curated context rather than exposing diagnostic strings as
+policy. Session correlation, timestamps, camera/client identity, and build
+provenance remain host-owned telemetry-envelope fields rather than executor
+events.
 Firmware refinement preserves one activity lifecycle across the splice when
 the first replacement span repeats the active descriptor's id, version, and
 metadata; a different identity or version starts a new lifecycle.

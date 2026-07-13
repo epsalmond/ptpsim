@@ -9,12 +9,13 @@ use camera_config as cc;
 use futures_util::future::{select, Either};
 use ptp_core::codes::{op, resp};
 
+use crate::executor::ActiveActivity;
 use crate::{
     frame_decode, frame_encode, ActionVerb, CaptureInfo, CaptureSourceInfo, ConfigStore,
-    ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityEvent,
-    ConnectionActivityObserver, EntryParam, EntryStep, ExecutorStepFailureKind, FfiAwaitSource,
-    FfiChunkSize, FfiLoopKind, FfiPredicate, KeyValue, PtpFraming, StepObserver, StepOutcome,
-    StepReport, ValueWidth,
+    ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityFailure,
+    ConnectionActivityObserver, ConnectionActivityRetry, EntryParam, EntryStep,
+    ExecutorStepFailureKind, FfiAwaitSource, FfiChunkSize, FfiLoopKind, FfiPredicate, KeyValue,
+    PtpFraming, StepObserver, StepOutcome, StepReport, ValueWidth,
 };
 
 const DEFAULT_OP_TIMEOUT_MS: u32 = 10_000;
@@ -319,6 +320,15 @@ struct StepError {
     meta: Option<TxMeta>,
 }
 
+fn ptp_activity_failure(error: &StepError) -> ConnectionActivityFailure {
+    let kind = if error.class == FailureClass::Deadline {
+        ExecutorStepFailureKind::DeadlineExceeded
+    } else {
+        ExecutorStepFailureKind::Other
+    };
+    ConnectionActivityFailure::without_context(kind)
+}
+
 impl From<StepError> for PtpExecutorError {
     fn from(error: StepError) -> Self {
         let mut context = Vec::new();
@@ -355,6 +365,11 @@ struct WireReply {
     payload: Vec<u8>,
 }
 
+struct PtpActiveActivity {
+    descriptor: ConnectionActivityDescriptor,
+    lifecycle: ActiveActivity,
+}
+
 struct PtpCtx {
     store: Arc<ConfigStore>,
     connection: String,
@@ -364,7 +379,7 @@ struct PtpCtx {
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
     activities: Vec<ConnectionActivityDescriptor>,
-    active_activity: Option<ConnectionActivityDescriptor>,
+    active_activity: Option<PtpActiveActivity>,
     observed: cc::PropView,
     bindings: BTreeMap<String, u64>,
     runtime_params: BTreeMap<String, u64>,
@@ -373,18 +388,6 @@ struct PtpCtx {
     steps_run: u32,
     control_attempts: Option<u32>,
     deferred_tolerance: Option<StepError>,
-}
-
-impl Drop for PtpCtx {
-    fn drop(&mut self) {
-        if let Some(activity) = self.active_activity.take() {
-            self.activity_observer
-                .on_activity(ConnectionActivityEvent::Cancelled {
-                    id: activity.id,
-                    version: activity.version,
-                });
-        }
-    }
 }
 
 impl PtpCtx {
@@ -419,7 +422,7 @@ impl PtpCtx {
     fn activity_ends_after(&self, index: u32) -> bool {
         self.active_activity.as_ref().is_some_and(|active| {
             matches!(
-                active.binding,
+                active.descriptor.binding,
                 ConnectionActivityBinding::ExecutorSpan {
                     end_step_exclusive,
                     ..
@@ -430,55 +433,48 @@ impl PtpCtx {
 
     fn start_activity(&mut self, activity: ConnectionActivityDescriptor) {
         self.finish_activity_success();
-        self.activity_observer
-            .on_activity(ConnectionActivityEvent::Started {
-                id: activity.id.clone(),
-                version: activity.version,
-            });
-        self.active_activity = Some(activity);
+        let lifecycle = ActiveActivity::new(
+            Arc::clone(&self.activity_observer),
+            activity.id.clone(),
+            activity.version,
+        );
+        self.active_activity = Some(PtpActiveActivity {
+            descriptor: activity,
+            lifecycle,
+        });
     }
 
     fn finish_activity_success(&mut self) {
         if let Some(activity) = self.active_activity.take() {
-            self.activity_observer
-                .on_activity(ConnectionActivityEvent::Succeeded {
-                    id: activity.id,
-                    version: activity.version,
-                });
+            activity.lifecycle.succeed();
         }
     }
 
     fn finish_activity_failure(&mut self, error: &StepError) {
         if let Some(activity) = self.active_activity.take() {
-            self.activity_observer
-                .on_activity(ConnectionActivityEvent::Failed {
-                    id: activity.id,
-                    version: activity.version,
-                    kind: if error.class == FailureClass::Deadline {
-                        ExecutorStepFailureKind::DeadlineExceeded
-                    } else {
-                        ExecutorStepFailureKind::Other
-                    },
-                });
+            activity.lifecycle.fail(ptp_activity_failure(error));
         }
     }
 
-    fn retry_activity(&self, ordinal: u32, limit: u32) {
-        if let Some(activity) = &self.active_activity {
-            self.activity_observer
-                .on_activity(ConnectionActivityEvent::Retrying {
-                    id: activity.id.clone(),
-                    version: activity.version,
-                    ordinal,
-                    limit,
-                });
+    fn retry_activity(&mut self, ordinal: u32, limit: u32, error: &StepError) {
+        if let Some(activity) = &mut self.active_activity {
+            activity.lifecycle.retry(ConnectionActivityRetry {
+                ordinal,
+                limit,
+                failure: ptp_activity_failure(error),
+            });
         }
     }
 
     fn activity_correlation(&self) -> (Option<String>, Option<u32>) {
         self.active_activity
             .as_ref()
-            .map(|activity| (Some(activity.id.clone()), Some(activity.version)))
+            .map(|activity| {
+                (
+                    Some(activity.lifecycle.id().to_string()),
+                    Some(activity.lifecycle.version()),
+                )
+            })
             .unwrap_or((None, None))
     }
 
@@ -870,7 +866,7 @@ impl PtpCtx {
                                     })
                                     && attempt < limit =>
                             {
-                                self.retry_activity(attempt + 1, limit);
+                                self.retry_activity(attempt + 1, limit, &error);
                                 if *retry_delay_ms > 0 {
                                     self.transport_deadline(
                                         self.transport.sleep(*retry_delay_ms),

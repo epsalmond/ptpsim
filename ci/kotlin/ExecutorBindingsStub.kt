@@ -3,7 +3,9 @@ package ptpsim.ci
 import uniffi.camera_protocol_ffi.BleExecutorTransport
 import uniffi.camera_protocol_ffi.CccdMode
 import uniffi.camera_protocol_ffi.ConnectionActivityEvent
+import uniffi.camera_protocol_ffi.ConnectionActivityFailure
 import uniffi.camera_protocol_ffi.ConnectionActivityObserver
+import uniffi.camera_protocol_ffi.ConnectionActivityRetry
 import uniffi.camera_protocol_ffi.ExecutorException
 import uniffi.camera_protocol_ffi.ExecutorStepFailureKind
 import uniffi.camera_protocol_ffi.Predicate
@@ -67,6 +69,24 @@ fun classifyFailure(kind: ExecutorStepFailureKind): Boolean = when (kind) {
     ExecutorStepFailureKind.CONDITION_REJECTED -> true
     ExecutorStepFailureKind.OTHER -> false
 }
+
+fun activityRetryCount(event: ConnectionActivityEvent): UInt = when (event) {
+    is ConnectionActivityEvent.Started -> 0u
+    is ConnectionActivityEvent.Retrying -> event.retry.ordinal
+    is ConnectionActivityEvent.Succeeded -> event.summary.retryCount
+    is ConnectionActivityEvent.Failed ->
+        event.summary.retryCount + event.failure.context.size.toUInt()
+    is ConnectionActivityEvent.Cancelled -> event.summary.retryCount
+}
+
+fun activityRetryBindingShape(): ConnectionActivityRetry = ConnectionActivityRetry(
+    ordinal = 2u,
+    limit = 3u,
+    failure = ConnectionActivityFailure(
+        kind = ExecutorStepFailureKind.CONDITION_REJECTED,
+        context = emptyList(),
+    ),
+)
 
 fun retryBindingShape(): Step = Step.Retry(
     steps = emptyList(),

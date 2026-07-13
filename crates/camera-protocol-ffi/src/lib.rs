@@ -18,7 +18,8 @@ use std::sync::Arc;
 pub mod executor;
 pub use executor::{
     run_ble_action, run_establishment, run_post_exit_readiness, BleExecutorTransport,
-    ConnectionActivityEvent, ConnectionActivityObserver, ExecutionOutcome, ExecutorError,
+    ConnectionActivityEvent, ConnectionActivityFailure, ConnectionActivityObserver,
+    ConnectionActivityRetry, ConnectionActivityTerminalSummary, ExecutionOutcome, ExecutorError,
     ExecutorStepFailureKind, StepObserver, StepOutcome, StepReport, TransportError,
 };
 pub mod ptp_executor;
@@ -1335,7 +1336,7 @@ pub struct SelectedObjectTransferInfo {
     pub read: Action,
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct KeyValue {
     pub key: String,
     pub value: String,

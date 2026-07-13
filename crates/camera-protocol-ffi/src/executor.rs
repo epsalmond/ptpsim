@@ -168,6 +168,53 @@ pub trait StepObserver: Send + Sync {
     fn on_step(&self, report: StepReport);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ExecutorStepFailureKind {
+    /// An executor-owned wall-clock budget or transport timeout elapsed.
+    DeadlineExceeded,
+    /// A manifest-declared terminal condition matched an observation.
+    ConditionRejected,
+    /// Any non-timeout transport, validation, transform, or plan-step failure.
+    Other,
+}
+
+/// Typed cause of an activity retry or terminal failure. `context` contains
+/// only manifest-selected, decoded scope values; raw diagnostic text stays on
+/// the executor error and step-report surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ConnectionActivityFailure {
+    pub kind: ExecutorStepFailureKind,
+    pub context: Vec<KeyValue>,
+}
+
+impl ConnectionActivityFailure {
+    pub(crate) fn without_context(kind: ExecutorStepFailureKind) -> Self {
+        Self {
+            kind,
+            context: Vec::new(),
+        }
+    }
+}
+
+/// One replay transition. `ordinal`/`limit` belong to the local retry
+/// primitive and may reset within a longer activity.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ConnectionActivityRetry {
+    pub ordinal: u32,
+    pub limit: u32,
+    pub failure: ConnectionActivityFailure,
+}
+
+/// Queryable terminal rollup for one activity lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ConnectionActivityTerminalSummary {
+    /// Every replay transition across the activity, independent of local
+    /// retry ordinals.
+    pub retry_count: u32,
+    /// The most recent failure that authorized a replay.
+    pub last_retry: Option<ConnectionActivityRetry>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum ConnectionActivityEvent {
     Started {
@@ -177,21 +224,23 @@ pub enum ConnectionActivityEvent {
     Retrying {
         id: String,
         version: u32,
-        ordinal: u32,
-        limit: u32,
+        retry: ConnectionActivityRetry,
     },
     Succeeded {
         id: String,
         version: u32,
+        summary: ConnectionActivityTerminalSummary,
     },
     Failed {
         id: String,
         version: u32,
-        kind: ExecutorStepFailureKind,
+        summary: ConnectionActivityTerminalSummary,
+        failure: ConnectionActivityFailure,
     },
     Cancelled {
         id: String,
         version: u32,
+        summary: ConnectionActivityTerminalSummary,
     },
 }
 
@@ -203,16 +252,6 @@ pub trait ConnectionActivityObserver: Send + Sync {
 // ---------------------------------------------------------------------------
 // Entry points
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum ExecutorStepFailureKind {
-    /// An executor-owned wall-clock budget or transport timeout elapsed.
-    DeadlineExceeded,
-    /// A manifest-declared terminal condition matched an observation.
-    ConditionRejected,
-    /// Any non-timeout transport, validation, transform, or plan-step failure.
-    Other,
-}
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum ExecutorError {
@@ -518,27 +557,47 @@ struct ExecCtx<'a> {
     refine: Option<RefineCtx<'a>>,
 }
 
-struct ActiveActivity {
+pub(crate) struct ActiveActivity {
     observer: Arc<dyn ConnectionActivityObserver>,
     id: String,
     version: u32,
+    retry_count: u32,
+    last_retry: Option<ConnectionActivityRetry>,
     terminal: bool,
 }
 
 impl ActiveActivity {
-    fn new(
+    pub(crate) fn new(
         observer: Arc<dyn ConnectionActivityObserver>,
-        descriptor: &ConfigActivityDescriptor,
+        id: String,
+        version: u32,
     ) -> Self {
         observer.on_activity(ConnectionActivityEvent::Started {
-            id: descriptor.id.clone(),
-            version: descriptor.version,
+            id: id.clone(),
+            version,
         });
         Self {
             observer,
-            id: descriptor.id.clone(),
-            version: descriptor.version,
+            id,
+            version,
+            retry_count: 0,
+            last_retry: None,
             terminal: false,
+        }
+    }
+
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(crate) fn version(&self) -> u32 {
+        self.version
+    }
+
+    fn summary(&self) -> ConnectionActivityTerminalSummary {
+        ConnectionActivityTerminalSummary {
+            retry_count: self.retry_count,
+            last_retry: self.last_retry.clone(),
         }
     }
 
@@ -546,19 +605,31 @@ impl ActiveActivity {
         self.observer.on_activity(event);
     }
 
-    fn succeed(mut self) {
+    pub(crate) fn retry(&mut self, retry: ConnectionActivityRetry) {
+        self.retry_count = self.retry_count.saturating_add(1);
+        self.last_retry = Some(retry.clone());
+        self.emit(ConnectionActivityEvent::Retrying {
+            id: self.id.clone(),
+            version: self.version,
+            retry,
+        });
+    }
+
+    pub(crate) fn succeed(mut self) {
         self.emit(ConnectionActivityEvent::Succeeded {
             id: self.id.clone(),
             version: self.version,
+            summary: self.summary(),
         });
         self.terminal = true;
     }
 
-    fn fail(mut self, kind: ExecutorStepFailureKind) {
+    pub(crate) fn fail(mut self, failure: ConnectionActivityFailure) {
         self.emit(ConnectionActivityEvent::Failed {
             id: self.id.clone(),
             version: self.version,
-            kind,
+            summary: self.summary(),
+            failure,
         });
         self.terminal = true;
     }
@@ -571,6 +642,7 @@ impl Drop for ActiveActivity {
                 .on_activity(ConnectionActivityEvent::Cancelled {
                     id: self.id.clone(),
                     version: self.version,
+                    summary: self.summary(),
                 });
             self.terminal = true;
         }
@@ -581,7 +653,11 @@ impl ExecCtx<'_> {
     fn begin_activity(&mut self, descriptor: &ConfigActivityDescriptor) {
         debug_assert!(self.active_activity.is_none());
         if let Some(observer) = self.activity_observer {
-            self.active_activity = Some(ActiveActivity::new(Arc::clone(observer), descriptor));
+            self.active_activity = Some(ActiveActivity::new(
+                Arc::clone(observer),
+                descriptor.id.clone(),
+                descriptor.version,
+            ));
         }
     }
 
@@ -591,19 +667,18 @@ impl ExecCtx<'_> {
         }
     }
 
-    fn fail_activity(&mut self, kind: ExecutorStepFailureKind) {
+    fn fail_activity(&mut self, failure: ConnectionActivityFailure) {
         if let Some(activity) = self.active_activity.take() {
-            activity.fail(kind);
+            activity.fail(failure);
         }
     }
 
-    fn retry_activity(&mut self, ordinal: u32, limit: u32) {
+    fn retry_activity(&mut self, ordinal: u32, limit: u32, failure: ConnectionActivityFailure) {
         if let Some(activity) = &mut self.active_activity {
-            activity.emit(ConnectionActivityEvent::Retrying {
-                id: activity.id.clone(),
-                version: activity.version,
+            activity.retry(ConnectionActivityRetry {
                 ordinal,
                 limit,
+                failure,
             });
         }
     }
@@ -611,7 +686,7 @@ impl ExecCtx<'_> {
     fn activity_correlation(&self) -> (Option<String>, Option<u32>) {
         self.active_activity
             .as_ref()
-            .map(|activity| (Some(activity.id.clone()), Some(activity.version)))
+            .map(|activity| (Some(activity.id().to_string()), Some(activity.version())))
             .unwrap_or((None, None))
     }
 }
@@ -764,7 +839,10 @@ async fn walk_plan_with_activities(
             }
             Ok(None) => {}
             Err(error) => {
-                ctx.fail_activity(error.kind);
+                ctx.fail_activity(ConnectionActivityFailure {
+                    kind: error.kind,
+                    context: error.context.clone(),
+                });
                 return Err(error);
             }
         }
@@ -968,9 +1046,12 @@ fn run_step<'a>(
                     return Ok(tail);
                 }
                 Err(e) if attempt < opts.retries => {
-                    ctx.retry_activity(attempt + 2, opts.retries + 1);
+                    ctx.retry_activity(
+                        attempt + 2,
+                        opts.retries + 1,
+                        ConnectionActivityFailure::without_context(e.kind),
+                    );
                     attempt += 1;
-                    let _ = e;
                     if opts.retry_delay_ms > 0 {
                         let _ = ctx.transport.sleep(opts.retry_delay_ms).await;
                     }
@@ -1047,9 +1128,9 @@ async fn run_retry_control(
                     }
                 };
 
-                let attempts_used = retries_consumed + 1;
-                if !should_retry || attempts_used >= retry.max_attempts {
-                    body_error.context = retry
+                let failure = ConnectionActivityFailure {
+                    kind: body_error.kind,
+                    context: retry
                         .failure_context
                         .iter()
                         .filter_map(|key| {
@@ -1058,18 +1139,19 @@ async fn run_retry_control(
                                 value: value.clone(),
                             })
                         })
-                        .collect();
+                        .collect(),
+                };
+                let attempts_used = retries_consumed + 1;
+                if !should_retry || attempts_used >= retry.max_attempts {
+                    body_error.context = failure.context;
                     return Err((body_error, retries_consumed));
                 }
 
+                ctx.retry_activity(retries_consumed + 2, retry.max_attempts, failure);
                 if retry.retry_delay_ms > 0 {
-                    ctx.retry_activity(retries_consumed + 2, retry.max_attempts);
                     if let Err(error) = ctx.transport.sleep(retry.retry_delay_ms).await {
                         return Err((StepError::transport(here, error), retries_consumed));
                     }
-                }
-                if retry.retry_delay_ms == 0 {
-                    ctx.retry_activity(retries_consumed + 2, retry.max_attempts);
                 }
                 retries_consumed += 1;
             }
@@ -2003,6 +2085,21 @@ mod tests {
         }
     }
 
+    fn no_retry_summary() -> ConnectionActivityTerminalSummary {
+        ConnectionActivityTerminalSummary {
+            retry_count: 0,
+            last_retry: None,
+        }
+    }
+
+    fn context_free_retry(ordinal: u32, limit: u32) -> ConnectionActivityRetry {
+        ConnectionActivityRetry {
+            ordinal,
+            limit,
+            failure: ConnectionActivityFailure::without_context(ExecutorStepFailureKind::Other),
+        }
+    }
+
     fn harness(
         transport: MockTransport,
     ) -> (
@@ -2152,18 +2249,82 @@ mod tests {
                 ConnectionActivityEvent::Retrying {
                     id: "camera.test.retry".into(),
                     version: 1,
-                    ordinal: 2,
-                    limit: 3,
+                    retry: context_free_retry(2, 3),
                 },
                 ConnectionActivityEvent::Retrying {
                     id: "camera.test.retry".into(),
                     version: 1,
-                    ordinal: 3,
-                    limit: 3,
+                    retry: context_free_retry(3, 3),
                 },
                 ConnectionActivityEvent::Succeeded {
                     id: "camera.test.retry".into(),
                     version: 1,
+                    summary: ConnectionActivityTerminalSummary {
+                        retry_count: 2,
+                        last_retry: Some(context_free_retry(3, 3)),
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_retry_count_spans_local_ordinal_resets() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([
+                Io::Fail("first retry"),
+                Io::Value(b"one".to_vec()),
+                Io::Fail("second retry"),
+                Io::Value(b"two".to_vec()),
+            ])),
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let activity_recorder = Arc::new(ActivityRecorder::default());
+        let activity_observer: Arc<dyn ConnectionActivityObserver> = activity_recorder.clone();
+        let mut ctx = ctx(&transport, &observer);
+        ctx.activity_observer = Some(&activity_observer);
+        let retry_once = StepOptions {
+            tolerant: false,
+            retries: 1,
+            retry_delay_ms: 0,
+        };
+
+        block_on(walk_plan_with_activities(
+            &mut ctx,
+            vec![
+                read_step("first", retry_once.clone()),
+                read_step("second", retry_once),
+            ],
+            vec![activity_descriptor("camera.test.two-retries", 2)],
+            ConfigActivitySequence::Steps,
+        ))
+        .expect("both local retry ladders recover");
+
+        assert_eq!(
+            *activity_recorder.0.lock().unwrap(),
+            vec![
+                ConnectionActivityEvent::Started {
+                    id: "camera.test.two-retries".into(),
+                    version: 1,
+                },
+                ConnectionActivityEvent::Retrying {
+                    id: "camera.test.two-retries".into(),
+                    version: 1,
+                    retry: context_free_retry(2, 2),
+                },
+                ConnectionActivityEvent::Retrying {
+                    id: "camera.test.two-retries".into(),
+                    version: 1,
+                    retry: context_free_retry(2, 2),
+                },
+                ConnectionActivityEvent::Succeeded {
+                    id: "camera.test.two-retries".into(),
+                    version: 1,
+                    summary: ConnectionActivityTerminalSummary {
+                        retry_count: 2,
+                        last_retry: Some(context_free_retry(2, 2)),
+                    },
                 },
             ]
         );
@@ -2285,6 +2446,7 @@ mod tests {
                 ConnectionActivityEvent::Succeeded {
                     id: "camera.test.acquire".into(),
                     version: 1,
+                    summary: no_retry_summary(),
                 },
                 ConnectionActivityEvent::Started {
                     id: "camera.test.refined".into(),
@@ -2293,6 +2455,7 @@ mod tests {
                 ConnectionActivityEvent::Succeeded {
                     id: "camera.test.refined".into(),
                     version: 1,
+                    summary: no_retry_summary(),
                 },
             ]
         );
@@ -2355,6 +2518,7 @@ mod tests {
                 ConnectionActivityEvent::Succeeded {
                     id: "camera.test.continuing".into(),
                     version: 1,
+                    summary: no_retry_summary(),
                 },
             ]
         );
@@ -2590,9 +2754,66 @@ mod tests {
                 ConnectionActivityEvent::Cancelled {
                     id: "camera.test.cancel".into(),
                     version: 1,
+                    summary: no_retry_summary(),
                 },
             ],
             "cancellation emits one terminal event"
+        );
+    }
+
+    #[test]
+    fn cancellation_preserves_a_retry_already_in_progress() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([Io::Fail("retry me")])),
+            // The retry transition is emitted before this pending backoff.
+            sleeps_fire: false,
+            ..Default::default()
+        });
+        let activity_recorder = Arc::new(ActivityRecorder::default());
+        let activity_observer: Arc<dyn ConnectionActivityObserver> = activity_recorder.clone();
+        let mut ctx = ctx(&transport, &observer);
+        ctx.activity_observer = Some(&activity_observer);
+        {
+            let mut future = Box::pin(walk_plan_with_activities(
+                &mut ctx,
+                vec![read_step(
+                    "v",
+                    StepOptions {
+                        tolerant: false,
+                        retries: 1,
+                        retry_delay_ms: 7,
+                    },
+                )],
+                vec![activity_descriptor("camera.test.cancel-retry", 1)],
+                ConfigActivitySequence::Steps,
+            ));
+            let waker = futures::task::noop_waker();
+            let mut poll_ctx = Context::from_waker(&waker);
+            assert!(matches!(future.as_mut().poll(&mut poll_ctx), Poll::Pending));
+        }
+        drop(ctx);
+
+        assert_eq!(
+            *activity_recorder.0.lock().unwrap(),
+            vec![
+                ConnectionActivityEvent::Started {
+                    id: "camera.test.cancel-retry".into(),
+                    version: 1,
+                },
+                ConnectionActivityEvent::Retrying {
+                    id: "camera.test.cancel-retry".into(),
+                    version: 1,
+                    retry: context_free_retry(2, 2),
+                },
+                ConnectionActivityEvent::Cancelled {
+                    id: "camera.test.cancel-retry".into(),
+                    version: 1,
+                    summary: ConnectionActivityTerminalSummary {
+                        retry_count: 1,
+                        last_retry: Some(context_free_retry(2, 2)),
+                    },
+                },
+            ]
         );
     }
 

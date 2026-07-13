@@ -32,6 +32,27 @@ func stepFailureContext(_ error: ExecutorError) -> [KeyValue] {
     return context
 }
 
+func activityRetryCount(_ event: ConnectionActivityEvent) -> UInt32 {
+    switch event {
+    case .started:
+        return 0
+    case let .retrying(_, _, retry):
+        return retry.ordinal
+    case let .succeeded(_, _, summary), let .cancelled(_, _, summary):
+        return summary.retryCount
+    case let .failed(_, _, summary, failure):
+        return summary.retryCount + UInt32(failure.context.count)
+    }
+}
+
+func activityRetryBindingShape() -> ConnectionActivityRetry {
+    ConnectionActivityRetry(
+        ordinal: 2,
+        limit: 3,
+        failure: ConnectionActivityFailure(kind: .conditionRejected, context: [])
+    )
+}
+
 func retryBindingShape() -> Step {
     .retry(
         steps: [],

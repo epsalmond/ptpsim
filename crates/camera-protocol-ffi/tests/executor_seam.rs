@@ -13,9 +13,10 @@ use std::sync::{Arc, Mutex};
 use camera_config::index::{CccdMode, FamilyBleBlock, ModelView, ResolvedManufacturerIndex};
 use camera_protocol_ffi::{
     run_establishment, run_post_exit_readiness, BleManufacturerData, ConfigStore,
-    ConnectionActivityEvent, ConnectionActivityObserver, EstablishmentRefinement, ExecutorError,
-    ExecutorStepFailureKind, KeyValue, Observation, Recognition, ReconnectDecision, StepObserver,
-    StepOutcome, StepReport, TransportError,
+    ConnectionActivityEvent, ConnectionActivityFailure, ConnectionActivityObserver,
+    ConnectionActivityRetry, ConnectionActivityTerminalSummary, EstablishmentRefinement,
+    ExecutorError, ExecutorStepFailureKind, KeyValue, Observation, Recognition, ReconnectDecision,
+    StepObserver, StepOutcome, StepReport, TransportError,
 };
 use camera_sim::{BleEvent, BleResponder};
 use futures::executor::block_on;
@@ -281,6 +282,37 @@ struct ActivityRecorder(Mutex<Vec<ConnectionActivityEvent>>);
 impl ConnectionActivityObserver for ActivityRecorder {
     fn on_activity(&self, event: ConnectionActivityEvent) {
         self.0.lock().unwrap().push(event);
+    }
+}
+
+fn no_retry_summary() -> ConnectionActivityTerminalSummary {
+    ConnectionActivityTerminalSummary {
+        retry_count: 0,
+        last_retry: None,
+    }
+}
+
+fn launch_refusal_failure() -> ConnectionActivityFailure {
+    ConnectionActivityFailure {
+        kind: ExecutorStepFailureKind::ConditionRejected,
+        context: vec![
+            KeyValue {
+                key: "apState".into(),
+                value: "32768".into(),
+            },
+            KeyValue {
+                key: "stateErrorDetails".into(),
+                value: "2".into(),
+            },
+        ],
+    }
+}
+
+fn launch_refusal_retry() -> ConnectionActivityRetry {
+    ConnectionActivityRetry {
+        ordinal: 2,
+        limit: 2,
+        failure: launch_refusal_failure(),
     }
 }
 
@@ -646,6 +678,7 @@ fn legacy_pair_plan_round_trips_through_the_executor() {
             ConnectionActivityEvent::Succeeded {
                 id: "camera.link.connect".into(),
                 version: 1,
+                summary: no_retry_summary(),
             },
             ConnectionActivityEvent::Started {
                 id: "camera.pair.confirm".into(),
@@ -654,6 +687,7 @@ fn legacy_pair_plan_round_trips_through_the_executor() {
             ConnectionActivityEvent::Succeeded {
                 id: "camera.pair.confirm".into(),
                 version: 1,
+                summary: no_retry_summary(),
             },
             ConnectionActivityEvent::Started {
                 id: "camera.pair.configure".into(),
@@ -662,6 +696,7 @@ fn legacy_pair_plan_round_trips_through_the_executor() {
             ConnectionActivityEvent::Succeeded {
                 id: "camera.pair.configure".into(),
                 version: 1,
+                summary: no_retry_summary(),
             },
         ]
     );
@@ -838,6 +873,120 @@ fn wifi_ap_plan_awaits_launch_and_binds_credentials() {
 }
 
 #[test]
+fn wifi_ap_retry_success_preserves_the_rejected_snapshot() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let launch = uuid(ble, "functionLaunchRequest");
+    let image_setting = uuid(ble, "imageTransferSetting");
+    let ap_state = uuid(ble, "apState");
+    let details = uuid(ble, "stateErrorDetails");
+    let ssid = uuid(ble, "cameraSSIDNameString");
+    let passphrase = uuid(ble, "cameraWiFiPassphraseString");
+    let responder = BleResponder::new([
+        launch,
+        image_setting,
+        ap_state.clone(),
+        details.clone(),
+        ssid.clone(),
+        passphrase.clone(),
+    ])
+    .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80], vec![0x01, 0x80]])
+    .serve_read(&details, &[0x02, 0x00])
+    .serve_read(&ssid, b"GFX100II-1234")
+    .serve_read(&passphrase, b"12345678");
+    let activities = Arc::new(ActivityRecorder::default());
+
+    let outcome = block_on(run_establishment(
+        store,
+        "gfx100ii:app".into(),
+        Arc::new(ResponderTransport::new(responder)),
+        Arc::new(Recorder::default()),
+        activities.clone(),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect("the second launch attempt succeeds");
+
+    assert_eq!(scope_get(&outcome.scope, "apState"), Some("32769"));
+    assert_eq!(scope_get(&outcome.scope, "stateErrorDetails"), Some("2"));
+    let events = activities.0.lock().unwrap();
+    assert!(events.contains(&ConnectionActivityEvent::Retrying {
+        id: "camera.ap.launch".into(),
+        version: 1,
+        retry: launch_refusal_retry(),
+    }));
+    assert!(events.contains(&ConnectionActivityEvent::Succeeded {
+        id: "camera.ap.launch".into(),
+        version: 1,
+        summary: ConnectionActivityTerminalSummary {
+            retry_count: 1,
+            last_retry: Some(launch_refusal_retry()),
+        },
+    }));
+}
+
+#[test]
+fn recovered_launch_snapshot_survives_a_later_activity_failure() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let launch = uuid(ble, "functionLaunchRequest");
+    let image_setting = uuid(ble, "imageTransferSetting");
+    let ap_state = uuid(ble, "apState");
+    let details = uuid(ble, "stateErrorDetails");
+    let responder = BleResponder::new([launch, image_setting, ap_state.clone(), details.clone()])
+        .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80], vec![0x01, 0x80]])
+        .serve_read(&details, &[0x02, 0x00]);
+    let activities = Arc::new(ActivityRecorder::default());
+
+    let error = block_on(run_establishment(
+        store,
+        "gfx100ii:app".into(),
+        Arc::new(ResponderTransport::new(responder)),
+        Arc::new(Recorder::default()),
+        activities.clone(),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect_err("the required credential read is not exposed");
+    assert!(matches!(
+        error,
+        ExecutorError::StepFailed {
+            kind: ExecutorStepFailureKind::Other,
+            ..
+        }
+    ));
+
+    let events = activities.0.lock().unwrap();
+    assert!(events.contains(&ConnectionActivityEvent::Succeeded {
+        id: "camera.ap.launch".into(),
+        version: 1,
+        summary: ConnectionActivityTerminalSummary {
+            retry_count: 1,
+            last_retry: Some(launch_refusal_retry()),
+        },
+    }));
+    assert!(events.contains(&ConnectionActivityEvent::Failed {
+        id: "camera.ap.credentials".into(),
+        version: 1,
+        summary: no_retry_summary(),
+        failure: ConnectionActivityFailure {
+            kind: ExecutorStepFailureKind::Other,
+            context: vec![],
+        },
+    }));
+}
+
+#[test]
 fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
     let store = store();
     let view = gfx100ii();
@@ -909,6 +1058,7 @@ fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
             ConnectionActivityEvent::Succeeded {
                 id: "camera.ap.prepare".into(),
                 version: 1,
+                summary: no_retry_summary(),
             },
             ConnectionActivityEvent::Started {
                 id: "camera.ap.launch".into(),
@@ -917,13 +1067,16 @@ fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
             ConnectionActivityEvent::Retrying {
                 id: "camera.ap.launch".into(),
                 version: 1,
-                ordinal: 2,
-                limit: 2,
+                retry: launch_refusal_retry(),
             },
             ConnectionActivityEvent::Failed {
                 id: "camera.ap.launch".into(),
                 version: 1,
-                kind: ExecutorStepFailureKind::ConditionRejected,
+                summary: ConnectionActivityTerminalSummary {
+                    retry_count: 1,
+                    last_retry: Some(launch_refusal_retry()),
+                },
+                failure: launch_refusal_failure(),
             },
         ]
     );
@@ -997,6 +1150,7 @@ fn post_exit_readiness_gate_awaits_the_not_launched_baseline() {
             ConnectionActivityEvent::Succeeded {
                 id: "camera.ap.reset".into(),
                 version: 1,
+                summary: no_retry_summary(),
             },
         ],
         "the Rust gate emits only its executor span, never host checkpoints"

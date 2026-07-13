@@ -12,9 +12,11 @@ use camera_config::CameraManifest;
 use camera_media_store::{MediaStore, ObjectQuery};
 use camera_protocol_ffi::{
     run_action, run_mode_entry, run_mode_reestablishment_exit, run_selected_object_preparation,
-    ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityObserver, KeyValue,
-    PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpRuntimeValue, PtpSessionOpenResult,
-    PtpTransportError, StepObserver, StepOutcome, StepReport,
+    ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityFailure,
+    ConnectionActivityObserver, ConnectionActivityRetry, ConnectionActivityTerminalSummary,
+    ExecutorStepFailureKind, KeyValue, PtpExecutorError, PtpExecutorTransport, PtpFraming,
+    PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError, StepObserver, StepOutcome,
+    StepReport,
 };
 use camera_sim::{Engine, Fault, Reply};
 use futures::executor::block_on;
@@ -41,8 +43,8 @@ fn store_with_standard_app_framing() -> Arc<ConfigStore> {
     store_from_body(body)
 }
 
-fn store_with_cold_entry_activities() -> Arc<ConfigStore> {
-    let body = data("fuji/gfx100ii/gfx100ii.yaml").replacen(
+fn body_with_cold_entry_activities() -> String {
+    data("fuji/gfx100ii/gfx100ii.yaml").replacen(
         "      - to: shooting/stills          # enter live-view from a cold App connection\n        steps:",
         r#"      - to: shooting/stills          # enter live-view from a cold App connection
         activities:
@@ -59,6 +61,23 @@ fn store_with_cold_entry_activities() -> Arc<ConfigStore> {
             interactionRequired: false
             executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 5 }
         steps:"#,
+        1,
+    )
+}
+
+fn store_with_cold_entry_activities() -> Arc<ConfigStore> {
+    store_from_body(body_with_cold_entry_activities())
+}
+
+fn store_with_cold_entry_activity_retry() -> Arc<ConfigStore> {
+    let body = body_with_cold_entry_activities().replacen(
+        r#"          - { sendOp: "0x902b", repeat: 4 }"#,
+        r#"          - retry:
+              whenResponseCodes: ["0x2019"]
+              maxAttempts: 2
+              retryDelayMs: 0
+              steps:
+                - { sendOp: "0x902b", repeat: 4 }"#,
         1,
     );
     store_from_body(body)
@@ -1381,6 +1400,56 @@ fn ptp_spans_emit_the_shared_activity_stream() {
         reports[4].activity_id.as_deref(),
         Some("camera.test.stream")
     );
+}
+
+#[test]
+fn ptp_retry_reports_typed_empty_context_and_terminal_count() {
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    transport.install_fault(Fault::FailOperationTimes {
+        code: 0x902b,
+        response: 0x2019,
+        remaining: 1,
+    });
+    let activities = Arc::new(Activities::default());
+
+    block_on(run_mode_entry(
+        store_with_cold_entry_activity_retry(),
+        "app".into(),
+        None,
+        "shooting/stills".into(),
+        transport,
+        Arc::new(Reports::default()),
+        activities.clone(),
+        Vec::new(),
+    ))
+    .expect("the manifest-selected PTP response retries once");
+
+    let retry = ConnectionActivityRetry {
+        ordinal: 2,
+        limit: 2,
+        failure: ConnectionActivityFailure {
+            kind: ExecutorStepFailureKind::Other,
+            context: vec![],
+        },
+    };
+    let events = activities.0.lock().expect("activities");
+    assert!(events.contains(&ConnectionActivityEvent::Retrying {
+        id: "camera.test.stream".into(),
+        version: 1,
+        retry: retry.clone(),
+    }));
+    assert!(events.contains(&ConnectionActivityEvent::Succeeded {
+        id: "camera.test.stream".into(),
+        version: 1,
+        summary: ConnectionActivityTerminalSummary {
+            retry_count: 1,
+            last_retry: Some(retry),
+        },
+    }));
 }
 
 #[test]
