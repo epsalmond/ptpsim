@@ -615,6 +615,8 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - { id: camera.test.captures, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 } }
           steps:
             - bleNotify:
                 gatt: c
@@ -672,6 +674,8 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - { id: camera.test.subscribe, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 } }
           steps:
             - bleSubscribe:
                 gatt: a
@@ -863,6 +867,8 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - { id: camera.test.transform, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 } }
           steps:
             - bleRead:
                 gatt: c
@@ -973,6 +979,8 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - { id: camera.test.captures, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 } }
           steps:
             - bleSubscribe: { gatt: c, timeoutMs: 3000 }
             - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
@@ -1046,6 +1054,8 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - { id: camera.test.setup, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 4 } }
           steps:
             - bleConnect: {}
             - bleRequestMtu: { mtu: 158 }
@@ -1398,6 +1408,8 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - {{ id: camera.test.await, version: 1, displayRole: waitingForCamera, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: {{ sequence: steps, startStep: 0, endStepExclusive: 2 }} }}
           steps:
             - bleConnect: {{}}
             - bleAwaitUntil:
@@ -1577,6 +1589,9 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - { id: camera.test.gate, version: 1, displayRole: waitingForCamera, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: postExitReadiness, startStep: 0, endStepExclusive: 1 } }
+            - { id: camera.test.connect, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }
           postExitReadiness:
             - if:
                 condition: { style: { eq: legacy } }
@@ -1601,4 +1616,113 @@ models:
         msg.contains("postExitReadiness[0].then[0]"),
         "path names the nested step: {msg}"
     );
+}
+
+fn activity_index(activities: &str, steps: &str) -> String {
+    format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {{}}
+      advert: {{}}
+      establishments:
+        test:
+          mechanism: test
+          activities:
+{activities}
+          steps:
+{steps}
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+    )
+}
+
+#[test]
+fn connection_activity_spans_reject_invalid_coverage_and_metadata() {
+    let cases = [
+        (
+            "requires 1",
+            "            - { id: camera.test.first, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }\n            - { id: camera.test.second, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 3 } }",
+        ),
+        (
+            "requires 2",
+            "            - { id: camera.test.first, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 } }\n            - { id: camera.test.second, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 1, endStepExclusive: 3 } }",
+        ),
+        (
+            "outside sequence length",
+            "            - { id: camera.test.first, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 4 } }",
+        ),
+        (
+            "duplicate activity id",
+            "            - { id: camera.test.same, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }\n            - { id: camera.test.same, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 1, endStepExclusive: 3 } }",
+        ),
+        (
+            "version",
+            "            - { id: camera.test.zero, version: 0, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 } }",
+        ),
+        (
+            "defaultExpectedDurationMs",
+            "            - { id: camera.test.zero, version: 1, displayRole: connecting, defaultExpectedDurationMs: 0, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 } }",
+        ),
+        (
+            "must use executorSpan",
+            "            - { id: camera.test.host, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: host } }",
+        ),
+    ];
+    let steps =
+        "            - bleConnect: {}\n            - bleConnect: {}\n            - bleConnect: {}";
+    for (needle, activities) in cases {
+        let error = ResolvedManufacturerIndex::from_yaml(&activity_index(activities, steps))
+            .expect_err(needle);
+        assert!(error.to_string().contains(needle), "{needle}: {error}");
+    }
+}
+
+#[test]
+fn connection_activity_span_covers_nested_steps_and_unknown_roles() {
+    let activities = "            - { id: camera.test.future, version: 1, displayRole: futureRole, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }";
+    let steps = "            - if:\n                condition: { style: { eq: red } }\n                then:\n                  - bleConnect: {}\n                  - retry:\n                      steps: [{ bleConnect: {} }]\n                      whenFailure: other\n                      retryWhen: { style: { eq: red } }\n                      maxAttempts: 1";
+    let index = ResolvedManufacturerIndex::from_yaml(&activity_index(activities, steps))
+        .expect("a top-level span covers every nested child");
+    assert!(matches!(
+        index.models[0].ble.as_ref().unwrap().establishments["test"].activities[0]
+            .display_role,
+        camera_config::ConnectionActivityDisplayRole::Unknown(ref raw) if raw == "futureRole"
+    ));
+
+    ResolvedManufacturerIndex::from_yaml(&activity_index("            []", "            []"))
+        .expect("an empty preliminary plan needs no activities");
+}
+
+#[test]
+fn host_activity_checkpoints_are_unique_and_metadata_is_consistent() {
+    let invalid_body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  ble:
+    activities:
+      - { id: camera.test.first, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: same } }
+      - { id: camera.test.second, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: same } }
+"#;
+    let error = camera_config::CameraManifest::from_yaml(invalid_body)
+        .expect_err("duplicate host checkpoints fail");
+    assert!(error.to_string().contains("duplicates checkpoint"));
+
+    let index = data("fuji/index.yaml").replacen(
+        "defaultExpectedDurationMs: 4000",
+        "defaultExpectedDurationMs: 4001",
+        1,
+    );
+    let mut bodies = BTreeMap::new();
+    bodies.insert("gfx100ii".into(), data("fuji/gfx100ii/gfx100ii.yaml"));
+    let error = ConfigStore::from_manufacturer_index(&index, bodies)
+        .expect_err("repeated id/version metadata must agree");
+    assert!(error.to_string().contains("metadata differs"));
 }

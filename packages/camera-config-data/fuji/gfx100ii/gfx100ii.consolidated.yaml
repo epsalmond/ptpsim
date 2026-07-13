@@ -6800,6 +6800,28 @@ connections:
     requiresHardware: null
     kind: ptpip-app
     establishment: ble-establish-wifi-ap
+    activities:
+    - id: camera.network.join-confirmation
+      version: 1
+      displayRole: joiningNetwork
+      defaultExpectedDurationMs: 15000
+      interactionRequired: true
+      hostCheckpoint:
+        name: networkJoinConfirmation
+    - id: camera.network.associate
+      version: 1
+      displayRole: joiningNetwork
+      defaultExpectedDurationMs: 12000
+      interactionRequired: false
+      hostCheckpoint:
+        name: networkAssociation
+    - id: camera.session.open.ap
+      version: 1
+      displayRole: openingSession
+      defaultExpectedDurationMs: 10000
+      interactionRequired: false
+      hostCheckpoint:
+        name: sessionOpen
     init:
       identity:
         guid: initiatorGuid
@@ -7859,6 +7881,7 @@ connections:
     requiresHardware: null
     kind: ble
     establishment: ble-pair
+    activities: []
     init: null
     initShape: null
     liveViewDelivery: null
@@ -7899,6 +7922,7 @@ connections:
     requiresHardware: null
     kind: usb-ptp
     establishment: null
+    activities: []
     init: null
     initShape: null
     liveViewDelivery: null
@@ -7934,6 +7958,14 @@ connections:
     requiresHardware: null
     kind: ptpip-direct
     establishment: pcss-knock
+    activities:
+    - id: camera.session.open.direct
+      version: 1
+      displayRole: openingSession
+      defaultExpectedDurationMs: 5000
+      interactionRequired: false
+      hostCheckpoint:
+        name: sessionOpen
     init: null
     initShape: pcssKnock
     liveViewDelivery:
@@ -8204,6 +8236,7 @@ connections:
     requiresHardware: null
     kind: http-xlv
     establishment: null
+    activities: []
     init: null
     initShape: null
     liveViewDelivery: null

@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::ConnectionActivityDescriptor;
+
 // ---------------------------------------------------------------------------
 // Top-level index
 // ---------------------------------------------------------------------------
@@ -179,6 +181,10 @@ pub struct EstablishmentBlock {
     /// creds. Declarative; the reference walker does not act on it.
     #[serde(default)]
     pub persist: Vec<String>,
+    /// Stable semantic progress spans over the two top-level executor
+    /// sequences (schema §11.23).
+    #[serde(default)]
+    pub activities: Vec<ConnectionActivityDescriptor>,
     /// Optional manifest-authored sequence that proves the camera has returned
     /// to a state from which this establishment can be replayed after an orderly
     /// feature exit. Empty means the connection declares no post-exit gate.

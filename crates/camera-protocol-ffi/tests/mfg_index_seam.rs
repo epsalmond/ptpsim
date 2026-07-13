@@ -78,6 +78,79 @@ fn loader_requires_every_declared_model_body() {
 }
 
 #[test]
+fn establishment_uses_the_requested_models_host_activities() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {}
+      advert: {}
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.executor
+              version: 1
+              displayRole: connecting
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+          steps:
+            - bleConnect: {}
+models:
+  - id: primary
+    displayName: Primary
+    inherits: [test]
+    manifest: primary.yaml
+  - id: secondary
+    displayName: Secondary
+    inherits: [test]
+    manifest: secondary.yaml
+"#;
+    let body = |model: &str, activity: &str| {
+        format!(
+            r#"
+schema: camera-config/v1
+camera: {{ manufacturer: TESTCO, model: {model} }}
+connections:
+  ble:
+    kind: ble
+    establishment: test
+    activities:
+      - id: {activity}
+        version: 1
+        displayRole: openingSession
+        defaultExpectedDurationMs: 1
+        interactionRequired: false
+        hostCheckpoint: {{ name: sessionOpen }}
+"#
+        )
+    };
+    let store = ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![
+            KeyValue {
+                key: "primary".into(),
+                value: body("Primary", "camera.primary.host"),
+            },
+            KeyValue {
+                key: "secondary".into(),
+                value: body("Secondary", "camera.secondary.host"),
+            },
+        ],
+    )
+    .expect("multi-model store loads");
+
+    let plan = store
+        .establishment("secondary".into(), "ble".into(), vec![])
+        .expect("secondary establishment resolves");
+    assert_eq!(plan.activities.len(), 2);
+    assert_eq!(plan.activities[0].id, "camera.test.executor");
+    assert_eq!(plan.activities[1].id, "camera.secondary.host");
+}
+
+#[test]
 fn real_manifest_exposes_resolved_camera_initiated_transfer() {
     let transfer = store()
         .camera_initiated_transfer("gfx100ii".into())
@@ -529,6 +602,20 @@ fn establishment_returns_walkable_ble_plan() {
             "cameraSerial".to_string(),
         ],
     );
+    assert!(matches!(
+        &plan.activities[0],
+        ConnectionActivityDescriptor {
+            id,
+            version: 1,
+            display_role: ConnectionActivityDisplayRole::Connecting,
+            binding: ConnectionActivityBinding::ExecutorSpan {
+                sequence: ConnectionActivitySequence::Steps,
+                start_step: 0,
+                end_step_exclusive: 2,
+            },
+            ..
+        } if id == "camera.link.connect"
+    ));
 
     // Step 0: bleConnect with no fields.
     assert!(matches!(plan.steps[0], Step::BleConnect { .. }));
@@ -838,6 +925,19 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         vec!["ssid".to_string(), "passphrase".to_string()]
     );
     assert_eq!(plan.post_exit_readiness.len(), 3);
+    assert_eq!(
+        plan.activities.len(),
+        7,
+        "four executor spans plus three host checkpoints"
+    );
+    assert!(matches!(
+        plan.activities.last(),
+        Some(ConnectionActivityDescriptor {
+            id,
+            binding: ConnectionActivityBinding::HostCheckpoint { name },
+            ..
+        }) if id == "camera.session.open.ap" && name == "sessionOpen"
+    ));
     assert!(matches!(
         plan.post_exit_readiness[0],
         Step::BleConnect { .. }
@@ -1096,6 +1196,13 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - id: camera.test.notify
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
           steps:
             - bleSubscribe: { gatt: c, timeoutMs: 3000, mode: indicate }
             - bleNotify:
@@ -1189,6 +1296,13 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - id: camera.test.setup
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 }
           steps:
             - bleConnect: {}
             - bleRequestMtu: { mtu: 158, tolerant: true }
@@ -1235,7 +1349,17 @@ families:
     ble:
       gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
       advert: {}
-      establishments: { test: { mechanism: test, steps: [ { bleConnect: {} } ] } }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.connect
+              version: 1
+              displayRole: connecting
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+          steps: [ { bleConnect: {} } ]
 models:
   - id: tm1
     displayName: "Test Z9"
@@ -1509,6 +1633,13 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - id: camera.test.await
+              version: 1
+              displayRole: waitingForCamera
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
           steps:
             - bleConnect: {}
             - bleAwaitUntil:

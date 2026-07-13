@@ -15,7 +15,7 @@
 //!
 //! [plan §11]: ../../../../../docs/plans/ios-rewrite-p0-p1-ble-mvp.md
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_yaml::Value;
 
@@ -50,6 +50,35 @@ impl ResolvedManufacturerIndex {
         let mut models = Vec::with_capacity(index.models.len());
         for model in &index.models {
             models.push(resolve_one(&index, model)?);
+        }
+        let mut metadata = BTreeMap::new();
+        for model in &models {
+            if let Some(ble) = &model.ble {
+                for (mechanism, establishment) in &ble.establishments {
+                    for (activity_index, activity) in establishment.activities.iter().enumerate() {
+                        let key = (activity.id.clone(), activity.version);
+                        let value = (
+                            activity.display_role.clone(),
+                            activity.default_expected_duration_ms,
+                            activity.interaction_required,
+                        );
+                        if let Some(previous) = metadata.insert(key, value.clone()) {
+                            if previous != value {
+                                return Err(ConfigError::Validation {
+                                    path: format!(
+                                        "models.{}.establishments.{mechanism}.activities[{activity_index}]",
+                                        model.id
+                                    ),
+                                    message: format!(
+                                        "activity '{}@{}' metadata differs from another descriptor",
+                                        activity.id, activity.version
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
         Ok(ResolvedManufacturerIndex {
             manufacturer: index.manufacturer,
@@ -441,6 +470,7 @@ fn validate_establishment(
     model_id: &str,
     mechanism: &str,
 ) -> Result<(), ConfigError> {
+    validate_establishment_activities(est, model_id, mechanism)?;
     for (i, step) in est.post_exit_readiness.iter().enumerate() {
         let path = format!("models.{model_id}.establishments.{mechanism}.postExitReadiness[{i}]");
         validate_step(step, &path)?;
@@ -451,6 +481,120 @@ fn validate_establishment(
             step,
             &format!("models.{model_id}.establishments.{mechanism}.steps[{i}]"),
         )?;
+    }
+    Ok(())
+}
+
+fn validate_establishment_activities(
+    est: &EstablishmentBlock,
+    model_id: &str,
+    mechanism: &str,
+) -> Result<(), ConfigError> {
+    use crate::activity::{
+        valid_activity_id, ConnectionActivityBinding, ConnectionActivitySequence,
+    };
+
+    let base = format!("models.{model_id}.establishments.{mechanism}.activities");
+    let mut ids = BTreeSet::new();
+    for (i, activity) in est.activities.iter().enumerate() {
+        let path = format!("{base}[{i}]");
+        if !valid_activity_id(&activity.id) {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.id"),
+                message: "activity id must contain at least two non-empty dot-delimited segments"
+                    .to_string(),
+            });
+        }
+        if !ids.insert(&activity.id) {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.id"),
+                message: format!("duplicate activity id '{}'", activity.id),
+            });
+        }
+        if activity.version == 0 {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.version"),
+                message: "activity version must be > 0".to_string(),
+            });
+        }
+        if activity.default_expected_duration_ms == 0 {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.defaultExpectedDurationMs"),
+                message: "activity defaultExpectedDurationMs must be > 0".to_string(),
+            });
+        }
+        if matches!(
+            activity.binding,
+            ConnectionActivityBinding::HostCheckpoint(_)
+        ) {
+            return Err(ConfigError::Validation {
+                path,
+                message: "establishment activities must use executorSpan".to_string(),
+            });
+        }
+    }
+
+    for (sequence, length, name) in [
+        (ConnectionActivitySequence::Steps, est.steps.len(), "steps"),
+        (
+            ConnectionActivitySequence::PostExitReadiness,
+            est.post_exit_readiness.len(),
+            "postExitReadiness",
+        ),
+    ] {
+        let spans: Vec<_> = est
+            .activities
+            .iter()
+            .filter_map(|activity| match &activity.binding {
+                ConnectionActivityBinding::ExecutorSpan(binding)
+                    if binding.executor_span.sequence == sequence =>
+                {
+                    Some((&activity.id, &binding.executor_span))
+                }
+                _ => None,
+            })
+            .collect();
+        if length == 0 {
+            if !spans.is_empty() {
+                return Err(ConfigError::Validation {
+                    path: base.clone(),
+                    message: format!("{name} activity span targets an empty sequence"),
+                });
+            }
+            continue;
+        }
+        let mut next = 0_u32;
+        for (id, span) in spans {
+            if span.start_step != next {
+                return Err(ConfigError::Validation {
+                    path: base.clone(),
+                    message: format!(
+                        "{name} activity '{}' starts at {} but complete ordered coverage requires {}",
+                        id, span.start_step, next
+                    ),
+                });
+            }
+            if span.end_step_exclusive <= span.start_step
+                || span.end_step_exclusive as usize > length
+            {
+                return Err(ConfigError::Validation {
+                    path: base.clone(),
+                    message: format!(
+                        "{name} activity '{}' span {}..{} is outside sequence length {}",
+                        id, span.start_step, span.end_step_exclusive, length
+                    ),
+                });
+            }
+            next = span.end_step_exclusive;
+        }
+        if next as usize != length {
+            return Err(ConfigError::Validation {
+                path: base.clone(),
+                message: format!(
+                    "{name} activity spans cover 0..{next}, not the complete 0..{length} sequence"
+                ),
+            });
+        }
     }
     Ok(())
 }

@@ -37,6 +37,8 @@ families:
       establishments:
         test:
           mechanism: test
+          activities:
+            - {{ id: camera.test.walk, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: {{ sequence: steps, startStep: 0, endStepExclusive: 3 }} }}
           steps:
             - bleConnect: {{}}
             - bleDiscoverServices: {{}}

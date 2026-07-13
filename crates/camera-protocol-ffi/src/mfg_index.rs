@@ -178,6 +178,8 @@ pub struct EstablishmentPlan {
     /// Slot names the host should persist after this plan to replay on a later
     /// `ble-reconnect` (#91). Empty for plans with nothing to cache.
     pub persist: Vec<String>,
+    /// Executor spans followed by the selected connection's host checkpoints.
+    pub activities: Vec<ConnectionActivityDescriptor>,
     /// Manifest-authored gate to walk after an orderly feature exit and before
     /// replaying `steps`. Empty means no post-exit readiness gate is declared.
     pub post_exit_readiness: Vec<Step>,
@@ -189,8 +191,105 @@ pub struct EstablishmentPlan {
 pub enum EstablishmentRefinement {
     /// The existing unwalked tail remains valid.
     NoChange,
-    /// Replace `plan.steps[next_step_index..]` with these steps.
-    ReplaceTail { steps: Vec<Step> },
+    /// Replace `plan.steps[next_step_index..]` with these steps and relative
+    /// executor spans.
+    ReplaceTail {
+        steps: Vec<Step>,
+        activities: Vec<ConnectionActivityDescriptor>,
+    },
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ConnectionActivityDescriptor {
+    pub id: String,
+    pub version: u32,
+    pub display_role: ConnectionActivityDisplayRole,
+    pub default_expected_duration_ms: u32,
+    pub interaction_required: bool,
+    pub binding: ConnectionActivityBinding,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum ConnectionActivityBinding {
+    ExecutorSpan {
+        sequence: ConnectionActivitySequence,
+        start_step: u32,
+        end_step_exclusive: u32,
+    },
+    HostCheckpoint {
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ConnectionActivitySequence {
+    Steps,
+    PostExitReadiness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum ConnectionActivityDisplayRole {
+    Connecting,
+    WaitingForCamera,
+    ConfirmingPairing,
+    PreparingConnection,
+    StartingNetwork,
+    JoiningNetwork,
+    OpeningSession,
+    Unknown { raw: String },
+}
+
+impl From<&camera_config::ConnectionActivityDescriptor> for ConnectionActivityDescriptor {
+    fn from(value: &camera_config::ConnectionActivityDescriptor) -> Self {
+        Self {
+            id: value.id.clone(),
+            version: value.version,
+            display_role: (&value.display_role).into(),
+            default_expected_duration_ms: value.default_expected_duration_ms,
+            interaction_required: value.interaction_required,
+            binding: (&value.binding).into(),
+        }
+    }
+}
+
+impl From<&camera_config::ConnectionActivityDisplayRole> for ConnectionActivityDisplayRole {
+    fn from(value: &camera_config::ConnectionActivityDisplayRole) -> Self {
+        use camera_config::ConnectionActivityDisplayRole as Source;
+        match value {
+            Source::Connecting => Self::Connecting,
+            Source::WaitingForCamera => Self::WaitingForCamera,
+            Source::ConfirmingPairing => Self::ConfirmingPairing,
+            Source::PreparingConnection => Self::PreparingConnection,
+            Source::StartingNetwork => Self::StartingNetwork,
+            Source::JoiningNetwork => Self::JoiningNetwork,
+            Source::OpeningSession => Self::OpeningSession,
+            Source::Unknown(raw) => Self::Unknown { raw: raw.clone() },
+        }
+    }
+}
+
+impl From<&camera_config::ConnectionActivityBinding> for ConnectionActivityBinding {
+    fn from(value: &camera_config::ConnectionActivityBinding) -> Self {
+        match value {
+            camera_config::ConnectionActivityBinding::ExecutorSpan(binding) => Self::ExecutorSpan {
+                sequence: match binding.executor_span.sequence {
+                    camera_config::ConnectionActivitySequence::Steps => {
+                        ConnectionActivitySequence::Steps
+                    }
+                    camera_config::ConnectionActivitySequence::PostExitReadiness => {
+                        ConnectionActivitySequence::PostExitReadiness
+                    }
+                },
+                start_step: binding.executor_span.start_step,
+                end_step_exclusive: binding.executor_span.end_step_exclusive,
+            },
+            camera_config::ConnectionActivityBinding::HostCheckpoint(binding) => {
+                Self::HostCheckpoint {
+                    name: binding.host_checkpoint.name.clone(),
+                }
+            }
+        }
+    }
 }
 
 /// Common per-step options (§11.6). The dispatcher's retry loop wraps every
@@ -1037,6 +1136,7 @@ fn build_establishment_mechanism(
         on_demand: block.on_demand,
         params: block.params.clone(),
         persist: block.persist.clone(),
+        activities: block.activities.iter().map(Into::into).collect(),
         post_exit_readiness: block.post_exit_readiness.iter().map(Step::from).collect(),
         steps,
     })
@@ -1085,5 +1185,32 @@ pub fn build_ble_action(
 impl From<cc::ConfigError> for crate::ConfigError {
     fn from(e: cc::ConfigError) -> Self {
         crate::ConfigError::Parse(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_activity_display_role_survives_the_ffi_mirror() {
+        let source: camera_config::ConnectionActivityDescriptor = serde_yaml::from_str(
+            r#"
+id: camera.test.future
+version: 1
+displayRole: futureRole
+defaultExpectedDurationMs: 1
+interactionRequired: false
+hostCheckpoint: { name: future }
+"#,
+        )
+        .expect("unknown roles remain parseable");
+        let ffi = ConnectionActivityDescriptor::from(&source);
+        assert_eq!(
+            ffi.display_role,
+            ConnectionActivityDisplayRole::Unknown {
+                raw: "futureRole".into()
+            }
+        );
     }
 }

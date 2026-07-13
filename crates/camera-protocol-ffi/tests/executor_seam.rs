@@ -13,8 +13,9 @@ use std::sync::{Arc, Mutex};
 use camera_config::index::{CccdMode, FamilyBleBlock, ModelView, ResolvedManufacturerIndex};
 use camera_protocol_ffi::{
     run_establishment, run_post_exit_readiness, BleManufacturerData, ConfigStore,
-    EstablishmentRefinement, ExecutorError, ExecutorStepFailureKind, KeyValue, Observation,
-    Recognition, ReconnectDecision, StepObserver, StepOutcome, StepReport, TransportError,
+    ConnectionActivityEvent, ConnectionActivityObserver, EstablishmentRefinement, ExecutorError,
+    ExecutorStepFailureKind, KeyValue, Observation, Recognition, ReconnectDecision, StepObserver,
+    StepOutcome, StepReport, TransportError,
 };
 use camera_sim::{BleEvent, BleResponder};
 use futures::executor::block_on;
@@ -48,6 +49,13 @@ families:
       establishments:
         poll:
           mechanism: poll
+          activities:
+            - id: camera.test.poll
+              version: 1
+              displayRole: waitingForCamera
+              defaultExpectedDurationMs: 5
+              interactionRequired: false
+              executorSpan: { sequence: postExitReadiness, startStep: 0, endStepExclusive: 3 }
           postExitReadiness:
             - bleConnect: {}
             - bleDiscoverServices: {}
@@ -265,6 +273,14 @@ struct Recorder(Mutex<Vec<StepReport>>);
 impl StepObserver for Recorder {
     fn on_step(&self, report: StepReport) {
         self.0.lock().unwrap().push(report);
+    }
+}
+
+#[derive(Default)]
+struct ActivityRecorder(Mutex<Vec<ConnectionActivityEvent>>);
+impl ConnectionActivityObserver for ActivityRecorder {
+    fn on_activity(&self, event: ConnectionActivityEvent) {
+        self.0.lock().unwrap().push(event);
     }
 }
 
@@ -488,6 +504,7 @@ fn wake_decision_handle_runs_and_refines() {
         plan.plan_handle.clone(),
         transport.clone(),
         Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
         persisted.clone(),
         persisted_legacy_encodings(),
         vec![],
@@ -527,6 +544,7 @@ fn ready_decision_handle_runs_and_refines() {
         plan.plan_handle.clone(),
         transport.clone(),
         Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
         persisted.clone(),
         persisted_legacy_encodings(),
         runtime_params(),
@@ -559,6 +577,7 @@ fn unknown_plan_handles_fail_before_io() {
             handle.into(),
             transport.clone(),
             Arc::new(Recorder::default()),
+            Arc::new(ActivityRecorder::default()),
             vec![],
             vec![],
             vec![],
@@ -586,11 +605,13 @@ fn legacy_pair_plan_round_trips_through_the_executor() {
 
     let transport = Arc::new(ResponderTransport::new(responder_for(ble)));
     let recorder = Arc::new(Recorder::default());
+    let activities = Arc::new(ActivityRecorder::default());
     let outcome = block_on(run_establishment(
         store,
         handle,
         transport.clone(),
         recorder.clone(),
+        activities.clone(),
         scope,
         encodings,
         runtime_params(),
@@ -610,7 +631,40 @@ fn legacy_pair_plan_round_trips_through_the_executor() {
         started as u32, outcome.steps_run,
         "one Started per dispatched step"
     );
+    assert!(reports
+        .iter()
+        .all(|report| { report.activity_id.is_some() && report.activity_version == Some(1) }));
     drop(reports);
+
+    assert_eq!(
+        *activities.0.lock().unwrap(),
+        vec![
+            ConnectionActivityEvent::Started {
+                id: "camera.link.connect".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Succeeded {
+                id: "camera.link.connect".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Started {
+                id: "camera.pair.confirm".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Succeeded {
+                id: "camera.pair.confirm".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Started {
+                id: "camera.pair.configure".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Succeeded {
+                id: "camera.pair.configure".into(),
+                version: 1,
+            },
+        ]
+    );
 
     assert_eq!(
         scope_get(&outcome.scope, "cameraSerial"),
@@ -639,11 +693,13 @@ fn red_pair_plan_round_trips_with_id_number_echo() {
     );
     let transport = Arc::new(ResponderTransport::new(responder));
     let recorder = Arc::new(Recorder::default());
+    let activities = Arc::new(ActivityRecorder::default());
     let outcome = block_on(run_establishment(
         store,
         handle,
         transport.clone(),
         recorder.clone(),
+        activities.clone(),
         scope,
         encodings,
         runtime_params(),
@@ -654,6 +710,13 @@ fn red_pair_plan_round_trips_with_id_number_echo() {
     // executor rebuilt the advert-capture encodings itself: `shortSerial`
     // (ascii) wrote back as its bytes, `idNumber` (u32) re-encoded LE.
     assert_eq!(scope_get(&outcome.scope, "idNumber"), Some("305419896"));
+    assert!(
+        recorder.0.lock().unwrap().iter().any(|report| {
+            report.step_path.contains(".if.then[")
+                && report.activity_id.as_deref() == Some("camera.pair.configure")
+        }),
+        "nested steps inherit their top-level activity"
+    );
 
     let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
     assert_app_order(ble, &transport.into_log(), true);
@@ -672,11 +735,13 @@ fn missing_protected_serial_read_is_tolerated_not_fatal() {
         .serve_read(&uuid(ble, "transferState"), &[0x00]);
     let transport = Arc::new(ResponderTransport::new(responder));
     let recorder = Arc::new(Recorder::default());
+    let activities = Arc::new(ActivityRecorder::default());
     let outcome = block_on(run_establishment(
         store,
         handle,
         transport,
         recorder.clone(),
+        activities.clone(),
         scope,
         encodings,
         runtime_params(),
@@ -696,6 +761,18 @@ fn missing_protected_serial_read_is_tolerated_not_fatal() {
     );
     assert_eq!(tolerated[0].verb, "bleRead");
     assert!(tolerated[0].error.is_some());
+    let activity_events = activities.0.lock().unwrap();
+    assert!(activity_events.iter().all(|event| !matches!(
+        event,
+        ConnectionActivityEvent::Failed { .. } | ConnectionActivityEvent::Cancelled { .. }
+    )));
+    assert!(
+        activity_events.iter().any(|event| matches!(
+            event,
+            ConnectionActivityEvent::Succeeded { id, .. } if id == "camera.pair.confirm"
+        )),
+        "a tolerated raw failure keeps the activity alive through success"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -733,6 +810,7 @@ fn wifi_ap_plan_awaits_launch_and_binds_credentials() {
         "gfx100ii:app".to_string(),
         transport.clone(),
         recorder,
+        Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
         // 0x0004 RemoteShooting, bound as the u16-le launch value.
@@ -778,11 +856,13 @@ fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
     .serve_read(&details, &[0x02, 0x00]);
     let transport = Arc::new(ResponderTransport::new(responder));
     let sleep_log = transport.sleep_log.clone();
+    let activities = Arc::new(ActivityRecorder::default());
     let error = block_on(run_establishment(
         store,
         "gfx100ii:app".to_string(),
         transport.clone(),
         Arc::new(Recorder::default()),
+        activities.clone(),
         vec![],
         vec![],
         vec![KeyValue {
@@ -818,6 +898,34 @@ fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
             .filter(|ms| **ms == 200)
             .count(),
         1,
+    );
+    assert_eq!(
+        *activities.0.lock().unwrap(),
+        vec![
+            ConnectionActivityEvent::Started {
+                id: "camera.ap.prepare".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Succeeded {
+                id: "camera.ap.prepare".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Started {
+                id: "camera.ap.launch".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Retrying {
+                id: "camera.ap.launch".into(),
+                version: 1,
+                ordinal: 2,
+                limit: 2,
+            },
+            ConnectionActivityEvent::Failed {
+                id: "camera.ap.launch".into(),
+                version: 1,
+                kind: ExecutorStepFailureKind::ConditionRejected,
+            },
+        ]
     );
     drop(sleep_log);
     let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
@@ -861,11 +969,13 @@ fn post_exit_readiness_gate_awaits_the_not_launched_baseline() {
 
     let transport = Arc::new(ResponderTransport::new(responder));
     let recorder = Arc::new(Recorder::default());
+    let activities = Arc::new(ActivityRecorder::default());
     let outcome = block_on(run_post_exit_readiness(
         store,
         "gfx100ii:app".to_string(),
         transport.clone(),
         recorder.clone(),
+        activities.clone(),
         vec![],
         vec![],
         vec![],
@@ -877,6 +987,20 @@ fn post_exit_readiness_gate_awaits_the_not_launched_baseline() {
         "bleConnect + bleDiscoverServices + bleAwaitUntil"
     );
     assert_eq!(scope_get(&outcome.scope, "apState"), Some("32768"));
+    assert_eq!(
+        *activities.0.lock().unwrap(),
+        vec![
+            ConnectionActivityEvent::Started {
+                id: "camera.ap.reset".into(),
+                version: 1,
+            },
+            ConnectionActivityEvent::Succeeded {
+                id: "camera.ap.reset".into(),
+                version: 1,
+            },
+        ],
+        "the Rust gate emits only its executor span, never host checkpoints"
+    );
 
     let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
     let log = transport.into_log();
@@ -916,6 +1040,7 @@ fn post_exit_notification_timeout_crosses_ffi_with_deadline_kind() {
         "gfx100ii:app".into(),
         Arc::new(ResponderTransport::new(responder)),
         Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
         vec![],
@@ -945,6 +1070,7 @@ fn post_exit_poll_timeout_crosses_ffi_with_deadline_kind() {
             stall_connect: false,
         }),
         Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
         vec![],
@@ -974,6 +1100,7 @@ fn per_verb_clock_failure_crosses_ffi_as_other() {
             stall_connect: true,
         }),
         Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
         vec![],
@@ -1003,6 +1130,7 @@ fn notification_budget_clock_failure_crosses_ffi_as_other() {
             stall_connect: false,
         }),
         Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
         vec![],
@@ -1032,6 +1160,7 @@ fn poll_budget_clock_failure_crosses_ffi_as_other() {
             stall_connect: false,
         }),
         Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
         vec![],
@@ -1064,6 +1193,7 @@ fn connection_without_a_gate_resolves_immediately_with_no_io() {
         "gfx100ii:ble".to_string(),
         transport.clone(),
         recorder.clone(),
+        Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
         vec![],

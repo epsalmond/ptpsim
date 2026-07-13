@@ -18,18 +18,29 @@ use std::sync::Arc;
 pub mod executor;
 pub use executor::{
     run_ble_action, run_establishment, run_post_exit_readiness, BleExecutorTransport,
-    ExecutionOutcome, ExecutorError, ExecutorStepFailureKind, StepObserver, StepOutcome,
-    StepReport, TransportError,
+    ConnectionActivityEvent, ConnectionActivityObserver, ExecutionOutcome, ExecutorError,
+    ExecutorStepFailureKind, StepObserver, StepOutcome, StepReport, TransportError,
 };
 pub mod mfg_index;
 pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
-    BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, EstablishmentPlan,
-    EstablishmentRefinement, ModelMatch, NotifyCapture, Observation, Predicate, PredicateOp,
-    Recognition, ReconnectDecision, ReconnectPolicy, Step, StepOptions, StepValue, Transform,
+    BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, ConnectionActivityBinding,
+    ConnectionActivityDescriptor, ConnectionActivityDisplayRole, ConnectionActivitySequence,
+    EstablishmentPlan, EstablishmentRefinement, ModelMatch, NotifyCapture, Observation, Predicate,
+    PredicateOp, Recognition, ReconnectDecision, ReconnectPolicy, Step, StepOptions, StepValue,
+    Transform,
 };
 
 uniffi::setup_scaffolding!();
+
+#[allow(dead_code)] // ReplaceTail is exercised through the executor's injected resolver seam.
+pub(crate) enum NativeEstablishmentRefinement {
+    NoChange,
+    ReplaceTail {
+        steps: Vec<camera_config::index::Step>,
+        activities: Vec<camera_config::ConnectionActivityDescriptor>,
+    },
+}
 
 /// Crate version, exposed so an FFI consumer can assert ABI/build expectations.
 #[uniffi::export]
@@ -1328,6 +1339,7 @@ pub struct ConnectionEstablishmentInfo {
     pub mechanism: Option<String>,
     pub user_instruction: Option<String>,
     pub params: Vec<KeyValue>,
+    pub activities: Vec<ConnectionActivityDescriptor>,
 }
 
 #[derive(Debug, uniffi::Enum)]
@@ -1701,14 +1713,14 @@ impl ConfigStore {
         let index = self.inner.index.as_ref()?;
         // The body manifest maps connection → establishment mechanism; the
         // index registry holds the plan under that mechanism name.
-        let mechanism = self
-            .inner
-            .manifest
-            .connections
-            .get(&connection)?
-            .establishment
-            .clone()?;
-        mfg_index::build_establishment(index, &model, &connection, &mechanism, &initial_scope)
+        let body = self.inner.body(&model)?;
+        let connection_config = body.connections.get(&connection)?;
+        let mechanism = connection_config.establishment.clone()?;
+        let mut plan =
+            mfg_index::build_establishment(index, &model, &connection, &mechanism, &initial_scope)?;
+        plan.activities
+            .extend(connection_config.activities.iter().map(Into::into));
+        Some(plan)
     }
 
     /// The BLE-native control action plan registered under `action` for `model`
@@ -1733,46 +1745,13 @@ impl ConfigStore {
         scope: Vec<KeyValue>,
         next_step_index: u32,
     ) -> Result<EstablishmentRefinement, EstablishmentError> {
-        let (model, selector) = plan_handle
-            .split_once(':')
-            .ok_or_else(|| EstablishmentError::InvalidPlanHandle(plan_handle.clone()))?;
-        if model.is_empty() || selector.is_empty() || selector.contains(':') {
-            return Err(EstablishmentError::InvalidPlanHandle(plan_handle));
-        }
-
-        let Some(index) = &self.inner.index else {
-            return Err(EstablishmentError::UnknownPlan(format!(
-                "{model}:{selector}: store has no manufacturer index"
-            )));
-        };
-        let Some(body) = self.inner.body(model) else {
-            return Err(EstablishmentError::UnknownPlan(format!(
-                "{model}:{selector}: unknown model"
-            )));
-        };
-        let mechanism = match body.connections.get(selector) {
-            Some(connection) => connection.establishment.clone().ok_or_else(|| {
-                EstablishmentError::UnknownPlan(format!(
-                    "{model}:{selector}: connection has no establishment"
-                ))
-            })?,
-            None => selector.to_string(),
-        };
-        let Some(plan) = mfg_index::build_establishment(index, model, selector, &mechanism, &scope)
-        else {
-            return Err(EstablishmentError::UnknownPlan(format!(
-                "{model}:{selector}: missing mechanism {mechanism}"
-            )));
-        };
-        if next_step_index as usize > plan.steps.len() {
-            return Err(EstablishmentError::InvalidNextStepIndex(format!(
-                "{model}:{selector}: next_step_index {next_step_index} > plan length {}",
-                plan.steps.len()
-            )));
-        }
-
-        let _ = firmware;
-        Ok(EstablishmentRefinement::NoChange)
+        Ok(refinement_to_ffi(refine_establishment_native(
+            self,
+            plan_handle,
+            firmware,
+            scope,
+            next_step_index,
+        )?))
     }
 
     /// Connections valid on `platform` under the camera's firmware (instax filtered
@@ -1848,6 +1827,7 @@ impl ConfigStore {
             mechanism: c.establishment.clone(),
             user_instruction: None,
             params,
+            activities: c.activities.iter().map(Into::into).collect(),
         })
     }
 
@@ -2403,6 +2383,109 @@ fn flattened_establishment_params(
 // ----------------------------------------------------------------------------
 // helpers
 // ----------------------------------------------------------------------------
+
+fn refine_establishment_native(
+    store: &ConfigStore,
+    plan_handle: String,
+    firmware: String,
+    scope: Vec<KeyValue>,
+    next_step_index: u32,
+) -> Result<NativeEstablishmentRefinement, EstablishmentError> {
+    let (model, selector) = plan_handle
+        .split_once(':')
+        .ok_or_else(|| EstablishmentError::InvalidPlanHandle(plan_handle.clone()))?;
+    if model.is_empty() || selector.is_empty() || selector.contains(':') {
+        return Err(EstablishmentError::InvalidPlanHandle(plan_handle));
+    }
+
+    let Some(index) = &store.inner.index else {
+        return Err(EstablishmentError::UnknownPlan(format!(
+            "{model}:{selector}: store has no manufacturer index"
+        )));
+    };
+    let Some(body) = store.inner.body(model) else {
+        return Err(EstablishmentError::UnknownPlan(format!(
+            "{model}:{selector}: unknown model"
+        )));
+    };
+    let mechanism = match body.connections.get(selector) {
+        Some(connection) => connection.establishment.clone().ok_or_else(|| {
+            EstablishmentError::UnknownPlan(format!(
+                "{model}:{selector}: connection has no establishment"
+            ))
+        })?,
+        None => selector.to_string(),
+    };
+    let Some(plan) = mfg_index::build_establishment(index, model, selector, &mechanism, &scope)
+    else {
+        return Err(EstablishmentError::UnknownPlan(format!(
+            "{model}:{selector}: missing mechanism {mechanism}"
+        )));
+    };
+    if next_step_index as usize > plan.steps.len() {
+        return Err(EstablishmentError::InvalidNextStepIndex(format!(
+            "{model}:{selector}: next_step_index {next_step_index} > plan length {}",
+            plan.steps.len()
+        )));
+    }
+
+    let _ = firmware;
+    Ok(NativeEstablishmentRefinement::NoChange)
+}
+
+fn refinement_to_ffi(native: NativeEstablishmentRefinement) -> EstablishmentRefinement {
+    match native {
+        NativeEstablishmentRefinement::NoChange => EstablishmentRefinement::NoChange,
+        NativeEstablishmentRefinement::ReplaceTail { steps, activities } => {
+            EstablishmentRefinement::ReplaceTail {
+                steps: steps.iter().map(Into::into).collect(),
+                activities: activities.iter().map(Into::into).collect(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod refinement_tests {
+    use super::*;
+
+    #[test]
+    fn replacement_tail_mirrors_steps_and_relative_spans() {
+        let activity: camera_config::ConnectionActivityDescriptor = serde_yaml::from_str(
+            r#"
+id: camera.test.refined
+version: 1
+displayRole: preparingConnection
+defaultExpectedDurationMs: 1
+interactionRequired: false
+executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+"#,
+        )
+        .unwrap();
+        let ffi = refinement_to_ffi(NativeEstablishmentRefinement::ReplaceTail {
+            steps: vec![camera_config::index::Step::BleConnect(
+                camera_config::index::BleConnectStep {
+                    opts: camera_config::index::StepOptions::default(),
+                },
+            )],
+            activities: vec![activity],
+        });
+        match ffi {
+            EstablishmentRefinement::ReplaceTail { steps, activities } => {
+                assert!(matches!(steps.as_slice(), [Step::BleConnect { .. }]));
+                assert!(matches!(
+                    activities[0].binding,
+                    ConnectionActivityBinding::ExecutorSpan {
+                        sequence: ConnectionActivitySequence::Steps,
+                        start_step: 0,
+                        end_step_exclusive: 1,
+                    }
+                ));
+            }
+            EstablishmentRefinement::NoChange => panic!("expected replacement"),
+        }
+    }
+}
 
 fn build_store(
     m: cc::CameraManifest,

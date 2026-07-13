@@ -3,6 +3,7 @@
 //! `DESIGN.md` (camelCase). Most sections default to empty so partial manifests
 //! and append-only growth are valid.
 
+use crate::activity::ConnectionActivityDescriptor;
 use crate::predicate::Predicate;
 use crate::version::{compare, VersionScheme};
 use serde::{Deserialize, Serialize};
@@ -655,6 +656,10 @@ pub struct Connection {
     pub kind: Option<String>,
     #[serde(default)]
     pub establishment: Option<String>,
+    /// Host-owned semantic checkpoints that complete this connection after
+    /// the manufacturer-index executor plan (schema §11.23).
+    #[serde(default)]
+    pub activities: Vec<ConnectionActivityDescriptor>,
     /// The PTP/IP establishment packet shape for this connection — the
     /// InitCommandRequest byte template (#82). When present, the engine/FFI can
     /// assemble the init bytes from manifest data alone (no client literals).

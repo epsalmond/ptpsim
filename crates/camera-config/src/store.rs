@@ -123,6 +123,7 @@ impl ConfigStore {
             validate_reestablishment_params(id, &body, model_view)?;
             bodies.insert(id.clone(), body);
         }
+        validate_activity_metadata_consistency(&index, &bodies)?;
         // Plan §3.1: "the primary manifest" semantics — the first declared
         // model's body. Single-model indices (the MVP case) trivially get
         // the only body. Callers wanting a different model look up by id
@@ -218,6 +219,70 @@ impl ConfigStore {
             .map(|(id, _)| id.as_str())
             .collect()
     }
+}
+
+fn validate_activity_metadata_consistency(
+    index: &ResolvedManufacturerIndex,
+    bodies: &BTreeMap<String, CameraManifest>,
+) -> Result<(), ConfigError> {
+    use crate::ConnectionActivityDescriptor;
+
+    let mut seen: BTreeMap<
+        (String, u32),
+        (crate::ConnectionActivityDisplayRole, u32, bool, String),
+    > = BTreeMap::new();
+    let mut check = |descriptor: &ConnectionActivityDescriptor, path: String| {
+        let key = (descriptor.id.clone(), descriptor.version);
+        let metadata = (
+            descriptor.display_role.clone(),
+            descriptor.default_expected_duration_ms,
+            descriptor.interaction_required,
+        );
+        if let Some((role, duration, interaction, first_path)) = seen.get(&key) {
+            if (&metadata.0, metadata.1, metadata.2) != (role, *duration, *interaction) {
+                return Err(ConfigError::Validation {
+                    path,
+                    message: format!(
+                        "activity '{}@{}' metadata differs from {first_path}",
+                        descriptor.id, descriptor.version
+                    ),
+                });
+            }
+        } else {
+            seen.insert(key, (metadata.0, metadata.1, metadata.2, path));
+        }
+        Ok(())
+    };
+
+    for model in &index.models {
+        if let Some(ble) = &model.ble {
+            for (mechanism, establishment) in &ble.establishments {
+                for (activity_index, descriptor) in establishment.activities.iter().enumerate() {
+                    check(
+                        descriptor,
+                        format!(
+                            "models.{}.establishments.{mechanism}.activities[{activity_index}]",
+                            model.id
+                        ),
+                    )?;
+                }
+            }
+        }
+        if let Some(body) = bodies.get(&model.id) {
+            for (connection_id, connection) in &body.connections {
+                for (activity_index, descriptor) in connection.activities.iter().enumerate() {
+                    check(
+                        descriptor,
+                        format!(
+                            "models.{}.connections.{connection_id}.activities[{activity_index}]",
+                            model.id
+                        ),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_reestablishment_params(

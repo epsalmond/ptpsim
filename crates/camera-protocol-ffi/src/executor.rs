@@ -32,6 +32,11 @@ use camera_config::index::{
     AcquireSource, AwaitSource, BleAwaitUntilStep, BleNotifyStep, BleNotifyUntil,
     BleWriteChunkStep, Encoding, EstablishmentBlock, NotifyCapture, PredicateOp, Step, StepValue,
 };
+use camera_config::{
+    ConnectionActivityBinding as ConfigActivityBinding,
+    ConnectionActivityDescriptor as ConfigActivityDescriptor,
+    ConnectionActivitySequence as ConfigActivitySequence,
+};
 use futures_util::future::{select, Either, FutureExt};
 
 use crate::{ConfigStore, KeyValue};
@@ -143,6 +148,10 @@ pub struct StepReport {
     pub error: Option<String>,
     /// Retries consumed so far (0 on first-try success).
     pub attempts: u32,
+    /// Semantic activity correlation for this raw report, when the top-level
+    /// step belongs to an executor span.
+    pub activity_id: Option<String>,
+    pub activity_version: Option<u32>,
 }
 
 /// Foreign observer for the step outcome stream. Fire-and-forget from the
@@ -150,6 +159,38 @@ pub struct StepReport {
 #[uniffi::export(with_foreign)]
 pub trait StepObserver: Send + Sync {
     fn on_step(&self, report: StepReport);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum ConnectionActivityEvent {
+    Started {
+        id: String,
+        version: u32,
+    },
+    Retrying {
+        id: String,
+        version: u32,
+        ordinal: u32,
+        limit: u32,
+    },
+    Succeeded {
+        id: String,
+        version: u32,
+    },
+    Failed {
+        id: String,
+        version: u32,
+        kind: ExecutorStepFailureKind,
+    },
+    Cancelled {
+        id: String,
+        version: u32,
+    },
+}
+
+#[uniffi::export(with_foreign)]
+pub trait ConnectionActivityObserver: Send + Sync {
+    fn on_activity(&self, event: ConnectionActivityEvent);
 }
 
 // ---------------------------------------------------------------------------
@@ -195,11 +236,13 @@ pub struct ExecutionOutcome {
 /// correctly without the app-side hex-string heuristic (#43). Unknown
 /// encoding tokens are ignored (the scope value then decodes by fallback).
 #[uniffi::export]
+#[allow(clippy::too_many_arguments)] // Flat, explicit FFI call contract.
 pub async fn run_establishment(
     store: Arc<ConfigStore>,
     plan_handle: String,
     transport: Arc<dyn BleExecutorTransport>,
     observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
     initial_scope: Vec<KeyValue>,
     initial_encodings: Vec<KeyValue>,
     runtime_params: Vec<KeyValue>,
@@ -213,6 +256,8 @@ pub async fn run_establishment(
     let mut ctx = ExecCtx {
         transport: &transport,
         observer: &observer,
+        activity_observer: Some(&activity_observer),
+        active_activity: None,
         scope: initial_scope
             .into_iter()
             .map(|kv| (kv.key, kv.value))
@@ -225,11 +270,17 @@ pub async fn run_establishment(
         subscriptions: BTreeSet::new(),
         steps_run: 0,
         refine: Some(RefineCtx {
-            store: &store,
+            source: RefinementSource::Store(&store),
             plan_handle: plan_handle.clone(),
         }),
     };
-    walk_plan(&mut ctx, block.steps).await?;
+    walk_plan_with_activities(
+        &mut ctx,
+        block.steps,
+        block.activities,
+        ConfigActivitySequence::Steps,
+    )
+    .await?;
     Ok(outcome(ctx))
 }
 
@@ -242,11 +293,13 @@ pub async fn run_establishment(
 /// fixed sequence, §11.5 tiering applies to `steps` only, and the manifest
 /// parser rejects `acquireFirmware` inside `postExitReadiness`.
 #[uniffi::export]
+#[allow(clippy::too_many_arguments)] // Mirrors run_establishment at the FFI seam.
 pub async fn run_post_exit_readiness(
     store: Arc<ConfigStore>,
     plan_handle: String,
     transport: Arc<dyn BleExecutorTransport>,
     observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
     initial_scope: Vec<KeyValue>,
     initial_encodings: Vec<KeyValue>,
     runtime_params: Vec<KeyValue>,
@@ -260,6 +313,8 @@ pub async fn run_post_exit_readiness(
     let mut ctx = ExecCtx {
         transport: &transport,
         observer: &observer,
+        activity_observer: Some(&activity_observer),
+        active_activity: None,
         scope: initial_scope
             .into_iter()
             .map(|kv| (kv.key, kv.value))
@@ -273,7 +328,13 @@ pub async fn run_post_exit_readiness(
         steps_run: 0,
         refine: None,
     };
-    walk_plan(&mut ctx, block.post_exit_readiness).await?;
+    walk_plan_with_activities(
+        &mut ctx,
+        block.post_exit_readiness,
+        block.activities,
+        ConfigActivitySequence::PostExitReadiness,
+    )
+    .await?;
     Ok(outcome(ctx))
 }
 
@@ -346,6 +407,8 @@ pub async fn run_ble_action(
     let mut ctx = ExecCtx {
         transport: &transport,
         observer: &observer,
+        activity_observer: None,
+        active_activity: None,
         scope: initial_scope
             .into_iter()
             .map(|kv| (kv.key, kv.value))
@@ -359,7 +422,13 @@ pub async fn run_ble_action(
         steps_run: 0,
         refine: None,
     };
-    walk_plan(&mut ctx, block.steps.clone()).await?;
+    walk_plan_with_activities(
+        &mut ctx,
+        block.steps.clone(),
+        Vec::new(),
+        ConfigActivitySequence::Steps,
+    )
+    .await?;
     Ok(outcome(ctx))
 }
 
@@ -379,13 +448,56 @@ fn outcome(ctx: ExecCtx<'_>) -> ExecutionOutcome {
 // ---------------------------------------------------------------------------
 
 struct RefineCtx<'a> {
-    store: &'a ConfigStore,
+    source: RefinementSource<'a>,
     plan_handle: String,
+}
+
+enum RefinementSource<'a> {
+    Store(&'a ConfigStore),
+    #[cfg(test)]
+    #[allow(dead_code)]
+    Resolver(&'a dyn NativeRefinementResolver),
+}
+
+#[cfg(test)]
+trait NativeRefinementResolver: Send + Sync {
+    fn refine(
+        &self,
+        plan_handle: String,
+        firmware: String,
+        scope: Vec<KeyValue>,
+        next_step_index: u32,
+    ) -> Result<crate::NativeEstablishmentRefinement, crate::EstablishmentError>;
+}
+
+impl RefineCtx<'_> {
+    fn refine(
+        &self,
+        firmware: String,
+        scope: Vec<KeyValue>,
+        next_step_index: u32,
+    ) -> Result<crate::NativeEstablishmentRefinement, crate::EstablishmentError> {
+        match self.source {
+            RefinementSource::Store(store) => crate::refine_establishment_native(
+                store,
+                self.plan_handle.clone(),
+                firmware,
+                scope,
+                next_step_index,
+            ),
+            #[cfg(test)]
+            RefinementSource::Resolver(resolver) => {
+                resolver.refine(self.plan_handle.clone(), firmware, scope, next_step_index)
+            }
+        }
+    }
 }
 
 struct ExecCtx<'a> {
     transport: &'a Arc<dyn BleExecutorTransport>,
     observer: &'a Arc<dyn StepObserver>,
+    activity_observer: Option<&'a Arc<dyn ConnectionActivityObserver>>,
+    active_activity: Option<ActiveActivity>,
     scope: BTreeMap<String, String>,
     /// Encoding each scope key was captured with — `{ captured: … }` writes
     /// re-encode by this instead of guessing from the scope string.
@@ -397,6 +509,104 @@ struct ExecCtx<'a> {
     /// Present for establishment walks; `acquireFirmware` re-resolves the
     /// tail through it (§11.5). `None` for BLE actions.
     refine: Option<RefineCtx<'a>>,
+}
+
+struct ActiveActivity {
+    observer: Arc<dyn ConnectionActivityObserver>,
+    id: String,
+    version: u32,
+    terminal: bool,
+}
+
+impl ActiveActivity {
+    fn new(
+        observer: Arc<dyn ConnectionActivityObserver>,
+        descriptor: &ConfigActivityDescriptor,
+    ) -> Self {
+        observer.on_activity(ConnectionActivityEvent::Started {
+            id: descriptor.id.clone(),
+            version: descriptor.version,
+        });
+        Self {
+            observer,
+            id: descriptor.id.clone(),
+            version: descriptor.version,
+            terminal: false,
+        }
+    }
+
+    fn emit(&mut self, event: ConnectionActivityEvent) {
+        self.observer.on_activity(event);
+    }
+
+    fn succeed(mut self) {
+        self.emit(ConnectionActivityEvent::Succeeded {
+            id: self.id.clone(),
+            version: self.version,
+        });
+        self.terminal = true;
+    }
+
+    fn fail(mut self, kind: ExecutorStepFailureKind) {
+        self.emit(ConnectionActivityEvent::Failed {
+            id: self.id.clone(),
+            version: self.version,
+            kind,
+        });
+        self.terminal = true;
+    }
+}
+
+impl Drop for ActiveActivity {
+    fn drop(&mut self) {
+        if !self.terminal {
+            self.observer
+                .on_activity(ConnectionActivityEvent::Cancelled {
+                    id: self.id.clone(),
+                    version: self.version,
+                });
+            self.terminal = true;
+        }
+    }
+}
+
+impl ExecCtx<'_> {
+    fn begin_activity(&mut self, descriptor: &ConfigActivityDescriptor) {
+        debug_assert!(self.active_activity.is_none());
+        if let Some(observer) = self.activity_observer {
+            self.active_activity = Some(ActiveActivity::new(Arc::clone(observer), descriptor));
+        }
+    }
+
+    fn succeed_activity(&mut self) {
+        if let Some(activity) = self.active_activity.take() {
+            activity.succeed();
+        }
+    }
+
+    fn fail_activity(&mut self, kind: ExecutorStepFailureKind) {
+        if let Some(activity) = self.active_activity.take() {
+            activity.fail(kind);
+        }
+    }
+
+    fn retry_activity(&mut self, ordinal: u32, limit: u32) {
+        if let Some(activity) = &mut self.active_activity {
+            activity.emit(ConnectionActivityEvent::Retrying {
+                id: activity.id.clone(),
+                version: activity.version,
+                ordinal,
+                limit,
+            });
+        }
+    }
+
+    fn activity_correlation(&self) -> (Option<String>, Option<u32>) {
+        self.active_activity
+            .as_ref()
+            .map(|activity| (Some(activity.id.clone()), Some(activity.version)))
+            .unwrap_or((None, None))
+    }
 }
 
 /// Step failure: which step (verb + position path) and why.
@@ -489,7 +699,12 @@ impl OperationFailure {
 
 /// A refined tail bubbling up from `acquireFirmware` (§11.5) — the top-level
 /// walk splices it over the steps after the current one.
-type RefinedTail = Option<Vec<Step>>;
+struct NativeRefinedTail {
+    steps: Vec<Step>,
+    activities: Vec<ConfigActivityDescriptor>,
+}
+
+type RefinedTail = Option<NativeRefinedTail>;
 
 // ---------------------------------------------------------------------------
 // The walk
@@ -498,18 +713,155 @@ type RefinedTail = Option<Vec<Step>>;
 /// Top-level walk with §11.5 tail splicing: a step that returns a refined
 /// tail replaces everything after itself, and the walk continues into the
 /// spliced steps.
-async fn walk_plan(ctx: &mut ExecCtx<'_>, mut steps: Vec<Step>) -> Result<(), StepError> {
+async fn walk_plan_with_activities(
+    ctx: &mut ExecCtx<'_>,
+    mut steps: Vec<Step>,
+    mut activities: Vec<ConfigActivityDescriptor>,
+    sequence: ConfigActivitySequence,
+) -> Result<(), StepError> {
     let mut i = 0;
     while i < steps.len() {
+        let activity = activities
+            .iter()
+            .find(|activity| {
+                matches!(
+                    &activity.binding,
+                    ConfigActivityBinding::ExecutorSpan(binding)
+                        if binding.executor_span.sequence == sequence
+                            && binding.executor_span.start_step <= i as u32
+                            && (i as u32) < binding.executor_span.end_step_exclusive
+                )
+            })
+            .cloned();
+        if ctx.active_activity.is_none() {
+            if let Some(activity) = &activity {
+                ctx.begin_activity(activity);
+            }
+        }
         let step = steps[i].clone();
         let here = format!("steps[{i}].{}", step.verb_name());
-        if let Some(tail) = run_step(ctx, &step, &here, (i + 1) as u32).await? {
-            steps.truncate(i + 1);
-            steps.extend(tail);
+        let mut refined_activity_continues = false;
+        match run_step(ctx, &step, &here, (i + 1) as u32).await {
+            Ok(Some(tail)) => {
+                steps.truncate(i + 1);
+                steps.extend(tail.steps);
+                refined_activity_continues = splice_refined_activities(
+                    &mut activities,
+                    &sequence,
+                    (i + 1) as u32,
+                    tail.activities,
+                );
+                if !refined_activity_continues {
+                    ctx.succeed_activity();
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                ctx.fail_activity(error.kind);
+                return Err(error);
+            }
+        }
+        let activity_ends = !refined_activity_continues
+            && ctx.active_activity.is_some()
+            && activity.is_some_and(|activity| {
+                matches!(
+                    &activity.binding,
+                    ConfigActivityBinding::ExecutorSpan(binding)
+                        if binding.executor_span.end_step_exclusive == (i + 1) as u32
+                )
+            });
+        if activity_ends {
+            ctx.succeed_activity();
         }
         i += 1;
     }
     Ok(())
+}
+
+fn splice_refined_activities(
+    activities: &mut Vec<ConfigActivityDescriptor>,
+    sequence: &ConfigActivitySequence,
+    next_step: u32,
+    replacements: Vec<ConfigActivityDescriptor>,
+) -> bool {
+    let continuation = activities
+        .iter()
+        .enumerate()
+        .find(|(_, activity)| {
+            matches!(
+                &activity.binding,
+                ConfigActivityBinding::ExecutorSpan(binding)
+                    if &binding.executor_span.sequence == sequence
+                        && binding.executor_span.start_step < next_step
+                        && next_step <= binding.executor_span.end_step_exclusive
+            )
+        })
+        .and_then(|(retained_index, retained)| {
+            replacements
+                .iter()
+                .position(|replacement| {
+                    matches!(
+                        &replacement.binding,
+                        ConfigActivityBinding::ExecutorSpan(binding)
+                            if &binding.executor_span.sequence == sequence
+                                && binding.executor_span.start_step == 0
+                    ) && same_activity_metadata(retained, replacement)
+                })
+                .map(|replacement_index| (retained_index, replacement_index))
+        });
+
+    activities.retain_mut(|activity| match &mut activity.binding {
+        ConfigActivityBinding::ExecutorSpan(binding)
+            if &binding.executor_span.sequence == sequence =>
+        {
+            if binding.executor_span.start_step >= next_step {
+                false
+            } else {
+                binding.executor_span.end_step_exclusive =
+                    binding.executor_span.end_step_exclusive.min(next_step);
+                true
+            }
+        }
+        _ => true,
+    });
+    let mut replacements = replacements;
+    if let Some((retained_index, replacement_index)) = continuation {
+        let replacement = replacements.remove(replacement_index);
+        let ConfigActivityBinding::ExecutorSpan(replacement_binding) = replacement.binding else {
+            unreachable!("continuation selection requires an executor span");
+        };
+        let ConfigActivityBinding::ExecutorSpan(retained_binding) =
+            &mut activities[retained_index].binding
+        else {
+            unreachable!("continuation selection requires an executor span");
+        };
+        retained_binding.executor_span.end_step_exclusive =
+            next_step + replacement_binding.executor_span.end_step_exclusive;
+    }
+    activities.extend(replacements.into_iter().map(|mut activity| {
+        if let ConfigActivityBinding::ExecutorSpan(binding) = &mut activity.binding {
+            binding.executor_span.start_step += next_step;
+            binding.executor_span.end_step_exclusive += next_step;
+        }
+        activity
+    }));
+    continuation.is_some()
+}
+
+fn same_activity_metadata(
+    left: &ConfigActivityDescriptor,
+    right: &ConfigActivityDescriptor,
+) -> bool {
+    left.id == right.id
+        && left.version == right.version
+        && left.display_role == right.display_role
+        && left.default_expected_duration_ms == right.default_expected_duration_ms
+        && left.interaction_required == right.interaction_required
+}
+
+#[cfg(test)]
+async fn walk_plan(ctx: &mut ExecCtx<'_>, steps: Vec<Step>) -> Result<(), StepError> {
+    walk_plan_with_activities(ctx, steps, Vec::new(), ConfigActivitySequence::Steps).await
 }
 
 /// Nested walk (if-branches, `on_each`, acquire delegates). A refined tail
@@ -548,6 +900,7 @@ fn run_step<'a>(
         let opts = step.options();
         let verb = step.verb_name();
         let characteristic = step_characteristic(step);
+        let (activity_id, activity_version) = ctx.activity_correlation();
         let report = |outcome: StepOutcome, error: Option<String>, attempts: u32| StepReport {
             step_path: here.to_string(),
             verb: verb.to_string(),
@@ -555,6 +908,8 @@ fn run_step<'a>(
             outcome,
             error,
             attempts,
+            activity_id: activity_id.clone(),
+            activity_version,
         };
         ctx.observer.on_step(report(StepOutcome::Started, None, 0));
 
@@ -602,6 +957,7 @@ fn run_step<'a>(
                     return Ok(tail);
                 }
                 Err(e) if attempt < opts.retries => {
+                    ctx.retry_activity(attempt + 2, opts.retries + 1);
                     attempt += 1;
                     let _ = e;
                     if opts.retry_delay_ms > 0 {
@@ -696,9 +1052,13 @@ async fn run_retry_control(
                 }
 
                 if retry.retry_delay_ms > 0 {
+                    ctx.retry_activity(retries_consumed + 2, retry.max_attempts);
                     if let Err(error) = ctx.transport.sleep(retry.retry_delay_ms).await {
                         return Err((StepError::transport(here, error), retries_consumed));
                     }
+                }
+                if retry.retry_delay_ms == 0 {
+                    ctx.retry_activity(retries_consumed + 2, retry.max_attempts);
                 }
                 retries_consumed += 1;
             }
@@ -907,21 +1267,10 @@ async fn run_step_once(
                     value: v.clone(),
                 })
                 .collect();
-            match refine.store.refine_establishment(
-                refine.plan_handle.clone(),
-                firmware,
-                scope_kvs,
-                top_next,
-            ) {
-                Ok(crate::EstablishmentRefinement::NoChange) => Ok(None),
-                Ok(crate::EstablishmentRefinement::ReplaceTail { .. }) => {
-                    // The FFI refinement carries FFI Steps; the internal
-                    // walker needs ix Steps. Current manifests never branch on
-                    // firmware, so a live ReplaceTail here means the manifest
-                    // grammar outgrew the executor — fail loud, don't guess.
-                    Err(err("refinement returned replaceTail — executor-side tail \
-                         conversion is not implemented yet"
-                        .into()))
+            match refine.refine(firmware, scope_kvs, top_next) {
+                Ok(crate::NativeEstablishmentRefinement::NoChange) => Ok(None),
+                Ok(crate::NativeEstablishmentRefinement::ReplaceTail { steps, activities }) => {
+                    Ok(Some(NativeRefinedTail { steps, activities }))
                 }
                 Err(e) => Err(err(format!("refinement failed: {e}"))),
             }
@@ -1504,9 +1853,9 @@ fn summarize_observations(observations: &[String]) -> String {
 mod tests {
     use super::*;
     use camera_config::index::{
-        AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleReadStep, BleRequestMtuStep,
-        BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate, RetryFailureKind, RetryStep,
-        StepOptions,
+        AcquireFirmwareStep, AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleReadStep,
+        BleRequestMtuStep, BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate,
+        RetryFailureKind, RetryStep, StepOptions,
     };
     use std::collections::VecDeque;
     use std::future::Future;
@@ -1618,6 +1967,31 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ActivityRecorder(Mutex<Vec<ConnectionActivityEvent>>);
+    impl ConnectionActivityObserver for ActivityRecorder {
+        fn on_activity(&self, event: ConnectionActivityEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    fn activity_descriptor(id: &str, end_step_exclusive: u32) -> ConfigActivityDescriptor {
+        ConfigActivityDescriptor {
+            id: id.into(),
+            version: 1,
+            display_role: camera_config::ConnectionActivityDisplayRole::Connecting,
+            default_expected_duration_ms: 1000,
+            interaction_required: false,
+            binding: ConfigActivityBinding::ExecutorSpan(camera_config::ExecutorSpanBinding {
+                executor_span: camera_config::ConnectionActivityExecutorSpan {
+                    sequence: ConfigActivitySequence::Steps,
+                    start_step: 0,
+                    end_step_exclusive,
+                },
+            }),
+        }
+    }
+
     fn harness(
         transport: MockTransport,
     ) -> (
@@ -1638,6 +2012,8 @@ mod tests {
         ExecCtx {
             transport,
             observer,
+            activity_observer: None,
+            active_activity: None,
             scope: BTreeMap::new(),
             encodings: BTreeMap::new(),
             runtime_params: BTreeMap::new(),
@@ -1722,7 +2098,10 @@ mod tests {
             sleep_log: sleep_log.clone(),
             ..Default::default()
         });
+        let activity_recorder = Arc::new(ActivityRecorder::default());
+        let activity_observer: Arc<dyn ConnectionActivityObserver> = activity_recorder.clone();
         let mut ctx = ctx(&transport, &observer);
+        ctx.activity_observer = Some(&activity_observer);
         let steps = vec![read_step(
             "v",
             StepOptions {
@@ -1731,7 +2110,13 @@ mod tests {
                 retry_delay_ms: 7,
             },
         )];
-        block_on(walk_plan(&mut ctx, steps)).expect("third attempt succeeds");
+        block_on(walk_plan_with_activities(
+            &mut ctx,
+            steps,
+            vec![activity_descriptor("camera.test.retry", 1)],
+            ConfigActivitySequence::Steps,
+        ))
+        .expect("third attempt succeeds");
         assert_eq!(ctx.scope.get("v").map(String::as_str), Some("ok"));
 
         let reports = recorder.0.lock().unwrap();
@@ -1746,6 +2131,222 @@ mod tests {
             .filter(|m| **m == 7)
             .count();
         assert_eq!(backoffs, 2);
+        assert_eq!(
+            *activity_recorder.0.lock().unwrap(),
+            vec![
+                ConnectionActivityEvent::Started {
+                    id: "camera.test.retry".into(),
+                    version: 1,
+                },
+                ConnectionActivityEvent::Retrying {
+                    id: "camera.test.retry".into(),
+                    version: 1,
+                    ordinal: 2,
+                    limit: 3,
+                },
+                ConnectionActivityEvent::Retrying {
+                    id: "camera.test.retry".into(),
+                    version: 1,
+                    ordinal: 3,
+                    limit: 3,
+                },
+                ConnectionActivityEvent::Succeeded {
+                    id: "camera.test.retry".into(),
+                    version: 1,
+                },
+            ]
+        );
+    }
+
+    struct SyntheticTailResolver;
+
+    impl NativeRefinementResolver for SyntheticTailResolver {
+        fn refine(
+            &self,
+            _plan_handle: String,
+            _firmware: String,
+            _scope: Vec<KeyValue>,
+            next_step_index: u32,
+        ) -> Result<crate::NativeEstablishmentRefinement, crate::EstablishmentError> {
+            assert_eq!(next_step_index, 1);
+            Ok(crate::NativeEstablishmentRefinement::ReplaceTail {
+                steps: vec![
+                    read_step("refinedFirst", StepOptions::default()),
+                    read_step("refinedSecond", StepOptions::default()),
+                ],
+                activities: vec![activity_descriptor("camera.test.refined", 2)],
+            })
+        }
+    }
+
+    struct ContinuingTailResolver;
+
+    impl NativeRefinementResolver for ContinuingTailResolver {
+        fn refine(
+            &self,
+            _plan_handle: String,
+            _firmware: String,
+            _scope: Vec<KeyValue>,
+            next_step_index: u32,
+        ) -> Result<crate::NativeEstablishmentRefinement, crate::EstablishmentError> {
+            assert_eq!(next_step_index, 1);
+            Ok(crate::NativeEstablishmentRefinement::ReplaceTail {
+                steps: vec![
+                    read_step("refinedFirst", StepOptions::default()),
+                    read_step("refinedSecond", StepOptions::default()),
+                ],
+                activities: vec![activity_descriptor("camera.test.continuing", 2)],
+            })
+        }
+    }
+
+    #[test]
+    fn refinement_splices_native_steps_and_relative_activity_spans() {
+        let (transport, recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([
+                Io::Value(b"2.40".to_vec()),
+                Io::Value(b"first".to_vec()),
+                Io::Value(b"second".to_vec()),
+            ])),
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let activity_recorder = Arc::new(ActivityRecorder::default());
+        let activity_observer: Arc<dyn ConnectionActivityObserver> = activity_recorder.clone();
+        let resolver = SyntheticTailResolver;
+        let mut ctx = ctx(&transport, &observer);
+        ctx.activity_observer = Some(&activity_observer);
+        ctx.refine = Some(RefineCtx {
+            source: RefinementSource::Resolver(&resolver),
+            plan_handle: "tm1:test".into(),
+        });
+        let original = vec![
+            Step::AcquireFirmware(AcquireFirmwareStep {
+                from: AcquireSource::BleRead {
+                    gatt: "FIRMWARE".into(),
+                    encoding: Encoding::Utf8,
+                },
+                opts: StepOptions::default(),
+            }),
+            read_step("oldFirst", StepOptions::default()),
+            read_step("oldSecond", StepOptions::default()),
+        ];
+        let activities = vec![
+            activity_descriptor("camera.test.acquire", 1),
+            ConfigActivityDescriptor {
+                id: "camera.test.old-tail".into(),
+                binding: ConfigActivityBinding::ExecutorSpan(camera_config::ExecutorSpanBinding {
+                    executor_span: camera_config::ConnectionActivityExecutorSpan {
+                        sequence: ConfigActivitySequence::Steps,
+                        start_step: 1,
+                        end_step_exclusive: 3,
+                    },
+                }),
+                ..activity_descriptor("camera.test.old-tail", 3)
+            },
+        ];
+
+        block_on(walk_plan_with_activities(
+            &mut ctx,
+            original,
+            activities,
+            ConfigActivitySequence::Steps,
+        ))
+        .expect("the native replacement tail runs");
+
+        assert_eq!(
+            ctx.scope.get("refinedFirst").map(String::as_str),
+            Some("first")
+        );
+        assert_eq!(
+            ctx.scope.get("refinedSecond").map(String::as_str),
+            Some("second")
+        );
+        assert!(!ctx.scope.contains_key("oldFirst"));
+        assert_eq!(recorder.0.lock().unwrap().len(), 6);
+        assert_eq!(
+            *activity_recorder.0.lock().unwrap(),
+            vec![
+                ConnectionActivityEvent::Started {
+                    id: "camera.test.acquire".into(),
+                    version: 1,
+                },
+                ConnectionActivityEvent::Succeeded {
+                    id: "camera.test.acquire".into(),
+                    version: 1,
+                },
+                ConnectionActivityEvent::Started {
+                    id: "camera.test.refined".into(),
+                    version: 1,
+                },
+                ConnectionActivityEvent::Succeeded {
+                    id: "camera.test.refined".into(),
+                    version: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn refinement_keeps_a_matching_activity_alive_across_the_splice() {
+        let (transport, recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([
+                Io::Value(b"2.40".to_vec()),
+                Io::Value(b"first".to_vec()),
+                Io::Value(b"second".to_vec()),
+            ])),
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let activity_recorder = Arc::new(ActivityRecorder::default());
+        let activity_observer: Arc<dyn ConnectionActivityObserver> = activity_recorder.clone();
+        let resolver = ContinuingTailResolver;
+        let mut ctx = ctx(&transport, &observer);
+        ctx.activity_observer = Some(&activity_observer);
+        ctx.refine = Some(RefineCtx {
+            source: RefinementSource::Resolver(&resolver),
+            plan_handle: "tm1:test".into(),
+        });
+        let original = vec![
+            Step::AcquireFirmware(AcquireFirmwareStep {
+                from: AcquireSource::BleRead {
+                    gatt: "FIRMWARE".into(),
+                    encoding: Encoding::Utf8,
+                },
+                opts: StepOptions::default(),
+            }),
+            read_step("oldFirst", StepOptions::default()),
+            read_step("oldSecond", StepOptions::default()),
+        ];
+
+        block_on(walk_plan_with_activities(
+            &mut ctx,
+            original,
+            vec![activity_descriptor("camera.test.continuing", 3)],
+            ConfigActivitySequence::Steps,
+        ))
+        .expect("the continued replacement tail runs");
+
+        assert_eq!(recorder.0.lock().unwrap().len(), 6);
+        assert!(recorder
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|report| report.activity_id.as_deref() == Some("camera.test.continuing")));
+        assert_eq!(
+            *activity_recorder.0.lock().unwrap(),
+            vec![
+                ConnectionActivityEvent::Started {
+                    id: "camera.test.continuing".into(),
+                    version: 1,
+                },
+                ConnectionActivityEvent::Succeeded {
+                    id: "camera.test.continuing".into(),
+                    version: 1,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1944,10 +2545,18 @@ mod tests {
             dropped_inflight: flag.clone(),
             ..Default::default()
         });
+        let activity_recorder = Arc::new(ActivityRecorder::default());
+        let activity_observer: Arc<dyn ConnectionActivityObserver> = activity_recorder.clone();
         let mut ctx = ctx(&transport, &observer);
+        ctx.activity_observer = Some(&activity_observer);
         let steps = vec![read_step("v", StepOptions::default())];
         {
-            let mut fut = Box::pin(walk_plan(&mut ctx, steps));
+            let mut fut = Box::pin(walk_plan_with_activities(
+                &mut ctx,
+                steps,
+                vec![activity_descriptor("camera.test.cancel", 1)],
+                ConfigActivitySequence::Steps,
+            ));
             let waker = futures::task::noop_waker();
             let mut poll_ctx = Context::from_waker(&waker);
             assert!(matches!(fut.as_mut().poll(&mut poll_ctx), Poll::Pending));
@@ -1958,6 +2567,21 @@ mod tests {
         assert!(
             flag.load(Ordering::SeqCst),
             "cancelling the walk must drop the in-flight transport call"
+        );
+        drop(ctx);
+        assert_eq!(
+            *activity_recorder.0.lock().unwrap(),
+            vec![
+                ConnectionActivityEvent::Started {
+                    id: "camera.test.cancel".into(),
+                    version: 1,
+                },
+                ConnectionActivityEvent::Cancelled {
+                    id: "camera.test.cancel".into(),
+                    version: 1,
+                },
+            ],
+            "cancellation emits one terminal event"
         );
     }
 

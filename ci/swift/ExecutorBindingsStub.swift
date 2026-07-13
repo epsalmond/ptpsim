@@ -1,5 +1,9 @@
 import Foundation
 
+final class ConnectionActivityObserverStub: ConnectionActivityObserver, @unchecked Sendable {
+    func onActivity(event: ConnectionActivityEvent) {}
+}
+
 func classifyFailure(_ kind: ExecutorStepFailureKind) -> Bool {
     switch kind {
     case .deadlineExceeded, .other:

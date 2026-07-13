@@ -132,6 +132,25 @@ families:
           # is the 4/5-byte key written to PAIRING_KEY; style + cameraSerial key
           # the cached record. Wi-Fi creds are persisted by ble-establish-wifi-ap.
           persist: [pairingKeyBytes, style, cameraSerial]
+          activities:
+            - id: camera.link.connect
+              version: 1
+              displayRole: connecting
+              defaultExpectedDurationMs: 4000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
+            - id: camera.pair.confirm
+              version: 1
+              displayRole: confirmingPairing
+              defaultExpectedDurationMs: 15000
+              interactionRequired: true
+              executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 3 }
+            - id: camera.pair.configure
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 8000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 3, endStepExclusive: 20 }
           steps:
             # Peripheral is already in app scope from recognition; the
             # dispatcher's BLE primitive holds the binding (plan §11.4).
@@ -240,6 +259,13 @@ families:
         # camera dropping the link while it boots.
         ble-wake:
           mechanism: ble-wake
+          activities:
+            - id: camera.wake
+              version: 1
+              displayRole: waitingForCamera
+              defaultExpectedDurationMs: 10000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
           steps:
             - bleConnect: {}
             - bleAwaitDisconnect: { timeoutMs: 60000 }
@@ -264,6 +290,31 @@ families:
           # The Wi-Fi creds read below are cached for reconnect (#91), alongside
           # the pairing identity ble-pair persists.
           persist: [ssid, passphrase]
+          activities:
+            - id: camera.ap.reset
+              version: 1
+              displayRole: waitingForCamera
+              defaultExpectedDurationMs: 8000
+              interactionRequired: false
+              executorSpan: { sequence: postExitReadiness, startStep: 0, endStepExclusive: 3 }
+            - id: camera.ap.prepare
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 2000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 }
+            - id: camera.ap.launch
+              version: 1
+              displayRole: startingNetwork
+              defaultExpectedDurationMs: 12000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 3, endStepExclusive: 4 }
+            - id: camera.ap.credentials
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 2000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 4, endStepExclusive: 6 }
           # A successful PTP/TCP close completes before the camera returns its
           # BLE AP state to the relaunchable baseline. Consumers walk this exact
           # manifest-authored gate after an orderly feature exit; they must not
@@ -353,6 +404,19 @@ families:
         ble-reconnect:
           mechanism: ble-reconnect
           persist: [pairingKeyBytes, style, cameraSerial, ssid, passphrase]
+          activities:
+            - id: camera.link.connect
+              version: 1
+              displayRole: connecting
+              defaultExpectedDurationMs: 4000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
+            - id: camera.reconnect.restore
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 6000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 18 }
           steps:
             - bleConnect: {}
             - bleDiscoverServices: {}

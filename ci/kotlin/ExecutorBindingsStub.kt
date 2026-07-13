@@ -2,6 +2,8 @@ package ptpsim.ci
 
 import uniffi.camera_protocol_ffi.BleExecutorTransport
 import uniffi.camera_protocol_ffi.CccdMode
+import uniffi.camera_protocol_ffi.ConnectionActivityEvent
+import uniffi.camera_protocol_ffi.ConnectionActivityObserver
 import uniffi.camera_protocol_ffi.ExecutorException
 import uniffi.camera_protocol_ffi.ExecutorStepFailureKind
 import uniffi.camera_protocol_ffi.Predicate
@@ -32,6 +34,10 @@ class ExecutorBindingsStub : BleExecutorTransport {
 
 class StepObserverStub : StepObserver {
     override fun onStep(report: StepReport) = Unit
+}
+
+class ConnectionActivityObserverStub : ConnectionActivityObserver {
+    override fun onActivity(event: ConnectionActivityEvent) = Unit
 }
 
 fun stepFailureDetail(error: ExecutorException.StepFailed): String =

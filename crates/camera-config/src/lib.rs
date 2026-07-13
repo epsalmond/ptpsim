@@ -6,6 +6,7 @@
 //! unresolved (they become lints, never load errors), which is what lets the
 //! public engine run manifests whose evidence lives in a private repo.
 
+pub mod activity;
 pub mod error;
 pub mod generate;
 pub mod index;
@@ -17,6 +18,11 @@ pub mod store;
 pub mod trace;
 pub mod version;
 
+pub use activity::{
+    ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityDisplayRole,
+    ConnectionActivityExecutorSpan, ConnectionActivityHostCheckpoint, ConnectionActivitySequence,
+    ExecutorSpanBinding, HostCheckpointBinding,
+};
 pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{enrich, generate_proposal};
 pub use model::{
@@ -309,7 +315,25 @@ impl CameraManifest {
     /// establish the connection and resolve a non-recursive cold PTP entry before
     /// it executes the old session's exit steps.
     pub fn require_valid_mode_entries(&self) -> Result<(), ManifestError> {
+        let mut activity_metadata = std::collections::BTreeMap::new();
         for (connection_id, connection) in &self.connections {
+            require_valid_host_activities(connection, connection_id)?;
+            for descriptor in &connection.activities {
+                let key = (descriptor.id.clone(), descriptor.version);
+                let value = (
+                    descriptor.display_role.clone(),
+                    descriptor.default_expected_duration_ms,
+                    descriptor.interaction_required,
+                );
+                if let Some(previous) = activity_metadata.insert(key, value.clone()) {
+                    if previous != value {
+                        return Err(ManifestError::Contract(format!(
+                            "connections.{connection_id}.activities activity '{}@{}' metadata differs from another descriptor",
+                            descriptor.id, descriptor.version
+                        )));
+                    }
+                }
+            }
             for (index, entry) in connection.entries.iter().enumerate() {
                 let path = format!("connections.{connection_id}.entries[{index}]");
                 match &entry.execution {
@@ -367,6 +391,57 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+fn require_valid_host_activities(
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    use activity::{valid_activity_id, ConnectionActivityBinding};
+
+    let mut ids = std::collections::BTreeSet::new();
+    let mut checkpoints = std::collections::BTreeSet::new();
+    for (index, descriptor) in connection.activities.iter().enumerate() {
+        let path = format!("connections.{connection_id}.activities[{index}]");
+        if !valid_activity_id(&descriptor.id) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.id must contain at least two non-empty dot-delimited segments"
+            )));
+        }
+        if !ids.insert(&descriptor.id) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.id duplicates activity '{}'",
+                descriptor.id
+            )));
+        }
+        if descriptor.version == 0 {
+            return Err(ManifestError::Contract(format!(
+                "{path}.version must be > 0"
+            )));
+        }
+        if descriptor.default_expected_duration_ms == 0 {
+            return Err(ManifestError::Contract(format!(
+                "{path}.defaultExpectedDurationMs must be > 0"
+            )));
+        }
+        let ConnectionActivityBinding::HostCheckpoint(binding) = &descriptor.binding else {
+            return Err(ManifestError::Contract(format!(
+                "{path} must use hostCheckpoint"
+            )));
+        };
+        if binding.host_checkpoint.name.is_empty() {
+            return Err(ManifestError::Contract(format!(
+                "{path}.hostCheckpoint.name must not be empty"
+            )));
+        }
+        if !checkpoints.insert(&binding.host_checkpoint.name) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.hostCheckpoint.name duplicates checkpoint '{}'",
+                binding.host_checkpoint.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn require_valid_ptp_steps(steps: &[Step], path: &str) -> Result<(), ManifestError> {

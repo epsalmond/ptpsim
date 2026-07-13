@@ -329,9 +329,9 @@ is the bytes AFTER the 2-byte company id: split iOS
 `CBAdvertisementDataManufacturerDataKey` into `(companyId LE, payload)`;
 Android `getManufacturerSpecificData(id)` is already the payload.
 CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
-| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, postExitReadiness: [Step], steps: [Step] }`. `initialScope` is typically the `runtimeScope` from a `Candidate`. After an orderly feature exit, walk the optional `postExitReadiness` sequence before replaying `steps`; do not infer readiness by negating a launch predicate. |
-| `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | validates the plan handle and returns `NoChange` or `ReplaceTail{steps}` per §11.5; invalid handles/indices are errors. Current manifests return `NoChange` because no establishment overlays exist yet. |
-| `connectionEstablishment(connection)` | (unchanged renamed §2 method — single-body connection bring-up) |
+| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, postExitReadiness: [Step], steps: [Step], activities: [ConnectionActivityDescriptor] }`. Activities contain the plan's executor spans followed by the selected connection's host checkpoints (§11.23). `initialScope` is typically the `runtimeScope` from a `Candidate`. After an orderly feature exit, walk the optional `postExitReadiness` sequence before replaying `steps`; do not infer readiness by negating a launch predicate. |
+| `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | validates the plan handle and returns `NoChange` or `ReplaceTail{steps, activities}` per §11.5/§11.23; replacement activity spans are relative to the returned tail. Invalid handles/indices are errors. Current manifests return `NoChange` because no establishment overlays exist yet. |
+| `connectionEstablishment(connection)` | Single-body connection bring-up, including the connection's host-checkpoint activity descriptors (§11.23). |
 
 Saved-camera reconnect is a fresh-observation loop. For each advert, call
 `reconnectDecision` with the scope persisted from pairing. `Wake` means walk the
@@ -357,13 +357,31 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 - `StepObserver` — receives the `StepReport` outcome stream: `Started` plus
   exactly one terminal (`Succeeded` / `Tolerated` / `Failed`) per step at every
   nesting level, with a `stepPath` position path (`steps[3].bleWrite`,
-  `steps[5].if.then[0].bleRead`). Map it onto your telemetry bus.
+  `steps[5].if.then[0].bleRead`). Reports include optional activity id/version
+  correlation. Map them onto your diagnostic telemetry bus.
+- `ConnectionActivityObserver` — receives the semantic activity stream from
+  manifest-declared executor spans: `Started`, `Retrying`, and one terminal
+  `Succeeded`, `Failed`, or `Cancelled`. Host-checkpoint activities are driven
+  by the host and are never emitted by this executor.
 
 | call | walks |
 |---|---|
-| `runEstablishment(store, planHandle, transport, observer, initialScope, initialEncodings, runtimeParams)` | the plan's `steps`, including §11.5 `acquireFirmware` refinement. `initialScope` / `initialEncodings` are the `Candidate`'s `runtimeScope` / `runtimeScopeEncodings` — thread both verbatim so a `{ captured: … }` write-back re-encodes with the capture's true encoding instead of an app-side guess (#43). |
+| `runEstablishment(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `steps`, including §11.5 `acquireFirmware` refinement. `initialScope` / `initialEncodings` are the `Candidate`'s `runtimeScope` / `runtimeScopeEncodings` — thread both verbatim so a `{ captured: … }` write-back re-encodes with the capture's true encoding instead of an app-side guess (#43). |
 | `runBleAction(store, model, action, transport, observer, initialScope, runtimeParams)` | a named BLE-native control action (#91) over an already-established link; no refinement. |
-| `runPostExitReadiness(store, planHandle, transport, observer, initialScope, initialEncodings, runtimeParams)` | the plan's `postExitReadiness` gate. Run it after an orderly feature exit, before replaying `runEstablishment`. A plan whose establishment declares no gate returns immediately with `stepsRun == 0` and touches no I/O; a handle with no establishment at all is `UnknownPlan`, same as `runEstablishment`. |
+| `runPostExitReadiness(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `postExitReadiness` gate. Run it after an orderly feature exit, before replaying `runEstablishment`. A plan whose establishment declares no gate returns immediately with `stepsRun == 0` and touches no I/O; a handle with no establishment at all is `UnknownPlan`, same as `runEstablishment`. |
+
+Activity display roles are consumer-neutral hints: `connecting`,
+`waitingForCamera`, `confirmingPairing`, `preparingConnection`,
+`startingNetwork`, `joiningNetwork`, and `openingSession`. Unknown future role
+tokens cross the FFI as `Unknown { raw }`. `defaultExpectedDurationMs` is a
+curated p75-like initial display seed only; it is a conservative estimate, not
+a measured guarantee, and MUST NOT be used as an execution deadline. The
+executor emits retry ordinals as total-attempt positions (`2` of `3`), keeps an
+activity alive across tolerated failures, and emits exactly one `Cancelled` if
+its future is dropped while an activity is active (§11.23).
+Firmware refinement preserves one activity lifecycle across the splice when
+the first replacement span repeats the active descriptor's id, version, and
+metadata; a different identity or version starts a new lifecycle.
 
 `planHandle` has the stable form `<model>:<selector>`. Plans obtained through
 `establishment(model, connection, ...)` use the connection id as the selector;

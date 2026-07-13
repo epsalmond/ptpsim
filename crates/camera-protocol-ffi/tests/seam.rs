@@ -274,9 +274,19 @@ fn connection_establishment_is_returned_as_data() {
         .params
         .iter()
         .any(|kv| kv.key == "initRetriesMax" && kv.value == "3"));
+    assert!(matches!(
+        wt.activities.as_slice(),
+        [ConnectionActivityDescriptor {
+            id,
+            display_role: ConnectionActivityDisplayRole::OpeningSession,
+            binding: ConnectionActivityBinding::HostCheckpoint { name },
+            ..
+        }] if id == "camera.session.open.direct" && name == "sessionOpen"
+    ));
     // app is brought up via the BLE→WiFi handover.
     let app = s.connection_establishment("app".into()).unwrap();
     assert_eq!(app.mechanism.as_deref(), Some("ble-establish-wifi-ap"));
+    assert_eq!(app.activities.len(), 3);
 }
 
 #[test]

@@ -107,6 +107,25 @@ connections:
   app:
     kind: ptpip-app                 # WiFi-AP path (camera hosts the AP; app joins)
     establishment: ble-establish-wifi-ap # BLE pairing brings up the camera AP, app joins + routes, then PTP-IP
+    activities:
+      - id: camera.network.join-confirmation
+        version: 1
+        displayRole: joiningNetwork
+        defaultExpectedDurationMs: 15000
+        interactionRequired: true
+        hostCheckpoint: { name: networkJoinConfirmation }
+      - id: camera.network.associate
+        version: 1
+        displayRole: joiningNetwork
+        defaultExpectedDurationMs: 12000
+        interactionRequired: false
+        hostCheckpoint: { name: networkAssociation }
+      - id: camera.session.open.ap
+        version: 1
+        displayRole: openingSession
+        defaultExpectedDurationMs: 10000
+        interactionRequired: false
+        hostCheckpoint: { name: sessionOpen }
     # Per-connection traits (#81): the app selects behavior from these, not by
     # branching on the connection id.
     initShape: app82                    # the 82-byte reference app InitCommandRequest (#82)
@@ -446,6 +465,13 @@ connections:
   wireless-tether:
     kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference-app family)
     establishment: pcss-knock     # camera joins LAN (Wi-Fi/Ethernet), then PCSS port-knock
+    activities:
+      - id: camera.session.open.direct
+        version: 1
+        displayRole: openingSession
+        defaultExpectedDurationMs: 5000
+        interactionRequired: false
+        hostCheckpoint: { name: sessionOpen }
     # Per-connection traits (#81): a different init family, poll-based live view,
     # and the 3-beat virtual shutter — all data-driven, not app id-branches.
     initShape: pcssKnock                                  # PCSS init (not the 82-byte reference app)
