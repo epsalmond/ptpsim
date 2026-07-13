@@ -8,6 +8,8 @@ import uniffi.camera_protocol_ffi.ExecutorException
 import uniffi.camera_protocol_ffi.ExecutorStepFailureKind
 import uniffi.camera_protocol_ffi.Predicate
 import uniffi.camera_protocol_ffi.PredicateOp
+import uniffi.camera_protocol_ffi.PtpExecutorTransport
+import uniffi.camera_protocol_ffi.PtpSessionOpenResult
 import uniffi.camera_protocol_ffi.Step
 import uniffi.camera_protocol_ffi.StepObserver
 import uniffi.camera_protocol_ffi.StepReport
@@ -28,6 +30,23 @@ class ExecutorBindingsStub : BleExecutorTransport {
     override suspend fun subscribe(characteristic: String, mode: CccdMode) = Unit
 
     override suspend fun nextNotification(characteristic: String): ByteArray = byteArrayOf()
+
+    override suspend fun sleep(ms: UInt) = Unit
+}
+
+class PtpExecutorTransportStub : PtpExecutorTransport {
+    override suspend fun reserveTransactionId(): UInt = 1u
+
+    override suspend fun sendCommandFrame(frame: ByteArray) = Unit
+
+    override suspend fun nextCommandFrame(): ByteArray = byteArrayOf()
+
+    override suspend fun nextEventFrame(eventCode: UShort): ByteArray = byteArrayOf()
+
+    override suspend fun closeCommandChannel(transportCloseFrame: ByteArray?) = Unit
+
+    override suspend fun reopenCommandSession(): PtpSessionOpenResult =
+        PtpSessionOpenResult(1u, 0x2001u.toUShort(), emptyList())
 
     override suspend fun sleep(ms: UInt) = Unit
 }

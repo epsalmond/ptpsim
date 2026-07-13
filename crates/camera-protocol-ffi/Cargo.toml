@@ -28,4 +28,5 @@ protocol-primitives = { workspace = true }
 # The executor seam tests drive the async plan-walker against the same
 # in-memory BLE responder the reference walker's acceptance tests use.
 camera-sim = { workspace = true }
+camera-media-store = { workspace = true }
 futures = { workspace = true }

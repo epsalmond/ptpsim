@@ -1157,6 +1157,7 @@ fn response_retry_requires_a_finite_selected_body() {
         "              whenResponseCodes: [\"not-hex\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 0\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              steps: []",
+        "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              steps:\n                - loop:\n                    chunk:\n                      total: total\n                      size: { literal: 1 }\n                      offsetBind: offset\n                      lengthBind: length\n                      body: [{ sendOp: \"0x101b\" }]",
     ] {
         assert!(CameraManifest::from_yaml(&manifest(invalid)).is_err());
     }
@@ -1186,6 +1187,56 @@ fn captured_collection_loop_requires_a_definite_nontolerant_get() {
 
     let tolerant_retry = "          - retry:\n              whenResponseCodes: [\"0x2002\"]\n              maxAttempts: 2\n              steps:\n                - getProp: \"0xd621\"\n                  captures: [{ bind: handles, as: ptpU32Array }]\n            tolerant: true\n";
     assert!(CameraManifest::from_yaml(&manifest(tolerant_retry)).is_err());
+}
+
+#[test]
+fn ptp_executor_activities_require_complete_ordered_coverage() {
+    let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    entries:
+      - to: test
+        steps:
+          - { sendOp: "0x1001" }
+          - { sendOp: "0x1002" }
+        activities:
+          - id: camera.test.prepare
+            version: 1
+            displayRole: preparingConnection
+            defaultExpectedDurationMs: 10
+            interactionRequired: false
+            executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
+"#;
+    let loaded = CameraManifest::from_yaml(manifest).expect("complete span loads");
+    assert_eq!(loaded.connections["app"].entries[0].activities.len(), 1);
+
+    let gap = manifest.replace("startStep: 0", "startStep: 1");
+    let error = CameraManifest::from_yaml(&gap).expect_err("coverage gap rejected");
+    assert!(error.to_string().contains("ordered coverage"));
+}
+
+#[test]
+fn user_instruction_rejects_executor_activities() {
+    let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  usb:
+    entries:
+      - to: test
+        userInstruction: choose a camera menu item
+        activities:
+          - id: camera.test.manual
+            version: 1
+            displayRole: preparingConnection
+            defaultExpectedDurationMs: 10
+            interactionRequired: true
+            executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+"#;
+    let error = CameraManifest::from_yaml(manifest).expect_err("manual entry rejects spans");
+    assert!(error.to_string().contains("userInstruction"));
 }
 
 #[test]

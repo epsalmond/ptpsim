@@ -143,6 +143,13 @@ pub struct StepReport {
     pub verb: String,
     /// The GATT UUID the verb addressed, when it addressed one.
     pub characteristic: Option<String>,
+    /// PTP operation/property correlation; unset for BLE reports.
+    pub operation: Option<u16>,
+    pub property: Option<u16>,
+    pub response_code: Option<u16>,
+    pub transaction_id: Option<u32>,
+    /// The step's declared response tolerance.
+    pub tolerant: bool,
     pub outcome: StepOutcome,
     /// `Display` of the failure on `Tolerated`/`Failed`, else `None`.
     pub error: Option<String>,
@@ -901,10 +908,20 @@ fn run_step<'a>(
         let verb = step.verb_name();
         let characteristic = step_characteristic(step);
         let (activity_id, activity_version) = ctx.activity_correlation();
+        let tolerant = match step {
+            // §11.6: If's tolerant gates predicate fields, not body errors.
+            Step::If(_) => false,
+            other => other.options().tolerant,
+        };
         let report = |outcome: StepOutcome, error: Option<String>, attempts: u32| StepReport {
             step_path: here.to_string(),
             verb: verb.to_string(),
             characteristic: characteristic.clone(),
+            operation: None,
+            property: None,
+            response_code: None,
+            transaction_id: None,
+            tolerant,
             outcome,
             error,
             attempts,
@@ -912,12 +929,6 @@ fn run_step<'a>(
             activity_version,
         };
         ctx.observer.on_step(report(StepOutcome::Started, None, 0));
-
-        let tolerant = match step {
-            // §11.6: If's tolerant gates predicate fields, not body errors.
-            Step::If(_) => false,
-            other => other.options().tolerant,
-        };
 
         if let Step::Retry(retry) = step {
             return match run_retry_control(ctx, retry, here, top_next).await {

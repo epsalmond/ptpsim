@@ -161,7 +161,7 @@ per-platform packaging:
    role with `port_for_role(connection, role)` (`ConnectionInfo.command_framing` /
    `event_framing` tell you which codec framing each channel uses).
 3. **Enter a mode.** `mode_entry(connection, from, to)` returns one
-   `ModeEntryExecution`: execute `Ptp.steps` via the codec functions over the
+   `ModeEntryExecution`: execute `Ptp.steps` with `run_mode_entry` over the
    current transport, surface `UserInstruction`, or orchestrate
    `ReestablishConnection` as described below. Each PTP step may be `tolerant` (a
    non-OK PTP *response* is advisory — log + continue; only a transport failure
@@ -382,6 +382,62 @@ its future is dropped while an activity is active (§11.23).
 Firmware refinement preserves one activity lifecycle across the splice when
 the first replacement span repeats the active descriptor's id, version, and
 metadata; a different identity or version starts a new lifecycle.
+
+### 9.4 Walking PTP entry and action plans
+
+`PtpExecutorTransport` is the raw PTP/IP seam for mode entries and named
+actions. The host retains socket ownership, cached session identity, network
+association, and outer transition orchestration. Rust owns the `EntryStep`
+grammar, transaction ordering, PTP/IP framing, response tolerance, retries,
+captures, predicates, loops, deadlines, and outcome streams.
+
+The transport reserves transaction ids, exchanges complete command-channel
+frames, pulls complete event-channel frames by requested event code, closes or
+reopens the command session when a plan says so, and provides `sleep(ms)` as
+the host clock. Event delivery MUST retain nonmatching frames for their normal
+consumers; the executor parses and verifies the returned matching frame. The
+executor uses the connection's declared command/event framing, including the
+standard PTP/IP `StartData`/`EndData` sequence, and races every pending
+transport call against that clock. An ordinary step has a 60-second aggregate
+budget in addition to the 10-second per-call backstop; `awaitUntil.timeoutMs`
+is its aggregate budget. A deadline drops the losing foreign future;
+cancelling the whole exported future does the same. Socket reads may therefore
+remain pending indefinitely: consumers must not add a second semantic timeout
+or retry policy around them.
+
+| call | walks |
+|---|---|
+| `runModeEntry(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | a current-session `ptp` mode entry. `UserInstruction` and `ReestablishConnection` fail with `UnsupportedPlan` so the host cannot accidentally skip their outer lifecycle. |
+| `runModeReestablishmentExit(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | only the old-session `exitSteps` of a `ReestablishConnection` entry. Establishment replay, network association, fresh session creation, and the cold entry remain explicit host orchestration. |
+| `runAction(store, connection, action, transport, observer, activityObserver, runtimeParams)` | one named manifest action on the current session. |
+| `runSelectedObjectPreparation(store, connection, transport, observer, activityObserver, runtimeParams)` | the selected-object prefix projected from the canonical import action, preserving capture bindings for later chunk reads. |
+
+`PtpExecutionOutcome` returns scalar scope, captured collections, ordered data
+outputs (payload plus final response parameters and transaction id), and the
+number of completed steps. Runtime values cross the FFI as unsigned 64-bit
+values so object sizes and offsets are not truncated. Collection loop bindings
+are lexical: the prior value is restored after each element, and a failure on
+one element never replays completed elements. A `retry` may not contain a
+`loop`; put response-selected retry inside the per-element body so a later
+failure cannot restart earlier elements.
+
+`StepReport` is shared by the BLE and PTP executors. PTP reports add optional
+operation, property, response-code, and transaction-id correlation plus the
+step's declared tolerance. A composite step reports the transaction that
+determined its terminal outcome. Raw transport failures are never tolerated;
+only a non-OK PTP response may be swallowed by `tolerant: true`, and `retry`
+selects only the response codes declared in the manifest.
+
+Scalar property reads always update predicate scope, whether or not they bind a
+named capture. A property with a manifest-declared record-stream payload is
+decoded into its allowed member observations, so composite polling remains
+manifest-driven and does not move camera-specific parsing into the host.
+
+Mode entries and actions may declare complete, ordered `executorSpan`
+activities over their top-level steps (§11.24). When present, the PTP executor
+emits them through the same `ConnectionActivityObserver` contract as
+establishment walking; absent metadata produces no invented activity or
+duration. Cancellation emits exactly one `Cancelled` for the active span.
 
 `planHandle` has the stable form `<model>:<selector>`. Plans obtained through
 `establishment(model, connection, ...)` use the connection id as the selector;

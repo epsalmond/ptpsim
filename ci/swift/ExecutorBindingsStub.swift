@@ -4,6 +4,18 @@ final class ConnectionActivityObserverStub: ConnectionActivityObserver, @uncheck
     func onActivity(event: ConnectionActivityEvent) {}
 }
 
+final class PtpExecutorTransportStub: PtpExecutorTransport, @unchecked Sendable {
+    func reserveTransactionId() async throws -> UInt32 { 1 }
+    func sendCommandFrame(frame: Data) async throws {}
+    func nextCommandFrame() async throws -> Data { Data() }
+    func nextEventFrame(eventCode: UInt16) async throws -> Data { Data() }
+    func closeCommandChannel(transportCloseFrame: Data?) async throws {}
+    func reopenCommandSession() async throws -> PtpSessionOpenResult {
+        PtpSessionOpenResult(transactionId: 1, responseCode: 0x2001, responseParams: [])
+    }
+    func sleep(ms: UInt32) async throws {}
+}
+
 func classifyFailure(_ kind: ExecutorStepFailureKind) -> Bool {
     switch kind {
     case .deadlineExceeded, .other:

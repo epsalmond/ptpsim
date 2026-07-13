@@ -946,6 +946,8 @@ pub struct ModeEntry {
     pub to: String,
     pub from: Option<String>,
     pub execution: ModeEntryExecution,
+    /// Optional semantic spans over the executable top-level step sequence.
+    pub activities: Vec<ConnectionActivityDescriptor>,
     /// Optional runtime prerequisite for taking this edge.
     pub requires: Option<Predicate>,
 }
@@ -994,6 +996,8 @@ struct ModeEntryWire {
     #[serde(default)]
     user_instruction: Option<String>,
     #[serde(default)]
+    activities: Vec<ConnectionActivityDescriptor>,
+    #[serde(default)]
     requires: Option<Predicate>,
 }
 
@@ -1029,6 +1033,7 @@ impl<'de> Deserialize<'de> for ModeEntry {
             to: wire.to,
             from: wire.from,
             execution,
+            activities: wire.activities,
             requires: wire.requires,
         })
     }
@@ -1041,7 +1046,10 @@ impl Serialize for ModeEntry {
     {
         use serde::ser::SerializeStruct;
 
-        let fields = 2 + usize::from(self.from.is_some()) + usize::from(self.requires.is_some());
+        let fields = 2
+            + usize::from(self.from.is_some())
+            + usize::from(!self.activities.is_empty())
+            + usize::from(self.requires.is_some());
         let mut out = serializer.serialize_struct("ModeEntry", fields)?;
         out.serialize_field("to", &self.to)?;
         if let Some(from) = &self.from {
@@ -1055,6 +1063,9 @@ impl Serialize for ModeEntry {
             ModeEntryExecution::UserInstruction { instruction } => {
                 out.serialize_field("userInstruction", instruction)?;
             }
+        }
+        if !self.activities.is_empty() {
+            out.serialize_field("activities", &self.activities)?;
         }
         if let Some(requires) = &self.requires {
             out.serialize_field("requires", requires)?;
@@ -1233,6 +1244,9 @@ pub struct Action {
     /// The wire sequence. Reuses the `Step` vocabulary unchanged.
     #[serde(default)]
     pub steps: Vec<Step>,
+    /// Optional semantic spans over `steps`.
+    #[serde(default)]
+    pub activities: Vec<ConnectionActivityDescriptor>,
     /// Post-conditions the camera produces after this action completes —
     /// the app plans UX around them without connection-specific knowledge.
     #[serde(default)]

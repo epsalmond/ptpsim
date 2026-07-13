@@ -279,6 +279,28 @@ fn validate_activity_metadata_consistency(
                         ),
                     )?;
                 }
+                for (entry_index, entry) in connection.entries.iter().enumerate() {
+                    for (activity_index, descriptor) in entry.activities.iter().enumerate() {
+                        check(
+                            descriptor,
+                            format!(
+                                "models.{}.connections.{connection_id}.entries[{entry_index}].activities[{activity_index}]",
+                                model.id
+                            ),
+                        )?;
+                    }
+                }
+                for (verb, action) in &connection.actions {
+                    for (activity_index, descriptor) in action.activities.iter().enumerate() {
+                        check(
+                            descriptor,
+                            format!(
+                                "models.{}.connections.{connection_id}.actions.{verb:?}.activities[{activity_index}]",
+                                model.id
+                            ),
+                        )?;
+                    }
+                }
             }
         }
     }

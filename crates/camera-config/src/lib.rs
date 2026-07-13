@@ -337,14 +337,39 @@ impl CameraManifest {
             for (index, entry) in connection.entries.iter().enumerate() {
                 let path = format!("connections.{connection_id}.entries[{index}]");
                 match &entry.execution {
-                    ModeEntryExecution::Ptp { steps } => require_valid_ptp_steps(steps, &path)?,
+                    ModeEntryExecution::Ptp { steps } => {
+                        require_valid_ptp_steps(steps, &path)?;
+                        require_valid_executor_activities(
+                            &entry.activities,
+                            steps.len(),
+                            &format!("{path}.activities"),
+                        )?;
+                    }
                     ModeEntryExecution::ReestablishConnection(reestablish) => {
                         require_valid_ptp_steps(
                             &reestablish.exit_steps,
                             &format!("{path}.reestablishConnection.exitSteps"),
                         )?;
+                        require_valid_executor_activities(
+                            &entry.activities,
+                            reestablish.exit_steps.len(),
+                            &format!("{path}.activities"),
+                        )?;
                     }
-                    ModeEntryExecution::UserInstruction { .. } => {}
+                    ModeEntryExecution::UserInstruction { .. } => {
+                        if !entry.activities.is_empty() {
+                            return Err(ManifestError::Contract(format!(
+                                "{path}.activities cannot target a userInstruction"
+                            )));
+                        }
+                    }
+                }
+                for descriptor in &entry.activities {
+                    require_consistent_activity_metadata(
+                        &mut activity_metadata,
+                        descriptor,
+                        &format!("{path}.activities"),
+                    )?;
                 }
                 if !matches!(
                     entry.execution,
@@ -376,6 +401,18 @@ impl CameraManifest {
                     &action.steps,
                     &format!("connections.{connection_id}.actions.{verb:?}"),
                 )?;
+                require_valid_executor_activities(
+                    &action.activities,
+                    action.steps.len(),
+                    &format!("connections.{connection_id}.actions.{verb:?}.activities"),
+                )?;
+                for descriptor in &action.activities {
+                    require_consistent_activity_metadata(
+                        &mut activity_metadata,
+                        descriptor,
+                        &format!("connections.{connection_id}.actions.{verb:?}.activities"),
+                    )?;
+                }
             }
         }
         Ok(())
@@ -391,6 +428,78 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+fn require_consistent_activity_metadata(
+    seen: &mut std::collections::BTreeMap<
+        (String, u32),
+        (ConnectionActivityDisplayRole, u32, bool),
+    >,
+    descriptor: &ConnectionActivityDescriptor,
+    path: &str,
+) -> Result<(), ManifestError> {
+    let key = (descriptor.id.clone(), descriptor.version);
+    let value = (
+        descriptor.display_role.clone(),
+        descriptor.default_expected_duration_ms,
+        descriptor.interaction_required,
+    );
+    if let Some(previous) = seen.insert(key, value.clone()) {
+        if previous != value {
+            return Err(ManifestError::Contract(format!(
+                "{path} activity '{}@{}' metadata differs from another descriptor",
+                descriptor.id, descriptor.version
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn require_valid_executor_activities(
+    activities: &[ConnectionActivityDescriptor],
+    step_count: usize,
+    path: &str,
+) -> Result<(), ManifestError> {
+    use activity::{valid_activity_id, ConnectionActivityBinding, ConnectionActivitySequence};
+
+    let mut ids = std::collections::BTreeSet::new();
+    let mut next = 0_u32;
+    for (index, descriptor) in activities.iter().enumerate() {
+        let here = format!("{path}[{index}]");
+        if !valid_activity_id(&descriptor.id) || !ids.insert(&descriptor.id) {
+            return Err(ManifestError::Contract(format!(
+                "{here}.id must be unique with at least two dot-delimited segments"
+            )));
+        }
+        if descriptor.version == 0 || descriptor.default_expected_duration_ms == 0 {
+            return Err(ManifestError::Contract(format!(
+                "{here} version and defaultExpectedDurationMs must be > 0"
+            )));
+        }
+        let ConnectionActivityBinding::ExecutorSpan(binding) = &descriptor.binding else {
+            return Err(ManifestError::Contract(format!(
+                "{here} must use executorSpan"
+            )));
+        };
+        let span = &binding.executor_span;
+        if span.sequence != ConnectionActivitySequence::Steps {
+            return Err(ManifestError::Contract(format!(
+                "{here}.executorSpan.sequence must be steps"
+            )));
+        }
+        if span.start_step != next || span.end_step_exclusive <= span.start_step {
+            return Err(ManifestError::Contract(format!(
+                "{here}.executorSpan must continue ordered coverage at step {next}"
+            )));
+        }
+        next = span.end_step_exclusive;
+    }
+    if !activities.is_empty() && next as usize != step_count {
+        return Err(ManifestError::Contract(format!(
+            "{path} covers {next} of {step_count} top-level steps"
+        )));
+    }
+    Ok(())
 }
 
 fn require_valid_host_activities(
@@ -500,6 +609,11 @@ fn require_valid_ptp_steps_with_collections(
                     "{step_path}.retry maxAttempts must be at least one"
                 )));
             }
+            if contains_ptp_loop(&retry.steps) {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.retry must not contain loop; put retry inside the per-element body"
+                )));
+            }
             for code in &retry.when_response_codes {
                 if parse_hex_code(code).is_none() {
                     return Err(ManifestError::Contract(format!(
@@ -560,6 +674,24 @@ fn require_valid_ptp_steps_with_collections(
         }
     }
     Ok(())
+}
+
+fn contains_ptp_loop(steps: &[Step]) -> bool {
+    steps.iter().any(|step| {
+        step.r#loop.is_some()
+            || step
+                .retry
+                .as_ref()
+                .is_some_and(|retry| contains_ptp_loop(&retry.steps))
+            || step
+                .await_until
+                .as_ref()
+                .is_some_and(|await_until| contains_ptp_loop(&await_until.on_each))
+            || step
+                .if_step
+                .as_ref()
+                .is_some_and(|condition| contains_ptp_loop(&condition.then_steps))
+    })
 }
 
 fn validate_transfer_hex_values(

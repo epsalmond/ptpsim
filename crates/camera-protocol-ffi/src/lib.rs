@@ -21,6 +21,12 @@ pub use executor::{
     ConnectionActivityEvent, ConnectionActivityObserver, ExecutionOutcome, ExecutorError,
     ExecutorStepFailureKind, StepObserver, StepOutcome, StepReport, TransportError,
 };
+pub mod ptp_executor;
+pub use ptp_executor::{
+    run_action, run_mode_entry, run_mode_reestablishment_exit, run_selected_object_preparation,
+    PtpCollectionValue, PtpDataOutput, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
+    PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError,
+};
 pub mod mfg_index;
 pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
@@ -72,7 +78,7 @@ fn codec_decode<E: std::fmt::Display>(e: E) -> CodecError {
 /// Property value width on the wire (mirrors `protocol_primitives::ValueWidth`).
 /// Signed widths (`I16`/`I32`) carry the camera's declared datatype so a consumer
 /// encodes negative values (exposure-bias, ISO auto sentinels) two's-complement.
-#[derive(Debug, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
 pub enum ValueWidth {
     U8,
     U16,
@@ -154,7 +160,10 @@ pub enum PtpFraming {
     Usb,
 }
 
-fn frame_encode(framing: PtpFraming, pkt: &ptp_core::PtpIpPacket) -> Result<Vec<u8>, CodecError> {
+pub(crate) fn frame_encode(
+    framing: PtpFraming,
+    pkt: &ptp_core::PtpIpPacket,
+) -> Result<Vec<u8>, CodecError> {
     match framing {
         PtpFraming::Standard => ptp_core::encode(pkt).map_err(codec_encode),
         PtpFraming::Compressed => {
@@ -164,7 +173,10 @@ fn frame_encode(framing: PtpFraming, pkt: &ptp_core::PtpIpPacket) -> Result<Vec<
     }
 }
 
-fn frame_decode(framing: PtpFraming, bytes: &[u8]) -> Result<ptp_core::PtpIpPacket, CodecError> {
+pub(crate) fn frame_decode(
+    framing: PtpFraming,
+    bytes: &[u8],
+) -> Result<ptp_core::PtpIpPacket, CodecError> {
     use ptp_core::PtpCodec;
     match framing {
         PtpFraming::Standard => ptp_core::PtpIpPacket::decode(bytes),
@@ -1220,6 +1232,7 @@ pub struct ModeEntryPlan {
     pub to: String,
     pub from: Option<String>,
     pub execution: ModeEntryExecution,
+    pub activities: Vec<ConnectionActivityDescriptor>,
 }
 
 #[derive(Debug, uniffi::Enum)]
@@ -1296,6 +1309,7 @@ pub struct Action {
     pub mode: String,
     pub params: Vec<String>,
     pub steps: Vec<EntryStep>,
+    pub activities: Vec<ConnectionActivityDescriptor>,
     pub triggers: Vec<ActionEffect>,
     pub evidence: Vec<String>,
 }
@@ -1557,7 +1571,7 @@ pub struct TransportCloseInfo {
 
 #[derive(uniffi::Object)]
 pub struct ConfigStore {
-    inner: cc::ConfigStore,
+    pub(crate) inner: cc::ConfigStore,
 }
 
 #[uniffi::export]
@@ -1993,6 +2007,7 @@ impl ConfigStore {
             to: e.to.clone(),
             from: e.from.clone(),
             execution,
+            activities: e.activities.iter().map(Into::into).collect(),
         })
     }
 
@@ -2885,6 +2900,7 @@ fn try_map_action(a: &cc::Action, context: &str) -> Result<Action, ConfigError> 
         mode: a.mode.clone(),
         params: a.params.clone(),
         steps: try_map_steps(&a.steps, context)?,
+        activities: a.activities.iter().map(Into::into).collect(),
         triggers: a.triggers.iter().filter_map(map_action_effect).collect(),
         evidence: a.evidence.clone(),
     })
@@ -2937,6 +2953,7 @@ fn map_action(a: &cc::Action) -> Action {
         mode: a.mode.clone(),
         params: a.params.clone(),
         steps: a.steps.iter().filter_map(map_step).collect(),
+        activities: a.activities.iter().map(Into::into).collect(),
         triggers: a.triggers.iter().filter_map(map_action_effect).collect(),
         evidence: a.evidence.clone(),
     }
