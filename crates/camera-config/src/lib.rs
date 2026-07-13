@@ -30,7 +30,7 @@ pub use model::{
     ModeEntryExecution, ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssKnock,
     PostviewEvent, Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile,
     PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
-    ReestablishConnection, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
+    ReestablishConnection, ResponseRetry, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
     SocketBindings, SocketRole, Step, StepParam, TransferCompletion, TransportClose, TriggerMatch,
     ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
 };
@@ -311,13 +311,23 @@ impl CameraManifest {
     pub fn require_valid_mode_entries(&self) -> Result<(), ManifestError> {
         for (connection_id, connection) in &self.connections {
             for (index, entry) in connection.entries.iter().enumerate() {
+                let path = format!("connections.{connection_id}.entries[{index}]");
+                match &entry.execution {
+                    ModeEntryExecution::Ptp { steps } => require_valid_ptp_steps(steps, &path)?,
+                    ModeEntryExecution::ReestablishConnection(reestablish) => {
+                        require_valid_ptp_steps(
+                            &reestablish.exit_steps,
+                            &format!("{path}.reestablishConnection.exitSteps"),
+                        )?;
+                    }
+                    ModeEntryExecution::UserInstruction { .. } => {}
+                }
                 if !matches!(
                     entry.execution,
                     ModeEntryExecution::ReestablishConnection(_)
                 ) {
                     continue;
                 }
-                let path = format!("connections.{connection_id}.entries[{index}]");
                 if connection.establishment.is_none() {
                     return Err(ManifestError::Contract(format!(
                         "{path} reestablishes a connection with no establishment mechanism"
@@ -337,6 +347,12 @@ impl CameraManifest {
                     )));
                 }
             }
+            for (verb, action) in &connection.actions {
+                require_valid_ptp_steps(
+                    &action.steps,
+                    &format!("connections.{connection_id}.actions.{verb:?}"),
+                )?;
+            }
         }
         Ok(())
     }
@@ -351,6 +367,50 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+fn require_valid_ptp_steps(steps: &[Step], path: &str) -> Result<(), ManifestError> {
+    for (index, step) in steps.iter().enumerate() {
+        let step_path = format!("{path}.steps[{index}]");
+        if let Some(retry) = &step.retry {
+            if retry.steps.is_empty() {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.retry steps must not be empty"
+                )));
+            }
+            if retry.when_response_codes.is_empty() {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.retry whenResponseCodes must not be empty"
+                )));
+            }
+            if retry.max_attempts == 0 {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.retry maxAttempts must be at least one"
+                )));
+            }
+            for code in &retry.when_response_codes {
+                if parse_hex_code(code).is_none() {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path}.retry has invalid response code '{code}'"
+                    )));
+                }
+            }
+            require_valid_ptp_steps(&retry.steps, &format!("{step_path}.retry"))?;
+        }
+        if let Some(await_until) = &step.await_until {
+            require_valid_ptp_steps(&await_until.on_each, &format!("{step_path}.awaitUntil"))?;
+        }
+        if let Some(loop_step) = &step.r#loop {
+            let body = match loop_step {
+                Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => body,
+            };
+            require_valid_ptp_steps(body, &format!("{step_path}.loop"))?;
+        }
+        if let Some(condition) = &step.if_step {
+            require_valid_ptp_steps(&condition.then_steps, &format!("{step_path}.if"))?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_transfer_hex_values(
@@ -410,6 +470,14 @@ fn check_gate_steps(
 ) {
     let mut active: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for (i, step) in steps.iter().enumerate() {
+        if let Some(retry) = &step.retry {
+            check_gate_steps(
+                &retry.steps,
+                &format!("{ctx}.steps[{i}].retry"),
+                defined_gates,
+                lints,
+            );
+        }
         if let Some(gate) = &step.starts_gate {
             if !defined_gates.contains(gate.as_str()) {
                 lints.push(Lint::warn(format!(

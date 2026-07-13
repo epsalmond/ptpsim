@@ -48,6 +48,30 @@ fn engine() -> Engine {
     Engine::new(consolidated(), store)
 }
 
+fn image_import_ready() -> (Engine, camera_config::Action) {
+    let manifest = consolidated();
+    let app = &manifest.connections["app"];
+    let cold = app
+        .entries
+        .iter()
+        .find(|entry| entry.to == "image-transfer" && entry.from.is_none())
+        .expect("cold image-transfer entry");
+    let enumerate = app
+        .actions
+        .get(&ActionVerb::EnumerateObjects)
+        .expect("enumerateObjects action")
+        .clone();
+    let mut engine = engine();
+    walk_ptpip_in(
+        &mut engine,
+        entry_steps(cold),
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("cold image-transfer entry succeeds");
+    (engine, enumerate)
+}
+
 fn engine_with_two_jpegs() -> Engine {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -703,7 +727,12 @@ fn image_import_full_bootstrap_unlocks_count_and_handle_properties() {
         .expect("cold image-transfer entry");
     let mut e = engine();
     walk_ptpip_in(&mut e, entry_steps(cold), &BTreeMap::new(), Some("app"))
-        .expect("full bootstrap entry succeeds");
+        .expect("cold image-transfer entry succeeds");
+    let enumerate = m
+        .action("app", ActionVerb::EnumerateObjects)
+        .expect("enumerateObjects action");
+    walk_ptpip_in(&mut e, &enumerate.steps[..1], &BTreeMap::new(), Some("app"))
+        .expect("enumeration prime succeeds");
 
     let count = data_of(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
     let mut r = Reader::new(&count);
@@ -720,6 +749,99 @@ fn image_import_full_bootstrap_unlocks_count_and_handle_properties() {
 
     assert_ok(&e.on_operation(&req(0x1016, 54, vec![0xdf01]), Some(&0x16u16.to_le_bytes())));
     assert_no_response(e.on_operation(&req(0x1015, 55, vec![0xd620]), None));
+}
+
+#[test]
+fn image_import_retries_transient_prime_and_count_responses() {
+    let (mut engine, enumerate) = image_import_ready();
+    engine.install_fault(Fault::FailOperationTimes {
+        code: 0x9050,
+        response: 0x2019,
+        remaining: 1,
+    });
+    let prime = walk_ptpip_in(
+        &mut engine,
+        &enumerate.steps[..1],
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("DeviceBusy enumeration prime recovers");
+    assert_eq!(prime.retry_delays_ms, [100]);
+
+    engine.clear_faults();
+    engine.install_fault(Fault::FailOperationTimes {
+        code: 0x1015,
+        response: 0x2002,
+        remaining: 1,
+    });
+    let count = walk_ptpip_in(
+        &mut engine,
+        &enumerate.steps[1..2],
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("transient GeneralError count read recovers");
+    assert_eq!(count.retry_delays_ms, [1000]);
+    assert_eq!(count.observed.get(0xd620), Some(1));
+}
+
+#[test]
+fn image_import_count_retry_exhausts_with_typed_response() {
+    let (mut engine, enumerate) = image_import_ready();
+    walk_ptpip_in(
+        &mut engine,
+        &enumerate.steps[..1],
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("enumeration prime succeeds");
+    engine.install_fault(Fault::FailOperationTimes {
+        code: 0x1015,
+        response: 0x2002,
+        remaining: 3,
+    });
+    let error = walk_ptpip_in(
+        &mut engine,
+        &enumerate.steps[1..2],
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect_err("three GeneralError responses exhaust the declared budget");
+    assert_eq!(error.response_code, Some(0x2002));
+}
+
+#[test]
+fn image_import_count_does_not_retry_unselected_or_transport_failures() {
+    for fault in [
+        Fault::FailOperationTimes {
+            code: 0x1015,
+            response: 0x2005,
+            remaining: 1,
+        },
+        Fault::CloseOnOperation { code: 0x1015 },
+    ] {
+        let (mut engine, enumerate) = image_import_ready();
+        walk_ptpip_in(
+            &mut engine,
+            &enumerate.steps[..1],
+            &BTreeMap::new(),
+            Some("app"),
+        )
+        .expect("enumeration prime succeeds");
+        engine.install_fault(fault.clone());
+        let error = walk_ptpip_in(
+            &mut engine,
+            &enumerate.steps[1..2],
+            &BTreeMap::new(),
+            Some("app"),
+        )
+        .expect_err("unselected failure escapes immediately");
+        match fault {
+            Fault::FailOperationTimes { .. } => assert_eq!(error.response_code, Some(0x2005)),
+            Fault::CloseOnOperation { .. } => assert_eq!(error.response_code, None),
+            Fault::FailOperation { .. } => unreachable!(),
+        }
+    }
 }
 
 #[test]
@@ -913,7 +1035,18 @@ fn live_view_to_image_transfer_reestablishes_then_runs_cold_entry() {
         .expect("cold image-transfer entry");
     let mut fresh = engine();
     walk_ptpip_in(&mut fresh, entry_steps(cold), &BTreeMap::new(), Some("app"))
-        .expect("fresh session runs cold image-transfer bootstrap");
+        .expect("fresh session runs cold image-transfer entry");
+    let enumerate = app
+        .actions
+        .get(&ActionVerb::EnumerateObjects)
+        .expect("enumerateObjects action");
+    walk_ptpip_in(
+        &mut fresh,
+        &enumerate.steps[..1],
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("fresh session runs enumeration prime");
     let handles = data_of(fresh.on_operation(&req(0x1015, 1, vec![0xd621]), None));
     let mut reader = Reader::new(&handles);
     assert!(!reader.ptp_array(|r| r.u32()).unwrap().is_empty());

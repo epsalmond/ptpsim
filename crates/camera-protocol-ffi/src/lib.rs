@@ -1139,6 +1139,15 @@ pub enum EntryStep {
         interval_ms: u32,
         tolerant: bool,
     },
+    /// Replay a complete logical PTP sequence only after one of the exact
+    /// manifest-declared non-OK response codes (§11.21).
+    Retry {
+        steps: Vec<EntryStep>,
+        when_response_codes: Vec<u16>,
+        max_attempts: u32,
+        retry_delay_ms: u32,
+        tolerant: bool,
+    },
     /// A closed declarative loop (#46): `ForEach` over a captured collection (each
     /// element binds a runtime slot for `body`), or `Chunk` by fixed size (the
     /// dispatcher owns the offset/length cursor; `total` names the scope slot a
@@ -2559,6 +2568,19 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
             tolerant,
         });
     }
+    if let Some(retry) = &s.retry {
+        return Some(EntryStep::Retry {
+            steps: retry.steps.iter().filter_map(map_step).collect(),
+            when_response_codes: retry
+                .when_response_codes
+                .iter()
+                .map(|code| parse_hex_code(code))
+                .collect::<Option<Vec<_>>>()?,
+            max_attempts: retry.max_attempts,
+            retry_delay_ms: retry.retry_delay_ms,
+            tolerant,
+        });
+    }
     if let Some(lp) = &s.r#loop {
         let kind = match lp {
             cc::Loop::ForEach {
@@ -2758,6 +2780,10 @@ fn steps_capture(steps: &[cc::Step], bind: &str, source: cc::model::CaptureSourc
                 .await_until
                 .as_ref()
                 .is_some_and(|await_until| steps_capture(&await_until.on_each, bind, source))
+            || step
+                .retry
+                .as_ref()
+                .is_some_and(|retry| steps_capture(&retry.steps, bind, source))
             || step.r#loop.as_ref().is_some_and(|r#loop| match r#loop {
                 cc::Loop::ForEach { body, .. } | cc::Loop::Chunk { body, .. } => {
                     steps_capture(body, bind, source)
@@ -2798,6 +2824,11 @@ fn validate_step_mapping(step: &cc::Step, context: &str) -> Result<(), ConfigErr
     }
     if let Some(await_until) = &step.await_until {
         for nested in &await_until.on_each {
+            validate_step_mapping(nested, context)?;
+        }
+    }
+    if let Some(retry) = &step.retry {
+        for nested in &retry.steps {
             validate_step_mapping(nested, context)?;
         }
     }

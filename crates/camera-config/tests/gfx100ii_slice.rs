@@ -29,7 +29,7 @@ fn assert_image_import_bootstrap_gate(steps: &[camera_config::Step]) {
         .position(|s| s.completes_gate.as_deref() == Some("imageImportBootstrap"))
         .expect("bootstrap gate completes");
     assert!(start < complete, "gate start precedes completion");
-    assert_eq!(steps[start].get_prop.as_deref(), Some("0xd212"));
+    assert!(steps[start].is_sequence_gate_matchable());
     assert_eq!(steps[complete].get_prop.as_deref(), Some("0xd212"));
     let d22b = steps[start..=complete]
         .iter()
@@ -492,15 +492,26 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
     //     (not whole-object 0x1009 like PCSS).
     let m = gfx();
 
-    // Enumeration: two getProps, no sendOp, no runtime params.
+    // Enumeration owns the page-prime operation and independently retries the
+    // count/handle properties; it takes no runtime params.
     let enumerate = m
         .action("app", ActionVerb::EnumerateObjects)
         .expect("app.actions.enumerateObjects");
     assert_eq!(enumerate.mode, "image-transfer");
     assert!(enumerate.params.is_empty());
-    assert_eq!(enumerate.steps.len(), 2);
-    assert_eq!(enumerate.steps[0].get_prop.as_deref(), Some("0xd620"));
-    assert_eq!(enumerate.steps[1].get_prop.as_deref(), Some("0xd621"));
+    assert_eq!(enumerate.steps.len(), 3);
+    let prime = enumerate.steps[0].retry.as_ref().expect("prime retry");
+    assert_eq!(prime.when_response_codes, ["0x2013", "0x2019"]);
+    assert_eq!(prime.max_attempts, 5);
+    assert_eq!(prime.retry_delay_ms, 100);
+    assert_image_import_bootstrap_gate(&prime.steps);
+    for (step, prop) in enumerate.steps[1..].iter().zip(["0xd620", "0xd621"]) {
+        let retry = step.retry.as_ref().expect("enumeration property retry");
+        assert_eq!(retry.when_response_codes, ["0x2002", "0x2013", "0x2019"]);
+        assert_eq!(retry.max_attempts, 3);
+        assert_eq!(retry.retry_delay_ms, 1000);
+        assert_eq!(retry.steps[0].get_prop.as_deref(), Some(prop));
+    }
     assert!(enumerate.triggers.is_empty());
 
     // Per-handle metadata + thumbnail: standard PTP, same wire shape as PCSS.
@@ -843,16 +854,17 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
 }
 
 #[test]
-fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
+fn image_import_entry_and_enumeration_keep_their_own_steps() {
     let m = gfx();
     let entries = &m.connections["app"].entries;
-    // Cold entry: tolerant preamble + vendor-prime op with literal params.
+    // Cold entry: tolerant preamble + first-image initialization. Public
+    // enumeration priming belongs to enumerateObjects, not mode entry.
     let cold = entries
         .iter()
         .find(|e| e.to == "image-transfer" && e.from.is_none())
         .unwrap();
     let cold_steps = cold.ptp_steps().expect("cold image-transfer PTP entry");
-    assert_image_import_bootstrap_gate(cold_steps);
+    assert!(cold_steps.iter().all(|step| step.retry.is_none()));
     assert!(cold_steps
         .iter()
         .any(|s| s.get_prop.as_deref() == Some("0xd212") && s.tolerant));
@@ -868,15 +880,13 @@ fn image_import_entry_uses_tolerant_params_and_runtime_slot() {
     assert!(cold_steps
         .iter()
         .any(|s| s.get_prop.as_deref() == Some("0xd244") && s.tolerant));
-    let prime = cold_steps
+    assert!(cold_steps
         .iter()
-        .find(|s| s.send_op.as_deref() == Some("0x9053"))
-        .unwrap();
-    assert_eq!(
-        prime.params,
-        vec![StepParam::Literal(0), StepParam::Literal(0x7530)]
-    );
-    assert!(prime.tolerant);
+        .all(|step| !matches!(step.send_op.as_deref(), Some("0x9050" | "0x9053"))));
+    let enumerate = m
+        .action("app", ActionVerb::EnumerateObjects)
+        .expect("enumeration action");
+    assert_image_import_bootstrap_gate(&enumerate.steps[0].retry.as_ref().unwrap().steps);
     // from-live-view entry binds the runtime open-capture txid into 0x1018.
     let from = entries
         .iter()
@@ -975,6 +985,12 @@ fn image_import_bootstrap_gate_covers_import_action_and_enumeration_props() {
         complete < d620_pos,
         "gate completes before D620 enumeration"
     );
+
+    let enumerate = m
+        .action("app", ActionVerb::EnumerateObjects)
+        .expect("enumerateObjects action");
+    let prime = enumerate.steps[0].retry.as_ref().expect("prime retry");
+    assert_image_import_bootstrap_gate(&prime.steps);
 }
 
 #[test]
@@ -1098,6 +1114,27 @@ fn close_session_step_parses_and_is_well_formed() {
         serde_yaml::from_str::<camera_config::Step>("closeSession: { keepAp: true }").is_err(),
         "retired keepAp spelling must fail closed"
     );
+}
+
+#[test]
+fn response_retry_requires_a_finite_selected_body() {
+    let manifest = |retry: &str| {
+        format!(
+            "schema: camera-config/v1\ncamera: {{ manufacturer: Test, model: Test, firmware: \"1\" }}\nconnections:\n  app:\n    entries:\n      - to: test\n        steps:\n          - retry:\n{retry}\n"
+        )
+    };
+    let valid = manifest(
+        "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              retryDelayMs: 10\n              steps: [{ getProp: \"0xd620\" }]",
+    );
+    assert!(CameraManifest::from_yaml(&valid).is_ok());
+    for invalid in [
+        "              whenResponseCodes: []\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
+        "              whenResponseCodes: [\"not-hex\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
+        "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 0\n              steps: [{ getProp: \"0xd620\" }]",
+        "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              steps: []",
+    ] {
+        assert!(CameraManifest::from_yaml(&manifest(invalid)).is_err());
+    }
 }
 
 #[test]

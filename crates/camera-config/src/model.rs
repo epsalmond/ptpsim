@@ -1302,6 +1302,10 @@ pub struct Step {
     /// over a collection (a distinct future construct). See [`AwaitUntil`].
     #[serde(default)]
     pub await_until: Option<AwaitUntil>,
+    /// Replay a logical PTP sequence only after explicitly selected non-OK
+    /// response codes. Transport failures and unselected responses escape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<ResponseRetry>,
     /// A closed declarative loop (#46): `forEach` over a captured collection (each
     /// element binds a runtime slot), or `chunk`-by-size over the current object
     /// (the executor owns the offset/length cursor). The sanctioned for-each
@@ -1353,6 +1357,17 @@ pub struct IfStep {
     pub equals: u64,
     #[serde(default, rename = "then")]
     pub then_steps: Vec<Step>,
+}
+
+/// Response-selected retry for a logical PTP sequence (§11.21).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResponseRetry {
+    pub steps: Vec<Step>,
+    pub when_response_codes: Vec<HexCode>,
+    pub max_attempts: u32,
+    #[serde(default)]
+    pub retry_delay_ms: u32,
 }
 
 /// Where a PTP-IP `awaitUntil` observes (§11.16): a property `poll` or an `event`
@@ -1751,6 +1766,7 @@ impl Step {
             self.reopen_session.is_some(),
             self.close_session.is_some(),
             self.await_until.is_some(),
+            self.retry.is_some(),
             self.r#loop.is_some(),
             self.if_step.is_some(),
         ]

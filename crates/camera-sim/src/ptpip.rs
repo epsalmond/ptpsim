@@ -64,6 +64,8 @@ pub struct PtpIpOutcome {
     /// (forEach element count / chunk window count). Lets tests assert a transfer
     /// actually walked the handles and chunked each object.
     pub loop_iterations: Vec<usize>,
+    /// Manifest-declared backoffs consumed by response-selected retries.
+    pub retry_delays_ms: Vec<u32>,
 }
 
 /// Walk failure: which step (by verb + position) and why. Tolerant steps never
@@ -72,6 +74,7 @@ pub struct PtpIpOutcome {
 pub struct PtpIpError {
     pub step: String,
     pub message: String,
+    pub response_code: Option<u16>,
 }
 
 impl std::fmt::Display for PtpIpError {
@@ -116,6 +119,8 @@ pub fn walk_ptpip_in(
         steps_run: 0,
         await_iterations: Vec::new(),
         loop_iterations: Vec::new(),
+        retry_delays_ms: Vec::new(),
+        last_response_code: None,
         bindings: BTreeMap::new(),
         command_listener_volatile,
     };
@@ -125,6 +130,7 @@ pub fn walk_ptpip_in(
             .map_err(|message| PtpIpError {
                 step: "openSession".into(),
                 message,
+                response_code: None,
             })?;
     }
     ctx.walk_steps(steps, "steps")?;
@@ -133,6 +139,7 @@ pub fn walk_ptpip_in(
         steps_run: ctx.steps_run,
         await_iterations: ctx.await_iterations,
         loop_iterations: ctx.loop_iterations,
+        retry_delays_ms: ctx.retry_delays_ms,
     })
 }
 
@@ -152,6 +159,10 @@ struct Ctx<'a> {
     steps_run: usize,
     await_iterations: Vec<usize>,
     loop_iterations: Vec<usize>,
+    retry_delays_ms: Vec<u32>,
+    /// Captured directly from the last wire reply; retry control never parses
+    /// a diagnostic string.
+    last_response_code: Option<u16>,
     /// The active connection's `command_listener_volatile` trait (#103): when set,
     /// a live-view `reopenSession` is refused because that transport-close tears
     /// down the command-port listener, so the reconnect gets "Connection refused".
@@ -183,7 +194,15 @@ impl Ctx<'_> {
             // `repeat` wraps an action verb (e.g. 902B ×4). awaitUntil's repeat
             // is 1 (the poll loop is its own iteration); the cap below is a no-op.
             for _ in 0..step.repeat.max(1) {
-                self.run_step(step, &here)?;
+                self.last_response_code = None;
+                if let Err(mut error) = self.run_step(step, &here) {
+                    if error.response_code.is_none() {
+                        error.response_code = self
+                            .last_response_code
+                            .filter(|response| *response != resp::OK);
+                    }
+                    return Err(error);
+                }
             }
             self.steps_run += 1;
         }
@@ -194,6 +213,7 @@ impl Ctx<'_> {
         let err = |message: String| PtpIpError {
             step: here.to_string(),
             message,
+            response_code: None,
         };
         if let Some(p) = &step.set_prop {
             let code = parse_hex_code(p).ok_or_else(|| err(format!("bad prop code {p:?}")))?;
@@ -271,6 +291,8 @@ impl Ctx<'_> {
             // CloseSession operation and resulting engine state.
             self.simple_op(op::CLOSE_SESSION, vec![], step.tolerant)
                 .map_err(err)
+        } else if let Some(retry) = &step.retry {
+            self.run_response_retry(retry, step.tolerant, here)
         } else if let Some(aw) = &step.await_until {
             self.run_await_until(aw, step.tolerant, here)
         } else if let Some(lp) = &step.r#loop {
@@ -290,6 +312,40 @@ impl Ctx<'_> {
         }
     }
 
+    fn run_response_retry(
+        &mut self,
+        retry: &camera_config::ResponseRetry,
+        tolerant: bool,
+        here: &str,
+    ) -> Result<(), PtpIpError> {
+        let selected: Vec<u16> = retry
+            .when_response_codes
+            .iter()
+            .filter_map(|code| parse_hex_code(code))
+            .collect();
+        let max_attempts = retry.max_attempts.max(1);
+        for attempt in 0..max_attempts {
+            match self.walk_steps(&retry.steps, &format!("{here}.steps")) {
+                Ok(()) => return Ok(()),
+                Err(mut error) => {
+                    let response_code = error.response_code.or_else(|| {
+                        self.last_response_code
+                            .filter(|response| *response != resp::OK)
+                    });
+                    error.response_code = response_code;
+                    if !response_code.is_some_and(|code| selected.contains(&code)) {
+                        return Err(error);
+                    }
+                    if attempt + 1 == max_attempts {
+                        return if tolerant { Ok(()) } else { Err(error) };
+                    }
+                    self.retry_delays_ms.push(retry.retry_delay_ms);
+                }
+            }
+        }
+        unreachable!("max_attempts is at least one")
+    }
+
     /// A closed declarative loop (#46): `forEach` over a captured collection or a
     /// `chunk`-by-size walk. The executor owns all cursor advancement; the body
     /// reuses the ordinary step grammar with the bound slots resolvable as runtime
@@ -298,6 +354,7 @@ impl Ctx<'_> {
         let err = |message: String| PtpIpError {
             step: here.to_string(),
             message,
+            response_code: None,
         };
         match lp {
             Loop::ForEach {
@@ -377,6 +434,7 @@ impl Ctx<'_> {
             params: vec![code as u32],
         };
         let reply = self.engine.on_operation(&req, None);
+        self.last_response_code = response_code(&reply);
         match reply {
             Reply::Data { data, response } if response.code == resp::OK => {
                 let mut r = Reader::new(&data);
@@ -407,6 +465,7 @@ impl Ctx<'_> {
         let err = |message: String| PtpIpError {
             step: here.to_string(),
             message,
+            response_code: None,
         };
         match &aw.source {
             AwaitSource::Poll { prop } => {
@@ -501,6 +560,7 @@ impl Ctx<'_> {
             params: vec![code as u32],
         };
         let reply = self.engine.on_operation(&req, Some(&data));
+        self.last_response_code = response_code(&reply);
         check_ok(&reply, op::SET_DEVICE_PROP_VALUE, tolerant)
     }
 
@@ -515,6 +575,7 @@ impl Ctx<'_> {
             params: vec![code as u32],
         };
         let reply = self.engine.on_operation(&req, None);
+        self.last_response_code = response_code(&reply);
         match reply {
             Reply::Data { data, response } if response.code == resp::OK => {
                 let mut r = Reader::new(&data);
@@ -545,7 +606,9 @@ impl Ctx<'_> {
             transaction_id: tid,
             params,
         };
-        self.engine.on_operation(&req, None)
+        let reply = self.engine.on_operation(&req, None);
+        self.last_response_code = response_code(&reply);
+        reply
     }
 
     fn apply_captures(
@@ -691,6 +754,8 @@ fn verb_name(s: &Step) -> &'static str {
         "reopenSession"
     } else if s.await_until.is_some() {
         "awaitUntil"
+    } else if s.retry.is_some() {
+        "retry"
     } else if s.r#loop.is_some() {
         "loop"
     } else if s.if_step.is_some() {

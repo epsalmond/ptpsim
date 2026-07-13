@@ -190,22 +190,17 @@ connections:
       - to: image-transfer            # cold entry to image-import (no live-view active)
         # Ground truth: FujiCameraAPISession.enterImageImportModeUnlocked + IMAGE_TRANSFER_FW230.
         steps:
-          - { getProp: "0xd212", tolerant: true, startsGate: imageImportBootstrap } # live-status preamble (best-effort)
+          - { getProp: "0xd212", tolerant: true }                 # live-status preamble (best-effort)
           - { setProp: "0xdf01", value: 0x14 }               # functionMode = 20 (image-import)
           - { getProp: "0xdf28", tolerant: true }            # read-before-write (advisory negotiator)
           - { setProp: "0xdf28", value: 3, tolerant: true }   # feature version; uint32 width from the property type
           - { setProp: "0xd226", value: 0, tolerant: true }   # image-import filter
           - { setProp: "0xd227", value: 0, tolerant: true }   # image-import sort
           - { getProp: "0xd244", tolerant: true }             # image-import preamble
-          # Vendor-prime block required before GetObjectHandles (0xd620/0xd621). Advisory:
-          # a body/responder may reject these (vcam returns DeviceProp_Not_Supported) — tolerate.
+          # First-image initialization remains part of connection completion.
+          # Public enumeration priming (0x9050/0x9053) belongs to the action below.
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
-          - { sendOp: "0x9050", tolerant: true }
-          - { getProp: "0xd212", tolerant: true }
-          - { getProp: "0xd22b", tolerant: true }
-          - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
-          - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
       - to: image-transfer            # from live-view: exit, re-arm the AP through BLE, then enter cold
         from: shooting/stills
         reestablishConnection:
@@ -275,16 +270,39 @@ connections:
       # §"Confirmed enumeration": reference-app **never** calls 0x1007
       # GetObjectHandles — camera rejects with 0x2005 Operation_Not_Supported
       # on fw2.30. Instead it reads count + handle list as PTP properties
-      # AFTER the mode-entry vendor-prime block (0x9054/55/50/53) in the
-      # `to: image-transfer` entry has run. 0xD620 returns u32 count;
+      # AFTER the enumeration-prime block below. 0xD620 returns u32 count;
       # 0xD621 returns a count-prefixed u32[] handle list, **descending /
       # newest-first** (v6: 0x83, 0x82, …, 0x01). Pre-reading 0xD620 sizes
       # the buffer for 0xD621.
       enumerateObjects:
         mode: image-transfer
         steps:
-          - { getProp: "0xd620" }
-          - { getProp: "0xd621" }
+          # The camera may still be settling after mode entry. Replay the whole
+          # page-selection operation for the observed busy/store responses.
+          - retry:
+              whenResponseCodes: ["0x2013", "0x2019"]
+              maxAttempts: 5
+              retryDelayMs: 100
+              steps:
+                - { sendOp: "0x9050", startsGate: imageImportBootstrap }
+                - { getProp: "0xd212", tolerant: true }
+                - { getProp: "0xd22b", tolerant: true }
+                - { sendOp: "0x9053", params: [0, 0x7530] }
+                - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
+          # Field evidence shows 0x2002 can be transient here even though the
+          # reference client treats it as terminal. Prefer bounded recovery.
+          - retry:
+              whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
+              maxAttempts: 3
+              retryDelayMs: 1000
+              steps:
+                - { getProp: "0xd620" }
+          - retry:
+              whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
+              maxAttempts: 3
+              retryDelayMs: 1000
+              steps:
+                - { getProp: "0xd621" }
         evidence: [docImageTransfer]
       # Per-handle metadata + thumbnail — same wire shape as PCSS, different
       # surface (reference-app goes through the image-transfer mode-entry first).
@@ -336,7 +354,7 @@ connections:
         mode: image-transfer
         steps:
           # --- arm (mirrors the to:image-transfer mode-entry; idempotent, tolerant) ---
-          - { getProp: "0xd212", tolerant: true, startsGate: imageImportBootstrap }
+          - { getProp: "0xd212", tolerant: true }
           - { setProp: "0xdf01", value: 0x14 }
           - { getProp: "0xdf28", tolerant: true }
           - { setProp: "0xdf28", value: 3, tolerant: true }
@@ -345,7 +363,7 @@ connections:
           - { getProp: "0xd244", tolerant: true }
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
-          - { sendOp: "0x9050", tolerant: true }
+          - { sendOp: "0x9050", tolerant: true, startsGate: imageImportBootstrap }
           - { getProp: "0xd212", tolerant: true }
           - { getProp: "0xd22b", tolerant: true }
           - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }

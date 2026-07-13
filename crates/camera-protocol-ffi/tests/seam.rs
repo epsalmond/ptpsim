@@ -107,6 +107,7 @@ fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
                 interval_ms: _,
                 tolerant: _,
             } => assert_no_gate_metadata_surfaces(on_each),
+            EntryStep::Retry { steps, .. } => assert_no_gate_metadata_surfaces(steps),
             EntryStep::Loop { kind, tolerant: _ } => match kind {
                 FfiLoopKind::ForEach {
                     in_prop: _,
@@ -551,7 +552,13 @@ fn take_to_get_entry_reestablishes_with_image_import_launch() {
     let cold = s
         .mode_entry("app".into(), None, "image-transfer".into())
         .expect("cold image-transfer entry");
-    assert_bootstrap_tail_surfaces(ptp_steps(&cold));
+    assert!(ptp_steps(&cold).iter().all(|step| !matches!(
+        step,
+        EntryStep::SendOp {
+            op: 0x9050 | 0x9053,
+            ..
+        } | EntryStep::Retry { .. }
+    )));
 }
 
 #[test]
@@ -936,6 +943,48 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
             ] if h == "handle" && o1 == "offset" && l == "length" && o2 == "offset")),
         "chunk body is the GetPartialObject download",
     );
+}
+
+#[test]
+fn enumerate_objects_surfaces_response_selected_retries() {
+    let plan = store()
+        .action("app".into(), ActionVerb::EnumerateObjects)
+        .expect("app.actions.enumerateObjects");
+    assert_eq!(plan.steps.len(), 3);
+    let EntryStep::Retry {
+        steps,
+        when_response_codes,
+        max_attempts,
+        retry_delay_ms,
+        tolerant,
+    } = &plan.steps[0]
+    else {
+        panic!("expected enumeration-prime retry")
+    };
+    assert_eq!(when_response_codes, &[0x2013, 0x2019]);
+    assert_eq!(*max_attempts, 5);
+    assert_eq!(*retry_delay_ms, 100);
+    assert!(!tolerant);
+    assert_bootstrap_tail_surfaces(steps);
+
+    for (step, prop) in plan.steps[1..].iter().zip([0xd620, 0xd621]) {
+        let EntryStep::Retry {
+            steps,
+            when_response_codes,
+            max_attempts,
+            retry_delay_ms,
+            ..
+        } = step
+        else {
+            panic!("expected property retry")
+        };
+        assert_eq!(when_response_codes, &[0x2002, 0x2013, 0x2019]);
+        assert_eq!(*max_attempts, 3);
+        assert_eq!(*retry_delay_ms, 1000);
+        assert!(
+            matches!(steps.as_slice(), [EntryStep::GetProp { prop: actual, .. }] if *actual == prop)
+        );
+    }
 }
 
 #[test]

@@ -467,9 +467,10 @@ impl Engine {
         self.prepare_camera_initiated_pre_mode_probe(req);
 
         // Injected faults take precedence over normal handling.
-        if let Some(fault) = self.faults.match_op(req.code) {
+        if let Some(fault) = self.faults.take_op(req.code) {
             return match fault {
-                Fault::FailOperation { response, .. } => Self::err(tid, *response),
+                Fault::FailOperation { response, .. }
+                | Fault::FailOperationTimes { response, .. } => Self::err(tid, response),
                 Fault::CloseOnOperation { .. } => Reply::Close,
             };
         }
@@ -1442,6 +1443,9 @@ fn collect_gate_sequences(steps: &[Step], out: &mut Vec<GateSequence>) {
     let mut active: std::collections::BTreeMap<String, Option<Vec<GateMatcher>>> =
         std::collections::BTreeMap::new();
     for step in steps {
+        if let Some(retry) = &step.retry {
+            collect_gate_sequences(&retry.steps, out);
+        }
         let matcher = matcher_for_step(step);
         let starts = step.starts_gate.clone();
         for (gate, sequence) in active.iter_mut() {

@@ -165,7 +165,9 @@ per-platform packaging:
    current transport, surface `UserInstruction`, or orchestrate
    `ReestablishConnection` as described below. Each PTP step may be `tolerant` (a
    non-OK PTP *response* is advisory — log + continue; only a transport failure
-   aborts). `sendOp` `params` are literals **or** a named runtime slot
+   aborts). A `retry` step reruns its complete nested sequence only for the exact
+   manifest-declared PTP response codes; transport failures and unselected
+   responses escape immediately. `sendOp` `params` are literals **or** a named runtime slot
    (`EntryParam.Runtime { slot }`, e.g. `openCaptureTxId`) that **you** bind from
    your session state — ptpsim names which runtime value goes there; it never
    computes it.
@@ -394,6 +396,13 @@ the complete executor scope is never exposed. Consumers may map
 `DeadlineExceeded` from a readiness gate to retryable UI while keeping
 `detail` for diagnostics only. Never string-match `detail` for control flow.
 Tolerated failures remain step reports and do not escape as `ExecutorError`.
+
+For an AP-launch establishment, `ConditionRejected` is a camera refusal over
+the still-valid BLE link. Keep that link as the resting home: a connected camera
+does not advertise, and a subsequent launch is expected to reuse it. Do not
+infer the same disposition from `DeadlineExceeded`, `Other`, the step path, or
+the diagnostic text. A transport/link failure is not a refusal; release the
+failed BLE link before offering a scan/reconnect path.
 
 ### 9.4 The Step grammar (reference; legacy dispatcher)
 

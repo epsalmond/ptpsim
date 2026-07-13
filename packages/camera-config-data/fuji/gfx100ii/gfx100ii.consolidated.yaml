@@ -7030,7 +7030,6 @@ connections:
         closeSession: null
         value: null
         params: []
-        startsGate: imageImportBootstrap
         tolerant: true
         repeat: 1
         awaitUntil: null
@@ -7124,64 +7123,6 @@ connections:
         tolerant: true
         repeat: 1
         awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x9050'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xd212'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xd22b'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x9053'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params:
-        - 0
-        - 30000
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: '0xd212'
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        completesGate: imageImportBootstrap
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
     - to: image-transfer
       from: shooting/stills
       reestablishConnection:
@@ -7271,7 +7212,7 @@ connections:
         params: []
         steps:
         - setProp: null
-          getProp: '0xd620'
+          getProp: null
           readEcho: null
           sendOp: null
           reopenSession: null
@@ -7281,8 +7222,74 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+          retry:
+            steps:
+            - setProp: null
+              getProp: null
+              readEcho: null
+              sendOp: '0x9050'
+              reopenSession: null
+              closeSession: null
+              value: null
+              params: []
+              startsGate: imageImportBootstrap
+              tolerant: false
+              repeat: 1
+              awaitUntil: null
+            - setProp: null
+              getProp: '0xd212'
+              readEcho: null
+              sendOp: null
+              reopenSession: null
+              closeSession: null
+              value: null
+              params: []
+              tolerant: true
+              repeat: 1
+              awaitUntil: null
+            - setProp: null
+              getProp: '0xd22b'
+              readEcho: null
+              sendOp: null
+              reopenSession: null
+              closeSession: null
+              value: null
+              params: []
+              tolerant: true
+              repeat: 1
+              awaitUntil: null
+            - setProp: null
+              getProp: null
+              readEcho: null
+              sendOp: '0x9053'
+              reopenSession: null
+              closeSession: null
+              value: null
+              params:
+              - 0
+              - 30000
+              tolerant: false
+              repeat: 1
+              awaitUntil: null
+            - setProp: null
+              getProp: '0xd212'
+              readEcho: null
+              sendOp: null
+              reopenSession: null
+              closeSession: null
+              value: null
+              params: []
+              completesGate: imageImportBootstrap
+              tolerant: true
+              repeat: 1
+              awaitUntil: null
+            whenResponseCodes:
+            - '0x2013'
+            - '0x2019'
+            maxAttempts: 5
+            retryDelayMs: 100
         - setProp: null
-          getProp: '0xd621'
+          getProp: null
           readEcho: null
           sendOp: null
           reopenSession: null
@@ -7292,6 +7299,55 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+          retry:
+            steps:
+            - setProp: null
+              getProp: '0xd620'
+              readEcho: null
+              sendOp: null
+              reopenSession: null
+              closeSession: null
+              value: null
+              params: []
+              tolerant: false
+              repeat: 1
+              awaitUntil: null
+            whenResponseCodes:
+            - '0x2002'
+            - '0x2013'
+            - '0x2019'
+            maxAttempts: 3
+            retryDelayMs: 1000
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+          retry:
+            steps:
+            - setProp: null
+              getProp: '0xd621'
+              readEcho: null
+              sendOp: null
+              reopenSession: null
+              closeSession: null
+              value: null
+              params: []
+              tolerant: false
+              repeat: 1
+              awaitUntil: null
+            whenResponseCodes:
+            - '0x2002'
+            - '0x2013'
+            - '0x2019'
+            maxAttempts: 3
+            retryDelayMs: 1000
         triggers: []
         evidence:
         - docImageTransfer
@@ -7439,7 +7495,6 @@ connections:
           closeSession: null
           value: null
           params: []
-          startsGate: imageImportBootstrap
           tolerant: true
           repeat: 1
           awaitUntil: null
@@ -7541,6 +7596,7 @@ connections:
           closeSession: null
           value: null
           params: []
+          startsGate: imageImportBootstrap
           tolerant: true
           repeat: 1
           awaitUntil: null
