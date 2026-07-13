@@ -114,14 +114,24 @@ fn import_steps(window: u32, chunk_tolerant: bool) -> Vec<Step> {
         },
         chunk_tolerant,
     );
-    vec![loop_step(
-        Loop::ForEach {
-            in_prop: "0xd621".into(),
-            bind: "handle".into(),
-            body: vec![send_op("0x1008", vec![rt("handle")]), chunk],
+    vec![
+        Step {
+            get_prop: Some("0xd621".into()),
+            captures: vec![camera_config::model::Capture {
+                bind: "objectHandles".into(),
+                source: camera_config::CaptureSource::PtpU32Array,
+            }],
+            ..Default::default()
         },
-        false,
-    )]
+        loop_step(
+            Loop::ForEach {
+                collection: "objectHandles".into(),
+                bind: "handle".into(),
+                body: vec![send_op("0x1008", vec![rt("handle")]), chunk],
+            },
+            false,
+        ),
+    ]
 }
 
 fn walk(engine: &mut Engine, steps: &[Step]) -> Result<Vec<usize>, String> {

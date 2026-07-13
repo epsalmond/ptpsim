@@ -1348,6 +1348,9 @@ pub enum CaptureSource {
     U32Le,
     #[serde(rename = "u64Le")]
     U64Le,
+    /// Standard PTP array framing: little-endian u32 count followed by u32 items.
+    #[serde(rename = "ptpU32Array")]
+    PtpU32Array,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1516,12 +1519,12 @@ pub struct AwaitUntil {
 /// consolidation round-trip survives (serde's `!forEach` tag can't be reparsed).
 #[derive(Debug, Clone)]
 pub enum Loop {
-    /// Iterate the array-valued property `in_prop` (e.g. `0xd621`, the object
-    /// handle list), binding each element into the runtime slot `bind` for the
-    /// body's `StepParam::Runtime` references. General over any list-valued
-    /// property — reusable beyond image transfer.
+    /// Iterate a named collection captured by an earlier step, binding each
+    /// element into the runtime slot `bind` for the body's `StepParam::Runtime`
+    /// references. Collection acquisition is explicit wire I/O; this loop never
+    /// reads a property and therefore cannot replay its body through read retry.
     ForEach {
-        in_prop: HexCode,
+        collection: String,
         bind: String,
         body: Vec<Step>,
     },
@@ -1564,7 +1567,7 @@ impl serde::Serialize for Loop {
         let mut map = s.serialize_map(Some(1))?;
         match self {
             Loop::ForEach {
-                in_prop,
+                collection,
                 bind,
                 body,
             } => {
@@ -1572,14 +1575,14 @@ impl serde::Serialize for Loop {
                 #[serde(rename_all = "camelCase")]
                 struct Body<'a> {
                     #[serde(rename = "in")]
-                    in_prop: &'a str,
+                    collection: &'a str,
                     bind: &'a str,
                     body: &'a [Step],
                 }
                 map.serialize_entry(
                     "forEach",
                     &Body {
-                        in_prop: in_prop.as_str(),
+                        collection: collection.as_str(),
                         bind: bind.as_str(),
                         body: body.as_slice(),
                     },
@@ -1644,7 +1647,7 @@ impl<'de> serde::Deserialize<'de> for Loop {
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
                 struct F {
                     #[serde(rename = "in")]
-                    in_prop: String,
+                    collection: String,
                     bind: String,
                     #[serde(default)]
                     body: Vec<Step>,
@@ -1652,7 +1655,7 @@ impl<'de> serde::Deserialize<'de> for Loop {
                 let f: F = serde_yaml::from_value(body)
                     .map_err(|err| D::Error::custom(format!("forEach: {err}")))?;
                 Ok(Loop::ForEach {
-                    in_prop: f.in_prop,
+                    collection: f.collection,
                     bind: f.bind,
                     body: f.body,
                 })

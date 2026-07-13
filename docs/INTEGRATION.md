@@ -54,7 +54,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
 | `mode_entry(connection, from, to)` | a closed execution plan: PTP wire steps, a manual instruction, or an outer connection re-establishment that exits the old session and reuses the target mode's cold entry |
-| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). See `docs/plans/action-verbs.md` |
+| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). A `PtpU32Array` capture binds a count-prefixed property reply as a collection; `ForEach.collection` names that captured slot and performs no additional read. See `docs/plans/action-verbs.md` and schema §11.22. |
 | `selected_object_transfer(connection)` | typed lazy-gallery projection of the canonical `importObjects` per-handle preparation plus the existing chunk-read action; exposes the preparation-step index whose response is ObjectInfo and manifest-owned u64 transfer-size/u32 chunk-size slots without requiring consumers to inspect nested action ASTs; returns a contract error when a connection declares the actions with an invalid shape |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
@@ -262,6 +262,12 @@ tracked by issue #164.
   `[ObjectsAvailable]`) to plan UX side-effects without per-transport knowledge —
   the camera-knowledge that's coming next stays out of your code.
   See `docs/plans/action-verbs.md`.
+- **Collection reads and iteration are separate steps.** Execute a
+  `GetProp` carrying `CaptureSourceInfo::PtpU32Array` through its declared retry
+  policy, store the decoded elements under the capture's `bind`, then let
+  `FfiLoopKind::ForEach.collection` iterate that collection. Do not re-read the property
+  inside the loop or widen the collection retry around its body; a failed body
+  must not replay completed object work.
 - **Settings UI filters on `PropertyInfo.kind`.** The typed `PropertyKind`
   resolves omitted manifest classifications to `setting`. Props classified as
   `scaffold` (the wireless-tether `0xD039 / 0xD21C / 0xD207` virtual-shutter +

@@ -279,7 +279,7 @@ connections:
         steps:
           # The camera may still be settling after mode entry. Replay the whole
           # page-selection operation for the observed busy/store responses.
-          - retry:
+          - retry: &imageImportPrimeRetry
               whenResponseCodes: ["0x2013", "0x2019"]
               maxAttempts: 5
               retryDelayMs: 100
@@ -291,18 +291,19 @@ connections:
                 - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
           # Field evidence shows 0x2002 can be transient here even though the
           # reference client treats it as terminal. Prefer bounded recovery.
-          - retry:
+          - retry: &imageImportCountRetry
               whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
               maxAttempts: 3
               retryDelayMs: 1000
               steps:
                 - { getProp: "0xd620" }
-          - retry:
+          - retry: &imageImportHandlesRetry
               whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
               maxAttempts: 3
               retryDelayMs: 1000
               steps:
-                - { getProp: "0xd621" }
+                - getProp: "0xd621"
+                  captures: [{ bind: objectHandles, as: ptpU32Array }]
         evidence: [docImageTransfer]
       # Per-handle metadata + thumbnail — same wire shape as PCSS, different
       # surface (reference-app goes through the image-transfer mode-entry first).
@@ -363,17 +364,14 @@ connections:
           - { getProp: "0xd244", tolerant: true }
           - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
           - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
-          - { sendOp: "0x9050", tolerant: true, startsGate: imageImportBootstrap }
-          - { getProp: "0xd212", tolerant: true }
-          - { getProp: "0xd22b", tolerant: true }
-          - { sendOp: "0x9053", params: [0, 0x7530], tolerant: true }
-          - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
-          # --- enumerate (count sizes the 0xd621 handle list) ---
-          - { getProp: "0xd620" }
+          # --- enumerate (shared recovery with enumerateObjects) ---
+          - retry: *imageImportPrimeRetry
+          - retry: *imageImportCountRetry
+          - retry: *imageImportHandlesRetry
           # --- per-handle: learn reported/true size, then chunk-download until exhausted ---
           - loop:
               forEach:
-                in: "0xd621"          # descending handle list (array property)
+                in: objectHandles      # captured descending handle list
                 bind: handle
                 body:
                   - sendOp: "0x1008"

@@ -110,7 +110,7 @@ fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
             EntryStep::Retry { steps, .. } => assert_no_gate_metadata_surfaces(steps),
             EntryStep::Loop { kind, tolerant: _ } => match kind {
                 FfiLoopKind::ForEach {
-                    in_prop: _,
+                    collection: _,
                     bind: _,
                     body,
                 }
@@ -857,9 +857,31 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
         .action("app".into(), ActionVerb::ImportObjects)
         .expect("app.actions.importObjects");
     assert_eq!(plan.mode, "image-transfer");
-    assert_bootstrap_tail_surfaces(&plan.steps);
+    let bootstrap = plan
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            EntryStep::Retry { steps, .. }
+                if steps
+                    .iter()
+                    .any(|nested| matches!(nested, EntryStep::GetProp { prop: 0xd22b, .. })) =>
+            {
+                Some(steps.as_slice())
+            }
+            _ => None,
+        })
+        .expect("importObjects reuses the enumeration-prime retry");
+    assert_bootstrap_tail_surfaces(bootstrap);
 
-    // The forEach iterates the 0xd621 handle list, binding `handle`.
+    assert!(plan.steps.iter().any(|step| matches!(
+        step,
+        EntryStep::Retry { steps, .. }
+            if matches!(steps.as_slice(), [EntryStep::GetProp { prop: 0xd621, captures, .. }]
+                if matches!(captures.as_slice(), [CaptureInfo { bind, source: CaptureSourceInfo::PtpU32Array }]
+                    if bind == "objectHandles"))
+    )));
+
+    // The forEach iterates the captured handle list, binding `handle`.
     let for_each = plan
         .steps
         .iter()
@@ -867,16 +889,16 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
             EntryStep::Loop {
                 kind:
                     FfiLoopKind::ForEach {
-                        in_prop,
+                        collection,
                         bind,
                         body,
                     },
                 ..
-            } => Some((*in_prop, bind.as_str(), body)),
+            } => Some((collection.as_str(), bind.as_str(), body)),
             _ => None,
         })
         .expect("importObjects nests a forEach over the handle list");
-    assert_eq!(for_each.0, 0xd621);
+    assert_eq!(for_each.0, "objectHandles");
     assert_eq!(for_each.1, "handle");
 
     assert!(for_each.2.iter().any(|st| matches!(

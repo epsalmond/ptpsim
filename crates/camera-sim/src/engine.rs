@@ -467,10 +467,11 @@ impl Engine {
         self.prepare_camera_initiated_pre_mode_probe(req);
 
         // Injected faults take precedence over normal handling.
-        if let Some(fault) = self.faults.take_op(req.code) {
+        if let Some(fault) = self.faults.take_op(req.code, &req.params) {
             return match fault {
                 Fault::FailOperation { response, .. }
-                | Fault::FailOperationTimes { response, .. } => Self::err(tid, response),
+                | Fault::FailOperationTimes { response, .. }
+                | Fault::FailOperationParamsTimes { response, .. } => Self::err(tid, response),
                 Fault::CloseOnOperation { .. } => Reply::Close,
             };
         }

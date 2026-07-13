@@ -14,6 +14,15 @@ pub enum Fault {
         response: u16,
         remaining: u32,
     },
+    /// Return `response` for the next `remaining` operations whose code and
+    /// complete parameter list match. Lets tests target one property read or
+    /// object handle without catching neighboring operations with the same code.
+    FailOperationParamsTimes {
+        code: u16,
+        params: Vec<u32>,
+        response: u16,
+        remaining: u32,
+    },
     /// Close the command connection when operation `code` arrives.
     CloseOnOperation { code: u16 },
 }
@@ -37,18 +46,24 @@ impl FaultSet {
     }
 
     /// First matching fault for an operation code, if any.
-    pub fn match_op(&self, code: u16) -> Option<&Fault> {
+    pub fn match_op(&self, code: u16, params: &[u32]) -> Option<&Fault> {
         self.rules.iter().find(|f| match f {
             Fault::FailOperation { code: c, .. } => *c == code,
             Fault::FailOperationTimes {
                 code: c, remaining, ..
             } => *c == code && *remaining > 0,
+            Fault::FailOperationParamsTimes {
+                code: c,
+                params: expected,
+                remaining,
+                ..
+            } => *c == code && expected == params && *remaining > 0,
             Fault::CloseOnOperation { code: c } => *c == code,
         })
     }
 
     /// Consume one use of a finite fault, or clone a persistent fault.
-    pub fn take_op(&mut self, code: u16) -> Option<Fault> {
+    pub fn take_op(&mut self, code: u16, params: &[u32]) -> Option<Fault> {
         let fault = self.rules.iter_mut().find(|fault| match fault {
             Fault::FailOperation {
                 code: candidate, ..
@@ -59,9 +74,17 @@ impl FaultSet {
                 remaining,
                 ..
             } => *candidate == code && *remaining > 0,
+            Fault::FailOperationParamsTimes {
+                code: candidate,
+                params: expected,
+                remaining,
+                ..
+            } => *candidate == code && expected == params && *remaining > 0,
         })?;
-        if let Fault::FailOperationTimes { remaining, .. } = fault {
-            *remaining -= 1;
+        match fault {
+            Fault::FailOperationTimes { remaining, .. }
+            | Fault::FailOperationParamsTimes { remaining, .. } => *remaining -= 1,
+            Fault::FailOperation { .. } | Fault::CloseOnOperation { .. } => {}
         }
         Some(fault.clone())
     }

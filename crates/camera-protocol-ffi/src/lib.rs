@@ -988,6 +988,7 @@ pub enum CaptureSourceInfo {
     PropValue,
     U32Le,
     U64Le,
+    PtpU32Array,
 }
 
 /// The PTP condition vocabulary (`cc::Predicate`) mirrored for the app: a
@@ -1161,14 +1162,15 @@ pub enum EntryStep {
     },
 }
 
-/// The two `Loop` shapes (#46). Mirrors `cc::Loop`. `ForEach` iterates the
-/// array-valued property `in_prop`, binding each element to `bind`; `Chunk` walks
-/// `total` bytes in `size`-byte windows, binding `offset_bind`/`length_bind` each
-/// iteration. The dispatcher owns all cursor advancement — no author arithmetic.
+/// The two `Loop` shapes (#46). Mirrors `cc::Loop`. `ForEach` iterates a named
+/// collection captured by an earlier step, binding each element to `bind`;
+/// `Chunk` walks `total` bytes in `size`-byte windows, binding
+/// `offset_bind`/`length_bind` each iteration. The dispatcher owns all cursor
+/// advancement — no author arithmetic or implicit property reads.
 #[derive(Debug, uniffi::Enum)]
 pub enum FfiLoopKind {
     ForEach {
-        in_prop: u16,
+        collection: String,
         bind: String,
         body: Vec<EntryStep>,
     },
@@ -2584,13 +2586,11 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
     if let Some(lp) = &s.r#loop {
         let kind = match lp {
             cc::Loop::ForEach {
-                in_prop,
+                collection,
                 bind,
                 body,
             } => FfiLoopKind::ForEach {
-                // A malformed `in` prop `?`-drops the whole step (same hazard as a
-                // bad op code — guarded by the seam test).
-                in_prop: parse_hex_code(in_prop)?,
+                collection: collection.clone(),
                 bind: bind.clone(),
                 body: body.iter().filter_map(map_step).collect(),
             },
@@ -2646,6 +2646,7 @@ fn map_capture(c: &cc::model::Capture) -> CaptureInfo {
             cc::model::CaptureSource::PropValue => CaptureSourceInfo::PropValue,
             cc::model::CaptureSource::U32Le => CaptureSourceInfo::U32Le,
             cc::model::CaptureSource::U64Le => CaptureSourceInfo::U64Le,
+            cc::model::CaptureSource::PtpU32Array => CaptureSourceInfo::PtpU32Array,
         },
     }
 }
@@ -3014,14 +3015,24 @@ mod tests {
             ..Default::default()
         };
         let import = cc::Action {
-            steps: vec![cc::Step {
-                r#loop: Some(cc::Loop::ForEach {
-                    in_prop: "0xd621".into(),
-                    bind: "handle".into(),
-                    body: vec![object_info, true_size, chunk_size, chunk],
-                }),
-                ..Default::default()
-            }],
+            steps: vec![
+                cc::Step {
+                    get_prop: Some("0xd621".into()),
+                    captures: vec![cc::model::Capture {
+                        bind: "objectHandles".into(),
+                        source: cc::model::CaptureSource::PtpU32Array,
+                    }],
+                    ..Default::default()
+                },
+                cc::Step {
+                    r#loop: Some(cc::Loop::ForEach {
+                        collection: "objectHandles".into(),
+                        bind: "handle".into(),
+                        body: vec![object_info, true_size, chunk_size, chunk],
+                    }),
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         };
         (import, cc::Action::default())
@@ -3044,7 +3055,7 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_missing_chunk() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
             panic!("fixture forEach");
         };
         body.pop();
@@ -3054,7 +3065,7 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_literal_chunk_size() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
             panic!("fixture forEach");
         };
         let Some(cc::Loop::Chunk { size, .. }) = body[3].r#loop.as_mut() else {
@@ -3067,7 +3078,7 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_missing_object_info_capture() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
             panic!("fixture forEach");
         };
         body[0].captures.clear();
@@ -3077,7 +3088,7 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_mismatched_total_capture() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
             panic!("fixture forEach");
         };
         body[0].captures[1].bind = "differentSlot".into();
@@ -3087,7 +3098,7 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_missing_true_size_override() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
             panic!("fixture forEach");
         };
         body[1].if_step = None;
@@ -3098,7 +3109,7 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_missing_chunk_size_capture() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
             panic!("fixture forEach");
         };
         body[2].captures.clear();
@@ -3108,7 +3119,7 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_unmappable_nested_step() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[0].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
             panic!("fixture forEach");
         };
         let Some(condition) = body[1].if_step.as_mut() else {

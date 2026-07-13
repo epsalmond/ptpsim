@@ -786,6 +786,73 @@ fn image_import_retries_transient_prime_and_count_responses() {
 }
 
 #[test]
+fn enumerate_objects_executes_the_captured_handle_collection() {
+    let (mut engine, enumerate) = image_import_ready();
+    let outcome = walk_ptpip_in(&mut engine, &enumerate.steps, &BTreeMap::new(), Some("app"))
+        .expect("complete enumerateObjects action succeeds");
+    assert_eq!(outcome.observed.get(0xd620), Some(1));
+}
+
+#[test]
+fn import_objects_recovers_each_shared_enumeration_boundary() {
+    let manifest = consolidated();
+    let action = manifest
+        .action("app", ActionVerb::ImportObjects)
+        .expect("importObjects action");
+    let cases = [
+        (
+            Fault::FailOperationTimes {
+                code: 0x9050,
+                response: 0x2019,
+                remaining: 1,
+            },
+            100,
+        ),
+        (
+            Fault::FailOperationParamsTimes {
+                code: 0x1015,
+                params: vec![0xd620],
+                response: 0x2002,
+                remaining: 1,
+            },
+            1000,
+        ),
+        (
+            Fault::FailOperationParamsTimes {
+                code: 0x1015,
+                params: vec![0xd621],
+                response: 0x2002,
+                remaining: 1,
+            },
+            1000,
+        ),
+    ];
+
+    for (fault, expected_delay) in cases {
+        let mut engine = engine_with_jpegs(1);
+        engine.install_fault(fault);
+        let outcome = walk_ptpip_in(&mut engine, &action.steps, &BTreeMap::new(), Some("app"))
+            .expect("shared recovery succeeds without replaying transfer work");
+        assert_eq!(outcome.retry_delays_ms, [expected_delay]);
+        assert_eq!(outcome.loop_iterations, [1, 1]);
+    }
+}
+
+#[test]
+fn image_import_handle_retry_exhausts_with_typed_response() {
+    let (mut engine, enumerate) = image_import_ready();
+    engine.install_fault(Fault::FailOperationParamsTimes {
+        code: 0x1015,
+        params: vec![0xd621],
+        response: 0x2002,
+        remaining: 3,
+    });
+    let error = walk_ptpip_in(&mut engine, &enumerate.steps, &BTreeMap::new(), Some("app"))
+        .expect_err("three GeneralError handle reads exhaust the declared budget");
+    assert_eq!(error.response_code, Some(0x2002));
+}
+
+#[test]
 fn image_import_count_retry_exhausts_with_typed_response() {
     let (mut engine, enumerate) = image_import_ready();
     walk_ptpip_in(
@@ -839,7 +906,7 @@ fn image_import_count_does_not_retry_unselected_or_transport_failures() {
         match fault {
             Fault::FailOperationTimes { .. } => assert_eq!(error.response_code, Some(0x2005)),
             Fault::CloseOnOperation { .. } => assert_eq!(error.response_code, None),
-            Fault::FailOperation { .. } => unreachable!(),
+            Fault::FailOperation { .. } | Fault::FailOperationParamsTimes { .. } => unreachable!(),
         }
     }
 }
@@ -1137,6 +1204,10 @@ fn d246_stills_video_selector_keeps_live_view_streaming() {
 
 /// An engine whose card holds `count` small JPGs (each one 12 MiB chunk).
 fn engine_with_jpegs(count: usize) -> Engine {
+    engine_with_jpegs_and_handles(count).0
+}
+
+fn engine_with_jpegs_and_handles(count: usize) -> (Engine, Vec<u32>) {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1153,7 +1224,11 @@ fn engine_with_jpegs(count: usize) -> Engine {
     }
     let mut store = MediaStore::open(&root).unwrap();
     store.scan().unwrap();
-    Engine::new(consolidated(), store)
+    let handles = store.handles(ObjectQuery {
+        format: Some(ptp_core::codes::format::EXIF_JPEG),
+        ..Default::default()
+    });
+    (Engine::new(consolidated(), store), handles)
 }
 
 #[test]
@@ -1174,6 +1249,26 @@ fn import_objects_runs_the_full_transfer_from_the_consolidated() {
         vec![1, 1, 1, 3],
         "one chunk per handle, then forEach visited all three handles",
     );
+}
+
+#[test]
+fn import_objects_never_retries_a_per_handle_body_failure() {
+    let m = consolidated();
+    let action = m
+        .action("app", ActionVerb::ImportObjects)
+        .expect("app.actions.importObjects in the consolidated");
+    let (mut engine, handles) = engine_with_jpegs_and_handles(3);
+    let second_handle = handles[1];
+    engine.install_fault(Fault::FailOperationParamsTimes {
+        code: 0x101b,
+        params: vec![second_handle, 0, 13, 0],
+        response: 0x2019,
+        remaining: 1,
+    });
+    let error = walk_ptpip_in(&mut engine, &action.steps, &BTreeMap::new(), Some("app"))
+        .expect_err("a body failure escapes instead of replaying the collection loop");
+    assert_eq!(error.response_code, Some(0x2019));
+    assert!(error.step.contains("forEach[1]"));
 }
 
 #[test]

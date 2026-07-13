@@ -512,6 +512,13 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         assert_eq!(retry.retry_delay_ms, 1000);
         assert_eq!(retry.steps[0].get_prop.as_deref(), Some(prop));
     }
+    assert!(matches!(
+        enumerate.steps[2].retry.as_ref().unwrap().steps[0].captures.as_slice(),
+        [camera_config::model::Capture {
+            bind,
+            source: camera_config::CaptureSource::PtpU32Array,
+        }] if bind == "objectHandles"
+    ));
     assert!(enumerate.triggers.is_empty());
 
     // Per-handle metadata + thumbnail: standard PTP, same wire shape as PCSS.
@@ -970,19 +977,34 @@ fn image_import_bootstrap_gate_covers_import_action_and_enumeration_props() {
     let import = m
         .action("app", ActionVerb::ImportObjects)
         .expect("app importObjects action");
-    assert_image_import_bootstrap_gate(&import.steps);
+    let prime_pos = import
+        .steps
+        .iter()
+        .position(|step| {
+            step.retry.as_ref().is_some_and(|retry| {
+                retry
+                    .steps
+                    .iter()
+                    .any(|nested| nested.starts_gate.as_deref() == Some("imageImportBootstrap"))
+            })
+        })
+        .expect("import action reuses the enumeration prime");
+    let import_prime = import.steps[prime_pos].retry.as_ref().unwrap();
+    assert_image_import_bootstrap_gate(&import_prime.steps);
     let d620_pos = import
         .steps
         .iter()
-        .position(|s| s.get_prop.as_deref() == Some("0xd620"))
+        .position(|step| {
+            step.retry.as_ref().is_some_and(|retry| {
+                retry
+                    .steps
+                    .iter()
+                    .any(|nested| nested.get_prop.as_deref() == Some("0xd620"))
+            })
+        })
         .expect("import action reads D620");
-    let complete = import
-        .steps
-        .iter()
-        .position(|s| s.completes_gate.as_deref() == Some("imageImportBootstrap"))
-        .expect("import action completes bootstrap");
     assert!(
-        complete < d620_pos,
+        prime_pos < d620_pos,
         "gate completes before D620 enumeration"
     );
 
@@ -991,6 +1013,9 @@ fn image_import_bootstrap_gate_covers_import_action_and_enumeration_props() {
         .expect("enumerateObjects action");
     let prime = enumerate.steps[0].retry.as_ref().expect("prime retry");
     assert_image_import_bootstrap_gate(&prime.steps);
+    assert_eq!(import_prime.when_response_codes, prime.when_response_codes);
+    assert_eq!(import_prime.max_attempts, prime.max_attempts);
+    assert_eq!(import_prime.retry_delay_ms, prime.retry_delay_ms);
 }
 
 #[test]
@@ -1135,6 +1160,32 @@ fn response_retry_requires_a_finite_selected_body() {
     ] {
         assert!(CameraManifest::from_yaml(&manifest(invalid)).is_err());
     }
+}
+
+#[test]
+fn captured_collection_loop_requires_a_definite_nontolerant_get() {
+    let manifest = |steps: &str| {
+        format!(
+            "schema: camera-config/v1\ncamera: {{ manufacturer: Test, model: Test, firmware: \"1\" }}\nconnections:\n  app:\n    entries:\n      - to: test\n        steps:\n{steps}\n"
+        )
+    };
+    let capture = "          - getProp: \"0xd621\"\n            captures: [{ bind: handles, as: ptpU32Array }]";
+    let loop_step = "          - loop:\n              forEach:\n                in: handles\n                bind: handle\n                body: [{ sendOp: \"0x1008\", params: [{ runtime: handle }] }]";
+    let valid = CameraManifest::from_yaml(&manifest(&format!("{capture}\n{loop_step}")));
+    assert!(valid.is_ok(), "valid collection loop: {:?}", valid.err());
+
+    for invalid in [
+        loop_step.to_string(),
+        format!("{capture}\n{capture}\n{loop_step}").replace("bind: handles", "bind: ''"),
+        format!("{capture}\n{loop_step}").replace("getProp: \"0xd621\"", "sendOp: \"0x1008\""),
+        format!("{capture}\n{loop_step}")
+            .replace("captures:", "tolerant: true\n            captures:"),
+    ] {
+        assert!(CameraManifest::from_yaml(&manifest(&invalid)).is_err());
+    }
+
+    let tolerant_retry = "          - retry:\n              whenResponseCodes: [\"0x2002\"]\n              maxAttempts: 2\n              steps:\n                - getProp: \"0xd621\"\n                  captures: [{ bind: handles, as: ptpU32Array }]\n            tolerant: true\n";
+    assert!(CameraManifest::from_yaml(&manifest(tolerant_retry)).is_err());
 }
 
 #[test]

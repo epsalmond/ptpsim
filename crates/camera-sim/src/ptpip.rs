@@ -114,6 +114,7 @@ pub fn walk_ptpip_in(
     let mut ctx = Ctx {
         engine,
         observed: PropView::new(),
+        collections: BTreeMap::new(),
         runtime_params: runtime_params.clone(),
         tid: 1,
         steps_run: 0,
@@ -149,6 +150,8 @@ struct Ctx<'a> {
     /// `getProp`/`readEcho`/`awaitUntil` poll lands the typed value here keyed
     /// by prop code; `until` predicates evaluate over it.
     observed: PropView,
+    /// Collection scope is separate from scalar bindings and `PropView`.
+    collections: BTreeMap<String, Vec<u64>>,
     runtime_params: BTreeMap<String, String>,
     /// Loop-bound scalar slots (#46): the forEach element + the chunk offset/length
     /// the executor advances, plus the `objectSize` captured from GetObjectInfo.
@@ -221,9 +224,19 @@ impl Ctx<'_> {
             self.set_prop(code, value, step.tolerant).map_err(err)
         } else if let Some(p) = &step.get_prop {
             let code = parse_hex_code(p).ok_or_else(|| err(format!("bad prop code {p:?}")))?;
-            let v = self.poll_prop(code).map_err(err)?;
-            self.observed.set(code, v);
-            self.capture_prop_value(&step.captures, v).map_err(err)?;
+            if step
+                .captures
+                .iter()
+                .any(|capture| capture.source == CaptureSource::PtpU32Array)
+            {
+                let values = self.poll_collection(code).map_err(err)?;
+                self.capture_collection(&step.captures, &values)
+                    .map_err(err)?;
+            } else {
+                let v = self.poll_prop(code).map_err(err)?;
+                self.observed.set(code, v);
+                self.capture_prop_value(&step.captures, v).map_err(err)?;
+            }
             Ok(())
         } else if let Some(p) = &step.read_echo {
             // Read, then write the same value back (the live-view 0xdf2a echo).
@@ -358,16 +371,16 @@ impl Ctx<'_> {
         };
         match lp {
             Loop::ForEach {
-                in_prop,
+                collection,
                 bind,
                 body,
             } => {
-                let code = parse_hex_code(in_prop)
-                    .ok_or_else(|| err(format!("bad forEach prop {in_prop:?}")))?;
-                let items = self.poll_collection(code).map_err(err)?;
+                let items = self.collections.get(collection).cloned().ok_or_else(|| {
+                    err(format!("forEach collection slot '{collection}' unbound"))
+                })?;
                 if items.len() > MAX_FOREACH_ITERS && !tolerant {
                     return Err(err(format!(
-                        "forEach over {code:#06x} has {} elements, exceeds cap {MAX_FOREACH_ITERS}",
+                        "forEach over collection '{collection}' has {} elements, exceeds cap {MAX_FOREACH_ITERS}",
                         items.len()
                     )));
                 }
@@ -423,8 +436,9 @@ impl Ctx<'_> {
     }
 
     /// GetDevicePropValue for an array-valued property (e.g. `0xd621`, the handle
-    /// list) → decode the count-prefixed `u32` array → `Vec<i64>`. The forEach
-    /// source. A scalar/non-array reply is a hard error (tolerant-aware at the loop).
+    /// list) → decode the count-prefixed `u32` array → `Vec<u64>`. The result is
+    /// captured into collection scope before `forEach`; a scalar/non-array reply
+    /// is a hard error.
     fn poll_collection(&mut self, code: u16) -> Result<Vec<u64>, String> {
         let tid = self.next_tid();
         let req = OperationRequest {
@@ -629,6 +643,9 @@ impl Ctx<'_> {
                     self.decode_object_info_size(reply)?
                 }
                 CaptureSource::PropValue => return Err("propValue capture requires getProp".into()),
+                CaptureSource::PtpU32Array => {
+                    return Err("ptpU32Array capture requires getProp".into())
+                }
                 CaptureSource::U32Le => {
                     let data = scalar_capture_head(reply, 4, "u32Le")?;
                     let mut r = Reader::new(&data);
@@ -674,6 +691,17 @@ impl Ctx<'_> {
                 return Err("getProp captures only support propValue".into());
             }
             self.bindings.insert(capture.bind.clone(), value as u64);
+        }
+        Ok(())
+    }
+
+    fn capture_collection(&mut self, captures: &[Capture], values: &[u64]) -> Result<(), String> {
+        for capture in captures {
+            if capture.source != CaptureSource::PtpU32Array {
+                return Err("array-valued getProp captures only support ptpU32Array".into());
+            }
+            self.collections
+                .insert(capture.bind.clone(), values.to_vec());
         }
         Ok(())
     }
@@ -983,6 +1011,25 @@ media:
         assert_eq!(out.observed.get(0xdf00), Some(6));
         assert_eq!(out.steps_run, 3);
         assert!(out.await_iterations.is_empty());
+    }
+
+    #[test]
+    fn malformed_ptp_u32_array_capture_fails_loud() {
+        let mut engine = engine(MANIFEST);
+        let error = walk_ptpip(
+            &mut engine,
+            &[Step {
+                get_prop: Some("0xdf00".into()),
+                captures: vec![Capture {
+                    bind: "items".into(),
+                    source: CaptureSource::PtpU32Array,
+                }],
+                ..Default::default()
+            }],
+            &BTreeMap::new(),
+        )
+        .expect_err("a scalar payload is not a count-prefixed u32 array");
+        assert!(error.message.contains("decode array prop"));
     }
 
     #[test]

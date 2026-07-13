@@ -24,11 +24,11 @@ pub use model::{
     AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
     CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
     CameraInitiatedReceive, CameraInitiatedTransfer, CameraInitiatedTrigger, CameraManifest,
-    CloseSession, Connection, ConnectionTransition, Control, Descriptor, GateFailure,
-    GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
-    LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry,
-    ModeEntryExecution, ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssKnock,
-    PostviewEvent, Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile,
+    CaptureSource, CloseSession, Connection, ConnectionTransition, Control, Descriptor,
+    GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery,
+    LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode,
+    ModeEntry, ModeEntryExecution, ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm,
+    PcssKnock, PostviewEvent, Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile,
     PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
     ReestablishConnection, ResponseRetry, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
     SocketBindings, SocketRole, Step, StepParam, TransferCompletion, TransportClose, TriggerMatch,
@@ -370,8 +370,45 @@ impl CameraManifest {
 }
 
 fn require_valid_ptp_steps(steps: &[Step], path: &str) -> Result<(), ManifestError> {
+    let mut collections = std::collections::BTreeSet::new();
+    require_valid_ptp_steps_with_collections(steps, path, &mut collections)
+}
+
+fn require_valid_ptp_steps_with_collections(
+    steps: &[Step],
+    path: &str,
+    collections: &mut std::collections::BTreeSet<String>,
+) -> Result<(), ManifestError> {
     for (index, step) in steps.iter().enumerate() {
         let step_path = format!("{path}.steps[{index}]");
+        let mut array_binds = std::collections::BTreeSet::new();
+        for capture in &step.captures {
+            if capture.source != CaptureSource::PtpU32Array {
+                continue;
+            }
+            if step.get_prop.is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path} ptpU32Array capture requires getProp"
+                )));
+            }
+            if step.tolerant {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path} ptpU32Array capture must not be tolerant"
+                )));
+            }
+            if capture.bind.trim().is_empty() {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path} ptpU32Array capture bind must not be empty"
+                )));
+            }
+            if !array_binds.insert(capture.bind.clone()) {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path} repeats ptpU32Array capture bind '{}'",
+                    capture.bind
+                )));
+            }
+        }
+        collections.extend(array_binds);
         if let Some(retry) = &step.retry {
             if retry.steps.is_empty() {
                 return Err(ManifestError::Contract(format!(
@@ -395,19 +432,56 @@ fn require_valid_ptp_steps(steps: &[Step], path: &str) -> Result<(), ManifestErr
                     )));
                 }
             }
-            require_valid_ptp_steps(&retry.steps, &format!("{step_path}.retry"))?;
+            let before_retry = collections.clone();
+            let mut after_retry = collections.clone();
+            require_valid_ptp_steps_with_collections(
+                &retry.steps,
+                &format!("{step_path}.retry"),
+                &mut after_retry,
+            )?;
+            if step.tolerant && after_retry != before_retry {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.retry captures a collection and must not be tolerant"
+                )));
+            }
+            *collections = after_retry;
         }
         if let Some(await_until) = &step.await_until {
-            require_valid_ptp_steps(&await_until.on_each, &format!("{step_path}.awaitUntil"))?;
+            let mut nested = collections.clone();
+            require_valid_ptp_steps_with_collections(
+                &await_until.on_each,
+                &format!("{step_path}.awaitUntil"),
+                &mut nested,
+            )?;
         }
         if let Some(loop_step) = &step.r#loop {
             let body = match loop_step {
-                Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => body,
+                Loop::ForEach {
+                    collection, body, ..
+                } => {
+                    if !collections.contains(collection) {
+                        return Err(ManifestError::Contract(format!(
+                            "{step_path}.loop forEach collection '{collection}' is not definitely bound"
+                        )));
+                    }
+                    body
+                }
+                Loop::Chunk { body, .. } => body,
             };
-            require_valid_ptp_steps(body, &format!("{step_path}.loop"))?;
+            let mut nested = collections.clone();
+            require_valid_ptp_steps_with_collections(
+                body,
+                &format!("{step_path}.loop"),
+                &mut nested,
+            )?;
         }
         if let Some(condition) = &step.if_step {
-            require_valid_ptp_steps(&condition.then_steps, &format!("{step_path}.if"))?;
+            let mut nested = collections.clone();
+            require_valid_ptp_steps_with_collections(
+                &condition.then_steps,
+                &format!("{step_path}.if"),
+                &mut nested,
+            )?;
         }
     }
     Ok(())
