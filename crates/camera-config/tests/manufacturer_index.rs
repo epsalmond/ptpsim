@@ -1329,6 +1329,61 @@ fn preliminary_vendor_indexes_load_in_camera_config() {
 // §11.15 bleAwaitUntil — deserialize, validate, gatt-resolution
 // ---------------------------------------------------------------------------
 
+#[test]
+fn fuji_condition_retry_parses_with_resolved_diagnostic_gatt() {
+    let index = real_index();
+    let plan = index.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("ble-establish-wifi-ap")
+        .unwrap();
+    let retry = plan
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            Step::Retry(retry) => Some(retry),
+            _ => None,
+        })
+        .expect("launch retry parses");
+    assert_eq!(retry.max_attempts, 2);
+    assert_eq!(retry.retry_delay_ms, 200);
+    assert!(matches!(
+        &retry.on_failure[..],
+        [Step::BleRead(read)]
+            if read.gatt == "1587B102-0B6D-4B63-9226-66FCC6D17387"
+    ));
+    assert!(matches!(
+        &retry.steps[1],
+        Step::BleAwaitUntil(await_step)
+            if await_step.fail_when.as_ref().is_some_and(|p| p.field == "apState" && p.value == "32768")
+    ));
+
+    // Step's serializer is intentionally not the authored one-entry mapping,
+    // so isolate the retry record fields from its nested step payloads here.
+    let mut retry_shape = retry.clone();
+    retry_shape.steps.clear();
+    retry_shape.on_failure.clear();
+    let yaml = serde_yaml::to_string(&retry_shape).expect("retry serializes");
+    assert_eq!(
+        yaml.lines()
+            .filter(|line| line.starts_with("retryDelayMs:"))
+            .count(),
+        1,
+        "retry policy has one unambiguous delay field: {yaml}",
+    );
+}
+
+#[test]
+fn retry_validation_rejects_zero_max_attempts() {
+    let yaml = data("fuji/index.yaml").replacen("maxAttempts: 2", "maxAttempts: 0", 1);
+    let error = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        error.to_string().contains("maxAttempts must be > 0"),
+        "got: {error}",
+    );
+}
+
 fn await_fixture(step_body: &str) -> String {
     format!(
         r#"

@@ -12,9 +12,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use camera_config::index::{FamilyBleBlock, ModelView, ResolvedManufacturerIndex};
-use camera_sim::{walk_establishment, BleEvent, BleResponder};
+use camera_sim::{walk_establishment, BleEvent, BleResponder, WalkError};
 
 const AP_STATE_UUID: &str = "A68E3F66-0FCC-4395-8D4C-AA980B5877FA";
+const STATE_ERROR_DETAILS_UUID: &str = "1587B102-0B6D-4B63-9226-66FCC6D17387";
 
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -78,12 +79,18 @@ fn walk_wifi_ap_with_ap_state(
 
     let launch = uuid(ble, "functionLaunchRequest");
     let ap_state = uuid(ble, "apState");
+    let image_setting = uuid(ble, "imageTransferSetting");
     let ssid_uuid = uuid(ble, "cameraSSIDNameString");
     let pass_uuid = uuid(ble, "cameraWiFiPassphraseString");
 
     // The passphrase characteristic is catalogued only when the body exposes
     // it; an open AP omits it, and the tolerant read then skips.
-    let mut catalog = vec![launch.clone(), ap_state.clone(), ssid_uuid.clone()];
+    let mut catalog = vec![
+        launch.clone(),
+        ap_state.clone(),
+        image_setting.clone(),
+        ssid_uuid.clone(),
+    ];
     if passphrase.is_some() {
         catalog.push(pass_uuid.clone());
     }
@@ -117,6 +124,11 @@ fn walk_wifi_ap_with_ap_state(
 
     let writes = responder.written(&launch);
     assert_eq!(writes.len(), 1, "launch request written exactly once");
+    assert_eq!(
+        responder.written(&image_setting),
+        vec![&[0x01][..]],
+        "image-transfer setting written exactly once",
+    );
     (outcome.scope, writes[0].to_vec(), responder.log().to_vec())
 }
 
@@ -242,4 +254,135 @@ fn establish_wifi_ap_tolerates_a_missing_passphrase_on_an_open_ap() {
         !scope.contains_key("passphrase"),
         "an absent passphrase characteristic leaves scope unbound, not aborted",
     );
+}
+
+fn walk_refusal(
+    detail: u16,
+    ap_states: &[u16],
+) -> (Result<BTreeMap<String, String>, WalkError>, Vec<BleEvent>) {
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().expect("fuji BLE block");
+    let plan = ble
+        .establishment("ble-establish-wifi-ap")
+        .expect("Wi-Fi plan");
+    let launch = uuid(ble, "functionLaunchRequest");
+    let image_setting = uuid(ble, "imageTransferSetting");
+    let ap_state = uuid(ble, "apState");
+    let details = uuid(ble, "stateErrorDetails");
+    assert_eq!(details, STATE_ERROR_DETAILS_UUID);
+    let ssid = uuid(ble, "cameraSSIDNameString");
+    let passphrase = uuid(ble, "cameraWiFiPassphraseString");
+    let mut responder = BleResponder::new([
+        launch,
+        image_setting,
+        ap_state.clone(),
+        details.clone(),
+        ssid.clone(),
+        passphrase.clone(),
+    ])
+    .serve_read_sequence(
+        &ap_state,
+        ap_states
+            .iter()
+            .map(|value| value.to_le_bytes().to_vec())
+            .collect(),
+    )
+    .serve_read(&details, &detail.to_le_bytes())
+    .serve_read(&ssid, b"GFX100II-1234")
+    .serve_read(&passphrase, b"secret-pass");
+    let runtime_params = [("launchMode".to_string(), "4".to_string())]
+        .into_iter()
+        .collect();
+    let result = walk_establishment(
+        &mut responder,
+        &plan.steps,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &runtime_params,
+    )
+    .map(|outcome| outcome.scope);
+    (result, responder.log().to_vec())
+}
+
+fn count_writes(events: &[BleEvent], uuid: &str) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event, BleEvent::Write { uuid: actual, .. } if actual == uuid))
+        .count()
+}
+
+#[test]
+fn short_camera_action_resends_launch_once_then_recovers() {
+    let (result, events) = walk_refusal(2, &[0x8000, 0x8001]);
+    let scope = result.expect("second launch reaches Launched");
+    assert_eq!(scope.get("apState").map(String::as_str), Some("32769"));
+    assert_eq!(
+        count_writes(&events, "600655E6-3637-42F1-8FB2-44EFC5C63B13"),
+        2,
+    );
+    assert_eq!(
+        count_writes(&events, "98934B2C-756C-4632-AA2F-DCBA1BFEC824"),
+        1,
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(
+                |event| matches!(event, BleEvent::Subscribe { uuid, .. } if uuid == AP_STATE_UUID)
+            )
+            .count(),
+        1,
+        "the retry reuses the successful CCCD enable",
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, BleEvent::Read { uuid } if uuid == AP_STATE_UUID))
+            .count(),
+        2,
+        "each attempt performs a fresh seed read",
+    );
+}
+
+#[test]
+fn short_camera_action_exhausts_after_one_resend_with_curated_context() {
+    let (result, events) = walk_refusal(2, &[0x8000, 0x8000]);
+    let error = result.expect_err("second refusal exhausts the retry");
+    assert_eq!(
+        error.kind,
+        camera_config::index::RetryFailureKind::ConditionRejected
+    );
+    assert_eq!(
+        error.context,
+        BTreeMap::from([
+            ("apState".to_string(), "32768".to_string()),
+            ("stateErrorDetails".to_string(), "2".to_string()),
+        ])
+    );
+    assert_eq!(
+        count_writes(&events, "600655E6-3637-42F1-8FB2-44EFC5C63B13"),
+        2,
+    );
+    assert_eq!(
+        count_writes(&events, "98934B2C-756C-4632-AA2F-DCBA1BFEC824"),
+        1,
+    );
+}
+
+#[test]
+fn permanent_and_unknown_refusal_details_never_retry() {
+    for detail in (0..=14).filter(|detail| *detail != 2).chain([99]) {
+        let (result, events) = walk_refusal(detail, &[0x8000]);
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.context.get("stateErrorDetails"),
+            Some(&detail.to_string()),
+            "detail {detail}",
+        );
+        assert_eq!(
+            count_writes(&events, "600655E6-3637-42F1-8FB2-44EFC5C63B13"),
+            1,
+            "detail {detail} must not retry",
+        );
+    }
 }

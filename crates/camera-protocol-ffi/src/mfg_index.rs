@@ -20,6 +20,7 @@
 use camera_config as cc;
 use camera_config::index as ix;
 
+use crate::executor::ExecutorStepFailureKind;
 use crate::KeyValue;
 
 // ---------------------------------------------------------------------------
@@ -279,6 +280,8 @@ pub enum Step {
         capture_as: Option<String>,
         /// Satisfied when this predicate holds over scope.
         until: Predicate,
+        /// Optional terminal rejection evaluated after `until`.
+        fail_when: Option<Predicate>,
         /// Steps run each iteration `until` is not yet met, before the next
         /// observe. `Vec<Step>` (may be empty for a pure poll).
         on_each: Vec<Step>,
@@ -330,6 +333,17 @@ pub enum Step {
         /// §11.6: when true, an unbound predicate field evaluates as false
         /// (else-branch runs / step is skipped) rather than erroring.
         tolerant: bool,
+    },
+    /// Run a body repeatedly only when a selected typed failure is followed
+    /// by a matching scope predicate.
+    Retry {
+        steps: Vec<Step>,
+        when_failure: ExecutorStepFailureKind,
+        on_failure: Vec<Step>,
+        retry_when: Predicate,
+        max_attempts: u32,
+        retry_delay_ms: u32,
+        failure_context: Vec<String>,
     },
 }
 
@@ -680,6 +694,16 @@ impl From<&ix::AwaitSource> for AwaitSource {
     }
 }
 
+impl From<ix::RetryFailureKind> for ExecutorStepFailureKind {
+    fn from(kind: ix::RetryFailureKind) -> Self {
+        match kind {
+            ix::RetryFailureKind::DeadlineExceeded => Self::DeadlineExceeded,
+            ix::RetryFailureKind::ConditionRejected => Self::ConditionRejected,
+            ix::RetryFailureKind::Other => Self::Other,
+        }
+    }
+}
+
 impl From<&ix::Step> for Step {
     fn from(s: &ix::Step) -> Self {
         match s {
@@ -729,6 +753,7 @@ impl From<&ix::Step> for Step {
                 capture: inner.capture.iter().map(Into::into).collect(),
                 capture_as: inner.capture_as.clone(),
                 until: (&inner.until).into(),
+                fail_when: inner.fail_when.as_ref().map(Into::into),
                 on_each: inner.on_each.iter().map(Step::from).collect(),
                 timeout_ms: inner.timeout_ms,
                 interval_ms: inner.interval_ms,
@@ -764,6 +789,15 @@ impl From<&ix::Step> for Step {
                 then_branch: inner.then.iter().map(Step::from).collect(),
                 else_branch: inner.else_branch.iter().map(Step::from).collect(),
                 tolerant: inner.tolerant,
+            },
+            ix::Step::Retry(inner) => Step::Retry {
+                steps: inner.steps.iter().map(Step::from).collect(),
+                when_failure: inner.when_failure.into(),
+                on_failure: inner.on_failure.iter().map(Step::from).collect(),
+                retry_when: (&inner.retry_when).into(),
+                max_attempts: inner.max_attempts,
+                retry_delay_ms: inner.retry_delay_ms,
+                failure_context: inner.failure_context.clone(),
             },
         }
     }

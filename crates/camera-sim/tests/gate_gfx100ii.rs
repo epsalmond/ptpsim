@@ -884,7 +884,7 @@ fn live_view_to_image_transfer_reestablishes_then_runs_cold_entry() {
         passphrase.clone(),
         gatt("imageTransferSetting"),
     ])
-    .serve_read(&ap_state, &[0x00, 0x80])
+    .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80], vec![0x02, 0x80]])
     .queue_notification(&ap_state, &[0x01, 0x80])
     .serve_read(&ssid, b"GFX100II-TEST")
     .serve_read(&passphrase, b"test-passphrase");

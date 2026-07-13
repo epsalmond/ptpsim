@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use camera_config::index::eval;
 use camera_config::index::{
     AcquireSource, AwaitSource, BleAwaitUntilStep, BleNotifyUntil, BleWriteChunkStep, CccdMode,
-    ChunkField, Encoding, NotifyCapture, PredicateOp, Step, StepValue,
+    ChunkField, Encoding, NotifyCapture, PredicateOp, RetryFailureKind, Step, StepValue,
 };
 
 /// Reference-walker bound on a `bleAwaitUntil` loop: the deterministic
@@ -340,7 +340,9 @@ impl BleResponder {
 #[derive(Debug)]
 pub struct WalkError {
     pub step: String,
+    pub kind: RetryFailureKind,
     pub message: String,
+    pub context: BTreeMap<String, String>,
 }
 
 impl std::fmt::Display for WalkError {
@@ -364,6 +366,7 @@ struct WalkCtx<'a> {
     /// of guessing from the scope string.
     encodings: BTreeMap<String, Encoding>,
     runtime_params: BTreeMap<String, String>,
+    subscriptions: BTreeSet<(String, bool)>,
     steps_run: usize,
 }
 
@@ -392,6 +395,7 @@ pub fn walk_establishment(
         scope: initial_scope.clone(),
         encodings: initial_encodings.clone(),
         runtime_params: runtime_params.clone(),
+        subscriptions: BTreeSet::new(),
         steps_run: 0,
     };
     walk_steps(&mut ctx, steps, "steps")?;
@@ -437,7 +441,9 @@ fn primary_capture_name(step: &Step) -> Option<&str> {
 fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkError> {
     let err = |message: String| WalkError {
         step: here.to_string(),
+        kind: RetryFailureKind::Other,
         message,
+        context: BTreeMap::new(),
     };
     match step {
         Step::BleConnect(_) => {
@@ -485,14 +491,11 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
                 .write(&s.gatt, &bytes)
                 .map_err(|e| err(e.to_string()))
         }
-        Step::BleSubscribe(s) => ctx
-            .responder
-            .subscribe(&s.gatt, s.mode)
-            .map_err(|e| err(e.to_string())),
+        Step::BleSubscribe(s) => {
+            ensure_subscribed(ctx, &s.gatt, s.mode).map_err(|e| err(e.to_string()))
+        }
         Step::BleNotify(s) => {
-            ctx.responder
-                .subscribe(&s.gatt, s.mode)
-                .map_err(|e| err(e.to_string()))?;
+            ensure_subscribed(ctx, &s.gatt, s.mode).map_err(|e| err(e.to_string()))?;
             let payload = ctx
                 .responder
                 .take_notification(&s.gatt)
@@ -578,7 +581,50 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
             let branch_path = format!("{here}.{}", if holds { "then" } else { "else" });
             walk_steps(ctx, branch, &branch_path)
         }
+        Step::Retry(s) => {
+            let mut attempts = 0;
+            loop {
+                match walk_steps(ctx, &s.steps, &format!("{here}.steps")) {
+                    Ok(()) => return Ok(()),
+                    Err(mut body_error) => {
+                        if body_error.kind != s.when_failure {
+                            return Err(body_error);
+                        }
+                        walk_steps(ctx, &s.on_failure, &format!("{here}.onFailure"))?;
+                        let actual = ctx.scope.get(&s.retry_when.field).ok_or_else(|| {
+                            err(format!(
+                                "retryWhen field '{}' unbound in scope",
+                                s.retry_when.field
+                            ))
+                        })?;
+                        let should_retry =
+                            predicate_holds(actual, s.retry_when.op, &s.retry_when.value);
+                        attempts += 1;
+                        if !should_retry || attempts >= s.max_attempts {
+                            body_error.context = s
+                                .failure_context
+                                .iter()
+                                .filter_map(|key| {
+                                    ctx.scope.get(key).map(|value| (key.clone(), value.clone()))
+                                })
+                                .collect();
+                            return Err(body_error);
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+fn ensure_subscribed(ctx: &mut WalkCtx<'_>, gatt: &str, mode: CccdMode) -> Result<(), BleError> {
+    let key = (gatt.to_string(), matches!(mode, CccdMode::Indicate));
+    if ctx.subscriptions.contains(&key) {
+        return Ok(());
+    }
+    ctx.responder.subscribe(gatt, mode)?;
+    ctx.subscriptions.insert(key);
+    Ok(())
 }
 
 /// Bind a value (read result / notification payload) into scope: the whole
@@ -624,13 +670,13 @@ fn run_await_until(
 ) -> Result<(), WalkError> {
     let err = |message: String| WalkError {
         step: here.to_string(),
+        kind: RetryFailureKind::Other,
         message,
+        context: BTreeMap::new(),
     };
     // CCCD-enable once up front for a notify source (the camera then streams).
     if let AwaitSource::Notify { gatt, mode, .. } = &s.source {
-        ctx.responder
-            .subscribe(gatt, *mode)
-            .map_err(|e| err(e.to_string()))?;
+        ensure_subscribed(ctx, gatt, *mode).map_err(|e| err(e.to_string()))?;
     }
     let mut seed_pending = matches!(
         &s.source,
@@ -673,6 +719,24 @@ fn run_await_until(
         if satisfied {
             return Ok(());
         }
+        if s.fail_when.as_ref().is_some_and(|predicate| {
+            ctx.scope
+                .get(&predicate.field)
+                .is_some_and(|actual| predicate_holds(actual, predicate.op, &predicate.value))
+        }) {
+            let predicate = s.fail_when.as_ref().expect("matched above");
+            return Err(WalkError {
+                step: here.to_string(),
+                kind: RetryFailureKind::ConditionRejected,
+                message: format!(
+                    "`failWhen` matched ({} {} {})",
+                    predicate.field,
+                    predicate.op.as_token(),
+                    predicate.value
+                ),
+                context: BTreeMap::new(),
+            });
+        }
         // Not yet: act, then observe again. interval_ms is dispatcher cadence
         // — the deterministic walker doesn't sleep.
         walk_steps(ctx, &s.on_each, &format!("{here}.onEach"))?;
@@ -698,7 +762,9 @@ fn run_write_chunk(
 ) -> Result<(), WalkError> {
     let err = |message: String| WalkError {
         step: here.to_string(),
+        kind: RetryFailureKind::Other,
         message,
+        context: BTreeMap::new(),
     };
 
     // The host supplies the whole blob once as a bytes-raw hex param (#114).

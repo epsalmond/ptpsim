@@ -56,6 +56,7 @@ build_target() {
     esac
     require_macos
     require cargo
+    require swiftc
     require rustup
     rustup target list --installed | grep -qx "${target}" || {
         echo "FATAL: rustup target '${target}' is not installed." >&2
@@ -86,6 +87,11 @@ generate_bindings() {
         -o "${swift_dir}" \
         "${library}"
     test -f "${swift_dir}/${XCF_NAME}.swift"
+    swiftc -typecheck \
+        -I "${swift_dir}" \
+        -Xcc "-fmodule-map-file=${swift_dir}/${XCF_NAME}FFI.modulemap" \
+        "${swift_dir}/${XCF_NAME}.swift" \
+        "${ROOT}/ci/swift/ExecutorBindingsStub.swift"
 }
 
 package_xcframework() {

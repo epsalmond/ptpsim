@@ -50,6 +50,13 @@ families:
         functionLaunchRequest: "600655E6-3637-42F1-8FB2-44EFC5C63B13"
         imageTransferSetting: "98934B2C-756C-4632-AA2F-DCBA1BFEC824"  # AP-handoff image-transfer arming (#102)
         apState: "A68E3F66-0FCC-4395-8D4C-AA980B5877FA"
+        # AP launch refusal reason, u16-le. Vendor client symbols define:
+        # 0 other, 1 FTP active, 2 short camera action, 3 long camera action,
+        # 4 finish camera operation, 5 initial setup, 6 USB active,
+        # 7 tethered-auto, 8 tethered-fixed, 9 USB RAW conversion,
+        # 10 USB webcam, 11 live remote, 12 image not transferred,
+        # 13 Frame.io, 14 last/sentinel. Only 2 is transient and retryable.
+        stateErrorDetails: "1587B102-0B6D-4B63-9226-66FCC6D17387"
         transferState: "BD17BA04-B76B-4892-A545-B73BA1F74DAE"
         dateSyncState: "F9150137-5D40-4801-A8DC-F7FC5B01DA50"
         locationSyncState: "AD06C7B7-F41A-46F4-A29A-712055319122"
@@ -289,32 +296,37 @@ families:
                 value: { literal: "01" }
                 tolerant: true
 
-            # FUNCTION_LAUNCH_REQUEST: 2-byte LE launch value bound at runtime.
-            - bleWrite:
-                gatt: functionLaunchRequest
-                value: { runtime: launchMode, encoding: u16-le }
+            # A NotLaunched response has a typed refusal detail. Only the
+            # short-camera-action detail (2) is transient: keep BLE connected,
+            # wait 200 ms, and resend only FUNCTION_LAUNCH_REQUEST once. The
+            # image-transfer setting above remains a one-time setup write.
+            - retry:
+                whenFailure: conditionRejected
+                maxAttempts: 2
+                retryDelayMs: 200
+                retryWhen: { stateErrorDetails: { eq: "2" } }
+                failureContext: [apState, stateErrorDetails]
+                onFailure:
+                  - bleRead: { gatt: stateErrorDetails, encoding: u16-le, captureAs: stateErrorDetails }
+                steps:
+                  # FUNCTION_LAUNCH_REQUEST: 2-byte LE launch value bound at runtime.
+                  - bleWrite:
+                      gatt: functionLaunchRequest
+                      value: { runtime: launchMode, encoding: u16-le }
 
-            # Subscribe for the terminal AP state, then issue one seed read through
-            # the same predicate. The seed recovers an AP that was already launched
-            # before subscription (#179); notifications carry the terminal value
-            # during a fresh launch without the BLE-contention regression caused by
-            # a 250 ms read poll (#202). Device evidence:
-
-            # captureAs keeps the raw bytes for the app's fallback parsing.
-            - bleAwaitUntil:
-                source: { notify: { gatt: apState, seedRead: true } }
-                capture: { at: 0, length: 2, encoding: u16-le, name: apState }
-                captureAs: apStateRaw
-                # 0x8001 Launched (live-view / RemoteShooting) + 0x8003
-                # LaunchedForReservedImageTransfer — the u16-le read of wire
-                # bytes [01 80]. Excludes 0x8000 NotLaunched and 0x8002
-                # Launching (transitional). Device-verified (#84); the earlier
-                # {384, 256} was these values byte-swapped, so it never matched.
-                until: { apState: { in: "32769, 32771" } }
-                # 20 s matches the camera's FUNCTION_LAUNCH_REQUEST timer: it
-                # brings up the AP autonomously and reaches launched within 20 s
-                # (operators APP_AP_HANDOVER_HANDSHAKE).
-                timeoutMs: 20000
+                  # Subscribe for the terminal AP state, then issue one seed read
+                  # through the same predicate. A retry reuses the subscription and
+                  # performs a fresh seed read under a fresh 20-second budget.
+                  - bleAwaitUntil:
+                      source: { notify: { gatt: apState, seedRead: true } }
+                      capture: { at: 0, length: 2, encoding: u16-le, name: apState }
+                      captureAs: apStateRaw
+                      # 0x8001 Launched + 0x8003 reserved-image-transfer launch.
+                      # 0x8002 Launching remains transitional. 0x8000 NotLaunched
+                      # immediately selects the typed diagnostic path.
+                      until: { apState: { in: "32769, 32771" } }
+                      failWhen: { apState: { eq: "32768" } }
+                      timeoutMs: 20000
 
             # AP is up — read the credentials the app joins the network with.
             # Both are fixed-width, NUL-padded GATT string fields: utf8-cstring

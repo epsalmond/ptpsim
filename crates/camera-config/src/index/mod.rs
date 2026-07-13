@@ -36,6 +36,6 @@ pub use types::{
     ChunkFrameField, Confidence, Encoding, EstablishmentBlock, FamilyBleBlock, FamilyBlock, IfStep,
     IndexedModel, LocalNamePredicate, ManufacturerIndex, MfgDataPredicate, ModelView,
     NotifyCapture, PayloadPredicate, Predicate, PredicateOp, ReconnectDisposition,
-    ReconnectSuggestion, Signature, SignatureKind, Step, StepOptions, StepValue, SuggestsBlock,
-    Transform,
+    ReconnectSuggestion, RetryFailureKind, RetryStep, Signature, SignatureKind, Step, StepOptions,
+    StepValue, SuggestsBlock, Transform,
 };

@@ -384,15 +384,18 @@ Two transport contracts carry the correctness load:
   foreign task through the generated bindings, so make each transport method
   cancellation-safe.
 
-A fatal step returns `ExecutorError::StepFailed { step, kind, detail }`.
+A fatal step returns `ExecutorError::StepFailed { step, kind, detail, context }`.
 `kind` is the stable `ExecutorStepFailureKind`: `DeadlineExceeded` covers
 executor-owned verb backstops, step-level notification/poll budgets, and a
-transport-reported timeout; `Other` covers every non-timeout failure. Consumers
-may map `DeadlineExceeded` from a readiness gate to retryable UI while keeping
+transport-reported timeout; `ConditionRejected` identifies a manifest-declared
+terminal condition; `Other` covers every remaining failure. `context` contains
+only the key/value pairs explicitly selected by the controlling manifest step;
+the complete executor scope is never exposed. Consumers may map
+`DeadlineExceeded` from a readiness gate to retryable UI while keeping
 `detail` for diagnostics only. Never string-match `detail` for control flow.
 Tolerated failures remain step reports and do not escape as `ExecutorError`.
 
-### 9.4 The 13-verb Step grammar (reference; legacy dispatcher)
+### 9.4 The Step grammar (reference; legacy dispatcher)
 
 The executor implements this grammar for you — read this section as the verb
 reference. It is also the contract for the legacy alternative, a hand-built
@@ -411,10 +414,11 @@ retry loop and the same code handles all of them.
 | `bleWriteChunk` | frame and write one manifest-declared window from a runtime blob, using the captured chunk index, frame fields, size, and sentinel index. |
 | `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate — CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
 | `bleNotify` | subscribe (`mode` as above) AND wait for `until` (Any / Equals / Matches); bind whole payload via `captureAs` and/or extract fields via `capture` (window → transform chain → encoding → scope; a failing capture is skipped, not a step failure). |
-| `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same predicate, then remain notification-only. Each observation applies `capture`/`captureAs`; if `until` is false, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
+| `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same predicate, then remain notification-only. Each observation applies `capture`/`captureAs`; `until` wins, otherwise an optional matching `failWhen` fails immediately as `ConditionRejected`; if neither matches, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
 | `acquire` | run inner step (`from[0]` — `Vec<Step>` of length 1; uniffi 0.31 doesn't accept `Box<Step>` for recursive enums), bind result to `name`. |
 | `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. |
 | `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |
+| `retry` | run `steps`; when a failure's stable kind equals `whenFailure`, run `onFailure` in the same scope and evaluate `retryWhen`. Retry only when it is true and `maxAttempts` is not exhausted, sleeping `retryDelayMs` first. Unselected failures escape unchanged. Terminal selected failures include only the named `failureContext` values. Repeated subscriptions to the same GATT characteristic and mode are reused within the walk. |
 
 ### 9.5 StepValue resolution
 

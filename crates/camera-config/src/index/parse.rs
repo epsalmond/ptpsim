@@ -324,6 +324,17 @@ fn resolve_gatt_names_in_steps(
                     }
                 }
             }
+            "retry" => {
+                if let Some(body_map) = body.as_mapping_mut() {
+                    for key in ["steps", "onFailure"] {
+                        if let Some(Value::Sequence(nested)) =
+                            body_map.get_mut(Value::String(key.into()))
+                        {
+                            resolve_gatt_names_in_steps(nested, gatt, &format!("{here}.{key}"))?;
+                        }
+                    }
+                }
+            }
             "if" => {
                 if let Some(body_map) = body.as_mapping_mut() {
                     if let Some(Value::Sequence(then_seq)) =
@@ -341,7 +352,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if)"),
+                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry)"),
                 });
             }
         }
@@ -477,6 +488,26 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
             validate_step(inner, &format!("{path}.onEach[{i}]"))?;
         }
     }
+    if let Step::Retry(s) = step {
+        if s.max_attempts == 0 {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.maxAttempts"),
+                message: "retry maxAttempts must be > 0".to_string(),
+            });
+        }
+        if s.steps.is_empty() {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.steps"),
+                message: "retry steps must not be empty".to_string(),
+            });
+        }
+        for (i, inner) in s.steps.iter().enumerate() {
+            validate_step(inner, &format!("{path}.steps[{i}]"))?;
+        }
+        for (i, inner) in s.on_failure.iter().enumerate() {
+            validate_step(inner, &format!("{path}.onFailure[{i}]"))?;
+        }
+    }
     if let Step::BleAwaitDisconnect(s) = step {
         if s.timeout_ms == 0 {
             return Err(ConfigError::Validation {
@@ -517,6 +548,15 @@ fn forbid_acquire_firmware(step: &Step, path: &str) -> Result<(), ConfigError> {
         Step::BleAwaitUntil(s) => {
             for (i, inner) in s.on_each.iter().enumerate() {
                 forbid_acquire_firmware(inner, &format!("{path}.onEach[{i}]"))?;
+            }
+            Ok(())
+        }
+        Step::Retry(s) => {
+            for (i, inner) in s.steps.iter().enumerate() {
+                forbid_acquire_firmware(inner, &format!("{path}.steps[{i}]"))?;
+            }
+            for (i, inner) in s.on_failure.iter().enumerate() {
+                forbid_acquire_firmware(inner, &format!("{path}.onFailure[{i}]"))?;
             }
             Ok(())
         }
@@ -845,8 +885,11 @@ impl<'de> serde::Deserialize<'de> for Step {
             "if" => Ok(Step::If(
                 serde_yaml::from_value(body).map_err(|e| dec_err("if", e))?,
             )),
+            "retry" => Ok(Step::Retry(
+                serde_yaml::from_value(body).map_err(|e| dec_err("retry", e))?,
+            )),
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (allowlist: bleConnect, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry)"
             ))),
         }
     }

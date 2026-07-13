@@ -234,6 +234,7 @@ pub enum Step {
     Acquire(AcquireStep),
     AcquireFirmware(AcquireFirmwareStep),
     If(IfStep),
+    Retry(RetryStep),
 }
 
 impl Step {
@@ -254,6 +255,7 @@ impl Step {
             Step::Acquire(_) => "acquire",
             Step::AcquireFirmware(_) => "acquireFirmware",
             Step::If(_) => "if",
+            Step::Retry(_) => "retry",
         }
     }
 
@@ -275,6 +277,7 @@ impl Step {
             Step::Acquire(s) => s.opts.clone(),
             Step::AcquireFirmware(s) => s.opts.clone(),
             Step::If(_) => StepOptions::default(),
+            Step::Retry(_) => StepOptions::default(),
         }
     }
 }
@@ -529,6 +532,10 @@ pub struct BleAwaitUntilStep {
     /// Satisfied when this predicate over runtime_scope holds (evaluated
     /// after each iteration's captures land).
     pub until: Predicate,
+    /// Optional terminal condition evaluated after `until`. A match fails the
+    /// step immediately as `conditionRejected`; `until` takes precedence.
+    #[serde(default)]
+    pub fail_when: Option<Predicate>,
     /// Steps run each iteration when `until` is NOT yet satisfied, before the
     /// next poll/notification (Sony's launch-request write). Empty = pure
     /// observe.
@@ -544,6 +551,33 @@ pub struct BleAwaitUntilStep {
     pub interval_ms: u32,
     #[serde(flatten, default)]
     pub opts: StepOptions,
+}
+
+/// Stable failure classes a [`RetryStep`] may select without inspecting an
+/// implementation-defined error string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RetryFailureKind {
+    DeadlineExceeded,
+    ConditionRejected,
+    Other,
+}
+
+/// Predicate-gated recovery around a group of steps. Diagnostics run in the
+/// same scope after a selected failure and before the retry predicate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryStep {
+    pub steps: Vec<Step>,
+    pub when_failure: RetryFailureKind,
+    #[serde(default)]
+    pub on_failure: Vec<Step>,
+    pub retry_when: Predicate,
+    pub max_attempts: u32,
+    #[serde(default)]
+    pub retry_delay_ms: u32,
+    #[serde(default)]
+    pub failure_context: Vec<String>,
 }
 
 /// Where `bleAwaitUntil` observes. Authored in YAML as a single-entry mapping

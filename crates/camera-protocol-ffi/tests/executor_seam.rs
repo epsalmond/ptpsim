@@ -759,6 +759,89 @@ fn wifi_ap_plan_awaits_launch_and_binds_credentials() {
     );
 }
 
+#[test]
+fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let launch = uuid(ble, "functionLaunchRequest");
+    let image_setting = uuid(ble, "imageTransferSetting");
+    let ap_state = uuid(ble, "apState");
+    let details = uuid(ble, "stateErrorDetails");
+    let responder = BleResponder::new([
+        launch.clone(),
+        image_setting.clone(),
+        ap_state.clone(),
+        details.clone(),
+    ])
+    .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80], vec![0x00, 0x80]])
+    .serve_read(&details, &[0x02, 0x00]);
+    let transport = Arc::new(ResponderTransport::new(responder));
+    let sleep_log = transport.sleep_log.clone();
+    let error = block_on(run_establishment(
+        store,
+        "gfx100ii:app".to_string(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".to_string(),
+            value: "4".to_string(),
+        }],
+    ))
+    .expect_err("the second NotLaunched refusal exhausts the bounded retry");
+    match error {
+        ExecutorError::StepFailed {
+            kind,
+            context,
+            detail,
+            ..
+        } => {
+            assert_eq!(kind, ExecutorStepFailureKind::ConditionRejected);
+            assert!(detail.contains("failWhen"));
+            assert_eq!(scope_get(&context, "apState"), Some("32768"));
+            assert_eq!(scope_get(&context, "stateErrorDetails"), Some("2"));
+            assert_eq!(
+                context.len(),
+                2,
+                "only manifest-selected context crosses FFI"
+            );
+        }
+        other => panic!("expected typed StepFailed, got {other:?}"),
+    }
+    assert_eq!(
+        sleep_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|ms| **ms == 200)
+            .count(),
+        1,
+    );
+    drop(sleep_log);
+    let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
+    let log = transport.into_log();
+    assert_eq!(
+        log.iter()
+            .filter(|event| matches!(event, BleEvent::Write { uuid, .. } if uuid == &launch))
+            .count(),
+        2,
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|event| matches!(event, BleEvent::Write { uuid, .. } if uuid == &image_setting))
+            .count(),
+        1,
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|event| matches!(event, BleEvent::Subscribe { uuid, .. } if uuid == &ap_state))
+            .count(),
+        1,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // postExitReadiness (run_post_exit_readiness — the pre-replay gate)
 // ---------------------------------------------------------------------------
@@ -840,7 +923,9 @@ fn post_exit_notification_timeout_crosses_ffi_with_deadline_kind() {
     .expect_err("the notification budget lapses");
 
     match error {
-        ExecutorError::StepFailed { step, kind, detail } => {
+        ExecutorError::StepFailed {
+            step, kind, detail, ..
+        } => {
             assert_eq!(step, "steps[2].bleAwaitUntil");
             assert_eq!(kind, ExecutorStepFailureKind::DeadlineExceeded);
             assert!(detail.contains("within 20000ms"));
@@ -867,7 +952,9 @@ fn post_exit_poll_timeout_crosses_ffi_with_deadline_kind() {
     .expect_err("the poll budget lapses");
 
     match error {
-        ExecutorError::StepFailed { step, kind, detail } => {
+        ExecutorError::StepFailed {
+            step, kind, detail, ..
+        } => {
             assert_eq!(step, "steps[2].bleAwaitUntil");
             assert_eq!(kind, ExecutorStepFailureKind::DeadlineExceeded);
             assert!(detail.contains("within 5ms"));
@@ -894,7 +981,9 @@ fn per_verb_clock_failure_crosses_ffi_as_other() {
     .expect_err("the foreign deadline clock fails");
 
     match error {
-        ExecutorError::StepFailed { step, kind, detail } => {
+        ExecutorError::StepFailed {
+            step, kind, detail, ..
+        } => {
             assert_eq!(step, "steps[0].bleConnect");
             assert_eq!(kind, ExecutorStepFailureKind::Other);
             assert!(detail.contains("clock unavailable"));
@@ -921,7 +1010,9 @@ fn notification_budget_clock_failure_crosses_ffi_as_other() {
     .expect_err("the notification budget clock fails");
 
     match error {
-        ExecutorError::StepFailed { step, kind, detail } => {
+        ExecutorError::StepFailed {
+            step, kind, detail, ..
+        } => {
             assert_eq!(step, "steps[2].bleAwaitUntil");
             assert_eq!(kind, ExecutorStepFailureKind::Other);
             assert!(detail.contains("clock unavailable"));
@@ -948,7 +1039,9 @@ fn poll_budget_clock_failure_crosses_ffi_as_other() {
     .expect_err("the poll budget clock fails");
 
     match error {
-        ExecutorError::StepFailed { step, kind, detail } => {
+        ExecutorError::StepFailed {
+            step, kind, detail, ..
+        } => {
             assert_eq!(step, "steps[2].bleAwaitUntil");
             assert_eq!(kind, ExecutorStepFailureKind::Other);
             assert!(detail.contains("clock unavailable"));

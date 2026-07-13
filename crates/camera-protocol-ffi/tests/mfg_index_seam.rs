@@ -881,18 +881,45 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         Some(&"98934B2C-756C-4632-AA2F-DCBA1BFEC824"),
         "the IMAGE_TRANSFER_SETTING prep write must come first (#102)"
     );
-    let (gatt, value) = plan
+    let retry = plan
         .steps
         .iter()
-        .find_map(|s| match s {
-            Step::BleWrite { gatt, value, .. }
-                if gatt.as_str() == "600655E6-3637-42F1-8FB2-44EFC5C63B13" =>
-            {
-                Some((gatt, value))
-            }
+        .find(|step| matches!(step, Step::Retry { .. }))
+        .expect("AP launch is guarded by typed retry control flow");
+    let Step::Retry {
+        steps,
+        when_failure,
+        on_failure,
+        retry_when,
+        max_attempts,
+        retry_delay_ms,
+        failure_context,
+        ..
+    } = retry
+    else {
+        unreachable!()
+    };
+    assert_eq!(*when_failure, ExecutorStepFailureKind::ConditionRejected);
+    assert_eq!(*max_attempts, 2);
+    assert_eq!(*retry_delay_ms, 200);
+    assert_eq!(retry_when.field, "stateErrorDetails");
+    assert_eq!(retry_when.value, "2");
+    assert_eq!(failure_context, &["apState", "stateErrorDetails"]);
+    assert!(matches!(
+        &on_failure[..],
+        [Step::BleRead { gatt, encoding, capture_as, .. }]
+            if gatt == "1587B102-0B6D-4B63-9226-66FCC6D17387"
+                && encoding == "u16-le"
+                && capture_as == "stateErrorDetails"
+    ));
+
+    let (gatt, value) = steps
+        .iter()
+        .find_map(|step| match step {
+            Step::BleWrite { gatt, value, .. } => Some((gatt, value)),
             _ => None,
         })
-        .expect("writes the function-launch request");
+        .expect("retry body writes the function-launch request");
     assert_eq!(gatt, "600655E6-3637-42F1-8FB2-44EFC5C63B13");
     match value {
         StepValue::Runtime { slot, encoding, .. } => {
@@ -904,14 +931,14 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
 
     // The await step subscribes to apState and issues exactly one seed read
     // (#202), closing the already-launched hole without a read-poll loop.
-    let until_field = plan
-        .steps
+    let until_field = steps
         .iter()
         .find_map(|s| match s {
             Step::BleAwaitUntil {
                 source,
                 capture,
                 until,
+                fail_when,
                 interval_ms,
                 ..
             } => {
@@ -926,6 +953,9 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
                 }
                 assert_eq!(*interval_ms, 0, "notify sources do not carry poll cadence");
                 assert!(capture.iter().any(|c| c.name == "apState"));
+                let fail_when = fail_when.as_ref().expect("NotLaunched is terminal");
+                assert_eq!(fail_when.field, "apState");
+                assert_eq!(fail_when.value, "32768");
                 Some(until.field.clone())
             }
             _ => None,

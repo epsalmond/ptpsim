@@ -23,7 +23,7 @@
 //! consumed, so acceptance logic (which lives here, not in the app) can never
 //! lose a notification that raced a seed read.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -160,6 +160,8 @@ pub trait StepObserver: Send + Sync {
 pub enum ExecutorStepFailureKind {
     /// An executor-owned wall-clock budget or transport timeout elapsed.
     DeadlineExceeded,
+    /// A manifest-declared terminal condition matched an observation.
+    ConditionRejected,
     /// Any non-timeout transport, validation, transform, or plan-step failure.
     Other,
 }
@@ -173,6 +175,7 @@ pub enum ExecutorError {
         step: String,
         kind: ExecutorStepFailureKind,
         detail: String,
+        context: Vec<KeyValue>,
     },
 }
 
@@ -219,6 +222,7 @@ pub async fn run_establishment(
             .into_iter()
             .map(|kv| (kv.key, kv.value))
             .collect(),
+        subscriptions: BTreeSet::new(),
         steps_run: 0,
         refine: Some(RefineCtx {
             store: &store,
@@ -265,6 +269,7 @@ pub async fn run_post_exit_readiness(
             .into_iter()
             .map(|kv| (kv.key, kv.value))
             .collect(),
+        subscriptions: BTreeSet::new(),
         steps_run: 0,
         refine: None,
     };
@@ -350,6 +355,7 @@ pub async fn run_ble_action(
             .into_iter()
             .map(|kv| (kv.key, kv.value))
             .collect(),
+        subscriptions: BTreeSet::new(),
         steps_run: 0,
         refine: None,
     };
@@ -385,6 +391,8 @@ struct ExecCtx<'a> {
     /// re-encode by this instead of guessing from the scope string.
     encodings: BTreeMap<String, Encoding>,
     runtime_params: BTreeMap<String, String>,
+    /// Successful CCCD enables in this walk. A retry reuses transport state.
+    subscriptions: BTreeSet<(String, bool)>,
     steps_run: u32,
     /// Present for establishment walks; `acquireFirmware` re-resolves the
     /// tail through it (§11.5). `None` for BLE actions.
@@ -397,6 +405,7 @@ struct StepError {
     step: String,
     kind: ExecutorStepFailureKind,
     message: String,
+    context: Vec<KeyValue>,
 }
 
 impl StepError {
@@ -405,6 +414,7 @@ impl StepError {
             step: step.to_string(),
             kind: ExecutorStepFailureKind::Other,
             message,
+            context: Vec::new(),
         }
     }
 
@@ -413,6 +423,16 @@ impl StepError {
             step: step.to_string(),
             kind: ExecutorStepFailureKind::DeadlineExceeded,
             message,
+            context: Vec::new(),
+        }
+    }
+
+    fn condition_rejected(step: &str, message: String) -> Self {
+        Self {
+            step: step.to_string(),
+            kind: ExecutorStepFailureKind::ConditionRejected,
+            message,
+            context: Vec::new(),
         }
     }
 
@@ -421,6 +441,7 @@ impl StepError {
             step: step.to_string(),
             kind: failure.kind,
             message: failure.message,
+            context: Vec::new(),
         }
     }
 
@@ -435,6 +456,7 @@ impl From<StepError> for ExecutorError {
             step: e.step,
             kind: e.kind,
             detail: e.message,
+            context: e.context,
         }
     }
 }
@@ -542,6 +564,34 @@ fn run_step<'a>(
             other => other.options().tolerant,
         };
 
+        if let Step::Retry(retry) = step {
+            return match run_retry_control(ctx, retry, here, top_next).await {
+                Ok((tail, retries_consumed)) => {
+                    ctx.steps_run += 1;
+                    ctx.observer
+                        .on_step(report(StepOutcome::Succeeded, None, retries_consumed));
+                    Ok(tail)
+                }
+                Err((error, retries_consumed)) if tolerant => {
+                    ctx.steps_run += 1;
+                    ctx.observer.on_step(report(
+                        StepOutcome::Tolerated,
+                        Some(error.message),
+                        retries_consumed,
+                    ));
+                    Ok(None)
+                }
+                Err((error, retries_consumed)) => {
+                    ctx.observer.on_step(report(
+                        StepOutcome::Failed,
+                        Some(error.message.clone()),
+                        retries_consumed,
+                    ));
+                    Err(error)
+                }
+            };
+        }
+
         let mut attempt: u32 = 0;
         loop {
             match run_step_once(ctx, step, here, top_next).await {
@@ -575,6 +625,85 @@ fn run_step<'a>(
             }
         }
     })
+}
+
+async fn run_retry_control(
+    ctx: &mut ExecCtx<'_>,
+    retry: &camera_config::index::RetryStep,
+    here: &str,
+    top_next: u32,
+) -> Result<(RefinedTail, u32), (StepError, u32)> {
+    let mut retries_consumed = 0;
+    loop {
+        match walk_steps(ctx, &retry.steps, &format!("{here}.steps"), top_next).await {
+            Ok(tail) => return Ok((tail, retries_consumed)),
+            Err(mut body_error) => {
+                let selected = match retry.when_failure {
+                    camera_config::index::RetryFailureKind::DeadlineExceeded => {
+                        ExecutorStepFailureKind::DeadlineExceeded
+                    }
+                    camera_config::index::RetryFailureKind::ConditionRejected => {
+                        ExecutorStepFailureKind::ConditionRejected
+                    }
+                    camera_config::index::RetryFailureKind::Other => ExecutorStepFailureKind::Other,
+                };
+                if body_error.kind != selected {
+                    return Err((body_error, retries_consumed));
+                }
+
+                if let Err(error) = walk_steps(
+                    ctx,
+                    &retry.on_failure,
+                    &format!("{here}.onFailure"),
+                    top_next,
+                )
+                .await
+                {
+                    return Err((error, retries_consumed));
+                }
+
+                let should_retry = match ctx.scope.get(&retry.retry_when.field) {
+                    Some(actual) => {
+                        predicate_holds(actual, retry.retry_when.op, &retry.retry_when.value)
+                    }
+                    None => {
+                        return Err((
+                            StepError::other(
+                                here,
+                                format!(
+                                    "retryWhen field '{}' unbound in scope",
+                                    retry.retry_when.field
+                                ),
+                            ),
+                            retries_consumed,
+                        ));
+                    }
+                };
+
+                let attempts_used = retries_consumed + 1;
+                if !should_retry || attempts_used >= retry.max_attempts {
+                    body_error.context = retry
+                        .failure_context
+                        .iter()
+                        .filter_map(|key| {
+                            ctx.scope.get(key).map(|value| KeyValue {
+                                key: key.clone(),
+                                value: value.clone(),
+                            })
+                        })
+                        .collect();
+                    return Err((body_error, retries_consumed));
+                }
+
+                if retry.retry_delay_ms > 0 {
+                    if let Err(error) = ctx.transport.sleep(retry.retry_delay_ms).await {
+                        return Err((StepError::transport(here, error), retries_consumed));
+                    }
+                }
+                retries_consumed += 1;
+            }
+        }
+    }
 }
 
 /// The GATT UUID a verb addresses, for telemetry.
@@ -679,11 +808,9 @@ async fn run_step_once(
             } else {
                 DEFAULT_OP_TIMEOUT_MS
             };
-            deadline(ctx.transport, budget, "subscribe", async {
-                ctx.transport.subscribe(s.gatt.clone(), s.mode.into()).await
-            })
-            .await
-            .map_err(op_err)?;
+            ensure_subscribed(ctx, &s.gatt, s.mode, budget)
+                .await
+                .map_err(op_err)?;
             Ok(None)
         }
         Step::BleNotify(s) => {
@@ -814,6 +941,7 @@ async fn run_step_once(
             let branch_path = format!("{here}.{}", if holds { "then" } else { "else" });
             walk_steps(ctx, branch, &branch_path, top_next).await
         }
+        Step::Retry(_) => unreachable!("retry is handled by run_step"),
     }
 }
 
@@ -821,17 +949,36 @@ async fn run_step_once(
 // Notify + await loops
 // ---------------------------------------------------------------------------
 
+async fn ensure_subscribed(
+    ctx: &mut ExecCtx<'_>,
+    gatt: &str,
+    mode: camera_config::index::CccdMode,
+    timeout_ms: u32,
+) -> Result<(), OperationFailure> {
+    let key = (
+        gatt.to_string(),
+        matches!(mode, camera_config::index::CccdMode::Indicate),
+    );
+    if ctx.subscriptions.contains(&key) {
+        return Ok(());
+    }
+    deadline(ctx.transport, timeout_ms, "subscribe", async {
+        ctx.transport.subscribe(gatt.to_string(), mode.into()).await
+    })
+    .await?;
+    ctx.subscriptions.insert(key);
+    Ok(())
+}
+
 /// `bleNotify` (§11.8): CCCD-enable, then consume the notification stream
 /// until a payload satisfies `until` or the wall-clock budget lapses. A
 /// non-matching payload keeps the wait alive (the app dispatcher's semantics;
 /// the deterministic walker fails on it instead).
 async fn run_notify(ctx: &mut ExecCtx<'_>, s: &BleNotifyStep, here: &str) -> Result<(), StepError> {
     let err = |message: String| StepError::other(here, message);
-    deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "subscribe", async {
-        ctx.transport.subscribe(s.gatt.clone(), s.mode.into()).await
-    })
-    .await
-    .map_err(|failure| StepError::operation(here, failure))?;
+    ensure_subscribed(ctx, &s.gatt, s.mode, DEFAULT_OP_TIMEOUT_MS)
+        .await
+        .map_err(|failure| StepError::operation(here, failure))?;
 
     let mut budget = ctx.transport.sleep(s.timeout_ms).fuse();
     let mut observations: Vec<String> = Vec::new();
@@ -891,11 +1038,9 @@ async fn run_await_until(
             if !s.on_each.is_empty() {
                 return Err(err("onEach is unsupported for a notify source".into()));
             }
-            deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "subscribe", async {
-                ctx.transport.subscribe(gatt.clone(), (*mode).into()).await
-            })
-            .await
-            .map_err(|failure| StepError::operation(here, failure))?;
+            ensure_subscribed(ctx, gatt, *mode, DEFAULT_OP_TIMEOUT_MS)
+                .await
+                .map_err(|failure| StepError::operation(here, failure))?;
 
             let mut budget = ctx.transport.sleep(s.timeout_ms).fuse();
             let mut observations: Vec<String> = Vec::new();
@@ -935,6 +1080,9 @@ async fn run_await_until(
                 };
                 if satisfied {
                     return Ok(None);
+                }
+                if fail_when_holds(&ctx.scope, s) {
+                    return Err(condition_rejected_err(here, s));
                 }
             }
             Err(err(format!(
@@ -980,6 +1128,9 @@ async fn run_await_until(
                 if satisfied {
                     return Ok(tail);
                 }
+                if fail_when_holds(&ctx.scope, s) {
+                    return Err(condition_rejected_err(here, s));
+                }
                 // Not yet: act, then observe again after the poll interval.
                 if let Some(t) =
                     walk_steps(ctx, &s.on_each, &format!("{here}.onEach"), top_next).await?
@@ -1015,6 +1166,30 @@ async fn run_await_until(
             )))
         }
     }
+}
+
+fn fail_when_holds(scope: &BTreeMap<String, String>, s: &BleAwaitUntilStep) -> bool {
+    s.fail_when.as_ref().is_some_and(|predicate| {
+        scope
+            .get(&predicate.field)
+            .is_some_and(|actual| predicate_holds(actual, predicate.op, &predicate.value))
+    })
+}
+
+fn condition_rejected_err(here: &str, s: &BleAwaitUntilStep) -> StepError {
+    let predicate = s
+        .fail_when
+        .as_ref()
+        .expect("called only after failWhen matched");
+    StepError::condition_rejected(
+        here,
+        format!(
+            "`failWhen` matched ({} {} {})",
+            predicate.field,
+            predicate.op.as_token(),
+            predicate.value
+        ),
+    )
 }
 
 fn await_timeout_err(here: &str, s: &BleAwaitUntilStep, observations: &[String]) -> StepError {
@@ -1329,8 +1504,9 @@ fn summarize_observations(observations: &[String]) -> String {
 mod tests {
     use super::*;
     use camera_config::index::{
-        BleAwaitDisconnectStep, BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep,
-        Predicate, StepOptions,
+        AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleReadStep, BleRequestMtuStep,
+        BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate, RetryFailureKind, RetryStep,
+        StepOptions,
     };
     use std::collections::VecDeque;
     use std::future::Future;
@@ -1365,6 +1541,7 @@ mod tests {
         /// lapse). Both are the degenerate ends a real clock interpolates.
         sleeps_fire: bool,
         sleep_log: Arc<Mutex<Vec<u32>>>,
+        subscribe_log: Arc<Mutex<Vec<String>>>,
         dropped_inflight: Arc<AtomicBool>,
     }
 
@@ -1410,9 +1587,10 @@ mod tests {
         }
         async fn subscribe(
             &self,
-            _characteristic: String,
+            characteristic: String,
             _mode: crate::CccdMode,
         ) -> Result<(), TransportError> {
+            self.subscribe_log.lock().unwrap().push(characteristic);
             Ok(())
         }
         async fn next_notification(
@@ -1463,6 +1641,7 @@ mod tests {
             scope: BTreeMap::new(),
             encodings: BTreeMap::new(),
             runtime_params: BTreeMap::new(),
+            subscriptions: BTreeSet::new(),
             steps_run: 0,
             refine: None,
         }
@@ -1475,6 +1654,54 @@ mod tests {
             capture_as: capture_as.into(),
             transform: vec![],
             opts,
+        })
+    }
+
+    fn rejection_await() -> Step {
+        Step::BleAwaitUntil(BleAwaitUntilStep {
+            source: AwaitSource::Notify {
+                gatt: "APSTATE".into(),
+                mode: CccdMode::Notify,
+                seed_read: true,
+            },
+            capture: vec![NotifyCapture {
+                at: 0,
+                length: Some(2),
+                transform: vec![],
+                encoding: Encoding::U16Le,
+                name: "apState".into(),
+            }],
+            capture_as: None,
+            until: Predicate {
+                field: "apState".into(),
+                op: PredicateOp::Eq,
+                value: "32769".into(),
+            },
+            fail_when: Some(Predicate {
+                field: "apState".into(),
+                op: PredicateOp::Eq,
+                value: "32768".into(),
+            }),
+            on_each: vec![],
+            timeout_ms: 20_000,
+            interval_ms: 0,
+            opts: StepOptions::default(),
+        })
+    }
+
+    fn condition_retry(steps: Vec<Step>, on_failure: Vec<Step>) -> Step {
+        Step::Retry(RetryStep {
+            steps,
+            when_failure: RetryFailureKind::ConditionRejected,
+            on_failure,
+            retry_when: Predicate {
+                field: "stateErrorDetails".into(),
+                op: PredicateOp::Eq,
+                value: "2".into(),
+            },
+            max_attempts: 2,
+            retry_delay_ms: 200,
+            failure_context: vec!["apState".into(), "stateErrorDetails".into()],
         })
     }
 
@@ -1776,5 +2003,125 @@ mod tests {
         let mut tolerant_ctx = ctx(&transport, &observer);
         block_on(walk_plan(&mut tolerant_ctx, vec![step(true)]))
             .expect("tolerant if treats unbound as false");
+    }
+
+    #[test]
+    fn condition_retry_sleeps_once_reuses_subscription_and_reports_retry() {
+        let transport = MockTransport {
+            reads: Mutex::new(VecDeque::from([
+                Io::Value(vec![0x00, 0x80]),
+                Io::Value(vec![0x02, 0x00]),
+                Io::Value(vec![0x01, 0x80]),
+            ])),
+            sleeps_fire: true,
+            ..Default::default()
+        };
+        let sleep_log = transport.sleep_log.clone();
+        let subscribe_log = transport.subscribe_log.clone();
+        let (transport, recorder, observer) = harness(transport);
+        let mut ctx = ctx(&transport, &observer);
+        let retry = condition_retry(
+            vec![rejection_await()],
+            vec![Step::BleRead(BleReadStep {
+                gatt: "DETAILS".into(),
+                encoding: Encoding::U16Le,
+                capture_as: "stateErrorDetails".into(),
+                transform: vec![],
+                opts: StepOptions::default(),
+            })],
+        );
+
+        block_on(walk_plan(&mut ctx, vec![retry])).expect("second seed succeeds");
+        assert_eq!(subscribe_log.lock().unwrap().as_slice(), ["APSTATE"]);
+        assert_eq!(
+            sleep_log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|ms| **ms == 200)
+                .count(),
+            1,
+        );
+        let reports = recorder.0.lock().unwrap();
+        let outer = reports
+            .iter()
+            .rev()
+            .find(|report| report.verb == "retry")
+            .expect("outer retry report");
+        assert_eq!(outer.outcome, StepOutcome::Succeeded);
+        assert_eq!(outer.attempts, 1, "one retry was consumed");
+    }
+
+    #[test]
+    fn condition_retry_does_not_select_transport_or_timeout_failures() {
+        for (io, expected_kind) in [
+            (Io::Fail("read failed"), ExecutorStepFailureKind::Other),
+            (
+                Io::Timeout("read timed out"),
+                ExecutorStepFailureKind::DeadlineExceeded,
+            ),
+        ] {
+            let transport = MockTransport {
+                reads: Mutex::new(VecDeque::from([io])),
+                sleeps_fire: false,
+                ..Default::default()
+            };
+            let sleep_log = transport.sleep_log.clone();
+            let (transport, _recorder, observer) = harness(transport);
+            let mut ctx = ctx(&transport, &observer);
+            let error = block_on(walk_plan(
+                &mut ctx,
+                vec![condition_retry(
+                    vec![read_step("value", StepOptions::default())],
+                    vec![read_step("diagnostic", StepOptions::default())],
+                )],
+            ))
+            .expect_err("unselected failure escapes");
+            assert_eq!(error.kind, expected_kind);
+            assert!(!ctx.scope.contains_key("diagnostic"));
+            assert_eq!(
+                sleep_log
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|ms| **ms == 200)
+                    .count(),
+                0,
+            );
+        }
+    }
+
+    #[test]
+    fn condition_retry_does_not_mask_diagnostic_read_failure() {
+        let transport = MockTransport {
+            reads: Mutex::new(VecDeque::from([
+                Io::Value(vec![0x00, 0x80]),
+                Io::Fail("details unavailable"),
+            ])),
+            sleeps_fire: false,
+            ..Default::default()
+        };
+        let sleep_log = transport.sleep_log.clone();
+        let (transport, _recorder, observer) = harness(transport);
+        let mut ctx = ctx(&transport, &observer);
+        let error = block_on(walk_plan(
+            &mut ctx,
+            vec![condition_retry(
+                vec![rejection_await()],
+                vec![read_step("stateErrorDetails", StepOptions::default())],
+            )],
+        ))
+        .expect_err("diagnostic failure escapes");
+        assert_eq!(error.kind, ExecutorStepFailureKind::Other);
+        assert!(error.message.contains("details unavailable"));
+        assert_eq!(
+            sleep_log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|ms| **ms == 200)
+                .count(),
+            0,
+        );
     }
 }
