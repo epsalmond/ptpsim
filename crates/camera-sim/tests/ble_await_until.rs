@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use camera_config::index::{ResolvedManufacturerIndex, Step};
+use camera_config::index::{ResolvedManufacturerIndex, RetryFailureKind, Step};
 use camera_sim::{walk_establishment, BleEvent, BleResponder};
 
 /// A synthetic single-family index whose establishment is `steps`. `gatt` maps
@@ -194,6 +194,33 @@ fn seeded_notify_reads_once_then_waits_for_a_notification() {
         vec![&[0x01][..]],
         "onEach runs once after the unsatisfying seed"
     );
+}
+
+#[test]
+fn read_source_still_rejects_from_fail_when() {
+    let idx = index_with_steps(
+        r#"          - bleAwaitUntil:
+              source: { read: launchState }
+              capture: { at: 0, length: 1, encoding: u8, name: wifiStatus }
+              until: { wifiStatus: { eq: 1 } }
+              failWhen: { wifiStatus: { eq: 0 } }
+              timeoutMs: 5000
+"#,
+    );
+    let mut responder = BleResponder::new([CC09.to_string()]).serve_read(CC09, &[0x00]);
+
+    let error = match walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("ordinary read observations must remain eligible for failWhen"),
+    };
+
+    assert_eq!(error.kind, RetryFailureKind::ConditionRejected);
 }
 
 #[test]

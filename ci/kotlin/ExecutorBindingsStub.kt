@@ -29,6 +29,12 @@ class ExecutorBindingsStub : BleExecutorTransport {
 
     override suspend fun write(characteristic: String, value: ByteArray) = Unit
 
+    override suspend fun writeWithNotificationFence(
+        characteristic: String,
+        value: ByteArray,
+        notificationCharacteristic: String,
+    ) = Unit
+
     override suspend fun subscribe(characteristic: String, mode: CccdMode) = Unit
 
     override suspend fun nextNotification(characteristic: String): ByteArray = byteArrayOf()

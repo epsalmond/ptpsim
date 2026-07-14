@@ -981,6 +981,22 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         Some(&"98934B2C-756C-4632-AA2F-DCBA1BFEC824"),
         "the IMAGE_TRANSFER_SETTING prep write must come first (#102)"
     );
+    let Step::BleAwaitUntil {
+        source,
+        fail_when,
+        capture,
+        ..
+    } = &plan.steps[2]
+    else {
+        panic!("plan reads AP state before the command")
+    };
+    assert!(matches!(source, AwaitSource::Read { .. }));
+    assert!(fail_when.is_none());
+    assert!(capture
+        .iter()
+        .any(|capture| capture.name == "apStateBaseline"));
+    assert!(matches!(plan.steps[3], Step::BleSubscribe { .. }));
+
     let retry = plan
         .steps
         .iter()
@@ -1013,14 +1029,23 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
                 && capture_as == "stateErrorDetails"
     ));
 
-    let (gatt, value) = steps
+    let (gatt, value, notification_fence) = steps
         .iter()
         .find_map(|step| match step {
-            Step::BleWrite { gatt, value, .. } => Some((gatt, value)),
+            Step::BleWrite {
+                gatt,
+                value,
+                notification_fence,
+                ..
+            } => Some((gatt, value, notification_fence)),
             _ => None,
         })
         .expect("retry body writes the function-launch request");
     assert_eq!(gatt, "600655E6-3637-42F1-8FB2-44EFC5C63B13");
+    assert_eq!(
+        notification_fence.as_deref(),
+        Some("A68E3F66-0FCC-4395-8D4C-AA980B5877FA")
+    );
     match value {
         StepValue::Runtime { slot, encoding, .. } => {
             assert_eq!(slot, "launchMode");
@@ -1029,9 +1054,9 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         other => panic!("expected Runtime launch value, got {other:?}"),
     }
 
-    // The await step subscribes to apState and issues exactly one seed read
-    // (#202), closing the already-launched hole without a read-poll loop.
-    let until_field = steps
+    // The post-command await consumes notifications only, so callback transports
+    // cannot misclassify a racing notification as the baseline read response.
+    let until = steps
         .iter()
         .find_map(|s| match s {
             Step::BleAwaitUntil {
@@ -1047,21 +1072,22 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
                         gatt, seed_read, ..
                     } => {
                         assert_eq!(gatt, "A68E3F66-0FCC-4395-8D4C-AA980B5877FA");
-                        assert!(*seed_read, "apState notify carries one seed read");
+                        assert!(!*seed_read, "post-command await is notification-only");
                     }
-                    other => panic!("expected seeded apState notify source, got {other:?}"),
+                    other => panic!("expected apState notify source, got {other:?}"),
                 }
                 assert_eq!(*interval_ms, 0, "notify sources do not carry poll cadence");
                 assert!(capture.iter().any(|c| c.name == "apState"));
                 let fail_when = fail_when.as_ref().expect("NotLaunched is terminal");
-                assert_eq!(fail_when.field, "apState");
-                assert_eq!(fail_when.value, "32768");
-                Some(until.field.clone())
+                assert_eq!(fail_when.field, "apStateRaw");
+                assert_eq!(fail_when.value, "0080");
+                Some(until.clone())
             }
             _ => None,
         })
         .expect("ble-establish-wifi-ap awaits apState");
-    assert_eq!(until_field, "apState");
+    assert_eq!(until.field, "apStateRaw");
+    assert_eq!(until.value, "0180");
 
     // The credential reads bind ssid + passphrase — the consumer contract.
     // Both decode as utf8-cstring so trailing NUL padding never reaches the

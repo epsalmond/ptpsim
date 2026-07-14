@@ -1364,9 +1364,32 @@ fn fuji_condition_retry_parses_with_resolved_diagnostic_gatt() {
             if read.gatt == "1587B102-0B6D-4B63-9226-66FCC6D17387"
     ));
     assert!(matches!(
+        &plan.steps[2],
+        Step::BleAwaitUntil(await_step)
+            if matches!(await_step.source, camera_config::index::AwaitSource::Read { .. })
+                && await_step.fail_when.is_none()
+                && await_step.until.field == "apStateBaseline"
+                && await_step.capture.iter().any(|capture| capture.name == "apStateBaseline")
+    ));
+    assert!(matches!(&plan.steps[3], Step::BleSubscribe(_)));
+    assert!(matches!(
         &retry.steps[1],
         Step::BleAwaitUntil(await_step)
-            if await_step.fail_when.as_ref().is_some_and(|p| p.field == "apState" && p.value == "32768")
+            if matches!(
+                await_step.source,
+                camera_config::index::AwaitSource::Notify { seed_read: false, .. }
+            ) && await_step
+                .fail_when
+                .as_ref()
+                .is_some_and(|p| p.field == "apStateRaw" && p.value == "0080")
+                && await_step.until.field == "apStateRaw"
+                && await_step.until.value == "0180"
+    ));
+    assert!(matches!(
+        &retry.steps[0],
+        Step::BleWrite(write)
+            if write.notification_fence.as_deref()
+                == Some("A68E3F66-0FCC-4395-8D4C-AA980B5877FA")
     ));
 
     // Step's serializer is intentionally not the authored one-entry mapping,
@@ -1385,11 +1408,79 @@ fn fuji_condition_retry_parses_with_resolved_diagnostic_gatt() {
 }
 
 #[test]
+fn notification_fence_requires_a_declared_gatt_characteristic() {
+    let yaml = data("fuji/index.yaml").replacen(
+        "notificationFence: apState",
+        "notificationFence: missingFenceCharacteristic",
+        1,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        error.to_string().contains("notificationFence")
+            && error.to_string().contains("missingFenceCharacteristic"),
+        "got: {error}"
+    );
+}
+
+#[test]
 fn retry_validation_rejects_zero_max_attempts() {
     let yaml = data("fuji/index.yaml").replacen("maxAttempts: 2", "maxAttempts: 0", 1);
     let error = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
     assert!(
         error.to_string().contains("maxAttempts must be > 0"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn seeded_notify_rejects_fail_when_at_validation() {
+    let yaml = await_fixture(
+        r#"                source: { notify: { gatt: statusChar, seedRead: true } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                failWhen: { status: { eq: 0 } }
+                timeoutMs: 5000"#,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("notify seedRead cannot be combined with failWhen"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn seeded_notify_rejection_is_validated_inside_ble_actions() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        statusChar: "0000CC09-0000-1000-8000-00805F9B34FB"
+      advert: { manufacturerCompanyId: 1 }
+      actions:
+        test-action:
+          steps:
+            - bleAwaitUntil:
+                source: { notify: { gatt: statusChar, seedRead: true } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                failWhen: { status: { eq: 0 } }
+                timeoutMs: 5000
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let error = ResolvedManufacturerIndex::from_yaml(yaml).unwrap_err();
+    assert!(
+        error.to_string().contains("actions.test-action.steps[0]")
+            && error
+                .to_string()
+                .contains("notify seedRead cannot be combined with failWhen"),
         "got: {error}",
     );
 }

@@ -39,8 +39,17 @@ pub enum BleEvent {
     RequestMtu { requested: u16, negotiated: u16 },
     DiscoverServices,
     Read { uuid: String },
+    NotificationFence { uuid: String },
     Write { uuid: String, value: Vec<u8> },
     Subscribe { uuid: String, mode: CccdMode },
+}
+
+#[derive(Debug, Clone)]
+struct ScriptedNotification {
+    payload: Vec<u8>,
+    /// `None` means already buffered before the next fenced write. A tagged
+    /// payload becomes eligible after the named write reaches that ordinal.
+    after_fenced_write: Option<(String, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +90,8 @@ pub struct BleResponder {
     /// read pops the next, the last value is sticky. Checked before
     /// `read_values`.
     read_sequences: BTreeMap<String, Vec<Vec<u8>>>,
-    notify_queues: BTreeMap<String, Vec<Vec<u8>>>,
+    notify_queues: BTreeMap<String, Vec<ScriptedNotification>>,
+    fenced_write_counts: BTreeMap<String, u32>,
     mtu_cap: u16,
     connected: bool,
     services_discovered: bool,
@@ -107,6 +117,7 @@ impl BleResponder {
             read_values: BTreeMap::new(),
             read_sequences: BTreeMap::new(),
             notify_queues: BTreeMap::new(),
+            fenced_write_counts: BTreeMap::new(),
             mtu_cap: 247,
             connected: false,
             services_discovered: false,
@@ -166,13 +177,39 @@ impl BleResponder {
         self
     }
 
-    /// Queue a notification payload on `uuid` (FIFO; one per `bleNotify`).
+    /// Buffer a notification payload immediately. A later fenced write for
+    /// this characteristic discards it as pre-command state.
     pub fn queue_notification(mut self, uuid: &str, payload: &[u8]) -> Self {
         self.catalog.insert(uuid.to_string());
         self.notify_queues
             .entry(uuid.to_string())
             .or_default()
-            .push(payload.to_vec());
+            .push(ScriptedNotification {
+                payload: payload.to_vec(),
+                after_fenced_write: None,
+            });
+        self
+    }
+
+    /// Script a notification caused by the `ordinal`th fenced write to
+    /// `write_uuid`. It is not buffered until that write occurs, which lets the
+    /// deterministic oracle distinguish stale queue entries from causal ones.
+    pub fn queue_notification_after_fenced_write(
+        mut self,
+        uuid: &str,
+        write_uuid: &str,
+        ordinal: u32,
+        payload: &[u8],
+    ) -> Self {
+        self.catalog.insert(uuid.to_string());
+        self.catalog.insert(write_uuid.to_string());
+        self.notify_queues
+            .entry(uuid.to_string())
+            .or_default()
+            .push(ScriptedNotification {
+                payload: payload.to_vec(),
+                after_fenced_write: Some((write_uuid.to_string(), ordinal)),
+            });
         self
     }
 
@@ -287,6 +324,41 @@ impl BleResponder {
         Ok(())
     }
 
+    /// Atomically discard the notification characteristic's buffered prefix
+    /// and issue the write. Scripted notifications caused by this write become
+    /// eligible only after the write is recorded.
+    pub fn write_with_notification_fence(
+        &mut self,
+        uuid: &str,
+        value: &[u8],
+        notification_uuid: &str,
+    ) -> Result<(), BleError> {
+        // Validate both characteristics before mutating the queue or ordinal.
+        // `write` has no remaining fallible work after this preflight.
+        self.require_char(uuid)?;
+        self.require_char(notification_uuid)?;
+        let next_ordinal = self.fenced_write_counts.get(uuid).copied().unwrap_or(0) + 1;
+        let fenced_write_counts = &self.fenced_write_counts;
+        if let Some(queue) = self.notify_queues.get_mut(notification_uuid) {
+            queue.retain(|entry| {
+                entry
+                    .after_fenced_write
+                    .as_ref()
+                    .is_some_and(|(write_uuid, ordinal)| {
+                        !fenced_write_counts
+                            .get(write_uuid)
+                            .is_some_and(|count| count >= ordinal)
+                    })
+            });
+        }
+        self.log.push(BleEvent::NotificationFence {
+            uuid: notification_uuid.to_string(),
+        });
+        self.fenced_write_counts
+            .insert(uuid.to_string(), next_ordinal);
+        self.write(uuid, value)
+    }
+
     /// CCCD descriptor write — success IS the ack (§11.8 `bleSubscribe`).
     pub fn subscribe(&mut self, uuid: &str, mode: CccdMode) -> Result<(), BleError> {
         self.require_char(uuid)?;
@@ -300,11 +372,14 @@ impl BleResponder {
     /// Pop the next queued notification payload for `uuid`, if any.
     pub fn take_notification(&mut self, uuid: &str) -> Option<Vec<u8>> {
         let queue = self.notify_queues.get_mut(uuid)?;
-        if queue.is_empty() {
-            None
-        } else {
-            Some(queue.remove(0))
-        }
+        let eligible = match &queue.first()?.after_fenced_write {
+            None => true,
+            Some((write_uuid, ordinal)) => self
+                .fenced_write_counts
+                .get(write_uuid)
+                .is_some_and(|count| count >= ordinal),
+        };
+        eligible.then(|| queue.remove(0).payload)
     }
 
     /// Every interaction, in order.
@@ -487,9 +562,14 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
         }
         Step::BleWrite(s) => {
             let bytes = resolve_value(ctx, &s.value).map_err(err)?;
-            ctx.responder
-                .write(&s.gatt, &bytes)
-                .map_err(|e| err(e.to_string()))
+            match &s.notification_fence {
+                Some(notification_uuid) => {
+                    ctx.responder
+                        .write_with_notification_fence(&s.gatt, &bytes, notification_uuid)
+                }
+                None => ctx.responder.write(&s.gatt, &bytes),
+            }
+            .map_err(|e| err(e.to_string()))
         }
         Step::BleSubscribe(s) => {
             ensure_subscribed(ctx, &s.gatt, s.mode).map_err(|e| err(e.to_string()))

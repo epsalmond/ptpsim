@@ -178,6 +178,18 @@ impl camera_protocol_ffi::BleExecutorTransport for ResponderTransport {
             .write(&characteristic, &value)
             .map_err(transport_err)
     }
+    async fn write_with_notification_fence(
+        &self,
+        characteristic: String,
+        value: Vec<u8>,
+        notification_characteristic: String,
+    ) -> Result<(), TransportError> {
+        self.responder
+            .lock()
+            .unwrap()
+            .write_with_notification_fence(&characteristic, &value, &notification_characteristic)
+            .map_err(transport_err)
+    }
     async fn subscribe(
         &self,
         characteristic: String,
@@ -246,6 +258,14 @@ impl camera_protocol_ffi::BleExecutorTransport for ClockTestTransport {
         }
     }
     async fn write(&self, _characteristic: String, _value: Vec<u8>) -> Result<(), TransportError> {
+        Ok(())
+    }
+    async fn write_with_notification_fence(
+        &self,
+        _characteristic: String,
+        _value: Vec<u8>,
+        _notification_characteristic: String,
+    ) -> Result<(), TransportError> {
         Ok(())
     }
     async fn subscribe(
@@ -811,7 +831,7 @@ fn missing_protected_serial_read_is_tolerated_not_fatal() {
 }
 
 // ---------------------------------------------------------------------------
-// ble-establish-wifi-ap (bleAwaitUntil notify source + seed read)
+// ble-establish-wifi-ap (preflight read + notification-only await)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -831,21 +851,23 @@ fn wifi_ap_plan_awaits_launch_and_binds_credentials() {
         ssid_uuid.clone(),
         pass_uuid.clone(),
     ])
-    // Seeded-notify source: one Launching (0x8002) seed read, then the
-    // terminal Launched (0x8001) notification, LE on the wire.
-    .serve_read(&ap_state, &[0x02, 0x80])
-    .queue_notification(&ap_state, &[0x01, 0x80])
+    // The pre-transition NotLaunched baseline is read before the command.
+    // Launching and terminal Launched arrive through the later notification-only await.
+    .serve_read(&ap_state, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x02, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x01, 0x80])
     .serve_read(&ssid_uuid, b"GFX100II-1234")
     .serve_read(&pass_uuid, b"12345678");
 
     let transport = Arc::new(ResponderTransport::new(responder));
     let recorder = Arc::new(Recorder::default());
+    let activities = Arc::new(ActivityRecorder::default());
     let outcome = block_on(run_establishment(
         store,
         "gfx100ii:app".to_string(),
         transport.clone(),
         recorder,
-        Arc::new(ActivityRecorder::default()),
+        activities.clone(),
         vec![],
         vec![],
         // 0x0004 RemoteShooting, bound as the u16-le launch value.
@@ -870,6 +892,218 @@ fn wifi_ap_plan_awaits_launch_and_binds_credentials() {
         1,
         "launch request written exactly once"
     );
+    let preflight_read = log
+        .iter()
+        .position(|event| matches!(event, BleEvent::Read { uuid } if *uuid == ap_state))
+        .expect("pre-command AP-state read");
+    let subscription = log
+        .iter()
+        .position(|event| matches!(event, BleEvent::Subscribe { uuid, .. } if *uuid == ap_state))
+        .expect("AP-state subscription");
+    let launch_write = log
+        .iter()
+        .position(|event| matches!(event, BleEvent::Write { uuid, .. } if *uuid == launch))
+        .expect("function-launch write");
+    assert!(preflight_read < subscription && subscription < launch_write);
+    assert!(activities.0.lock().unwrap().iter().all(|event| !matches!(
+        event,
+        ConnectionActivityEvent::Retrying { id, .. } if id == "camera.ap.launch"
+    )));
+}
+
+#[test]
+fn wifi_ap_fence_discards_stale_notification_before_first_attempt() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let launch = uuid(ble, "functionLaunchRequest");
+    let image_setting = uuid(ble, "imageTransferSetting");
+    let ap_state = uuid(ble, "apState");
+    let ssid = uuid(ble, "cameraSSIDNameString");
+    let passphrase = uuid(ble, "cameraWiFiPassphraseString");
+    let responder = BleResponder::new([
+        launch.clone(),
+        image_setting,
+        ap_state.clone(),
+        ssid.clone(),
+        passphrase.clone(),
+    ])
+    .serve_read(&ap_state, &[0x00, 0x80])
+    .queue_notification(&ap_state, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x01, 0x80])
+    .serve_read(&ssid, b"GFX100II-1234")
+    .serve_read(&passphrase, b"12345678");
+    let transport = Arc::new(ResponderTransport::new(responder));
+
+    let outcome = block_on(run_establishment(
+        store,
+        "gfx100ii:app".into(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect("the stale pre-command refusal is fenced before the causal success");
+    assert_eq!(scope_get(&outcome.scope, "apState"), Some("32769"));
+
+    let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
+    let log = transport.into_log();
+    let fence = log
+        .iter()
+        .position(
+            |event| matches!(event, BleEvent::NotificationFence { uuid } if uuid == &ap_state),
+        )
+        .expect("AP-state fence");
+    assert!(matches!(
+        log.get(fence + 1),
+        Some(BleEvent::Write { uuid, .. }) if uuid == &launch
+    ));
+}
+
+#[test]
+fn wifi_ap_malformed_notification_cannot_reuse_the_preflight_state() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let launch = uuid(ble, "functionLaunchRequest");
+    let ap_state = uuid(ble, "apState");
+    let responder = BleResponder::new([launch.clone(), ap_state.clone()])
+        .serve_read(&ap_state, &[0x00, 0x80])
+        .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00]);
+
+    let error = block_on(run_establishment(
+        store,
+        "gfx100ii:app".into(),
+        Arc::new(ResponderTransport::new(responder)),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect_err("a malformed notification cannot satisfy or reject from stale baseline scope");
+
+    assert!(matches!(
+        error,
+        ExecutorError::StepFailed {
+            kind: ExecutorStepFailureKind::DeadlineExceeded,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn wifi_ap_malformed_retry_notification_cannot_reuse_the_refusal() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let launch = uuid(ble, "functionLaunchRequest");
+    let image_setting = uuid(ble, "imageTransferSetting");
+    let ap_state = uuid(ble, "apState");
+    let details = uuid(ble, "stateErrorDetails");
+    let responder = BleResponder::new([
+        launch.clone(),
+        image_setting,
+        ap_state.clone(),
+        details.clone(),
+    ])
+    .serve_read(&ap_state, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 2, &[0x00])
+    .serve_read(&details, &[0x02, 0x00]);
+
+    let error = block_on(run_establishment(
+        store,
+        "gfx100ii:app".into(),
+        Arc::new(ResponderTransport::new(responder)),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect_err("a malformed retry notification cannot reuse the prior refusal");
+
+    assert!(matches!(
+        error,
+        ExecutorError::StepFailed {
+            kind: ExecutorStepFailureKind::DeadlineExceeded,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn wifi_ap_retry_fence_discards_notification_left_by_prior_attempt() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let launch = uuid(ble, "functionLaunchRequest");
+    let image_setting = uuid(ble, "imageTransferSetting");
+    let ap_state = uuid(ble, "apState");
+    let details = uuid(ble, "stateErrorDetails");
+    let responder = BleResponder::new([
+        launch.clone(),
+        image_setting,
+        ap_state.clone(),
+        details.clone(),
+    ])
+    .serve_read(&ap_state, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x01, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 2, &[0x00, 0x80])
+    .serve_read(&details, &[0x02, 0x00]);
+    let transport = Arc::new(ResponderTransport::new(responder));
+
+    let error = block_on(run_establishment(
+        store,
+        "gfx100ii:app".into(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect_err("attempt-1 launched residue cannot satisfy attempt 2");
+    assert!(matches!(
+        error,
+        ExecutorError::StepFailed {
+            kind: ExecutorStepFailureKind::ConditionRejected,
+            ..
+        }
+    ));
+
+    let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
+    let log = transport.into_log();
+    assert_eq!(
+        log.iter()
+            .filter(
+                |event| matches!(event, BleEvent::NotificationFence { uuid } if uuid == &ap_state)
+            )
+            .count(),
+        2
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|event| matches!(event, BleEvent::Write { uuid, .. } if uuid == &launch))
+            .count(),
+        2
+    );
 }
 
 #[test]
@@ -884,14 +1118,16 @@ fn wifi_ap_retry_success_preserves_the_rejected_snapshot() {
     let ssid = uuid(ble, "cameraSSIDNameString");
     let passphrase = uuid(ble, "cameraWiFiPassphraseString");
     let responder = BleResponder::new([
-        launch,
+        launch.clone(),
         image_setting,
         ap_state.clone(),
         details.clone(),
         ssid.clone(),
         passphrase.clone(),
     ])
-    .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80], vec![0x01, 0x80]])
+    .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80]])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 2, &[0x01, 0x80])
     .serve_read(&details, &[0x02, 0x00])
     .serve_read(&ssid, b"GFX100II-1234")
     .serve_read(&passphrase, b"12345678");
@@ -917,12 +1153,12 @@ fn wifi_ap_retry_success_preserves_the_rejected_snapshot() {
     let events = activities.0.lock().unwrap();
     assert!(events.contains(&ConnectionActivityEvent::Retrying {
         id: "camera.ap.launch".into(),
-        version: 1,
+        version: 2,
         retry: launch_refusal_retry(),
     }));
     assert!(events.contains(&ConnectionActivityEvent::Succeeded {
         id: "camera.ap.launch".into(),
-        version: 1,
+        version: 2,
         summary: ConnectionActivityTerminalSummary {
             retry_count: 1,
             last_retry: Some(launch_refusal_retry()),
@@ -939,9 +1175,16 @@ fn recovered_launch_snapshot_survives_a_later_activity_failure() {
     let image_setting = uuid(ble, "imageTransferSetting");
     let ap_state = uuid(ble, "apState");
     let details = uuid(ble, "stateErrorDetails");
-    let responder = BleResponder::new([launch, image_setting, ap_state.clone(), details.clone()])
-        .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80], vec![0x01, 0x80]])
-        .serve_read(&details, &[0x02, 0x00]);
+    let responder = BleResponder::new([
+        launch.clone(),
+        image_setting,
+        ap_state.clone(),
+        details.clone(),
+    ])
+    .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80]])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 2, &[0x01, 0x80])
+    .serve_read(&details, &[0x02, 0x00]);
     let activities = Arc::new(ActivityRecorder::default());
 
     let error = block_on(run_establishment(
@@ -969,7 +1212,7 @@ fn recovered_launch_snapshot_survives_a_later_activity_failure() {
     let events = activities.0.lock().unwrap();
     assert!(events.contains(&ConnectionActivityEvent::Succeeded {
         id: "camera.ap.launch".into(),
-        version: 1,
+        version: 2,
         summary: ConnectionActivityTerminalSummary {
             retry_count: 1,
             last_retry: Some(launch_refusal_retry()),
@@ -1001,7 +1244,9 @@ fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
         ap_state.clone(),
         details.clone(),
     ])
-    .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80], vec![0x00, 0x80]])
+    .serve_read_sequence(&ap_state, vec![vec![0x00, 0x80]])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00, 0x80])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 2, &[0x00, 0x80])
     .serve_read(&details, &[0x02, 0x00]);
     let transport = Arc::new(ResponderTransport::new(responder));
     let sleep_log = transport.sleep_log.clone();
@@ -1053,25 +1298,25 @@ fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
         vec![
             ConnectionActivityEvent::Started {
                 id: "camera.ap.prepare".into(),
-                version: 1,
+                version: 2,
             },
             ConnectionActivityEvent::Succeeded {
                 id: "camera.ap.prepare".into(),
-                version: 1,
+                version: 2,
                 summary: no_retry_summary(),
             },
             ConnectionActivityEvent::Started {
                 id: "camera.ap.launch".into(),
-                version: 1,
+                version: 2,
             },
             ConnectionActivityEvent::Retrying {
                 id: "camera.ap.launch".into(),
-                version: 1,
+                version: 2,
                 retry: launch_refusal_retry(),
             },
             ConnectionActivityEvent::Failed {
                 id: "camera.ap.launch".into(),
-                version: 1,
+                version: 2,
                 summary: ConnectionActivityTerminalSummary {
                     retry_count: 1,
                     last_retry: Some(launch_refusal_retry()),

@@ -370,6 +370,11 @@ pub struct BleReadStep {
 pub struct BleWriteStep {
     pub gatt: String,
     pub value: StepValue,
+    /// Optional subscribed characteristic whose already-buffered notification
+    /// prefix the transport atomically fences immediately before issuing this
+    /// write. Notifications caused by the write remain consumable.
+    #[serde(default)]
+    pub notification_fence: Option<String>,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }
@@ -540,6 +545,8 @@ pub struct BleAwaitUntilStep {
     pub until: Predicate,
     /// Optional terminal condition evaluated after `until`. A match fails the
     /// step immediately as `conditionRejected`; `until` takes precedence.
+    /// Invalid with a seeded notify source because callback transports cannot
+    /// reliably distinguish a read response from a racing notification.
     #[serde(default)]
     pub fail_when: Option<Predicate>,
     /// Steps run each iteration when `until` is NOT yet satisfied, before the
@@ -597,6 +604,7 @@ pub enum AwaitSource {
     /// Consume a characteristic's notification stream (CCCD enabled with
     /// `mode`). When `seed_read` is true, subscribe first, issue one read
     /// through the same capture/predicate path, then remain notification-only.
+    /// A seeded notify cannot declare `fail_when`.
     Notify {
         gatt: String,
         mode: CccdMode,

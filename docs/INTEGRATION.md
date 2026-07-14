@@ -350,7 +350,8 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 
 - `BleExecutorTransport` (a `with_foreign` async trait) — raw I/O only:
   `connect` / `awaitDisconnect` / `requestMtu` / `ensureServicesDiscovered` /
-  `read` / `write` / `subscribe` / `nextNotification` / `sleep`.
+  `read` / `write` / `writeWithNotificationFence` / `subscribe` /
+  `nextNotification` / `sleep`.
   `awaitDisconnect` resolves when the connected peer drops the link and may
   pend indefinitely — the executor races it against the step's manifest
   `timeoutMs`.
@@ -472,7 +473,12 @@ Two transport contracts carry the correctness load:
   lives in the executor — a payload arriving between subscribe and the first
   `nextNotification` call must not be lost. `nextNotification` may stay pending
   indefinitely; the executor owns every deadline (including a backstop on each
-  transport verb, so a silently-stalled transport cannot hang a walk).
+  transport verb, so a silently-stalled transport cannot hang a walk). A
+  `bleWrite.notificationFence` uses `writeWithNotificationFence`: atomically
+  discard that subscribed characteristic's already-buffered prefix immediately
+  before issuing the write. Notifications caused by the write remain buffered;
+  implementing this as an executor-side drain followed by a separate write is
+  invalid because a notification can race into the gap.
 - **The host clock.** `sleep(ms)` resolves after `ms` milliseconds of
   wall-clock time. The executor races I/O futures against it for timeouts and
   retry backoff, so the library carries no async runtime of its own.
@@ -514,11 +520,11 @@ retry loop and the same code handles all of them.
 | `bleRequestMtu` | request ATT MTU `mtu` before GATT traffic. If your platform has no request API (CoreBluetooth negotiates on its own), treat as a checkpoint: succeed when the negotiated MTU ≥ `mtu`. |
 | `bleDiscoverServices` | explicit service-discovery state transition. If your stack auto-discovers, complete when discovery has completed — don't re-trigger. Discovery timeout is your policy. |
 | `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13 — empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
-| `bleWrite` | resolve `value` → bytes (see StepValue table), write. |
+| `bleWrite` | resolve `value` → bytes (see StepValue table), write. Optional `notificationFence` names a subscribed GATT characteristic whose buffered prefix the transport atomically fences immediately before issuing this write; notifications caused by the write remain consumable. |
 | `bleWriteChunk` | frame and write one manifest-declared window from a runtime blob, using the captured chunk index, frame fields, size, and sentinel index. |
 | `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate — CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
 | `bleNotify` | subscribe (`mode` as above) AND wait for `until` (Any / Equals / Matches); bind whole payload via `captureAs` and/or extract fields via `capture` (window → transform chain → encoding → scope; a failing capture is skipped, not a step failure). |
-| `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same predicate, then remain notification-only. Each observation applies `capture`/`captureAs`; `until` wins, otherwise an optional matching `failWhen` fails immediately as `ConditionRejected`; if neither matches, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
+| `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same captures and predicates, then remain notification-only. `seedRead` cannot be combined with `failWhen`, because callback transports cannot reliably distinguish a read response from a racing notification; use an explicit pre-command read plus a notification-only rejection await. Each observation applies `capture`/`captureAs`; `until` wins, otherwise a matching `failWhen` fails immediately as `ConditionRejected`; if neither matches, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
 | `acquire` | run inner step (`from[0]` — `Vec<Step>` of length 1; uniffi 0.31 doesn't accept `Box<Step>` for recursive enums), bind result to `name`. |
 | `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. |
 | `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |

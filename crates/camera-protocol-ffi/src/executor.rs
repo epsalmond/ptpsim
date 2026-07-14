@@ -106,6 +106,16 @@ pub trait BleExecutorTransport: Send + Sync {
     async fn ensure_services_discovered(&self) -> Result<(), TransportError>;
     async fn read(&self, characteristic: String) -> Result<Vec<u8>, TransportError>;
     async fn write(&self, characteristic: String, value: Vec<u8>) -> Result<(), TransportError>;
+    /// Atomically fence the already-buffered prefix for
+    /// `notification_characteristic` immediately before issuing the write.
+    /// Notifications caused by this write must remain buffered and visible to
+    /// [`Self::next_notification`].
+    async fn write_with_notification_fence(
+        &self,
+        characteristic: String,
+        value: Vec<u8>,
+        notification_characteristic: String,
+    ) -> Result<(), TransportError>;
     /// CCCD-enable with `mode`; success is the descriptor-write ack. From this
     /// point the transport buffers notifications on the characteristic until
     /// they are consumed via [`Self::next_notification`].
@@ -159,6 +169,43 @@ pub struct StepReport {
     /// step belongs to an executor span.
     pub activity_id: Option<String>,
     pub activity_version: Option<u32>,
+}
+
+/// Completes the raw step-report pair if a parent deadline drops a nested
+/// `run_step` future before it can emit its normal terminal outcome.
+struct StepTerminalGuard {
+    observer: Arc<dyn StepObserver>,
+    cancelled: Option<StepReport>,
+}
+
+impl StepTerminalGuard {
+    fn new(observer: Arc<dyn StepObserver>, started: &StepReport) -> Self {
+        let mut cancelled = started.clone();
+        cancelled.outcome = StepOutcome::Failed;
+        cancelled.error = Some("step cancelled before terminal outcome".to_string());
+        Self {
+            observer,
+            cancelled: Some(cancelled),
+        }
+    }
+
+    fn set_attempts(&mut self, attempts: u32) {
+        if let Some(report) = &mut self.cancelled {
+            report.attempts = attempts;
+        }
+    }
+
+    fn finish(&mut self) {
+        self.cancelled = None;
+    }
+}
+
+impl Drop for StepTerminalGuard {
+    fn drop(&mut self) {
+        if let Some(report) = self.cancelled.take() {
+            self.observer.on_step(report);
+        }
+    }
 }
 
 /// Foreign observer for the step outcome stream. Fire-and-forget from the
@@ -1006,18 +1053,22 @@ fn run_step<'a>(
             activity_id: activity_id.clone(),
             activity_version,
         };
-        ctx.observer.on_step(report(StepOutcome::Started, None, 0));
+        let started = report(StepOutcome::Started, None, 0);
+        ctx.observer.on_step(started.clone());
+        let mut terminal_guard = StepTerminalGuard::new(Arc::clone(ctx.observer), &started);
 
         if let Step::Retry(retry) = step {
-            return match run_retry_control(ctx, retry, here, top_next).await {
+            return match run_retry_control(ctx, retry, here, top_next, &mut terminal_guard).await {
                 Ok((tail, retries_consumed)) => {
                     ctx.steps_run += 1;
+                    terminal_guard.finish();
                     ctx.observer
                         .on_step(report(StepOutcome::Succeeded, None, retries_consumed));
                     Ok(tail)
                 }
                 Err((error, retries_consumed)) if tolerant => {
                     ctx.steps_run += 1;
+                    terminal_guard.finish();
                     ctx.observer.on_step(report(
                         StepOutcome::Tolerated,
                         Some(error.message),
@@ -1026,6 +1077,7 @@ fn run_step<'a>(
                     Ok(None)
                 }
                 Err((error, retries_consumed)) => {
+                    terminal_guard.finish();
                     ctx.observer.on_step(report(
                         StepOutcome::Failed,
                         Some(error.message.clone()),
@@ -1038,9 +1090,11 @@ fn run_step<'a>(
 
         let mut attempt: u32 = 0;
         loop {
+            terminal_guard.set_attempts(attempt);
             match run_step_once(ctx, step, here, top_next).await {
                 Ok(tail) => {
                     ctx.steps_run += 1;
+                    terminal_guard.finish();
                     ctx.observer
                         .on_step(report(StepOutcome::Succeeded, None, attempt));
                     return Ok(tail);
@@ -1052,17 +1106,20 @@ fn run_step<'a>(
                         ConnectionActivityFailure::without_context(e.kind),
                     );
                     attempt += 1;
+                    terminal_guard.set_attempts(attempt);
                     if opts.retry_delay_ms > 0 {
                         let _ = ctx.transport.sleep(opts.retry_delay_ms).await;
                     }
                 }
                 Err(e) if tolerant => {
                     ctx.steps_run += 1;
+                    terminal_guard.finish();
                     ctx.observer
                         .on_step(report(StepOutcome::Tolerated, Some(e.message), attempt));
                     return Ok(None);
                 }
                 Err(e) => {
+                    terminal_guard.finish();
                     ctx.observer.on_step(report(
                         StepOutcome::Failed,
                         Some(e.message.clone()),
@@ -1080,6 +1137,7 @@ async fn run_retry_control(
     retry: &camera_config::index::RetryStep,
     here: &str,
     top_next: u32,
+    terminal_guard: &mut StepTerminalGuard,
 ) -> Result<(RefinedTail, u32), (StepError, u32)> {
     let mut retries_consumed = 0;
     loop {
@@ -1147,13 +1205,14 @@ async fn run_retry_control(
                     return Err((body_error, retries_consumed));
                 }
 
-                ctx.retry_activity(retries_consumed + 2, retry.max_attempts, failure);
+                retries_consumed += 1;
+                terminal_guard.set_attempts(retries_consumed);
+                ctx.retry_activity(retries_consumed + 1, retry.max_attempts, failure);
                 if retry.retry_delay_ms > 0 {
                     if let Err(error) = ctx.transport.sleep(retry.retry_delay_ms).await {
                         return Err((StepError::transport(here, error), retries_consumed));
                     }
                 }
-                retries_consumed += 1;
             }
         }
     }
@@ -1249,7 +1308,18 @@ async fn run_step_once(
         Step::BleWrite(s) => {
             let bytes = resolve_value(ctx, &s.value).map_err(err)?;
             deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "write", async {
-                ctx.transport.write(s.gatt.clone(), bytes).await
+                match &s.notification_fence {
+                    Some(notification_characteristic) => {
+                        ctx.transport
+                            .write_with_notification_fence(
+                                s.gatt.clone(),
+                                bytes,
+                                notification_characteristic.clone(),
+                            )
+                            .await
+                    }
+                    None => ctx.transport.write(s.gatt.clone(), bytes).await,
+                }
             })
             .await
             .map_err(op_err)?;
@@ -1477,9 +1547,6 @@ async fn run_await_until(
             mode,
             seed_read,
         } => {
-            if !s.on_each.is_empty() {
-                return Err(err("onEach is unsupported for a notify source".into()));
-            }
             ensure_subscribed(ctx, gatt, *mode, DEFAULT_OP_TIMEOUT_MS)
                 .await
                 .map_err(|failure| StepError::operation(here, failure))?;
@@ -1487,6 +1554,7 @@ async fn run_await_until(
             let mut budget = ctx.transport.sleep(s.timeout_ms).fuse();
             let mut observations: Vec<String> = Vec::new();
             let mut seed_pending = *seed_read;
+            let mut tail = None;
             for _ in 0..MAX_LOOP_ITERS {
                 let value = if seed_pending {
                     // One fresh read routed through the same acceptance path,
@@ -1521,10 +1589,28 @@ async fn run_await_until(
                     None => false,
                 };
                 if satisfied {
-                    return Ok(None);
+                    return Ok(tail);
                 }
                 if fail_when_holds(&ctx.scope, s) {
                     return Err(condition_rejected_err(here, s));
+                }
+                {
+                    let on_each_path = format!("{here}.onEach");
+                    let on_each = walk_steps(ctx, &s.on_each, &on_each_path, top_next);
+                    futures_util::pin_mut!(on_each);
+                    match select(on_each, &mut budget).await {
+                        Either::Left((result, _)) => {
+                            if let Some(t) = result? {
+                                tail = Some(t);
+                            }
+                        }
+                        Either::Right((Ok(()), _)) => {
+                            return Err(await_timeout_err(here, s, &observations));
+                        }
+                        Either::Right((Err(error), _)) => {
+                            return Err(StepError::transport(here, error));
+                        }
+                    }
                 }
             }
             Err(err(format!(
@@ -1574,10 +1660,32 @@ async fn run_await_until(
                     return Err(condition_rejected_err(here, s));
                 }
                 // Not yet: act, then observe again after the poll interval.
-                if let Some(t) =
-                    walk_steps(ctx, &s.on_each, &format!("{here}.onEach"), top_next).await?
                 {
-                    tail = Some(t);
+                    let on_each_path = format!("{here}.onEach");
+                    let on_each = walk_steps(ctx, &s.on_each, &on_each_path, top_next);
+                    futures_util::pin_mut!(on_each);
+                    match select(on_each, &mut budget).await {
+                        Either::Left((result, _)) => {
+                            if let Some(t) = result? {
+                                tail = Some(t);
+                            }
+                        }
+                        Either::Right((Ok(()), _)) => {
+                            return Err(StepError::deadline(
+                                here,
+                                format!(
+                                    "`until` ({} {} {}) not satisfied within {}ms",
+                                    s.until.field,
+                                    s.until.op.as_token(),
+                                    s.until.value,
+                                    s.timeout_ms
+                                ),
+                            ));
+                        }
+                        Either::Right((Err(error), _)) => {
+                            return Err(StepError::transport(here, error));
+                        }
+                    }
                 }
                 let pause = ctx.transport.sleep(interval);
                 futures_util::pin_mut!(pause);
@@ -1982,6 +2090,9 @@ mod tests {
         /// raced I/O pends); `false` = the clock is frozen (deadlines never
         /// lapse). Both are the degenerate ends a real clock interpolates.
         sleeps_fire: bool,
+        /// Fire only the clock with this exact duration. This lets tests keep
+        /// nested operation deadlines frozen while the enclosing await lapses.
+        sleep_fire_ms: Option<u32>,
         sleep_log: Arc<Mutex<Vec<u32>>>,
         subscribe_log: Arc<Mutex<Vec<String>>>,
         dropped_inflight: Arc<AtomicBool>,
@@ -2027,6 +2138,14 @@ mod tests {
         ) -> Result<(), TransportError> {
             Ok(())
         }
+        async fn write_with_notification_fence(
+            &self,
+            _characteristic: String,
+            _value: Vec<u8>,
+            _notification_characteristic: String,
+        ) -> Result<(), TransportError> {
+            Ok(())
+        }
         async fn subscribe(
             &self,
             characteristic: String,
@@ -2044,7 +2163,7 @@ mod tests {
         }
         async fn sleep(&self, ms: u32) -> Result<(), TransportError> {
             self.sleep_log.lock().unwrap().push(ms);
-            if self.sleeps_fire {
+            if self.sleeps_fire || self.sleep_fire_ms == Some(ms) {
                 Ok(())
             } else {
                 std::future::pending().await
@@ -2146,7 +2265,7 @@ mod tests {
             source: AwaitSource::Notify {
                 gatt: "APSTATE".into(),
                 mode: CccdMode::Notify,
-                seed_read: true,
+                seed_read: false,
             },
             capture: vec![NotifyCapture {
                 at: 0,
@@ -2615,6 +2734,7 @@ mod tests {
                 value: StepValue::Literal {
                     literal: serde_yaml::Value::String("01".into()),
                 },
+                notification_fence: None,
                 opts: StepOptions::default(),
             }),
         ];
@@ -2713,7 +2833,7 @@ mod tests {
     #[test]
     fn cancelling_the_walk_drops_the_inflight_transport_call() {
         let flag = Arc::new(AtomicBool::new(false));
-        let (transport, _recorder, observer) = harness(MockTransport {
+        let (transport, recorder, observer) = harness(MockTransport {
             reads: Mutex::new(VecDeque::from([Io::Stall])),
             // Frozen clock: nothing resolves; the walk parks on the read.
             sleeps_fire: false,
@@ -2759,11 +2879,19 @@ mod tests {
             ],
             "cancellation emits one terminal event"
         );
+        let reports = recorder.0.lock().unwrap();
+        assert_eq!(reports.len(), 2, "raw Started also receives one terminal");
+        assert_eq!(reports[1].outcome, StepOutcome::Failed);
+        assert_eq!(reports[1].attempts, 0);
+        assert_eq!(
+            reports[1].error.as_deref(),
+            Some("step cancelled before terminal outcome")
+        );
     }
 
     #[test]
     fn cancellation_preserves_a_retry_already_in_progress() {
-        let (transport, _recorder, observer) = harness(MockTransport {
+        let (transport, recorder, observer) = harness(MockTransport {
             reads: Mutex::new(VecDeque::from([Io::Fail("retry me")])),
             // The retry transition is emitted before this pending backoff.
             sleeps_fire: false,
@@ -2815,6 +2943,76 @@ mod tests {
                 },
             ]
         );
+        let reports = recorder.0.lock().unwrap();
+        assert_eq!(reports.len(), 2, "raw Started also receives one terminal");
+        assert_eq!(reports[1].outcome, StepOutcome::Failed);
+        assert_eq!(reports[1].attempts, 1);
+        assert_eq!(
+            reports[1].error.as_deref(),
+            Some("step cancelled before terminal outcome")
+        );
+    }
+
+    #[test]
+    fn control_retry_cancellation_reports_the_committed_retry() {
+        let (transport, recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([Io::Value(vec![0x02, 0x00])])),
+            notifications: Mutex::new(VecDeque::from([Io::Value(vec![0x00, 0x80])])),
+            // The manifest retry transition is emitted before this pending backoff.
+            sleeps_fire: false,
+            ..Default::default()
+        });
+        let activity_recorder = Arc::new(ActivityRecorder::default());
+        let activity_observer: Arc<dyn ConnectionActivityObserver> = activity_recorder.clone();
+        let mut ctx = ctx(&transport, &observer);
+        ctx.activity_observer = Some(&activity_observer);
+        let retry = condition_retry(
+            vec![rejection_await()],
+            vec![Step::BleRead(BleReadStep {
+                gatt: "DETAILS".into(),
+                encoding: Encoding::U16Le,
+                capture_as: "stateErrorDetails".into(),
+                transform: vec![],
+                opts: StepOptions::default(),
+            })],
+        );
+        {
+            let mut future = Box::pin(walk_plan_with_activities(
+                &mut ctx,
+                vec![retry],
+                vec![activity_descriptor("camera.test.control-retry", 1)],
+                ConfigActivitySequence::Steps,
+            ));
+            let waker = futures::task::noop_waker();
+            let mut poll_ctx = Context::from_waker(&waker);
+            assert!(matches!(future.as_mut().poll(&mut poll_ctx), Poll::Pending));
+        }
+        drop(ctx);
+
+        let reports = recorder.0.lock().unwrap();
+        let retry_reports: Vec<&StepReport> = reports
+            .iter()
+            .filter(|report| report.verb == "retry")
+            .collect();
+        assert_eq!(retry_reports.len(), 2);
+        assert_eq!(retry_reports[0].outcome, StepOutcome::Started);
+        assert_eq!(retry_reports[1].outcome, StepOutcome::Failed);
+        assert_eq!(retry_reports[1].attempts, 1);
+        assert_eq!(
+            retry_reports[1].error.as_deref(),
+            Some("step cancelled before terminal outcome")
+        );
+        assert!(matches!(
+            activity_recorder.0.lock().unwrap().as_slice(),
+            [
+                ConnectionActivityEvent::Started { .. },
+                ConnectionActivityEvent::Retrying { .. },
+                ConnectionActivityEvent::Cancelled {
+                    summary: ConnectionActivityTerminalSummary { retry_count: 1, .. },
+                    ..
+                }
+            ]
+        ));
     }
 
     #[test]
@@ -2864,9 +3062,9 @@ mod tests {
     #[test]
     fn condition_retry_sleeps_once_reuses_subscription_and_reports_retry() {
         let transport = MockTransport {
-            reads: Mutex::new(VecDeque::from([
+            reads: Mutex::new(VecDeque::from([Io::Value(vec![0x02, 0x00])])),
+            notifications: Mutex::new(VecDeque::from([
                 Io::Value(vec![0x00, 0x80]),
-                Io::Value(vec![0x02, 0x00]),
                 Io::Value(vec![0x01, 0x80]),
             ])),
             sleeps_fire: true,
@@ -2887,7 +3085,8 @@ mod tests {
             })],
         );
 
-        block_on(walk_plan(&mut ctx, vec![retry])).expect("second seed succeeds");
+        block_on(walk_plan(&mut ctx, vec![retry]))
+            .expect("the second attempt's notification succeeds");
         assert_eq!(subscribe_log.lock().unwrap().as_slice(), ["APSTATE"]);
         assert_eq!(
             sleep_log
@@ -2906,6 +3105,129 @@ mod tests {
             .expect("outer retry report");
         assert_eq!(outer.outcome, StepOutcome::Succeeded);
         assert_eq!(outer.attempts, 1, "one retry was consumed");
+    }
+
+    #[test]
+    fn seeded_notify_runs_on_each_before_waiting_for_a_notification() {
+        let mut step = match rejection_await() {
+            Step::BleAwaitUntil(step) => step,
+            _ => unreachable!(),
+        };
+        let AwaitSource::Notify { seed_read, .. } = &mut step.source else {
+            unreachable!()
+        };
+        *seed_read = true;
+        step.fail_when = None;
+        step.on_each = vec![read_step("onEachResult", StepOptions::default())];
+        let transport = MockTransport {
+            reads: Mutex::new(VecDeque::from([
+                Io::Value(vec![0x02, 0x80]),
+                Io::Value(b"ran".to_vec()),
+            ])),
+            notifications: Mutex::new(VecDeque::from([Io::Value(vec![0x01, 0x80])])),
+            ..Default::default()
+        };
+        let (transport, _recorder, observer) = harness(transport);
+        let mut ctx = ctx(&transport, &observer);
+
+        block_on(walk_plan(&mut ctx, vec![Step::BleAwaitUntil(step)]))
+            .expect("the seed runs onEach before the launched notification");
+        assert_eq!(ctx.scope.get("apState").map(String::as_str), Some("32769"));
+        assert_eq!(
+            ctx.scope.get("onEachResult").map(String::as_str),
+            Some("ran")
+        );
+    }
+
+    #[test]
+    fn notify_on_each_cannot_outlive_the_await_budget() {
+        let mut step = match rejection_await() {
+            Step::BleAwaitUntil(step) => step,
+            _ => unreachable!(),
+        };
+        step.fail_when = None;
+        step.on_each = vec![read_step("onEachResult", StepOptions::default())];
+        let transport = MockTransport {
+            reads: Mutex::new(VecDeque::from([Io::Stall])),
+            notifications: Mutex::new(VecDeque::from([Io::Value(vec![0x02, 0x80])])),
+            sleep_fire_ms: Some(step.timeout_ms),
+            ..Default::default()
+        };
+        let dropped = transport.dropped_inflight.clone();
+        let (transport, recorder, observer) = harness(transport);
+        let mut ctx = ctx(&transport, &observer);
+
+        let error = block_on(walk_plan(&mut ctx, vec![Step::BleAwaitUntil(step)]))
+            .expect_err("the enclosing await deadline cancels stalled onEach work");
+        assert_eq!(error.kind, ExecutorStepFailureKind::DeadlineExceeded);
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "stalled onEach was cancelled"
+        );
+        let reports = recorder.0.lock().unwrap();
+        let nested: Vec<StepOutcome> = reports
+            .iter()
+            .filter(|report| report.step_path.contains(".onEach[0]."))
+            .map(|report| report.outcome)
+            .collect();
+        assert_eq!(nested, [StepOutcome::Started, StepOutcome::Failed]);
+    }
+
+    #[test]
+    fn read_on_each_cannot_outlive_the_await_budget() {
+        let mut step = match rejection_await() {
+            Step::BleAwaitUntil(step) => step,
+            _ => unreachable!(),
+        };
+        step.source = AwaitSource::Read {
+            gatt: "APSTATE".into(),
+        };
+        step.fail_when = None;
+        step.on_each = vec![read_step("onEachResult", StepOptions::default())];
+        let transport = MockTransport {
+            reads: Mutex::new(VecDeque::from([Io::Value(vec![0x02, 0x80]), Io::Stall])),
+            sleep_fire_ms: Some(step.timeout_ms),
+            ..Default::default()
+        };
+        let dropped = transport.dropped_inflight.clone();
+        let (transport, recorder, observer) = harness(transport);
+        let mut ctx = ctx(&transport, &observer);
+
+        let error = block_on(walk_plan(&mut ctx, vec![Step::BleAwaitUntil(step)]))
+            .expect_err("the enclosing await deadline cancels stalled onEach work");
+        assert_eq!(error.kind, ExecutorStepFailureKind::DeadlineExceeded);
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "stalled onEach was cancelled"
+        );
+        let reports = recorder.0.lock().unwrap();
+        let nested: Vec<StepOutcome> = reports
+            .iter()
+            .filter(|report| report.step_path.contains(".onEach[0]."))
+            .map(|report| report.outcome)
+            .collect();
+        assert_eq!(nested, [StepOutcome::Started, StepOutcome::Failed]);
+    }
+
+    #[test]
+    fn read_source_remains_eligible_for_fail_when() {
+        let mut step = match rejection_await() {
+            Step::BleAwaitUntil(step) => step,
+            _ => unreachable!(),
+        };
+        step.source = AwaitSource::Read {
+            gatt: "APSTATE".into(),
+        };
+        let transport = MockTransport {
+            reads: Mutex::new(VecDeque::from([Io::Value(vec![0x00, 0x80])])),
+            ..Default::default()
+        };
+        let (transport, _recorder, observer) = harness(transport);
+        let mut ctx = ctx(&transport, &observer);
+
+        let error = block_on(walk_plan(&mut ctx, vec![Step::BleAwaitUntil(step)]))
+            .expect_err("a read observation can still match failWhen");
+        assert_eq!(error.kind, ExecutorStepFailureKind::ConditionRejected);
     }
 
     #[test]
@@ -2950,10 +3272,8 @@ mod tests {
     #[test]
     fn condition_retry_does_not_mask_diagnostic_read_failure() {
         let transport = MockTransport {
-            reads: Mutex::new(VecDeque::from([
-                Io::Value(vec![0x00, 0x80]),
-                Io::Fail("details unavailable"),
-            ])),
+            reads: Mutex::new(VecDeque::from([Io::Fail("details unavailable")])),
+            notifications: Mutex::new(VecDeque::from([Io::Value(vec![0x00, 0x80])])),
             sleeps_fire: false,
             ..Default::default()
         };

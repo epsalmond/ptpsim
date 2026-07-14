@@ -20,8 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_yaml::Value;
 
 use super::types::{
-    BleAdvertSignature, EstablishmentBlock, FamilyBleBlock, IndexedModel, ManufacturerIndex,
-    ModelView, Predicate, PredicateOp, Signature, SignatureKind, Step, StepValue,
+    AwaitSource, BleAdvertSignature, EstablishmentBlock, FamilyBleBlock, IndexedModel,
+    ManufacturerIndex, ModelView, Predicate, PredicateOp, Signature, SignatureKind, Step,
+    StepValue,
 };
 use crate::error::ConfigError;
 
@@ -281,6 +282,14 @@ fn build_ble_block(
     for (mech, est) in &ble.establishments {
         validate_establishment(est, &ble.gatt, &model.id, mech)?;
     }
+    for (action, block) in &ble.actions {
+        for (i, step) in block.steps.iter().enumerate() {
+            validate_step(
+                step,
+                &format!("models.{}.actions.{action}.steps[{i}]", model.id),
+            )?;
+        }
+    }
     Ok((Some(ble), value_for_resolve))
 }
 
@@ -315,6 +324,9 @@ fn resolve_gatt_names_in_steps(
             "bleConnect" | "bleAwaitDisconnect" | "bleRequestMtu" | "bleDiscoverServices" => {}
             "bleRead" | "bleWrite" | "bleSubscribe" | "bleNotify" | "bleWriteChunk" => {
                 resolve_gatt_field(body, gatt, &here)?;
+                if verb == "bleWrite" {
+                    resolve_optional_gatt_field(body, "notificationFence", gatt, &here)?;
+                }
             }
             "acquire" => {
                 if let Some(inner) = body
@@ -386,6 +398,24 @@ fn resolve_gatt_names_in_steps(
             }
         }
     }
+    Ok(())
+}
+
+fn resolve_optional_gatt_field(
+    step_body: &mut Value,
+    field: &str,
+    gatt: &BTreeMap<String, String>,
+    path_ctx: &str,
+) -> Result<(), ConfigError> {
+    let Some(m) = step_body.as_mapping_mut() else {
+        return Ok(());
+    };
+    let key = Value::String(field.into());
+    let Some(Value::String(name)) = m.get(&key).cloned() else {
+        return Ok(());
+    };
+    let resolved = resolve_one_gatt_name(&name, gatt, &format!("{path_ctx}.{field}"))?;
+    m.insert(key, Value::String(resolved));
     Ok(())
 }
 
@@ -627,6 +657,20 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
                     message: "capture length 0 can never capture bytes".to_string(),
                 });
             }
+        }
+        if matches!(
+            s.source,
+            AwaitSource::Notify {
+                seed_read: true,
+                ..
+            }
+        ) && s.fail_when.is_some()
+        {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.failWhen"),
+                message: "notify seedRead cannot be combined with failWhen; read the baseline before the command and use a notification-only rejection await"
+                    .to_string(),
+            });
         }
         for (i, inner) in s.on_each.iter().enumerate() {
             validate_step(inner, &format!("{path}.onEach[{i}]"))?;

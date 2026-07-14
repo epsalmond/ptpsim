@@ -329,6 +329,9 @@ pub enum Step {
     BleWrite {
         gatt: String,
         value: StepValue,
+        /// Subscribed characteristic whose buffered prefix is atomically
+        /// fenced immediately before the write, when declared.
+        notification_fence: Option<String>,
         opts: StepOptions,
     },
     BleRead {
@@ -379,7 +382,8 @@ pub enum Step {
         capture_as: Option<String>,
         /// Satisfied when this predicate holds over scope.
         until: Predicate,
-        /// Optional terminal rejection evaluated after `until`.
+        /// Optional terminal rejection evaluated after `until`. Invalid with
+        /// a seeded notify source; use an explicit pre-command read instead.
         fail_when: Option<Predicate>,
         /// Steps run each iteration `until` is not yet met, before the next
         /// observe. `Vec<Step>` (may be empty for a pure poll).
@@ -555,7 +559,9 @@ pub enum AcquireSource {
 
 /// Where `bleAwaitUntil` observes (§11.15): poll a readable characteristic,
 /// or consume a characteristic's notification stream, optionally preceded by
-/// one seed read after the notification accept path is armed.
+/// one seed read after the notification accept path is armed. Seeded notify
+/// sources cannot declare `fail_when` because callback transports may deliver
+/// read responses and notifications through the same callback.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum AwaitSource {
     Read {
@@ -830,6 +836,7 @@ impl From<&ix::Step> for Step {
             ix::Step::BleWrite(inner) => Step::BleWrite {
                 gatt: inner.gatt.clone(),
                 value: (&inner.value).into(),
+                notification_fence: inner.notification_fence.clone(),
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleSubscribe(inner) => Step::BleSubscribe {
