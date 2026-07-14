@@ -59,6 +59,8 @@ evidence:
 
 
 
+  wirePcssParity20260714: { kind: wire-capture, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-14" }
+  sdkPcssParity20260714: { kind: vendor-sdk, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-14" }
 
 sentinels:
   # PTP/IP length-8 frame with body 0xffffffff. Sent and flushed before the
@@ -491,13 +493,13 @@ connections:
     # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
     # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
     # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference-app's 82-byte init).
-    knock: { callbackPort: 51560, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0", retryIntervalMs: 10000, maxAttempts: 10 }
+    knock: { callbackPort: 51560, knockPort: 51562, protocol: "PCSS/1.0", retryIntervalMs: 1000, maxAttempts: 15, connectTimeoutMs: 5000 }
     # InitCmdReq retry tolerance: PCSS may emit 0-3 InitFail packets before
     # InitCmdAck. Hyper-Utility waits ~250ms between retries; the engine should
     # accept up to 3 retries before treating the handshake as failed
     # (wirePCSSShootDownload20260523).
-    initRetries: { max: 3, backoffMs: 250 }
-    discovery: { mechanism: pcss-knock, announces: none, autoDiscoverable: false }  # app needs the camera's LAN address
+    initRetries: { max: 3, backoffMs: 500, whenReasons: ["0x2019"] }
+    discovery: { mechanism: pcss-knock, announces: callback, autoDiscoverable: true }
     # remote-trigger here is the SAME mode node as over BLE — transport-independent (its
     # PTP/IP form can also push images to the camera; per-connection capability TODO).
     modes: [shooting/stills, image-transfer, remote-trigger]
@@ -513,6 +515,7 @@ connections:
         shutterSpeed: { property: "0x500d", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
         aperture:     { property: "0x5007", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
         exposureBias: { property: "0x5010", readSource: directProperty, writeEffect: descriptorOnly, effectiveOwner: client }
+        focusArea:    { property: "0xd395", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
     # Wire-confirmed NOT-supported on this connection (per the 05-27 capability snapshot
     # `wireTetherCaps20260527` + wire-capture 2026-06-02 replies). Don't author entries that
     # rely on these — the camera will reject them:
@@ -682,7 +685,7 @@ operations:
   # the app-side shutter call. wireless-tether entries: filled in once the wire
   # capture lands (see 2026-06-02 consult).
   "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], emits: ["0xc001"], evidence: [iosLiveControls, docLiveControls, wireTetherCaps20260527] }   # 0xC001 PostviewComplete (delivered on the app event socket; wireless-tether has no event channel)
-  "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosLiveControls] }
+  "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [iosLiveControls, wireTetherCaps20260527] }
   "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireAutoImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }
   "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireAutoImageTransfer, wireTether] }
   "0x101b": { name: GetPartialObject,     owner: standard-ptp, modes: [image-transfer, reserved-photo-receive], connections: [app], evidence: [docImageTransfer, wireAutoImageTransfer] }
@@ -894,6 +897,30 @@ properties:
   "0x500d": { name: shutterSpeed, ptpName: ExposureTime, type: u32, access: readWrite,
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [wireTether] }   # microseconds
   "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [iosLiveControls, wireTether] }   # PASM / body dial
+  # Camera-side simultaneous card recording policy. Rows 1/2 are controlled
+  # capture results; rows 3/4 retain their vendor-definition provenance.
+  "0xd20c":
+    name: simultaneousCardRecording
+    type: u16
+    access: readWrite
+    descriptor: { form: enum, values: [1, 2, 3, 4] }
+    controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } }
+    valueRows:
+      - { label: rawAndProcessed, raw: 1, evidence: [wirePcssParity20260714] }
+      - { label: rawOnly, raw: 2, evidence: [wirePcssParity20260714] }
+      - { label: processedOnly, raw: 3, evidence: [sdkPcssParity20260714] }
+      - { label: noCardRecording, raw: 4, evidence: [sdkPcssParity20260714] }
+    evidence: [wirePcssParity20260714, sdkPcssParity20260714]
+  # Live View "Move Focus Area" sends the click coordinates as a PTP string
+  # value on this property. Other click modes remain evidence gaps.
+  "0xd395": { name: liveViewFocusArea, type: str, access: readWrite,
+              structuredText: { delimiter: ",", fields: [
+                { name: x, scalar: signedInteger },
+                { name: y, scalar: signedInteger },
+                { name: size, scalar: signedInteger }
+              ] },
+              controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } },
+              evidence: [wirePcssParity20260714] }
 
   # ------------------------------------------------------------------------------
   # PROTOCOL SCAFFOLDING — these props look like settings (RW, accept arbitrary

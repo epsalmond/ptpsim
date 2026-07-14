@@ -251,6 +251,7 @@ pub fn generate_proposal(evidence_jsonl: &str) -> CameraManifest {
                     value_rows: Vec::new(),
                     value_profiles: agg.value_profiles,
                     value_encoding: None,
+                    structured_text: None,
                     requires_gate: None,
                     evidence,
                 },

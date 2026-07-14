@@ -58,6 +58,15 @@ pub enum Observation {
         /// them (Android `ScanRecord.getBytes()`); empty on iOS.
         ad_records: Vec<BleAdRecord>,
     },
+    /// A validated PCSS callback. The executor parses the wire message before
+    /// recognition; callers that use the codec surface may construct this
+    /// observation from `PcssNotifyInfo`.
+    PcssNotify {
+        camera_ipv4: String,
+        camera_name: String,
+        command_port: u16,
+        service: String,
+    },
 }
 
 /// The manufacturer-specific AD record split per §11.14: `payload` excludes
@@ -951,7 +960,9 @@ pub fn recognize_ble(
     let mut matches: Vec<(String, String, &ix::BleAdvertSignature)> = Vec::new();
     for model in &index.models {
         for (_sig_name, sig) in &model.signatures {
-            let ix::Signature::BleAdvert(ble_sig) = sig;
+            let ix::Signature::BleAdvert(ble_sig) = sig else {
+                continue;
+            };
             if !ix::eval::advert_matches(ble_sig, facts) {
                 continue;
             }
@@ -1020,6 +1031,74 @@ pub fn recognize_ble(
     }
 }
 
+/// Match a parsed PCSS callback against model signatures. Dynamic endpoint
+/// values ride in runtime scope so auto-discovery can immediately converge on
+/// the same known-address establishment entry point.
+pub fn recognize_pcss(
+    index: &ix::ResolvedManufacturerIndex,
+    camera_ipv4: &str,
+    camera_name: &str,
+    command_port: u16,
+    service: &str,
+) -> Recognition {
+    let mut matches = Vec::new();
+    for model in &index.models {
+        for (_name, signature) in &model.signatures {
+            let ix::Signature::PcssNotify(signature) = signature else {
+                continue;
+            };
+            if signature.require.camera_name == camera_name && signature.require.service == service
+            {
+                matches.push((model, signature));
+                break;
+            }
+        }
+    }
+    let scope = || {
+        vec![
+            KeyValue {
+                key: "cameraIpv4".into(),
+                value: camera_ipv4.into(),
+            },
+            KeyValue {
+                key: "cameraName".into(),
+                value: camera_name.into(),
+            },
+            KeyValue {
+                key: "commandPort".into(),
+                value: command_port.to_string(),
+            },
+            KeyValue {
+                key: "service".into(),
+                value: service.into(),
+            },
+        ]
+    };
+    match matches.as_slice() {
+        [] => Recognition::NoMatch,
+        [(model, signature)] => Recognition::Candidate {
+            model: model.id.clone(),
+            connection: signature.suggests.connection.clone(),
+            confidence: confidence_from(signature.suggests.confidence),
+            runtime_scope: scope(),
+            runtime_scope_encodings: Vec::new(),
+        },
+        many => Recognition::Disambiguate {
+            family: index.manufacturer.to_lowercase(),
+            candidates: many
+                .iter()
+                .map(|(model, signature)| ModelMatch {
+                    model: model.id.clone(),
+                    display_name: model.display_name.clone(),
+                    connection_hint: Some(signature.suggests.connection.clone()),
+                })
+                .collect(),
+            runtime_scope: scope(),
+            hint: Some("Multiple models match this PCSS callback".into()),
+        },
+    }
+}
+
 pub fn reconnect_policy(
     index: &ix::ResolvedManufacturerIndex,
     model: &str,
@@ -1048,7 +1127,9 @@ pub fn reconnect_decision(
         .map(|kv| (kv.key.as_str(), kv.value.as_str()))
         .collect();
     for (_name, signature) in &model_view.signatures {
-        let ix::Signature::BleAdvert(signature) = signature;
+        let ix::Signature::BleAdvert(signature) = signature else {
+            continue;
+        };
         let Some(route) = &signature.reconnect else {
             continue;
         };

@@ -123,8 +123,10 @@ pub struct PcssDiscovery {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PcssNotify {
+    pub camera_address: Ipv4Addr,
     pub camera_name: String,
     pub command_port: u16,
+    pub service: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,7 +142,7 @@ pub enum PcssMessageError {
 impl fmt::Display for PcssMessageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidIpv4 => write!(f, "PCSS discovery HOST is not an IPv4 address"),
+            Self::InvalidIpv4 => write!(f, "PCSS address field is not an IPv4 address"),
             Self::InvalidUtf8 => write!(f, "PCSS message is not valid UTF-8"),
             Self::WrongStartLine => write!(f, "PCSS message has the wrong start line"),
             Self::MissingField(field) => write!(f, "PCSS message is missing {field}"),
@@ -179,9 +181,14 @@ pub fn parse_discovery(datagram: &[u8], protocol: &str) -> Option<PcssDiscovery>
     service_ok.then_some(PcssDiscovery { host: host? })
 }
 
-pub fn notify_message(camera_name: &str, command_port: u16, protocol: &str) -> Vec<u8> {
+pub fn notify_message(
+    camera_address: Ipv4Addr,
+    camera_name: &str,
+    command_port: u16,
+    protocol: &str,
+) -> Vec<u8> {
     format!(
-        "NOTIFY * HTTP/1.1\r\nCAMERANAME: {camera_name}\r\nDSCPORT:{command_port}\r\nSERVICE: {protocol}\r\n\r\n\0"
+        "NOTIFY * HTTP/1.1\r\nDSC: {camera_address}\r\nCAMERANAME: {camera_name}\r\nDSCPORT: {command_port}\r\nMX: 7\r\nSERVICE: {protocol}\r\n"
     )
     .into_bytes()
 }
@@ -195,6 +202,7 @@ pub fn parse_notify(datagram: &[u8], protocol: &str) -> Result<PcssNotify, PcssM
     if lines.next() != Some("NOTIFY * HTTP/1.1") {
         return Err(PcssMessageError::WrongStartLine);
     }
+    let mut camera_address = None;
     let mut camera_name = None;
     let mut command_port = None;
     let mut service = None;
@@ -203,6 +211,14 @@ pub fn parse_notify(datagram: &[u8], protocol: &str) -> Result<PcssNotify, PcssM
             continue;
         };
         match key.trim().to_ascii_lowercase().as_str() {
+            "dsc" => {
+                camera_address = Some(
+                    value
+                        .trim()
+                        .parse::<Ipv4Addr>()
+                        .map_err(|_| PcssMessageError::InvalidIpv4)?,
+                )
+            }
             "cameraname" => camera_name = Some(value.trim().to_string()),
             "dscport" => {
                 let port = value
@@ -218,12 +234,15 @@ pub fn parse_notify(datagram: &[u8], protocol: &str) -> Result<PcssNotify, PcssM
             _ => {}
         }
     }
-    if service.ok_or(PcssMessageError::MissingField("SERVICE"))? != protocol {
+    let service = service.ok_or(PcssMessageError::MissingField("SERVICE"))?;
+    if service != protocol {
         return Err(PcssMessageError::WrongProtocol);
     }
     Ok(PcssNotify {
+        camera_address: camera_address.ok_or(PcssMessageError::MissingField("DSC"))?,
         camera_name: camera_name.ok_or(PcssMessageError::MissingField("CAMERANAME"))?,
         command_port: command_port.ok_or(PcssMessageError::MissingField("DSCPORT"))?,
+        service: service.to_string(),
     })
 }
 
@@ -301,11 +320,12 @@ mod tests {
                 host: "127.0.0.1".into()
             })
         );
-        let notify = notify_message("GFX100 II", 15740, "PCSS/1.0");
+        let notify = notify_message(Ipv4Addr::new(192, 0, 2, 94), "GFX100 II", 15740, "PCSS/1.0");
         let text = std::str::from_utf8(&notify).unwrap();
         assert!(text.starts_with("NOTIFY * HTTP/1.1\r\n"));
-        assert!(text.contains("DSCPORT:15740\r\n"));
-        assert!(notify.ends_with(&[0]));
+        assert!(text.contains("DSC: 192.0.2.94\r\n"));
+        assert!(text.contains("DSCPORT: 15740\r\n"));
+        assert!(notify.ends_with(b"\r\n"));
     }
 
     #[test]
@@ -314,12 +334,14 @@ mod tests {
             discovery_message(Ipv4Addr::new(192, 168, 7, 49), "PCSS/1.0"),
             b"DISCOVERY * HTTP/1.1\r\nHOST: 192.168.7.49\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0"
         );
-        let notify = notify_message("CAMERA", 15740, "PCSS/1.0");
+        let notify = notify_message(Ipv4Addr::new(192, 0, 2, 94), "CAMERA", 15740, "PCSS/1.0");
         assert_eq!(
             parse_notify(&notify, "PCSS/1.0"),
             Ok(PcssNotify {
+                camera_address: Ipv4Addr::new(192, 0, 2, 94),
                 camera_name: "CAMERA".into(),
                 command_port: 15740,
+                service: "PCSS/1.0".into(),
             })
         );
         assert_eq!(callback_ack_message(), b"HTTP/1.1 200 OK\r\n\0");
@@ -327,7 +349,7 @@ mod tests {
 
     #[test]
     fn rejects_notify_for_a_different_protocol() {
-        let notify = notify_message("CAMERA", 15740, "OTHER/1.0");
+        let notify = notify_message(Ipv4Addr::LOCALHOST, "CAMERA", 15740, "OTHER/1.0");
         assert_eq!(
             parse_notify(&notify, "PCSS/1.0"),
             Err(PcssMessageError::WrongProtocol)
@@ -336,7 +358,7 @@ mod tests {
 
     #[test]
     fn rejects_notify_with_a_zero_command_port() {
-        let notify = notify_message("CAMERA", 0, "PCSS/1.0");
+        let notify = notify_message(Ipv4Addr::LOCALHOST, "CAMERA", 0, "PCSS/1.0");
         assert_eq!(
             parse_notify(&notify, "PCSS/1.0"),
             Err(PcssMessageError::InvalidCommandPort)

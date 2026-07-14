@@ -1367,12 +1367,19 @@ Modeled real-camera flow:
 
 ```text
 host listens TCP :51560
-host sends UDP camera:51562 DISCOVERY ... HOST:<hostIP> ... SERVICE:PCSS/1.0
-camera dials host:51560 and sends NOTIFY ... DSCPORT:<port>
+known address: host sends UDP camera:51562 DISCOVERY
+auto discovery: host broadcasts DISCOVERY, learns the camera, then runs the same unicast flow
+camera dials host:51560 and sends NOTIFY ... DSC:<address> ... DSCPORT:<port>
 host replies HTTP/1.1 200 OK
-host connects TCP camera:<DSCPORT>, usually 15740
+host connects TCP <DSC>:<DSCPORT>
 PTP/IP InitCommandRequest -> InitCommandAck -> OpenSession
 ```
+
+The broadcast leg only discovers identity and address. Saved and manually
+entered camera addresses skip it, and all paths converge before the unicast
+knock. `DSC` and `DSCPORT` are runtime-advertised endpoint fields. Captured
+broadcast cadence or service-readiness delay is evidence for bounded retry
+policy, not a fixed client contract.
 
 Simulator modes:
 
@@ -1393,7 +1400,7 @@ Simulator modes:
   retryable and do not change the queue.
 
 PCSS must live behind a manifest transport entry because ports, callback
-behavior, and one-shot-per-boot quirks can vary by model and firmware.
+behavior, recognition, and retry policy can vary by family, model, and firmware.
 
 ## Fuji Workflows
 

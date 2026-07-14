@@ -48,7 +48,8 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
 | `ConnectionInfo.command_listener_volatile` | whether closing the active PTP/IP transport may remove the command listener, so a consumer must not assume it can immediately redial the same endpoint as generic recovery. A manifest-authored outer connection re-establishment may create a new listener. |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
-| `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` / `build_pcss_init` | typed callback/knock/command ports, retry policy, and byte-exact PCSS packet codecs. The host supplies the route-selected local IPv4 address, initiator GUID, and friendly name; no wire text, fixed layout, or port is authored in client code. |
+| `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` / `build_pcss_init` | typed callback/knock policy and byte-exact PCSS packet codecs. `NOTIFY` supplies the camera address and command port; neither is inferred from a captured default. |
+| `run_pcss_auto_establishment` / `run_pcss_known_address_establishment` | Rust-owned PCSS discovery and establishment. Auto-discovery broadcasts only to identify an address, then converges on the same unicast rendezvous used for saved or manually supplied addresses. The host implements raw socket I/O through `PcssExecutorTransport`. |
 | `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
 | `camera_initiated_transfer(model)` | BLE trigger states, optional/cached handoff, resolved endpoint, reserved count/head, metadata/data operations, chunk limit, and completion policy for the camera-controlled pull queue. Requires a manufacturer-index store so symbolic GATT names resolve. |
 | `transport_close(connection)` | the manifest-resolved frame plus its declared `when` context (Fuji `app`: the 8-byte sentinel before image-transfer re-establishment), `None` when absent; malformed sentinel data is an error. Use it only in the declared context; sending it does not by itself guarantee that the endpoint is immediately redialable. |
@@ -63,6 +64,11 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `control_surface(connection, mode)` | semantic control roles mapped to manifest-owned properties, write effects/evidence state, effective owner, and the existing set/readback mechanism. `descriptorOnly` and other non-confirmed effects must be presented as experimental and verified by readback. |
 | `property_value_width(prop)` | the manifest property's generic scalar encoder width (`u8`, `u16`, `u32`, `i16`, or `i32`), or `None` for non-scalar/unknown types |
 | `value(key)` / `value_label(prop, value)` / `decode_property(prop, raw)` / `encode_property(prop, label)` | value-policy resolution, human labels, and manifest-backed property label↔wire-byte encoding |
+| `encode_property_text(prop, value)` / `encode_structured_integer_property(prop, values)` | PTP `STR` encoding. The structured form validates manifest-declared field count and separators without inventing model-specific limits. |
+
+`PropertyValueInfo.evidence` preserves provenance per enum row. Consumers can
+therefore distinguish directly exercised values from accepted reference-defined
+rows even when both belong to one semantic property.
 
 Byte codecs (build/parse PTP packets, decode datasets, encode values) are exported
 functions — the **G1–G3 set is complete** (see §6).
@@ -160,19 +166,22 @@ per-platform packaging:
    releases.) OTA bundle loading lands later; bundled baseline for now.
 2. **Pick a connection.** `connections(platform)` → present what's actually available
    here. Bring it up: `connection_establishment(connection)` returns the recipe (knock
-   ports, GATT char UUIDs); **your code does the UDP/TCP/BLE/Wi-Fi**. Bind sockets by
+   ports, GATT char UUIDs). BLE/Wi-Fi association remains host-owned; Rust-owned
+   executors drive BLE and PCSS protocol sequencing over foreign raw-I/O traits. Bind sockets by
    role with `port_for_role(connection, role)` (`ConnectionInfo.command_framing` /
    `event_framing` tell you which codec framing each channel uses).
 
-   For a PCSS connection, bind the callback listener first, choose the
-   route-selected local IPv4 address for the known camera address, and pass that
-   IPv4 to `build_pcss_discovery`. Send the returned datagram at the cadence and
-   attempt limit from `pcss_rendezvous`; stop retransmitting as soon as a valid
-   callback parses. Acknowledge that callback with
-   `build_pcss_callback_ack`, then connect the PTP/IP command session to the
-   callback's returned port and send `build_pcss_init` instead of the ordinary
-   variable-length PTP/IP init. PCSS discovery is known-camera IPv4 unicast: do not
-   add broadcast, multicast, service discovery, or IPv6 fallback in the host.
+   PCSS has two entry paths. `run_pcss_known_address_establishment` sends
+   `DISCOVERY` directly to a saved or manually supplied camera IPv4.
+   `run_pcss_auto_establishment` first sends the same payload to the
+   route-selected subnet broadcast address, acknowledges a recognized callback,
+   then invokes that same known-address unicast path. Broadcast is address
+   discovery, not a prerequisite for PCSS. Both paths bind the callback listener
+   before sending, parse `DSC`, `CAMERANAME`, `DSCPORT`, and `SERVICE`, acknowledge
+   the callback, and connect to the advertised `DSC:DSCPORT`. The executor retries
+   a typed Device Busy InitFail with an identical request on the same command
+   socket; other InitFail reasons remain fatal. Captured application delays are
+   not protocol constants.
 3. **Enter a mode.** `mode_entry(connection, from, to)` returns one
    `ModeEntryExecution`: execute `Ptp.steps` with `run_mode_entry` over the
    current transport, surface `UserInstruction`, or orchestrate

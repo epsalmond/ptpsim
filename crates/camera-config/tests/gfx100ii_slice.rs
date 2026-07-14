@@ -61,6 +61,40 @@ fn app_slice_loads_and_schema_is_supported() {
 }
 
 #[test]
+fn pcss_init_retry_policy_rejects_malformed_or_incoherent_values() {
+    let manifest = data("fuji/gfx100ii/gfx100ii.yaml");
+    let malformed = manifest.replace(
+        "whenReasons: [\"0x2019\"]",
+        "whenReasons: [not-a-response-code]",
+    );
+    assert!(CameraManifest::from_yaml(&malformed).is_err());
+
+    let missing_backoff = manifest.replace(
+        "max: 3, backoffMs: 500, whenReasons: [\"0x2019\"]",
+        "max: 3, backoffMs: 0, whenReasons: [\"0x2019\"]",
+    );
+    assert!(CameraManifest::from_yaml(&missing_backoff).is_err());
+
+    let duplicate = manifest.replace(
+        "whenReasons: [\"0x2019\"]",
+        "whenReasons: [\"0x2019\", \"0x2019\"]",
+    );
+    assert!(CameraManifest::from_yaml(&duplicate).is_err());
+
+    let stray_backoff = manifest.replace(
+        "max: 3, backoffMs: 500, whenReasons: [\"0x2019\"]",
+        "max: 0, backoffMs: 500, whenReasons: []",
+    );
+    assert!(CameraManifest::from_yaml(&stray_backoff).is_err());
+
+    let stray_reason = manifest.replace(
+        "max: 3, backoffMs: 500, whenReasons: [\"0x2019\"]",
+        "max: 0, backoffMs: 0, whenReasons: [\"0x2019\"]",
+    );
+    assert!(CameraManifest::from_yaml(&stray_reason).is_err());
+}
+
+#[test]
 fn port_roles_match_the_shipping_app() {
     use camera_config::SocketRole;
     let m = gfx();

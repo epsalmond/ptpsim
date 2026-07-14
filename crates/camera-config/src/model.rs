@@ -321,6 +321,11 @@ pub struct Property {
     /// shape; it does not bake manufacturer formulas into Rust.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_encoding: Option<PropertyValueEncoding>,
+    /// Generic field layout for a structured PTP string. This describes the
+    /// wire grammar without assigning camera-specific coordinate bounds or
+    /// behavior to the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_text: Option<StructuredTextLayout>,
     /// Ordered wire-precondition gate required before the simulator serves this
     /// property. Distinct from `Operation.requires` predicate gating.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,6 +353,10 @@ impl PropertyKind {
 pub struct PropertyValueRow {
     pub label: String,
     pub raw: i64,
+    /// Evidence backing this individual semantic mapping. This is intentionally
+    /// row-scoped because one enum may mix captured and reference-defined values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,6 +396,26 @@ pub struct PropertyValueEncoding {
     pub sentinel: Option<SentinelMask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masks: Vec<SentinelMask>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredTextLayout {
+    pub delimiter: String,
+    pub fields: Vec<StructuredTextField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredTextField {
+    pub name: String,
+    pub scalar: StructuredTextScalar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StructuredTextScalar {
+    SignedInteger,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,6 +544,7 @@ pub enum ControlRole {
     ShutterSpeed,
     Aperture,
     ExposureBias,
+    FocusArea,
 }
 
 /// What a successful write response is known to mean on this surface.
@@ -1019,7 +1049,6 @@ pub struct TransportClose {
 pub struct PcssKnock {
     pub callback_port: u16,
     pub knock_port: u16,
-    pub command_port: u16,
     pub protocol: String,
     /// Delay between discovery datagrams while awaiting the callback.
     #[serde(default = "default_pcss_retry_interval_ms")]
@@ -1027,6 +1056,9 @@ pub struct PcssKnock {
     /// Maximum discovery datagrams sent for one rendezvous attempt.
     #[serde(default = "default_pcss_max_attempts")]
     pub max_attempts: u32,
+    /// Deadline for one attempt to open the advertised command endpoint.
+    #[serde(default = "default_pcss_connect_timeout_ms")]
+    pub connect_timeout_ms: u32,
 }
 
 fn default_pcss_retry_interval_ms() -> u32 {
@@ -1037,11 +1069,18 @@ fn default_pcss_max_attempts() -> u32 {
     10
 }
 
+fn default_pcss_connect_timeout_ms() -> u32 {
+    5_000
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct InitRetries {
     pub max: u32,
     pub backoff_ms: u32,
+    /// Typed InitFail reasons that authorize a same-socket replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_reasons: Vec<HexCode>,
 }
 
 /// An establishment edge: from one connection, bring up another. Carries a named

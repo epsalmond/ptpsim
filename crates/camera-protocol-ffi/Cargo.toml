@@ -30,3 +30,4 @@ protocol-primitives = { workspace = true }
 camera-sim = { workspace = true }
 camera-media-store = { workspace = true }
 futures = { workspace = true }
+serde_json = { workspace = true }

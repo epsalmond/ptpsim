@@ -40,8 +40,9 @@ pub use model::{
     PostviewEvent, Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile,
     PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
     ReestablishConnection, ResponseRetry, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
-    SocketBindings, SocketRole, Step, StepParam, TransferCompletion, TransportClose, TriggerMatch,
-    ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    SocketBindings, SocketRole, Step, StepParam, StructuredTextField, StructuredTextLayout,
+    StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy,
+    ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
@@ -319,6 +320,9 @@ impl CameraManifest {
     /// it executes the old session's exit steps.
     pub fn require_valid_mode_entries(&self) -> Result<(), ManifestError> {
         let mut activity_metadata = std::collections::BTreeMap::new();
+        for (code, property) in &self.properties {
+            require_valid_structured_text(property, code)?;
+        }
         for (connection_id, connection) in &self.connections {
             require_valid_host_activities(connection, connection_id)?;
             require_valid_pcss_rendezvous(connection, connection_id)?;
@@ -436,6 +440,34 @@ impl CameraManifest {
     }
 }
 
+fn require_valid_structured_text(property: &Property, code: &str) -> Result<(), ManifestError> {
+    let Some(layout) = &property.structured_text else {
+        return Ok(());
+    };
+    let path = format!("properties.{code}.structuredText");
+    if property.ptype.as_deref() != Some("str") {
+        return Err(ManifestError::Contract(format!(
+            "{path} is valid only for a property with type str"
+        )));
+    }
+    if layout.delimiter.is_empty() || layout.fields.is_empty() {
+        return Err(ManifestError::Contract(format!(
+            "{path} requires a non-empty delimiter and at least one field"
+        )));
+    }
+    let mut names = std::collections::BTreeSet::new();
+    if layout
+        .fields
+        .iter()
+        .any(|field| field.name.trim().is_empty() || !names.insert(&field.name))
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path}.fields must have unique, non-empty names"
+        )));
+    }
+    Ok(())
+}
+
 fn require_valid_pcss_rendezvous(
     connection: &Connection,
     connection_id: &str,
@@ -444,9 +476,9 @@ fn require_valid_pcss_rendezvous(
         return Ok(());
     };
     let path = format!("connections.{connection_id}.knock");
-    if knock.callback_port == 0 || knock.knock_port == 0 || knock.command_port == 0 {
+    if knock.callback_port == 0 || knock.knock_port == 0 {
         return Err(ManifestError::Contract(format!(
-            "{path} ports must all be non-zero"
+            "{path} callbackPort and knockPort must be non-zero"
         )));
     }
     if knock.protocol.trim().is_empty() {
@@ -454,10 +486,39 @@ fn require_valid_pcss_rendezvous(
             "{path}.protocol must not be empty"
         )));
     }
-    if knock.retry_interval_ms == 0 || knock.max_attempts == 0 {
+    if knock.retry_interval_ms == 0 || knock.max_attempts == 0 || knock.connect_timeout_ms == 0 {
         return Err(ManifestError::Contract(format!(
-            "{path} retryIntervalMs and maxAttempts must be non-zero"
+            "{path} retryIntervalMs, maxAttempts, and connectTimeoutMs must be non-zero"
         )));
+    }
+    if let Some(retries) = &connection.init_retries {
+        let retry_path = format!("connections.{connection_id}.initRetries");
+        let parsed_reasons: Option<Vec<u16>> = retries
+            .when_reasons
+            .iter()
+            .map(|reason| parse_hex_code(reason))
+            .collect();
+        let Some(parsed_reasons) = parsed_reasons else {
+            return Err(ManifestError::Contract(format!(
+                "{retry_path}.whenReasons entries must be 16-bit hexadecimal codes"
+            )));
+        };
+        let incoherent = if retries.max == 0 {
+            retries.backoff_ms != 0 || !retries.when_reasons.is_empty()
+        } else {
+            retries.backoff_ms == 0 || retries.when_reasons.is_empty()
+        };
+        if incoherent {
+            return Err(ManifestError::Contract(format!(
+                "{retry_path} requires non-empty whenReasons and non-zero backoffMs exactly when max is non-zero"
+            )));
+        }
+        let reasons: std::collections::BTreeSet<_> = parsed_reasons.iter().collect();
+        if reasons.len() != parsed_reasons.len() {
+            return Err(ManifestError::Contract(format!(
+                "{retry_path}.whenReasons must not contain duplicates"
+            )));
+        }
     }
     Ok(())
 }

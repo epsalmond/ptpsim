@@ -79,6 +79,10 @@ evidence:
     kind: ios-source
     path: client application/.../client applicationApp/FujiCameraAPISession.swift
     date: 2026-05-26
+  sdkPcssParity20260714:
+    kind: vendor-sdk
+    path: evidence/PCSS_PARITY_20260714.md
+    date: 2026-07-14
   staticAutoImageTransfer:
     kind: app-source
 
@@ -110,6 +114,10 @@ evidence:
     kind: wire-capture
 
     date: 2026-06-02
+  wirePcssParity20260714:
+    kind: wire-capture
+    path: evidence/PCSS_PARITY_20260714.md
+    date: 2026-07-14
   wireReopenTrace:
     kind: wire-capture
 
@@ -484,11 +492,13 @@ operations:
     - shooting
     connections:
     - app
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
     - iosLiveControls
+    - wireTetherCaps20260527
   '0x1015':
     name: GetDevicePropValue
     owner: standard-ptp
@@ -3659,7 +3669,7 @@ properties:
     evidence:
     - activeProbe
   '0xd20c':
-    name: raw_0xd20c
+    name: simultaneousCardRecording
     ptpName: null
     type: u16
     access: readWrite
@@ -3670,11 +3680,33 @@ properties:
       - 2
       - 3
       - 4
-      source: camera
-    controls: {}
+      source: null
+    controls:
+      wireless-tether:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
+    valueRows:
+    - label: rawAndProcessed
+      raw: 1
+      evidence:
+      - wirePcssParity20260714
+    - label: rawOnly
+      raw: 2
+      evidence:
+      - wirePcssParity20260714
+    - label: processedOnly
+      raw: 3
+      evidence:
+      - sdkPcssParity20260714
+    - label: noCardRecording
+      raw: 4
+      evidence:
+      - sdkPcssParity20260714
     evidence:
-    - activeProbe
+    - wirePcssParity20260714
+    - sdkPcssParity20260714
   '0xd20d':
     name: raw_0xd20d
     ptpName: null
@@ -6510,7 +6542,7 @@ properties:
     evidence:
     - activeProbe
   '0xd395':
-    name: raw_0xd395
+    name: liveViewFocusArea
     ptpName: null
     type: str
     access: readWrite
@@ -6518,10 +6550,23 @@ properties:
       form: range
       values: []
       source: camera
-    controls: {}
+    controls:
+      wireless-tether:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
+    structuredText:
+      delimiter: ','
+      fields:
+      - name: x
+        scalar: signedInteger
+      - name: y
+        scalar: signedInteger
+      - name: size
+        scalar: signedInteger
     evidence:
-    - activeProbe
+    - wirePcssParity20260714
   '0xd406':
     name: raw_0xd406
     ptpName: null
@@ -8011,13 +8056,15 @@ connections:
     knock:
       callbackPort: 51560
       knockPort: 51562
-      commandPort: 15740
       protocol: PCSS/1.0
-      retryIntervalMs: 10000
-      maxAttempts: 10
+      retryIntervalMs: 1000
+      maxAttempts: 15
+      connectTimeoutMs: 5000
     initRetries:
       max: 3
-      backoffMs: 250
+      backoffMs: 500
+      whenReasons:
+      - '0x2019'
     objectTransfer:
       strategy: wholeObject
       resumePolicy: restartFromZero
@@ -8051,6 +8098,11 @@ connections:
           property: '0x5010'
           readSource: directProperty
           writeEffect: descriptorOnly
+          effectiveOwner: client
+        focusArea:
+          property: '0xd395'
+          readSource: directProperty
+          writeEffect: confirmed
           effectiveOwner: client
     modes:
     - shooting/stills
@@ -8301,8 +8353,8 @@ connections:
     enables: []
     discovery:
       mechanism: pcss-knock
-      announces: none
-      autoDiscoverable: false
+      announces: callback
+      autoDiscoverable: true
     evidence:
     - wireTether
   xlv:

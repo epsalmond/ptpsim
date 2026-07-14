@@ -20,9 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_yaml::Value;
 
 use super::types::{
-    AwaitSource, BleAdvertSignature, EstablishmentBlock, FamilyBleBlock, IndexedModel,
-    ManufacturerIndex, ModelView, Predicate, PredicateOp, Signature, SignatureKind, Step,
-    StepValue,
+    AwaitSource, BleAdvertSignature, EstablishmentBlock, FamilyBleBlock, FamilyPcssBlock,
+    IndexedModel, ManufacturerIndex, ModelView, PcssNotifySignature, Predicate, PredicateOp,
+    Signature, SignatureKind, Step, StepValue,
 };
 use crate::error::ConfigError;
 
@@ -92,6 +92,7 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
     // -- BLE block: family-merged + GATT-resolved (operates on raw YAML
     //    Values throughout the merge; typed decode happens at the very end).
     let (ble, ble_value_for_resolve) = build_ble_block(index, model)?;
+    let (pcss, pcss_value_for_resolve) = build_pcss_block(index, model)?;
 
     // -- Signatures: per-signature, plant the merged BLE Value as a sibling
     //    so paths like `{ble.advert.manufacturerCompanyId}` resolve, then typed-decode.
@@ -102,6 +103,7 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
         if let Value::Mapping(m) = &mut envelope {
             m.insert(Value::String("__sig__".into()), raw_sig_value.clone());
             m.insert(Value::String("ble".into()), ble_value_for_resolve.clone());
+            m.insert(Value::String("pcss".into()), pcss_value_for_resolve.clone());
         }
         let root_snapshot = envelope.clone();
         substitute_static_paths(
@@ -130,6 +132,7 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
         display_name: model.display_name.clone(),
         manifest_path: model.manifest.clone(),
         ble,
+        pcss,
         signatures,
     })
 }
@@ -154,7 +157,9 @@ fn validate_reconnect_contract(
     }
 
     for (name, signature) in signatures {
-        let Signature::BleAdvert(signature) = signature;
+        let Signature::BleAdvert(signature) = signature else {
+            continue;
+        };
         let Some(route) = &signature.reconnect else {
             continue;
         };
@@ -189,6 +194,49 @@ fn validate_reconnect_contract(
         }
     }
     Ok(())
+}
+
+/// Build the merged manufacturer-family PCSS block. Unlike BLE there are no
+/// symbolic step references to resolve; the raw value is retained only so
+/// signatures can use `{pcss.protocol}` style constants.
+fn build_pcss_block(
+    index: &ManufacturerIndex,
+    model: &IndexedModel,
+) -> Result<(Option<FamilyPcssBlock>, Value), ConfigError> {
+    let mut merged = Value::Null;
+    for fam_id in &model.inherits {
+        let fam_value = index
+            .families
+            .get(fam_id)
+            .ok_or_else(|| ConfigError::UnknownFamily {
+                model_id: model.id.clone(),
+                family_id: fam_id.clone(),
+            })?;
+        let Some(pcss) = fam_value.get("pcss").cloned() else {
+            continue;
+        };
+        merged = deep_merge(merged, pcss);
+    }
+    if matches!(merged, Value::Null) {
+        return Ok((None, Value::Null));
+    }
+    let typed: FamilyPcssBlock =
+        serde_yaml::from_value(merged.clone()).map_err(|error| ConfigError::Validation {
+            path: format!("models.{}.pcss", model.id),
+            message: error.to_string(),
+        })?;
+    if typed.callback_port == 0
+        || typed.knock_port == 0
+        || typed.protocol.trim().is_empty()
+        || typed.discovery.retry_interval_ms == 0
+        || typed.discovery.max_attempts == 0
+    {
+        return Err(ConfigError::Validation {
+            path: format!("models.{}.pcss", model.id),
+            message: "ports, protocol, retryIntervalMs, and maxAttempts must be non-zero".into(),
+        });
+    }
+    Ok((Some(typed), merged))
 }
 
 // ---------------------------------------------------------------------------
@@ -999,6 +1047,14 @@ fn parse_signature(mut value: Value) -> Result<Signature, String> {
                 }
             }
             Ok(Signature::BleAdvert(sig))
+        }
+        SignatureKind::PcssNotify => {
+            let sig: PcssNotifySignature = serde_yaml::from_value(value)
+                .map_err(|e| format!("typed PcssNotify decode: {e}"))?;
+            if sig.require.camera_name.trim().is_empty() || sig.require.service.trim().is_empty() {
+                return Err("pcssNotify require cameraName and service must be non-empty".into());
+            }
+            Ok(Signature::PcssNotify(sig))
         }
     }
 }

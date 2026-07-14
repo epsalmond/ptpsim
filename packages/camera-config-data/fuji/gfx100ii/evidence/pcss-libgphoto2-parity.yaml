@@ -1,0 +1,71 @@
+schema: camera-config-parity/v1
+scope: { manufacturer: FUJIFILM, model: "GFX100 II", firmware: "2.30", connection: wireless-tether, mode: shooting/stills }
+sources:
+  capture: probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
+  libgphoto2:
+    repository: https://github.com/gphoto/libgphoto2
+    revision: 57e2a06e35c6e413180b62371360fdbb077b6e74
+classifications: [alreadyModeled, safeToAdd, modelOrFirmwareDependent, conflictsWithCapture, requiresFocusedCapture]
+
+# The capture inventory is authoritative. Tests require exact operation-row
+# coverage and require every captured property to exist in the generated
+# manifest. Explicit candidates below record semantic comparisons; remaining
+# properties are wire-catalog coverage, not claims that every value is known.
+inventory:
+  operations: { expectedCount: 24, coverage: explicitRows }
+  properties: { expectedCount: 287, coverage: generatedManifest, defaultClassification: alreadyModeled, level: wireCatalog }
+
+operations:
+  - { code: "0x1001", name: GetDeviceInfo, classification: alreadyModeled, basis: advertised-and-standard }
+  - { code: "0x1002", name: OpenSession, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x1003", name: CloseSession, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x1004", name: GetStorageIDs, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x1005", name: GetStorageInfo, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x1006", name: GetNumObjects, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x1007", name: GetObjectHandles, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x1008", name: GetObjectInfo, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x1009", name: GetObject, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x100a", name: GetThumb, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x100b", name: DeleteObject, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x100c", name: SendObjectInfo, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x100d", name: SendObject, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x100e", name: InitiateCapture, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x1014", name: GetDevicePropDesc, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x1015", name: GetDevicePropValue, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x1016", name: SetDevicePropValue, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x1017", name: ResetDevicePropValue, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x1018", name: TerminateOpenCapture, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x101c", name: InitiateOpenCapture, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x900c", name: Vendor900c, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x900d", name: Vendor900d, classification: modelOrFirmwareDependent, basis: advertised-only }
+  - { code: "0x9018", name: GetLiveViewImage, classification: alreadyModeled, basis: advertised-and-captured }
+  - { code: "0x901d", name: Vendor901d, classification: modelOrFirmwareDependent, basis: advertised-only }
+
+properties:
+  - code: "0xd20c"
+    name: SimultaneousCardRecording
+    wireType: u16
+    classification: safeToAdd
+    basis: capture-plus-libgphoto2-symbols
+    reference: "camlibs/ptp2/ptp.h:3004; camlibs/ptp2/ptp.c:7340"
+    rows:
+      - { raw: 1, label: rawAndProcessed, provenance: wirePcssParity20260714 }
+      - { raw: 2, label: rawOnly, provenance: wirePcssParity20260714 }
+      - { raw: 3, label: processedOnly, provenance: sdkPcssParity20260714 }
+      - { raw: 4, label: noCardRecording, provenance: sdkPcssParity20260714 }
+  - { code: "0xd395", name: FocusArea, wireType: str, shape: "signedInteger,signedInteger,signedInteger", classification: safeToAdd, basis: capture-plus-libgphoto2-type, reference: "camlibs/ptp2/ptp.h:3080; camlibs/ptp2/config.c:3283" }
+
+workflows:
+  - { code: optional-auto-discovery, classification: alreadyModeled, basis: captured-pcss-knock-and-callback }
+  - { code: known-address-unicast, classification: alreadyModeled, basis: captured-pcss-knock-and-callback }
+  - { code: same-socket-init-retry, classification: alreadyModeled, basis: captured-initfail-sequence }
+  - { code: object-transfer, classification: alreadyModeled, basis: captured-whole-object-sequence }
+  - { code: live-view-poll, classification: alreadyModeled, basis: captured-0x9018-sequence }
+  - { code: host-format-selection, classification: conflictsWithCapture, basis: no-camera-property-write-observed }
+  - { code: other-live-view-click-modes, classification: requiresFocusedCapture, basis: no-successful-capture }
+
+transport:
+  - { code: libgphoto2-direct-connect, classification: alreadyModeled, basis: "camlibs/ptp2/fujiptpip.c direct endpoint" }
+  - { code: libgphoto2-compressed-data, classification: alreadyModeled, basis: "camlibs/ptp2/fujiptpip.c compressed framing" }
+  - { code: libgphoto2-event-and-jpeg-channels, classification: conflictsWithCapture, basis: pcss-capture-is-command-only-with-polled-live-view }
+  - { code: libgphoto2-fixed-init-shape, classification: conflictsWithCapture, basis: pcss-capture-uses-guid-address-name-and-zero-tail }

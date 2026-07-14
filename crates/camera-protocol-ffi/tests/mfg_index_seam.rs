@@ -64,6 +64,33 @@ fn ble_advert(
     }
 }
 
+#[test]
+fn pcss_notify_recognition_carries_dynamic_endpoint_scope() {
+    let result = store().recognize(Observation::PcssNotify {
+        camera_ipv4: "192.0.2.44".into(),
+        camera_name: "GFX100 II".into(),
+        command_port: 17555,
+        service: "PCSS/1.0".into(),
+    });
+    let Recognition::Candidate {
+        model,
+        connection,
+        runtime_scope,
+        ..
+    } = result
+    else {
+        panic!("expected PCSS candidate");
+    };
+    assert_eq!(model, "gfx100ii");
+    assert_eq!(connection, "wireless-tether");
+    assert!(runtime_scope
+        .iter()
+        .any(|entry| { entry.key == "cameraIpv4" && entry.value == "192.0.2.44" }));
+    assert!(runtime_scope
+        .iter()
+        .any(|entry| entry.key == "commandPort" && entry.value == "17555"));
+}
+
 // ---------------------------------------------------------------------------
 // from_manufacturer_index loader
 // ---------------------------------------------------------------------------

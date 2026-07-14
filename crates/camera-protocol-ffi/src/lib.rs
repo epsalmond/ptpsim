@@ -28,6 +28,11 @@ pub use ptp_executor::{
     PtpCollectionValue, PtpDataOutput, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
     PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError,
 };
+pub mod pcss_executor;
+pub use pcss_executor::{
+    run_pcss_auto_establishment, run_pcss_known_address_establishment, PcssEstablishmentOutcome,
+    PcssExecutorError, PcssExecutorTransport,
+};
 pub mod streaming_executor;
 pub use streaming_executor::{
     run_streaming_action, PtpStreamingError, PtpStreamingOutcome, PtpStreamingSink,
@@ -795,6 +800,7 @@ pub enum ControlRole {
     ShutterSpeed,
     Aperture,
     ExposureBias,
+    FocusArea,
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
@@ -898,6 +904,7 @@ pub struct PropertyInfo {
     pub value_rows: Vec<PropertyValueInfo>,
     pub value_profiles: Vec<PropertyValueProfileInfo>,
     pub value_encoding: Option<PropertyValueEncodingInfo>,
+    pub structured_text: Option<StructuredTextLayoutInfo>,
 }
 
 /// Whether a manifest property is a user-facing setting or protocol machinery.
@@ -921,6 +928,7 @@ impl From<cc::PropertyKind> for PropertyKind {
 pub struct PropertyValueInfo {
     pub label: String,
     pub raw: i64,
+    pub evidence: Vec<String>,
 }
 
 /// A scoped property-value capability profile. These rows may represent an
@@ -958,6 +966,24 @@ pub struct SentinelMaskInfo {
     pub equals: i64,
     pub meaning: Option<String>,
     pub label_prefix: String,
+}
+
+/// Consumer-neutral grammar for a structured PTP string property.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct StructuredTextLayoutInfo {
+    pub delimiter: String,
+    pub fields: Vec<StructuredTextFieldInfo>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct StructuredTextFieldInfo {
+    pub name: String,
+    pub scalar: StructuredTextScalar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum StructuredTextScalar {
+    SignedInteger,
 }
 
 /// An object-format classification from the manifest media table (#36): the
@@ -1021,6 +1047,7 @@ impl From<&cc::PropertyValueRow> for PropertyValueInfo {
         PropertyValueInfo {
             label: row.label.clone(),
             raw: row.raw,
+            evidence: row.evidence.clone(),
         }
     }
 }
@@ -1057,6 +1084,30 @@ impl From<&cc::PropertyValueEncoding> for PropertyValueEncodingInfo {
         PropertyValueEncodingInfo {
             sentinel: enc.sentinel.as_ref().map(SentinelMaskInfo::from),
             masks: enc.masks.iter().map(SentinelMaskInfo::from).collect(),
+        }
+    }
+}
+
+impl From<&cc::StructuredTextLayout> for StructuredTextLayoutInfo {
+    fn from(layout: &cc::StructuredTextLayout) -> Self {
+        StructuredTextLayoutInfo {
+            delimiter: layout.delimiter.clone(),
+            fields: layout
+                .fields
+                .iter()
+                .map(StructuredTextFieldInfo::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<&cc::StructuredTextField> for StructuredTextFieldInfo {
+    fn from(field: &cc::StructuredTextField) -> Self {
+        StructuredTextFieldInfo {
+            name: field.name.clone(),
+            scalar: match field.scalar {
+                cc::StructuredTextScalar::SignedInteger => StructuredTextScalar::SignedInteger,
+            },
         }
     }
 }
@@ -1451,16 +1502,21 @@ pub struct ConnectionEstablishmentInfo {
 pub struct PcssRendezvousInfo {
     pub callback_port: u16,
     pub knock_port: u16,
-    pub command_port: u16,
     pub protocol: String,
     pub retry_interval_ms: u32,
     pub max_attempts: u32,
+    pub connect_timeout_ms: u32,
+    pub init_retries_max: u32,
+    pub init_retries_backoff_ms: u32,
+    pub init_retry_reasons: Vec<u32>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PcssNotifyInfo {
+    pub camera_ipv4: String,
     pub camera_name: String,
     pub command_port: u16,
+    pub service: String,
 }
 
 #[derive(Debug, uniffi::Enum)]
@@ -1771,6 +1827,14 @@ impl ConfigStore {
                 };
                 mfg_index::recognize_ble(index, &facts)
             }
+            Observation::PcssNotify {
+                camera_ipv4,
+                camera_name,
+                command_port,
+                service,
+            } => {
+                mfg_index::recognize_pcss(index, &camera_ipv4, &camera_name, command_port, &service)
+            }
         }
     }
 
@@ -1798,7 +1862,10 @@ impl ConfigStore {
             local_name,
             tx_power,
             ad_records,
-        } = observation;
+        } = observation
+        else {
+            return ReconnectDecision::NoMatch;
+        };
         let facts = cc::index::eval::BleAdvertFacts {
             service_uuids,
             manufacturer_data: manufacturer_data.map(|m| (m.company_id, m.payload)),
@@ -1922,10 +1989,6 @@ impl ConfigStore {
                 value: knock.knock_port.to_string(),
             });
             params.push(KeyValue {
-                key: "commandPort".into(),
-                value: knock.command_port.to_string(),
-            });
-            params.push(KeyValue {
                 key: "protocol".into(),
                 value: knock.protocol.clone(),
             });
@@ -1955,20 +2018,23 @@ impl ConfigStore {
     /// Typed PCSS rendezvous contract for `connection`, or `None` when that
     /// connection does not use the PCSS knock/callback handshake.
     pub fn pcss_rendezvous(&self, connection: String) -> Option<PcssRendezvousInfo> {
-        let knock = self
-            .inner
-            .manifest
-            .connections
-            .get(&connection)?
-            .knock
-            .as_ref()?;
+        let candidate = self.inner.manifest.connections.get(&connection)?;
+        let knock = candidate.knock.as_ref()?;
+        let retries = candidate.init_retries.as_ref();
         Some(PcssRendezvousInfo {
             callback_port: knock.callback_port,
             knock_port: knock.knock_port,
-            command_port: knock.command_port,
             protocol: knock.protocol.clone(),
             retry_interval_ms: knock.retry_interval_ms,
             max_attempts: knock.max_attempts,
+            connect_timeout_ms: knock.connect_timeout_ms,
+            init_retries_max: retries.map_or(0, |retries| retries.max),
+            init_retries_backoff_ms: retries.map_or(0, |retries| retries.backoff_ms),
+            init_retry_reasons: retries
+                .into_iter()
+                .flat_map(|retries| retries.when_reasons.iter())
+                .filter_map(|reason| parse_hex_code(reason).map(u32::from))
+                .collect(),
         })
     }
 
@@ -2046,8 +2112,10 @@ impl ConfigStore {
         let parsed = protocol_primitives::parse_pcss_notify(&payload, &knock.protocol)
             .map_err(codec_decode)?;
         Ok(PcssNotifyInfo {
+            camera_ipv4: parsed.camera_address.to_string(),
             camera_name: parsed.camera_name,
             command_port: parsed.command_port,
+            service: parsed.service,
         })
     }
 
@@ -2524,10 +2592,24 @@ impl ConfigStore {
     /// rows/labels win; generic sentinel/mask metadata can compose labels such
     /// as `AUTO 6400` from the same table data.
     pub fn decode_property(&self, prop: u16, raw: i64) -> Option<PropertyValueInfo> {
+        if let Some(row) = self
+            .inner
+            .manifest
+            .property(prop)?
+            .value_rows
+            .iter()
+            .find(|row| row.raw == raw)
+        {
+            return Some(PropertyValueInfo::from(row));
+        }
         self.inner
             .manifest
             .decode_property_label(prop, raw)
-            .map(|label| PropertyValueInfo { label, raw })
+            .map(|label| PropertyValueInfo {
+                label,
+                raw,
+                evidence: Vec::new(),
+            })
     }
 
     /// Encode a property label to wire bytes using the manifest row/sentinel data
@@ -2547,6 +2629,71 @@ impl ConfigStore {
             CodecError::Encode(format!("property 0x{prop:04x} has no encodable width"))
         })?;
         protocol_primitives::encode_value(raw, width.into()).map_err(codec_encode)
+    }
+
+    /// Encode a manifest-declared PTP string property. This keeps structured
+    /// text values (for example comma-separated coordinate tuples) on the same
+    /// generic property path without teaching the FFI about camera-specific
+    /// field names or limits.
+    pub fn encode_property_text(&self, prop: u16, value: String) -> Result<Vec<u8>, CodecError> {
+        let property = self
+            .inner
+            .manifest
+            .property(prop)
+            .filter(|property| property.ptype.as_deref() == Some("str"))
+            .ok_or_else(|| {
+                CodecError::Encode(format!(
+                    "property 0x{prop:04x} is not a manifest-declared string"
+                ))
+            })?;
+        let _ = property;
+        let mut writer = ptp_core::Writer::new();
+        writer.ptp_string(&value).map_err(codec_encode)?;
+        Ok(writer.into_vec())
+    }
+
+    /// Encode integer fields according to a manifest-declared structured-text
+    /// grammar. Field count and separators are data; numeric bounds remain
+    /// unspecified until supported by evidence.
+    pub fn encode_structured_integer_property(
+        &self,
+        prop: u16,
+        values: Vec<i64>,
+    ) -> Result<Vec<u8>, CodecError> {
+        let property = self
+            .inner
+            .manifest
+            .property(prop)
+            .filter(|property| property.ptype.as_deref() == Some("str"))
+            .ok_or_else(|| {
+                CodecError::Encode(format!(
+                    "property 0x{prop:04x} is not a manifest-declared string"
+                ))
+            })?;
+        let layout = property.structured_text.as_ref().ok_or_else(|| {
+            CodecError::Encode(format!(
+                "property 0x{prop:04x} has no structured-text grammar"
+            ))
+        })?;
+        if values.len() != layout.fields.len()
+            || layout
+                .fields
+                .iter()
+                .any(|field| field.scalar != cc::StructuredTextScalar::SignedInteger)
+        {
+            return Err(CodecError::Encode(format!(
+                "property 0x{prop:04x} requires {} signed integer fields",
+                layout.fields.len()
+            )));
+        }
+        self.encode_property_text(
+            prop,
+            values
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(&layout.delimiter),
+        )
     }
 
     /// The encoder width for a property, resolved from the manifest's `type`
@@ -2618,6 +2765,10 @@ impl ConfigStore {
                         .value_encoding
                         .as_ref()
                         .map(PropertyValueEncodingInfo::from),
+                    structured_text: p
+                        .structured_text
+                        .as_ref()
+                        .map(StructuredTextLayoutInfo::from),
                 })
             })
             .collect()
@@ -3084,6 +3235,7 @@ impl From<cc::ControlRole> for ControlRole {
             cc::ControlRole::ShutterSpeed => Self::ShutterSpeed,
             cc::ControlRole::Aperture => Self::Aperture,
             cc::ControlRole::ExposureBias => Self::ExposureBias,
+            cc::ControlRole::FocusArea => Self::FocusArea,
         }
     }
 }

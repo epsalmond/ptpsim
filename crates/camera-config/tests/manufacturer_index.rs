@@ -263,7 +263,9 @@ fn static_path_refs_substitute_in_signatures() {
         .find(|(name, _)| name == "bleLegacyAdvert")
         .unwrap();
     assert_eq!(name, "bleLegacyAdvert");
-    let Signature::BleAdvert(sig) = sig;
+    let Signature::BleAdvert(sig) = sig else {
+        panic!("expected BLE signature");
+    };
     // The legacy require is all-of [manufacturerData, serviceUuids] with
     // both template refs resolved to literals.
     let AdvertPredicate::All(children) = &sig.require else {
@@ -292,7 +294,10 @@ fn awake_legacy_signature_uses_local_name_identity_without_fuji_mfg_data() {
         .iter()
         .find(|(name, _)| name == "bleAwakeLegacyAdvert")
         .unwrap()
-        .1;
+        .1
+    else {
+        panic!("expected BLE signature");
+    };
     let AdvertPredicate::All(children) = &sig.require else {
         panic!("expected all-of predicate, got {:?}", sig.require);
     };
@@ -335,7 +340,10 @@ fn awake_legacy_signature_uses_local_name_identity_without_fuji_mfg_data() {
         .iter()
         .find(|(name, _)| name == "bleLegacyAdvert")
         .unwrap()
-        .1;
+        .1
+    else {
+        panic!("expected BLE signature");
+    };
     assert!(pairing.discoverable);
     assert!(pairing.reconnect.is_none());
 }
@@ -413,6 +421,7 @@ fn signatures_preserve_file_declaration_order() {
     assert_eq!(
         names,
         vec![
+            "pcssGfx100ii",
             "bleStartupLegacyAdvert",
             "bleStartupRedAdvert",
             "bleAwakeRedAdvert",
@@ -420,7 +429,7 @@ fn signatures_preserve_file_declaration_order() {
             "bleLegacyAdvert",
             "bleRedAdvert",
         ],
-        "startup/awake reconnect routes must precede broad pairing signatures (§11.7)",
+        "protocol-local signatures retain their authored precedence (§11.7)",
     );
 }
 
@@ -727,7 +736,10 @@ fn signature_scope_carries_literal_facts() {
         .iter()
         .find(|(name, _)| name == "bleLegacyAdvert")
         .unwrap()
-        .1;
+        .1
+    else {
+        panic!("expected BLE signature");
+    };
     assert_eq!(
         legacy.scope.get("style").map(String::as_str),
         Some("legacy")
@@ -740,7 +752,10 @@ fn signature_scope_carries_literal_facts() {
         .iter()
         .find(|(name, _)| name == "bleRedAdvert")
         .unwrap()
-        .1;
+        .1
+    else {
+        panic!("expected BLE signature");
+    };
     assert_eq!(red.scope.get("style").map(String::as_str), Some("red"));
     // RED captures 5 ASCII bytes into pairingKeyBytes AND shortSerial,
     // both from the manufacturer-data payload.
@@ -1135,7 +1150,9 @@ fn nikon_style_signature_without_company_id_parses() {
             - not: { txPower: { min: 0 } }"#,
     );
     let idx = ResolvedManufacturerIndex::from_yaml(&yaml).expect("nikon-style shape loads");
-    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1;
+    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1 else {
+        panic!("expected BLE signature");
+    };
     let AdvertPredicate::All(children) = &sig.require else {
         panic!("expected all-of");
     };
@@ -1152,7 +1169,9 @@ fn manufacturer_payload_constraint_without_company_id_matches() {
     );
     let idx = ResolvedManufacturerIndex::from_yaml(&yaml)
         .expect("manufacturerData without companyId but with payload constraint loads");
-    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1;
+    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1 else {
+        panic!("expected BLE signature");
+    };
     let facts = BleAdvertFacts {
         manufacturer_data: Some((0x9999, vec![0x42, 0x10])),
         ..Default::default()
@@ -1185,7 +1204,9 @@ fn service_data_and_raw_ad_record_predicates_evaluate() {
     );
     let idx = ResolvedManufacturerIndex::from_yaml(&yaml)
         .expect("serviceData/rawAdRecord predicate loads");
-    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1;
+    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1 else {
+        panic!("expected BLE signature");
+    };
     let facts = BleAdvertFacts {
         service_data: vec![("fe2c".into(), vec![0xaa, 0xbb, 0xcc, 0xdd])],
         // Raw AD manufacturer payload as seen on air: company id included.
@@ -1297,7 +1318,9 @@ models:
         suggests: { connection: ble, confidence: low }
 "#;
     let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("capture sources load");
-    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1;
+    let Signature::BleAdvert(sig) = &idx.models[0].signatures[0].1 else {
+        panic!("expected BLE signature");
+    };
     assert_eq!(sig.capture.len(), 4);
     assert_eq!(sig.capture[0].source, AdvertByteSource::ManufacturerData);
     assert_eq!(sig.capture[1].source, AdvertByteSource::LocalName);

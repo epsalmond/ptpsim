@@ -256,6 +256,7 @@ dependencies = [
  "protocol-primitives",
  "ptp-core",
  "regex-lite",
+ "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
  "uniffi",

@@ -18,6 +18,13 @@ manufacturer: FUJIFILM
 
 families:
   fuji:
+    # PCSS address discovery is an optional broadcast front end. Saved/manual
+    # addresses skip it and enter the same unicast rendezvous directly.
+    pcss:
+      callbackPort: 51560
+      knockPort: 51562
+      protocol: "PCSS/1.0"
+      discovery: { retryIntervalMs: 1000, maxAttempts: 60 }
     ble:
       # Universal GATT catalog. Every Fuji BLE camera, every firmware.
       # The same UUIDs are used for both LEGACY and RED styles (observed in
@@ -653,6 +660,13 @@ models:
     # pairing discovery, the legacy signature precedes RED because the
     # file-transfer service uniquely identifies that legacy form.
     signatures:
+      pcssGfx100ii:
+        kind: pcssNotify
+        require:
+          cameraName: "GFX100 II"
+          service: "{pcss.protocol}"
+        suggests: { connection: wireless-tether, confidence: high }
+
       bleStartupLegacyAdvert:
         kind: bleAdvert
         require:

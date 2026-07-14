@@ -297,17 +297,20 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
         .expect("wireless-tether PCSS rendezvous");
     assert_eq!(rendezvous.callback_port, 51560);
     assert_eq!(rendezvous.knock_port, 51562);
-    assert_eq!(rendezvous.command_port, 15740);
     assert_eq!(rendezvous.protocol, "PCSS/1.0");
-    assert_eq!(rendezvous.retry_interval_ms, 10_000);
-    assert_eq!(rendezvous.max_attempts, 10);
+    assert_eq!(rendezvous.retry_interval_ms, 1_000);
+    assert_eq!(rendezvous.max_attempts, 15);
+    assert_eq!(rendezvous.connect_timeout_ms, 5_000);
+    assert_eq!(rendezvous.init_retries_max, 3);
+    assert_eq!(rendezvous.init_retries_backoff_ms, 500);
+    assert_eq!(rendezvous.init_retry_reasons, [0x2019]);
 
     let discovery = s
-        .build_pcss_discovery("wireless-tether".into(), "192.168.7.49".into())
+        .build_pcss_discovery("wireless-tether".into(), "192.0.2.49".into())
         .expect("discovery builds");
     assert_eq!(
         discovery,
-        b"DISCOVERY * HTTP/1.1\r\nHOST: 192.168.7.49\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0"
+        b"DISCOVERY * HTTP/1.1\r\nHOST: 192.0.2.49\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0"
     );
     let guid = vec![
         0xf2, 0xe4, 0x53, 0x8f, 0xad, 0xa5, 0x48, 0x5d, 0x87, 0xb2, 0x7f, 0x0b, 0xd3, 0xd5, 0xde,
@@ -317,19 +320,19 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
         .build_pcss_init(
             "wireless-tether".into(),
             guid,
-            "192.168.7.49".into(),
+            "192.0.2.49".into(),
             "mbp".into(),
         )
         .expect("PCSS init builds");
     assert_eq!(init.len(), 82);
     assert_eq!(&init[0..8], &[82, 0, 0, 0, 1, 0, 0, 0]);
-    assert_eq!(&init[24..28], &[0x31, 0x07, 0xa8, 0xc0]);
+    assert_eq!(&init[24..28], &[0x31, 0x02, 0x00, 0xc0]);
     assert_eq!(&init[28..36], &[b'm', 0, b'b', 0, b'p', 0, 0, 0]);
     assert!(s
         .build_pcss_init(
             "wireless-tether".into(),
             vec![0; 15],
-            "192.168.7.49".into(),
+            "192.0.2.49".into(),
             "mbp".into(),
         )
         .is_err());
@@ -337,7 +340,7 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
         .build_pcss_init(
             "wireless-tether".into(),
             vec![0; 16],
-            "192.168.7.49".into(),
+            "192.0.2.49".into(),
             "mbp\0other".into(),
         )
         .is_err());
@@ -353,18 +356,19 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
         .build_pcss_init(
             "wireless-tether".into(),
             vec![0; 16],
-            "192.168.7.49".into(),
+            "192.0.2.49".into(),
             "thirteen-units".into(),
         )
         .is_err());
     let notify = s
         .parse_pcss_notify(
             "wireless-tether".into(),
-            b"NOTIFY * HTTP/1.1\r\nCAMERANAME: CAMERA\r\nDSCPORT:15740\r\nSERVICE: PCSS/1.0\r\n\r\n\0"
+            b"NOTIFY * HTTP/1.1\r\nDSC: 192.0.2.44\r\nCAMERANAME: CAMERA\r\nDSCPORT:15740\r\nSERVICE: PCSS/1.0\r\n"
                 .to_vec(),
         )
         .expect("notify parses");
     assert_eq!(notify.camera_name, "CAMERA");
+    assert_eq!(notify.camera_ipv4, "192.0.2.44");
     assert_eq!(notify.command_port, 15740);
     assert_eq!(
         s.build_pcss_callback_ack("wireless-tether".into())
@@ -409,7 +413,12 @@ fn pcss_transfer_and_semantic_controls_surface_evidence_state() {
     }));
 
     let controls = s.control_surface("wireless-tether".into(), "shooting/stills".into());
-    assert_eq!(controls.len(), 4);
+    assert_eq!(controls.len(), 5);
+    let focus = controls
+        .iter()
+        .find(|control| matches!(control.role, ControlRole::FocusArea))
+        .expect("focus-area semantic control");
+    assert_eq!(focus.property, 0xd395);
     let exposure_bias = controls
         .iter()
         .find(|control| matches!(control.role, ControlRole::ExposureBias))

@@ -759,7 +759,7 @@ async fn run_knock_loop(
     loop {
         tokio::select! {
             received = knock.recv_from(&mut buf) => {
-                let Ok((n, _peer)) = received else {
+                let Ok((n, peer)) = received else {
                     continue;
                 };
                 let Some(discovery) = parse_pcss_discovery(&buf[..n], &knock_config.protocol) else {
@@ -770,15 +770,39 @@ async fn run_knock_loop(
                 let protocol = knock_config.protocol.clone();
                 tokio::spawn(async move {
                     if let Ok(mut callback) = TcpStream::connect(callback).await {
-                        let notify = pcss_notify_message(&camera_name, command_port, &protocol);
+                        let Some(camera_address) = route_selected_ipv4(peer) else {
+                            return;
+                        };
+                        let notify = pcss_notify_message(
+                            camera_address,
+                            &camera_name,
+                            command_port,
+                            &protocol,
+                        );
                         let _ = callback.write_all(&notify).await;
-                        let mut ack = [0u8; 256];
-                        let _ = callback.read(&mut ack).await;
+                        let mut ack = [0u8; 18];
+                        if callback.read_exact(&mut ack).await.is_ok()
+                            && ack != *b"HTTP/1.1 200 OK\r\n\0"
+                        {
+                            let _ = callback.shutdown().await;
+                        }
                     }
                 });
             }
             _ = shutdown.recv() => break,
         }
+    }
+}
+
+fn route_selected_ipv4(peer: std::net::SocketAddr) -> Option<std::net::Ipv4Addr> {
+    let std::net::SocketAddr::V4(peer) = peer else {
+        return None;
+    };
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect(peer).ok()?;
+    match socket.local_addr().ok()? {
+        std::net::SocketAddr::V4(local) => Some(*local.ip()),
+        std::net::SocketAddr::V6(_) => None,
     }
 }
 

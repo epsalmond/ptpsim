@@ -48,7 +48,9 @@ fn recognize(
     facts: &BleAdvertFacts,
 ) -> (BTreeMap<String, String>, BTreeMap<String, Encoding>) {
     for (_name, sig) in &view.signatures {
-        let Signature::BleAdvert(sig) = sig;
+        let Signature::BleAdvert(sig) = sig else {
+            continue;
+        };
         if sig.discoverable && eval::advert_matches(sig, facts) {
             return (
                 eval::advert_scope(sig, facts).into_iter().collect(),

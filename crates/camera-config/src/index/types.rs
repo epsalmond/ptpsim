@@ -85,13 +85,32 @@ where
 // Families
 // ---------------------------------------------------------------------------
 
-/// Family-shared facts. Today carries only BLE; future families may add USB,
-/// PCSS, etc.
+/// Family-shared discovery and establishment facts.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct FamilyBlock {
     #[serde(default)]
     pub ble: Option<FamilyBleBlock>,
+    #[serde(default)]
+    pub pcss: Option<FamilyPcssBlock>,
+}
+
+/// PCSS facts available before a body manifest has been selected. The caller
+/// supplies the route-specific subnet broadcast address at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FamilyPcssBlock {
+    pub callback_port: u16,
+    pub knock_port: u16,
+    pub protocol: String,
+    pub discovery: PcssDiscoveryPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PcssDiscoveryPolicy {
+    pub retry_interval_ms: u32,
+    pub max_attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -950,13 +969,29 @@ pub struct IndexedSignature {
 #[serde(rename_all = "camelCase")]
 pub enum SignatureKind {
     BleAdvert,
+    PcssNotify,
 }
 
-/// Post-resolution typed signature. Today the MVP only ships
-/// `Signature::BleAdvert`; later transports extend the enum.
+/// Post-resolution typed signature.
 #[derive(Debug, Clone)]
 pub enum Signature {
     BleAdvert(BleAdvertSignature),
+    PcssNotify(PcssNotifySignature),
+}
+
+/// Recognition predicate over an already parsed PCSS callback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PcssNotifySignature {
+    pub require: PcssNotifyPredicate,
+    pub suggests: SuggestsBlock,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PcssNotifyPredicate {
+    pub camera_name: String,
+    pub service: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1206,6 +1241,8 @@ pub struct ModelView {
     /// Merged family + model BLE block, with GATT names already resolved on
     /// every Step's `gatt:` field.
     pub ble: Option<FamilyBleBlock>,
+    /// Merged family PCSS discovery policy.
+    pub pcss: Option<FamilyPcssBlock>,
     /// Signatures in file-declaration order (top-of-file first), with all
     /// `{family.path}` refs resolved to literals.
     pub signatures: Vec<(String, Signature)>,

@@ -34,8 +34,9 @@ pub use types::{
     BleDiscoverServicesStep, BleNotifyStep, BleNotifyUntil, BleReadStep, BleReconnectPolicy,
     BleRequestMtuStep, BleSubscribeStep, BleWriteChunkStep, BleWriteStep, ByteAssertion, CccdMode,
     ChunkField, ChunkFrameField, Confidence, Encoding, EstablishmentBlock, FamilyBleBlock,
-    FamilyBlock, IfStep, IndexedModel, LocalNamePredicate, ManufacturerIndex, MfgDataPredicate,
-    ModelView, NotifyCapture, PayloadPredicate, Predicate, PredicateOp, ReconnectDisposition,
+    FamilyBlock, FamilyPcssBlock, IfStep, IndexedModel, LocalNamePredicate, ManufacturerIndex,
+    MfgDataPredicate, ModelView, NotifyCapture, PayloadPredicate, PcssDiscoveryPolicy,
+    PcssNotifyPredicate, PcssNotifySignature, Predicate, PredicateOp, ReconnectDisposition,
     ReconnectSuggestion, RetryFailureKind, RetryStep, Signature, SignatureKind, Step, StepOptions,
     StepValue, SuggestsBlock, Transform,
 };

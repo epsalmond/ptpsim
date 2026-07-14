@@ -1336,7 +1336,7 @@ connections:
     initShape: pcssKnock
     commandFraming: compressed
     bindings: {{ command: 15740 }}
-    knock: {{ callbackPort: {callback_port}, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0" }}
+    knock: {{ callbackPort: {callback_port}, knockPort: 51562, protocol: "PCSS/1.0" }}
 operations:
   "0x1002": {{ name: OpenSession, connections: [wireless-tether] }}
 properties: {{}}
@@ -1400,8 +1400,11 @@ properties: {{}}
     callback_stream.write_all(b"HTTP/1.1 200 OK\r\n\0").unwrap();
     let notify = String::from_utf8_lossy(&notify);
     assert!(notify.starts_with("NOTIFY * HTTP/1.1\r\n"), "{notify}");
+    assert!(notify.contains("DSC: 127.0.0.1\r\n"), "{notify}");
+    assert!(notify.contains("CAMERANAME: GFX100 II\r\n"), "{notify}");
+    assert!(notify.contains("SERVICE: PCSS/1.0\r\n"), "{notify}");
     assert!(
-        notify.contains(&format!("DSCPORT:{}\r\n", command_addr.port())),
+        notify.contains(&format!("DSCPORT: {}\r\n", command_addr.port())),
         "{notify}"
     );
 
