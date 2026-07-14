@@ -26,6 +26,7 @@ pub enum PcssInitError {
     WrongPacketType(u32),
     MissingHostnameTerminator,
     InvalidHostname,
+    HostnameTooLong,
     NonZeroTail,
 }
 
@@ -40,12 +41,41 @@ impl fmt::Display for PcssInitError {
                 write!(f, "PCSS init hostname is not NUL-terminated")
             }
             Self::InvalidHostname => write!(f, "PCSS init hostname is not valid UTF-16LE"),
+            Self::HostnameTooLong => write!(f, "PCSS init hostname exceeds 12 UTF-16 code units"),
             Self::NonZeroTail => write!(f, "PCSS init zero-tail contains nonzero bytes"),
         }
     }
 }
 
 impl std::error::Error for PcssInitError {}
+
+/// Build the fixed PCSS InitCommandRequest. Unlike ordinary PTP/IP init, this
+/// layout carries the route-selected client IPv4 and a fixed-width host name.
+pub fn pcss_init_message(
+    initiator_guid: [u8; 16],
+    client_ip: Ipv4Addr,
+    hostname: &str,
+) -> Result<Vec<u8>, PcssInitError> {
+    let hostname: Vec<u16> = hostname.encode_utf16().collect();
+    let max_units = (ZERO_TAIL_OFFSET - NAME_OFFSET) / 2 - 1;
+    if hostname.contains(&0) {
+        return Err(PcssInitError::InvalidHostname);
+    }
+    if hostname.len() > max_units {
+        return Err(PcssInitError::HostnameTooLong);
+    }
+
+    let mut bytes = vec![0u8; INIT_LEN];
+    bytes[0..4].copy_from_slice(&(INIT_LEN as u32).to_le_bytes());
+    bytes[4..8].copy_from_slice(&INIT_PACKET_TYPE.to_le_bytes());
+    bytes[8..24].copy_from_slice(&initiator_guid);
+    bytes[IP_OFFSET..IP_OFFSET + 4].copy_from_slice(&u32::from(client_ip).to_le_bytes());
+    for (index, unit) in hostname.into_iter().enumerate() {
+        let offset = NAME_OFFSET + index * 2;
+        bytes[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    Ok(bytes)
+}
 
 pub fn parse_pcss_init(bytes: &[u8]) -> Result<PcssInit, PcssInitError> {
     if bytes.len() != INIT_LEN {
@@ -225,6 +255,30 @@ mod tests {
         let parsed = parse_pcss_init(&valid_init()).unwrap();
         assert_eq!(parsed.client_ip, Ipv4Addr::new(192, 168, 7, 49));
         assert_eq!(parsed.hostname, "mbp");
+    }
+
+    #[test]
+    fn builds_wire_backed_pcss_init_shape() {
+        let guid: [u8; 16] = valid_init()[8..24].try_into().unwrap();
+        let bytes = pcss_init_message(guid, "192.168.7.49".parse().unwrap(), "mbp").unwrap();
+        assert_eq!(bytes, valid_init());
+        assert_eq!(parse_pcss_init(&bytes).unwrap().hostname, "mbp");
+    }
+
+    #[test]
+    fn rejects_pcss_init_hostname_over_fixed_field() {
+        assert_eq!(
+            pcss_init_message([0; 16], Ipv4Addr::LOCALHOST, "thirteen-units").unwrap_err(),
+            PcssInitError::HostnameTooLong
+        );
+    }
+
+    #[test]
+    fn rejects_pcss_init_hostname_with_embedded_nul() {
+        assert_eq!(
+            pcss_init_message([0; 16], Ipv4Addr::LOCALHOST, "mbp\0other").unwrap_err(),
+            PcssInitError::InvalidHostname
+        );
     }
 
     #[test]

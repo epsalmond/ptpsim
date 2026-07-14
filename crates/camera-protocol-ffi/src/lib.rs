@@ -1997,6 +1997,37 @@ impl ConfigStore {
         ))
     }
 
+    /// Build the fixed PCSS InitCommandRequest after rendezvous. The host
+    /// supplies its route-selected IPv4, 16-byte initiator GUID, and friendly
+    /// name; all layout details remain inside protocol-primitives.
+    pub fn build_pcss_init(
+        &self,
+        connection: String,
+        initiator_guid: Vec<u8>,
+        client_ipv4: String,
+        friendly_name: String,
+    ) -> Result<Vec<u8>, CodecError> {
+        self.inner
+            .manifest
+            .connections
+            .get(&connection)
+            .filter(|candidate| candidate.init_shape.as_deref() == Some("pcssKnock"))
+            .ok_or_else(|| {
+                CodecError::Encode(format!("connection '{connection}' has no PCSS init"))
+            })?;
+        let initiator_guid: [u8; 16] = initiator_guid.try_into().map_err(|guid: Vec<u8>| {
+            CodecError::Encode(format!(
+                "PCSS initiator GUID is {} bytes, expected 16",
+                guid.len()
+            ))
+        })?;
+        let client_ip = client_ipv4
+            .parse::<std::net::Ipv4Addr>()
+            .map_err(codec_encode)?;
+        protocol_primitives::pcss_init_message(initiator_guid, client_ip, &friendly_name)
+            .map_err(codec_encode)
+    }
+
     /// Parse and protocol-check the camera's PCSS callback.
     pub fn parse_pcss_notify(
         &self,

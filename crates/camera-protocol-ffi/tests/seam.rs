@@ -309,6 +309,54 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
         discovery,
         b"DISCOVERY * HTTP/1.1\r\nHOST: 192.168.7.49\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0"
     );
+    let guid = vec![
+        0xf2, 0xe4, 0x53, 0x8f, 0xad, 0xa5, 0x48, 0x5d, 0x87, 0xb2, 0x7f, 0x0b, 0xd3, 0xd5, 0xde,
+        0xd0,
+    ];
+    let init = s
+        .build_pcss_init(
+            "wireless-tether".into(),
+            guid,
+            "192.168.7.49".into(),
+            "mbp".into(),
+        )
+        .expect("PCSS init builds");
+    assert_eq!(init.len(), 82);
+    assert_eq!(&init[0..8], &[82, 0, 0, 0, 1, 0, 0, 0]);
+    assert_eq!(&init[24..28], &[0x31, 0x07, 0xa8, 0xc0]);
+    assert_eq!(&init[28..36], &[b'm', 0, b'b', 0, b'p', 0, 0, 0]);
+    assert!(s
+        .build_pcss_init(
+            "wireless-tether".into(),
+            vec![0; 15],
+            "192.168.7.49".into(),
+            "mbp".into(),
+        )
+        .is_err());
+    assert!(s
+        .build_pcss_init(
+            "wireless-tether".into(),
+            vec![0; 16],
+            "192.168.7.49".into(),
+            "mbp\0other".into(),
+        )
+        .is_err());
+    assert!(s
+        .build_pcss_init(
+            "wireless-tether".into(),
+            vec![0; 16],
+            "not-ipv4".into(),
+            "mbp".into(),
+        )
+        .is_err());
+    assert!(s
+        .build_pcss_init(
+            "wireless-tether".into(),
+            vec![0; 16],
+            "192.168.7.49".into(),
+            "thirteen-units".into(),
+        )
+        .is_err());
     let notify = s
         .parse_pcss_notify(
             "wireless-tether".into(),
