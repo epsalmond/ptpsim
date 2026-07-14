@@ -40,6 +40,10 @@ const MAX_AWAIT_ITERS: usize = 256;
 /// corrupt array count, not real iteration. Set high enough for any real card.
 const MAX_FOREACH_ITERS: usize = 100_000;
 
+/// Collection captures feed `forEach`, so reject a declared count the walker
+/// could never consume before allocating or reading the payload.
+const MAX_CAPTURED_U32S: u32 = MAX_FOREACH_ITERS as u32;
+
 /// Deterministic cap on a `chunk` loop's windows. Covers the 4 GiB `SIZE_CEILING`
 /// at any realistic chunk size (4 GiB / 12 MiB ≈ 358) with wide headroom; a
 /// degenerate tiny window hits it instead of spinning. The §11.15 analogue.
@@ -259,7 +263,11 @@ impl Ctx<'_> {
                 _ => None,
             };
             if response_code(&reply) == Some(resp::OK) {
-                if let Some((source, _)) = completion.as_ref() {
+                let captures_collection = step
+                    .captures
+                    .iter()
+                    .any(|capture| capture.source == CaptureSource::PtpU32Array);
+                if let Some((source, _)) = completion.as_ref().filter(|_| !captures_collection) {
                     consume_stream(source).map_err(err)?;
                 }
                 if let Err(message) = self.apply_captures(&step.captures, code, &reply) {
@@ -644,7 +652,9 @@ impl Ctx<'_> {
                 }
                 CaptureSource::PropValue => return Err("propValue capture requires getProp".into()),
                 CaptureSource::PtpU32Array => {
-                    return Err("ptpU32Array capture requires getProp".into())
+                    let collection = decode_collection_capture(reply)?;
+                    self.collections.insert(capture.bind.clone(), collection);
+                    continue;
                 }
                 CaptureSource::U32Le => {
                     let data = scalar_capture_head(reply, 4, "u32Le")?;
@@ -842,6 +852,105 @@ fn scalar_capture_head(reply: &Reply, width: usize, label: &str) -> Result<Vec<u
     }
 }
 
+fn decode_collection_capture(reply: &Reply) -> Result<Vec<u64>, String> {
+    match reply {
+        Reply::Data { data, .. } => decode_collection_bytes(data),
+        Reply::DataStream { source, .. } => decode_collection_stream(source),
+        Reply::Response(_) | Reply::NoResponse | Reply::Close => {
+            Err("ptpU32Array capture requires a data or stream reply".into())
+        }
+    }
+}
+
+fn decode_collection_bytes(data: &[u8]) -> Result<Vec<u64>, String> {
+    let count_bytes: [u8; 4] = data
+        .get(..4)
+        .ok_or_else(|| "decode captured ptpU32Array: count needs 4 bytes".to_string())?
+        .try_into()
+        .expect("four-byte count");
+    let count = u32::from_le_bytes(count_bytes);
+    if count > MAX_CAPTURED_U32S {
+        return Err(format!(
+            "decode captured ptpU32Array: count {count} exceeds {MAX_CAPTURED_U32S}"
+        ));
+    }
+    let expected =
+        4_usize
+            .checked_add((count as usize).checked_mul(4).ok_or_else(|| {
+                "decode captured ptpU32Array: payload length overflow".to_string()
+            })?)
+            .ok_or_else(|| "decode captured ptpU32Array: payload length overflow".to_string())?;
+    if data.len() > expected {
+        return Err(format!(
+            "decode captured ptpU32Array: {} trailing bytes",
+            data.len() - expected
+        ));
+    }
+    if data.len() != expected {
+        return Err(format!(
+            "decode captured ptpU32Array: expected {expected} bytes for {count} values, got {}",
+            data.len()
+        ));
+    }
+    Ok(data[4..]
+        .chunks_exact(4)
+        .map(|bytes| {
+            u64::from(u32::from_le_bytes(
+                bytes.try_into().expect("four-byte value"),
+            ))
+        })
+        .collect())
+}
+
+fn decode_collection_stream(source: &ByteSource) -> Result<Vec<u64>, String> {
+    let header = source
+        .read_chunk(0, 4)
+        .map_err(|error| format!("read ptpU32Array capture count: {error}"))?;
+    if header.len() != 4 {
+        return Err(format!(
+            "decode captured ptpU32Array: count needs 4 bytes, got {}",
+            header.len()
+        ));
+    }
+    let count = u32::from_le_bytes(header.try_into().expect("four-byte header"));
+    if count > MAX_CAPTURED_U32S {
+        return Err(format!(
+            "decode captured ptpU32Array: count {count} exceeds {MAX_CAPTURED_U32S}"
+        ));
+    }
+    let expected =
+        4_u64
+            .checked_add(u64::from(count).checked_mul(4).ok_or_else(|| {
+                "decode captured ptpU32Array: payload length overflow".to_string()
+            })?)
+            .ok_or_else(|| "decode captured ptpU32Array: payload length overflow".to_string())?;
+    if source.len() != expected {
+        return Err(format!(
+            "decode captured ptpU32Array: expected {expected} bytes for {count} values, got {}",
+            source.len()
+        ));
+    }
+
+    let mut values = Vec::with_capacity(count as usize);
+    let mut offset = 4_u64;
+    while offset < expected {
+        let bytes = source
+            .read_chunk(offset, 4)
+            .map_err(|error| format!("read ptpU32Array capture value: {error}"))?;
+        if bytes.len() != 4 {
+            return Err(format!(
+                "decode captured ptpU32Array: value at {offset} needs 4 bytes, got {}",
+                bytes.len()
+            ));
+        }
+        values.push(u64::from(u32::from_le_bytes(
+            bytes.try_into().expect("four-byte value"),
+        )));
+        offset += 4;
+    }
+    Ok(values)
+}
+
 fn consume_stream(source: &ByteSource) -> Result<(), String> {
     const CHUNK_BYTES: usize = 1024 * 1024;
     let total = source.len();
@@ -1030,6 +1139,99 @@ media:
         )
         .expect_err("a scalar payload is not a count-prefixed u32 array");
         assert!(error.message.contains("decode array prop"));
+    }
+
+    #[test]
+    fn ptp_u32_array_capture_rejects_trailing_bytes() {
+        let mut data = 1_u32.to_le_bytes().to_vec();
+        data.extend_from_slice(&7_u32.to_le_bytes());
+        data.push(0xff);
+
+        let error = decode_collection_bytes(&data).expect_err("trailing data is malformed");
+        assert!(error.contains("trailing bytes"));
+    }
+
+    #[test]
+    fn ptp_u32_array_capture_rejects_over_ceiling_header_before_allocation() {
+        let data = (MAX_CAPTURED_U32S + 1).to_le_bytes();
+
+        let error = decode_collection_bytes(&data).expect_err("count exceeds walker ceiling");
+        assert!(error.contains("exceeds 100000"));
+    }
+
+    #[test]
+    fn generated_collection_stream_rejects_huge_declared_source_before_realizing_it() {
+        let source = ByteSource::Generated {
+            len: u64::MAX,
+            seed: 0,
+        };
+
+        let error = decode_collection_stream(&source)
+            .expect_err("an unbounded generated source is not a collection payload");
+        assert!(error.contains("exceeds"));
+    }
+
+    #[test]
+    fn send_op_ptp_u32_array_capture_populates_collection() {
+        let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: TEST, model: SendOp Collection }
+connections:
+  wireless-tether:
+    modes: [image-transfer]
+operations:
+  "0x1002": { name: OpenSession, connections: [wireless-tether] }
+  "0x1007": { name: GetObjectHandles, modes: [image-transfer], connections: [wireless-tether] }
+  "0x1008": { name: GetObjectInfo, modes: [image-transfer], connections: [wireless-tether] }
+properties: {}
+"#;
+        let (mut engine, _) = engine_with_file(manifest, b"jpeg");
+        engine.bind_connection("wireless-tether");
+        let reply = engine.on_operation(
+            &OperationRequest {
+                data_phase_info: 1,
+                code: op::OPEN_SESSION,
+                transaction_id: 1,
+                params: vec![1],
+            },
+            None,
+        );
+        assert!(matches!(reply, Reply::Response(response) if response.code == resp::OK));
+
+        let outcome = walk_ptpip(
+            &mut engine,
+            &[
+                Step {
+                    send_op: Some("0x1007".into()),
+                    params: vec![StepParam::Literal(u32::MAX), StepParam::Literal(0)],
+                    captures: vec![Capture {
+                        bind: "objectHandles".into(),
+                        source: CaptureSource::PtpU32Array,
+                    }],
+                    ..Default::default()
+                },
+                Step {
+                    r#loop: Some(Loop::ForEach {
+                        collection: "objectHandles".into(),
+                        bind: "handle".into(),
+                        body: vec![Step {
+                            send_op: Some("0x1008".into()),
+                            params: vec![StepParam::Runtime {
+                                runtime: "handle".into(),
+                                shift: 0,
+                                mask: None,
+                            }],
+                            ..Default::default()
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            ],
+            &BTreeMap::new(),
+        )
+        .expect("sendOp collection capture succeeds");
+
+        assert_eq!(outcome.loop_iterations, vec![1]);
     }
 
     #[test]

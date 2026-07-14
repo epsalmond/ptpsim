@@ -1138,6 +1138,166 @@ fn malformed_collection_capture_fails_before_iteration() {
 }
 
 #[test]
+fn collection_capture_rejects_trailing_bytes() {
+    let store = store();
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(run_mode_entry(
+        store.clone(),
+        "app".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("image-transfer entry succeeds");
+    let mut malformed = 1_u32.to_le_bytes().to_vec();
+    malformed.extend_from_slice(&7_u32.to_le_bytes());
+    malformed.push(0xff);
+    transport.override_next_data(0x1015, vec![0xd621], malformed);
+
+    let error = block_on(run_action(
+        store,
+        "app".into(),
+        ActionVerb::EnumerateObjects,
+        transport,
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("trailing bytes after a u32 array fail loud");
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("trailing bytes")
+    ));
+}
+
+#[test]
+fn collection_capture_rejects_over_ceiling_count_before_payload_allocation() {
+    let store = store();
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(run_mode_entry(
+        store.clone(),
+        "app".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("image-transfer entry succeeds");
+    transport.override_next_data(0x1015, vec![0xd621], (100_001_u32).to_le_bytes().to_vec());
+
+    let error = block_on(run_action(
+        store,
+        "app".into(),
+        ActionVerb::EnumerateObjects,
+        transport,
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("an over-ceiling header fails before reading array values");
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("exceeds 100000")
+    ));
+}
+
+#[test]
+fn wireless_tether_enumeration_captures_send_op_collection() {
+    let store = store();
+    let transport = Arc::new(EngineTransport::new(
+        "wireless-tether",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    transport
+        .state
+        .lock()
+        .expect("state")
+        .engine
+        .configure_standard_object_queue("wireless-tether", 1)
+        .expect("queue config");
+
+    block_on(run_action(
+        store.clone(),
+        "wireless-tether".into(),
+        ActionVerb::Shutter,
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("shutter feeds the standard object queue");
+
+    let outcome = block_on(run_action(
+        store,
+        "wireless-tether".into(),
+        ActionVerb::EnumerateObjects,
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("standard GetObjectHandles collection capture succeeds");
+
+    assert!(outcome.collections.iter().any(|collection| {
+        collection.key == "objectHandles"
+            && collection.values == vec![u64::from(transport.first_handle())]
+    }));
+}
+
+#[test]
+fn malformed_send_op_collection_capture_fails_loud() {
+    let store = store();
+    let transport = Arc::new(EngineTransport::new(
+        "wireless-tether",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    transport
+        .state
+        .lock()
+        .expect("state")
+        .engine
+        .configure_standard_object_queue("wireless-tether", 1)
+        .expect("queue config");
+    let mut malformed = 2_u32.to_le_bytes().to_vec();
+    malformed.extend_from_slice(&transport.first_handle().to_le_bytes());
+    transport.override_next_data(0x1007, vec![u32::MAX, 0], malformed);
+
+    let error = block_on(run_action(
+        store,
+        "wireless-tether".into(),
+        ActionVerb::EnumerateObjects,
+        transport,
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("truncated sendOp u32 array fails loud");
+
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("decode u32 array")
+    ));
+}
+
+#[test]
 fn collection_iteration_limit_fails_before_any_element_body() {
     let store = store();
     let transport = Arc::new(EngineTransport::new(
@@ -1176,7 +1336,7 @@ fn collection_iteration_limit_fails_before_any_element_body() {
     assert!(matches!(
         error,
         PtpExecutorError::StepFailed { ref detail, .. }
-            if detail.contains("collection exceeds 100000 elements")
+            if detail.contains("count 100001 exceeds 100000")
     ));
     assert!(!transport.operations()[before..].contains(&0x1008));
 }

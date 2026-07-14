@@ -1361,7 +1361,10 @@ impl PtpCtx {
                     return Err(self.other(here, "propValue requires getProp".into()))
                 }
                 CaptureSourceInfo::PtpU32Array => {
-                    return Err(self.other(here, "ptpU32Array requires getProp".into()))
+                    let collection =
+                        decode_u32_array(payload).map_err(|detail| self.other(here, detail))?;
+                    self.collections.insert(capture.bind.clone(), collection);
+                    continue;
                 }
             };
             values.push((capture.bind.clone(), value));
@@ -1532,11 +1535,44 @@ fn decode_scalar(width: ValueWidth, payload: &[u8]) -> Result<i64, String> {
 }
 
 fn decode_u32_array(payload: &[u8]) -> Result<Vec<u64>, String> {
-    let mut reader = ptp_core::Reader::new(payload);
-    reader
-        .ptp_array(|reader| reader.u32())
-        .map(|values| values.into_iter().map(u64::from).collect())
-        .map_err(|error| format!("decode u32 array: {error:?}"))
+    let count_bytes: [u8; 4] = payload
+        .get(..4)
+        .ok_or_else(|| "decode u32 array: count needs 4 bytes".to_string())?
+        .try_into()
+        .expect("four-byte count");
+    let count = u32::from_le_bytes(count_bytes);
+    if count as usize > MAX_FOREACH_ITERS {
+        return Err(format!(
+            "decode u32 array: count {count} exceeds {MAX_FOREACH_ITERS}"
+        ));
+    }
+    let expected = 4_usize
+        .checked_add(
+            (count as usize)
+                .checked_mul(4)
+                .ok_or_else(|| "decode u32 array: payload length overflow".to_string())?,
+        )
+        .ok_or_else(|| "decode u32 array: payload length overflow".to_string())?;
+    if payload.len() > expected {
+        return Err(format!(
+            "decode u32 array: {} trailing bytes",
+            payload.len() - expected
+        ));
+    }
+    if payload.len() != expected {
+        return Err(format!(
+            "decode u32 array: expected {expected} bytes for {count} values, got {}",
+            payload.len()
+        ));
+    }
+    Ok(payload[4..]
+        .chunks_exact(4)
+        .map(|bytes| {
+            u64::from(u32::from_le_bytes(
+                bytes.try_into().expect("four-byte value"),
+            ))
+        })
+        .collect())
 }
 
 fn read_u32(payload: &[u8]) -> Result<u32, String> {
