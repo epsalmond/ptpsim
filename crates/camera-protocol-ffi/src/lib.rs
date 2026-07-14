@@ -777,11 +777,93 @@ pub struct PropObservation {
     pub value: i64,
 }
 
-#[derive(uniffi::Record)]
+#[derive(Debug, uniffi::Record)]
 pub struct ControlInfo {
     pub set_method: Option<String>,
     pub operation: Option<u16>,
     pub readback: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ControlRole {
+    Iso,
+    ShutterSpeed,
+    Aperture,
+    ExposureBias,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ControlWriteEffect {
+    Confirmed,
+    DescriptorOnly,
+    AckNoEffect,
+    Refused,
+    DestructiveClamp,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ControlOwner {
+    Client,
+    Camera,
+    Body,
+    ModeGated,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ControlReadSource {
+    DirectProperty,
+    DeclaredReadback,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct ControlSurfaceInfo {
+    pub role: ControlRole,
+    pub property: u16,
+    pub read_source: ControlReadSource,
+    pub write_effect: ControlWriteEffect,
+    pub effective_owner: Option<ControlOwner>,
+    pub control: ControlInfo,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ObjectTransferStrategy {
+    Chunked,
+    WholeObject,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ObjectTransferResumePolicy {
+    ByteOffset,
+    RestartFromZero,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ObjectTransferFormatSupport {
+    Confirmed,
+    Experimental,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ObjectTransferCompletionTiming {
+    LocalCommit,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct ObjectTransferFormatInfo {
+    pub code: u16,
+    pub support: ObjectTransferFormatSupport,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct ObjectTransferContractInfo {
+    pub strategy: ObjectTransferStrategy,
+    pub resume_policy: ObjectTransferResumePolicy,
+    pub read_action: ActionVerb,
+    pub completion_action: Option<ActionVerb>,
+    pub completion_after: Option<ObjectTransferCompletionTiming>,
+    pub formats: Vec<ObjectTransferFormatInfo>,
 }
 
 /// Mirror of `cc::Payload` — how a composite byte-array property (`0xD212`
@@ -1357,6 +1439,25 @@ pub struct ConnectionEstablishmentInfo {
     pub activities: Vec<ConnectionActivityDescriptor>,
 }
 
+/// Manifest-owned PCSS rendezvous parameters. A consumer binds
+/// `callback_port`, sends discovery to `knock_port`, and connects to the port
+/// returned by the parsed callback.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PcssRendezvousInfo {
+    pub callback_port: u16,
+    pub knock_port: u16,
+    pub command_port: u16,
+    pub protocol: String,
+    pub retry_interval_ms: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PcssNotifyInfo {
+    pub camera_name: String,
+    pub command_port: u16,
+}
+
 #[derive(Debug, uniffi::Enum)]
 pub enum ResolvedValue {
     Fixed {
@@ -1846,6 +1947,88 @@ impl ConfigStore {
         })
     }
 
+    /// Typed PCSS rendezvous contract for `connection`, or `None` when that
+    /// connection does not use the PCSS knock/callback handshake.
+    pub fn pcss_rendezvous(&self, connection: String) -> Option<PcssRendezvousInfo> {
+        let knock = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)?
+            .knock
+            .as_ref()?;
+        Some(PcssRendezvousInfo {
+            callback_port: knock.callback_port,
+            knock_port: knock.knock_port,
+            command_port: knock.command_port,
+            protocol: knock.protocol.clone(),
+            retry_interval_ms: knock.retry_interval_ms,
+            max_attempts: knock.max_attempts,
+        })
+    }
+
+    /// Build the PCSS discovery datagram from the selected connection's
+    /// protocol and the route-selected local IPv4 callback address.
+    pub fn build_pcss_discovery(
+        &self,
+        connection: String,
+        callback_ipv4: String,
+    ) -> Result<Vec<u8>, CodecError> {
+        let knock = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)
+            .and_then(|candidate| candidate.knock.as_ref())
+            .ok_or_else(|| {
+                CodecError::Encode(format!("connection '{connection}' has no PCSS rendezvous"))
+            })?;
+        let host = callback_ipv4
+            .parse::<std::net::Ipv4Addr>()
+            .map_err(codec_encode)?;
+        Ok(protocol_primitives::pcss_discovery_message(
+            host,
+            &knock.protocol,
+        ))
+    }
+
+    /// Parse and protocol-check the camera's PCSS callback.
+    pub fn parse_pcss_notify(
+        &self,
+        connection: String,
+        payload: Vec<u8>,
+    ) -> Result<PcssNotifyInfo, CodecError> {
+        let knock = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)
+            .and_then(|candidate| candidate.knock.as_ref())
+            .ok_or_else(|| {
+                CodecError::Decode(format!("connection '{connection}' has no PCSS rendezvous"))
+            })?;
+        let parsed = protocol_primitives::parse_pcss_notify(&payload, &knock.protocol)
+            .map_err(codec_decode)?;
+        Ok(PcssNotifyInfo {
+            camera_name: parsed.camera_name,
+            command_port: parsed.command_port,
+        })
+    }
+
+    /// Byte-exact acknowledgement for a validated callback. Requiring a PCSS
+    /// connection keeps clients from treating this as a generic HTTP response.
+    pub fn build_pcss_callback_ack(&self, connection: String) -> Result<Vec<u8>, CodecError> {
+        self.inner
+            .manifest
+            .connections
+            .get(&connection)
+            .and_then(|candidate| candidate.knock.as_ref())
+            .ok_or_else(|| {
+                CodecError::Encode(format!("connection '{connection}' has no PCSS rendezvous"))
+            })?;
+        Ok(protocol_primitives::pcss_callback_ack_message())
+    }
+
     /// The port a consumer binds for `role` on `connection` (command / event /
     /// live-view), or `None` if this connection has no such socket. Replaces the
     /// app's hardcoded Fuji command-port + `+1`/`+2` offsets (#140).
@@ -2026,6 +2209,43 @@ impl ConfigStore {
         Some(map_action(a))
     }
 
+    /// Typed object-transfer policy for a connection.
+    pub fn object_transfer_contract(
+        &self,
+        connection: String,
+    ) -> Option<ObjectTransferContractInfo> {
+        let contract = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)?
+            .object_transfer
+            .as_ref()?;
+        Some(ObjectTransferContractInfo {
+            strategy: contract.strategy.into(),
+            resume_policy: contract.resume_policy.into(),
+            read_action: cc_to_ffi_verb(contract.read_action),
+            completion_action: contract
+                .completion
+                .as_ref()
+                .map(|completion| cc_to_ffi_verb(completion.action)),
+            completion_after: contract
+                .completion
+                .as_ref()
+                .map(|completion| completion.after.into()),
+            formats: contract
+                .formats
+                .iter()
+                .filter_map(|(code, support)| {
+                    Some(ObjectTransferFormatInfo {
+                        code: parse_hex_code(code)?,
+                        support: (*support).into(),
+                    })
+                })
+                .collect(),
+        })
+    }
+
     /// The manifest-owned preparation/read contract for one selected object.
     ///
     /// `ImportObjects` remains the canonical all-handles reference recipe. This
@@ -2102,6 +2322,36 @@ impl ConfigStore {
             operation: ctl.operation.as_deref().and_then(parse_hex_code),
             readback: ctl.readback.as_deref().and_then(parse_hex_code),
         })
+    }
+
+    /// Semantic controls for a connection/mode. Property codes and write
+    /// mechanisms are returned as data; the caller never maps intent to a
+    /// camera-specific property itself.
+    pub fn control_surface(&self, connection: String, mode: String) -> Vec<ControlSurfaceInfo> {
+        let Some(surface) = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)
+            .and_then(|candidate| candidate.control_surfaces.get(&mode))
+        else {
+            return Vec::new();
+        };
+        surface
+            .iter()
+            .filter_map(|(role, entry)| {
+                let property = parse_hex_code(&entry.property)?;
+                let control = self.control_for(connection.clone(), mode.clone(), property)?;
+                Some(ControlSurfaceInfo {
+                    role: (*role).into(),
+                    property,
+                    read_source: entry.read_source.into(),
+                    write_effect: entry.write_effect.into(),
+                    effective_owner: entry.effective_owner.map(Into::into),
+                    control,
+                })
+            })
+            .collect()
     }
 
     /// Value-policy resolution (fixed initiator identity, generated session ids, …),
@@ -2772,6 +3022,102 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
         ActionVerb::ImportObjects => cc::ActionVerb::ImportObjects,
         ActionVerb::ReadDeviceInfo => cc::ActionVerb::ReadDeviceInfo,
         ActionVerb::Keepalive => cc::ActionVerb::Keepalive,
+    }
+}
+
+fn cc_to_ffi_verb(v: cc::ActionVerb) -> ActionVerb {
+    match v {
+        cc::ActionVerb::Shutter => ActionVerb::Shutter,
+        cc::ActionVerb::EnumerateObjects => ActionVerb::EnumerateObjects,
+        cc::ActionVerb::GetObjectInfo => ActionVerb::GetObjectInfo,
+        cc::ActionVerb::GetThumb => ActionVerb::GetThumb,
+        cc::ActionVerb::GetObject => ActionVerb::GetObject,
+        cc::ActionVerb::DeleteObject => ActionVerb::DeleteObject,
+        cc::ActionVerb::AutofocusLock => ActionVerb::AutofocusLock,
+        cc::ActionVerb::AutofocusRelease => ActionVerb::AutofocusRelease,
+        cc::ActionVerb::ImportObjects => ActionVerb::ImportObjects,
+        cc::ActionVerb::ReadDeviceInfo => ActionVerb::ReadDeviceInfo,
+        cc::ActionVerb::Keepalive => ActionVerb::Keepalive,
+    }
+}
+
+impl From<cc::ControlRole> for ControlRole {
+    fn from(value: cc::ControlRole) -> Self {
+        match value {
+            cc::ControlRole::Iso => Self::Iso,
+            cc::ControlRole::ShutterSpeed => Self::ShutterSpeed,
+            cc::ControlRole::Aperture => Self::Aperture,
+            cc::ControlRole::ExposureBias => Self::ExposureBias,
+        }
+    }
+}
+
+impl From<cc::ControlReadSource> for ControlReadSource {
+    fn from(value: cc::ControlReadSource) -> Self {
+        match value {
+            cc::ControlReadSource::DirectProperty => Self::DirectProperty,
+            cc::ControlReadSource::DeclaredReadback => Self::DeclaredReadback,
+        }
+    }
+}
+
+impl From<cc::ControlWriteEffect> for ControlWriteEffect {
+    fn from(value: cc::ControlWriteEffect) -> Self {
+        match value {
+            cc::ControlWriteEffect::Confirmed => Self::Confirmed,
+            cc::ControlWriteEffect::DescriptorOnly => Self::DescriptorOnly,
+            cc::ControlWriteEffect::AckNoEffect => Self::AckNoEffect,
+            cc::ControlWriteEffect::Refused => Self::Refused,
+            cc::ControlWriteEffect::DestructiveClamp => Self::DestructiveClamp,
+        }
+    }
+}
+
+impl From<cc::ControlOwner> for ControlOwner {
+    fn from(value: cc::ControlOwner) -> Self {
+        match value {
+            cc::ControlOwner::Client => Self::Client,
+            cc::ControlOwner::Camera => Self::Camera,
+            cc::ControlOwner::Body => Self::Body,
+            cc::ControlOwner::ModeGated => Self::ModeGated,
+            cc::ControlOwner::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<cc::ObjectTransferStrategy> for ObjectTransferStrategy {
+    fn from(value: cc::ObjectTransferStrategy) -> Self {
+        match value {
+            cc::ObjectTransferStrategy::Chunked => Self::Chunked,
+            cc::ObjectTransferStrategy::WholeObject => Self::WholeObject,
+        }
+    }
+}
+
+impl From<cc::ObjectTransferResumePolicy> for ObjectTransferResumePolicy {
+    fn from(value: cc::ObjectTransferResumePolicy) -> Self {
+        match value {
+            cc::ObjectTransferResumePolicy::ByteOffset => Self::ByteOffset,
+            cc::ObjectTransferResumePolicy::RestartFromZero => Self::RestartFromZero,
+        }
+    }
+}
+
+impl From<cc::ObjectTransferFormatSupport> for ObjectTransferFormatSupport {
+    fn from(value: cc::ObjectTransferFormatSupport) -> Self {
+        match value {
+            cc::ObjectTransferFormatSupport::Confirmed => Self::Confirmed,
+            cc::ObjectTransferFormatSupport::Experimental => Self::Experimental,
+            cc::ObjectTransferFormatSupport::Unsupported => Self::Unsupported,
+        }
+    }
+}
+
+impl From<cc::ObjectTransferCompletionTiming> for ObjectTransferCompletionTiming {
+    fn from(value: cc::ObjectTransferCompletionTiming) -> Self {
+        match value {
+            cc::ObjectTransferCompletionTiming::LocalCommit => Self::LocalCommit,
+        }
     }
 }
 

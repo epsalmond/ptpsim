@@ -21,6 +21,8 @@ pub use error::FramingError;
 pub use focus_area::pack_af_area;
 pub use fuji_init::{build_app_init, validate_init_ack};
 pub use pcss::{
-    notify_message as pcss_notify_message, parse_discovery as parse_pcss_discovery, parse_pcss_init,
+    callback_ack_message as pcss_callback_ack_message, discovery_message as pcss_discovery_message,
+    notify_message as pcss_notify_message, parse_discovery as parse_pcss_discovery,
+    parse_notify as parse_pcss_notify, parse_pcss_init, PcssMessageError, PcssNotify,
 };
 pub use value_codec::{encode_value, ValueWidth};

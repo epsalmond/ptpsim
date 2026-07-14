@@ -143,6 +143,11 @@ connections:
     commandListenerVolatile: true
     discovery: { mechanism: ble, announces: camera }
     modes: [shooting/stills, shooting/video, image-transfer, reserved-photo-receive]
+    objectTransfer:
+      strategy: chunked
+      resumePolicy: byteOffset
+      readAction: getObject
+      formats: { "0x3801": confirmed, "0xb103": confirmed, "0xb105": confirmed, "0x300d": confirmed }
     # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
     # live-view exercises both sockets, so this assignment is authoritative. Resolved
     # ports (not offsets) so a consumer binds by role and deletes the Fuji +1/+2 math.
@@ -486,7 +491,7 @@ connections:
     # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
     # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
     # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference-app's 82-byte init).
-    knock: { callbackPort: 51560, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0" }
+    knock: { callbackPort: 51560, knockPort: 51562, commandPort: 15740, protocol: "PCSS/1.0", retryIntervalMs: 10000, maxAttempts: 10 }
     # InitCmdReq retry tolerance: PCSS may emit 0-3 InitFail packets before
     # InitCmdAck. Hyper-Utility waits ~250ms between retries; the engine should
     # accept up to 3 retries before treating the handshake as failed
@@ -495,7 +500,19 @@ connections:
     discovery: { mechanism: pcss-knock, announces: none, autoDiscoverable: false }  # app needs the camera's LAN address
     # remote-trigger here is the SAME mode node as over BLE — transport-independent (its
     # PTP/IP form can also push images to the camera; per-connection capability TODO).
-    modes: [shooting/stills, remote-trigger]
+    modes: [shooting/stills, image-transfer, remote-trigger]
+    objectTransfer:
+      strategy: wholeObject
+      resumePolicy: restartFromZero
+      readAction: getObject
+      completion: { action: deleteObject, after: localCommit }
+      formats: { "0x3801": experimental, "0xb103": experimental, "0xb105": confirmed, "0x300d": experimental }
+    controlSurfaces:
+      shooting/stills:
+        iso:          { property: "0x500f", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
+        shutterSpeed: { property: "0x500d", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
+        aperture:     { property: "0x5007", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
+        exposureBias: { property: "0x5010", readSource: directProperty, writeEffect: descriptorOnly, effectiveOwner: client }
     # Wire-confirmed NOT-supported on this connection (per the 05-27 capability snapshot
     # `wireTetherCaps20260527` + wire-capture 2026-06-02 replies). Don't author entries that
     # rely on these — the camera will reject them:
@@ -563,7 +580,10 @@ connections:
       enumerateObjects:
         mode: image-transfer
         steps:
-          - { sendOp: "0x1007", params: [0xffffffff, 0] }
+          - sendOp: "0x1007"
+            params: [0xffffffff, 0]
+            captures:
+              - { bind: objectHandles, as: ptpU32Array }
         evidence: [wirePCSSShootDownload20260523]
       getObjectInfo:
         mode: image-transfer
@@ -829,7 +849,7 @@ properties:
   # Exposure bias is SIGNED: probe GetDevicePropDesc declares i16, descriptor enum
   # runs -5000..5000 milliEV (negative EV writes two's-complement, e.g. -0.3 → 0xFEB3) (#88).
   "0x5010": { name: exposureBias, ptpName: ExposureBiasCompensation, type: i16, access: readWrite,
-              controls: { app: { setMethod: vendorStep, operation: "0x902e", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
+              controls: { app: { setMethod: vendorStep, operation: "0x902e", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls, docLiveControls, wireTether] }
   "0x5012": { name: selfTimer, ptpName: SelfTimer, type: u16, access: readWrite,
               controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0xd001": { name: filmSimulation, type: u16, access: readWrite,
@@ -941,9 +961,9 @@ events:
   "0x80f8": { name: FirmwareUpdateTrigger,    destination: app, evidence: [docFujiPtpPropReference] }
 
 quirks:
-  - id: pcss-knock-once-per-boot
+  - id: pcss-knock-multi-session
     appliesTo: [wireless-tether]
-    behavior: "The PCSS knock (UDP 51562) is accepted only once per camera boot; after one session the camera ICMP-rejects further knocks until power-cycled."
+    behavior: "PCSS supports multiple knock/notify sessions in one camera boot. A new rendezvous may be ignored during a short post-session recovery window; retry the manifest-authored discovery sequence instead of assuming once-per-boot availability."
     evidence: wireTether
 
 # Object-format table (#36): the app classifies enumerated objects from data,

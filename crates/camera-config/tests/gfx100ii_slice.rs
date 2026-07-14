@@ -1164,7 +1164,7 @@ fn response_retry_requires_a_finite_selected_body() {
 }
 
 #[test]
-fn captured_collection_loop_requires_a_definite_nontolerant_get() {
+fn captured_collection_loop_requires_a_definite_nontolerant_data_step() {
     let manifest = |steps: &str| {
         format!(
             "schema: camera-config/v1\ncamera: {{ manufacturer: Test, model: Test, firmware: \"1\" }}\nconnections:\n  app:\n    entries:\n      - to: test\n        steps:\n{steps}\n"
@@ -1174,11 +1174,12 @@ fn captured_collection_loop_requires_a_definite_nontolerant_get() {
     let loop_step = "          - loop:\n              forEach:\n                in: handles\n                bind: handle\n                body: [{ sendOp: \"0x1008\", params: [{ runtime: handle }] }]";
     let valid = CameraManifest::from_yaml(&manifest(&format!("{capture}\n{loop_step}")));
     assert!(valid.is_ok(), "valid collection loop: {:?}", valid.err());
+    let send_capture = capture.replace("getProp: \"0xd621\"", "sendOp: \"0x1007\"");
+    assert!(CameraManifest::from_yaml(&manifest(&format!("{send_capture}\n{loop_step}"))).is_ok());
 
     for invalid in [
         loop_step.to_string(),
         format!("{capture}\n{capture}\n{loop_step}").replace("bind: handles", "bind: ''"),
-        format!("{capture}\n{loop_step}").replace("getProp: \"0xd621\"", "sendOp: \"0x1008\""),
         format!("{capture}\n{loop_step}")
             .replace("captures:", "tolerant: true\n            captures:"),
     ] {
@@ -1187,6 +1188,57 @@ fn captured_collection_loop_requires_a_definite_nontolerant_get() {
 
     let tolerant_retry = "          - retry:\n              whenResponseCodes: [\"0x2002\"]\n              maxAttempts: 2\n              steps:\n                - getProp: \"0xd621\"\n                  captures: [{ bind: handles, as: ptpU32Array }]\n            tolerant: true\n";
     assert!(CameraManifest::from_yaml(&manifest(tolerant_retry)).is_err());
+}
+
+#[test]
+fn object_transfer_contract_requires_reachable_matching_action_modes() {
+    let manifest = |modes: &str, read_mode: &str, completion_mode: &str| {
+        format!(
+            r#"schema: camera-config/v1
+camera: {{ manufacturer: Test, model: Test, firmware: "1" }}
+media:
+  formats:
+    "0x3801": {{ name: jpeg }}
+connections:
+  app:
+    commandFraming: compressed
+    modes: [{modes}]
+    objectTransfer:
+      strategy: wholeObject
+      resumePolicy: restartFromZero
+      readAction: getObject
+      completion: {{ action: deleteObject, after: localCommit }}
+      formats: {{ "0x3801": confirmed }}
+    actions:
+      getObject:
+        mode: {read_mode}
+        params: [handle]
+        steps: [{{ sendOp: "0x1009", params: [{{ runtime: handle }}] }}]
+      deleteObject:
+        mode: {completion_mode}
+        params: [handle]
+        steps: [{{ sendOp: "0x100b", params: [{{ runtime: handle }}] }}]
+"#
+        )
+    };
+    assert!(CameraManifest::from_yaml(&manifest(
+        "image-transfer",
+        "image-transfer",
+        "image-transfer"
+    ))
+    .is_ok());
+    assert!(CameraManifest::from_yaml(&manifest(
+        "shooting/stills",
+        "image-transfer",
+        "image-transfer"
+    ))
+    .is_err());
+    assert!(CameraManifest::from_yaml(&manifest(
+        "image-transfer, shooting/stills",
+        "image-transfer",
+        "shooting/stills"
+    ))
+    .is_err());
 }
 
 #[test]

@@ -30,11 +30,14 @@ pub use model::{
     AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
     CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
     CameraInitiatedReceive, CameraInitiatedTransfer, CameraInitiatedTrigger, CameraManifest,
-    CaptureSource, CloseSession, Connection, ConnectionTransition, Control, Descriptor,
+    CaptureSource, CloseSession, Connection, ConnectionTransition, Control, ControlOwner,
+    ControlReadSource, ControlRole, ControlSurfaceEntry, ControlWriteEffect, Descriptor,
     GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery,
     LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode,
-    ModeEntry, ModeEntryExecution, ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm,
-    PcssKnock, PostviewEvent, Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile,
+    ModeEntry, ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
+    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
+    ObjectTransferStrategy, ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssKnock,
+    PostviewEvent, Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile,
     PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
     ReestablishConnection, ResponseRetry, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
     SocketBindings, SocketRole, Step, StepParam, TransferCompletion, TransportClose, TriggerMatch,
@@ -318,6 +321,9 @@ impl CameraManifest {
         let mut activity_metadata = std::collections::BTreeMap::new();
         for (connection_id, connection) in &self.connections {
             require_valid_host_activities(connection, connection_id)?;
+            require_valid_pcss_rendezvous(connection, connection_id)?;
+            require_valid_object_transfer(self, connection, connection_id)?;
+            require_valid_control_surfaces(self, connection, connection_id)?;
             for descriptor in &connection.activities {
                 let key = (descriptor.id.clone(), descriptor.version);
                 let value = (
@@ -428,6 +434,177 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+fn require_valid_pcss_rendezvous(
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(knock) = &connection.knock else {
+        return Ok(());
+    };
+    let path = format!("connections.{connection_id}.knock");
+    if knock.callback_port == 0 || knock.knock_port == 0 || knock.command_port == 0 {
+        return Err(ManifestError::Contract(format!(
+            "{path} ports must all be non-zero"
+        )));
+    }
+    if knock.protocol.trim().is_empty() {
+        return Err(ManifestError::Contract(format!(
+            "{path}.protocol must not be empty"
+        )));
+    }
+    if knock.retry_interval_ms == 0 || knock.max_attempts == 0 {
+        return Err(ManifestError::Contract(format!(
+            "{path} retryIntervalMs and maxAttempts must be non-zero"
+        )));
+    }
+    Ok(())
+}
+
+fn require_valid_object_transfer(
+    manifest: &CameraManifest,
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(contract) = &connection.object_transfer else {
+        return Ok(());
+    };
+    let path = format!("connections.{connection_id}.objectTransfer");
+    let read = connection
+        .actions
+        .get(&contract.read_action)
+        .ok_or_else(|| {
+            ManifestError::Contract(format!(
+                "{path}.readAction references a missing connection action"
+            ))
+        })?;
+    if !read.mode.is_empty() && !connection.modes.iter().any(|mode| mode == &read.mode) {
+        return Err(ManifestError::Contract(format!(
+            "{path}.readAction mode '{}' is unavailable on this connection",
+            read.mode
+        )));
+    }
+    match contract.strategy {
+        ObjectTransferStrategy::WholeObject if read.params.as_slice() != ["handle"] => {
+            return Err(ManifestError::Contract(format!(
+                "{path} wholeObject readAction must accept exactly [handle]"
+            )));
+        }
+        ObjectTransferStrategy::Chunked
+            if read.params.as_slice() != ["handle", "offset", "length"] =>
+        {
+            return Err(ManifestError::Contract(format!(
+                "{path} chunked readAction must accept [handle, offset, length]"
+            )));
+        }
+        _ => {}
+    }
+    match (contract.strategy, contract.resume_policy) {
+        (ObjectTransferStrategy::WholeObject, ObjectTransferResumePolicy::RestartFromZero)
+        | (ObjectTransferStrategy::Chunked, ObjectTransferResumePolicy::ByteOffset) => {}
+        _ => {
+            return Err(ManifestError::Contract(format!(
+                "{path} strategy and resumePolicy are inconsistent"
+            )));
+        }
+    }
+    if let Some(completion) = &contract.completion {
+        let action = connection.actions.get(&completion.action).ok_or_else(|| {
+            ManifestError::Contract(format!(
+                "{path}.completion.action references a missing connection action"
+            ))
+        })?;
+        if action.params.as_slice() != ["handle"] {
+            return Err(ManifestError::Contract(format!(
+                "{path}.completion.action must accept exactly [handle]"
+            )));
+        }
+        if action.mode != read.mode {
+            return Err(ManifestError::Contract(format!(
+                "{path}.completion.action mode '{}' does not match readAction mode '{}'",
+                action.mode, read.mode
+            )));
+        }
+        if !action.mode.is_empty() && !connection.modes.iter().any(|mode| mode == &action.mode) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.completion.action mode '{}' is unavailable on this connection",
+                action.mode
+            )));
+        }
+    }
+    if contract.formats.is_empty() {
+        return Err(ManifestError::Contract(format!(
+            "{path}.formats must declare at least one object format"
+        )));
+    }
+    for code in contract.formats.keys() {
+        if parse_hex_code(code).is_none() {
+            return Err(ManifestError::Contract(format!(
+                "{path}.formats contains invalid object-format code '{code}'"
+            )));
+        }
+        if !manifest
+            .media
+            .as_ref()
+            .is_some_and(|media| media.formats.contains_key(code))
+        {
+            return Err(ManifestError::Contract(format!(
+                "{path}.formats references unknown media format '{code}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn require_valid_control_surfaces(
+    manifest: &CameraManifest,
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    for (mode, controls) in &connection.control_surfaces {
+        let path = format!("connections.{connection_id}.controlSurfaces.{mode}");
+        if !connection.modes.iter().any(|candidate| candidate == mode) {
+            return Err(ManifestError::Contract(format!(
+                "{path} references a mode unavailable on this connection"
+            )));
+        }
+        for (role, surface) in controls {
+            if parse_hex_code(&surface.property).is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.{role:?} contains invalid property code '{}'",
+                    surface.property
+                )));
+            }
+            let property = manifest.properties.get(&surface.property).ok_or_else(|| {
+                ManifestError::Contract(format!(
+                    "{path}.{role:?} references unknown property '{}'",
+                    surface.property
+                ))
+            })?;
+            if !property.controls.contains_key(connection_id)
+                && !property.controls.contains_key(mode)
+            {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.{role:?} property '{}' has no control for this connection or mode",
+                    surface.property
+                )));
+            }
+            let control = property
+                .controls
+                .get(connection_id)
+                .or_else(|| property.controls.get(mode))
+                .expect("checked above");
+            if surface.read_source == ControlReadSource::DeclaredReadback
+                && control.readback.is_none()
+            {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.{role:?} selects declaredReadback but its control has no readback property"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn require_consistent_activity_metadata(
@@ -570,9 +747,9 @@ fn require_valid_ptp_steps_with_collections(
             if capture.source != CaptureSource::PtpU32Array {
                 continue;
             }
-            if step.get_prop.is_none() {
+            if step.get_prop.is_none() && step.send_op.is_none() {
                 return Err(ManifestError::Contract(format!(
-                    "{step_path} ptpU32Array capture requires getProp"
+                    "{step_path} ptpU32Array capture requires getProp or sendOp"
                 )));
             }
             if step.tolerant {

@@ -290,6 +290,95 @@ fn connection_establishment_is_returned_as_data() {
 }
 
 #[test]
+fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
+    let s = store();
+    let rendezvous = s
+        .pcss_rendezvous("wireless-tether".into())
+        .expect("wireless-tether PCSS rendezvous");
+    assert_eq!(rendezvous.callback_port, 51560);
+    assert_eq!(rendezvous.knock_port, 51562);
+    assert_eq!(rendezvous.command_port, 15740);
+    assert_eq!(rendezvous.protocol, "PCSS/1.0");
+    assert_eq!(rendezvous.retry_interval_ms, 10_000);
+    assert_eq!(rendezvous.max_attempts, 10);
+
+    let discovery = s
+        .build_pcss_discovery("wireless-tether".into(), "192.168.7.49".into())
+        .expect("discovery builds");
+    assert_eq!(
+        discovery,
+        b"DISCOVERY * HTTP/1.1\r\nHOST: 192.168.7.49\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0"
+    );
+    let notify = s
+        .parse_pcss_notify(
+            "wireless-tether".into(),
+            b"NOTIFY * HTTP/1.1\r\nCAMERANAME: CAMERA\r\nDSCPORT:15740\r\nSERVICE: PCSS/1.0\r\n\r\n\0"
+                .to_vec(),
+        )
+        .expect("notify parses");
+    assert_eq!(notify.camera_name, "CAMERA");
+    assert_eq!(notify.command_port, 15740);
+    assert_eq!(
+        s.build_pcss_callback_ack("wireless-tether".into())
+            .expect("ack builds"),
+        b"HTTP/1.1 200 OK\r\n\0"
+    );
+    assert!(s
+        .build_pcss_discovery("wireless-tether".into(), "not-ipv4".into())
+        .is_err());
+    assert!(s.pcss_rendezvous("app".into()).is_none());
+}
+
+#[test]
+fn pcss_transfer_and_semantic_controls_surface_evidence_state() {
+    let s = store();
+    let transfer = s
+        .object_transfer_contract("wireless-tether".into())
+        .expect("PCSS object-transfer contract");
+    assert!(matches!(
+        transfer.strategy,
+        ObjectTransferStrategy::WholeObject
+    ));
+    assert!(matches!(
+        transfer.resume_policy,
+        ObjectTransferResumePolicy::RestartFromZero
+    ));
+    assert!(matches!(transfer.read_action, ActionVerb::GetObject));
+    assert!(matches!(
+        transfer.completion_action,
+        Some(ActionVerb::DeleteObject)
+    ));
+    assert!(matches!(
+        transfer.completion_after,
+        Some(ObjectTransferCompletionTiming::LocalCommit)
+    ));
+    assert_eq!(transfer.formats.len(), 4);
+    assert!(transfer.formats.iter().any(|format| {
+        format.code == 0xb105 && matches!(format.support, ObjectTransferFormatSupport::Confirmed)
+    }));
+    assert!(transfer.formats.iter().any(|format| {
+        format.code == 0x3801 && matches!(format.support, ObjectTransferFormatSupport::Experimental)
+    }));
+
+    let controls = s.control_surface("wireless-tether".into(), "shooting/stills".into());
+    assert_eq!(controls.len(), 4);
+    let exposure_bias = controls
+        .iter()
+        .find(|control| matches!(control.role, ControlRole::ExposureBias))
+        .expect("exposure-bias semantic control");
+    assert_eq!(exposure_bias.property, 0x5010);
+    assert!(matches!(
+        exposure_bias.read_source,
+        ControlReadSource::DirectProperty
+    ));
+    assert!(matches!(
+        exposure_bias.write_effect,
+        ControlWriteEffect::DescriptorOnly
+    ));
+    assert_eq!(exposure_bias.control.operation, Some(0x1016));
+}
+
+#[test]
 fn value_policy_resolves_initiator_identity_from_manufacturer_tier() {
     let s = store();
     match s.value("initiatorGuid".into()) {

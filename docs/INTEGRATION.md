@@ -48,6 +48,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
 | `ConnectionInfo.command_listener_volatile` | whether closing the active PTP/IP transport may remove the command listener, so a consumer must not assume it can immediately redial the same endpoint as generic recovery. A manifest-authored outer connection re-establishment may create a new listener. |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
+| `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` | typed callback/knock/command ports, retry policy, and byte-exact PCSS packet codecs. The host supplies the route-selected local IPv4 address; no wire text or port is authored in client code. |
 | `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
 | `camera_initiated_transfer(model)` | BLE trigger states, optional/cached handoff, resolved endpoint, reserved count/head, metadata/data operations, chunk limit, and completion policy for the camera-controlled pull queue. Requires a manufacturer-index store so symbolic GATT names resolve. |
 | `transport_close(connection)` | the manifest-resolved frame plus its declared `when` context (Fuji `app`: the 8-byte sentinel before image-transfer re-establishment), `None` when absent; malformed sentinel data is an error. Use it only in the declared context; sending it does not by itself guarantee that the endpoint is immediately redialable. |
@@ -56,8 +57,10 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `mode_entry(connection, from, to)` | a closed execution plan: PTP wire steps, a manual instruction, or an outer connection re-establishment that exits the old session and reuses the target mode's cold entry |
 | `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). A `PtpU32Array` capture binds a count-prefixed property reply as a collection; `ForEach.collection` names that captured slot and performs no additional read. See `docs/plans/action-verbs.md` and schema §11.22. |
 | `selected_object_transfer(connection)` | typed lazy-gallery projection of the canonical `importObjects` per-handle preparation plus the existing chunk-read action; exposes the preparation-step index whose response is ObjectInfo and manifest-owned u64 transfer-size/u32 chunk-size slots without requiring consumers to inspect nested action ASTs; returns a contract error when a connection declares the actions with an invalid shape |
+| `object_transfer_contract(connection)` | transfer strategy (`chunked` or `wholeObject`), resume policy, read/completion actions, completion timing, and per-format confidence. A completion action is eligible only after the host has atomically committed the object locally. |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
+| `control_surface(connection, mode)` | semantic control roles mapped to manifest-owned properties, write effects/evidence state, effective owner, and the existing set/readback mechanism. `descriptorOnly` and other non-confirmed effects must be presented as experimental and verified by readback. |
 | `property_value_width(prop)` | the manifest property's generic scalar encoder width (`u8`, `u16`, `u32`, `i16`, or `i32`), or `None` for non-scalar/unknown types |
 | `value(key)` / `value_label(prop, value)` / `decode_property(prop, raw)` / `encode_property(prop, label)` | value-policy resolution, human labels, and manifest-backed property label↔wire-byte encoding |
 
@@ -160,6 +163,15 @@ per-platform packaging:
    ports, GATT char UUIDs); **your code does the UDP/TCP/BLE/Wi-Fi**. Bind sockets by
    role with `port_for_role(connection, role)` (`ConnectionInfo.command_framing` /
    `event_framing` tell you which codec framing each channel uses).
+
+   For a PCSS connection, bind the callback listener first, choose the
+   route-selected local IPv4 address for the known camera address, and pass that
+   IPv4 to `build_pcss_discovery`. Send the returned datagram at the cadence and
+   attempt limit from `pcss_rendezvous`; stop retransmitting as soon as a valid
+   callback parses. Acknowledge that callback with
+   `build_pcss_callback_ack`, then connect the PTP/IP command session to the
+   callback's returned port. PCSS discovery is known-camera IPv4 unicast: do not
+   add broadcast, multicast, service discovery, or IPv6 fallback in the host.
 3. **Enter a mode.** `mode_entry(connection, from, to)` returns one
    `ModeEntryExecution`: execute `Ptp.steps` with `run_mode_entry` over the
    current transport, surface `UserInstruction`, or orchestrate

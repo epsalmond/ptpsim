@@ -1416,6 +1416,10 @@ properties:
         setMethod: vendorStep
         operation: '0x902e'
         readback: '0xd212'
+      wireless-tether:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels:
       '-1000': '-1.0'
       '-1333': '-1.3'
@@ -1451,6 +1455,7 @@ properties:
     evidence:
     - iosLiveControls
     - docLiveControls
+    - wireTether
     - activeProbe
     - appCatalog
   '0x5011':
@@ -6732,10 +6737,10 @@ events:
     evidence:
     - docFujiPtpPropReference
 quirks:
-- id: pcss-knock-once-per-boot
+- id: pcss-knock-multi-session
   appliesTo:
   - wireless-tether
-  behavior: The PCSS knock (UDP 51562) is accepted only once per camera boot; after one session the camera ICMP-rejects further knocks until power-cycled.
+  behavior: PCSS supports multiple knock/notify sessions in one camera boot. A new rendezvous may be ignored during a short post-session recovery window; retry the manifest-authored discovery sequence instead of assuming once-per-boot availability.
   evidence: wireTether
 modes:
   card-reader:
@@ -6847,6 +6852,16 @@ connections:
       when: before-image-transfer-reestablishment
     knock: null
     initRetries: null
+    objectTransfer:
+      strategy: chunked
+      resumePolicy: byteOffset
+      readAction: getObject
+      formats:
+        '0x300d': confirmed
+        '0x3801': confirmed
+        '0xb103': confirmed
+        '0xb105': confirmed
+    controlSurfaces: {}
     modes:
     - shooting/stills
     - shooting/video
@@ -7223,6 +7238,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers:
         - postviewEvent: {}
         evidence:
@@ -7373,6 +7389,7 @@ connections:
             - '0x2019'
             maxAttempts: 3
             retryDelayMs: 1000
+        activities: []
         triggers: []
         evidence:
         - docImageTransfer
@@ -7393,6 +7410,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - docImageTransfer
@@ -7413,6 +7431,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - docImageTransfer
@@ -7440,6 +7459,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - docImageTransfer
@@ -7485,6 +7505,7 @@ connections:
             onEach: []
             timeoutMs: 5000
             intervalMs: 100
+        activities: []
         triggers: []
         evidence:
         - iosLiveControls
@@ -7504,6 +7525,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - iosLiveControls
@@ -7867,6 +7889,7 @@ connections:
                       tolerant: false
                       repeat: 1
                       awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - docImageTransfer
@@ -7893,6 +7916,8 @@ connections:
     transportClose: null
     knock: null
     initRetries: null
+    objectTransfer: null
+    controlSurfaces: {}
     modes:
     - remote-trigger
     entries: []
@@ -7934,6 +7959,8 @@ connections:
     transportClose: null
     knock: null
     initRetries: null
+    objectTransfer: null
+    controlSurfaces: {}
     modes:
     - raw-conv-backup-restore
     - webcam
@@ -7986,11 +8013,48 @@ connections:
       knockPort: 51562
       commandPort: 15740
       protocol: PCSS/1.0
+      retryIntervalMs: 10000
+      maxAttempts: 10
     initRetries:
       max: 3
       backoffMs: 250
+    objectTransfer:
+      strategy: wholeObject
+      resumePolicy: restartFromZero
+      readAction: getObject
+      completion:
+        action: deleteObject
+        after: localCommit
+      formats:
+        '0x300d': experimental
+        '0x3801': experimental
+        '0xb103': experimental
+        '0xb105': confirmed
+    controlSurfaces:
+      shooting/stills:
+        iso:
+          property: '0x500f'
+          readSource: directProperty
+          writeEffect: confirmed
+          effectiveOwner: client
+        shutterSpeed:
+          property: '0x500d'
+          readSource: directProperty
+          writeEffect: confirmed
+          effectiveOwner: client
+        aperture:
+          property: '0x5007'
+          readSource: directProperty
+          writeEffect: confirmed
+          effectiveOwner: client
+        exposureBias:
+          property: '0x5010'
+          readSource: directProperty
+          writeEffect: descriptorOnly
+          effectiveOwner: client
     modes:
     - shooting/stills
+    - image-transfer
     - remote-trigger
     entries: []
     actions:
@@ -8070,6 +8134,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers:
         - objectsAvailable:
             min: 1
@@ -8090,9 +8155,13 @@ connections:
           params:
           - 4294967295
           - 0
+          captures:
+          - bind: objectHandles
+            as: ptpU32Array
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -8113,6 +8182,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -8133,6 +8203,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -8153,6 +8224,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -8173,6 +8245,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -8191,6 +8264,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - wireTetherCaps20260527
@@ -8220,6 +8294,7 @@ connections:
           tolerant: false
           repeat: 1
           awaitUntil: null
+        activities: []
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
@@ -8248,6 +8323,8 @@ connections:
     transportClose: null
     knock: null
     initRetries: null
+    objectTransfer: null
+    controlSurfaces: {}
     modes:
     - shooting/stills
     entries: []

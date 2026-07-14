@@ -23,6 +23,7 @@ pub struct Health {
     pub profile: String,
     pub connection: String,
     pub command_addr: SocketAddr,
+    pub knock_addr: Option<SocketAddr>,
     pub media_root: String,
     pub(crate) metrics: Metrics,
 }
@@ -36,6 +37,7 @@ impl Health {
             "profile": self.profile,
             "connection": self.connection,
             "bind": self.command_addr.to_string(),
+            "knock_bind": self.knock_addr.map(|address| address.to_string()),
             "sessions": sessions,
             "media_root": self.media_root,
             "metrics": {

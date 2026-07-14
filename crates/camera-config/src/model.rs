@@ -505,6 +505,111 @@ pub struct Control {
     pub readback: Option<HexCode>,
 }
 
+/// Semantic control intent exposed by a connection/mode. The role lets a
+/// consumer build controls without knowing property codes; the referenced
+/// property still owns the wire operation and readback recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlRole {
+    Iso,
+    ShutterSpeed,
+    Aperture,
+    ExposureBias,
+}
+
+/// What a successful write response is known to mean on this surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlWriteEffect {
+    Confirmed,
+    DescriptorOnly,
+    AckNoEffect,
+    Refused,
+    DestructiveClamp,
+}
+
+/// Who ultimately owns the effective value after a client writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlOwner {
+    Client,
+    Camera,
+    Body,
+    ModeGated,
+    Unknown,
+}
+
+/// Where the consumer verifies the effective value after a write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ControlReadSource {
+    /// Read the semantic surface's own `property` directly.
+    DirectProperty,
+    /// Read the control recipe's separately declared `readback` property.
+    DeclaredReadback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlSurfaceEntry {
+    pub property: HexCode,
+    pub read_source: ControlReadSource,
+    pub write_effect: ControlWriteEffect,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_owner: Option<ControlOwner>,
+}
+
+/// How object bytes are read over a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ObjectTransferStrategy {
+    Chunked,
+    WholeObject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ObjectTransferResumePolicy {
+    ByteOffset,
+    RestartFromZero,
+}
+
+/// Evidence level for one object format on one transfer surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ObjectTransferFormatSupport {
+    Confirmed,
+    Experimental,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ObjectTransferCompletionTiming {
+    LocalCommit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectTransferCompletionPolicy {
+    pub action: ActionVerb,
+    pub after: ObjectTransferCompletionTiming,
+}
+
+/// Connection-owned object-transfer policy. Actions continue to own the wire
+/// recipe; this record declares how the consumer composes them safely.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectTransferContract {
+    pub strategy: ObjectTransferStrategy,
+    pub resume_policy: ObjectTransferResumePolicy,
+    pub read_action: ActionVerb,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<ObjectTransferCompletionPolicy>,
+    #[serde(default)]
+    pub formats: BTreeMap<HexCode, ObjectTransferFormatSupport>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Workflow {
@@ -714,6 +819,12 @@ pub struct Connection {
     /// InitFail retry tolerance observed on PCSS establishment.
     #[serde(default)]
     pub init_retries: Option<InitRetries>,
+    /// Safe object-read and completion policy for this connection.
+    #[serde(default)]
+    pub object_transfer: Option<ObjectTransferContract>,
+    /// Mode-qualified semantic controls, keyed by mode then intent role.
+    #[serde(default)]
+    pub control_surfaces: BTreeMap<String, BTreeMap<ControlRole, ControlSurfaceEntry>>,
     #[serde(default)]
     pub modes: Vec<String>,
     /// Mode-graph edges reachable over this connection (decision #6, §3a). An edge
@@ -910,6 +1021,20 @@ pub struct PcssKnock {
     pub knock_port: u16,
     pub command_port: u16,
     pub protocol: String,
+    /// Delay between discovery datagrams while awaiting the callback.
+    #[serde(default = "default_pcss_retry_interval_ms")]
+    pub retry_interval_ms: u32,
+    /// Maximum discovery datagrams sent for one rendezvous attempt.
+    #[serde(default = "default_pcss_max_attempts")]
+    pub max_attempts: u32,
+}
+
+fn default_pcss_retry_interval_ms() -> u32 {
+    10_000
+}
+
+fn default_pcss_max_attempts() -> u32 {
+    10
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

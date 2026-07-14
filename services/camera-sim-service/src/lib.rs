@@ -331,6 +331,9 @@ impl Server {
             profile: config.profile.clone(),
             connection: config.connection.clone(),
             command_addr: command.local_addr().unwrap(),
+            knock_addr: knock
+                .as_ref()
+                .map(|listener| listener.local_addr().unwrap()),
             media_root: config.media_root.display().to_string(),
             metrics: metrics.clone(),
         };
