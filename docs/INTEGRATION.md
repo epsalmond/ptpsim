@@ -439,6 +439,7 @@ or retry policy around them.
 | `runModeReestablishmentExit(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | only the old-session `exitSteps` of a `ReestablishConnection` entry. Establishment replay, network association, fresh session creation, and the cold entry remain explicit host orchestration. |
 | `runAction(store, connection, action, transport, observer, activityObserver, runtimeParams)` | one named manifest action on the current session. |
 | `runSelectedObjectPreparation(store, connection, transport, observer, activityObserver, runtimeParams)` | the selected-object prefix projected from the canonical import action, preserving capture bindings for later chunk reads. |
+| `runStreamingAction(store, connection, action, transport, sink, runtimeParams, expectedPayloadBytes)` | one compressed, single-`sendOp` data-in action through bounded raw reads. Rust validates the 12-byte data header, streams the exact body to `PtpStreamingSink` in chunks no larger than 1 MiB, then validates the separate final response. |
 
 `PtpExecutionOutcome` returns scalar scope, captured collections, ordered data
 outputs (payload plus final response parameters and transaction id), and the
@@ -466,6 +467,18 @@ activities over their top-level steps (§11.24). When present, the PTP executor
 emits them through the same `ConnectionActivityObserver` contract as
 establishment walking; absent metadata produces no invented activity or
 duration. Cancellation emits exactly one `Cancelled` for the active span.
+
+`PtpStreamingTransport` is intentionally separate from `PtpExecutorTransport`:
+its `receiveCommandBytes(maxBytes)` must never return more than requested, which
+prevents a length-prefixed whole-object frame from being assembled in host or
+Rust memory. Each raw read has a 10-second idle deadline; there is no aggregate
+whole-transfer deadline. Once the command write begins, cancellation, malformed
+or truncated framing, a deadline, or any sink failure invokes
+`invalidateCommandSession` synchronously. The host must cancel and poison that
+command session because unread compressed-frame bytes cannot be resynchronized.
+A fully consumed non-OK PTP response is different: the session is synchronized
+and remains reusable. The sink owns temporary-file durability; run the
+manifest's completion action only after an atomic local commit.
 
 `planHandle` has the stable form `<model>:<selector>`. Plans obtained through
 `establishment(model, connection, ...)` use the connection id as the selector;

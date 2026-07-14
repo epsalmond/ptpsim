@@ -28,6 +28,11 @@ pub use ptp_executor::{
     PtpCollectionValue, PtpDataOutput, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
     PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError,
 };
+pub mod streaming_executor;
+pub use streaming_executor::{
+    run_streaming_action, PtpStreamingError, PtpStreamingOutcome, PtpStreamingSink,
+    PtpStreamingSinkError, PtpStreamingTransport,
+};
 pub mod mfg_index;
 pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
