@@ -1021,13 +1021,7 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
     assert_eq!(retry_when.field, "stateErrorDetails");
     assert_eq!(retry_when.value, "2");
     assert_eq!(failure_context, &["apState", "stateErrorDetails"]);
-    assert!(matches!(
-        &on_failure[..],
-        [Step::BleRead { gatt, encoding, capture_as, .. }]
-            if gatt == "1587B102-0B6D-4B63-9226-66FCC6D17387"
-                && encoding == "u16-le"
-                && capture_as == "stateErrorDetails"
-    ));
+    assert!(on_failure.is_empty());
 
     let (gatt, value, notification_fence) = steps
         .iter()
@@ -1064,6 +1058,7 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
                 capture,
                 until,
                 fail_when,
+                failure_evidence,
                 interval_ms,
                 ..
             } => {
@@ -1078,9 +1073,15 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
                 }
                 assert_eq!(*interval_ms, 0, "notify sources do not carry poll cadence");
                 assert!(capture.iter().any(|c| c.name == "apState"));
-                let fail_when = fail_when.as_ref().expect("NotLaunched is terminal");
+                let fail_when = fail_when.as_ref().expect("NotLaunched probes details");
                 assert_eq!(fail_when.field, "apStateRaw");
                 assert_eq!(fail_when.value, "0080");
+                let evidence = failure_evidence
+                    .as_ref()
+                    .expect("NotLaunched requires nonzero detail evidence");
+                assert_eq!(evidence.when.field, "stateErrorDetails");
+                assert_eq!(evidence.when.value, "0");
+                assert_eq!(evidence.steps.len(), 1);
                 Some(until.clone())
             }
             _ => None,

@@ -778,10 +778,13 @@ fn run_await_until(
                 } else {
                     match ctx.responder.take_notification(gatt) {
                         Some(p) => p,
-                        None => return Err(err(
-                            "awaited notification never arrived (source exhausted before `until`)"
-                                .into(),
-                        )),
+                        None => {
+                            return Err(await_deadline_error(
+                                here,
+                                "awaited notification never arrived (source exhausted before `until`)"
+                                    .into(),
+                            ));
+                        }
                     }
                 }
             }
@@ -805,28 +808,69 @@ fn run_await_until(
                 .is_some_and(|actual| predicate_holds(actual, predicate.op, &predicate.value))
         }) {
             let predicate = s.fail_when.as_ref().expect("matched above");
-            return Err(WalkError {
-                step: here.to_string(),
-                kind: RetryFailureKind::ConditionRejected,
-                message: format!(
-                    "`failWhen` matched ({} {} {})",
-                    predicate.field,
-                    predicate.op.as_token(),
-                    predicate.value
-                ),
-                context: BTreeMap::new(),
-            });
+            let confirmed = match &s.failure_evidence {
+                None => true,
+                Some(evidence) => {
+                    ctx.scope.remove(&evidence.when.field);
+                    ctx.encodings.remove(&evidence.when.field);
+                    walk_steps(
+                        ctx,
+                        &evidence.steps,
+                        &format!("{here}.failureEvidence.steps"),
+                    )?;
+                    ctx.scope.get(&evidence.when.field).is_some_and(|actual| {
+                        predicate_holds(actual, evidence.when.op, &evidence.when.value)
+                    })
+                }
+            };
+            if confirmed {
+                let evidence = s
+                    .failure_evidence
+                    .as_ref()
+                    .map_or(String::new(), |evidence| {
+                        format!(
+                            "; `failureEvidence.when` matched ({} {} {})",
+                            evidence.when.field,
+                            evidence.when.op.as_token(),
+                            evidence.when.value
+                        )
+                    });
+                return Err(WalkError {
+                    step: here.to_string(),
+                    kind: RetryFailureKind::ConditionRejected,
+                    message: format!(
+                        "`failWhen` matched ({} {} {}){}",
+                        predicate.field,
+                        predicate.op.as_token(),
+                        predicate.value,
+                        evidence
+                    ),
+                    context: BTreeMap::new(),
+                });
+            }
         }
         // Not yet: act, then observe again. interval_ms is dispatcher cadence
         // — the deterministic walker doesn't sleep.
         walk_steps(ctx, &s.on_each, &format!("{here}.onEach"))?;
     }
-    Err(err(format!(
-        "`until` ({} {} {}) not satisfied within {MAX_AWAIT_ITERS} observations",
-        s.until.field,
-        s.until.op.as_token(),
-        s.until.value
-    )))
+    Err(await_deadline_error(
+        here,
+        format!(
+            "`until` ({} {} {}) not satisfied within {MAX_AWAIT_ITERS} observations",
+            s.until.field,
+            s.until.op.as_token(),
+            s.until.value
+        ),
+    ))
+}
+
+fn await_deadline_error(here: &str, message: String) -> WalkError {
+    WalkError {
+        step: here.to_string(),
+        kind: RetryFailureKind::DeadlineExceeded,
+        message,
+        context: BTreeMap::new(),
+    }
 }
 
 /// Execute a `bleWriteChunk` (#112): frame + write ONE window of the host blob,

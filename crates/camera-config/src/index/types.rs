@@ -543,12 +543,18 @@ pub struct BleAwaitUntilStep {
     /// Satisfied when this predicate over runtime_scope holds (evaluated
     /// after each iteration's captures land).
     pub until: Predicate,
-    /// Optional terminal condition evaluated after `until`. A match fails the
-    /// step immediately as `conditionRejected`; `until` takes precedence.
+    /// Optional terminal condition evaluated after `until`. Without
+    /// `failure_evidence`, a match fails immediately as `conditionRejected`;
+    /// otherwise the evidence probe must confirm it. `until` takes precedence.
     /// Invalid with a seeded notify source because callback transports cannot
     /// reliably distinguish a read response from a racing notification.
     #[serde(default)]
     pub fail_when: Option<Predicate>,
+    /// Optional evidence probe for a matching `fail_when`. The probe runs
+    /// inside the await budget; rejection becomes terminal only when its
+    /// `when` predicate matches the freshly-probed scope.
+    #[serde(default)]
+    pub failure_evidence: Option<BleAwaitFailureEvidence>,
     /// Steps run each iteration when `until` is NOT yet satisfied, before the
     /// next poll/notification (Sony's launch-request write). Empty = pure
     /// observe.
@@ -564,6 +570,18 @@ pub struct BleAwaitUntilStep {
     pub interval_ms: u32,
     #[serde(flatten, default)]
     pub opts: StepOptions,
+}
+
+/// Additional evidence required before a `bleAwaitUntil.failWhen` match is
+/// classified as `conditionRejected`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleAwaitFailureEvidence {
+    /// Steps that acquire the evidence. The `when` field is cleared first so
+    /// a tolerated probe failure cannot reuse a stale value.
+    pub steps: Vec<Step>,
+    /// Terminal only when this predicate holds after `steps` completes.
+    pub when: Predicate,
 }
 
 /// Stable failure classes a [`RetryStep`] may select without inspecting an

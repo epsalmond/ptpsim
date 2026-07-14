@@ -385,6 +385,8 @@ pub enum Step {
         /// Optional terminal rejection evaluated after `until`. Invalid with
         /// a seeded notify source; use an explicit pre-command read instead.
         fail_when: Option<Predicate>,
+        /// Additional evidence required before `fail_when` becomes terminal.
+        failure_evidence: Option<BleAwaitFailureEvidence>,
         /// Steps run each iteration `until` is not yet met, before the next
         /// observe. `Vec<Step>` (may be empty for a pure poll).
         on_each: Vec<Step>,
@@ -560,8 +562,8 @@ pub enum AcquireSource {
 /// Where `bleAwaitUntil` observes (§11.15): poll a readable characteristic,
 /// or consume a characteristic's notification stream, optionally preceded by
 /// one seed read after the notification accept path is armed. Seeded notify
-/// sources cannot declare `fail_when` because callback transports may deliver
-/// read responses and notifications through the same callback.
+/// sources cannot declare rejection predicates because callback transports may
+/// deliver read responses and notifications through the same callback.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum AwaitSource {
     Read {
@@ -572,6 +574,22 @@ pub enum AwaitSource {
         mode: CccdMode,
         seed_read: bool,
     },
+}
+
+/// Probe and confirmation predicate for a potential `bleAwaitUntil` failure.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BleAwaitFailureEvidence {
+    pub steps: Vec<Step>,
+    pub when: Predicate,
+}
+
+impl From<&ix::BleAwaitFailureEvidence> for BleAwaitFailureEvidence {
+    fn from(value: &ix::BleAwaitFailureEvidence) -> Self {
+        Self {
+            steps: value.steps.iter().map(Step::from).collect(),
+            when: (&value.when).into(),
+        }
+    }
 }
 
 /// CCCD subscription mode (§11.8): `ENABLE_NOTIFICATION_VALUE` vs
@@ -860,6 +878,7 @@ impl From<&ix::Step> for Step {
                 capture_as: inner.capture_as.clone(),
                 until: (&inner.until).into(),
                 fail_when: inner.fail_when.as_ref().map(Into::into),
+                failure_evidence: inner.failure_evidence.as_ref().map(Into::into),
                 on_each: inner.on_each.iter().map(Step::from).collect(),
                 timeout_ms: inner.timeout_ms,
                 interval_ms: inner.interval_ms,

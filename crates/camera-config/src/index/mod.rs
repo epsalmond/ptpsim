@@ -30,12 +30,12 @@ pub use parse::ResolvedManufacturerIndex;
 pub use types::{
     AcquireFirmwareStep, AcquireSource, AcquireStep, AdvertByteSource, AdvertCapture,
     AdvertPredicate, AwaitSource, BitsAssertion, BleAdvertConstants, BleAdvertSignature,
-    BleAwaitDisconnectStep, BleAwaitUntilStep, BleConnectStep, BleDiscoverServicesStep,
-    BleNotifyStep, BleNotifyUntil, BleReadStep, BleReconnectPolicy, BleRequestMtuStep,
-    BleSubscribeStep, BleWriteChunkStep, BleWriteStep, ByteAssertion, CccdMode, ChunkField,
-    ChunkFrameField, Confidence, Encoding, EstablishmentBlock, FamilyBleBlock, FamilyBlock, IfStep,
-    IndexedModel, LocalNamePredicate, ManufacturerIndex, MfgDataPredicate, ModelView,
-    NotifyCapture, PayloadPredicate, Predicate, PredicateOp, ReconnectDisposition,
+    BleAwaitDisconnectStep, BleAwaitFailureEvidence, BleAwaitUntilStep, BleConnectStep,
+    BleDiscoverServicesStep, BleNotifyStep, BleNotifyUntil, BleReadStep, BleReconnectPolicy,
+    BleRequestMtuStep, BleSubscribeStep, BleWriteChunkStep, BleWriteStep, ByteAssertion, CccdMode,
+    ChunkField, ChunkFrameField, Confidence, Encoding, EstablishmentBlock, FamilyBleBlock,
+    FamilyBlock, IfStep, IndexedModel, LocalNamePredicate, ManufacturerIndex, MfgDataPredicate,
+    ModelView, NotifyCapture, PayloadPredicate, Predicate, PredicateOp, ReconnectDisposition,
     ReconnectSuggestion, RetryFailureKind, RetryStep, Signature, SignatureKind, Step, StepOptions,
     StepValue, SuggestsBlock, Transform,
 };

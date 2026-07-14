@@ -374,8 +374,6 @@ families:
                 retryDelayMs: 200
                 retryWhen: { stateErrorDetails: { eq: "2" } }
                 failureContext: [apState, stateErrorDetails]
-                onFailure:
-                  - bleRead: { gatt: stateErrorDetails, encoding: u16-le, captureAs: stateErrorDetails }
                 steps:
                   # FUNCTION_LAUNCH_REQUEST: 2-byte LE launch value bound at runtime.
                   - bleWrite:
@@ -390,14 +388,23 @@ families:
                       captureAs: apStateRaw
                       # Manual launch modes 3 and 4 terminate at 0x8001.
                       # 0x8002 Launching remains transitional; 0x8003 is the
-                      # separate reserved auto-transfer state. A notified
-                      # 0x8000 selects the typed diagnostic path.
+                      # separate reserved auto-transfer state. A command-caused
+                      # 0x8000 can also be transitional, so it selects the typed
+                      # diagnostic path only when STATE_ERROR_DETAILS is nonzero.
                       # Predicates use captureAs because it is replaced for every
                       # payload, including malformed ones whose decoded capture
                       # is skipped fail-soft. This prevents stale prior-attempt
                       # state from deciding the current observation.
                       until: { apStateRaw: { eq: "0180" } }
                       failWhen: { apStateRaw: { eq: "0080" } }
+                      failureEvidence:
+                        steps:
+                          - bleRead:
+                              gatt: stateErrorDetails
+                              encoding: u16-le
+                              captureAs: stateErrorDetails
+                              tolerant: true
+                        when: { stateErrorDetails: { ne: "0" } }
                       timeoutMs: 20000
 
             # AP is up — read the credentials the app joins the network with.

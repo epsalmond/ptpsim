@@ -1358,11 +1358,7 @@ fn fuji_condition_retry_parses_with_resolved_diagnostic_gatt() {
         .expect("launch retry parses");
     assert_eq!(retry.max_attempts, 2);
     assert_eq!(retry.retry_delay_ms, 200);
-    assert!(matches!(
-        &retry.on_failure[..],
-        [Step::BleRead(read)]
-            if read.gatt == "1587B102-0B6D-4B63-9226-66FCC6D17387"
-    ));
+    assert!(retry.on_failure.is_empty());
     assert!(matches!(
         &plan.steps[2],
         Step::BleAwaitUntil(await_step)
@@ -1382,6 +1378,12 @@ fn fuji_condition_retry_parses_with_resolved_diagnostic_gatt() {
                 .fail_when
                 .as_ref()
                 .is_some_and(|p| p.field == "apStateRaw" && p.value == "0080")
+                && await_step
+                .failure_evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.when.field == "stateErrorDetails"
+                    && evidence.when.op == camera_config::index::PredicateOp::Ne
+                    && evidence.when.value == "0")
                 && await_step.until.field == "apStateRaw"
                 && await_step.until.value == "0180"
     ));
@@ -1390,6 +1392,19 @@ fn fuji_condition_retry_parses_with_resolved_diagnostic_gatt() {
         Step::BleWrite(write)
             if write.notification_fence.as_deref()
                 == Some("A68E3F66-0FCC-4395-8D4C-AA980B5877FA")
+    ));
+    let Step::BleAwaitUntil(await_step) = &retry.steps[1] else {
+        unreachable!()
+    };
+    let evidence = await_step
+        .failure_evidence
+        .as_ref()
+        .expect("NotLaunched probes fresh error details");
+    assert!(matches!(
+        &evidence.steps[..],
+        [Step::BleRead(read)]
+            if read.gatt == "1587B102-0B6D-4B63-9226-66FCC6D17387"
+                && read.capture_as == "stateErrorDetails"
     ));
 
     // Step's serializer is intentionally not the authored one-entry mapping,
@@ -1446,6 +1461,95 @@ fn seeded_notify_rejects_fail_when_at_validation() {
         error
             .to_string()
             .contains("notify seedRead cannot be combined with failWhen"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn failure_evidence_requires_fail_when() {
+    let yaml = await_fixture(
+        r#"                source: { notify: { gatt: statusChar } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                failureEvidence:
+                  steps:
+                    - bleRead: { gatt: statusChar, encoding: u8, captureAs: detail }
+                  when: { detail: { ne: 0 } }
+                timeoutMs: 5000"#,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failureEvidence requires failWhen"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn failure_evidence_requires_probe_steps() {
+    let yaml = await_fixture(
+        r#"                source: { notify: { gatt: statusChar } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                failWhen: { status: { eq: 0 } }
+                failureEvidence:
+                  steps: []
+                  when: { detail: { ne: 0 } }
+                timeoutMs: 5000"#,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failureEvidence steps must not be empty"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn failure_evidence_rejects_mixed_case_uuid_for_notify_source() {
+    let yaml = await_fixture(
+        r#"                source: { notify: { gatt: statusChar } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                failWhen: { status: { eq: 0 } }
+                failureEvidence:
+                  steps:
+                    - bleRead: { gatt: 0000cc09-0000-1000-8000-00805f9b34fb, encoding: u8, captureAs: detail }
+                  when: { detail: { ne: 0 } }
+                timeoutMs: 5000"#,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failureEvidence cannot read its notify source characteristic"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn failure_evidence_rejects_nested_read_of_notify_source() {
+    let yaml = await_fixture(
+        r#"                source: { notify: { gatt: statusChar } }
+                capture: { at: 0, length: 1, encoding: u8, name: status }
+                until: { status: { eq: 1 } }
+                failWhen: { status: { eq: 0 } }
+                failureEvidence:
+                  steps:
+                    - if:
+                        condition: { status: { eq: 0 } }
+                        then:
+                          - bleRead: { gatt: statusChar, encoding: u8, captureAs: detail }
+                  when: { detail: { ne: 0 } }
+                timeoutMs: 5000"#,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&yaml).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failureEvidence cannot read its notify source characteristic"),
         "got: {error}",
     );
 }

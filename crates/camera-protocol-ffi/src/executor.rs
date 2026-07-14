@@ -30,7 +30,8 @@ use std::sync::Arc;
 use camera_config::index::eval;
 use camera_config::index::{
     AcquireSource, AwaitSource, BleAwaitUntilStep, BleNotifyStep, BleNotifyUntil,
-    BleWriteChunkStep, Encoding, EstablishmentBlock, NotifyCapture, PredicateOp, Step, StepValue,
+    BleWriteChunkStep, Encoding, EstablishmentBlock, NotifyCapture, Predicate, PredicateOp, Step,
+    StepValue,
 };
 use camera_config::{
     ConnectionActivityBinding as ConfigActivityBinding,
@@ -1592,7 +1593,35 @@ async fn run_await_until(
                     return Ok(tail);
                 }
                 if fail_when_holds(&ctx.scope, s) {
-                    return Err(condition_rejected_err(here, s));
+                    let confirmed = match &s.failure_evidence {
+                        None => true,
+                        Some(evidence) => {
+                            ctx.scope.remove(&evidence.when.field);
+                            ctx.encodings.remove(&evidence.when.field);
+                            let evidence_path = format!("{here}.failureEvidence.steps");
+                            let evidence_result = {
+                                let evidence_walk =
+                                    walk_steps(ctx, &evidence.steps, &evidence_path, top_next);
+                                futures_util::pin_mut!(evidence_walk);
+                                match select(evidence_walk, &mut budget).await {
+                                    Either::Left((result, _)) => result,
+                                    Either::Right((Ok(()), _)) => {
+                                        return Err(await_timeout_err(here, s, &observations));
+                                    }
+                                    Either::Right((Err(error), _)) => {
+                                        return Err(StepError::transport(here, error));
+                                    }
+                                }
+                            };
+                            if let Some(t) = evidence_result? {
+                                tail = Some(t);
+                            }
+                            predicate_matches(&ctx.scope, &evidence.when)
+                        }
+                    };
+                    if confirmed {
+                        return Err(condition_rejected_err(here, s));
+                    }
                 }
                 {
                     let on_each_path = format!("{here}.onEach");
@@ -1657,7 +1686,44 @@ async fn run_await_until(
                     return Ok(tail);
                 }
                 if fail_when_holds(&ctx.scope, s) {
-                    return Err(condition_rejected_err(here, s));
+                    let confirmed = match &s.failure_evidence {
+                        None => true,
+                        Some(evidence) => {
+                            ctx.scope.remove(&evidence.when.field);
+                            ctx.encodings.remove(&evidence.when.field);
+                            let evidence_path = format!("{here}.failureEvidence.steps");
+                            let evidence_result = {
+                                let evidence_walk =
+                                    walk_steps(ctx, &evidence.steps, &evidence_path, top_next);
+                                futures_util::pin_mut!(evidence_walk);
+                                match select(evidence_walk, &mut budget).await {
+                                    Either::Left((result, _)) => result,
+                                    Either::Right((Ok(()), _)) => {
+                                        return Err(StepError::deadline(
+                                            here,
+                                            format!(
+                                                "`until` ({} {} {}) not satisfied within {}ms",
+                                                s.until.field,
+                                                s.until.op.as_token(),
+                                                s.until.value,
+                                                s.timeout_ms
+                                            ),
+                                        ));
+                                    }
+                                    Either::Right((Err(error), _)) => {
+                                        return Err(StepError::transport(here, error));
+                                    }
+                                }
+                            };
+                            if let Some(t) = evidence_result? {
+                                tail = Some(t);
+                            }
+                            predicate_matches(&ctx.scope, &evidence.when)
+                        }
+                    };
+                    if confirmed {
+                        return Err(condition_rejected_err(here, s));
+                    }
                 }
                 // Not yet: act, then observe again after the poll interval.
                 {
@@ -1719,11 +1785,15 @@ async fn run_await_until(
 }
 
 fn fail_when_holds(scope: &BTreeMap<String, String>, s: &BleAwaitUntilStep) -> bool {
-    s.fail_when.as_ref().is_some_and(|predicate| {
-        scope
-            .get(&predicate.field)
-            .is_some_and(|actual| predicate_holds(actual, predicate.op, &predicate.value))
-    })
+    s.fail_when
+        .as_ref()
+        .is_some_and(|predicate| predicate_matches(scope, predicate))
+}
+
+fn predicate_matches(scope: &BTreeMap<String, String>, predicate: &Predicate) -> bool {
+    scope
+        .get(&predicate.field)
+        .is_some_and(|actual| predicate_holds(actual, predicate.op, &predicate.value))
 }
 
 fn condition_rejected_err(here: &str, s: &BleAwaitUntilStep) -> StepError {
@@ -1731,13 +1801,25 @@ fn condition_rejected_err(here: &str, s: &BleAwaitUntilStep) -> StepError {
         .fail_when
         .as_ref()
         .expect("called only after failWhen matched");
+    let evidence = s
+        .failure_evidence
+        .as_ref()
+        .map_or(String::new(), |evidence| {
+            format!(
+                "; `failureEvidence.when` matched ({} {} {})",
+                evidence.when.field,
+                evidence.when.op.as_token(),
+                evidence.when.value
+            )
+        });
     StepError::condition_rejected(
         here,
         format!(
-            "`failWhen` matched ({} {} {})",
+            "`failWhen` matched ({} {} {}){}",
             predicate.field,
             predicate.op.as_token(),
-            predicate.value
+            predicate.value,
+            evidence
         ),
     )
 }
@@ -2285,6 +2367,7 @@ mod tests {
                 op: PredicateOp::Eq,
                 value: "32768".into(),
             }),
+            failure_evidence: None,
             on_each: vec![],
             timeout_ms: 20_000,
             interval_ms: 0,

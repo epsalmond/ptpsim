@@ -363,6 +363,19 @@ fn resolve_gatt_names_in_steps(
                     {
                         resolve_gatt_names_in_steps(on_each, gatt, &format!("{here}.onEach"))?;
                     }
+                    if let Some(Value::Mapping(evidence)) =
+                        body_map.get_mut(Value::String("failureEvidence".into()))
+                    {
+                        if let Some(Value::Sequence(steps)) =
+                            evidence.get_mut(Value::String("steps".into()))
+                        {
+                            resolve_gatt_names_in_steps(
+                                steps,
+                                gatt,
+                                &format!("{here}.failureEvidence.steps"),
+                            )?;
+                        }
+                    }
                 }
             }
             "retry" => {
@@ -672,6 +685,30 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
                     .to_string(),
             });
         }
+        if s.failure_evidence.is_some() && s.fail_when.is_none() {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.failureEvidence"),
+                message: "bleAwaitUntil failureEvidence requires failWhen".to_string(),
+            });
+        }
+        if let Some(evidence) = &s.failure_evidence {
+            if evidence.steps.is_empty() {
+                return Err(ConfigError::Validation {
+                    path: format!("{path}.failureEvidence.steps"),
+                    message: "bleAwaitUntil failureEvidence steps must not be empty".to_string(),
+                });
+            }
+            for (i, inner) in evidence.steps.iter().enumerate() {
+                validate_step(inner, &format!("{path}.failureEvidence.steps[{i}]"))?;
+                if let AwaitSource::Notify { gatt, .. } = &s.source {
+                    forbid_read_of_notify_source(
+                        inner,
+                        &format!("{path}.failureEvidence.steps[{i}]"),
+                        gatt,
+                    )?;
+                }
+            }
+        }
         for (i, inner) in s.on_each.iter().enumerate() {
             validate_step(inner, &format!("{path}.onEach[{i}]"))?;
         }
@@ -710,6 +747,82 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// Callback transports may deliver a read response and a racing notification
+/// through the same callback. A failure-evidence probe for a notify await must
+/// therefore never read that await's source characteristic, even indirectly.
+fn forbid_read_of_notify_source(
+    step: &Step,
+    path: &str,
+    notify_gatt: &str,
+) -> Result<(), ConfigError> {
+    let same_gatt = |candidate: &str| candidate.eq_ignore_ascii_case(notify_gatt);
+    let rejected = || ConfigError::Validation {
+        path: path.to_string(),
+        message: concat!(
+            "bleAwaitUntil failureEvidence cannot read its notify source characteristic; ",
+            "use a separate evidence characteristic"
+        )
+        .to_string(),
+    };
+    match step {
+        Step::BleRead(read) if same_gatt(&read.gatt) => Err(rejected()),
+        Step::AcquireFirmware(acquire) => match &acquire.from {
+            AcquireSource::BleRead { gatt, .. } if same_gatt(gatt) => Err(rejected()),
+            _ => Ok(()),
+        },
+        Step::Acquire(acquire) => {
+            forbid_read_of_notify_source(&acquire.from, &format!("{path}.from"), notify_gatt)
+        }
+        Step::If(branch) => {
+            for (i, inner) in branch.then.iter().enumerate() {
+                forbid_read_of_notify_source(inner, &format!("{path}.then[{i}]"), notify_gatt)?;
+            }
+            for (i, inner) in branch.else_branch.iter().enumerate() {
+                forbid_read_of_notify_source(inner, &format!("{path}.else[{i}]"), notify_gatt)?;
+            }
+            Ok(())
+        }
+        Step::BleAwaitUntil(await_step) => {
+            match &await_step.source {
+                AwaitSource::Read { gatt } if same_gatt(gatt) => return Err(rejected()),
+                AwaitSource::Notify {
+                    gatt,
+                    seed_read: true,
+                    ..
+                } if same_gatt(gatt) => return Err(rejected()),
+                _ => {}
+            }
+            if let Some(evidence) = &await_step.failure_evidence {
+                for (i, inner) in evidence.steps.iter().enumerate() {
+                    forbid_read_of_notify_source(
+                        inner,
+                        &format!("{path}.failureEvidence.steps[{i}]"),
+                        notify_gatt,
+                    )?;
+                }
+            }
+            for (i, inner) in await_step.on_each.iter().enumerate() {
+                forbid_read_of_notify_source(inner, &format!("{path}.onEach[{i}]"), notify_gatt)?;
+            }
+            Ok(())
+        }
+        Step::Retry(retry) => {
+            for (i, inner) in retry.steps.iter().enumerate() {
+                forbid_read_of_notify_source(inner, &format!("{path}.steps[{i}]"), notify_gatt)?;
+            }
+            for (i, inner) in retry.on_failure.iter().enumerate() {
+                forbid_read_of_notify_source(
+                    inner,
+                    &format!("{path}.onFailure[{i}]"),
+                    notify_gatt,
+                )?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// `postExitReadiness` is a fixed replayability gate: §11.5 firmware tiering
 /// (`acquireFirmware` → `refineEstablishment` tail splice) applies to `steps`
 /// only, and executors walk the gate without a refinement context — an
@@ -734,6 +847,11 @@ fn forbid_acquire_firmware(step: &Step, path: &str) -> Result<(), ConfigError> {
             Ok(())
         }
         Step::BleAwaitUntil(s) => {
+            if let Some(evidence) = &s.failure_evidence {
+                for (i, inner) in evidence.steps.iter().enumerate() {
+                    forbid_acquire_firmware(inner, &format!("{path}.failureEvidence.steps[{i}]"))?;
+                }
+            }
             for (i, inner) in s.on_each.iter().enumerate() {
                 forbid_acquire_firmware(inner, &format!("{path}.onEach[{i}]"))?;
             }

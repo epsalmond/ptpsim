@@ -539,10 +539,23 @@ fn short_camera_action_exhausts_after_one_resend_with_curated_context() {
 }
 
 #[test]
-fn permanent_and_unknown_refusal_details_never_retry() {
-    for detail in (0..=14).filter(|detail| *detail != 2).chain([99]) {
+fn zero_refusal_detail_remains_a_deadline_without_retry() {
+    let (result, events) = walk_refusal(0, &[0x8000], &[(1, 0x8000)]);
+    let error = result.expect_err("zero detail does not confirm refusal");
+    assert_eq!(error.kind, RetryFailureKind::DeadlineExceeded);
+    assert!(error.context.is_empty());
+    assert_eq!(
+        count_writes(&events, "600655E6-3637-42F1-8FB2-44EFC5C63B13"),
+        1,
+    );
+}
+
+#[test]
+fn permanent_and_unknown_nonzero_refusal_details_never_retry() {
+    for detail in (1..=14).filter(|detail| *detail != 2).chain([99]) {
         let (result, events) = walk_refusal(detail, &[0x8000], &[(1, 0x8000)]);
         let error = result.unwrap_err();
+        assert_eq!(error.kind, RetryFailureKind::ConditionRejected);
         assert_eq!(
             error.context.get("stateErrorDetails"),
             Some(&detail.to_string()),

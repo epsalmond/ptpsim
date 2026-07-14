@@ -842,18 +842,23 @@ fn wifi_ap_plan_awaits_launch_and_binds_credentials() {
 
     let launch = uuid(ble, "functionLaunchRequest");
     let ap_state = uuid(ble, "apState");
+    let details = uuid(ble, "stateErrorDetails");
     let ssid_uuid = uuid(ble, "cameraSSIDNameString");
     let pass_uuid = uuid(ble, "cameraWiFiPassphraseString");
 
     let responder = BleResponder::new([
         launch.clone(),
         ap_state.clone(),
+        details.clone(),
         ssid_uuid.clone(),
         pass_uuid.clone(),
     ])
     // The pre-transition NotLaunched baseline is read before the command.
-    // Launching and terminal Launched arrive through the later notification-only await.
+    // Rejection-shaped and Launching intermediate states remain eligible to
+    // transition to terminal Launched within the same await budget.
     .serve_read(&ap_state, &[0x00, 0x80])
+    .serve_read(&details, &[0x00, 0x00])
+    .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00, 0x80])
     .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x02, 0x80])
     .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x01, 0x80])
     .serve_read(&ssid_uuid, b"GFX100II-1234")

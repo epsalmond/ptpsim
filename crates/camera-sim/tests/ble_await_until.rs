@@ -33,6 +33,7 @@ families:
       gatt:
         launchState: "0000CC09-0000-1000-8000-00805F9B34FB"
         launchRequest: "0000CC08-0000-1000-8000-00805F9B34FB"
+        failureDetail: "0000CC08-0000-1000-8000-00805F9B34FB"
       advert: {{ manufacturerCompanyId: 1 }}
       establishments:
         test:
@@ -221,6 +222,111 @@ fn read_source_still_rejects_from_fail_when() {
     };
 
     assert_eq!(error.kind, RetryFailureKind::ConditionRejected);
+}
+
+#[test]
+fn unconfirmed_rejection_state_can_transition_to_success() {
+    let idx = index_with_steps(
+        r#"          - bleAwaitUntil:
+              source: { notify: { gatt: launchState } }
+              capture: { at: 0, length: 1, encoding: u8, name: wifiStatus }
+              until: { wifiStatus: { eq: 1 } }
+              failWhen: { wifiStatus: { eq: 0 } }
+              failureEvidence:
+                steps:
+                  - bleRead: { gatt: failureDetail, encoding: u8, captureAs: failureDetail }
+                when: { failureDetail: { ne: 0 } }
+              timeoutMs: 5000
+"#,
+    );
+    let mut responder = BleResponder::new([CC09.to_string(), CC08.to_string()])
+        .serve_read(CC08, &[0x00])
+        .queue_notification(CC09, &[0x00])
+        .queue_notification(CC09, &[0x01]);
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("an intermediate rejection-shaped state does not end the await");
+
+    assert_eq!(
+        outcome.scope.get("wifiStatus").map(String::as_str),
+        Some("1")
+    );
+}
+
+#[test]
+fn failed_evidence_probe_cannot_reuse_stale_detail() {
+    let idx = index_with_steps(
+        r#"          - bleAwaitUntil:
+              source: { notify: { gatt: launchState } }
+              capture: { at: 0, length: 1, encoding: u8, name: wifiStatus }
+              until: { wifiStatus: { eq: 1 } }
+              failWhen: { wifiStatus: { eq: 0 } }
+              failureEvidence:
+                steps:
+                  - bleRead: { gatt: failureDetail, encoding: u8, captureAs: failureDetail, tolerant: true }
+                when: { failureDetail: { ne: 0 } }
+              timeoutMs: 5000
+"#,
+    );
+    let mut responder = BleResponder::new([CC09.to_string()])
+        .queue_notification(CC09, &[0x00])
+        .queue_notification(CC09, &[0x01]);
+    let initial_scope = BTreeMap::from([("failureDetail".to_string(), "2".to_string())]);
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &initial_scope,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("a failed probe clears stale evidence and keeps observing");
+
+    assert_eq!(
+        outcome.scope.get("wifiStatus").map(String::as_str),
+        Some("1")
+    );
+    assert!(!outcome.scope.contains_key("failureDetail"));
+}
+
+#[test]
+fn confirmed_rejection_state_is_terminal() {
+    let idx = index_with_steps(
+        r#"          - bleAwaitUntil:
+              source: { notify: { gatt: launchState } }
+              capture: { at: 0, length: 1, encoding: u8, name: wifiStatus }
+              until: { wifiStatus: { eq: 1 } }
+              failWhen: { wifiStatus: { eq: 0 } }
+              failureEvidence:
+                steps:
+                  - bleRead: { gatt: failureDetail, encoding: u8, captureAs: failureDetail }
+                when: { failureDetail: { ne: 0 } }
+              timeoutMs: 5000
+"#,
+    );
+    let mut responder = BleResponder::new([CC09.to_string(), CC08.to_string()])
+        .serve_read(CC08, &[0x02])
+        .queue_notification(CC09, &[0x00]);
+
+    let error = match walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("nonzero detail must confirm the rejection-shaped state"),
+    };
+
+    assert_eq!(error.kind, RetryFailureKind::ConditionRejected);
+    assert!(error.message.contains("failureEvidence.when"));
 }
 
 #[test]
