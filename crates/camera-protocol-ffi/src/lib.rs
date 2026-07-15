@@ -1595,6 +1595,9 @@ pub struct PcssRendezvousInfo {
     pub callback_port: u16,
     pub knock_port: u16,
     pub protocol: String,
+    /// Exact manifest-derived bytes, including the final CRLF, that complete
+    /// the callback even when the camera keeps the TCP socket open.
+    pub callback_message_terminator: Vec<u8>,
     pub retry_interval_ms: u32,
     pub max_attempts: u32,
     pub connect_timeout_ms: u32,
@@ -2117,6 +2120,9 @@ impl ConfigStore {
             callback_port: knock.callback_port,
             knock_port: knock.knock_port,
             protocol: knock.protocol.clone(),
+            callback_message_terminator: protocol_primitives::pcss_notify_message_terminator(
+                &knock.protocol,
+            ),
             retry_interval_ms: knock.retry_interval_ms,
             max_attempts: knock.max_attempts,
             connect_timeout_ms: knock.connect_timeout_ms,

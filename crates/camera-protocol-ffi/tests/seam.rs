@@ -409,6 +409,10 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
     assert_eq!(rendezvous.callback_port, 51560);
     assert_eq!(rendezvous.knock_port, 51562);
     assert_eq!(rendezvous.protocol, "PCSS/1.0");
+    assert_eq!(
+        rendezvous.callback_message_terminator,
+        b"SERVICE: PCSS/1.0\r\n"
+    );
     assert_eq!(rendezvous.retry_interval_ms, 1_000);
     assert_eq!(rendezvous.max_attempts, 15);
     assert_eq!(rendezvous.connect_timeout_ms, 5_000);

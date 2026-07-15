@@ -313,6 +313,13 @@ pub fn notify_message(
     .into_bytes()
 }
 
+/// The final manifest-selected header that makes a streamed PCSS callback
+/// complete. Consumers use this delimiter to stop reading without waiting for
+/// the camera to close its callback socket.
+pub fn notify_message_terminator(protocol: &str) -> Vec<u8> {
+    format!("SERVICE: {protocol}\r\n").into_bytes()
+}
+
 /// Parse the camera's TCP callback and verify it names the protocol selected by
 /// the manifest. Unknown headers are ignored for forward compatibility.
 pub fn parse_notify(datagram: &[u8], protocol: &str) -> Result<PcssNotify, PcssMessageError> {
@@ -465,6 +472,10 @@ mod tests {
             })
         );
         assert_eq!(callback_ack_message(), b"HTTP/1.1 200 OK\r\n\0");
+        assert_eq!(
+            notify_message_terminator("PCSS/1.0"),
+            b"SERVICE: PCSS/1.0\r\n"
+        );
     }
 
     #[test]
