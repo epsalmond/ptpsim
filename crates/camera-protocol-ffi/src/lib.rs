@@ -127,6 +127,57 @@ pub fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError> {
     protocol_primitives::validate_init_ack(&packet).map_err(|e| CodecError::Encode(e.to_string()))
 }
 
+/// Typed result of decoding a standard PTP/IP command-init response.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum InitCommandResponse {
+    Acknowledged {
+        connection_number: u32,
+        responder_guid: Vec<u8>,
+        friendly_name: String,
+        protocol_version: u32,
+    },
+    Failed {
+        reason: u32,
+    },
+}
+
+/// Decode either InitCommandAck or InitFail without making a host recognize
+/// packet types or offsets itself.
+#[uniffi::export]
+pub fn decode_init_command_response(packet: Vec<u8>) -> Result<InitCommandResponse, CodecError> {
+    use ptp_core::PtpCodec;
+
+    match ptp_core::PtpIpPacket::decode(&packet).map_err(codec_decode)? {
+        ptp_core::PtpIpPacket::InitCommandAck(ack) => Ok(InitCommandResponse::Acknowledged {
+            connection_number: ack.connection_number,
+            responder_guid: ack.responder_guid.to_vec(),
+            friendly_name: ack.friendly_name,
+            protocol_version: ack.protocol_version,
+        }),
+        ptp_core::PtpIpPacket::InitFail(fail) => Ok(InitCommandResponse::Failed {
+            reason: fail.reason,
+        }),
+        other => Err(CodecError::Decode(format!(
+            "expected InitCommandAck or InitFail, got {}",
+            ptpip_packet_kind(&other)
+        ))),
+    }
+}
+
+fn ptpip_packet_kind(packet: &ptp_core::PtpIpPacket) -> &'static str {
+    match packet {
+        ptp_core::PtpIpPacket::InitCommandRequest(_) => "InitCommandRequest",
+        ptp_core::PtpIpPacket::InitCommandAck(_) => "InitCommandAck",
+        ptp_core::PtpIpPacket::InitFail(_) => "InitFail",
+        ptp_core::PtpIpPacket::OperationRequest(_) => "OperationRequest",
+        ptp_core::PtpIpPacket::OperationResponse(_) => "OperationResponse",
+        ptp_core::PtpIpPacket::Event(_) => "Event",
+        ptp_core::PtpIpPacket::StartData(_) => "StartData",
+        ptp_core::PtpIpPacket::Data(_) => "Data",
+        ptp_core::PtpIpPacket::EndData(_) => "EndData",
+    }
+}
+
 /// G1 — normalize a raw host device name into the canonical client name written
 /// to both the BLE `deviceNameString` and the PTP/IP friendly name. The host
 /// calls this once and feeds the result to the `terminalName` runtime slot, so

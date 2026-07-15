@@ -45,6 +45,98 @@ pub struct ServiceMetrics {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TraceSnapshot {
+    #[serde(default)]
+    pub instance_id: String,
+    #[serde(default)]
+    pub cursor: u64,
+    #[serde(default)]
+    pub events: Vec<LifecycleTraceEvent>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct LifecycleTraceEvent {
+    pub sequence: u64,
+    pub elapsed_ms: u64,
+    pub kind: String,
+    pub local_endpoint: Option<String>,
+    pub peer_endpoint: Option<String>,
+    pub target_endpoint: Option<String>,
+    pub payload_hex: Option<String>,
+    #[serde(default)]
+    pub payload_length: Option<usize>,
+    #[serde(default)]
+    pub payload_truncated: bool,
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub outcome_truncated: bool,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub error_truncated: bool,
+}
+
+impl LifecycleTraceEvent {
+    pub fn display_line(&self) -> String {
+        let peer = self.peer_endpoint.as_deref().unwrap_or("unknown peer");
+        let target = self.target_endpoint.as_deref().unwrap_or("unknown target");
+        match self.kind.as_str() {
+            "pcss.discovery.received" => format!("PCSS advertisement received from {peer}"),
+            "pcss.discovery.rejected" => format!("PCSS advertisement rejected from {peer}"),
+            "pcss.callback.connect_started" => {
+                format!("PCSS callback to {target} initiated")
+            }
+            "pcss.callback.connected" => format!("PCSS callback to {target} connected"),
+            "pcss.callback.connect_failed" => {
+                format!("PCSS callback to {target} failed")
+            }
+            "pcss.notify.sent" => format!("PCSS NOTIFY sent to {target}"),
+            "pcss.notify.failed" => format!("PCSS NOTIFY to {target} failed"),
+            "pcss.callback_ack.received" => {
+                format!("PCSS callback acknowledgement received from {peer}")
+            }
+            "pcss.callback_ack.invalid" | "pcss.callback_ack.failed" => {
+                format!("PCSS callback acknowledgement failed from {peer}")
+            }
+            "ptpip.command.accepted" => format!("PTP/IP command connection accepted from {peer}"),
+            "ptpip.init_request.received" => format!(
+                "PTP/IP InitCommandRequest {}",
+                self.outcome.as_deref().unwrap_or("received")
+            ),
+            "ptpip.init_request.rejected" => format!(
+                "PTP/IP InitCommandRequest {} rejected",
+                self.outcome.as_deref().unwrap_or("")
+            ),
+            "ptpip.init_fail.sent" => format!(
+                "PTP/IP InitFail {} sent",
+                outcome_field(self.outcome.as_deref(), "reason").unwrap_or("reason=unknown")
+            ),
+            "ptpip.init_ack.sent" => "PTP/IP InitCommandAck sent".to_string(),
+            "ptpip.first_operation.received" => format!(
+                "First PTP operation received ({})",
+                self.outcome.as_deref().unwrap_or("unknown")
+            ),
+            "ptpip.first_operation.rejected" => "First PTP operation rejected".to_string(),
+            other => format!("{other} {}", self.outcome.as_deref().unwrap_or(""))
+                .trim_end()
+                .to_string(),
+        }
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.error.is_some()
+            || self.kind.ends_with(".failed")
+            || self.kind.ends_with(".invalid")
+            || self.kind.ends_with(".rejected")
+    }
+}
+
+fn outcome_field<'a>(outcome: Option<&'a str>, key: &str) -> Option<&'a str> {
+    outcome?
+        .split(';')
+        .find(|field| field.starts_with(&format!("{key}=")))
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CameraSnapshot {
     #[serde(default)]
     pub phase: String,
@@ -297,6 +389,11 @@ impl ControlClient {
         serde_json::from_str(&body).context("parse /state JSON")
     }
 
+    pub fn trace(&self, after: u64) -> Result<TraceSnapshot> {
+        let body = self.request_json("GET", &format!("/trace?after={after}"), None)?;
+        serde_json::from_str(&body).context("parse /trace JSON")
+    }
+
     pub fn patch_state(&self, body: &str) -> Result<String> {
         self.request_json("PATCH", "/state", Some(body))
     }
@@ -371,7 +468,9 @@ pub fn callback_url_for(bound: SocketAddr) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionRegistry, CameraSnapshot, HealthSnapshot};
+    use super::{
+        ActionRegistry, CameraSnapshot, HealthSnapshot, LifecycleTraceEvent, TraceSnapshot,
+    };
     use std::collections::BTreeSet;
 
     #[test]
@@ -451,5 +550,53 @@ mod tests {
         assert_eq!(state.property_labels["0xd02a"], "stillIso");
         assert_eq!(state.transfer_queues.standard.unwrap().queued, 2);
         assert_eq!(state.transfer_queues.camera_initiated.unwrap().completed, 2);
+    }
+
+    #[test]
+    fn pcss_trace_events_render_operator_boundaries() {
+        let trace: TraceSnapshot = serde_json::from_value(serde_json::json!({
+            "instance_id": "test",
+            "cursor": 2,
+            "events": [
+                {
+                    "sequence": 1,
+                    "elapsed_ms": 5,
+                    "kind": "pcss.discovery.received",
+                    "peer_endpoint": "192.0.2.10:53000",
+                    "payload_hex": "44495343",
+                    "outcome": "accepted"
+                },
+                {
+                    "sequence": 2,
+                    "elapsed_ms": 12,
+                    "kind": "ptpip.init_fail.sent",
+                    "outcome": "attempt=1;reason=0x2019"
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(trace.cursor, 2);
+        assert_eq!(
+            trace.events[0].display_line(),
+            "PCSS advertisement received from 192.0.2.10:53000"
+        );
+        assert_eq!(
+            trace.events[1].display_line(),
+            "PTP/IP InitFail reason=0x2019 sent"
+        );
+        assert!(!trace.events[0].is_error());
+
+        let failed = LifecycleTraceEvent {
+            kind: "pcss.callback.connect_failed".into(),
+            target_endpoint: Some("192.0.2.20:51560".into()),
+            error: Some("connection refused".into()),
+            ..LifecycleTraceEvent::default()
+        };
+        assert!(failed.is_error());
+        assert_eq!(
+            failed.display_line(),
+            "PCSS callback to 192.0.2.20:51560 failed"
+        );
     }
 }

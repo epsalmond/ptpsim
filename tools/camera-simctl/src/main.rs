@@ -27,6 +27,14 @@ enum Cmd {
         #[arg(long, default_value = "127.0.0.1:8080")]
         control: String,
     },
+    /// GET the sequence-numbered lifecycle trace from the control endpoint.
+    Trace {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        control: String,
+        /// Return only events with a sequence greater than this cursor.
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+    },
     /// POST /shutdown on the control endpoint.
     Shutdown {
         #[arg(long, default_value = "127.0.0.1:8080")]
@@ -45,6 +53,12 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Health { control } => {
             println!("{}", http(&control, "GET", "/healthz")?);
+        }
+        Cmd::Trace { control, after } => {
+            println!(
+                "{}",
+                http(&control, "GET", &format!("/trace?after={after}"))?
+            );
         }
         Cmd::Shutdown { control } => {
             println!("{}", http(&control, "POST", "/shutdown")?);

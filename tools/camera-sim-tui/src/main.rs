@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use camera_sim_tui::{
     callback_url_for, Action, ActionKind, ActionRegistry, CameraSnapshot, ControlClient,
-    HealthSnapshot, QueueSnapshot,
+    HealthSnapshot, QueueSnapshot, TraceSnapshot,
 };
 use clap::{Parser, ValueEnum};
 use crossterm::cursor::{Hide, Show};
@@ -268,6 +268,8 @@ struct App {
     rates: Rates,
     last_health_sample: Option<HealthSample>,
     last_health_refresh: Instant,
+    trace_cursor: u64,
+    trace_instance_id: Option<String>,
     frame_window_started: Instant,
     frames_in_window: u32,
 }
@@ -301,6 +303,8 @@ impl App {
             rates: Rates::default(),
             last_health_sample: None,
             last_health_refresh: now,
+            trace_cursor: 0,
+            trace_instance_id: None,
             frame_window_started: now,
             frames_in_window: 0,
         }
@@ -331,6 +335,14 @@ impl App {
     }
 
     fn set_health(&mut self, health: HealthSnapshot) {
+        if self
+            .health
+            .as_ref()
+            .is_some_and(|current| current.instance_id != health.instance_id)
+        {
+            self.trace_cursor = 0;
+            self.trace_instance_id = None;
+        }
         let now = Instant::now();
         if let Some(prev) = self.last_health_sample {
             let elapsed = now.saturating_duration_since(prev.at).as_secs_f64();
@@ -367,6 +379,34 @@ impl App {
             self.frames_in_window = 0;
             self.frame_window_started = now;
         }
+    }
+
+    fn apply_trace(&mut self, trace: TraceSnapshot) -> bool {
+        if self
+            .trace_instance_id
+            .as_deref()
+            .is_some_and(|instance_id| instance_id != trace.instance_id)
+        {
+            self.trace_cursor = 0;
+            self.trace_instance_id = Some(trace.instance_id);
+            return false;
+        }
+        self.trace_instance_id = Some(trace.instance_id);
+        for event in trace.events {
+            let kind = if event.is_error() {
+                LogKind::Error
+            } else {
+                LogKind::Info
+            };
+            let mut line = event.display_line();
+            if let Some(error) = event.error.as_deref() {
+                line.push_str(": ");
+                line.push_str(error);
+            }
+            self.log(kind, line);
+        }
+        self.trace_cursor = trace.cursor;
+        true
     }
 }
 
@@ -431,6 +471,7 @@ fn main() -> Result<()> {
         }
         Err(e) => app.log(LogKind::Error, format!("initial state fetch failed: {e}")),
     }
+    refresh_trace(&mut app);
     if !args.no_subscribe {
         match client.subscribe_callback(&callback_url) {
             Ok(_) => app.log(LogKind::Info, format!("subscribed callback {callback_url}")),
@@ -552,6 +593,23 @@ fn refresh_health(app: &mut App) {
     match app.client.health() {
         Ok(health) => app.set_health(health),
         Err(e) => app.log(LogKind::Error, format!("health refresh failed: {e}")),
+    }
+    refresh_trace(app);
+}
+
+fn refresh_trace(app: &mut App) {
+    match app.client.trace(app.trace_cursor) {
+        Ok(trace) => {
+            if !app.apply_trace(trace) {
+                match app.client.trace(0) {
+                    Ok(trace) => {
+                        app.apply_trace(trace);
+                    }
+                    Err(e) => app.log(LogKind::Error, format!("trace refresh failed: {e}")),
+                }
+            }
+        }
+        Err(e) => app.log(LogKind::Error, format!("trace refresh failed: {e}")),
     }
 }
 
@@ -1437,6 +1495,16 @@ fn write_json(stream: &mut TcpStream, status: &str, body: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn test_app() -> App {
+        App::new(
+            ActionRegistry::core(),
+            ControlClient::new("http://127.0.0.1:1"),
+            ConsoleStyle::new(ThemeName::Cyberpunk, GlyphMode::Unicode),
+            "127.0.0.1:0".parse().unwrap(),
+            "http://127.0.0.1:1/state".into(),
+        )
+    }
+
     #[test]
     fn cyberpunk_unicode_is_the_default_console_style() {
         let args = Args::parse_from(["camera-sim-tui"]);
@@ -1474,5 +1542,31 @@ mod tests {
         };
         assert_eq!(queue_text(Some(&queue)), "2q 1done 3total");
         assert_eq!(queue_text(None), "not configured");
+    }
+
+    #[test]
+    fn trace_cursor_resets_when_service_instance_changes() {
+        let mut app = test_app();
+        assert!(app.apply_trace(TraceSnapshot {
+            instance_id: "first".into(),
+            cursor: 42,
+            events: Vec::new(),
+        }));
+        assert_eq!(app.trace_cursor, 42);
+
+        assert!(!app.apply_trace(TraceSnapshot {
+            instance_id: "second".into(),
+            cursor: 3,
+            events: Vec::new(),
+        }));
+        assert_eq!(app.trace_cursor, 0);
+        assert_eq!(app.trace_instance_id.as_deref(), Some("second"));
+
+        assert!(app.apply_trace(TraceSnapshot {
+            instance_id: "second".into(),
+            cursor: 3,
+            events: Vec::new(),
+        }));
+        assert_eq!(app.trace_cursor, 3);
     }
 }

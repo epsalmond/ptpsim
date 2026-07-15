@@ -757,6 +757,15 @@ fn http_get(addr: std::net::SocketAddr, path: &str) -> String {
     out
 }
 
+fn trace_json(addr: std::net::SocketAddr) -> serde_json::Value {
+    let response = http_get(addr, "/trace?after=0");
+    let body = response
+        .split_once("\r\n\r\n")
+        .expect("trace HTTP response has a body")
+        .1;
+    serde_json::from_str(body).expect("trace response is JSON")
+}
+
 fn http_post(addr: std::net::SocketAddr, path: &str) -> String {
     let mut s = TcpStream::connect(addr).unwrap();
     write!(
@@ -984,14 +993,14 @@ connections:
     initShape: pcssKnock
     commandFraming: compressed
     bindings: { command: 15740 }
-    initRetries: { max: 3, backoffMs: 250 }
+    initRetries: { max: 3, backoffMs: 500, whenReasons: ["0x2019"] }
 operations:
   "0x1002": { name: OpenSession, connections: [wireless-tether] }
 properties: {}
 "#;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii".into(),
@@ -1002,7 +1011,7 @@ properties: {}
             liveview_bind: None,
             event_bind: None,
             knock_bind: None,
-            pcss_init_fails: 2,
+            pcss_init_fails: 1,
             pcss_shutter_enqueue_count: 0,
             control_bind: "127.0.0.1:0".parse().unwrap(),
             liveview_dir: None,
@@ -1010,27 +1019,46 @@ properties: {}
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
+        let control = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(async move { server.run(rx).await });
-        (cmd, tx, h)
+        (cmd, control, tx, h)
     });
 
     let init = pcss_init_frame("mbp");
     let mut s = TcpStream::connect(command_addr).unwrap();
-    for _ in 0..2 {
-        write_frame(&mut s, &init);
-        match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
-            PtpIpPacket::InitFail(f) => assert_eq!(f.reason, 0x2019),
-            other => panic!("expected InitFail, got {other:?}"),
-        }
+    write_frame(&mut s, &init);
+    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
+        PtpIpPacket::InitFail(f) => assert_eq!(f.reason, 0x2019),
+        other => panic!("expected InitFail, got {other:?}"),
     }
     write_frame(&mut s, &init);
     match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
-        PtpIpPacket::InitCommandAck(_) => {}
+        PtpIpPacket::InitCommandAck(ack) => assert_eq!(ack.connection_number, 0),
         other => panic!("expected InitCommandAck after retries, got {other:?}"),
     }
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
+
+    let trace = trace_json(control_addr);
+    let events = trace["events"].as_array().unwrap();
+    let requests = events
+        .iter()
+        .filter(|event| event["kind"] == "ptpip.init_request.received")
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["payload_hex"], requests[1]["payload_hex"]);
+    assert!(events.iter().any(|event| {
+        event["kind"] == "ptpip.init_fail.sent"
+            && event["payload_hex"] == "0c0000000500000019200000"
+    }));
+    assert!(events.iter().any(|event| {
+        event["kind"] == "ptpip.init_ack.sent" && event["outcome"] == "connection_number=0"
+    }));
+    assert!(events.iter().any(|event| {
+        event["kind"] == "ptpip.first_operation.received"
+            && event["payload_hex"] == "10000000010002100100000001000000"
+    }));
 
     drop(s);
     rt.block_on(async {
@@ -1344,7 +1372,7 @@ properties: {{}}
     );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, knock_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, knock_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii".into(),
@@ -1364,9 +1392,10 @@ properties: {{}}
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
         let knock = server.knock_addr_opt().expect("knock listener bound");
+        let control = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(async move { server.run(rx).await });
-        (cmd, knock, tx, h)
+        (cmd, knock, control, tx, h)
     });
 
     let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -1411,6 +1440,30 @@ properties: {{}}
     let mut s = connect_pcss(command_addr, "mbp");
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
+
+    let trace = trace_json(control_addr);
+    let events = trace["events"].as_array().unwrap();
+    let expected_discovery =
+        b"DISCOVERY * HTTP/1.1\r\nHOST: 127.0.0.1\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0"
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+    assert!(events.iter().any(|event| {
+        event["kind"] == "pcss.discovery.received" && event["payload_hex"] == expected_discovery
+    }));
+    assert!(events
+        .iter()
+        .any(|event| event["kind"] == "pcss.callback.connect_started"));
+    assert!(events
+        .iter()
+        .any(|event| event["kind"] == "pcss.callback.connected"));
+    assert!(events
+        .iter()
+        .any(|event| event["kind"] == "pcss.notify.sent"));
+    assert!(events.iter().any(|event| {
+        event["kind"] == "pcss.callback_ack.received"
+            && event["payload_hex"] == "485454502f312e3120323030204f4b0d0a00"
+    }));
 
     drop(s);
     rt.block_on(async {

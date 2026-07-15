@@ -20,11 +20,12 @@ use camera_sim::{
     AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply, StreamCompletion,
 };
 use protocol_primitives::{
-    fuji_framing, parse_pcss_discovery, parse_pcss_init, pcss_notify_message,
+    fuji_framing, parse_pcss_discovery, parse_pcss_init, pcss_callback_ack_message,
+    pcss_notify_message,
 };
 use ptp_core::codes::{op, resp};
 use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpCodec, PtpIpPacket};
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
@@ -33,8 +34,10 @@ pub mod control;
 mod metrics;
 mod state_callback;
 mod state_json;
+mod trace;
 
 pub(crate) use metrics::Metrics;
+use trace::{TraceEndpoints, TraceLog};
 
 #[derive(Clone)]
 pub struct Config {
@@ -123,6 +126,17 @@ struct CommandContext {
     pcss_init_fails: u32,
     poll_live_view_op: Option<u16>,
     disallowed_ops: Arc<HashSet<u16>>,
+}
+
+#[derive(Clone)]
+struct CommandResources {
+    engine: Arc<Mutex<Engine>>,
+    frames: Arc<Mutex<LoopingFrameSource>>,
+    event_tx: broadcast::Sender<u16>,
+    state_dirty: Arc<Notify>,
+    context: CommandContext,
+    trace: TraceLog,
+    metrics: Metrics,
 }
 
 impl Server {
@@ -366,6 +380,7 @@ impl Server {
         // consumes it, debounces, and POSTs to startup and runtime subscribers.
         let state_dirty = Arc::new(Notify::new());
         let state_callbacks = state_callback::Registry::default();
+        let trace = TraceLog::default();
 
         // Per-connection tasks live in a JoinSet per accept loop (audit in
         // docs/internal-async-notes.md): the `Some(_) = join_next()` arm reaps
@@ -375,12 +390,15 @@ impl Server {
         // on exit is the documented run() contract.
         let command_port = command.local_addr().unwrap().port();
         let command_loop = {
-            let engine = engine.clone();
-            let frames = frames.clone();
-            let event_tx = event_tx.clone();
-            let state_dirty = state_dirty.clone();
-            let command_context = command_context.clone();
-            let metrics = metrics.clone();
+            let resources = CommandResources {
+                engine: engine.clone(),
+                frames: frames.clone(),
+                event_tx: event_tx.clone(),
+                state_dirty: state_dirty.clone(),
+                context: command_context.clone(),
+                trace: trace.clone(),
+                metrics: metrics.clone(),
+            };
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -388,15 +406,7 @@ impl Server {
                     tokio::select! {
                         accepted = command.accept() => {
                             if let Ok((stream, _)) = accepted {
-                                let engine = engine.clone();
-                                let frames = frames.clone();
-                                let event_tx = event_tx.clone();
-                                let state_dirty = state_dirty.clone();
-                                let command_context = command_context.clone();
-                                let metrics = metrics.clone();
-                                conns.spawn(async move {
-                                    let _ = handle_command_conn(stream, engine, frames, event_tx, state_dirty, command_context, metrics).await;
-                                });
+                                conns.spawn(handle_command_conn(stream, resources.clone()));
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -407,10 +417,15 @@ impl Server {
         };
 
         let control_loop = {
-            let engine = engine.clone();
-            let state_dirty = state_dirty.clone();
-            let state_callbacks = state_callbacks.clone();
-            let metrics = metrics.clone();
+            let context = control::Context::new(
+                health,
+                engine.clone(),
+                state_dirty.clone(),
+                state_callbacks.clone(),
+                trace.clone(),
+                metrics.clone(),
+                ctl_shutdown.clone(),
+            );
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -421,15 +436,7 @@ impl Server {
                                 // Per-connection task — a client that connects and
                                 // stalls before its request line must not block the
                                 // accept loop (and with it /healthz + /shutdown).
-                                conns.spawn(control::handle(
-                                    stream,
-                                    health.clone(),
-                                    engine.clone(),
-                                    state_dirty.clone(),
-                                    state_callbacks.clone(),
-                                    metrics.clone(),
-                                    ctl_shutdown.clone(),
-                                ));
+                                conns.spawn(control::handle(stream, context.clone()));
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -514,6 +521,7 @@ impl Server {
                 e.manifest().camera.model.clone()
             };
             let mut sub = shutdown_tx.subscribe();
+            let trace = trace.clone();
             async move {
                 let Some(knock) = knock else {
                     let _ = sub.recv().await;
@@ -523,7 +531,7 @@ impl Server {
                     let _ = sub.recv().await;
                     return;
                 };
-                run_knock_loop(knock, knock_config, camera_name, command_port, sub).await;
+                run_knock_loop(knock, knock_config, camera_name, command_port, trace, sub).await;
             }
         };
 
@@ -635,22 +643,64 @@ fn has_data_in(code: u16) -> bool {
 
 async fn handle_command_conn(
     mut stream: TcpStream,
-    engine: Arc<Mutex<Engine>>,
-    frames: Arc<Mutex<LoopingFrameSource>>,
-    event_tx: broadcast::Sender<u16>,
-    state_dirty: Arc<Notify>,
-    context: CommandContext,
-    metrics: Metrics,
+    resources: CommandResources,
 ) -> std::io::Result<()> {
+    let CommandResources {
+        engine,
+        frames,
+        event_tx,
+        state_dirty,
+        context,
+        trace,
+        metrics,
+    } = resources;
+    let endpoints = TraceEndpoints::connection(&stream);
+    let is_pcss = context.init_shape == "pcssKnock";
+    if is_pcss {
+        trace.record(
+            "ptpip.command.accepted",
+            endpoints.clone(),
+            None,
+            Some("accepted".into()),
+            None,
+        );
+    }
+
     // 1. Standard-framed init handshake.
     let Some(mut first) = read_frame(&mut stream, &metrics).await? else {
+        if is_pcss {
+            trace.record(
+                "ptpip.init_request.rejected",
+                endpoints.clone(),
+                None,
+                Some("closed".into()),
+                Some("command socket closed before InitCommandRequest".into()),
+            );
+        }
         return Ok(());
     };
     match context.init_shape.as_str() {
         "pcssKnock" => {
-            for _ in 0..context.pcss_init_fails {
-                if parse_pcss_init(&first).is_err() {
+            for attempt in 0..=context.pcss_init_fails {
+                trace.record(
+                    "ptpip.init_request.received",
+                    endpoints.clone(),
+                    Some(&first),
+                    Some(format!("attempt={}", attempt + 1)),
+                    None,
+                );
+                if let Err(error) = parse_pcss_init(&first) {
+                    trace.record(
+                        "ptpip.init_request.rejected",
+                        endpoints.clone(),
+                        Some(&first),
+                        Some(format!("attempt={}", attempt + 1)),
+                        Some(error.to_string()),
+                    );
                     return Ok(());
+                }
+                if attempt == context.pcss_init_fails {
+                    break;
                 }
                 let fail = PtpIpPacket::InitFail(InitFail {
                     reason: resp::DEVICE_BUSY as u32,
@@ -658,13 +708,28 @@ async fn handle_command_conn(
                 let bytes = ptp_core::encode(&fail).map_err(to_io)?;
                 stream.write_all(&bytes).await?;
                 metrics.record_write(bytes.len());
+                trace.record(
+                    "ptpip.init_fail.sent",
+                    endpoints.clone(),
+                    Some(&bytes),
+                    Some(format!(
+                        "attempt={};reason=0x{:04x}",
+                        attempt + 1,
+                        resp::DEVICE_BUSY
+                    )),
+                    None,
+                );
                 let Some(next) = read_frame(&mut stream, &metrics).await? else {
+                    trace.record(
+                        "ptpip.init_request.rejected",
+                        endpoints.clone(),
+                        None,
+                        Some(format!("attempt={}", attempt + 2)),
+                        Some("command socket closed before retry".into()),
+                    );
                     return Ok(());
                 };
                 first = next;
-            }
-            if parse_pcss_init(&first).is_err() {
-                return Ok(());
             }
         }
         _ => {
@@ -688,7 +753,7 @@ async fn handle_command_conn(
         }
     }
     let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
-        connection_number: 1,
+        connection_number: if is_pcss { 0 } else { 1 },
         responder_guid: [0; 16],
         friendly_name: {
             let e = engine.lock().await;
@@ -699,15 +764,65 @@ async fn handle_command_conn(
     let ack_bytes = ptp_core::encode(&ack).map_err(to_io)?;
     stream.write_all(&ack_bytes).await?;
     metrics.record_write(ack_bytes.len());
+    if is_pcss {
+        trace.record(
+            "ptpip.init_ack.sent",
+            endpoints.clone(),
+            Some(&ack_bytes),
+            Some("connection_number=0".into()),
+            None,
+        );
+    }
 
     // 2. Compressed-framed operation loop.
+    let mut first_operation_traced = false;
     loop {
         let Some(frame) = read_frame(&mut stream, &metrics).await? else {
             break;
         };
-        let Ok(PtpIpPacket::OperationRequest(req)) = fuji_framing::decode(&frame) else {
-            continue;
+        let req = match fuji_framing::decode(&frame) {
+            Ok(PtpIpPacket::OperationRequest(req)) => req,
+            Ok(other) => {
+                if is_pcss && !first_operation_traced {
+                    trace.record(
+                        "ptpip.first_operation.rejected",
+                        endpoints.clone(),
+                        Some(&frame),
+                        Some("wrong_packet_type".into()),
+                        Some(format!(
+                            "expected OperationRequest, got {}",
+                            ptpip_packet_kind(&other)
+                        )),
+                    );
+                }
+                continue;
+            }
+            Err(error) => {
+                if is_pcss && !first_operation_traced {
+                    trace.record(
+                        "ptpip.first_operation.rejected",
+                        endpoints.clone(),
+                        Some(&frame),
+                        Some("decode_failed".into()),
+                        Some(error.to_string()),
+                    );
+                }
+                continue;
+            }
         };
+        if is_pcss && !first_operation_traced {
+            trace.record(
+                "ptpip.first_operation.received",
+                endpoints.clone(),
+                Some(&frame),
+                Some(format!(
+                    "code=0x{:04x};transaction_id={}",
+                    req.code, req.transaction_id
+                )),
+                None,
+            );
+            first_operation_traced = true;
+        }
         if context.disallowed_ops.contains(&req.code) {
             write_reply(
                 &mut stream,
@@ -762,9 +877,11 @@ async fn run_knock_loop(
     knock_config: PcssKnock,
     camera_name: String,
     command_port: u16,
+    trace: TraceLog,
     mut shutdown: broadcast::Receiver<()>,
 ) {
     let mut buf = vec![0u8; 2048];
+    let knock_local = knock.local_addr().ok().map(|address| address.to_string());
     loop {
         tokio::select! {
             received = knock.recv_from(&mut buf) => {
@@ -772,35 +889,184 @@ async fn run_knock_loop(
                     continue;
                 };
                 let Some(discovery) = parse_pcss_discovery(&buf[..n], &knock_config.protocol) else {
+                    trace.record(
+                        "pcss.discovery.rejected",
+                        TraceEndpoints {
+                            local: knock_local.clone(),
+                            peer: Some(peer.to_string()),
+                            target: None,
+                        },
+                        Some(&buf[..n]),
+                        Some("rejected".into()),
+                        Some("payload does not match the selected PCSS protocol".into()),
+                    );
                     continue;
                 };
                 let callback = format!("{}:{}", discovery.host, knock_config.callback_port);
+                trace.record(
+                    "pcss.discovery.received",
+                    TraceEndpoints {
+                        local: knock_local.clone(),
+                        peer: Some(peer.to_string()),
+                        target: Some(callback.clone()),
+                    },
+                    Some(&buf[..n]),
+                    Some("accepted".into()),
+                    None,
+                );
                 let camera_name = camera_name.clone();
                 let protocol = knock_config.protocol.clone();
+                let trace = trace.clone();
                 tokio::spawn(async move {
-                    if let Ok(mut callback) = TcpStream::connect(callback).await {
-                        let Some(camera_address) = route_selected_ipv4(peer) else {
+                    trace.record(
+                        "pcss.callback.connect_started",
+                        TraceEndpoints {
+                            peer: Some(peer.to_string()),
+                            target: Some(callback.clone()),
+                            ..TraceEndpoints::default()
+                        },
+                        None,
+                        Some("started".into()),
+                        None,
+                    );
+                    let mut callback_stream = match TcpStream::connect(&callback).await {
+                        Ok(stream) => stream,
+                        Err(error) => {
+                            trace.record(
+                                "pcss.callback.connect_failed",
+                                TraceEndpoints {
+                                    peer: Some(peer.to_string()),
+                                    target: Some(callback),
+                                    ..TraceEndpoints::default()
+                                },
+                                None,
+                                Some("failed".into()),
+                                Some(error.to_string()),
+                            );
                             return;
-                        };
-                        let notify = pcss_notify_message(
-                            camera_address,
-                            &camera_name,
-                            command_port,
-                            &protocol,
-                        );
-                        let _ = callback.write_all(&notify).await;
-                        let mut ack = [0u8; 18];
-                        if callback.read_exact(&mut ack).await.is_ok()
-                            && ack != *b"HTTP/1.1 200 OK\r\n\0"
-                        {
-                            let _ = callback.shutdown().await;
                         }
+                    };
+                    let callback_endpoints = TraceEndpoints {
+                        local: callback_stream
+                            .local_addr()
+                            .ok()
+                            .map(|address| address.to_string()),
+                        peer: callback_stream
+                            .peer_addr()
+                            .ok()
+                            .map(|address| address.to_string()),
+                        target: Some(callback),
+                    };
+                    trace.record(
+                        "pcss.callback.connected",
+                        callback_endpoints.clone(),
+                        None,
+                        Some("connected".into()),
+                        None,
+                    );
+                    let Some(camera_address) = route_selected_ipv4(peer) else {
+                        trace.record(
+                            "pcss.notify.failed",
+                            callback_endpoints,
+                            None,
+                            Some("failed".into()),
+                            Some("no route-selected IPv4 address for discovery peer".into()),
+                        );
+                        return;
+                    };
+                    let notify = pcss_notify_message(
+                        camera_address,
+                        &camera_name,
+                        command_port,
+                        &protocol,
+                    );
+                    if let Err(error) = callback_stream.write_all(&notify).await {
+                        trace.record(
+                            "pcss.notify.failed",
+                            callback_endpoints,
+                            Some(&notify),
+                            Some("failed".into()),
+                            Some(error.to_string()),
+                        );
+                        return;
+                    }
+                    trace.record(
+                        "pcss.notify.sent",
+                        callback_endpoints.clone(),
+                        Some(&notify),
+                        Some("sent".into()),
+                        None,
+                    );
+                    let expected_ack = pcss_callback_ack_message();
+                    let mut ack = vec![0u8; expected_ack.len()];
+                    match read_exact_with_prefix(&mut callback_stream, &mut ack).await {
+                        Ok(_) if ack == expected_ack => trace.record(
+                            "pcss.callback_ack.received",
+                            callback_endpoints,
+                            Some(&ack),
+                            Some("accepted".into()),
+                            None,
+                        ),
+                        Ok(_) => {
+                            trace.record(
+                                "pcss.callback_ack.invalid",
+                                callback_endpoints,
+                                Some(&ack),
+                                Some("rejected".into()),
+                                Some("callback acknowledgement did not match PCSS".into()),
+                            );
+                            let _ = callback_stream.shutdown().await;
+                        }
+                        Err((error, received)) => trace.record(
+                            "pcss.callback_ack.failed",
+                            callback_endpoints,
+                            Some(&ack[..received]),
+                            Some("failed".into()),
+                            Some(error.to_string()),
+                        ),
                     }
                 });
             }
             _ = shutdown.recv() => break,
         }
     }
+}
+
+fn ptpip_packet_kind(packet: &PtpIpPacket) -> &'static str {
+    match packet {
+        PtpIpPacket::InitCommandRequest(_) => "InitCommandRequest",
+        PtpIpPacket::InitCommandAck(_) => "InitCommandAck",
+        PtpIpPacket::InitFail(_) => "InitFail",
+        PtpIpPacket::OperationRequest(_) => "OperationRequest",
+        PtpIpPacket::OperationResponse(_) => "OperationResponse",
+        PtpIpPacket::Event(_) => "Event",
+        PtpIpPacket::StartData(_) => "StartData",
+        PtpIpPacket::Data(_) => "Data",
+        PtpIpPacket::EndData(_) => "EndData",
+    }
+}
+
+async fn read_exact_with_prefix<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut [u8],
+) -> Result<(), (std::io::Error, usize)> {
+    let mut received = 0;
+    while received < buffer.len() {
+        match reader.read(&mut buffer[received..]).await {
+            Ok(0) => {
+                return Err((
+                    std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "early EOF while reading PCSS callback acknowledgement",
+                    ),
+                    received,
+                ));
+            }
+            Ok(count) => received += count,
+            Err(error) => return Err((error, received)),
+        }
+    }
+    Ok(())
 }
 
 fn route_selected_ipv4(peer: std::net::SocketAddr) -> Option<std::net::Ipv4Addr> {
@@ -1040,6 +1306,32 @@ mod tests {
     use std::task::{Context, Poll};
 
     use super::*;
+
+    #[tokio::test]
+    async fn exact_read_reports_only_the_received_prefix() {
+        let (mut writer, mut reader) = tokio::io::duplex(32);
+        writer.write_all(b"HTTP").await.unwrap();
+        writer.shutdown().await.unwrap();
+        let mut buffer = [0u8; 18];
+
+        let (error, received) = read_exact_with_prefix(&mut reader, &mut buffer)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(received, 4);
+        assert_eq!(&buffer[..received], b"HTTP");
+    }
+
+    #[test]
+    fn packet_kind_does_not_format_large_data_payloads() {
+        let packet = PtpIpPacket::Data(ptp_core::DataBlock {
+            transaction_id: 1,
+            payload: vec![0xab; 4 * 1024 * 1024],
+        });
+
+        assert_eq!(ptpip_packet_kind(&packet), "Data");
+    }
 
     struct FailAfter {
         remaining: usize,

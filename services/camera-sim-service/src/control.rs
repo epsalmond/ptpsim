@@ -1,7 +1,6 @@
 //! Minimal control HTTP surface. Hand-rolled HTTP/1.1 to avoid a web-framework
-//! dependency in the deployable image. Endpoints: `GET /healthz` (the shape the
-//! management sidecar polls into the `vcam_pool` inventory) and `POST /shutdown`
-//! (graceful stop). Bound to a private/loopback address by the operator.
+//! dependency in the deployable image. Bound to a private/loopback address by
+//! the operator.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -13,6 +12,7 @@ use tokio::sync::{broadcast, Mutex, Notify};
 
 use crate::state_callback::Registry;
 use crate::state_json::snapshot_json;
+use crate::trace::TraceLog;
 use crate::Metrics;
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
@@ -54,64 +54,116 @@ impl Health {
     }
 }
 
-pub async fn handle(
-    mut stream: TcpStream,
+#[derive(Clone)]
+pub struct Context {
     health: Health,
     engine: Arc<Mutex<Engine>>,
     state_notify: Arc<Notify>,
     callbacks: Registry,
+    trace: TraceLog,
     metrics: Metrics,
     shutdown: broadcast::Sender<()>,
-) {
-    let req = match read_request(&mut stream, &metrics).await {
+}
+
+impl Context {
+    pub fn new(
+        health: Health,
+        engine: Arc<Mutex<Engine>>,
+        state_notify: Arc<Notify>,
+        callbacks: Registry,
+        trace: TraceLog,
+        metrics: Metrics,
+        shutdown: broadcast::Sender<()>,
+    ) -> Self {
+        Self {
+            health,
+            engine,
+            state_notify,
+            callbacks,
+            trace,
+            metrics,
+            shutdown,
+        }
+    }
+}
+
+pub async fn handle(mut stream: TcpStream, context: Context) {
+    let req = match read_request(&mut stream, &context.metrics).await {
         Ok(Some(req)) => req,
         Ok(None) => return,
         Err(resp) => {
-            write_response(&mut stream, &resp.status, &resp.body, &metrics).await;
+            write_response(&mut stream, &resp.status, &resp.body, &context.metrics).await;
             return;
         }
     };
 
     let resp = match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => {
-            let sessions = if engine.lock().await.state().session_open {
+            let sessions = if context.engine.lock().await.state().session_open {
                 1
             } else {
                 0
             };
-            Response::ok(health.json(sessions))
+            Response::ok(context.health.json(sessions))
         }
         ("GET", "/state") => {
             let body = {
-                let engine = engine.lock().await;
+                let engine = context.engine.lock().await;
                 snapshot_json(&engine)
             };
             Response::ok(body)
         }
-        ("PATCH", "/state") => match apply_state_patch(&health, &engine, &req.body).await {
-            Ok(body) => {
-                state_notify.notify_one();
-                metrics.touch();
-                Response::ok(body)
+        ("GET", path) if path == "/trace" || path.starts_with("/trace?") => {
+            match trace_after(path) {
+                Ok(after) => Response::ok(context.trace.json(&context.health.instance_id, after)),
+                Err(error) => Response::bad_request(error),
             }
-            Err(e) => Response::bad_request(e),
-        },
-        ("POST", "/callbacks") => match subscribe_callback(&callbacks, &req.body).await {
+        }
+        ("PATCH", "/state") => {
+            match apply_state_patch(&context.health, &context.engine, &req.body).await {
+                Ok(body) => {
+                    context.state_notify.notify_one();
+                    context.metrics.touch();
+                    Response::ok(body)
+                }
+                Err(e) => Response::bad_request(e),
+            }
+        }
+        ("POST", "/callbacks") => match subscribe_callback(&context.callbacks, &req.body).await {
             Ok(body) => {
-                state_notify.notify_one();
-                metrics.touch();
+                context.state_notify.notify_one();
+                context.metrics.touch();
                 Response::ok(body)
             }
             Err(e) => Response::bad_request(e),
         },
         ("POST", "/shutdown") => {
-            let _ = shutdown.send(());
+            let _ = context.shutdown.send(());
             Response::ok(r#"{"shutting_down":true}"#.to_string())
         }
         _ => Response::not_found(),
     };
 
-    write_response(&mut stream, &resp.status, &resp.body, &metrics).await;
+    write_response(&mut stream, &resp.status, &resp.body, &context.metrics).await;
+}
+
+fn trace_after(path: &str) -> Result<u64, String> {
+    let Some((_, query)) = path.split_once('?') else {
+        return Ok(0);
+    };
+    let mut after = 0;
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err("trace query parameters must use key=value".to_string());
+        };
+        if key != "after" {
+            return Err(format!("unknown trace query parameter '{key}'"));
+        }
+        after = value
+            .parse::<u64>()
+            .map_err(|_| "trace 'after' cursor must be an unsigned integer".to_string())?;
+    }
+    Ok(after)
 }
 
 async fn apply_state_patch(

@@ -31,6 +31,57 @@ fn ids(cs: &[ConnectionInfo]) -> Vec<&str> {
     cs.iter().map(|c| c.id.as_str()).collect()
 }
 
+#[test]
+fn init_command_response_decoder_distinguishes_ack_and_fail() {
+    let ack = ptp_core::encode(&ptp_core::PtpIpPacket::InitCommandAck(
+        ptp_core::InitCommandAck {
+            connection_number: 0,
+            responder_guid: [0x5a; 16],
+            friendly_name: "CAMERA".into(),
+            protocol_version: 0x0001_0000,
+        },
+    ))
+    .unwrap();
+    match decode_init_command_response(ack).unwrap() {
+        InitCommandResponse::Acknowledged {
+            connection_number,
+            responder_guid,
+            friendly_name,
+            protocol_version,
+        } => {
+            assert_eq!(connection_number, 0);
+            assert_eq!(responder_guid, vec![0x5a; 16]);
+            assert_eq!(friendly_name, "CAMERA");
+            assert_eq!(protocol_version, 0x0001_0000);
+        }
+        other => panic!("expected acknowledged response, got {other:?}"),
+    }
+
+    let fail = ptp_core::encode(&ptp_core::PtpIpPacket::InitFail(ptp_core::InitFail {
+        reason: 0x2019,
+    }))
+    .unwrap();
+    match decode_init_command_response(fail).unwrap() {
+        InitCommandResponse::Failed { reason } => assert_eq!(reason, 0x2019),
+        other => panic!("expected failed response, got {other:?}"),
+    }
+}
+
+#[test]
+fn init_command_response_decoder_does_not_format_large_wrong_payloads() {
+    let packet = ptp_core::encode(&ptp_core::PtpIpPacket::Data(ptp_core::DataBlock {
+        transaction_id: 1,
+        payload: vec![0xab; 4 * 1024 * 1024],
+    }))
+    .unwrap();
+
+    let error = decode_init_command_response(packet).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "expected InitCommandAck or InitFail, got Data"
+    );
+}
+
 fn ptp_steps(plan: &ModeEntryPlan) -> &[EntryStep] {
     match &plan.execution {
         ModeEntryExecution::Ptp { steps } => steps,

@@ -855,12 +855,15 @@ Response (the exact shape `camera_sim_service::control::Health` emits today):
 
 Control endpoints should be enabled only on a private interface or protected by
 
-(graceful drain) are implemented; the rest of the table below is planned and
-distinguished so consumers don't depend on what isn't there yet.
+large live-view bodies and repetitive polling are intentionally excluded.
 
 Implemented:
 
 - `GET /healthz`
+- `GET /state`
+- `PATCH /state`
+- `POST /callbacks`
+- `GET /trace?after=<sequence>`
 - `POST /shutdown`
 
 Planned (DO NOT depend on yet; request upstream when needed):
@@ -869,7 +872,6 @@ Planned (DO NOT depend on yet; request upstream when needed):
 - `POST /scenario/load`
 - `POST /script`
 - `POST /faults`
-- `GET /trace`
 - `GET /metrics`
 
 Configuration:
@@ -998,6 +1000,7 @@ camera-sim-service \
 
 # IMPLEMENTED today (tools/camera-simctl):
 camera-simctl health  --control 127.0.0.1:8080
+camera-simctl trace   --control 127.0.0.1:8080 --after 0
 camera-simctl shutdown --control 127.0.0.1:8080
 camera-simctl smoke   --host    127.0.0.1:55740    # design gate #5
 
