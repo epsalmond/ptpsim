@@ -134,7 +134,7 @@ pub enum InitCommandResponse {
         connection_number: u32,
         responder_guid: Vec<u8>,
         friendly_name: String,
-        protocol_version: u32,
+        protocol_version: Option<u32>,
     },
     Failed {
         reason: u32,
@@ -147,20 +147,57 @@ pub enum InitCommandResponse {
 pub fn decode_init_command_response(packet: Vec<u8>) -> Result<InitCommandResponse, CodecError> {
     use ptp_core::PtpCodec;
 
-    match ptp_core::PtpIpPacket::decode(&packet).map_err(codec_decode)? {
-        ptp_core::PtpIpPacket::InitCommandAck(ack) => Ok(InitCommandResponse::Acknowledged {
+    let is_fixed_pcss_ack = packet.len() == 68
+        && packet
+            .get(4..8)
+            .is_some_and(|bytes| bytes == 2u32.to_le_bytes());
+    if is_fixed_pcss_ack {
+        let ack = protocol_primitives::parse_pcss_init_ack(&packet).map_err(codec_decode)?;
+        return Ok(InitCommandResponse::Acknowledged {
             connection_number: ack.connection_number,
             responder_guid: ack.responder_guid.to_vec(),
             friendly_name: ack.friendly_name,
-            protocol_version: ack.protocol_version,
-        }),
-        ptp_core::PtpIpPacket::InitFail(fail) => Ok(InitCommandResponse::Failed {
-            reason: fail.reason,
-        }),
+            protocol_version: None,
+        });
+    }
+
+    let decoded = ptp_core::PtpIpPacket::decode(&packet).map_err(codec_decode)?;
+    match decoded {
+        ptp_core::PtpIpPacket::InitCommandAck(ack) => {
+            let decoded = ptp_core::PtpIpPacket::InitCommandAck(ack.clone());
+            require_canonical_init_response(&packet, &decoded)?;
+            Ok(InitCommandResponse::Acknowledged {
+                connection_number: ack.connection_number,
+                responder_guid: ack.responder_guid.to_vec(),
+                friendly_name: ack.friendly_name,
+                protocol_version: Some(ack.protocol_version),
+            })
+        }
+        ptp_core::PtpIpPacket::InitFail(fail) => {
+            let decoded = ptp_core::PtpIpPacket::InitFail(fail.clone());
+            require_canonical_init_response(&packet, &decoded)?;
+            Ok(InitCommandResponse::Failed {
+                reason: fail.reason,
+            })
+        }
         other => Err(CodecError::Decode(format!(
             "expected InitCommandAck or InitFail, got {}",
             ptpip_packet_kind(&other)
         ))),
+    }
+}
+
+fn require_canonical_init_response(
+    packet: &[u8],
+    decoded: &ptp_core::PtpIpPacket,
+) -> Result<(), CodecError> {
+    let canonical = ptp_core::encode(decoded).map_err(codec_decode)?;
+    if canonical == packet {
+        Ok(())
+    } else {
+        Err(CodecError::Decode(
+            "non-canonical PTP/IP init response".into(),
+        ))
     }
 }
 

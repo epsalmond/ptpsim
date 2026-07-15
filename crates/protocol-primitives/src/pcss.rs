@@ -12,6 +12,9 @@ const INIT_PACKET_TYPE: u32 = 1;
 const IP_OFFSET: usize = 0x18;
 const NAME_OFFSET: usize = 0x1c;
 const ZERO_TAIL_OFFSET: usize = 0x36;
+const INIT_ACK_LEN: usize = 68;
+const INIT_ACK_PACKET_TYPE: u32 = 2;
+const INIT_ACK_NAME_OFFSET: usize = 28;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PcssInit {
@@ -48,6 +51,57 @@ impl fmt::Display for PcssInitError {
 }
 
 impl std::error::Error for PcssInitError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PcssInitAck {
+    pub connection_number: u32,
+    pub responder_guid: [u8; 16],
+    pub friendly_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PcssInitAckError {
+    WrongLength(usize),
+    WrongPacketType(u32),
+    MissingFriendlyNameTerminator,
+    InvalidFriendlyName,
+    FriendlyNameTooLong,
+    NonZeroNameTail,
+}
+
+impl fmt::Display for PcssInitAckError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongLength(n) => write!(f, "PCSS InitCommandAck length {n} != {INIT_ACK_LEN}"),
+            Self::WrongPacketType(t) => {
+                write!(
+                    f,
+                    "PCSS InitCommandAck packet type {t} != {INIT_ACK_PACKET_TYPE}"
+                )
+            }
+            Self::MissingFriendlyNameTerminator => {
+                write!(f, "PCSS InitCommandAck friendly name is not NUL-terminated")
+            }
+            Self::InvalidFriendlyName => {
+                write!(f, "PCSS InitCommandAck friendly name is not valid UTF-16LE")
+            }
+            Self::FriendlyNameTooLong => {
+                write!(
+                    f,
+                    "PCSS InitCommandAck friendly name exceeds 19 UTF-16 code units"
+                )
+            }
+            Self::NonZeroNameTail => {
+                write!(
+                    f,
+                    "PCSS InitCommandAck friendly-name tail contains nonzero bytes"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PcssInitAckError {}
 
 /// Build the fixed PCSS InitCommandRequest. Unlike ordinary PTP/IP init, this
 /// layout carries the route-selected client IPv4 and a fixed-width host name.
@@ -101,6 +155,72 @@ pub fn parse_pcss_init(bytes: &[u8]) -> Result<PcssInit, PcssInitError> {
         initiator_guid,
         client_ip,
         hostname,
+    })
+}
+
+/// Build the fixed 68-byte PCSS InitCommandAck observed on the tethering
+/// command socket. Unlike standard PTP/IP, PCSS omits the protocol-version
+/// suffix and pads the UTF-16LE camera name through the end of the packet.
+pub fn pcss_init_ack_message(
+    connection_number: u32,
+    responder_guid: [u8; 16],
+    friendly_name: &str,
+) -> Result<Vec<u8>, PcssInitAckError> {
+    let friendly_name: Vec<u16> = friendly_name.encode_utf16().collect();
+    let max_units = (INIT_ACK_LEN - INIT_ACK_NAME_OFFSET) / 2 - 1;
+    if friendly_name.contains(&0) {
+        return Err(PcssInitAckError::InvalidFriendlyName);
+    }
+    if friendly_name.len() > max_units {
+        return Err(PcssInitAckError::FriendlyNameTooLong);
+    }
+
+    let mut bytes = vec![0u8; INIT_ACK_LEN];
+    bytes[0..4].copy_from_slice(&(INIT_ACK_LEN as u32).to_le_bytes());
+    bytes[4..8].copy_from_slice(&INIT_ACK_PACKET_TYPE.to_le_bytes());
+    bytes[8..12].copy_from_slice(&connection_number.to_le_bytes());
+    bytes[12..28].copy_from_slice(&responder_guid);
+    for (index, unit) in friendly_name.into_iter().enumerate() {
+        let offset = INIT_ACK_NAME_OFFSET + index * 2;
+        bytes[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+pub fn parse_pcss_init_ack(bytes: &[u8]) -> Result<PcssInitAck, PcssInitAckError> {
+    if bytes.len() != INIT_ACK_LEN {
+        return Err(PcssInitAckError::WrongLength(bytes.len()));
+    }
+    let declared = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    if declared != INIT_ACK_LEN {
+        return Err(PcssInitAckError::WrongLength(declared));
+    }
+    let packet_type = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    if packet_type != INIT_ACK_PACKET_TYPE {
+        return Err(PcssInitAckError::WrongPacketType(packet_type));
+    }
+    let connection_number = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let mut responder_guid = [0u8; 16];
+    responder_guid.copy_from_slice(&bytes[12..28]);
+    let name_bytes = &bytes[INIT_ACK_NAME_OFFSET..];
+    let terminator = name_bytes
+        .chunks_exact(2)
+        .position(|chunk| chunk == [0, 0])
+        .ok_or(PcssInitAckError::MissingFriendlyNameTerminator)?;
+    let tail_offset = (terminator + 1) * 2;
+    if name_bytes[tail_offset..].iter().any(|byte| *byte != 0) {
+        return Err(PcssInitAckError::NonZeroNameTail);
+    }
+    let units = name_bytes[..terminator * 2]
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
+    let friendly_name =
+        String::from_utf16(&units).map_err(|_| PcssInitAckError::InvalidFriendlyName)?;
+    Ok(PcssInitAck {
+        connection_number,
+        responder_guid,
+        friendly_name,
     })
 }
 
@@ -345,6 +465,32 @@ mod tests {
             })
         );
         assert_eq!(callback_ack_message(), b"HTTP/1.1 200 OK\r\n\0");
+    }
+
+    #[test]
+    fn pcss_init_ack_matches_reference_capture() {
+        let guid = [
+            0x08, 0x70, 0xb0, 0x61, 0x0a, 0x8b, 0x45, 0x93, 0xb2, 0xe7, 0x93, 0x57, 0xdd, 0x36,
+            0xe0, 0x50,
+        ];
+        let expected = concat!(
+            "4400000002000000000000000870b0610a8b4593b2e79357dd36e05047004600",
+            "580031003000300020004900490000000000000000000000000000000000000000000000"
+        )
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect::<Vec<_>>();
+        let bytes = pcss_init_ack_message(0, guid, "GFX100 II").unwrap();
+        assert_eq!(bytes, expected);
+        assert_eq!(
+            parse_pcss_init_ack(&bytes).unwrap(),
+            PcssInitAck {
+                connection_number: 0,
+                responder_guid: guid,
+                friendly_name: "GFX100 II".into(),
+            }
+        );
     }
 
     #[test]

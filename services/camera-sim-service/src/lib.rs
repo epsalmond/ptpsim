@@ -21,7 +21,7 @@ use camera_sim::{
 };
 use protocol_primitives::{
     fuji_framing, parse_pcss_discovery, parse_pcss_init, pcss_callback_ack_message,
-    pcss_notify_message,
+    pcss_init_ack_message, pcss_notify_message,
 };
 use ptp_core::codes::{op, resp};
 use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpCodec, PtpIpPacket};
@@ -752,16 +752,21 @@ async fn handle_command_conn(
             }
         }
     }
-    let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
-        connection_number: if is_pcss { 0 } else { 1 },
-        responder_guid: [0; 16],
-        friendly_name: {
-            let e = engine.lock().await;
-            e.manifest().camera.model.clone()
-        },
-        protocol_version: 0x0001_0000,
-    });
-    let ack_bytes = ptp_core::encode(&ack).map_err(to_io)?;
+    let camera_name = {
+        let e = engine.lock().await;
+        e.manifest().camera.model.clone()
+    };
+    let ack_bytes = if is_pcss {
+        pcss_init_ack_message(0, [0; 16], &camera_name).map_err(to_io)?
+    } else {
+        let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
+            connection_number: 1,
+            responder_guid: [0; 16],
+            friendly_name: camera_name,
+            protocol_version: 0x0001_0000,
+        });
+        ptp_core::encode(&ack).map_err(to_io)?
+    };
     stream.write_all(&ack_bytes).await?;
     metrics.record_write(ack_bytes.len());
     if is_pcss {

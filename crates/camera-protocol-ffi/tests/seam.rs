@@ -52,7 +52,7 @@ fn init_command_response_decoder_distinguishes_ack_and_fail() {
             assert_eq!(connection_number, 0);
             assert_eq!(responder_guid, vec![0x5a; 16]);
             assert_eq!(friendly_name, "CAMERA");
-            assert_eq!(protocol_version, 0x0001_0000);
+            assert_eq!(protocol_version, Some(0x0001_0000));
         }
         other => panic!("expected acknowledged response, got {other:?}"),
     }
@@ -65,6 +65,62 @@ fn init_command_response_decoder_distinguishes_ack_and_fail() {
         InitCommandResponse::Failed { reason } => assert_eq!(reason, 0x2019),
         other => panic!("expected failed response, got {other:?}"),
     }
+}
+
+#[test]
+fn init_command_response_decoder_accepts_fixed_pcss_ack() {
+    let ack = protocol_primitives::pcss_init_ack_message(0, [0x5a; 16], "GFX100 II").unwrap();
+    match decode_init_command_response(ack).unwrap() {
+        InitCommandResponse::Acknowledged {
+            connection_number,
+            responder_guid,
+            friendly_name,
+            protocol_version,
+        } => {
+            assert_eq!(connection_number, 0);
+            assert_eq!(responder_guid, vec![0x5a; 16]);
+            assert_eq!(friendly_name, "GFX100 II");
+            assert_eq!(protocol_version, None);
+        }
+        other => panic!("expected acknowledged response, got {other:?}"),
+    }
+}
+
+#[test]
+fn init_command_response_decoder_rejects_malformed_fixed_pcss_acks() {
+    let valid = protocol_primitives::pcss_init_ack_message(0, [0x5a; 16], "GFX100 II").unwrap();
+
+    let mut nonzero_padding = valid.clone();
+    nonzero_padding[67] = 1;
+    assert!(decode_init_command_response(nonzero_padding).is_err());
+
+    let mut missing_terminator = valid.clone();
+    for byte in &mut missing_terminator[28..] {
+        *byte = 0x41;
+    }
+    assert!(decode_init_command_response(missing_terminator).is_err());
+
+    let mut invalid_utf16 = valid;
+    invalid_utf16[28..32].copy_from_slice(&[0x00, 0xd8, 0x00, 0x00]);
+    assert!(decode_init_command_response(invalid_utf16).is_err());
+}
+
+#[test]
+fn init_command_response_decoder_rejects_trailing_standard_bytes() {
+    let mut ack = ptp_core::encode(&ptp_core::PtpIpPacket::InitCommandAck(
+        ptp_core::InitCommandAck {
+            connection_number: 0,
+            responder_guid: [0x5a; 16],
+            friendly_name: "CAMERA".into(),
+            protocol_version: 0x0001_0000,
+        },
+    ))
+    .unwrap();
+    ack.extend_from_slice(&[0, 0, 0, 0]);
+    let length = ack.len() as u32;
+    ack[0..4].copy_from_slice(&length.to_le_bytes());
+
+    assert!(decode_init_command_response(ack).is_err());
 }
 
 #[test]

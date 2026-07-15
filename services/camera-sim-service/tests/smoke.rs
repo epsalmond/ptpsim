@@ -7,7 +7,7 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 
 use camera_sim_service::{Config, Server};
-use protocol_primitives::fuji_framing;
+use protocol_primitives::{fuji_framing, parse_pcss_init_ack};
 use ptp_core::{InitCommandRequest, PtpCodec, PtpIpPacket};
 
 const MANIFEST: &str = r#"
@@ -124,10 +124,8 @@ fn pcss_init_frame(hostname: &str) -> Vec<u8> {
 fn connect_pcss(command_addr: std::net::SocketAddr, hostname: &str) -> TcpStream {
     let mut s = TcpStream::connect(command_addr).unwrap();
     write_frame(&mut s, &pcss_init_frame(hostname));
-    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
-        PtpIpPacket::InitCommandAck(_) => {}
-        other => panic!("expected InitCommandAck, got {other:?}"),
-    }
+    let ack = parse_pcss_init_ack(&read_frame(&mut s)).expect("fixed PCSS InitCommandAck");
+    assert_eq!(ack.connection_number, 0);
     s
 }
 
@@ -1033,10 +1031,14 @@ properties: {}
         other => panic!("expected InitFail, got {other:?}"),
     }
     write_frame(&mut s, &init);
-    match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
-        PtpIpPacket::InitCommandAck(ack) => assert_eq!(ack.connection_number, 0),
-        other => panic!("expected InitCommandAck after retries, got {other:?}"),
-    }
+    let ack = read_frame(&mut s);
+    assert_eq!(ack.len(), 68);
+    assert_eq!(
+        parse_pcss_init_ack(&ack)
+            .expect("fixed PCSS InitCommandAck after retries")
+            .connection_number,
+        0
+    );
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
 

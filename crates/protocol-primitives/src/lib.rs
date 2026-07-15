@@ -23,7 +23,7 @@ pub use fuji_init::{build_app_init, validate_init_ack};
 pub use pcss::{
     callback_ack_message as pcss_callback_ack_message, discovery_message as pcss_discovery_message,
     notify_message as pcss_notify_message, parse_discovery as parse_pcss_discovery,
-    parse_notify as parse_pcss_notify, parse_pcss_init, pcss_init_message, PcssMessageError,
-    PcssNotify,
+    parse_notify as parse_pcss_notify, parse_pcss_init, parse_pcss_init_ack, pcss_init_ack_message,
+    pcss_init_message, PcssInitAck, PcssInitAckError, PcssMessageError, PcssNotify,
 };
 pub use value_codec::{encode_value, ValueWidth};
