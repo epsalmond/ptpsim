@@ -198,6 +198,14 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
     assert_eq!(steps[3].repeat, 4); // 902B ×4
     assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
+    assert_eq!(
+        steps[5].open_channel,
+        Some(camera_config::SocketRole::Event)
+    );
+    assert_eq!(
+        steps[6].open_channel,
+        Some(camera_config::SocketRole::LiveView)
+    );
     assert!(steps.iter().all(camera_config::Step::is_well_formed));
     // A from-qualified image-transfer edge exists (teardown-first switch).
     assert!(entries
@@ -980,8 +988,18 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
         .iter()
         .any(|s| s.send_op.as_deref() == Some("0x902b") && s.repeat == 4));
     assert_eq!(
-        reverse_steps.last().and_then(|s| s.send_op.as_deref()),
+        reverse_steps
+            .get(reverse_steps.len() - 3)
+            .and_then(|s| s.send_op.as_deref()),
         Some("0x101c")
+    );
+    assert_eq!(
+        reverse_steps[reverse_steps.len() - 2].open_channel,
+        Some(camera_config::SocketRole::Event)
+    );
+    assert_eq!(
+        reverse_steps.last().and_then(|s| s.open_channel),
+        Some(camera_config::SocketRole::LiveView)
     );
     assert!(
         reverse_steps
@@ -1173,6 +1191,52 @@ fn close_session_step_parses_and_is_well_formed() {
         serde_yaml::from_str::<camera_config::Step>("closeSession: { keepAp: true }").is_err(),
         "retired keepAp spelling must fail closed"
     );
+}
+
+#[test]
+fn open_channel_requires_a_top_level_bound_auxiliary_role() {
+    let manifest = |bindings: &str, step: &str| {
+        format!(
+            "schema: camera-config/v1\ncamera: {{ manufacturer: Test, model: Test, firmware: \"1\" }}\nconnections:\n  app:\n    bindings: {{ {bindings} }}\n    entries:\n      - to: test\n        steps:\n{step}\n"
+        )
+    };
+    let valid = manifest(
+        "command: 55740, event: 55741",
+        "          - { sendOp: \"0x101c\" }\n          - { openChannel: event }",
+    );
+    assert!(CameraManifest::from_yaml(&valid).is_ok());
+
+    let command = CameraManifest::from_yaml(&manifest(
+        "command: 55740, event: 55741",
+        "          - { openChannel: command }",
+    ))
+    .expect_err("the already-established command channel cannot be opened by a plan");
+    assert!(command
+        .to_string()
+        .contains("cannot open the command channel"));
+
+    let unbound = CameraManifest::from_yaml(&manifest(
+        "command: 55740",
+        "          - { openChannel: event }",
+    ))
+    .expect_err("an auxiliary channel needs a socket binding");
+    assert!(unbound.to_string().contains("has no socket binding"));
+
+    let nested = CameraManifest::from_yaml(&manifest(
+        "command: 55740, event: 55741",
+        "          - retry:\n              whenResponseCodes: [\"0x2002\"]\n              maxAttempts: 2\n              steps: [{ openChannel: event }]",
+    ))
+    .expect_err("nested channel openings are not simulator-enforceable");
+    assert!(nested.to_string().contains("only valid as a top-level"));
+
+    let tolerant_tail = CameraManifest::from_yaml(&manifest(
+        "command: 55740, event: 55741",
+        "          - { sendOp: \"0x9999\", tolerant: true }\n          - { openChannel: event }",
+    ))
+    .expect_err("a tolerated tail cannot enforce the callback boundary");
+    assert!(tolerant_tail
+        .to_string()
+        .contains("requires a preceding strict wire step"));
 }
 
 #[test]

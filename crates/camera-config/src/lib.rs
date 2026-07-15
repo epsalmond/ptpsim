@@ -349,6 +349,12 @@ impl CameraManifest {
                 match &entry.execution {
                     ModeEntryExecution::Ptp { steps } => {
                         require_valid_ptp_steps(steps, &path)?;
+                        require_valid_open_channels(
+                            steps,
+                            connection.bindings.as_ref(),
+                            &path,
+                            true,
+                        )?;
                         require_valid_executor_activities(
                             &entry.activities,
                             steps.len(),
@@ -359,6 +365,12 @@ impl CameraManifest {
                         require_valid_ptp_steps(
                             &reestablish.exit_steps,
                             &format!("{path}.reestablishConnection.exitSteps"),
+                        )?;
+                        require_valid_open_channels(
+                            &reestablish.exit_steps,
+                            connection.bindings.as_ref(),
+                            &format!("{path}.reestablishConnection.exitSteps"),
+                            false,
                         )?;
                         require_valid_executor_activities(
                             &entry.activities,
@@ -410,6 +422,12 @@ impl CameraManifest {
                 require_valid_ptp_steps(
                     &action.steps,
                     &format!("connections.{connection_id}.actions.{verb:?}"),
+                )?;
+                require_valid_open_channels(
+                    &action.steps,
+                    connection.bindings.as_ref(),
+                    &format!("connections.{connection_id}.actions.{verb:?}"),
+                    true,
                 )?;
                 require_valid_executor_activities(
                     &action.activities,
@@ -910,6 +928,73 @@ fn require_valid_ptp_steps_with_collections(
                 &mut nested,
             )?;
         }
+    }
+    Ok(())
+}
+
+fn require_valid_open_channels(
+    steps: &[Step],
+    bindings: Option<&SocketBindings>,
+    path: &str,
+    top_level_allowed: bool,
+) -> Result<(), ManifestError> {
+    let mut has_enforceable_prefix = false;
+    for (index, step) in steps.iter().enumerate() {
+        let step_path = format!("{path}.steps[{index}]");
+        if let Some(role) = step.open_channel {
+            if !top_level_allowed {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.openChannel is only valid as a top-level mode-entry or action step"
+                )));
+            }
+            if role == SocketRole::Command {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.openChannel cannot open the command channel; it is established before plan execution"
+                )));
+            }
+            if bindings.and_then(|value| value.port_for(role)).is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.openChannel role '{role:?}' has no socket binding on its connection"
+                )));
+            }
+            if !has_enforceable_prefix {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.openChannel requires a preceding strict wire step so simulators can enforce its causal boundary"
+                )));
+            }
+            continue;
+        }
+        if let Some(retry) = &step.retry {
+            require_valid_open_channels(
+                &retry.steps,
+                bindings,
+                &format!("{step_path}.retry"),
+                false,
+            )?;
+        }
+        if let Some(await_until) = &step.await_until {
+            require_valid_open_channels(
+                &await_until.on_each,
+                bindings,
+                &format!("{step_path}.awaitUntil"),
+                false,
+            )?;
+        }
+        if let Some(loop_step) = &step.r#loop {
+            let body = match loop_step {
+                Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => body,
+            };
+            require_valid_open_channels(body, bindings, &format!("{step_path}.loop"), false)?;
+        }
+        if let Some(condition) = &step.if_step {
+            require_valid_open_channels(
+                &condition.then_steps,
+                bindings,
+                &format!("{step_path}.if"),
+                false,
+            )?;
+        }
+        has_enforceable_prefix = !step.tolerant && step.is_sequence_gate_matchable();
     }
     Ok(())
 }

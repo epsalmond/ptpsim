@@ -15,7 +15,7 @@ use crate::{
     ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityFailure,
     ConnectionActivityObserver, ConnectionActivityRetry, EntryParam, EntryStep,
     ExecutorStepFailureKind, FfiAwaitSource, FfiChunkSize, FfiLoopKind, FfiPredicate, KeyValue,
-    PtpFraming, StepObserver, StepOutcome, StepReport, ValueWidth,
+    PtpFraming, SocketRole, StepObserver, StepOutcome, StepReport, ValueWidth,
 };
 
 const DEFAULT_OP_TIMEOUT_MS: u32 = 10_000;
@@ -52,6 +52,9 @@ pub trait PtpExecutorTransport: Send + Sync {
     /// Return the next frame for `event_code`, retaining unrelated events for
     /// their normal consumers instead of draining them from the host queue.
     async fn next_event_frame(&self, event_code: u16) -> Result<Vec<u8>, PtpTransportError>;
+    /// Open an auxiliary channel selected by the manifest. This callback occurs
+    /// only after all preceding entry/action steps have completed successfully.
+    async fn open_channel(&self, role: SocketRole) -> Result<(), PtpTransportError>;
     /// Close the command channel after flushing the optional resolved sentinel.
     async fn close_command_channel(
         &self,
@@ -751,6 +754,15 @@ impl PtpCtx {
                         }
                     }
                     Ok(last)
+                }
+                EntryStep::OpenChannel { role, .. } => {
+                    self.transport_deadline(
+                        self.transport.open_channel(*role),
+                        DEFAULT_OP_TIMEOUT_MS,
+                        here,
+                    )
+                    .await?;
+                    Ok(None)
                 }
                 EntryStep::CloseSession {
                     transport_close, ..
@@ -1464,6 +1476,7 @@ fn step_verb(step: &EntryStep) -> &'static str {
         EntryStep::GetProp { .. } => "getProp",
         EntryStep::ReadEcho { .. } => "readEcho",
         EntryStep::SendOp { .. } => "sendOp",
+        EntryStep::OpenChannel { .. } => "openChannel",
         EntryStep::ReopenSession { .. } => "reopenSession",
         EntryStep::CloseSession { .. } => "closeSession",
         EntryStep::AwaitUntil { .. } => "awaitUntil",
@@ -1479,6 +1492,7 @@ fn step_tolerant(step: &EntryStep) -> bool {
         | EntryStep::GetProp { tolerant, .. }
         | EntryStep::ReadEcho { tolerant, .. }
         | EntryStep::SendOp { tolerant, .. }
+        | EntryStep::OpenChannel { tolerant, .. }
         | EntryStep::ReopenSession { tolerant }
         | EntryStep::CloseSession { tolerant, .. }
         | EntryStep::AwaitUntil { tolerant, .. }
@@ -1495,6 +1509,7 @@ fn step_codes(step: &EntryStep) -> (Option<u16>, Option<u16>) {
             (Some(op::GET_DEVICE_PROP_VALUE), Some(*prop))
         }
         EntryStep::SendOp { op, .. } => (Some(*op), None),
+        EntryStep::OpenChannel { .. } => (None, None),
         EntryStep::ReopenSession { .. } => (Some(op::OPEN_SESSION), None),
         EntryStep::CloseSession { .. } => (Some(op::CLOSE_SESSION), None),
         EntryStep::AwaitUntil { source, .. } => match source {

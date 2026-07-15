@@ -1274,6 +1274,10 @@ pub enum EntryStep {
         repeat: u32,
         tolerant: bool,
     },
+    /// Open a manifest-selected auxiliary PTP/IP channel at this point in the
+    /// mode-entry/action sequence. The host owns the socket; Rust owns when the
+    /// callback runs.
+    OpenChannel { role: SocketRole, tolerant: bool },
     /// Re-establish the PTP/IP session in-place — close the current TCP
     /// socket, send the connection's manifest-declared transport-close frame,
     /// open a new socket to the connection's command port, replay the cached
@@ -3070,6 +3074,12 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
             params: s.params.iter().map(map_param).collect(),
             captures: s.captures.iter().map(map_capture).collect(),
             repeat: s.repeat,
+            tolerant,
+        });
+    }
+    if let Some(role) = s.open_channel {
+        return Some(EntryStep::OpenChannel {
+            role: role.into(),
             tolerant,
         });
     }

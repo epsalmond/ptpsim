@@ -120,6 +120,10 @@ pub enum SocketRole { Command, Event, LiveView }
 #[derive(uniffi::Record)]
 pub struct SocketBindingInfo { pub role: SocketRole, pub port: u16 }
 
+// PtpExecutorTransport also exposes async open_channel(role). A manifest
+// `openChannel` EntryStep owns the causal point at which the host opens event or
+// live-view transport; socket_bindings remains endpoint data, not readiness policy.
+
 #[derive(uniffi::Record)]
 pub struct TransportCloseInfo { pub packet: Vec<u8>, pub when: Option<String> } // named sentinel → bytes
 

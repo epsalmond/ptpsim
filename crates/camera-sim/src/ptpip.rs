@@ -286,6 +286,14 @@ impl Ctx<'_> {
                 }
             }
             Ok(())
+        } else if let Some(role) = step.open_channel {
+            if self.engine.channel_ready(role) {
+                Ok(())
+            } else {
+                Err(err(format!(
+                    "openChannel {role:?} reached before its manifest causal boundary"
+                )))
+            }
         } else if step.reopen_session.is_some() {
             if self.command_listener_volatile
                 && matches!(self.engine.phase(), Phase::LiveView | Phase::Streaming)
@@ -788,6 +796,8 @@ fn verb_name(s: &Step) -> &'static str {
         "readEcho"
     } else if s.send_op.is_some() {
         "sendOp"
+    } else if s.open_channel.is_some() {
+        "openChannel"
     } else if s.reopen_session.is_some() {
         "reopenSession"
     } else if s.await_until.is_some() {

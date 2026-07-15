@@ -187,6 +187,8 @@ connections:
           - { readEcho: "0xdf2a" }               # read then write back
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
           - { sendOp: "0x101c" }                 # InitiateOpenCapture
+          - { openChannel: event }
+          - { openChannel: liveView }
       - to: shooting/stills          # from image-import back to live-view
         from: image-transfer
         # Ground truth: MODE_CHANGES.md §5b. Get→Take reopens the PTP/IP
@@ -200,6 +202,8 @@ connections:
           - { setProp: "0xdf2a", value: 2 }                  # Fpcsh_VersionRemoteEx
           - { sendOp: "0x902b", repeat: 4 }                  # FujiVendor_902B startup ×4
           - { sendOp: "0x101c" }                             # InitiateOpenCapture
+          - { openChannel: event }
+          - { openChannel: liveView }
       - to: shooting/video          # in-live-view stills→video selector
         from: shooting/stills
         steps:

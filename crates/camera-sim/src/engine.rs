@@ -236,7 +236,8 @@ impl Engine {
 
     pub fn new(manifest: CameraManifest, store: MediaStore) -> Self {
         let state = CameraState::from_manifest(&manifest);
-        let gate_sequences = compile_gate_sequences(&manifest);
+        let mut gate_sequences = compile_gate_sequences(&manifest);
+        gate_sequences.extend(compile_channel_sequences(&manifest));
         let mut engine = Engine {
             manifest,
             gate_sequences,
@@ -264,6 +265,18 @@ impl Engine {
     pub fn bind_connection(&mut self, connection: &str) {
         self.connection.clear();
         self.connection.push_str(connection);
+    }
+
+    /// Whether a manifest-authored auxiliary socket has crossed its causal
+    /// availability boundary. Connections without an `openChannel` step retain
+    /// the historical immediately-available behavior.
+    pub fn channel_ready(&self, role: camera_config::SocketRole) -> bool {
+        let gate = channel_gate_name(&self.connection, role);
+        !self
+            .gate_sequences
+            .iter()
+            .any(|sequence| sequence.name == gate)
+            || self.state.gate_satisfied(&gate)
     }
 
     /// A clone of this engine's arming link (#102), to hand to the BLE responder so
@@ -1440,6 +1453,58 @@ fn compile_gate_sequences(manifest: &CameraManifest) -> Vec<GateSequence> {
     out
 }
 
+fn channel_gate_name(connection: &str, role: camera_config::SocketRole) -> String {
+    format!("channel-ready:{connection}:{role:?}")
+}
+
+fn compile_channel_sequences(manifest: &CameraManifest) -> Vec<GateSequence> {
+    let mut out = Vec::new();
+    for (connection_name, connection) in &manifest.connections {
+        for entry in &connection.entries {
+            if let camera_config::ModeEntryExecution::Ptp { steps } = &entry.execution {
+                collect_channel_sequences(connection_name, steps, &mut out);
+            }
+        }
+        for action in connection.actions.values() {
+            collect_channel_sequences(connection_name, &action.steps, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_channel_sequences(connection: &str, steps: &[Step], out: &mut Vec<GateSequence>) {
+    let mut causal_prefix = Vec::new();
+    for step in steps {
+        if let Some(role) = step.open_channel {
+            if !causal_prefix.is_empty() {
+                let sequence = GateSequence {
+                    name: channel_gate_name(connection, role),
+                    steps: causal_prefix.clone(),
+                };
+                if !out.contains(&sequence) {
+                    out.push(sequence);
+                }
+            }
+            continue;
+        }
+        if step.tolerant {
+            // The executor advances past a tolerated non-OK response, while the
+            // engine advances wire gates only after successful operations. A
+            // tolerant step therefore cannot be a mandatory causal prefix.
+            causal_prefix.clear();
+            continue;
+        }
+        if let Some(matcher) = matcher_for_step(step) {
+            causal_prefix.extend(std::iter::repeat_n(matcher, step.repeat.max(1) as usize));
+        } else {
+            // A channel boundary is simulator-enforceable only from the latest
+            // contiguous wire segment. Camera-side validation of the final
+            // operation still guards any earlier preconditions.
+            causal_prefix.clear();
+        }
+    }
+}
+
 fn collect_gate_sequences(steps: &[Step], out: &mut Vec<GateSequence>) {
     let mut active: std::collections::BTreeMap<String, Option<Vec<GateMatcher>>> =
         std::collections::BTreeMap::new();
@@ -1821,5 +1886,85 @@ properties:
             0,
             "absent-param effect skipped (stays default 0)"
         );
+    }
+
+    #[test]
+    fn auxiliary_channels_follow_manifest_causal_boundary() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+connections:
+  app:
+    kind: ptpip-app
+    bindings: { command: 55740, event: 55741, liveView: 55742 }
+    entries:
+      - to: shooting/stills
+        steps:
+          - { setProp: "0xdf01", value: 22 }
+          - { sendOp: "0x101c" }
+          - { openChannel: event }
+          - { openChannel: liveView }
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        assert!(!engine.channel_ready(camera_config::SocketRole::Event));
+        assert!(!engine.channel_ready(camera_config::SocketRole::LiveView));
+
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0xdf01]),
+            Some(&22u16.to_le_bytes()),
+        );
+        assert!(!engine.channel_ready(camera_config::SocketRole::Event));
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 3, vec![]), None)
+        ));
+        assert!(engine.channel_ready(camera_config::SocketRole::Event));
+        assert!(engine.channel_ready(camera_config::SocketRole::LiveView));
+    }
+
+    #[test]
+    fn strict_suffix_after_tolerant_step_controls_channel_gate() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+connections:
+  app:
+    kind: ptpip
+    bindings: { command: 55740, event: 55741 }
+    entries:
+      - to: shooting/stills
+        steps:
+          - { sendOp: "0x9999", tolerant: true }
+          - { setProp: "0xdf01", value: 22 }
+          - { openChannel: event }
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        assert!(!engine.channel_ready(camera_config::SocketRole::Event));
+
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        assert!(!reply_is_ok(
+            &engine.on_operation(&req(0x9999, 2, vec![]), None)
+        ));
+        assert!(!engine.channel_ready(camera_config::SocketRole::Event));
+
+        engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 3, vec![0xdf01]),
+            Some(&22u16.to_le_bytes()),
+        );
+        assert!(engine.channel_ready(camera_config::SocketRole::Event));
     }
 }

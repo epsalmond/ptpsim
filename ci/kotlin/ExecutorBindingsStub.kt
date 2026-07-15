@@ -12,6 +12,7 @@ import uniffi.camera_protocol_ffi.Predicate
 import uniffi.camera_protocol_ffi.PredicateOp
 import uniffi.camera_protocol_ffi.PtpExecutorTransport
 import uniffi.camera_protocol_ffi.PtpSessionOpenResult
+import uniffi.camera_protocol_ffi.SocketRole
 import uniffi.camera_protocol_ffi.Step
 import uniffi.camera_protocol_ffi.StepObserver
 import uniffi.camera_protocol_ffi.StepReport
@@ -50,6 +51,8 @@ class PtpExecutorTransportStub : PtpExecutorTransport {
     override suspend fun nextCommandFrame(): ByteArray = byteArrayOf()
 
     override suspend fun nextEventFrame(eventCode: UShort): ByteArray = byteArrayOf()
+
+    override suspend fun openChannel(role: SocketRole) = Unit
 
     override suspend fun closeCommandChannel(transportCloseFrame: ByteArray?) = Unit
 

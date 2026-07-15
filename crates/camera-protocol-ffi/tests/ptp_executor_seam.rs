@@ -1,7 +1,7 @@
 //! #250 acceptance: real manifest EntrySteps cross the foreign async seam as
 //! encoded PTP frames while Rust owns ordering, tolerance and deadlines.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -15,8 +15,8 @@ use camera_protocol_ffi::{
     ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityFailure,
     ConnectionActivityObserver, ConnectionActivityRetry, ConnectionActivityTerminalSummary,
     ExecutorStepFailureKind, KeyValue, PtpExecutorError, PtpExecutorTransport, PtpFraming,
-    PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError, StepObserver, StepOutcome,
-    StepReport,
+    PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError, SocketRole, StepObserver,
+    StepOutcome, StepReport,
 };
 use camera_sim::{Engine, Fault, Reply};
 use futures::executor::block_on;
@@ -59,7 +59,7 @@ fn body_with_cold_entry_activities() -> String {
             displayRole: openingSession
             defaultExpectedDurationMs: 10
             interactionRequired: false
-            executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 5 }
+            executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 7 }
         steps:"#,
         1,
     )
@@ -218,7 +218,17 @@ struct EngineState {
     replies: VecDeque<Vec<u8>>,
     operations: Vec<u16>,
     requests: Vec<(u16, Vec<u32>)>,
+    opened_channels: Vec<SocketRole>,
+    calls: Vec<ExecutorCall>,
+    operations_by_tid: BTreeMap<u32, u16>,
     next_tid: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutorCall {
+    Operation(u16),
+    OperationCompleted(u16),
+    OpenChannel(SocketRole),
 }
 
 struct PendingDataOut {
@@ -254,6 +264,9 @@ impl EngineTransport {
                 replies: VecDeque::new(),
                 operations: Vec::new(),
                 requests: Vec::new(),
+                opened_channels: Vec::new(),
+                calls: Vec::new(),
+                operations_by_tid: BTreeMap::new(),
                 next_tid: 2,
             }),
             first_handle,
@@ -268,6 +281,14 @@ impl EngineTransport {
 
     fn operations(&self) -> Vec<u16> {
         self.state.lock().expect("state").operations.clone()
+    }
+
+    fn opened_channels(&self) -> Vec<SocketRole> {
+        self.state.lock().expect("state").opened_channels.clone()
+    }
+
+    fn calls(&self) -> Vec<ExecutorCall> {
+        self.state.lock().expect("state").calls.clone()
     }
 
     fn request_count(&self, operation: u16, params: &[u32]) -> usize {
@@ -447,6 +468,10 @@ impl PtpExecutorTransport for EngineTransport {
         match packet {
             PtpIpPacket::OperationRequest(request) => {
                 state.operations.push(request.code);
+                state.calls.push(ExecutorCall::Operation(request.code));
+                state
+                    .operations_by_tid
+                    .insert(request.transaction_id, request.code);
                 state.requests.push((request.code, request.params.clone()));
                 if request.data_phase_info == 2
                     || request.code == ptp_core::codes::op::SET_DEVICE_PROP_VALUE
@@ -534,14 +559,21 @@ impl PtpExecutorTransport for EngineTransport {
     }
 
     async fn next_command_frame(&self) -> Result<Vec<u8>, PtpTransportError> {
-        self.state
-            .lock()
-            .expect("state")
+        let mut state = self.state.lock().expect("state");
+        let frame = state
             .replies
             .pop_front()
             .ok_or_else(|| PtpTransportError::Failed {
                 detail: "response queue empty".into(),
-            })
+            })?;
+        if let PtpIpPacket::OperationResponse(response) = self.decode(&frame)? {
+            if let Some(operation) = state.operations_by_tid.remove(&response.transaction_id) {
+                state
+                    .calls
+                    .push(ExecutorCall::OperationCompleted(operation));
+            }
+        }
+        Ok(frame)
     }
 
     async fn next_event_frame(&self, event_code: u16) -> Result<Vec<u8>, PtpTransportError> {
@@ -569,6 +601,13 @@ impl PtpExecutorTransport for EngineTransport {
             }
         }
         .map_err(|detail| PtpTransportError::Failed { detail })
+    }
+
+    async fn open_channel(&self, role: SocketRole) -> Result<(), PtpTransportError> {
+        let mut state = self.state.lock().expect("state");
+        state.opened_channels.push(role);
+        state.calls.push(ExecutorCall::OpenChannel(role));
+        Ok(())
     }
 
     async fn close_command_channel(
@@ -638,8 +677,21 @@ fn real_gfx_cold_entry_runs_in_manifest_wire_order() {
         transport.operations(),
         vec![0x1016, 0x1016, 0x1015, 0x1016, 0x902b, 0x902b, 0x902b, 0x902b, 0x101c]
     );
-    assert_eq!(outcome.steps_run, 5);
-    assert_eq!(reports.0.lock().expect("reports").len(), 10);
+    assert_eq!(
+        transport.opened_channels(),
+        vec![SocketRole::Event, SocketRole::LiveView]
+    );
+    assert!(matches!(
+        transport.calls().as_slice(),
+        [
+            ..,
+            ExecutorCall::OperationCompleted(0x101c),
+            ExecutorCall::OpenChannel(SocketRole::Event),
+            ExecutorCall::OpenChannel(SocketRole::LiveView)
+        ]
+    ));
+    assert_eq!(outcome.steps_run, 7);
+    assert_eq!(reports.0.lock().expect("reports").len(), 14);
     assert!(activities.0.lock().expect("activities").is_empty());
 }
 
@@ -1454,7 +1506,7 @@ fn standard_framing_runs_the_same_real_plan() {
     ))
     .expect("standard-framed cold entry succeeds");
 
-    assert_eq!(outcome.steps_run, 5);
+    assert_eq!(outcome.steps_run, 7);
     assert_eq!(transport.operations().len(), 9);
 }
 
@@ -1663,6 +1715,9 @@ impl Drop for DropSignal {
 
 #[async_trait::async_trait]
 impl PtpExecutorTransport for WholeStepDeadlineTransport {
+    async fn open_channel(&self, _role: SocketRole) -> Result<(), PtpTransportError> {
+        Ok(())
+    }
     async fn reserve_transaction_id(&self) -> Result<u32, PtpTransportError> {
         Ok(2)
     }
@@ -1696,6 +1751,9 @@ impl PtpExecutorTransport for WholeStepDeadlineTransport {
 
 #[async_trait::async_trait]
 impl PtpExecutorTransport for PendingTransport {
+    async fn open_channel(&self, _role: SocketRole) -> Result<(), PtpTransportError> {
+        Ok(())
+    }
     async fn reserve_transaction_id(&self) -> Result<u32, PtpTransportError> {
         futures::future::pending().await
     }
@@ -1724,6 +1782,9 @@ impl PtpExecutorTransport for PendingTransport {
 
 #[async_trait::async_trait]
 impl PtpExecutorTransport for FailingTransport {
+    async fn open_channel(&self, _role: SocketRole) -> Result<(), PtpTransportError> {
+        Ok(())
+    }
     async fn reserve_transaction_id(&self) -> Result<u32, PtpTransportError> {
         match self.0 {
             FailureMode::Transport => Err(PtpTransportError::Failed {

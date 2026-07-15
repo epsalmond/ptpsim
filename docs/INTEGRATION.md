@@ -430,9 +430,12 @@ grammar, transaction ordering, PTP/IP framing, response tolerance, retries,
 captures, predicates, loops, deadlines, and outcome streams.
 
 The transport reserves transaction ids, exchanges complete command-channel
-frames, pulls complete event-channel frames by requested event code, closes or
-reopens the command session when a plan says so, and provides `sleep(ms)` as
-the host clock. Event delivery MUST retain nonmatching frames for their normal
+frames, pulls complete event-channel frames by requested event code, opens an
+auxiliary channel when the plan reaches `openChannel`, closes or reopens the
+command session when a plan says so, and provides `sleep(ms)` as the host clock.
+The host MUST NOT eagerly open manifest-managed auxiliary channels: their camera
+listeners may be unavailable until the preceding PTP operation succeeds. Event
+delivery MUST retain nonmatching frames for their normal
 consumers; the executor parses and verifies the returned matching frame. The
 executor uses the connection's declared command/event framing, including the
 standard PTP/IP `StartData`/`EndData` sequence, and races every pending

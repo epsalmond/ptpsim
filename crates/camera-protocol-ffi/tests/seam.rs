@@ -94,6 +94,10 @@ fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
                 repeat: _,
                 tolerant: _,
             }
+            | EntryStep::OpenChannel {
+                role: _,
+                tolerant: _,
+            }
             | EntryStep::ReopenSession { tolerant: _ }
             | EntryStep::CloseSession {
                 transport_close: _,
@@ -785,8 +789,18 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
         }
     )));
     assert!(matches!(
-        steps.last(),
-        Some(EntryStep::SendOp { op: 0x101c, .. })
+        &steps[steps.len() - 3..],
+        [
+            EntryStep::SendOp { op: 0x101c, .. },
+            EntryStep::OpenChannel {
+                role: SocketRole::Event,
+                ..
+            },
+            EntryStep::OpenChannel {
+                role: SocketRole::LiveView,
+                ..
+            }
+        ]
     ));
     assert!(
         !steps

@@ -1545,9 +1545,8 @@ properties: {}
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// Live-view smoke: gate-#4 at the TCP boundary. The simulator only emits
-/// frames after the initiator reaches Phase::Streaming (df01=22 -> InitiateOpenCapture);
-/// before that, the socket is open but idle.
+/// Live-view smoke: the manifest's `openChannel` step controls TCP availability,
+/// then frames flow once the initiator reaches Phase::Streaming.
 #[test]
 fn service_streams_liveview_after_open_capture() {
     let root = tmp_card();
@@ -1570,6 +1569,13 @@ connections:
     commandFraming: compressed
     eventFraming: usb
     bindings: { command: 55740, event: 55741, liveView: 55742 }
+    entries:
+      - to: shooting/stills
+        steps:
+          - { setProp: "0xdf01", value: 22 }
+          - { sendOp: "0x101c" }
+          - { openChannel: event }
+          - { openChannel: liveView }
 operations:
   "0x1002": { name: OpenSession, connections: [app] }
 properties:
@@ -1577,7 +1583,7 @@ properties:
 "#;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, liveview_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, event_addr, liveview_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii".into(),
@@ -1599,22 +1605,33 @@ properties:
         let lv = server
             .liveview_addr_opt()
             .expect("app connection has live-view socket");
+        let event = server
+            .event_addr_opt()
+            .expect("app connection has event socket");
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(async move { server.run(rx).await });
-        (cmd, lv, tx, h)
+        (cmd, event, lv, tx, h)
     });
 
-    // Connect to live-view BEFORE driving the engine — reads must block (gated).
+    // Connect before the manifest boundary. The simulator accepts and then
+    // rejects the early socket, matching an unavailable camera listener.
     let mut lv = TcpStream::connect(liveview_addr).unwrap();
     lv.set_read_timeout(Some(std::time::Duration::from_millis(150)))
         .unwrap();
     let mut probe = [0u8; 4];
-    match lv.read_exact(&mut probe) {
-        Err(e)
-            if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut => {}
-        Ok(_) => panic!("frames leaked before Phase::Streaming"),
-        Err(e) => panic!("unexpected error: {e}"),
+    match lv.read(&mut probe) {
+        Ok(0) => {}
+        Ok(count) => panic!("early live-view channel returned {count} bytes instead of closing"),
+        Err(error) => panic!("early live-view channel stayed open instead of closing: {error}"),
+    }
+    let mut event = TcpStream::connect(event_addr).unwrap();
+    event
+        .set_read_timeout(Some(std::time::Duration::from_millis(150)))
+        .unwrap();
+    match event.read(&mut probe) {
+        Ok(0) => {}
+        Ok(count) => panic!("early event channel returned {count} bytes instead of closing"),
+        Err(error) => panic!("early event channel stayed open instead of closing: {error}"),
     }
 
     // Drive the command channel into Phase::Streaming.
@@ -1640,6 +1657,8 @@ properties:
     // InitiateOpenCapture -> Phase::Streaming
     write_frame(&mut s, &op(0x101c, 3, vec![]));
     read_ok(&mut s);
+
+    let mut lv = TcpStream::connect(liveview_addr).unwrap();
 
     // Now frames flow: read two and confirm they're the fixture (single-frame loop).
     lv.set_read_timeout(Some(std::time::Duration::from_millis(500)))

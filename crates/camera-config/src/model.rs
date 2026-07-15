@@ -1439,6 +1439,12 @@ pub struct Step {
     /// Send operation `op` (e.g. `0x101c` InitiateOpenCapture).
     #[serde(default)]
     pub send_op: Option<HexCode>,
+    /// Ask the host-owned transport to open an auxiliary PTP/IP channel at this
+    /// exact point in the manifest-authored sequence. The command channel is
+    /// established before plan execution; event and live-view listeners may not
+    /// exist until a preceding camera operation has completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_channel: Option<SocketRole>,
     /// Re-establish the PTP/IP session in-place (reference app Get→Take switch on `app`):
     /// CloseSession 0x1003 → 8B `0xffffffff` sentinel → new TCP socket to the
     /// connection's command port → cached 82B InitCmdReq → InitCmdAck →
@@ -1949,6 +1955,7 @@ impl Step {
             self.get_prop.is_some(),
             self.read_echo.is_some(),
             self.send_op.is_some(),
+            self.open_channel.is_some(),
             self.reopen_session.is_some(),
             self.close_session.is_some(),
             self.await_until.is_some(),

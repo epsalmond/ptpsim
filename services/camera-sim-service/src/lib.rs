@@ -458,6 +458,10 @@ impl Server {
                     tokio::select! {
                         accepted = liveview.accept() => {
                             if let Ok((stream, _)) = accepted {
+                                if !engine.lock().await.channel_ready(camera_config::SocketRole::LiveView) {
+                                    drop(stream);
+                                    continue;
+                                }
                                 let engine = engine.clone();
                                 let frames = frames.clone();
                                 let metrics = metrics.clone();
@@ -476,6 +480,7 @@ impl Server {
         // accept arm so it only sees events emitted after it connected) and
         // writes the codes the command loop forwards.
         let event_loop = {
+            let engine = engine.clone();
             let shutdown_tx = shutdown_tx.clone();
             let metrics = metrics.clone();
             async move {
@@ -489,6 +494,10 @@ impl Server {
                     tokio::select! {
                         accepted = event.accept() => {
                             if let Ok((stream, _)) = accepted {
+                                if !engine.lock().await.channel_ready(camera_config::SocketRole::Event) {
+                                    drop(stream);
+                                    continue;
+                                }
                                 conns.spawn(handle_event_conn(stream, event_tx.subscribe(), metrics.clone()));
                             }
                         }
