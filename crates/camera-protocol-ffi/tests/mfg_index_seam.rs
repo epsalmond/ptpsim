@@ -1821,3 +1821,21 @@ models:
         other => panic!("expected BleAwaitUntil, got {other:?}"),
     }
 }
+
+#[test]
+fn index_model_refs_enumerates_declared_models_in_order() {
+    let refs = index_model_refs(common::data("fuji/index.yaml")).expect("index parses");
+    let pairs: Vec<(String, String)> = refs.into_iter().map(|r| (r.id, r.manifest_path)).collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("gfx100ii".to_string(), "gfx100ii/gfx100ii.yaml".to_string()),
+            ("xa7".to_string(), "xa7/xa7.yaml".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn index_model_refs_rejects_malformed_yaml() {
+    assert!(index_model_refs("models: [".to_string()).is_err());
+}

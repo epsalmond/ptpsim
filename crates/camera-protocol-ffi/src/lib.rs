@@ -1572,6 +1572,34 @@ pub struct KeyValue {
     pub value: String,
 }
 
+/// A model a manufacturer index declares: its id plus the body-manifest path
+/// the index names for it (relative to the manufacturer directory, e.g.
+/// `xa7/xa7.yaml`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct IndexModelRef {
+    pub id: String,
+    pub manifest_path: String,
+}
+
+/// Parse-only enumeration of the models a manufacturer index declares —
+/// exactly the bodies [`ConfigStore::from_manufacturer_index`] will demand.
+/// Lets a host resolve the body list from the vendored index itself instead
+/// of hardcoding model ids, so shipping a new model is pure manifest data
+/// with no host code change (#308 review follow-through). Declaration order
+/// is preserved (§11.7: first model is the primary manifest).
+#[uniffi::export]
+pub fn index_model_refs(index_yaml: String) -> Result<Vec<IndexModelRef>, ConfigError> {
+    let index = cc::index::ResolvedManufacturerIndex::from_yaml(&index_yaml)?;
+    Ok(index
+        .models
+        .iter()
+        .map(|model| IndexModelRef {
+            id: model.id.clone(),
+            manifest_path: model.manifest_path.to_string_lossy().into_owned(),
+        })
+        .collect())
+}
+
 /// How to bring a known connection up (data only — the app drives the
 /// GATT/UDP/TCP I/O). Returned by [`ConfigStore::connection_establishment`].
 ///
