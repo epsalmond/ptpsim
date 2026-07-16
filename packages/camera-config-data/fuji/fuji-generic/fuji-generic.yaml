@@ -1,0 +1,68 @@
+schema: camera-config/v1
+
+# Fujifilm FAMILY-BASELINE body manifest (ptpsim#311).
+#
+# Every Fuji BLE camera advertises, pairs, and brings up its Wi-Fi AP the SAME
+# way — that sameness is the family layer (universal GATT catalog "Every Fuji
+# BLE camera, every firmware"; family `ble-pair` / `ble-establish-wifi-ap`).
+# Recognizing a Fuji advert therefore already tells us how to CONNECT: this body
+# carries only that shared connection stack so an unknown body (GFX100S, X-T4,
+# the X-A7 generation, …) pairs and reaches the family-universal feature slice
+# with zero shipping. A specific body manifest (e.g. gfx100ii) refines this with
+# body-specific features (operations, properties, live-view, D-codes,
+# expectations); those NEVER gate connection, so none of them belong here.
+#
+# Evidence (all body-agnostic):
+#   - Universal GATT catalog + BLE-pair / AP-handover choreography: the family
+#     `fuji:` block in fuji/index.yaml (READ_THIS_FIRST §3 §2 §5).
+#   - reference app Wi-Fi-AP establishment flow (join-confirmation / associate /
+#     session-open host checkpoints): the same reference app reference-app RE the
+#     gfx100ii `app` connection cites (iosStartupSeq / iosFujiPTPIP), which is
+#     the reference-app path for ALL Fuji bodies, not a GFX100 II specific.
+#   - X-A7 field capture (ptpsim#306): confirms the legacy-pairing advert shape
+#     is body-agnostic (standard 0x02 + 4-byte key; the service UUID varies).
+camera:
+  manufacturer: FUJIFILM
+  model: Fujifilm camera
+
+# Connection-name convention mirrors gfx100ii:
+#   `app` = reference-app PTP/IP on :55740 (BLE -> camera Wi-Fi AP -> app joins).
+connections:
+  ble:
+    kind: ble
+    establishment: ble-pair    # family-defined mechanism (fuji/index.yaml)
+    discovery: { mechanism: ble, announces: camera }
+    # The BLE→WiFi-AP handover: family `ble-establish-wifi-ap` drives apState to
+    # bring the AP up, reads SSID + passphrase over GATT, the app joins, and the
+    # `app` connection becomes available. Body-agnostic (family establishment).
+    enables:
+      - to: app
+        mechanism: ble-establish-wifi-ap
+
+  app:
+    kind: ptpip-app                       # WiFi-AP path (camera hosts the AP; app joins)
+    establishment: ble-establish-wifi-ap   # BLE pairing brings up the camera AP, app joins + routes, then PTP-IP
+    # Connection-level host checkpoints for the reference app Wi-Fi-AP bring-up. These are
+    # the reference-app establishment flow, identical for every Fuji body — so
+    # they carry the SAME id@version + metadata as gfx100ii's `app` connection
+    # (validate_activity_metadata_consistency requires that agreement).
+    activities:
+      - id: camera.network.join-confirmation
+        version: 1
+        displayRole: joiningNetwork
+        defaultExpectedDurationMs: 15000
+        interactionRequired: true
+        hostCheckpoint: { name: networkJoinConfirmation }
+      - id: camera.network.associate
+        version: 1
+        displayRole: joiningNetwork
+        defaultExpectedDurationMs: 12000
+        interactionRequired: false
+        hostCheckpoint: { name: networkAssociation }
+      - id: camera.session.open.ap
+        version: 1
+        displayRole: openingSession
+        defaultExpectedDurationMs: 10000
+        interactionRequired: false
+        hostCheckpoint: { name: sessionOpen }
+    discovery: { mechanism: ble, announces: camera }

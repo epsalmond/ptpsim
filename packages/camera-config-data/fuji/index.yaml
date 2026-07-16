@@ -11,7 +11,11 @@
 
 #     § "Update 2026-05-26 (D3-wire): camera-side resize is controlled via BLE"
 #   - ptpsim#306 (X-A7 pairing-advert field captures, 2026-07-16)
-#     cameraInformation-as-pairing-marker + the xa7 model signature
+#     cameraInformation-as-pairing-marker (the fuji-generic baseline's legacy
+#     pairing signature)
+#   - ptpsim#264 (bonded GFX100 II awake/startup advert observations) — the
+#     reconnect-state shapes, generalized family-wide per the #311 baseline
+#     decision (see the fuji-generic block for the generalization scoping)
 #
 # Schema: plan docs/plans/ios-rewrite-p0-p1-ble-mvp.md §2.1 (BLE-only).
 # Loader: camera_config::ConfigStore::from_manufacturer_index.
@@ -797,20 +801,45 @@ models:
           style: "red"
         suggests: { connection: ble, confidence: high }
 
-  - id: xa7
-    displayName: "X-A7"
+  # FAMILY-BASELINE model (ptpsim#311). Declared LAST so file-declaration-order
+  # precedence (§11.7) keeps every specific model's signatures ahead of these
+  # name-guard-free family shapes. `fallback: true` marks it as the baseline;
+  # the closest-match suppression rule lives in ONE place — recognize_ble in
+  # crates/camera-protocol-ffi/src/mfg_index.rs — see the comment there. On its
+  # own — no specific model matched — a baseline signature yields a normal
+  # Candidate, so any never-seen Fuji body pairs and reaches the
+  # family-universal slice with zero shipping. Promotion = add a specific model
+  # ABOVE this one; ranking does the rest. Beta telemetry (camera_model =
+  # fuji-generic) tells us which real bodies ride the baseline.
+  #
+  # PERMANENCE: consumers persist saved cameras under this model id, and saved
+  # records are never re-keyed (client application saved-camera model). This model and
+  # its reconnect signatures must never be removed or renamed — a promoted
+  # body's OLD saved records keep reconnecting through the baseline.
+  #
+  # ORDERING INVARIANT: the reconnect-only (discoverable:false) signatures
+  # precede pairing discovery per §11.7 and match on services DISJOINT from the
+  # pairing shapes. A future signature here must keep that disjointness — the
+  # per-model walk stops at the first match, so a reconnect state that also
+  # matched a pairing-mode advert would make fresh bodies invisible.
+  #
+  # Evidence scoping: every Fuji body advertises and connects the same way
+  # (product decision, #311). The pairing shapes are multi-body evidenced
+  # (GFX100 II captures + X-A7 field captures #306 + the body-agnostic reference app RE
+  # §2 detection rules). The reconnect-state shapes are observed on GFX100 II
+  # only (#264) and generalized family-wide per the #311 decision — pending
+  # captures from other bonded bodies (#309 tracks gathering them).
+  - id: fuji-generic
+    displayName: "Fujifilm camera"
     inherits: [fuji]
-    manifest: xa7/xa7.yaml
+    manifest: fuji-generic/fuji-generic.yaml
+    fallback: true
 
-    # X-A7-generation pairing advert: standard legacy manufacturer data
-    # (0x02 + 4-byte LE pairing key) but the advertised service is
-    # cameraInformation, not fileTransfer (field capture 2026-07-16,
-    # ptpsim#306). The localName shape is `<shortSerial>X-A7-<shortSerial>`;
-    # requiring it keeps a same-service advert from another legacy body from
-    # forcing a multi-model Disambiguate. Reconnect/awake signatures are
-    # deliberately absent pending a bonded-body capture (#306 follow-up).
     signatures:
-      bleLegacyCameraInformationAdvert:
+      # --- reconnect states (bonded bodies), body-agnostic ---
+      # Specific reconnect signatures precede broad pairing discovery so normal
+      # recognition of a bonded body stops at a reconnect state (§11.7).
+      bleStartupLegacyAdvert:
         kind: bleAdvert
         require:
           all:
@@ -818,11 +847,128 @@ models:
                 companyId: "{ble.advert.manufacturerCompanyId}"
                 minLength: 5
                 assertByte: { index: 0, equals: 0x02 }
-            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
-            - localName: { contains: "X-A7-" }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraStartupInformation}" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+        scope:
+          style: "legacy"
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: wake
+          mechanism: ble-wake
+          identity: [pairingKeyBytes]
+
+      bleStartupRedAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 6
+                assertByte: { index: 0, equals: 0x01 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraStartupInformationRed}" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: shortSerial }
+        scope:
+          style: "red"
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: wake
+          mechanism: ble-wake
+          identity: [shortSerial]
+
+      bleAwakeRedAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 6
+                assertByte: { index: 0, equals: 0x01 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.connectedDeviceInformationRed}" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: shortSerial }
+        scope:
+          style: "red"
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: ready
+          mechanism: ble-reconnect
+          identity: [shortSerial]
+
+      bleAwakeLegacyAdvert:
+        kind: bleAdvert
+        # Idle bonded legacy bodies advertise SERVICE_FF_FILE_TRANSFER with no
+        # Fuji manufacturer data (#264). The gfx100ii sibling additionally keys
+        # on `localName contains "GFX100II-"`; the baseline cannot name a model,
+        # so it identifies on the body-agnostic facts alone: file-transfer
+        # service + NOT Fuji mfg-data. shortSerial is captured from the advert's
+        # `<shortSerial>...` name prefix.
+        require:
+          all:
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.fileTransfer}" }
+            - not:
+                manufacturerData:
+                  companyId: "{ble.advert.manufacturerCompanyId}"
+        capture:
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope:
+          style: "legacy"
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: ready
+          mechanism: ble-reconnect
+          identity: [shortSerial]
+
+      # --- pairing discovery, body-agnostic ---
+      # Legacy pairing: standard legacy mfg-data (0x02 + 4-byte LE key) with the
+      # advertised service being EITHER fileTransfer (GFX100 II generation) OR
+      # cameraInformation (X-A7 generation, ptpsim#306). One signature via an
+      # `any` combinator over the two services. NO localName guard — any Fuji
+      # body of either generation matches. shortSerial is captured (never
+      # required — an absent name skips the capture, the match still fires)
+      # from the factory `<shortSerial>MODEL-<shortSerial>` name prefix, the
+      # same best-effort capture the awake signature uses; the iOS persistence
+      # layer keys saved entries on it.
+      bleLegacyPairingAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 5
+                assertByte: { index: 0, equals: 0x02 }
+            - any:
+                - serviceUuids: { contains: "{ble.advert.serviceUuids.fileTransfer}" }
+                - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
         capture:
           - { source: manufacturerData, at: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
           - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
         scope:
           style: "legacy"
+        suggests: { connection: ble, confidence: high }
+
+      # RED pairing: Fuji company ID + 6-byte mfg-data payload, type byte 0x01,
+      # 5 ASCII bytes as the pairing key / short serial. Mirrors gfx100ii's
+      # bleRedAdvert WITHOUT any name/service requirement — so a real RED advert
+      # ties gfx100ii and the baseline; the closest-match ranking then drops the
+      # baseline and the specific model wins (proved in the seam tests).
+      bleRedPairingAdvert:
+        kind: bleAdvert
+        require:
+          manufacturerData:
+            companyId: "{ble.advert.manufacturerCompanyId}"
+            length: 6
+            assertByte: { index: 0, equals: 0x01 }
+        capture:
+          - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: pairingKeyBytes }
+          # Save under shortSerial too so the iOS persistence layer can key the
+          # saved entry by short serial without re-decoding (gfx100ii precedent).
+          - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: shortSerial }
+        scope:
+          style: "red"
         suggests: { connection: ble, confidence: high }

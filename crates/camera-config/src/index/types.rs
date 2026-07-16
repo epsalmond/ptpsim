@@ -53,6 +53,15 @@ pub struct IndexedModel {
     /// callers to know which body-yaml string to feed
     /// [`crate::ConfigStore::from_manufacturer_index`] for this model.
     pub manifest: PathBuf,
+    /// Family-baseline model marker (#311). A `fallback: true` model carries
+    /// the connection truth every body of the family shares: its signatures
+    /// are name-guard-free family shapes, so any unknown body recognizes
+    /// through it. Specific models refine the baseline and win by being more
+    /// specific — during ranking a non-fallback match suppresses all baseline
+    /// matches (see `recognize_ble`, the "most specific wins" rule). Declared
+    /// last so file-order precedence keeps specific signatures ahead of it.
+    #[serde(default)]
+    pub fallback: bool,
     /// Signatures kept as raw YAML values until the template-substitution
     /// pass runs — the typed Signature deserialize comes after that. Stored
     /// as a `Vec<(name, value)>` to preserve file-declaration order (§11.7).
@@ -1237,6 +1246,9 @@ pub enum Confidence {
 pub struct ModelView {
     pub id: String,
     pub display_name: String,
+    /// True for the family-baseline model (#311). Ranking suppresses baseline
+    /// matches whenever a more-specific model also matches.
+    pub fallback: bool,
     pub manifest_path: PathBuf,
     /// Merged family + model BLE block, with GATT names already resolved on
     /// every Step's `gatt:` field.

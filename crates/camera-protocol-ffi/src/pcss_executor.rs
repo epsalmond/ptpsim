@@ -533,6 +533,7 @@ mod tests {
         ModelView {
             id: id.into(),
             display_name: id.into(),
+            fallback: false,
             manifest_path: PathBuf::from(format!("{id}.yaml")),
             ble: None,
             pcss: Some(FamilyPcssBlock {

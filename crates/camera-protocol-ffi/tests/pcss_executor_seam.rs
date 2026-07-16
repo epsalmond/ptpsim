@@ -11,7 +11,8 @@ use ptp_core::{InitCommandAck, InitFail, PtpIpPacket};
 
 const INDEX: &str = include_str!("../../../packages/camera-config-data/fuji/index.yaml");
 const BODY: &str = include_str!("../../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml");
-const XA7_BODY: &str = include_str!("../../../packages/camera-config-data/fuji/xa7/xa7.yaml");
+const GENERIC_BODY: &str =
+    include_str!("../../../packages/camera-config-data/fuji/fuji-generic/fuji-generic.yaml");
 
 #[derive(Default)]
 struct State {
@@ -127,8 +128,8 @@ fn store() -> Arc<ConfigStore> {
                 value: BODY.into(),
             },
             KeyValue {
-                key: "xa7".into(),
-                value: XA7_BODY.into(),
+                key: "fuji-generic".into(),
+                value: GENERIC_BODY.into(),
             },
         ],
     )

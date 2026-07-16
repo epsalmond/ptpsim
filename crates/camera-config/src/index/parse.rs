@@ -130,6 +130,7 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
     Ok(ModelView {
         id: model.id.clone(),
         display_name: model.display_name.clone(),
+        fallback: model.fallback,
         manifest_path: model.manifest.clone(),
         ble,
         pcss,

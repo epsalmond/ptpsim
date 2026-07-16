@@ -3,7 +3,7 @@
 //! HERE ONLY — the loader requires a body per declared model, so adding a
 //! model to fuji/index.yaml means extending `real_fuji_bodies()` once instead
 //! of editing every test file (that hand-maintenance is how test call sites
-//! drifted when xa7 landed).
+//! drifted when a second model landed).
 #![allow(dead_code)]
 
 use camera_protocol_ffi::*;
@@ -26,8 +26,8 @@ pub fn real_fuji_bodies() -> Vec<KeyValue> {
             value: data("fuji/gfx100ii/gfx100ii.yaml"),
         },
         KeyValue {
-            key: "xa7".to_string(),
-            value: data("fuji/xa7/xa7.yaml"),
+            key: "fuji-generic".to_string(),
+            value: data("fuji/fuji-generic/fuji-generic.yaml"),
         },
     ]
 }

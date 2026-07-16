@@ -957,7 +957,7 @@ pub fn recognize_ble(
     // order. The MVP returns the FIRST matching signature; multi-model
     // disambiguation gets added when a second body matches the same family
     // signature.
-    let mut matches: Vec<(String, String, &ix::BleAdvertSignature)> = Vec::new();
+    let mut matches: Vec<(String, String, &ix::BleAdvertSignature, bool)> = Vec::new();
     for model in &index.models {
         for (_sig_name, sig) in &model.signatures {
             let ix::Signature::BleAdvert(ble_sig) = sig else {
@@ -967,7 +967,12 @@ pub fn recognize_ble(
                 continue;
             }
             if ble_sig.discoverable {
-                matches.push((model.id.clone(), model.display_name.clone(), ble_sig));
+                matches.push((
+                    model.id.clone(),
+                    model.display_name.clone(),
+                    ble_sig,
+                    model.fallback,
+                ));
             }
             // §11.7: first matching signature for THIS model wins; do not
             // fall through a reconnect-only state into a broader discovery
@@ -976,10 +981,27 @@ pub fn recognize_ble(
         }
     }
 
+    // Closest-match ranking (#311). fuji-generic is the FAMILY BASELINE: every
+    // Fuji body advertises and connects the same way, so matching any Fuji
+    // advert already means we know how to connect. A specific model is a
+    // refinement of that baseline and wins by being more specific — the same
+    // "most specific ... wins" principle (plan §11.18) already
+    // applies to value-profile selection, extended here to model matching.
+    //
+    // Mechanically: drop every baseline (`fallback`) match whenever a
+    // more-specific match is present, BEFORE the count decision — otherwise a
+    // co-matching baseline would demote a specific model's lone Candidate into
+    // a Disambiguate and break the consumer's discovery path (the app acts only
+    // on Candidate). A baseline-only match set is left untouched, so it behaves
+    // exactly as before: one baseline → Candidate, several → Disambiguate.
+    if matches.iter().any(|(_, _, _, fallback)| !fallback) {
+        matches.retain(|(_, _, _, fallback)| !fallback);
+    }
+
     match matches.len() {
         0 => Recognition::NoMatch,
         1 => {
-            let (model_id, _display, sig) = &matches[0];
+            let (model_id, _display, sig, _fallback) = &matches[0];
             let runtime_scope = ix::eval::advert_scope(sig, facts)
                 .into_iter()
                 .map(|(key, value)| KeyValue { key, value })
@@ -1004,7 +1026,7 @@ pub fn recognize_ble(
             // candidates (intersection of literal scopes). Mfg-data
             // captures vary per model, so they're left out of the
 
-            let intersection = intersect_scope(matches.iter().map(|(_, _, s)| *s));
+            let intersection = intersect_scope(matches.iter().map(|(_, _, s, _)| *s));
             let runtime_scope = intersection
                 .into_iter()
                 .map(|(k, v)| KeyValue { key: k, value: v })
@@ -1015,7 +1037,7 @@ pub fn recognize_ble(
             let family = index.manufacturer.to_lowercase();
             let candidates = matches
                 .iter()
-                .map(|(id, display, _)| ModelMatch {
+                .map(|(id, display, _, _)| ModelMatch {
                     model: id.clone(),
                     display_name: display.clone(),
                     connection_hint: None,

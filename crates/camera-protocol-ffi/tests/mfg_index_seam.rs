@@ -538,7 +538,8 @@ fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
 
 /// X-A7 pairing-mode advert, byte-for-byte from the 2026-07-16 field capture
 /// (ptpsim#306): legacy mfg-data shape but the advertised service is
-/// SERVICE_FF_CAMERA_INFORMATION, not SERVICE_FF_FILE_TRANSFER.
+/// SERVICE_FF_CAMERA_INFORMATION, not SERVICE_FF_FILE_TRANSFER. The X-A7 has no
+/// specific model anymore — it rides the family-baseline `fuji-generic` (#311).
 fn field_xa7_pairing_advert(local_name: Option<&str>) -> Observation {
     ble_advert(
         &["117C4142-EDD4-4C77-8696-DD18EEBB770A"],
@@ -549,7 +550,7 @@ fn field_xa7_pairing_advert(local_name: Option<&str>) -> Observation {
 }
 
 #[test]
-fn xa7_camera_information_advert_recognised_with_legacy_style() {
+fn xa7_camera_information_advert_rides_the_family_baseline() {
     let s = store();
     match s.recognize(field_xa7_pairing_advert(Some("1361X-A7-1361"))) {
         Recognition::Candidate {
@@ -559,7 +560,9 @@ fn xa7_camera_information_advert_recognised_with_legacy_style() {
             runtime_scope,
             ..
         } => {
-            assert_eq!(model, "xa7");
+            // No specific X-A7 model: the baseline recognizes it and pairing
+            // proceeds via the family ble-pair walk.
+            assert_eq!(model, "fuji-generic");
             assert_eq!(connection, "ble");
             assert!(matches!(confidence, Confidence::High));
             assert!(
@@ -574,6 +577,9 @@ fn xa7_camera_information_advert_recognised_with_legacy_style() {
                     .any(|kv| kv.key == "pairingKeyBytes" && kv.value == "095ee904"),
                 "scope: {runtime_scope:?}"
             );
+            // shortSerial is captured from the factory name prefix — the key
+            // the iOS persistence layer uses for saved entries (capture, not
+            // requirement; parity with the retired xa7 model's capture).
             assert!(
                 runtime_scope
                     .iter()
@@ -586,20 +592,126 @@ fn xa7_camera_information_advert_recognised_with_legacy_style() {
 }
 
 #[test]
-fn xa7_signature_requires_the_model_name_in_the_advert() {
+fn family_baseline_legacy_pairing_has_no_name_guard() {
     let s = store();
-    // Same service + mfg-data but a different (or absent) local name must not
-    // claim the xa7 identity: recognize() answers plain NoMatch (there is no
-    // diagnostic variant), leaving the unknown body to the consumer's own
-    // unrecognized-advert reporting rather than persisting a wrong model id.
-    assert!(matches!(
-        s.recognize(field_xa7_pairing_advert(Some("9999X-T30-9999"))),
-        Recognition::NoMatch
-    ));
-    assert!(matches!(
-        s.recognize(field_xa7_pairing_advert(None)),
-        Recognition::NoMatch
-    ));
+    // The baseline signature carries NO localName guard: the SAME advert with
+    // the name absent still recognizes as the baseline Candidate (unlike the
+    // retired xa7 model, which required "X-A7-" in the name).
+    match s.recognize(field_xa7_pairing_advert(None)) {
+        Recognition::Candidate {
+            model,
+            runtime_scope,
+            ..
+        } => {
+            assert_eq!(model, "fuji-generic");
+            assert!(
+                runtime_scope
+                    .iter()
+                    .any(|kv| kv.key == "pairingKeyBytes" && kv.value == "095ee904"),
+                "scope: {runtime_scope:?}"
+            );
+            // No name advertised → the shortSerial capture is simply skipped;
+            // the match itself is unaffected.
+            assert!(
+                !runtime_scope.iter().any(|kv| kv.key == "shortSerial"),
+                "scope: {runtime_scope:?}"
+            );
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn unknown_legacy_body_with_file_transfer_service_stays_a_single_candidate() {
+    let s = store();
+    // A never-seen legacy body advertising SERVICE_FF_FILE_TRANSFER matches
+    // gfx100ii's (name-guard-free) legacy pairing signature AND the baseline's.
+    // Closest-match ranking suppresses the baseline, so the result is a single
+    // Candidate — never a Disambiguate that would break discovery. gfx100ii is
+    // the closest specific model we ship for a legacy file-transfer advert; a
+    // genuinely baseline-only legacy body advertises cameraInformation instead
+    // (the X-A7 case, covered above).
+    let obs = ble_advert(
+        &["AF854C2E-B214-458E-97E2-912C4ECF2CB8"], // SERVICE_FF_FILE_TRANSFER
+        0x04D8,
+        &[0x02, 0x11, 0x22, 0x33, 0x44],
+        Some("1234GFX100S-1234"),
+    );
+    match s.recognize(obs) {
+        Recognition::Candidate { model, .. } => assert_eq!(model, "gfx100ii"),
+        other => panic!("expected a single Candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn specific_model_suppresses_the_baseline_on_a_legacy_pairing_advert() {
+    let s = store();
+    // The GFX100 II legacy pairing advert (file-transfer service + "GFX100 II"
+    // name) matches BOTH gfx100ii's bleLegacyAdvert AND the baseline's
+    // bleLegacyPairingAdvert. Closest-match ranking must drop the baseline and
+    // leave a single Candidate{gfx100ii} — NOT a Disambiguate (which would
+    // break the app's Candidate-only discovery path).
+    match s.recognize(synthetic_legacy_pairing_advert()) {
+        Recognition::Candidate { model, .. } => assert_eq!(model, "gfx100ii"),
+        other => panic!("expected Candidate{{gfx100ii}}, got {other:?}"),
+    }
+}
+
+#[test]
+fn specific_model_suppresses_the_baseline_on_a_red_pairing_advert() {
+    let s = store();
+    // A RED pairing advert (no service uuids, mfg 0x01 + 5 ASCII) matches
+    // gfx100ii's bleRedAdvert AND the baseline's bleRedPairingAdvert (both
+    // deliberately service/name-free). Suppression keeps it a single
+    // Candidate{gfx100ii}, not a Disambiguate.
+    match s.recognize(synthetic_red_pairing_advert()) {
+        Recognition::Candidate { model, .. } => assert_eq!(model, "gfx100ii"),
+        other => panic!("expected Candidate{{gfx100ii}}, got {other:?}"),
+    }
+}
+
+#[test]
+fn baseline_reconnect_routes_wake_and_ready() {
+    let s = store();
+    // The family-baseline model carries the same four reconnect signatures as a
+    // specific model, body-agnostically. reconnect_decision is model-keyed, so
+    // a saved body promoted to `fuji-generic` reconnects through them.
+    assert_eq!(
+        s.reconnect_policy("fuji-generic".into())
+            .unwrap()
+            .scan_timeout_ms,
+        60_000
+    );
+
+    // Legacy startup advert → wake (mechanism ble-wake).
+    let legacy_scope = vec![KeyValue {
+        key: "pairingKeyBytes".into(),
+        value: "44732a80".into(),
+    }];
+    match s.reconnect_decision(
+        "fuji-generic".into(),
+        synthetic_legacy_startup_advert(),
+        legacy_scope,
+    ) {
+        ReconnectDecision::Wake { plan, .. } => {
+            assert_eq!(plan.plan_handle, "fuji-generic:ble-wake");
+            assert_eq!(plan.mechanism, "ble-wake");
+        }
+        other => panic!("expected Wake, got {other:?}"),
+    }
+
+    // Awake red advert → ready (mechanism ble-reconnect).
+    let red_scope = vec![KeyValue {
+        key: "shortSerial".into(),
+        value: "ABCDE".into(),
+    }];
+    match s.reconnect_decision("fuji-generic".into(), synthetic_red_advert(), red_scope) {
+        ReconnectDecision::Ready { plan, .. } => {
+            assert_eq!(plan.plan_handle, "fuji-generic:ble-reconnect");
+            assert_eq!(plan.mechanism, "ble-reconnect");
+        }
+        other => panic!("expected Ready, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1537,6 +1649,133 @@ models:
 }
 
 // ---------------------------------------------------------------------------
+// #311 family-baseline ranking, on a synthetic index (one specific + one
+// baseline model) so the closest-match rule is exercised in isolation from the
+// real Fuji data.
+// ---------------------------------------------------------------------------
+
+/// A synthetic index whose specific model `tm1` and baseline model `tm-generic`
+/// (fallback: true, declared last) BOTH match the same advert shape (service
+/// `DE00` + Fuji-style company id). The baseline's signature has no name guard.
+fn baseline_ranking_index() -> std::sync::Arc<ConfigStore> {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: { manufacturerCompanyId: 1 }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.connect
+              version: 1
+              displayRole: connecting
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+          steps: [ { bleConnect: {} } ]
+models:
+  - id: tm1
+    displayName: "Test One"
+    inherits: [test]
+    manifest: tm1.yaml
+    signatures:
+      specific:
+        kind: bleAdvert
+        require:
+          all:
+            - serviceUuids: { contains: "0000DE00-3DD4-4255-8D62-6DC7B9BD5561" }
+            - localName: { contains: "ONE" }
+        scope: { model: "one" }
+        suggests: { connection: ble, confidence: high }
+  - id: tm-generic
+    displayName: "Test camera"
+    inherits: [test]
+    manifest: tmg.yaml
+    fallback: true
+    signatures:
+      baseline:
+        kind: bleAdvert
+        require:
+          serviceUuids: { contains: "0000DE00-3DD4-4255-8D62-6DC7B9BD5561" }
+        scope: { model: "generic" }
+        suggests: { connection: ble, confidence: high }
+"#;
+    let body = |model: &str| {
+        format!(
+            "schema: camera-config/v1\ncamera:\n  manufacturer: TESTCO\n  model: {model}\nconnections:\n  ble:\n    kind: ble\n    establishment: test\n"
+        )
+    };
+    ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![
+            KeyValue {
+                key: "tm1".to_string(),
+                value: body("TM1"),
+            },
+            KeyValue {
+                key: "tm-generic".to_string(),
+                value: body("Test camera"),
+            },
+        ],
+    )
+    .expect("synthetic baseline index loads")
+}
+
+fn de00_advert(local_name: Option<&str>) -> Observation {
+    Observation::BleAdvert {
+        service_uuids: vec!["0000de00-3dd4-4255-8d62-6dc7b9bd5561".to_string()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: local_name.map(String::from),
+        tx_power: None,
+        ad_records: vec![],
+    }
+}
+
+#[test]
+fn specific_match_suppresses_the_baseline_leaving_one_candidate() {
+    let s = baseline_ranking_index();
+    // Both models match this advert; the specific model must win as a single
+    // Candidate, NEVER a Disambiguate.
+    match s.recognize(de00_advert(Some("MODEL-ONE-42"))) {
+        Recognition::Candidate {
+            model,
+            runtime_scope,
+            ..
+        } => {
+            assert_eq!(model, "tm1");
+            assert!(runtime_scope
+                .iter()
+                .any(|kv| kv.key == "model" && kv.value == "one"));
+        }
+        other => panic!("expected Candidate{{tm1}}, got {other:?}"),
+    }
+}
+
+#[test]
+fn baseline_only_match_is_a_plain_candidate() {
+    let s = baseline_ranking_index();
+    // No specific model matches (name lacks "ONE"): the baseline alone matches,
+    // so it behaves exactly as a normal single-model match → Candidate.
+    match s.recognize(de00_advert(Some("SOMEBODY-ELSE"))) {
+        Recognition::Candidate {
+            model,
+            runtime_scope,
+            ..
+        } => {
+            assert_eq!(model, "tm-generic");
+            assert!(runtime_scope
+                .iter()
+                .any(|kv| kv.key == "model" && kv.value == "generic"));
+        }
+        other => panic!("expected Candidate{{tm-generic}}, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Phase 1 preliminary vendor recognition (Sony / Canon / Nikon) — synthetic
 // adverts derived from the 2026-06-10 APK static passes. These prove the
 // shipped data files load and the predicate model evaluates them; they do
@@ -1830,7 +2069,10 @@ fn index_model_refs_enumerates_declared_models_in_order() {
         pairs,
         vec![
             ("gfx100ii".to_string(), "gfx100ii/gfx100ii.yaml".to_string()),
-            ("xa7".to_string(), "xa7/xa7.yaml".to_string()),
+            (
+                "fuji-generic".to_string(),
+                "fuji-generic/fuji-generic.yaml".to_string(),
+            ),
         ]
     );
 }
