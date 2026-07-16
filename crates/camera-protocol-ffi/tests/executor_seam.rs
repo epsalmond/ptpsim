@@ -21,6 +21,8 @@ use camera_protocol_ffi::{
 use camera_sim::{BleEvent, BleResponder};
 use futures::executor::block_on;
 
+mod common;
+
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/camera-config-data")
@@ -29,14 +31,7 @@ fn data(rel: &str) -> String {
 }
 
 fn store() -> Arc<ConfigStore> {
-    ConfigStore::from_manufacturer_index(
-        data("fuji/index.yaml"),
-        vec![KeyValue {
-            key: "gfx100ii".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
-        }],
-    )
-    .expect("manufacturer index loads")
+    common::real_fuji_store()
 }
 
 fn poll_timeout_store() -> Arc<ConfigStore> {

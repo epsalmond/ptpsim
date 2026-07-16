@@ -28,6 +28,14 @@ fn real_index() -> ResolvedManufacturerIndex {
     ResolvedManufacturerIndex::from_yaml(&data("fuji/index.yaml")).expect("fuji/index.yaml loads")
 }
 
+/// Every body the real Fuji index declares — extend here when a model lands.
+fn real_fuji_bodies() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("gfx100ii".to_string(), data("fuji/gfx100ii/gfx100ii.yaml")),
+        ("xa7".to_string(), data("fuji/xa7/xa7.yaml")),
+    ])
+}
+
 fn store_for(vendor: &str, model_id: &str) -> std::sync::Arc<ConfigStore> {
     let mut bodies = BTreeMap::new();
     bodies.insert(
@@ -46,7 +54,7 @@ fn reestablishment_bindings_must_match_the_resolved_plan() {
         "params: { wrongLaunchMode: \"3\" }",
     );
     assert_ne!(body, original, "fixture replacement must find the binding");
-    let mut bodies = BTreeMap::new();
+    let mut bodies = real_fuji_bodies();
     bodies.insert("gfx100ii".to_string(), body);
     let error = ConfigStore::from_manufacturer_index(&data("fuji/index.yaml"), bodies)
         .expect_err("mismatched establishment parameters must fail store loading");
@@ -550,17 +558,20 @@ models:
 
 #[test]
 fn config_store_loads_real_fuji_index_with_real_body() {
-    let mut bodies = BTreeMap::new();
-    bodies.insert("gfx100ii".to_string(), data("fuji/gfx100ii/gfx100ii.yaml"));
-    let store =
-        ConfigStore::from_manufacturer_index(&data("fuji/index.yaml"), bodies).expect("loads");
+    let store = ConfigStore::from_manufacturer_index(&data("fuji/index.yaml"), real_fuji_bodies())
+        .expect("loads");
     let index = store.index.as_ref().expect("index populated");
     assert_eq!(index.manufacturer, "FUJIFILM");
-    assert_eq!(index.models.len(), 1);
+    assert_eq!(index.models.len(), 2);
     assert_eq!(index.models[0].id, "gfx100ii");
+    assert_eq!(index.models[1].id, "xa7");
     // Body lookup works.
     let body = store.body("gfx100ii").expect("body present");
     assert_eq!(body.camera.model, "GFX100 II");
+    assert_eq!(
+        store.body("xa7").expect("body present").camera.model,
+        "X-A7"
+    );
     // Primary manifest is the first model's body.
     assert_eq!(store.manifest.camera.model, "GFX100 II");
 }
@@ -1938,9 +1949,7 @@ connections:
         "defaultExpectedDurationMs: 4001",
         1,
     );
-    let mut bodies = BTreeMap::new();
-    bodies.insert("gfx100ii".into(), data("fuji/gfx100ii/gfx100ii.yaml"));
-    let error = ConfigStore::from_manufacturer_index(&index, bodies)
+    let error = ConfigStore::from_manufacturer_index(&index, real_fuji_bodies())
         .expect_err("repeated id/version metadata must agree");
     assert!(error.to_string().contains("metadata differs"));
 }

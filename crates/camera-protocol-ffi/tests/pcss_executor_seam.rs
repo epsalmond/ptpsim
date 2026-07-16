@@ -11,6 +11,7 @@ use ptp_core::{InitCommandAck, InitFail, PtpIpPacket};
 
 const INDEX: &str = include_str!("../../../packages/camera-config-data/fuji/index.yaml");
 const BODY: &str = include_str!("../../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml");
+const XA7_BODY: &str = include_str!("../../../packages/camera-config-data/fuji/xa7/xa7.yaml");
 
 #[derive(Default)]
 struct State {
@@ -120,10 +121,16 @@ impl PcssExecutorTransport for FakeTransport {
 fn store() -> Arc<ConfigStore> {
     ConfigStore::from_manufacturer_index(
         INDEX.into(),
-        vec![KeyValue {
-            key: "gfx100ii".into(),
-            value: BODY.into(),
-        }],
+        vec![
+            KeyValue {
+                key: "gfx100ii".into(),
+                value: BODY.into(),
+            },
+            KeyValue {
+                key: "xa7".into(),
+                value: XA7_BODY.into(),
+            },
+        ],
     )
     .unwrap()
 }

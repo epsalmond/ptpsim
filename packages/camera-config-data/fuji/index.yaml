@@ -10,6 +10,8 @@
 
 
 #     § "Update 2026-05-26 (D3-wire): camera-side resize is controlled via BLE"
+#   - ptpsim#306 (X-A7 pairing-advert field captures, 2026-07-16)
+#     cameraInformation-as-pairing-marker + the xa7 model signature
 #
 # Schema: plan docs/plans/ios-rewrite-p0-p1-ble-mvp.md §2.1 (BLE-only).
 # Loader: camera_config::ConfigStore::from_manufacturer_index.
@@ -117,6 +119,11 @@ families:
           # SERVICE_FF_FILE_TRANSFER — presence in the advert's service-UUID
           # list classifies the advert as LEGACY style (READ_THIS_FIRST §2).
           fileTransfer: "AF854C2E-B214-458E-97E2-912C4ECF2CB8"
+          # SERVICE_FF_CAMERA_INFORMATION — the X-A7 generation advertises
+          # this INSTEAD of fileTransfer in pairing mode (manufacturer data
+          # is standard legacy 0x02 + 4-byte key), so here it doubles as
+          # that generation's pairing-discovery marker.
+          cameraInformation: "117C4142-EDD4-4C77-8696-DD18EEBB770A"
           connectedDeviceInformationRed: "123D8F06-62A1-4935-9322-833C531EE225"
           cameraStartupInformation: "731893F9-744E-4899-B7E3-174106FF2B82"
           cameraStartupInformationRed: "804DAA8E-FFEB-4AB3-8E75-6EDD7303208D"
@@ -788,4 +795,34 @@ models:
           - { source: manufacturerData, at: 1, length: 5, encoding: ascii, name: shortSerial }
         scope:
           style: "red"
+        suggests: { connection: ble, confidence: high }
+
+  - id: xa7
+    displayName: "X-A7"
+    inherits: [fuji]
+    manifest: xa7/xa7.yaml
+
+    # X-A7-generation pairing advert: standard legacy manufacturer data
+    # (0x02 + 4-byte LE pairing key) but the advertised service is
+    # cameraInformation, not fileTransfer (field capture 2026-07-16,
+    # ptpsim#306). The localName shape is `<shortSerial>X-A7-<shortSerial>`;
+    # requiring it keeps a same-service advert from another legacy body from
+    # forcing a multi-model Disambiguate. Reconnect/awake signatures are
+    # deliberately absent pending a bonded-body capture (#306 follow-up).
+    signatures:
+      bleLegacyCameraInformationAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 5
+                assertByte: { index: 0, equals: 0x02 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
+            - localName: { contains: "X-A7-" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope:
+          style: "legacy"
         suggests: { connection: ble, confidence: high }

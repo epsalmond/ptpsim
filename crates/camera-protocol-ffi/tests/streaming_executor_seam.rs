@@ -1,32 +1,18 @@
 use std::collections::VecDeque;
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use camera_protocol_ffi::{
-    run_streaming_action, ActionVerb, ConfigStore, KeyValue, PtpRuntimeValue, PtpStreamingError,
+    run_streaming_action, ActionVerb, ConfigStore, PtpRuntimeValue, PtpStreamingError,
     PtpStreamingSink, PtpStreamingSinkError, PtpStreamingTransport, PtpTransportError,
 };
 use futures::executor::block_on;
 
-fn data(rel: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/camera-config-data")
-        .join(rel);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
-}
+mod common;
 
 fn store() -> Arc<ConfigStore> {
-    ConfigStore::from_manufacturer_index(
-        data("fuji/index.yaml"),
-        vec![KeyValue {
-            key: "gfx100ii".into(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
-        }],
-    )
-    .expect("store loads")
+    common::real_fuji_store()
 }
 
 struct Transport {

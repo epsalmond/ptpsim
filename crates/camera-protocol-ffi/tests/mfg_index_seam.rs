@@ -6,6 +6,8 @@
 use camera_protocol_ffi::*;
 use std::path::PathBuf;
 
+mod common;
+
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/camera-config-data")
@@ -14,14 +16,7 @@ fn data(rel: &str) -> String {
 }
 
 fn store() -> std::sync::Arc<ConfigStore> {
-    ConfigStore::from_manufacturer_index(
-        data("fuji/index.yaml"),
-        vec![KeyValue {
-            key: "gfx100ii".to_string(),
-            value: data("fuji/gfx100ii/gfx100ii.yaml"),
-        }],
-    )
-    .expect("manufacturer index loads")
+    common::real_fuji_store()
 }
 
 /// Minimal body manifest for the synthetic `tm1` model used by the inline-index
@@ -539,6 +534,72 @@ fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
         }
         other => panic!("expected Candidate, got {other:?}"),
     }
+}
+
+/// X-A7 pairing-mode advert, byte-for-byte from the 2026-07-16 field capture
+/// (ptpsim#306): legacy mfg-data shape but the advertised service is
+/// SERVICE_FF_CAMERA_INFORMATION, not SERVICE_FF_FILE_TRANSFER.
+fn field_xa7_pairing_advert(local_name: Option<&str>) -> Observation {
+    ble_advert(
+        &["117C4142-EDD4-4C77-8696-DD18EEBB770A"],
+        0x04D8,
+        &[0x02, 0x09, 0x5E, 0xE9, 0x04],
+        local_name,
+    )
+}
+
+#[test]
+fn xa7_camera_information_advert_recognised_with_legacy_style() {
+    let s = store();
+    match s.recognize(field_xa7_pairing_advert(Some("1361X-A7-1361"))) {
+        Recognition::Candidate {
+            model,
+            connection,
+            confidence,
+            runtime_scope,
+            ..
+        } => {
+            assert_eq!(model, "xa7");
+            assert_eq!(connection, "ble");
+            assert!(matches!(confidence, Confidence::High));
+            assert!(
+                runtime_scope
+                    .iter()
+                    .any(|kv| kv.key == "style" && kv.value == "legacy"),
+                "scope: {runtime_scope:?}"
+            );
+            assert!(
+                runtime_scope
+                    .iter()
+                    .any(|kv| kv.key == "pairingKeyBytes" && kv.value == "095ee904"),
+                "scope: {runtime_scope:?}"
+            );
+            assert!(
+                runtime_scope
+                    .iter()
+                    .any(|kv| kv.key == "shortSerial" && kv.value == "1361"),
+                "scope: {runtime_scope:?}"
+            );
+        }
+        other => panic!("expected Candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn xa7_signature_requires_the_model_name_in_the_advert() {
+    let s = store();
+    // Same service + mfg-data but a different (or absent) local name must not
+    // claim the xa7 identity: recognize() answers plain NoMatch (there is no
+    // diagnostic variant), leaving the unknown body to the consumer's own
+    // unrecognized-advert reporting rather than persisting a wrong model id.
+    assert!(matches!(
+        s.recognize(field_xa7_pairing_advert(Some("9999X-T30-9999"))),
+        Recognition::NoMatch
+    ));
+    assert!(matches!(
+        s.recognize(field_xa7_pairing_advert(None)),
+        Recognition::NoMatch
+    ));
 }
 
 #[test]

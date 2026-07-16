@@ -14,13 +14,14 @@ use camera_protocol_ffi::{
     run_action, run_mode_entry, run_mode_reestablishment_exit, run_selected_object_preparation,
     ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityFailure,
     ConnectionActivityObserver, ConnectionActivityRetry, ConnectionActivityTerminalSummary,
-    ExecutorStepFailureKind, KeyValue, PtpExecutorError, PtpExecutorTransport, PtpFraming,
-    PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError, SocketRole, StepObserver,
-    StepOutcome, StepReport,
+    ExecutorStepFailureKind, PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpRuntimeValue,
+    PtpSessionOpenResult, PtpTransportError, SocketRole, StepObserver, StepOutcome, StepReport,
 };
 use camera_sim::{Engine, Fault, Reply};
 use futures::executor::block_on;
 use ptp_core::{OperationRequest, PtpCodec, PtpIpPacket};
+
+mod common;
 
 fn data(rel: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -147,11 +148,8 @@ fn store_with_composite_poll_action() -> Arc<ConfigStore> {
 
 fn store_from_body(body: String) -> Arc<ConfigStore> {
     ConfigStore::from_manufacturer_index(
-        data("fuji/index.yaml"),
-        vec![KeyValue {
-            key: "gfx100ii".into(),
-            value: body,
-        }],
+        common::data("fuji/index.yaml"),
+        common::real_fuji_bodies_with("gfx100ii", body),
     )
     .expect("GFX store loads")
 }
