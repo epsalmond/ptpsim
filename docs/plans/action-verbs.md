@@ -42,9 +42,12 @@ Camera state before and after is `shooting/stills`. This isn't a mode entry
 
 The `handle` is a **runtime value** the client gets from `0x1007`'s response.
 ptpsim's existing `StepParam::Runtime { runtime: "<slot>" }` covers this for
-*entries* (`runtime: openCaptureTxId` is precedent for `0x1018` in the `app`
-→ image-transfer entry) — but `entries` calls the sequence by mode, not by
-name. There's nowhere to put a parameterized `getObject(handle)` recipe today.
+*entries*. On the reference app `app` connection, `0x101c` captures its allocated
+transaction ID as `openCaptureTxId` and the later `0x1018` consumes that slot.
+The PCSS stop shape is deliberately different: `0x1018(1)` uses a
+connection-specific literal, not the start transaction ID. `entries` still
+calls a sequence by mode rather than by name, so there was nowhere to put a
+parameterized `getObject(handle)` recipe.
 
 The same gap exists implicitly on the `app` connection (`0x100E` shutter,
 plus the `0x9054/9055/9050/9053` vendor block during image-transfer); for now
@@ -127,7 +130,7 @@ connections:
         triggers:                   # 1-3 images per press (JPEG / HEIF / RAW)
           - objectsAvailable: { min: 1, max: 3 }
       enumerateObjects:
-        mode: image-transfer
+        mode: ""                       # also valid while PCSS live view is open
         steps:
           - { sendOp: "0x1007", params: [0xffffffff, 0] }
         # Action return value is the decoded response; client iterates it
@@ -161,8 +164,8 @@ connections:
   Plan`).
 - Parameterized verbs are first-class via `params:` (caller binds; engine
   emits).
-- Step grammar already supports `runtime:`-bound params for `0x1018` —
-  reused unchanged.
+- Step grammar already supports captured transaction IDs and `runtime:`-bound
+  params for the reference app `0x1018`; PCSS retains its separately evidenced literal.
 - Same pattern works retroactively for the `app` connection's `0x100E`
   shutter + the reference app vendor-prime block.
 
@@ -186,7 +189,8 @@ name.
 
 1. **Schema (`crates/camera-config/src/model.rs`)**:
    - `pub enum ActionVerb { Shutter, EnumerateObjects, GetObjectInfo, GetThumb,
-     GetObject, DeleteObject, Keepalive, ... }` — **closed vocabulary**. New
+     GetObject, DeleteObject, StartLiveView, PollLiveView, StopLiveView,
+     Keepalive, ... }` — **closed vocabulary**. New
      verbs require a schema PR (same fail-fast as Step verbs).
    - `pub struct ActionEffect` — flat struct mirroring the `Step` pattern
      (one optional field per variant, `deny_unknown_fields`). Fields:
@@ -200,11 +204,11 @@ name.
    - `CameraManifest::action(connection, verb)` query method returning
      `Option<&Action>`.
 2. **Data (`packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml`)**:
-   - `wireless-tether.actions.{shutter, keepalive, enumerateObjects,
-     getObjectInfo, getThumb, getObject, deleteObject}` per the wire-confirmed
-     D3 sequences. `keepalive` is one caller-scheduled loop iteration; cadence
-     is intentionally not modeled because captures show bursts and variable
-     intervals.
+   - `wireless-tether.actions.{startLiveView, pollLiveView, stopLiveView,
+     shutter, keepalive, enumerateObjects, getObjectInfo, getThumb, getObject,
+     deleteObject}` per the wire-confirmed D3 sequences. `keepalive` is one
+     caller-scheduled loop iteration; cadence is intentionally not modeled
+     because captures show bursts and variable intervals.
    - `shutter.triggers: [{ objectsAvailable: { min: 1, max: 3 } }]` on
      wireless-tether — the camera makes 1-3 objects available depending on
      the user's JPEG / HEIF / RAW format selection.

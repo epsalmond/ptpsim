@@ -320,6 +320,7 @@ operations:
     handler: null
     property: null
     modes:
+    - shooting/stills
     - image-transfer
     connections:
     - wireless-tether
@@ -581,11 +582,13 @@ operations:
     - shooting
     connections:
     - app
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
     - iosStartupSeq
+    - wirePCSSShootDownload20260523
   '0x101b':
     name: GetPartialObject
     owner: standard-ptp
@@ -617,11 +620,13 @@ operations:
     - shooting
     connections:
     - app
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
     - iosStartupSeq
+    - wirePCSSShootDownload20260523
   '0x900c':
     name: SendRawFromPcObjectInfo
     owner: fuji-vendor
@@ -3433,10 +3438,11 @@ properties:
     evidence:
     - activeProbe
   '0xd1bc':
-    name: raw_0xd1bc
+    name: pcssLiveViewSelector
     ptpName: null
     type: u16
     access: readWrite
+    kind: scaffold
     descriptor:
       form: enum
       values:
@@ -3445,7 +3451,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - activeProbe
+    - wirePCSSShootDownload20260523
   '0xd1bd':
     name: raw_0xd1bd
     ptpName: null
@@ -6967,6 +6973,9 @@ connections:
         closeSession: null
         value: null
         params: []
+        captures:
+        - bind: openCaptureTxId
+          as: transactionId
         tolerant: false
         repeat: 1
         awaitUntil: null
@@ -7060,6 +7069,9 @@ connections:
         closeSession: null
         value: null
         params: []
+        captures:
+        - bind: openCaptureTxId
+          as: transactionId
         tolerant: false
         repeat: 1
         awaitUntil: null
@@ -8086,7 +8098,13 @@ connections:
       interactionRequired: false
       hostCheckpoint:
         name: sessionOpen
-    init: null
+    init:
+      identity:
+        guid: initiatorGuid
+        friendlyName: initFriendlyName
+      nameFieldByteCount: 0
+      tail: null
+      tailEvidence: null
     initShape: pcssKnock
     liveViewDelivery:
       kind: poll
@@ -8105,6 +8123,12 @@ connections:
       callbackPort: 51560
       knockPort: 51562
       protocol: PCSS/1.0
+      discoveryTargets:
+        default: subnetBroadcast
+        supported:
+        - subnetBroadcast
+        - explicitUnicast
+        retryDiscoveredUnicast: true
       retryIntervalMs: 1000
       maxAttempts: 15
       connectTimeoutMs: 5000
@@ -8242,7 +8266,7 @@ connections:
         evidence:
         - wirePCSSShootDownload20260523
       enumerateObjects:
-        mode: image-transfer
+        mode: ''
         params: []
         steps:
         - setProp: null
@@ -8368,6 +8392,95 @@ connections:
         triggers: []
         evidence:
         - wireTetherCaps20260527
+      startLiveView:
+        mode: shooting/stills
+        params: []
+        steps:
+        - setProp: '0xd1bc'
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: 2
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x101c'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params:
+          - 0
+          - 0
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        activities: []
+        triggers: []
+        evidence:
+        - wirePCSSShootDownload20260523
+      pollLiveView:
+        mode: shooting/stills
+        params: []
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: null
+          reopenSession: null
+          closeSession: null
+          value: null
+          params: []
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+          retry:
+            steps:
+            - setProp: null
+              getProp: null
+              readEcho: null
+              sendOp: '0x9018'
+              reopenSession: null
+              closeSession: null
+              value: null
+              params: []
+              tolerant: false
+              repeat: 1
+              awaitUntil: null
+            whenResponseCodes:
+            - '0x2002'
+            maxAttempts: 10
+            retryDelayMs: 100
+        activities: []
+        triggers: []
+        evidence:
+        - wireTether
+        - wirePCSSShootDownload20260523
+      stopLiveView:
+        mode: shooting/stills
+        params: []
+        steps:
+        - setProp: null
+          getProp: null
+          readEcho: null
+          sendOp: '0x1018'
+          reopenSession: null
+          closeSession: null
+          value: null
+          params:
+          - 1
+          tolerant: false
+          repeat: 1
+          awaitUntil: null
+        activities: []
+        triggers: []
+        evidence:
+        - wirePCSSShootDownload20260523
       keepalive:
         mode: ''
         params: []

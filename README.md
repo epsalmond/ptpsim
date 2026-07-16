@@ -10,6 +10,9 @@ See [`DESIGN.md`](DESIGN.md) for the full design.
 The deployable `camera-sim-service` container contract is documented in
 [`docs/CONTAINER.md`](docs/CONTAINER.md).
 
+The headless real-camera workflow is documented in
+[`docs/REAL_CAMERA_PTPIP.md`](docs/REAL_CAMERA_PTPIP.md).
+
 ## Layout
 
 ```
@@ -23,6 +26,7 @@ crates/
 services/
   camera-sim-service    tokio service: PTP listeners + control HTTP
 tools/
+  camera-initiator      headless real-camera PTP/IP probe over the shipping engine
   camera-simctl         CLI over the control API
   camera-sim-tui        colorful terminal operator console over the control API
 packages/

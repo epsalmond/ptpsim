@@ -16,6 +16,14 @@ use ptp_core::Writer;
 const INIT_COMMAND_REQUEST: u32 = 1;
 const INIT_COMMAND_ACK: u32 = 2;
 const NAME_FIELD_BYTES: usize = 26;
+const APP_INIT_BYTES: usize = 82;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppInit {
+    pub initiator_guid: [u8; 16],
+    pub friendly_name: String,
+    pub tail: Vec<u8>,
+}
 
 /// Build the InitCommandRequest packet. `guid` must be 16 bytes; `tail` is the
 /// manifest-supplied trailer (28 bytes for the GFX, but length is not enforced —
@@ -41,6 +49,52 @@ pub fn build_app_init(
     pkt.u32(INIT_COMMAND_REQUEST);
     pkt.bytes(&payload);
     Ok(pkt.into_vec())
+}
+
+/// Parse the fixed-field reference app request without treating it as the variable-length
+/// standard PTP/IP InitCommandRequest.
+pub fn parse_app_init(packet: &[u8]) -> Result<AppInit, FramingError> {
+    if packet.len() != APP_INIT_BYTES {
+        return Err(FramingError::InitRequest(format!(
+            "length {} != {APP_INIT_BYTES}",
+            packet.len()
+        )));
+    }
+    let declared = u32::from_le_bytes(packet[0..4].try_into().unwrap()) as usize;
+    let typ = u32::from_le_bytes(packet[4..8].try_into().unwrap());
+    if declared != packet.len() {
+        return Err(FramingError::InitRequest(format!(
+            "declared length {declared} != actual {}",
+            packet.len()
+        )));
+    }
+    if typ != INIT_COMMAND_REQUEST {
+        return Err(FramingError::InitRequest(format!(
+            "type {typ} is not Init_Command_Request ({INIT_COMMAND_REQUEST})"
+        )));
+    }
+    if packet[24..28] != [0; 4] {
+        return Err(FramingError::InitRequest(
+            "reserved identity word is non-zero".into(),
+        ));
+    }
+    let mut initiator_guid = [0u8; 16];
+    initiator_guid.copy_from_slice(&packet[8..24]);
+    let mut units = Vec::new();
+    for pair in packet[28..54].chunks_exact(2) {
+        let unit = u16::from_le_bytes([pair[0], pair[1]]);
+        if unit == 0 {
+            break;
+        }
+        units.push(unit);
+    }
+    let friendly_name = String::from_utf16(&units)
+        .map_err(|_| FramingError::InitRequest("friendly name is not UTF-16LE".into()))?;
+    Ok(AppInit {
+        initiator_guid,
+        friendly_name,
+        tail: packet[54..].to_vec(),
+    })
 }
 
 /// The 26-byte name field: UTF-16LE + NUL, truncated or zero-padded to fit.
@@ -118,6 +172,24 @@ mod tests {
         assert_eq!(&pkt[52..54], &[0, 0]); // NUL terminator
                                            // Tail (28).
         assert_eq!(&pkt[54..82], &TAIL);
+        assert_eq!(
+            parse_app_init(&pkt).unwrap(),
+            AppInit {
+                initiator_guid: GUID,
+                friendly_name: "Pixel-6-4976".into(),
+                tail: TAIL.to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn parser_requires_the_fixed_82_byte_shape() {
+        let mut packet = build_app_init(&GUID, "probe", &TAIL).unwrap();
+        packet.pop();
+        assert!(matches!(
+            parse_app_init(&packet),
+            Err(FramingError::InitRequest(message)) if message.contains("length 81 != 82")
+        ));
     }
 
     #[test]

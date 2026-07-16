@@ -11,10 +11,11 @@ use std::task::{Context, Poll};
 use camera_config::CameraManifest;
 use camera_media_store::{MediaStore, ObjectQuery};
 use camera_protocol_ffi::{
-    run_action, run_mode_entry, run_mode_reestablishment_exit, run_selected_object_preparation,
-    ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityFailure,
-    ConnectionActivityObserver, ConnectionActivityRetry, ConnectionActivityTerminalSummary,
-    ExecutorStepFailureKind, PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpRuntimeValue,
+    run_action, run_action_to_sink, run_mode_entry, run_mode_reestablishment_exit,
+    run_selected_object_preparation, ActionVerb, ConfigStore, ConnectionActivityEvent,
+    ConnectionActivityFailure, ConnectionActivityObserver, ConnectionActivityRetry,
+    ConnectionActivityTerminalSummary, ExecutorStepFailureKind, PtpDataOutput, PtpDataOutputSink,
+    PtpDataOutputSinkError, PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpRuntimeValue,
     PtpSessionOpenResult, PtpTransportError, SocketRole, StepObserver, StepOutcome, StepReport,
 };
 use camera_sim::{Engine, Fault, Reply};
@@ -198,6 +199,32 @@ struct Reports(Mutex<Vec<StepReport>>);
 impl StepObserver for Reports {
     fn on_step(&self, report: StepReport) {
         self.0.lock().expect("reports").push(report);
+    }
+}
+
+#[derive(Default)]
+struct RecordingSink(Mutex<Vec<PtpDataOutput>>);
+
+#[async_trait::async_trait]
+impl PtpDataOutputSink for RecordingSink {
+    async fn write(&self, output: PtpDataOutput) -> Result<(), PtpDataOutputSinkError> {
+        self.0.lock().expect("sink outputs").push(output);
+        Ok(())
+    }
+}
+
+struct FailOnceSink(AtomicBool);
+
+#[async_trait::async_trait]
+impl PtpDataOutputSink for FailOnceSink {
+    async fn write(&self, _output: PtpDataOutput) -> Result<(), PtpDataOutputSinkError> {
+        if !self.0.swap(true, Ordering::SeqCst) {
+            Err(PtpDataOutputSinkError::Failed {
+                detail: "injected sink failure".into(),
+            })
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -987,7 +1014,7 @@ fn outer_reestablishment_entry_runs_only_its_exit_steps() {
         PtpFraming::Usb,
     ));
     let store = store();
-    block_on(run_mode_entry(
+    let source = block_on(run_mode_entry(
         store.clone(),
         "app".into(),
         None,
@@ -998,22 +1025,30 @@ fn outer_reestablishment_entry_runs_only_its_exit_steps() {
         Vec::new(),
     ))
     .expect("shooting entry succeeds");
+    let open_capture_txid = source
+        .scope
+        .iter()
+        .find(|value| value.key == "openCaptureTxId")
+        .expect("cold entry captures open-capture transaction")
+        .value;
 
     let outcome = block_on(run_mode_reestablishment_exit(
         store,
         "app".into(),
         Some("shooting/stills".into()),
         "image-transfer".into(),
-        transport,
+        transport.clone(),
         Arc::new(Reports::default()),
         Arc::new(Activities::default()),
-        vec![PtpRuntimeValue {
-            key: "openCaptureTxId".into(),
-            value: 10,
-        }],
+        source.scope,
     ))
     .expect("outer transition exit succeeds");
     assert!(outcome.steps_run > 0);
+    assert_eq!(
+        transport.request_count(0x1018, &[open_capture_txid as u32]),
+        1,
+        "TerminateOpenCapture consumes the captured 0x101c transaction"
+    );
 }
 
 #[test]
@@ -1145,6 +1180,109 @@ fn real_import_action_captures_collection_then_chunks_each_object() {
         .outputs
         .iter()
         .any(|output| output.operation == 0x101b && !output.payload.is_empty()));
+}
+
+#[test]
+fn ordinary_action_sink_receives_completed_outputs_in_wire_order() {
+    let store = store();
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(run_mode_entry(
+        store.clone(),
+        "app".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("image-transfer entry succeeds");
+    let sink = Arc::new(RecordingSink::default());
+
+    let outcome = block_on(run_action_to_sink(
+        store,
+        "app".into(),
+        ActionVerb::ImportObjects,
+        transport,
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        sink.clone(),
+        Vec::new(),
+    ))
+    .expect("import action succeeds");
+
+    assert!(outcome.outputs.is_empty(), "sink owns ordinary outputs");
+    let outputs = sink.0.lock().expect("sink outputs");
+    assert!(!outputs.is_empty());
+    assert_eq!(outputs[0].operation, 0x1015, "enumeration arrives first");
+    assert!(outputs
+        .iter()
+        .any(|output| output.operation == 0x101b && !output.payload.is_empty()));
+    assert!(outputs
+        .windows(2)
+        .all(|pair| pair[0].transaction_id < pair[1].transaction_id));
+}
+
+#[test]
+fn ordinary_sink_failure_leaves_command_session_synchronized() {
+    let store = store();
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(run_mode_entry(
+        store.clone(),
+        "app".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("image-transfer entry succeeds");
+
+    let error = block_on(run_action_to_sink(
+        store.clone(),
+        "app".into(),
+        ActionVerb::EnumerateObjects,
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Arc::new(FailOnceSink(AtomicBool::new(false))),
+        Vec::new(),
+    ))
+    .expect_err("sink failure reaches the caller");
+    let PtpExecutorError::StepFailed {
+        detail, context, ..
+    } = error
+    else {
+        panic!("expected correlated step failure")
+    };
+    assert!(detail.contains("injected sink failure"));
+    assert!(context
+        .iter()
+        .any(|value| value.key == "operation" && value.value == "0x1015"));
+    assert!(context
+        .iter()
+        .any(|value| value.key == "response" && value.value == "0x2001"));
+    assert!(context.iter().any(|value| value.key == "transactionId"));
+
+    block_on(run_action(
+        store,
+        "app".into(),
+        ActionVerb::EnumerateObjects,
+        transport,
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("next transaction succeeds after completed-response sink failure");
 }
 
 #[test]

@@ -447,12 +447,17 @@ mod tests {
                 host: "127.0.0.1".into()
             })
         );
-        let notify = notify_message(Ipv4Addr::new(192, 0, 2, 94), "GFX100 II", 15740, "PCSS/1.0");
-        let text = std::str::from_utf8(&notify).unwrap();
-        assert!(text.starts_with("NOTIFY * HTTP/1.1\r\n"));
-        assert!(text.contains("DSC: 192.0.2.94\r\n"));
-        assert!(text.contains("DSCPORT: 15740\r\n"));
-        assert!(notify.ends_with(b"\r\n"));
+        let notify = notify_message(
+            Ipv4Addr::new(198, 51, 100, 94),
+            "GFX100 II",
+            15740,
+            "PCSS/1.0",
+        );
+        assert_eq!(
+            notify,
+            b"NOTIFY * HTTP/1.1\r\nDSC: 198.51.100.94\r\nCAMERANAME: GFX100 II\r\nDSCPORT: 15740\r\nMX: 7\r\nSERVICE: PCSS/1.0\r\n"
+        );
+        assert_eq!(notify.len(), 104);
     }
 
     #[test]
@@ -519,6 +524,16 @@ mod tests {
         assert_eq!(
             parse_notify(&notify, "PCSS/1.0"),
             Err(PcssMessageError::InvalidCommandPort)
+        );
+    }
+
+    #[test]
+    fn rejects_notify_without_dsc() {
+        let notify =
+            b"NOTIFY * HTTP/1.1\r\nCAMERANAME: CAMERA\r\nDSCPORT: 15740\r\nSERVICE: PCSS/1.0\r\n";
+        assert_eq!(
+            parse_notify(notify, "PCSS/1.0"),
+            Err(PcssMessageError::MissingField("DSC"))
         );
     }
 }

@@ -1,8 +1,9 @@
 //! Manifest-driven PCSS discovery and command-session establishment.
 //!
-//! Broadcast discovery is only an optional address-finding front end. Both it
-//! and a caller-supplied address converge on the same unicast rendezvous and
-//! PTP/IP Init path.
+//! A recognized subnet-broadcast callback is itself a complete rendezvous: its
+//! validated endpoint is tried directly. A manifest may authorize one fresh
+//! unicast rendezvous to the learned camera address only when that first
+//! endpoint, or the first Init socket I/O on it, is unavailable.
 
 use std::future::Future;
 use std::net::Ipv4Addr;
@@ -19,6 +20,15 @@ use crate::{
 
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
+/// Raw PCSS socket I/O supplied by the foreign host.
+///
+/// For command connect and Init I/O, adapters map EOF, connection reset,
+/// broken pipe, and write-zero failures to [`TransportError::NotConnected`],
+/// connect refusal/unreachability to [`TransportError::ConnectFailed`], and
+/// socket deadlines to [`TransportError::Timeout`]. Local framing, validation,
+/// trace, and clock failures use [`TransportError::Failed`]. The executor uses
+/// that distinction only to select the manifest's one learned-unicast recovery
+/// after an unavailable broadcast-discovered endpoint or first Init attempt.
 pub trait PcssExecutorTransport: Send + Sync {
     async fn bind_callback_listener(&self, port: u16) -> Result<(), TransportError>;
     async fn send_discovery(
@@ -27,7 +37,7 @@ pub trait PcssExecutorTransport: Send + Sync {
         destination_port: u16,
         payload: Vec<u8>,
     ) -> Result<(), TransportError>;
-    async fn next_callback(&self) -> Result<Vec<u8>, TransportError>;
+    async fn next_callback(&self) -> Result<PcssCallback, TransportError>;
     async fn send_callback_reply(&self, payload: Vec<u8>) -> Result<(), TransportError>;
     async fn close_callback_connection(&self) -> Result<(), TransportError>;
     async fn connect_command(&self, camera_ipv4: String, port: u16) -> Result<(), TransportError>;
@@ -35,6 +45,16 @@ pub trait PcssExecutorTransport: Send + Sync {
     async fn next_command_frame(&self) -> Result<Vec<u8>, TransportError>;
     async fn close_command_connection(&self) -> Result<(), TransportError>;
     async fn sleep(&self, ms: u32) -> Result<(), TransportError>;
+}
+
+/// One accepted callback connection and the bytes read from it. The executor
+/// needs the TCP peer separately from the payload so it can enforce the PCSS
+/// requirement that the peer, the advertised DSC, and (for explicit unicast)
+/// the requested camera address agree.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PcssCallback {
+    pub peer_ipv4: String,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -95,6 +115,7 @@ pub async fn run_pcss_auto_establishment(
 ) -> Result<PcssEstablishmentOutcome, PcssExecutorError> {
     let broadcast = parse_ipv4(&broadcast_ipv4)?;
     let callback = parse_ipv4(&callback_ipv4)?;
+    let init = build_init(initiator_guid, callback, &friendly_name)?;
     let index = store
         .inner
         .index
@@ -112,26 +133,36 @@ pub async fn run_pcss_auto_establishment(
         transport
             .send_discovery(broadcast.to_string(), policy.knock_port, discovery.clone())
             .await?;
-        let payload = match with_deadline(
+        let payload = match with_deadline_source(
             &transport,
-            "discovery callback",
             policy.discovery.retry_interval_ms,
             transport.next_callback(),
         )
         .await
         {
             Ok(payload) => payload,
-            Err(PcssExecutorError::DeadlineExceeded { .. }) => continue,
-            Err(error) => return Err(error),
+            Err(error) if error.callback_timed_out() => continue,
+            Err(error) => return Err(error.into_executor("discovery callback")),
         };
-        let Ok(notify) = protocol_primitives::parse_pcss_notify(&payload, &policy.protocol) else {
+        let notify =
+            match protocol_primitives::parse_pcss_notify(&payload.payload, &policy.protocol) {
+                Ok(notify) => notify,
+                Err(_) => {
+                    let _ = transport.close_callback_connection().await;
+                    continue;
+                }
+            };
+        let peer = match parse_ipv4(&payload.peer_ipv4) {
+            Ok(peer) => peer,
+            Err(error) => {
+                let _ = transport.close_callback_connection().await;
+                return Err(error);
+            }
+        };
+        if peer != notify.camera_address {
             let _ = transport.close_callback_connection().await;
             continue;
-        };
-        transport
-            .send_callback_reply(protocol_primitives::pcss_callback_ack_message())
-            .await?;
-        transport.close_callback_connection().await?;
+        }
         match crate::mfg_index::recognize_pcss(
             index,
             &notify.camera_address.to_string(),
@@ -142,21 +173,72 @@ pub async fn run_pcss_auto_establishment(
             Recognition::Candidate {
                 model, connection, ..
             } => {
-                return establish_known(
-                    store,
-                    model,
-                    connection,
-                    notify.camera_address,
-                    callback,
-                    initiator_guid,
-                    friendly_name,
-                    transport,
-                    activity_observer,
+                acknowledge_callback(&transport).await?;
+                let plan = connection_plan(&store, &model, &connection)?;
+                // Connection-level activities are hostCheckpoint descriptors
+                // by schema. The socket-owning host emits them; this executor
+                // must never synthesize their lifecycle events.
+                let _ = activity_observer;
+                let mut activity = None;
+
+                match establish_endpoint(
+                    model.clone(),
+                    connection.clone(),
+                    notify.clone(),
+                    &init,
+                    &plan.retries,
+                    plan.knock.connect_timeout_ms,
+                    &transport,
+                    &mut activity,
                     true,
                 )
-                .await;
+                .await
+                {
+                    Ok(outcome) => return succeed_activity(activity, outcome),
+                    Err(first)
+                        if first.recovery_eligible
+                            && plan.knock.discovery_targets.retry_discovered_unicast =>
+                    {
+                        record_retry(&mut activity, 2, 2, executor_failure_kind(&first.error));
+                        let recovered = match acquire_explicit_callback(
+                            &store,
+                            &model,
+                            &connection,
+                            notify.camera_address,
+                            &plan.knock,
+                            callback,
+                            &transport,
+                            &mut activity,
+                        )
+                        .await
+                        {
+                            Ok(recovered) => recovered,
+                            Err(error) => return fail_activity(activity, error),
+                        };
+                        return match establish_endpoint(
+                            model,
+                            connection,
+                            recovered,
+                            &init,
+                            &plan.retries,
+                            plan.knock.connect_timeout_ms,
+                            &transport,
+                            &mut activity,
+                            false,
+                        )
+                        .await
+                        {
+                            Ok(outcome) => succeed_activity(activity, outcome),
+                            Err(error) => fail_activity(activity, error.error),
+                        };
+                    }
+                    Err(error) => return fail_activity(activity, error.error),
+                }
             }
-            Recognition::NoMatch | Recognition::Disambiguate { .. } => continue,
+            Recognition::NoMatch | Recognition::Disambiguate { .. } => {
+                let _ = transport.close_callback_connection().await;
+                continue;
+            }
         }
     }
     Err(PcssExecutorError::DiscoveryTimedOut)
@@ -177,43 +259,71 @@ pub async fn run_pcss_known_address_establishment(
 ) -> Result<PcssEstablishmentOutcome, PcssExecutorError> {
     let camera = parse_ipv4(&camera_ipv4)?;
     let callback = parse_ipv4(&callback_ipv4)?;
-    establish_known(
-        store,
+    let init = build_init(initiator_guid, callback, &friendly_name)?;
+    let plan = connection_plan(&store, &model, &connection)?;
+    // Connection-level activities are host checkpoints owned by the foreign
+    // socket/session lifecycle, not executor spans.
+    let _ = activity_observer;
+    let mut activity = None;
+    if let Err(error) = transport
+        .bind_callback_listener(plan.knock.callback_port)
+        .await
+    {
+        return fail_activity(activity, error.into());
+    }
+    let notify = match acquire_explicit_callback(
+        &store,
+        &model,
+        &connection,
+        camera,
+        &plan.knock,
+        callback,
+        &transport,
+        &mut activity,
+    )
+    .await
+    {
+        Ok(notify) => notify,
+        Err(error) => return fail_activity(activity, error),
+    };
+    match establish_endpoint(
         model,
         connection,
-        camera,
-        callback,
-        initiator_guid,
-        friendly_name,
-        transport,
-        activity_observer,
+        notify,
+        &init,
+        &plan.retries,
+        plan.knock.connect_timeout_ms,
+        &transport,
+        &mut activity,
         false,
     )
     .await
+    {
+        Ok(outcome) => succeed_activity(activity, outcome),
+        Err(error) => fail_activity(activity, error.error),
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn establish_known(
-    store: Arc<ConfigStore>,
-    model: String,
-    connection: String,
-    camera: Ipv4Addr,
-    callback: Ipv4Addr,
-    initiator_guid: Vec<u8>,
-    friendly_name: String,
-    transport: Arc<dyn PcssExecutorTransport>,
-    activity_observer: Option<Arc<dyn ConnectionActivityObserver>>,
-    listener_bound: bool,
-) -> Result<PcssEstablishmentOutcome, PcssExecutorError> {
+#[derive(Clone)]
+struct PcssConnectionPlan {
+    knock: camera_config::PcssKnock,
+    retries: camera_config::InitRetries,
+}
+
+fn connection_plan(
+    store: &ConfigStore,
+    model: &str,
+    connection: &str,
+) -> Result<PcssConnectionPlan, PcssExecutorError> {
     let body = store
         .inner
-        .body(&model)
+        .body(model)
         .ok_or_else(|| PcssExecutorError::UnknownPlan {
             detail: format!("unknown model '{model}'"),
         })?;
     let connection_config =
         body.connections
-            .get(&connection)
+            .get(connection)
             .ok_or_else(|| PcssExecutorError::UnknownPlan {
                 detail: format!("model '{model}' has no connection '{connection}'"),
             })?;
@@ -223,199 +333,279 @@ async fn establish_known(
         .ok_or_else(|| PcssExecutorError::UnknownPlan {
             detail: format!("connection '{connection}' has no PCSS rendezvous"),
         })?;
-    let retries = connection_config.init_retries.clone().unwrap_or_default();
-    let discovery = protocol_primitives::pcss_discovery_message(callback, &knock.protocol);
+    Ok(PcssConnectionPlan {
+        knock,
+        retries: connection_config.init_retries.clone().unwrap_or_default(),
+    })
+}
+
+fn build_init(
+    initiator_guid: Vec<u8>,
+    callback: Ipv4Addr,
+    friendly_name: &str,
+) -> Result<Vec<u8>, PcssExecutorError> {
     let guid: [u8; 16] = initiator_guid.try_into().map_err(|value: Vec<u8>| {
         PcssExecutorError::InvalidInitResponse {
             detail: format!("initiator GUID is {} bytes, expected 16", value.len()),
         }
     })?;
-    let init = protocol_primitives::pcss_init_message(guid, callback, &friendly_name).map_err(
-        |error| PcssExecutorError::InvalidInitResponse {
+    protocol_primitives::pcss_init_message(guid, callback, friendly_name).map_err(|error| {
+        PcssExecutorError::InvalidInitResponse {
             detail: error.to_string(),
-        },
-    )?;
-    let mut activity = activity_observer.and_then(|observer| {
-        connection_config.activities.first().map(|descriptor| {
-            ActiveActivity::new(observer, descriptor.id.clone(), descriptor.version)
-        })
-    });
-    if !listener_bound {
-        if let Err(error) = transport.bind_callback_listener(knock.callback_port).await {
-            return fail_activity(activity, error.into());
         }
-    }
+    })
+}
 
+#[allow(clippy::too_many_arguments)]
+async fn acquire_explicit_callback(
+    store: &ConfigStore,
+    model: &str,
+    connection: &str,
+    camera: Ipv4Addr,
+    knock: &camera_config::PcssKnock,
+    callback: Ipv4Addr,
+    transport: &Arc<dyn PcssExecutorTransport>,
+    activity: &mut Option<ActiveActivity>,
+) -> Result<protocol_primitives::PcssNotify, PcssExecutorError> {
+    let discovery = protocol_primitives::pcss_discovery_message(callback, &knock.protocol);
     for attempt in 1..=knock.max_attempts {
-        if let Err(error) = transport
+        transport
             .send_discovery(camera.to_string(), knock.knock_port, discovery.clone())
             .await
-        {
-            return fail_activity(activity, error.into());
-        }
-        let callback_payload = match with_deadline(
-            &transport,
-            "unicast callback",
+            .map_err(PcssExecutorError::from)?;
+        let callback_payload = match with_deadline_source(
+            transport,
             knock.retry_interval_ms,
             transport.next_callback(),
         )
         .await
         {
             Ok(payload) => payload,
-            Err(PcssExecutorError::DeadlineExceeded { .. }) => {
-                record_retry(
-                    &mut activity,
-                    attempt,
-                    knock.max_attempts,
-                    ExecutorStepFailureKind::DeadlineExceeded,
-                );
-                continue;
-            }
-            Err(error) => return fail_activity(activity, error),
-        };
-        let notify =
-            match protocol_primitives::parse_pcss_notify(&callback_payload, &knock.protocol) {
-                Ok(notify) => notify,
-                Err(_) => {
-                    let _ = transport.close_callback_connection().await;
-                    continue;
-                }
-            };
-        if let Err(error) = transport
-            .send_callback_reply(protocol_primitives::pcss_callback_ack_message())
-            .await
-        {
-            return fail_activity(activity, error.into());
-        }
-        if let Err(error) = transport.close_callback_connection().await {
-            return fail_activity(activity, error.into());
-        }
-        if !matches_model(&store, &model, &connection, &notify) {
-            return fail_activity(activity, PcssExecutorError::IdentityMismatch { model });
-        }
-
-        let connected = with_deadline(
-            &transport,
-            "command endpoint connect",
-            knock.connect_timeout_ms,
-            transport.connect_command(notify.camera_address.to_string(), notify.command_port),
-        )
-        .await;
-        if let Err(error) = connected {
-            let _ = transport.close_command_connection().await;
-            let kind = if matches!(error, PcssExecutorError::DeadlineExceeded { .. }) {
-                ExecutorStepFailureKind::DeadlineExceeded
-            } else {
-                ExecutorStepFailureKind::Other
-            };
-            record_retry(&mut activity, attempt, knock.max_attempts, kind);
-            if attempt < knock.max_attempts {
-                if let Err(error) = transport.sleep(knock.retry_interval_ms).await {
-                    return fail_activity(activity, error.into());
-                }
-                continue;
-            }
-            return fail_activity(
-                activity,
-                PcssExecutorError::EndpointUnavailable {
-                    attempts: knock.max_attempts,
-                },
-            );
-        }
-
-        for init_attempt in 0..=retries.max {
-            if let Err(error) = transport.send_command_frame(init.clone()).await {
-                let _ = transport.close_command_connection().await;
-                return fail_activity(activity, error.into());
-            }
-            let frame = match with_deadline(
-                &transport,
-                "PTP/IP Init response",
-                knock.connect_timeout_ms,
-                transport.next_command_frame(),
-            )
-            .await
-            {
-                Ok(frame) => frame,
-                Err(error) => {
-                    let _ = transport.close_command_connection().await;
-                    return fail_activity(activity, error);
-                }
-            };
-            let packet = match PtpIpPacket::decode(&frame) {
-                Ok(packet) => packet,
-                Err(error) => {
-                    let _ = transport.close_command_connection().await;
-                    return fail_activity(
-                        activity,
-                        PcssExecutorError::InvalidInitResponse {
-                            detail: error.to_string(),
-                        },
-                    );
-                }
-            };
-            match packet {
-                PtpIpPacket::InitCommandAck(ack) => {
-                    if let Some(activity) = activity.take() {
-                        activity.succeed();
-                    }
-                    return Ok(PcssEstablishmentOutcome {
-                        model,
-                        connection,
-                        camera_ipv4: notify.camera_address.to_string(),
-                        camera_name: notify.camera_name,
-                        command_port: notify.command_port,
-                        service: notify.service,
-                        connection_number: ack.connection_number,
-                        responder_guid: ack.responder_guid.to_vec(),
-                        responder_name: ack.friendly_name,
-                    });
-                }
-                PtpIpPacket::InitFail(failure)
-                    if init_attempt < retries.max
-                        && retries.when_reasons.iter().any(|reason| {
-                            camera_config::parse_hex_code(reason)
-                                .is_some_and(|code| u32::from(code) == failure.reason)
-                        }) =>
-                {
+            Err(error) if error.callback_timed_out() => {
+                if attempt < knock.max_attempts {
                     record_retry(
-                        &mut activity,
-                        init_attempt + 1,
-                        retries.max,
-                        ExecutorStepFailureKind::ConditionRejected,
-                    );
-                    if let Err(error) = transport.sleep(retries.backoff_ms).await {
-                        let _ = transport.close_command_connection().await;
-                        return fail_activity(activity, error.into());
-                    }
-                }
-                PtpIpPacket::InitFail(failure) => {
-                    let _ = transport.close_command_connection().await;
-                    return fail_activity(
                         activity,
-                        PcssExecutorError::InitRejected {
-                            reason: failure.reason,
-                        },
+                        attempt.saturating_add(1),
+                        knock.max_attempts,
+                        ExecutorStepFailureKind::DeadlineExceeded,
                     );
                 }
-                other => {
+                continue;
+            }
+            Err(error) => return Err(error.into_executor("unicast callback")),
+        };
+        let notify = match protocol_primitives::parse_pcss_notify(
+            &callback_payload.payload,
+            &knock.protocol,
+        ) {
+            Ok(notify) => notify,
+            Err(_) => {
+                let _ = transport.close_callback_connection().await;
+                continue;
+            }
+        };
+        let peer = match parse_ipv4(&callback_payload.peer_ipv4) {
+            Ok(peer) => peer,
+            Err(error) => {
+                let _ = transport.close_callback_connection().await;
+                return Err(error);
+            }
+        };
+        if peer != camera || notify.camera_address != camera {
+            let _ = transport.close_callback_connection().await;
+            return Err(PcssExecutorError::IdentityMismatch {
+                model: model.into(),
+            });
+        }
+        if !matches_model(store, model, connection, &notify) {
+            let _ = transport.close_callback_connection().await;
+            return Err(PcssExecutorError::IdentityMismatch {
+                model: model.into(),
+            });
+        }
+        acknowledge_callback(transport).await?;
+        return Ok(notify);
+    }
+    Err(PcssExecutorError::DiscoveryTimedOut)
+}
+
+struct EndpointAttemptError {
+    error: PcssExecutorError,
+    recovery_eligible: bool,
+}
+
+impl EndpointAttemptError {
+    fn terminal(error: PcssExecutorError) -> Self {
+        Self {
+            error,
+            recovery_eligible: false,
+        }
+    }
+
+    fn endpoint(error: PcssExecutorError) -> Self {
+        Self {
+            error,
+            recovery_eligible: true,
+        }
+    }
+}
+
+enum InitResponse {
+    Ack(protocol_primitives::PcssInitAck),
+    Fail(u32),
+}
+
+fn parse_init_response(frame: &[u8]) -> Result<InitResponse, PcssExecutorError> {
+    match protocol_primitives::parse_pcss_init_ack(frame) {
+        Ok(ack) => Ok(InitResponse::Ack(ack)),
+        Err(ack_error) => match canonical_init_fail_reason(frame) {
+            Some(reason) => Ok(InitResponse::Fail(reason)),
+            None => match PtpIpPacket::decode(frame) {
+                Ok(other) => Err(PcssExecutorError::InvalidInitResponse {
+                    detail: format!("expected PCSS InitCommandAck or InitFail, got {other:?}"),
+                }),
+                Err(_) => Err(PcssExecutorError::InvalidInitResponse {
+                    detail: ack_error.to_string(),
+                }),
+            },
+        },
+    }
+}
+
+fn canonical_init_fail_reason(frame: &[u8]) -> Option<u32> {
+    if frame.len() != 12 {
+        return None;
+    }
+    match PtpIpPacket::decode(frame).ok()? {
+        PtpIpPacket::InitFail(failure) => Some(failure.reason),
+        _ => None,
+    }
+}
+
+async fn acknowledge_callback(
+    transport: &Arc<dyn PcssExecutorTransport>,
+) -> Result<(), PcssExecutorError> {
+    if let Err(error) = transport
+        .send_callback_reply(protocol_primitives::pcss_callback_ack_message())
+        .await
+    {
+        let _ = transport.close_callback_connection().await;
+        return Err(error.into());
+    }
+    transport
+        .close_callback_connection()
+        .await
+        .map_err(Into::into)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn establish_endpoint(
+    model: String,
+    connection: String,
+    notify: protocol_primitives::PcssNotify,
+    init: &[u8],
+    retries: &camera_config::InitRetries,
+    connect_timeout_ms: u32,
+    transport: &Arc<dyn PcssExecutorTransport>,
+    activity: &mut Option<ActiveActivity>,
+    permit_recovery: bool,
+) -> Result<PcssEstablishmentOutcome, EndpointAttemptError> {
+    let connected = with_deadline_source(
+        transport,
+        connect_timeout_ms,
+        transport.connect_command(notify.camera_address.to_string(), notify.command_port),
+    )
+    .await;
+    if let Err(error) = connected {
+        let recovery_eligible = permit_recovery && error.endpoint_eligible();
+        let error = error.into_executor("command endpoint connect");
+        return Err(finish_failed_endpoint(transport, error, recovery_eligible).await);
+    }
+
+    for init_attempt in 0..=retries.max {
+        if let Err(error) = with_deadline_source(
+            transport,
+            connect_timeout_ms,
+            transport.send_command_frame(init.to_vec()),
+        )
+        .await
+        {
+            let recovery_eligible =
+                permit_recovery && init_attempt == 0 && error.endpoint_eligible();
+            let error = error.into_executor("PTP/IP Init request");
+            return Err(finish_failed_endpoint(transport, error, recovery_eligible).await);
+        }
+        let frame = match with_deadline_source(
+            transport,
+            connect_timeout_ms,
+            transport.next_command_frame(),
+        )
+        .await
+        {
+            Ok(frame) => frame,
+            Err(error) => {
+                let recovery_eligible =
+                    permit_recovery && init_attempt == 0 && error.endpoint_eligible();
+                let error = error.into_executor("PTP/IP Init response");
+                return Err(finish_failed_endpoint(transport, error, recovery_eligible).await);
+            }
+        };
+        match parse_init_response(&frame) {
+            Ok(InitResponse::Ack(ack)) => {
+                return Ok(PcssEstablishmentOutcome {
+                    model,
+                    connection,
+                    camera_ipv4: notify.camera_address.to_string(),
+                    camera_name: notify.camera_name,
+                    command_port: notify.command_port,
+                    service: notify.service,
+                    connection_number: ack.connection_number,
+                    responder_guid: ack.responder_guid.to_vec(),
+                    responder_name: ack.friendly_name,
+                });
+            }
+            Ok(InitResponse::Fail(reason))
+                if init_attempt < retries.max
+                    && retries.when_reasons.iter().any(|configured| {
+                        camera_config::parse_hex_u32(configured).is_some_and(|code| code == reason)
+                    }) =>
+            {
+                record_retry(
+                    activity,
+                    init_attempt.saturating_add(2),
+                    retries.max.saturating_add(1),
+                    ExecutorStepFailureKind::ConditionRejected,
+                );
+                if let Err(error) = transport.sleep(retries.backoff_ms).await {
                     let _ = transport.close_command_connection().await;
-                    return fail_activity(
-                        activity,
-                        PcssExecutorError::InvalidInitResponse {
-                            detail: format!("expected InitCommandAck or InitFail, got {other:?}"),
-                        },
-                    );
+                    return Err(EndpointAttemptError::terminal(error.into()));
                 }
+            }
+            Ok(InitResponse::Fail(reason)) => {
+                let _ = transport.close_command_connection().await;
+                return Err(EndpointAttemptError::terminal(
+                    PcssExecutorError::InitRejected { reason },
+                ));
+            }
+            Err(error) => {
+                let _ = transport.close_command_connection().await;
+                return Err(EndpointAttemptError::terminal(error));
             }
         }
     }
-    fail_activity(
-        activity,
-        PcssExecutorError::EndpointUnavailable {
-            attempts: knock.max_attempts,
-        },
-    )
+    unreachable!("the inclusive Init retry loop always returns or advances")
+}
+
+async fn finish_failed_endpoint(
+    transport: &Arc<dyn PcssExecutorTransport>,
+    error: PcssExecutorError,
+    recovery_eligible: bool,
+) -> EndpointAttemptError {
+    match transport.close_command_connection().await {
+        Err(close_error) if recovery_eligible => EndpointAttemptError::terminal(close_error.into()),
+        _ if recovery_eligible => EndpointAttemptError::endpoint(error),
+        _ => EndpointAttemptError::terminal(error),
+    }
 }
 
 fn matches_model(
@@ -483,14 +673,29 @@ fn fail_activity<T>(
     error: PcssExecutorError,
 ) -> Result<T, PcssExecutorError> {
     if let Some(activity) = activity {
-        let kind = if matches!(error, PcssExecutorError::DeadlineExceeded { .. }) {
-            ExecutorStepFailureKind::DeadlineExceeded
-        } else {
-            ExecutorStepFailureKind::Other
-        };
-        activity.fail(ConnectionActivityFailure::without_context(kind));
+        activity.fail(ConnectionActivityFailure::without_context(
+            executor_failure_kind(&error),
+        ));
     }
     Err(error)
+}
+
+fn executor_failure_kind(error: &PcssExecutorError) -> ExecutorStepFailureKind {
+    if matches!(error, PcssExecutorError::DeadlineExceeded { .. }) {
+        ExecutorStepFailureKind::DeadlineExceeded
+    } else {
+        ExecutorStepFailureKind::Other
+    }
+}
+
+fn succeed_activity(
+    activity: Option<ActiveActivity>,
+    outcome: PcssEstablishmentOutcome,
+) -> Result<PcssEstablishmentOutcome, PcssExecutorError> {
+    if let Some(activity) = activity {
+        activity.succeed();
+    }
+    Ok(outcome)
 }
 
 fn parse_ipv4(value: &str) -> Result<Ipv4Addr, PcssExecutorError> {
@@ -501,21 +706,59 @@ fn parse_ipv4(value: &str) -> Result<Ipv4Addr, PcssExecutorError> {
         })
 }
 
-async fn with_deadline<T, F>(
+enum TimedIoError {
+    Operation(TransportError),
+    Deadline,
+    Clock(TransportError),
+}
+
+impl TimedIoError {
+    fn callback_timed_out(&self) -> bool {
+        matches!(
+            self,
+            Self::Deadline | Self::Operation(TransportError::Timeout { .. })
+        )
+    }
+
+    fn endpoint_eligible(&self) -> bool {
+        match self {
+            Self::Operation(error) => transport_error_endpoint_eligible(error),
+            Self::Deadline => true,
+            Self::Clock(_) => false,
+        }
+    }
+
+    fn into_executor(self, stage: &str) -> PcssExecutorError {
+        match self {
+            Self::Operation(error) | Self::Clock(error) => error.into(),
+            Self::Deadline => PcssExecutorError::DeadlineExceeded {
+                stage: stage.into(),
+            },
+        }
+    }
+}
+
+fn transport_error_endpoint_eligible(error: &TransportError) -> bool {
+    matches!(
+        error,
+        TransportError::NotConnected
+            | TransportError::Timeout { .. }
+            | TransportError::ConnectFailed { .. }
+    )
+}
+
+async fn with_deadline_source<T, F>(
     transport: &Arc<dyn PcssExecutorTransport>,
-    stage: &str,
     timeout_ms: u32,
     future: F,
-) -> Result<T, PcssExecutorError>
+) -> Result<T, TimedIoError>
 where
     F: Future<Output = Result<T, TransportError>>,
 {
     match select(Box::pin(future), Box::pin(transport.sleep(timeout_ms))).await {
-        Either::Left((result, _)) => result.map_err(Into::into),
-        Either::Right((Ok(()), _)) => Err(PcssExecutorError::DeadlineExceeded {
-            stage: stage.into(),
-        }),
-        Either::Right((Err(error), _)) => Err(error.into()),
+        Either::Left((result, _)) => result.map_err(TimedIoError::Operation),
+        Either::Right((Ok(()), _)) => Err(TimedIoError::Deadline),
+        Either::Right((Err(error), _)) => Err(TimedIoError::Clock(error)),
     }
 }
 

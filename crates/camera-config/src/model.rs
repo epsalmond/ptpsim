@@ -22,6 +22,17 @@ pub fn parse_hex_code(s: &str) -> Option<u16> {
     u16::from_str_radix(hex, 16).ok()
 }
 
+/// Parse a hexadecimal manifest value that may exceed the 16-bit PTP code
+/// range, such as the u32 reason carried by PTP/IP InitFail.
+pub fn parse_hex_u32(s: &str) -> Option<u32> {
+    let t = s.trim();
+    let hex = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
+    u32::from_str_radix(hex, 16).ok()
+}
+
 /// Decode an even-length hex byte string, optionally `0x`-prefixed.
 pub fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
     let p = s
@@ -1044,12 +1055,15 @@ pub struct TransportClose {
     pub when: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PcssKnock {
     pub callback_port: u16,
     pub knock_port: u16,
     pub protocol: String,
+    /// Where the discovery datagram may be sent and which target is selected
+    /// when a caller does not override it.
+    pub discovery_targets: PcssDiscoveryTargets,
     /// Delay between discovery datagrams while awaiting the callback.
     #[serde(default = "default_pcss_retry_interval_ms")]
     pub retry_interval_ms: u32,
@@ -1071,6 +1085,31 @@ fn default_pcss_max_attempts() -> u32 {
 
 fn default_pcss_connect_timeout_ms() -> u32 {
     5_000
+}
+
+/// Manifest-authored PCSS discovery destination policy. The default must be a
+/// member of the non-empty, duplicate-free supported set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PcssDiscoveryTargets {
+    pub default: PcssDiscoveryTarget,
+    pub supported: Vec<PcssDiscoveryTarget>,
+    /// After a broadcast callback's command endpoint or first Init transport
+    /// attempt is unavailable, perform one fresh rendezvous by unicast to the
+    /// callback's validated DSC.
+    pub retry_discovered_unicast: bool,
+}
+
+/// Addressing mode for the byte-identical PCSS discovery datagram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PcssDiscoveryTarget {
+    /// Send to the selected IPv4 interface's subnet-directed broadcast. The
+    /// callback's DSC, validated against its peer, identifies the camera, so no
+    /// camera address is required.
+    SubnetBroadcast,
+    /// Send directly to a caller-supplied camera IPv4 address.
+    ExplicitUnicast,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1271,9 +1310,63 @@ pub enum ActionVerb {
     /// its supported-ops surface. Not mode-gated: valid whenever a session is
     /// open.
     ReadDeviceInfo,
+    /// Start connection-specific live-view delivery. The manifest owns the
+    /// operation parameters because PCSS and reference app do not share request shape.
+    StartLiveView,
+    /// Request exactly one frame from a connection whose live-view delivery is
+    /// polled. The manifest owns the operation and response payload shape.
+    PollLiveView,
+    /// Stop connection-specific live-view delivery. The manifest owns the
+    /// operation parameters and any connection-scoped transaction semantics.
+    StopLiveView,
     /// One session-maintenance keepalive iteration. The caller owns cadence;
     /// the manifest only names the wire writes that keep the session current.
     Keepalive,
+}
+
+impl ActionVerb {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shutter => "shutter",
+            Self::EnumerateObjects => "enumerateObjects",
+            Self::GetObjectInfo => "getObjectInfo",
+            Self::GetThumb => "getThumb",
+            Self::GetObject => "getObject",
+            Self::DeleteObject => "deleteObject",
+            Self::AutofocusLock => "autofocusLock",
+            Self::AutofocusRelease => "autofocusRelease",
+            Self::ImportObjects => "importObjects",
+            Self::ReadDeviceInfo => "readDeviceInfo",
+            Self::StartLiveView => "startLiveView",
+            Self::PollLiveView => "pollLiveView",
+            Self::StopLiveView => "stopLiveView",
+            Self::Keepalive => "keepalive",
+        }
+    }
+}
+
+impl std::str::FromStr for ActionVerb {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "shutter" => Ok(Self::Shutter),
+            "enumerateObjects" => Ok(Self::EnumerateObjects),
+            "getObjectInfo" => Ok(Self::GetObjectInfo),
+            "getThumb" => Ok(Self::GetThumb),
+            "getObject" => Ok(Self::GetObject),
+            "deleteObject" => Ok(Self::DeleteObject),
+            "autofocusLock" => Ok(Self::AutofocusLock),
+            "autofocusRelease" => Ok(Self::AutofocusRelease),
+            "importObjects" => Ok(Self::ImportObjects),
+            "readDeviceInfo" => Ok(Self::ReadDeviceInfo),
+            "startLiveView" => Ok(Self::StartLiveView),
+            "pollLiveView" => Ok(Self::PollLiveView),
+            "stopLiveView" => Ok(Self::StopLiveView),
+            "keepalive" => Ok(Self::Keepalive),
+            other => Err(format!("unknown action verb '{other}'")),
+        }
+    }
 }
 
 /// How live-view frames are delivered over a connection (#81 per-connection
@@ -1540,6 +1633,9 @@ pub enum CaptureSource {
     /// Standard PTP array framing: little-endian u32 count followed by u32 items.
     #[serde(rename = "ptpU32Array")]
     PtpU32Array,
+    /// The transaction id allocated to the successful `sendOp` request.
+    #[serde(rename = "transactionId")]
+    TransactionId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2494,5 +2590,33 @@ values:
         assert_eq!(d.manufacturer, "FUJIFILM");
         assert_eq!(d.version_order.as_deref(), Some("dotted-int"));
         assert!(d.values.contains_key("initiatorGuid"));
+    }
+
+    #[test]
+    fn action_verb_parser_is_exact_and_round_trips() {
+        for verb in [
+            ActionVerb::Shutter,
+            ActionVerb::EnumerateObjects,
+            ActionVerb::GetObjectInfo,
+            ActionVerb::GetThumb,
+            ActionVerb::GetObject,
+            ActionVerb::DeleteObject,
+            ActionVerb::AutofocusLock,
+            ActionVerb::AutofocusRelease,
+            ActionVerb::ImportObjects,
+            ActionVerb::ReadDeviceInfo,
+            ActionVerb::StartLiveView,
+            ActionVerb::PollLiveView,
+            ActionVerb::StopLiveView,
+            ActionVerb::Keepalive,
+        ] {
+            assert_eq!(verb.as_str().parse::<ActionVerb>(), Ok(verb));
+        }
+        for invalid in ["GetObject", "get-object", " getObject", "unknown"] {
+            assert!(
+                invalid.parse::<ActionVerb>().is_err(),
+                "accepted {invalid:?}"
+            );
+        }
     }
 }

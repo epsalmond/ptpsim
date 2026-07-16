@@ -186,7 +186,7 @@ connections:
           - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)
           - { readEcho: "0xdf2a" }               # read then write back
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
-          - { sendOp: "0x101c" }                 # InitiateOpenCapture
+          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; executor binds its transaction ID
           - { openChannel: event }
           - { openChannel: liveView }
       - to: shooting/stills          # from image-import back to live-view
@@ -201,7 +201,7 @@ connections:
           - { setProp: "0xdf01", value: 0x16 }               # functionMode = 22 (live-view)
           - { setProp: "0xdf2a", value: 2 }                  # Fpcsh_VersionRemoteEx
           - { sendOp: "0x902b", repeat: 4 }                  # FujiVendor_902B startup ×4
-          - { sendOp: "0x101c" }                             # InitiateOpenCapture
+          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; executor binds its transaction ID
           - { openChannel: event }
           - { openChannel: liveView }
       - to: shooting/video          # in-live-view stills→video selector
@@ -236,8 +236,8 @@ connections:
         reestablishConnection:
           params: { launchMode: "3" } # InCameraViewIng; resolved by ble-establish-wifi-ap
           exitSteps:
-          # 0x1018 needs the live-view InitiateOpenCapture transaction id — RUNTIME state the
-          # app binds into the named slot (it owns transaction ids; sans-io).
+          # 0x1018 needs the live-view InitiateOpenCapture transaction id — runtime state the
+          # executor captured from the successful 0x101c into this named slot.
             - { sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }
             # Consume CloseSession, close 55741/55742 normally, send+flush the
             # declared close frame on 55740, then cleanly close the command socket.
@@ -486,18 +486,33 @@ connections:
     # Per-connection traits (#81): a different init family, poll-based live view,
     # and the 3-beat virtual shutter — all data-driven, not app id-branches.
     initShape: pcssKnock                                  # PCSS init (not the 82-byte reference app)
+    init:
+      identity: { guid: initiatorGuid, friendlyName: initFriendlyName }
     liveViewDelivery: { kind: poll, pollOp: "0x9018" }    # app polls 0x9018 for frames
     shutterRecipe: wirelessTether3Beat                    # 3-beat 0xD039 + 0x100E virtual shutter
-    # Command socket = the PCSS knock's DSPORT (default 15740; runtime confirms it). No
-    # event/live-view socket — delivery is the 0x9018 poll (capture: events ct=4 = 0).
+    # `bindings.command` is the simulator/default bind. A real initiator always uses
+    # the callback's runtime-advertised DSCPORT. There is no event/live-view socket —
+    # delivery is the 0x9018 poll (capture: events ct=4 = 0).
     bindings: { command: 15740 }
     # The command/data channel is Fuji-compressed (data-phase types 9/10/12), same as the
     # app path; only the InitCommandRequest is standard-framed (#133, PR feedback 2026-07-01).
     commandFraming: compressed
-    # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP knock to cam:51562
-    # (PCSS/1.0 DISCOVERY) → cam NOTIFYs back to :51560 with DSCPORT:15740 → host ACKs →
-    # PTP-IP on 15740. Init = GUID + hostIP + name + zeros-tail (differs from reference-app's 82-byte init).
-    knock: { callbackPort: 51560, knockPort: 51562, protocol: "PCSS/1.0", retryIntervalMs: 1000, maxAttempts: 15, connectTimeoutMs: 5000 }
+    # Wire-confirmed PCSS handshake: host LISTENs TCP 51560 → UDP discovery on :51562
+    # → camera NOTIFYs back to :51560 with DSC + DSCPORT → host ACKs → PTP-IP
+    # on the advertised endpoint. Normal discovery uses the selected interface's
+    # IPv4 subnet-directed broadcast; explicit unicast sends the byte-identical
+    # payload to a known camera address. Init = GUID + hostIP + name + zeros-tail.
+    knock:
+      callbackPort: 51560
+      knockPort: 51562
+      protocol: "PCSS/1.0"
+      discoveryTargets:
+        default: subnetBroadcast
+        supported: [subnetBroadcast, explicitUnicast]
+        retryDiscoveredUnicast: true
+      retryIntervalMs: 1000
+      maxAttempts: 15
+      connectTimeoutMs: 5000
     # InitCmdReq retry tolerance: PCSS may emit 0-3 InitFail packets before
     # InitCmdAck. Hyper-Utility waits ~250ms between retries; the engine should
     # accept up to 3 retries before treating the handshake as failed
@@ -548,6 +563,37 @@ connections:
         steps:
           - { sendOp: "0x1001", params: [] }
         evidence: [wireTetherCaps20260527]
+      # PCSS selects live-view delivery with D1BC=2, then starts its poll-based
+      # live view with InitiateOpenCapture(0, 0).
+      # Unlike reference app, the later stop request does not consume this request's
+      # transaction id; the PCSS capture uses a connection-specific literal.
+      startLiveView:
+        mode: shooting/stills
+        steps:
+          - { setProp: "0xd1bc", value: 2 }
+          - { sendOp: "0x101c", params: [0, 0] }
+        evidence: [wirePCSSShootDownload20260523]
+      # Exactly one polled PCSS live-view payload. Callers own repetition and
+      # may follow this with another action on the same open session. General
+      # Error is transient while the camera arms the stream; no other response
+      # selects replay for this opcode.
+      pollLiveView:
+        mode: shooting/stills
+        steps:
+          - retry:
+              whenResponseCodes: ["0x2002"]
+              maxAttempts: 10
+              retryDelayMs: 100
+              steps:
+                - { sendOp: "0x9018", params: [] }
+        evidence: [wireTether, wirePCSSShootDownload20260523]
+      # Every PCSS TerminateOpenCapture request in the full-session capture
+      # carries literal 1 even though the request transaction ids vary.
+      stopLiveView:
+        mode: shooting/stills
+        steps:
+          - { sendOp: "0x1018", params: [1] }
+        evidence: [wirePCSSShootDownload20260523]
       # One caller-scheduled PCSS session keepalive iteration. Captures show
       # variable bursts/periodic intervals, so cadence is deliberately not
       # modeled here; clients loop this recipe while the PCSS session is alive.
@@ -583,9 +629,10 @@ connections:
         evidence: [wirePCSSShootDownload20260523]
       # Standard PTP enumeration. Returns a u32 count + u32 handle list. Client
       # iterates the result and calls getObjectInfo / getThumb / getObject /
-      # deleteObject per handle.
+      # deleteObject per handle. Mode-neutral because the live PCSS acceptance
+      # sequence enumerates while shooting/stills live view remains open.
       enumerateObjects:
-        mode: image-transfer
+        mode: ""
         steps:
           - sendOp: "0x1007"
             params: [0xffffffff, 0]
@@ -679,7 +726,7 @@ operations:
   # wire-confirmed: 0x1007(0xFFFFFFFF, 0) → 0x1008(handle) → 0x100A(handle, optional)
   # → 0x1009(handle) → 0x100B(handle, optional delete). No 0x101B chunking; whole
   # objects only on this connection. Evidence: wirePCSSShootDownload20260523.
-  "0x1007": { name: GetObjectHandles,     owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
+  "0x1007": { name: GetObjectHandles,     owner: standard-ptp, modes: [shooting/stills, image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
   "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, reserved-photo-receive, raw-conv-backup-restore], connections: [app, usb, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, staticAutoImageTransfer, staticRawStudio, wirePCSSShootDownload20260523] }
   "0x100a": { name: GetThumb,             owner: standard-ptp, modes: [image-transfer], connections: [app, wireless-tether], evidence: [docImageTransfer, wirePCSSShootDownload20260523] }
   "0x100b": { name: DeleteObject,         owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
@@ -693,8 +740,8 @@ operations:
   "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireAutoImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }
   "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireAutoImageTransfer, wireTether] }
   "0x101b": { name: GetPartialObject,     owner: standard-ptp, modes: [image-transfer, reserved-photo-receive], connections: [app], evidence: [docImageTransfer, wireAutoImageTransfer] }
-  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosStartupSeq] }
-  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [shooting], connections: [app], evidence: [iosStartupSeq] }
+  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [iosStartupSeq, wirePCSSShootDownload20260523] }
+  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [iosStartupSeq, wirePCSSShootDownload20260523] }
   "0x9022": { name: FujiVendor9022,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
   # Tap-to-AF (S1 lock). PTP_PROPERTIES_REFERENCE.md §5.1/§5.2: param is a 4-byte
   # LE u32 packing the AF area, built by the reference app as the hex
@@ -936,6 +983,8 @@ properties:
   # ------------------------------------------------------------------------------
   "0xd039": { name: pcssVirtualShutter, type: u32, access: readWrite, kind: scaffold,
               evidence: [wirePCSSShootDownload20260523] }   # 3-beat state machine paired with 0x100E on wireless-tether
+  "0xd1bc": { name: pcssLiveViewSelector, type: u16, access: readWrite, kind: scaffold,
+              evidence: [wirePCSSShootDownload20260523] }   # write 2 before PCSS 0x101C(0,0)
   "0xd21c": { name: pcssKeepalive21c,   type: u16, access: readWrite, kind: scaffold,
               evidence: [wirePCSSShootDownload20260523] }   # tethered-mode keepalive; write 0 in the keepalive action
   "0xd207": { name: pcssKeepalive207,   type: u16, access: readWrite, kind: scaffold,

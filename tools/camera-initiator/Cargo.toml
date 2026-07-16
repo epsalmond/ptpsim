@@ -1,0 +1,22 @@
+[package]
+name = "camera-initiator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+camera-protocol-ffi = { path = "../../crates/camera-protocol-ffi" }
+ptp-core = { workspace = true }
+protocol-primitives = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+if-addrs = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+camera-sim-service = { path = "../../services/camera-sim-service" }

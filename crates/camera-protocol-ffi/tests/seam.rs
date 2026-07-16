@@ -277,6 +277,26 @@ fn operation_gating_is_connection_and_mode_keyed() {
         s.operation_available("app".into(), "shooting/stills".into(), 0x9018, vec![]),
         Availability::WrongConnection
     ));
+    for op in [0x101cu16, 0x1018] {
+        assert!(matches!(
+            s.operation_available(
+                "wireless-tether".into(),
+                "shooting/stills".into(),
+                op,
+                vec![]
+            ),
+            Availability::Available
+        ));
+    }
+    assert!(matches!(
+        s.operation_available(
+            "wireless-tether".into(),
+            "shooting/stills".into(),
+            0x1007,
+            vec![]
+        ),
+        Availability::Available
+    ));
     // Backup op (0x100c) is available in ANY mode over usb (modes: []).
     assert!(matches!(
         s.operation_available("usb".into(), "shooting/stills".into(), 0x100c, vec![]),
@@ -403,12 +423,30 @@ fn connection_establishment_is_returned_as_data() {
 #[test]
 fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
     let s = store();
+    let connection = s
+        .connections(Platform::Macos)
+        .into_iter()
+        .find(|candidate| candidate.id == "wireless-tether")
+        .expect("wireless-tether connection info");
+    assert!(connection.auto_discoverable);
     let rendezvous = s
         .pcss_rendezvous("wireless-tether".into())
         .expect("wireless-tether PCSS rendezvous");
     assert_eq!(rendezvous.callback_port, 51560);
     assert_eq!(rendezvous.knock_port, 51562);
     assert_eq!(rendezvous.protocol, "PCSS/1.0");
+    assert_eq!(
+        rendezvous.default_discovery_target,
+        PcssDiscoveryTarget::SubnetBroadcast
+    );
+    assert_eq!(
+        rendezvous.supported_discovery_targets,
+        [
+            PcssDiscoveryTarget::SubnetBroadcast,
+            PcssDiscoveryTarget::ExplicitUnicast,
+        ]
+    );
+    assert!(rendezvous.retry_discovered_unicast);
     assert_eq!(
         rendezvous.callback_message_terminator,
         b"SERVICE: PCSS/1.0\r\n"
@@ -419,6 +457,12 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
     assert_eq!(rendezvous.init_retries_max, 3);
     assert_eq!(rendezvous.init_retries_backoff_ms, 500);
     assert_eq!(rendezvous.init_retry_reasons, [0x2019]);
+    let retry = s
+        .connection_init_retry_policy("wireless-tether".into())
+        .expect("typed PCSS init retry policy");
+    assert_eq!(retry.max_retries, 3);
+    assert_eq!(retry.backoff_ms, 500);
+    assert_eq!(retry.when_reasons, vec![0x2019]);
 
     let discovery = s
         .build_pcss_discovery("wireless-tether".into(), "192.0.2.49".into())
@@ -478,13 +522,14 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
     let notify = s
         .parse_pcss_notify(
             "wireless-tether".into(),
-            b"NOTIFY * HTTP/1.1\r\nDSC: 192.0.2.44\r\nCAMERANAME: CAMERA\r\nDSCPORT:15740\r\nSERVICE: PCSS/1.0\r\n"
+            b"NOTIFY * HTTP/1.1\r\nDSC: 198.51.100.50\r\nCAMERANAME: CAMERA\r\nDSCPORT: 15740\r\nMX: 7\r\nSERVICE: PCSS/1.0\r\n"
                 .to_vec(),
         )
         .expect("notify parses");
+    assert_eq!(notify.camera_ipv4, "198.51.100.50");
     assert_eq!(notify.camera_name, "CAMERA");
-    assert_eq!(notify.camera_ipv4, "192.0.2.44");
     assert_eq!(notify.command_port, 15740);
+    assert_eq!(notify.service, "PCSS/1.0");
     assert_eq!(
         s.build_pcss_callback_ack("wireless-tether".into())
             .expect("ack builds"),
@@ -494,6 +539,24 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
         .build_pcss_discovery("wireless-tether".into(), "not-ipv4".into())
         .is_err());
     assert!(s.pcss_rendezvous("app".into()).is_none());
+}
+
+#[test]
+fn pcss_retry_queries_preserve_full_u32_init_fail_reasons() {
+    let manifest = data("fuji/gfx100ii/gfx100ii.yaml")
+        .replace("whenReasons: [\"0x2019\"]", "whenReasons: [\"0x00012019\"]");
+    let s = ConfigStore::from_bundle(manifest, Some(data("fuji/fuji.yaml")))
+        .expect("bundle accepts a full-width InitFail reason");
+
+    let rendezvous = s
+        .pcss_rendezvous("wireless-tether".into())
+        .expect("wireless-tether PCSS rendezvous");
+    assert_eq!(rendezvous.init_retry_reasons, [0x0001_2019]);
+
+    let retry = s
+        .connection_init_retry_policy("wireless-tether".into())
+        .expect("typed PCSS init retry policy");
+    assert_eq!(retry.when_reasons, [0x0001_2019]);
 }
 
 #[test]
@@ -997,6 +1060,138 @@ fn read_device_info_action_pairs_with_the_device_info_codec() {
 }
 
 #[test]
+fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
+    let s = store();
+    assert_eq!(
+        parse_action_verb("startLiveView".into()),
+        Some(ActionVerb::StartLiveView)
+    );
+    assert_eq!(
+        parse_action_verb("pollLiveView".into()),
+        Some(ActionVerb::PollLiveView)
+    );
+    assert_eq!(
+        parse_action_verb("stopLiveView".into()),
+        Some(ActionVerb::StopLiveView)
+    );
+    assert_eq!(parse_action_verb("start-live-view".into()), None);
+    assert_eq!(parse_action_verb("poll-live-view".into()), None);
+    assert_eq!(parse_action_verb("stop-live-view".into()), None);
+    assert_eq!(parse_action_verb("StartLiveView".into()), None);
+    assert_eq!(parse_action_verb("PollLiveView".into()), None);
+    assert_eq!(parse_action_verb("StopLiveView".into()), None);
+
+    let start = s
+        .action("wireless-tether".into(), ActionVerb::StartLiveView)
+        .expect("wireless-tether.actions.startLiveView");
+    assert_eq!(start.mode, "shooting/stills");
+    assert!(start.params.is_empty());
+    assert!(matches!(
+        start.steps.as_slice(),
+        [
+            EntryStep::SetProp {
+                prop: 0xd1bc,
+                value: 2,
+                tolerant: false,
+            },
+            EntryStep::SendOp {
+                op: 0x101c,
+                params,
+                captures,
+                repeat: 1,
+                tolerant: false,
+            }
+        ] if matches!(
+            params.as_slice(),
+            [
+                EntryParam::Literal { value: 0 },
+                EntryParam::Literal { value: 0 }
+            ]
+        ) && captures.is_empty()
+    ));
+
+    let poll = s
+        .action("wireless-tether".into(), ActionVerb::PollLiveView)
+        .expect("wireless-tether.actions.pollLiveView");
+    assert_eq!(poll.mode, "shooting/stills");
+    assert!(poll.params.is_empty());
+    assert!(matches!(
+        poll.steps.as_slice(),
+        [EntryStep::Retry {
+            steps,
+            when_response_codes,
+            max_attempts: 10,
+            retry_delay_ms: 100,
+            tolerant: false,
+        }] if when_response_codes.as_slice() == [0x2002]
+            && matches!(
+                steps.as_slice(),
+                [EntryStep::SendOp {
+                    op: 0x9018,
+                    params,
+                    captures,
+                    repeat: 1,
+                    tolerant: false,
+                }] if params.is_empty() && captures.is_empty()
+            )
+    ));
+
+    let stop = s
+        .action("wireless-tether".into(), ActionVerb::StopLiveView)
+        .expect("wireless-tether.actions.stopLiveView");
+    assert_eq!(stop.mode, "shooting/stills");
+    assert!(stop.params.is_empty());
+    assert!(matches!(
+        stop.steps.as_slice(),
+        [EntryStep::SendOp {
+            op: 0x1018,
+            params,
+            captures,
+            repeat: 1,
+            tolerant: false,
+        }] if matches!(
+            params.as_slice(),
+            [EntryParam::Literal { value: 1 }]
+        ) && captures.is_empty()
+    ));
+
+    let enumerate = s
+        .action("wireless-tether".into(), ActionVerb::EnumerateObjects)
+        .expect("wireless-tether.actions.enumerateObjects");
+    assert_eq!(enumerate.mode, "");
+    assert!(matches!(
+        enumerate.steps.as_slice(),
+        [EntryStep::SendOp {
+            op: 0x1007,
+            params,
+            captures,
+            repeat: 1,
+            tolerant: false,
+        }] if matches!(
+            params.as_slice(),
+            [
+                EntryParam::Literal { value: 0xffff_ffff },
+                EntryParam::Literal { value: 0 },
+            ]
+        ) && matches!(
+            captures.as_slice(),
+            [CaptureInfo {
+                bind,
+                source: CaptureSourceInfo::PtpU32Array,
+            }] if bind == "objectHandles"
+        )
+    ));
+
+    for verb in [
+        ActionVerb::StartLiveView,
+        ActionVerb::PollLiveView,
+        ActionVerb::StopLiveView,
+    ] {
+        assert!(s.action("app".into(), verb).is_none());
+    }
+}
+
+#[test]
 fn action_returns_pcss_shutter_with_objects_available_trigger() {
     // wireless-tether shutter — the wire-confirmed 3-beat virtual-shutter
     // (setProp 0xD039 phases + sendOp 0x100E). triggers: [ObjectsAvailable{1,3}]
@@ -1493,6 +1688,26 @@ fn client_derived_friendly_name_defers_the_init_packet() {
     assert!(s
         .connection_init_with_runtime("app".into(), vec![])
         .is_none());
+    assert!(s
+        .connection_init_with_runtime(
+            "wireless-tether".into(),
+            vec![KeyValue {
+                key: "terminalName".into(),
+                value: "iphone".into(),
+            }],
+        )
+        .is_none());
+    let pcss_identity = s
+        .connection_init_identity_with_runtime(
+            "wireless-tether".into(),
+            vec![KeyValue {
+                key: "terminalName".into(),
+                value: "iphone".into(),
+            }],
+        )
+        .expect("PCSS identity resolves through the common policy");
+    assert_eq!(pcss_identity.guid, init.guid);
+    assert_eq!(pcss_identity.friendly_name, "iphone");
 }
 
 #[test]
@@ -1624,13 +1839,20 @@ fn property_catalog_enumerates_through_ffi() {
     assert_eq!(aperture.ptype.as_deref(), Some("u16"));
     assert_eq!(aperture.access.as_deref(), Some("readWrite"));
     assert_eq!(aperture.kind, PropertyKind::Setting);
-    for code in [0xd039, 0xd21c, 0xd207] {
+    for code in [0xd039, 0xd1bc, 0xd21c, 0xd207] {
         let property = cat
             .iter()
             .find(|property| property.code == code)
             .unwrap_or_else(|| panic!("scaffold property 0x{code:04x} in the catalog"));
         assert_eq!(property.kind, PropertyKind::Scaffold);
     }
+    let pcss_live_view_selector = cat
+        .iter()
+        .find(|property| property.code == 0xd1bc)
+        .expect("PCSS live-view selector in the catalog");
+    assert_eq!(pcss_live_view_selector.name, "pcssLiveViewSelector");
+    assert_eq!(pcss_live_view_selector.ptype.as_deref(), Some("u16"));
+    assert_eq!(pcss_live_view_selector.access.as_deref(), Some("readWrite"));
     // The newly-declared 0xD212 member is enumerable.
     assert!(cat
         .iter()

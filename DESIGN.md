@@ -286,6 +286,7 @@ packages/
   fixtures/                 small redistributable media fixtures
 
 tools/
+  camera-initiator/         Headless real-camera PTP/IP initiator over shipping manifests/executors
   camera-simctl/            CLI wrapper for local and remote simulator control
   golden/                   golden-packet capture fixtures for the codec tests
 ```
@@ -998,11 +999,19 @@ camera-sim-service \
   --pcss-shutter-enqueue-count 2 \
   --control-bind '127.0.0.1:8080'
 
-# IMPLEMENTED today (tools/camera-simctl):
+# Simulator lifecycle control:
 camera-simctl health  --control 127.0.0.1:8080
 camera-simctl trace   --control 127.0.0.1:8080 --after 0
 camera-simctl shutdown --control 127.0.0.1:8080
-camera-simctl smoke   --host    127.0.0.1:55740    # design gate #5
+
+# Drive the same manifest-backed protocol path used against real cameras:
+camera-initiator \
+  --camera 127.0.0.1 \
+  --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml \
+  --manufacturer packages/camera-config-data/fuji/fuji.yaml \
+  --connection app \
+  --param terminalName=probe-host \
+  entry --to image-transfer
 
 # PLANNED (not implemented yet — paper shape for the script/fault surface):
 camera-simctl script run scenarios/fuji/image-import-happy.yaml
@@ -1370,19 +1379,23 @@ Modeled real-camera flow:
 
 ```text
 host listens TCP :51560
+address free: host sends subnet-directed UDP broadcast :51562 DISCOVERY
 known address: host sends UDP camera:51562 DISCOVERY
-auto discovery: host broadcasts DISCOVERY, learns the camera, then runs the same unicast flow
 camera dials host:51560 and sends NOTIFY ... DSC:<address> ... DSCPORT:<port>
+host requires callback peer = DSC; explicit unicast also requires DSC = requested camera
 host replies HTTP/1.1 200 OK
 host connects TCP <DSC>:<DSCPORT>
+optional recovery: repeat DISCOVERY by unicast to the learned DSC
 PTP/IP InitCommandRequest -> InitCommandAck -> OpenSession
 ```
 
-The broadcast leg only discovers identity and address. Saved and manually
-entered camera addresses skip it, and all paths converge before the unicast
-knock. `DSC` and `DSCPORT` are runtime-advertised endpoint fields. Captured
-broadcast cadence or service-readiness delay is evidence for bounded retry
-policy, not a fixed client contract.
+Subnet broadcast and explicit unicast are alternative discovery targets, not
+different session protocols. The manifest chooses the address-free default and
+declares whether a failed command connection or first Init transport attempt
+may trigger one fresh unicast round to the learned camera. `DSC` and `DSCPORT`
+are runtime-advertised endpoint fields. Captured broadcast cadence or
+service-readiness delay is evidence for bounded retry policy, not a fixed
+client contract.
 
 Simulator modes:
 

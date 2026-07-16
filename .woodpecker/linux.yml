@@ -44,6 +44,7 @@ steps:
       - path:
           - 'crates/**'
           - 'services/**'
+          - 'tools/camera-initiator/**'
           - 'tools/camera-simctl/**'
           - 'tools/uniffi-bindgen/**'
           - 'packages/camera-config-data/**'

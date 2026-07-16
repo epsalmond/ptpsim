@@ -9,7 +9,7 @@
 //! payload bytes are reconciled against capture in the GFX100 II manifest work.)
 
 use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use camera_config::{parse_hex_code, CameraManifest, LiveViewDeliveryKind, PcssKnock};
@@ -20,11 +20,11 @@ use camera_sim::{
     AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply, StreamCompletion,
 };
 use protocol_primitives::{
-    fuji_framing, parse_pcss_discovery, parse_pcss_init, pcss_callback_ack_message,
-    pcss_init_ack_message, pcss_notify_message,
+    fuji_framing, parse_pcss_discovery, parse_pcss_init, parse_app_init,
+    pcss_callback_ack_message, pcss_init_ack_message, pcss_notify_message,
 };
 use ptp_core::codes::{op, resp};
-use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpCodec, PtpIpPacket};
+use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpIpPacket};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::broadcast;
@@ -109,6 +109,7 @@ pub struct Server {
     event: Option<TcpListener>,
     knock: Option<UdpSocket>,
     knock_config: Option<PcssKnock>,
+    event_framing: Option<WireFraming>,
     poll_live_view_op: Option<u16>,
     disallowed_ops: Arc<HashSet<u16>>,
     control: TcpListener,
@@ -175,7 +176,10 @@ impl Server {
             )));
         }
         if bindings.port_for(SocketRole::Event).is_some()
-            && !matches!(connection.event_framing, Some(WireFraming::Usb))
+            && !matches!(
+                connection.event_framing,
+                Some(WireFraming::Standard | WireFraming::Usb)
+            )
         {
             return Err(invalid_config(format!(
                 "selected connection '{}' uses unsupported event framing {:?}",
@@ -245,6 +249,7 @@ impl Server {
         } else {
             None
         };
+        let event_framing = connection.event_framing;
         let mut engine_value = Engine::new(manifest, store);
         engine_value.bind_connection(&config.connection);
         engine_value
@@ -277,6 +282,7 @@ impl Server {
             event,
             knock,
             knock_config,
+            event_framing,
             poll_live_view_op,
             disallowed_ops,
             control,
@@ -333,6 +339,7 @@ impl Server {
             event,
             knock,
             knock_config,
+            event_framing,
             poll_live_view_op,
             disallowed_ops,
             control,
@@ -505,7 +512,12 @@ impl Server {
                                     drop(stream);
                                     continue;
                                 }
-                                conns.spawn(handle_event_conn(stream, event_tx.subscribe(), metrics.clone()));
+                                conns.spawn(handle_event_conn(
+                                    stream,
+                                    event_tx.subscribe(),
+                                    event_framing.expect("bound event socket has framing"),
+                                    metrics.clone(),
+                                ));
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -732,8 +744,8 @@ async fn handle_command_conn(
                 first = next;
             }
         }
-        _ => {
-            let Ok(PtpIpPacket::InitCommandRequest(init_req)) = PtpIpPacket::decode(&first) else {
+        "app82" => {
+            let Ok(init_req) = parse_app_init(&first) else {
                 return Ok(()); // not a PTP/IP initiator
             };
             // The camera drops InitCommandRequest when a BLE AP handoff launched without
@@ -751,6 +763,7 @@ async fn handle_command_conn(
                 }
             }
         }
+        _ => return Ok(()),
     }
     let camera_name = {
         let e = engine.lock().await;
@@ -969,13 +982,18 @@ async fn run_knock_loop(
                         Some("connected".into()),
                         None,
                     );
-                    let Some(camera_address) = route_selected_ipv4(peer) else {
+                    let Some(camera_address) = callback_stream.local_addr().ok().and_then(|address| {
+                        let IpAddr::V4(address) = address.ip() else {
+                            return None;
+                        };
+                        Some(address)
+                    }) else {
                         trace.record(
                             "pcss.notify.failed",
                             callback_endpoints,
                             None,
                             Some("failed".into()),
-                            Some("no route-selected IPv4 address for discovery peer".into()),
+                            Some("callback route did not select an IPv4 address".into()),
                         );
                         return;
                     };
@@ -1074,18 +1092,6 @@ async fn read_exact_with_prefix<R: AsyncRead + Unpin>(
     Ok(())
 }
 
-fn route_selected_ipv4(peer: std::net::SocketAddr) -> Option<std::net::Ipv4Addr> {
-    let std::net::SocketAddr::V4(peer) = peer else {
-        return None;
-    };
-    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).ok()?;
-    socket.connect(peer).ok()?;
-    match socket.local_addr().ok()? {
-        std::net::SocketAddr::V4(local) => Some(*local.ip()),
-        std::net::SocketAddr::V6(_) => None,
-    }
-}
-
 async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSource>>) -> Reply {
     let Reply::Response(response) = reply else {
         return reply;
@@ -1100,13 +1106,14 @@ async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSourc
 }
 
 /// Push completion/lifecycle events to one connected event-socket client until
-/// it disconnects (#54). Each broadcast code is written as a standard-framed
-/// PTP/IP `Event` packet. Mirrors [`stream_liveview`]'s read-half watcher: event
+/// it disconnects (#54). Each broadcast code uses the selected connection's
+/// declared event framing. Mirrors [`stream_liveview`]'s read-half watcher: event
 /// clients never send bytes, so a completed read means EOF/reset — the client is
 /// gone, and without watching it a never-emitting session would hang the task.
 async fn handle_event_conn(
     mut stream: TcpStream,
     mut events: broadcast::Receiver<u16>,
+    framing: WireFraming,
     metrics: Metrics,
 ) {
     let (mut rd, mut wr) = stream.split();
@@ -1121,7 +1128,12 @@ async fn handle_event_conn(
                             transaction_id: 0,
                             params: vec![],
                         });
-                        let Ok(bytes) = ptp_core::encode(&packet) else { break };
+                        let bytes = match framing {
+                            WireFraming::Standard => ptp_core::encode(&packet).ok(),
+                            WireFraming::Usb => protocol_primitives::usb_ptp::encode(&packet).ok(),
+                            WireFraming::Compressed => unreachable!("compressed event framing is rejected at bind"),
+                        };
+                        let Some(bytes) = bytes else { break };
                         if wr.write_all(&bytes).await.is_err() {
                             break; // client gone
                         }

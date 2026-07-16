@@ -7,8 +7,8 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 
 use camera_sim_service::{Config, Server};
-use protocol_primitives::{fuji_framing, parse_pcss_init_ack};
-use ptp_core::{InitCommandRequest, PtpCodec, PtpIpPacket};
+use protocol_primitives::{build_app_init, fuji_framing, parse_pcss_init_ack};
+use ptp_core::{PtpCodec, PtpIpPacket};
 
 const MANIFEST: &str = r#"
 schema: camera-config/v1
@@ -91,17 +91,18 @@ fn real_gfx_manifest() -> String {
 
 fn connect_ptpip(command_addr: std::net::SocketAddr, friendly_name: &str) -> TcpStream {
     let mut s = TcpStream::connect(command_addr).unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: friendly_name.into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(1, friendly_name));
     match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
         PtpIpPacket::InitCommandAck(_) => {}
         other => panic!("expected InitCommandAck, got {other:?}"),
     }
     s
+}
+
+fn app_init_frame(guid_byte: u8, friendly_name: &str) -> Vec<u8> {
+    // A non-zero vendor tail distinguishes the reference app layout from PCSS, whose
+    // overlapping fixed fields require a zero tail.
+    build_app_init(&[guid_byte; 16], friendly_name, &[1; 28]).unwrap()
 }
 
 fn pcss_init_frame(hostname: &str) -> Vec<u8> {
@@ -265,12 +266,7 @@ fn service_drives_image_import_over_tcp() {
     // --- PTP/IP client flow ---
     let mut s = TcpStream::connect(command_addr).unwrap();
     // Init handshake (standard framing).
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: "smoke".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(1, "smoke"));
     match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
         PtpIpPacket::InitCommandAck(a) => assert_eq!(a.friendly_name, "GFX100 II"),
         other => panic!("expected InitCommandAck, got {other:?}"),
@@ -603,12 +599,7 @@ properties: {}
     // Command-socket session bring-up. These round-trips also give the event
     // accept time to land (and subscribe) before the AF op broadcasts.
     let mut s = TcpStream::connect(command_addr).unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: "smoke".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(1, "smoke"));
     let _ = read_frame(&mut s); // InitCommandAck
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
@@ -617,8 +608,8 @@ properties: {}
     write_frame(&mut s, &op(0x9026, 2, vec![0x0906_0403]));
     read_ok(&mut s);
 
-    // The push arrives on the event socket as a standard-framed Event packet.
-    match PtpIpPacket::decode(&read_frame(&mut evt)).unwrap() {
+    // The push follows the manifest's USB/PIMA event framing.
+    match protocol_primitives::usb_ptp::decode(&read_frame(&mut evt)).unwrap() {
         PtpIpPacket::Event(e) => {
             assert_eq!(e.code, 0xc005, "AFCAPTUER event code");
             assert_eq!(e.transaction_id, 0, "async event uses tid 0");
@@ -681,12 +672,7 @@ fn service_serves_a_large_object_in_a_single_frame() {
     });
 
     let mut s = TcpStream::connect(command_addr).unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: "bigobj".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(1, "bigobj"));
     match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
         PtpIpPacket::InitCommandAck(_) => {}
         other => panic!("expected InitCommandAck, got {other:?}"),
@@ -863,12 +849,7 @@ properties:
     let mut s = TcpStream::connect(command_addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(2)))
         .unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [9; 16],
-        friendly_name: "overflow".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(9, "overflow"));
     match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
         PtpIpPacket::InitCommandAck(_) => {}
         other => panic!("expected InitCommandAck, got {other:?}"),
@@ -1333,12 +1314,7 @@ properties: {}
     let mut s = TcpStream::connect(command_addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_millis(500)))
         .unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: "app".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(1, "app"));
     let mut buf = [0u8; 4];
     if s.read_exact(&mut buf).is_ok() {
         panic!("PCSS path accepted an reference app init packet");
@@ -1366,7 +1342,14 @@ connections:
     initShape: pcssKnock
     commandFraming: compressed
     bindings: {{ command: 15740 }}
-    knock: {{ callbackPort: {callback_port}, knockPort: 51562, protocol: "PCSS/1.0" }}
+    knock:
+      callbackPort: {callback_port}
+      knockPort: 51562
+      protocol: "PCSS/1.0"
+      discoveryTargets:
+        default: subnetBroadcast
+        supported: [subnetBroadcast, explicitUnicast]
+        retryDiscoveredUnicast: true
 operations:
   "0x1002": {{ name: OpenSession, connections: [wireless-tether] }}
 properties: {{}}
@@ -1531,12 +1514,7 @@ properties: {}
     });
 
     let mut s = TcpStream::connect(command_addr).unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [0; 16],
-        friendly_name: "test".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(0, "test"));
     match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
         PtpIpPacket::InitCommandAck(_) => {}
         other => panic!("expected InitCommandAck, got {other:?}"),
@@ -1691,12 +1669,7 @@ properties:
 
     // Drive the command channel into Phase::Streaming.
     let mut s = TcpStream::connect(command_addr).unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [0; 16],
-        friendly_name: "test".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(0, "test"));
     match PtpIpPacket::decode(&read_frame(&mut s)).unwrap() {
         PtpIpPacket::InitCommandAck(_) => {}
         other => panic!("expected InitCommandAck, got {other:?}"),
@@ -1988,12 +1961,7 @@ fn unarmed_engine_drops_init_command_request() {
     let mut s = TcpStream::connect(command_addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: "smoke".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(1, "smoke"));
     // The server hangs up without acking → a clean EOF (0 bytes), not an ack frame.
     let mut buf = [0u8; 4];
     let n = s.read(&mut buf).expect("read returns (EOF), not a timeout");
@@ -2046,12 +2014,7 @@ fn mismatched_friendly_name_is_dropped_a_matching_one_is_acked() {
     let mut s = TcpStream::connect(command_addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
-    let mismatch = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: "Pixel-6-4976".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&mismatch).unwrap());
+    write_frame(&mut s, &app_init_frame(1, "Pixel-6-4976"));
     let mut buf = [0u8; 4];
     let n = s.read(&mut buf).expect("read returns (EOF), not a timeout");
     assert_eq!(
@@ -2063,12 +2026,7 @@ fn mismatched_friendly_name_is_dropped_a_matching_one_is_acked() {
     let mut s2 = TcpStream::connect(command_addr).unwrap();
     s2.set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
-    let matching = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: "iphone".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s2, &ptp_core::encode(&matching).unwrap());
+    write_frame(&mut s2, &app_init_frame(1, "iphone"));
     match PtpIpPacket::decode(&read_frame(&mut s2)).unwrap() {
         PtpIpPacket::InitCommandAck(_) => {}
         other => panic!("expected InitCommandAck for the matching name, got {other:?}"),
@@ -2161,12 +2119,7 @@ fn state_callback_posts_camera_state_on_change() {
 
     // Drive: init handshake + OpenSession (flips session_open=true and the phase).
     let mut s = TcpStream::connect(command_addr).unwrap();
-    let init = PtpIpPacket::InitCommandRequest(InitCommandRequest {
-        initiator_guid: [1; 16],
-        friendly_name: "smoke".into(),
-        protocol_version: 0x0001_0000,
-    });
-    write_frame(&mut s, &ptp_core::encode(&init).unwrap());
+    write_frame(&mut s, &app_init_frame(1, "smoke"));
     let _ = read_frame(&mut s); // InitCommandAck
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);

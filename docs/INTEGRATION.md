@@ -48,16 +48,18 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
 | `ConnectionInfo.command_listener_volatile` | whether closing the active PTP/IP transport may remove the command listener, so a consumer must not assume it can immediately redial the same endpoint as generic recovery. A manifest-authored outer connection re-establishment may create a new listener. |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
-| `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` / `build_pcss_init` | typed callback/knock policy and byte-exact PCSS packet codecs. The camera may keep its callback TCP socket open: stop after receiving the rendezvous record's exact manifest-rendered terminator bytes, including the final CRLF, then pass the accumulated payload to `parse_pcss_notify`. `NOTIFY` supplies the camera address and command port; neither is inferred from a captured default. |
-| `run_pcss_auto_establishment` / `run_pcss_known_address_establishment` | Rust-owned PCSS discovery and establishment. Auto-discovery broadcasts only to identify an address, then converges on the same unicast rendezvous used for saved or manually supplied addresses. The host implements raw socket I/O through `PcssExecutorTransport`. |
-| `decode_init_command_response(packet)` | a typed response for canonical standard PTP/IP Ack/InitFail packets and the fixed-width PCSS Ack. `Acknowledged.protocol_version` is `Some(version)` for standard Ack and `None` for PCSS, whose wire shape omits that field. The InitFail reason drives manifest-owned retry policy; consumers do not inspect packet-type literals or offsets. |
+| `connection_init_with_runtime(connection, runtimeScope)` / `connection_init_identity_with_runtime(connection, runtimeScope)` | resolve the manifest-owned reference app packet or the shape-independent initiator GUID/friendly name. Normalize the raw host name once with `normalize_client_name`, store that result in the shared `terminalName` runtime slot used during pairing, and use the identity query for PCSS and other layouts; do not reinterpret an reference app packet. |
+| `connection_init_retry_policy(connection)` | typed InitFail retry limit, backoff, and selected u32 reason codes. Retry only listed reasons on the same socket; transport failures and unlisted reasons escape that retry loop. On auto PCSS only, first-Init transport unavailability may separately select the one manifest-authorized outer rendezvous recovery. |
+| `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` / `build_pcss_init` | typed discovery-target, callback/knock, and retry policy plus byte-exact PCSS packet codecs. The host supplies the route-selected local IPv4 address, initiator GUID, and friendly name. The camera may keep its callback TCP socket open: stop after receiving the rendezvous record's exact manifest-rendered terminator bytes, including the final CRLF, then pass the accumulated payload to `parse_pcss_notify`. `NOTIFY` supplies the camera address and command port; neither is inferred from a captured default. |
+| `run_pcss_auto_establishment` / `run_pcss_known_address_establishment` | Rust-owned PCSS discovery and establishment. Auto-discovery uses the first recognized broadcast callback directly; when manifest policy permits, an unavailable command endpoint or first Init transport attempt triggers one fresh rendezvous to the learned address by unicast. Known-address establishment starts with explicit unicast. The host implements raw socket I/O through `PcssExecutorTransport`; `next_callback` returns a typed `PcssCallback` containing the TCP peer IPv4 and payload. |
+| `decode_init_command_response(packet)` | a typed response for canonical standard PTP/IP Ack/InitFail packets and the fixed-width 68-byte PCSS Ack. `Acknowledged.protocol_version` is `Some(version)` for standard Ack and `None` for PCSS, whose wire shape omits that field. The InitFail reason drives manifest-owned retry policy; consumers do not inspect packet-type literals or offsets. |
 | `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
 | `camera_initiated_transfer(model)` | BLE trigger states, optional/cached handoff, resolved endpoint, reserved count/head, metadata/data operations, chunk limit, and completion policy for the camera-controlled pull queue. Requires a manufacturer-index store so symbolic GATT names resolve. |
 | `transport_close(connection)` | the manifest-resolved frame plus its declared `when` context (Fuji `app`: the 8-byte sentinel before image-transfer re-establishment), `None` when absent; malformed sentinel data is an error. Use it only in the declared context; sending it does not by itself guarantee that the endpoint is immediately redialable. |
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
 | `mode_entry(connection, from, to)` | a closed execution plan: PTP wire steps, a manual instruction, or an outer connection re-establishment that exits the old session and reuses the target mode's cold entry |
-| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). A `PtpU32Array` capture binds a count-prefixed property reply as a collection; `ForEach.collection` names that captured slot and performs no additional read. See `docs/plans/action-verbs.md` and schema §11.22. |
+| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). A `PtpU32Array` capture binds a count-prefixed property reply as a collection; `TransactionId` binds the executor-allocated id of one unrepeated `sendOp`; `ForEach.collection` names a captured collection and performs no additional read. See `docs/plans/action-verbs.md` and schema §11.22. |
 | `selected_object_transfer(connection)` | typed lazy-gallery projection of the canonical `importObjects` per-handle preparation plus the existing chunk-read action; exposes the preparation-step index whose response is ObjectInfo and manifest-owned u64 transfer-size/u32 chunk-size slots without requiring consumers to inspect nested action ASTs; returns a contract error when a connection declares the actions with an invalid shape |
 | `object_transfer_contract(connection)` | transfer strategy (`chunked` or `wholeObject`), resume policy, read/completion actions, completion timing, and per-format confidence. A completion action is eligible only after the host has atomically committed the object locally. |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
@@ -175,14 +177,20 @@ per-platform packaging:
    PCSS has two entry paths. `run_pcss_known_address_establishment` sends
    `DISCOVERY` directly to a saved or manually supplied camera IPv4.
    `run_pcss_auto_establishment` first sends the same payload to the
-   route-selected subnet broadcast address, acknowledges a recognized callback,
-   then invokes that same known-address unicast path. Broadcast is address
-   discovery, not a prerequisite for PCSS. Both paths bind the callback listener
-   before sending, parse `DSC`, `CAMERANAME`, `DSCPORT`, and `SERVICE`, acknowledge
-   the callback, and connect to the advertised `DSC:DSCPORT`. The executor retries
-   a typed Device Busy InitFail with an identical request on the same command
-   socket; other InitFail reasons remain fatal. Captured application delays are
-   not protocol constants.
+   route-selected subnet-directed broadcast address and uses the first recognized,
+   peer-validated callback directly. It performs one fresh unicast rendezvous to
+   the learned address only when body policy permits recovery and the advertised
+   command endpoint or first Init transport attempt is unavailable. Broadcast is
+   not a prerequisite for PCSS. Both paths bind the callback listener before
+   sending, require callback peer = `DSC` (and, for explicit unicast, both equal
+   the requested address), parse `CAMERANAME`, `DSCPORT`, and `SERVICE`, acknowledge
+   the validated callback, and connect to its `DSC:DSCPORT`. The executor retries
+   any manifest-selected u32 InitFail reason with an identical request on the
+   same command socket (`0x2019` is the current GFX100 II selection); other
+   InitFail reasons remain fatal. Captured application delays are not protocol
+   constants. Resolve the initiator identity from the same normalized
+   `terminalName` supplied during pairing; do not synthesize a second PCSS-only
+   friendly name.
 3. **Enter a mode.** `mode_entry(connection, from, to)` returns one
    `ModeEntryExecution`: execute `Ptp.steps` with `run_mode_entry` over the
    current transport, surface `UserInstruction`, or orchestrate
@@ -190,10 +198,12 @@ per-platform packaging:
    non-OK PTP *response* is advisory — log + continue; only a transport failure
    aborts). A `retry` step reruns its complete nested sequence only for the exact
    manifest-declared PTP response codes; transport failures and unselected
-   responses escape immediately. `sendOp` `params` are literals **or** a named runtime slot
-   (`EntryParam.Runtime { slot }`, e.g. `openCaptureTxId`) that **you** bind from
-   your session state — ptpsim names which runtime value goes there; it never
-   computes it.
+   responses escape immediately. `sendOp` `params` are literals **or** a named
+   runtime slot (`EntryParam.Runtime { slot }`). Callers supply ordinary runtime
+   values, while a manifest `capture: transactionId` binds the executor-allocated
+   transaction ID for a later step (for example reference app's `openCaptureTxId`). PCSS
+   live-view stop is separately manifest-authored as literal `0x1018(1)` and does
+   not consume that reference app transaction capture.
 
    `ReestablishConnection` is an outer lifecycle, not a PTP step. Execute its
    `exitSteps` on the old session, including any orderly transport close; release
@@ -277,8 +287,9 @@ tracked by issue #164.
   transport, stop — that's the thing we designed against.
 - **No protocol literals in app source.** Opcodes, prop codes, mode values, ports → ask
   the manifest. A CI grep for PTP hex literals in app sources should stay empty.
-- **No shutter or transfer sequences in app source either.** Verbs like
-  shutter / enumerateObjects / getObject are connection-specific recipes —
+- **No shutter, live-view, or transfer sequences in app source either.** Verbs
+  like startLiveView / pollLiveView / stopLiveView / shutter /
+  enumerateObjects / getObject are connection-specific recipes —
   the PCSS shutter is a 3-beat `0xD039 + 0x100E` dance, the reference app shutter is
   `0x100E + 0x9022` cleanup. Don't hardcode either; ask
   `action(connection, ActionVerb::<verb>)`. Read `.triggers` (e.g.
@@ -293,8 +304,9 @@ tracked by issue #164.
   must not replay completed object work.
 - **Settings UI filters on `PropertyInfo.kind`.** The typed `PropertyKind`
   resolves omitted manifest classifications to `setting`. Props classified as
-  `scaffold` (the wireless-tether `0xD039 / 0xD21C / 0xD207` virtual-shutter +
-  keepalives) look writable on the wire but are protocol mechanics, NOT
+  `scaffold` (the wireless-tether `0xD039 / 0xD1BC / 0xD21C / 0xD207`
+  virtual-shutter, live-view selector, and keepalives) look writable on the
+  wire but are protocol mechanics, NOT
   user-facing values. Don't surface them in settings UI; a generic
   set-prop-by-name path must skip them.
 - **Keepalives are actions.** For a connection that declares
@@ -452,6 +464,7 @@ or retry policy around them.
 | `runModeEntry(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | a current-session `ptp` mode entry. `UserInstruction` and `ReestablishConnection` fail with `UnsupportedPlan` so the host cannot accidentally skip their outer lifecycle. |
 | `runModeReestablishmentExit(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | only the old-session `exitSteps` of a `ReestablishConnection` entry. Establishment replay, network association, fresh session creation, and the cold entry remain explicit host orchestration. |
 | `runAction(store, connection, action, transport, observer, activityObserver, runtimeParams)` | one named manifest action on the current session. |
+| `runActionToSink(store, connection, action, transport, observer, activityObserver, sink, runtimeParams)` | the same action walker, delivering each completed ordinary data output to `PtpDataOutputSink` after its response has been consumed instead of accumulating payloads in the outcome. A sink failure fails the step but leaves the synchronized command session reusable. |
 | `runSelectedObjectPreparation(store, connection, transport, observer, activityObserver, runtimeParams)` | the selected-object prefix projected from the canonical import action, preserving capture bindings for later chunk reads. |
 | `runStreamingAction(store, connection, action, transport, sink, runtimeParams, expectedPayloadBytes)` | one compressed, single-`sendOp` data-in action through bounded raw reads. Rust validates the 12-byte data header, streams the exact body to `PtpStreamingSink` in chunks no larger than 1 MiB, then validates the separate final response. |
 
@@ -481,6 +494,10 @@ activities over their top-level steps (§11.24). When present, the PTP executor
 emits them through the same `ConnectionActivityObserver` contract as
 establishment walking; absent metadata produces no invented activity or
 duration. Cancellation emits exactly one `Cancelled` for the active span.
+
+For a complete host implementation of this seam, including manifest-driven
+reference app/PCSS establishment, raw frame traces, streamed object reads, and outer
+mode re-establishment, see [Driving a real camera over PTP/IP](REAL_CAMERA_PTPIP.md).
 
 `PtpStreamingTransport` is intentionally separate from `PtpExecutorTransport`:
 its `receiveCommandBytes(maxBytes)` must never return more than requested, which

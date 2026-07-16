@@ -4,6 +4,9 @@ This public summary records the protocol facts used by the GFX100 II manifest.
 Addresses in examples use the documentation-only `192.0.2.0/24` range; endpoint
 values are always parsed from the callback.
 
+Updated 2026-07-16 with live acceptance evidence for direct use of a valid
+broadcast callback versus an unnecessary second rendezvous.
+
 ## Discovery and establishment
 
 - Auto discovery sends `DISCOVERY * HTTP/1.1` to the subnet broadcast address on
@@ -11,11 +14,13 @@ values are always parsed from the callback.
 - The camera opens a TCP callback to the host on 51560 and sends one CRLF-delimited
   `NOTIFY` containing `DSC`, `CAMERANAME`, `DSCPORT`, `MX`, and `SERVICE`.
 - The callback is acknowledged with the exact 18 bytes
-  `HTTP/1.1 200 OK\0`. The advertised `DSC` and `DSCPORT` select the command
+  `HTTP/1.1 200 OK\r\n\0`. The advertised `DSC` and `DSCPORT` select the command
   endpoint; neither is a fixed protocol constant.
-- A callback may precede command-endpoint readiness. Repeating the unicast
-  rendezvous is reliable and preserves a single establishment path for auto,
-  saved, and manually entered addresses.
+- A valid broadcast callback may advertise a command endpoint that is already
+  ready; connect to that endpoint before sending another discovery datagram.
+  If the endpoint or first Init transport attempt is unavailable, one fresh
+  unicast rendezvous to the learned `DSC` can refresh it. An unconditional
+  second rendezvous can invalidate an otherwise ready command session.
 - PTP/IP Init may answer with typed `InitFail` reason `0x2019`. Replaying the
   byte-identical request after roughly 500 ms on the same TCP socket succeeded
   in both cold-start and stable-lease observations.

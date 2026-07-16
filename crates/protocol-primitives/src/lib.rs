@@ -19,7 +19,7 @@ pub mod value_codec;
 pub use client_identity::normalize_client_name;
 pub use error::FramingError;
 pub use focus_area::pack_af_area;
-pub use fuji_init::{build_app_init, validate_init_ack};
+pub use fuji_init::{build_app_init, parse_app_init, validate_init_ack, AppInit};
 pub use pcss::{
     callback_ack_message as pcss_callback_ack_message, discovery_message as pcss_discovery_message,
     notify_message as pcss_notify_message,

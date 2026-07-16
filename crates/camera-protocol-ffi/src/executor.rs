@@ -65,9 +65,11 @@ const MAX_LOOP_ITERS: usize = 65_536;
 // ---------------------------------------------------------------------------
 
 /// Failure surface a transport implementation may raise. Every variant is an
-/// ordinary step failure to the executor — retried per `StepOptions`, then
-/// tolerated or fatal. There is deliberately no error-class discrimination in
-/// the retry ladder (parity with the shipping dispatcher).
+/// ordinary step failure to the BLE executor — retried per `StepOptions`, then
+/// tolerated or fatal without error-class discrimination (parity with the
+/// shipping dispatcher). The PCSS executor separately uses the connection and
+/// timeout variants to select its manifest-authorized endpoint recovery; its
+/// foreign trait documents the required socket-error mapping.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum TransportError {
     #[error("peripheral not connected")]

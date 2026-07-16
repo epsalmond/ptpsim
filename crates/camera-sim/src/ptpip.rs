@@ -252,7 +252,7 @@ impl Ctx<'_> {
         } else if let Some(o) = &step.send_op {
             let code = parse_hex_code(o).ok_or_else(|| err(format!("bad op code {o:?}")))?;
             let params = self.resolve_params(&step.params).map_err(err)?;
-            let reply = self.issue_op(code, params);
+            let (transaction_id, reply) = self.issue_op(code, params);
             check_ok(&reply, code, step.tolerant).map_err(err)?;
             let completion = match &reply {
                 Reply::DataStream {
@@ -270,7 +270,9 @@ impl Ctx<'_> {
                 if let Some((source, _)) = completion.as_ref().filter(|_| !captures_collection) {
                     consume_stream(source).map_err(err)?;
                 }
-                if let Err(message) = self.apply_captures(&step.captures, code, &reply) {
+                if let Err(message) =
+                    self.apply_captures(&step.captures, code, transaction_id, &reply)
+                {
                     if !step.tolerant {
                         return Err(err(message));
                     }
@@ -624,11 +626,11 @@ impl Ctx<'_> {
     /// A no-data operation (send_op / session ops). `repeat` is applied by the
     /// caller; this fires exactly one request.
     fn simple_op(&mut self, code: u16, params: Vec<u32>, tolerant: bool) -> Result<(), String> {
-        let reply = self.issue_op(code, params);
+        let (_, reply) = self.issue_op(code, params);
         check_ok(&reply, code, tolerant)
     }
 
-    fn issue_op(&mut self, code: u16, params: Vec<u32>) -> Reply {
+    fn issue_op(&mut self, code: u16, params: Vec<u32>) -> (u32, Reply) {
         let tid = self.next_tid();
         let req = OperationRequest {
             data_phase_info: 1,
@@ -638,13 +640,14 @@ impl Ctx<'_> {
         };
         let reply = self.engine.on_operation(&req, None);
         self.last_response_code = response_code(&reply);
-        reply
+        (tid, reply)
     }
 
     fn apply_captures(
         &mut self,
         captures: &[Capture],
         code: u16,
+        transaction_id: u32,
         reply: &Reply,
     ) -> Result<(), String> {
         let mut captured = Vec::with_capacity(captures.len());
@@ -677,6 +680,7 @@ impl Ctx<'_> {
                     r.u64()
                         .map_err(|e| format!("decode captured u64Le: {e:?}"))?
                 }
+                CaptureSource::TransactionId => transaction_id as u64,
             };
             captured.push((capture.bind.clone(), value));
         }

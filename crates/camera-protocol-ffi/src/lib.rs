@@ -24,14 +24,15 @@ pub use executor::{
 };
 pub mod ptp_executor;
 pub use ptp_executor::{
-    run_action, run_mode_entry, run_mode_reestablishment_exit, run_selected_object_preparation,
-    PtpCollectionValue, PtpDataOutput, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
+    run_action, run_action_to_sink, run_mode_entry, run_mode_reestablishment_exit,
+    run_selected_object_preparation, PtpCollectionValue, PtpDataOutput, PtpDataOutputSink,
+    PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
     PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError,
 };
 pub mod pcss_executor;
 pub use pcss_executor::{
-    run_pcss_auto_establishment, run_pcss_known_address_establishment, PcssEstablishmentOutcome,
-    PcssExecutorError, PcssExecutorTransport,
+    run_pcss_auto_establishment, run_pcss_known_address_establishment, PcssCallback,
+    PcssEstablishmentOutcome, PcssExecutorError, PcssExecutorTransport,
 };
 pub mod streaming_executor;
 pub use streaming_executor::{
@@ -845,6 +846,22 @@ pub struct InitShapeInfo {
     pub packet: Vec<u8>,
 }
 
+/// Resolved initiator identity shared by every PTP/IP init shape.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ResolvedInitIdentityInfo {
+    pub guid: Vec<u8>,
+    pub friendly_name: String,
+}
+
+/// Manifest-selected InitFail retry policy. `max_retries` is the number of
+/// retries after the initial request.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct InitRetryPolicyInfo {
+    pub max_retries: u32,
+    pub backoff_ms: u32,
+    pub when_reasons: Vec<u32>,
+}
+
 #[derive(uniffi::Record)]
 pub struct CameraIdentityInfo {
     pub manufacturer: String,
@@ -925,7 +942,7 @@ pub struct ControlSurfaceInfo {
     pub control: ControlInfo,
 }
 
-#[derive(Debug, Clone, Copy, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ObjectTransferStrategy {
     Chunked,
     WholeObject,
@@ -1239,6 +1256,7 @@ pub enum CaptureSourceInfo {
     U32Le,
     U64Le,
     PtpU32Array,
+    TransactionId,
 }
 
 /// The PTP condition vocabulary (`cc::Predicate`) mirrored for the app: a
@@ -1498,7 +1516,7 @@ pub enum ModeEntryExecution {
 /// Closed verb vocabulary for named in-mode actions. Mirrors
 /// `cc::ActionVerb`; new verbs require an FFI-side variant alongside the
 /// camera-config-side addition (same fail-fast as Step verbs).
-#[derive(Debug, Clone, Copy, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ActionVerb {
     Shutter,
     EnumerateObjects,
@@ -1510,7 +1528,16 @@ pub enum ActionVerb {
     AutofocusRelease,
     ImportObjects,
     ReadDeviceInfo,
+    StartLiveView,
+    PollLiveView,
+    StopLiveView,
     Keepalive,
+}
+
+/// Parse the schema's exact camelCase action vocabulary.
+#[uniffi::export]
+pub fn parse_action_verb(value: String) -> Option<ActionVerb> {
+    value.parse::<cc::ActionVerb>().ok().map(cc_to_ffi_verb)
 }
 
 /// Declared post-conditions an action produces — the consumer plans UX
@@ -1616,13 +1643,20 @@ pub struct ConnectionEstablishmentInfo {
 }
 
 /// Manifest-owned PCSS rendezvous parameters. A consumer binds
-/// `callback_port`, sends discovery to `knock_port`, and connects to the port
-/// returned by the parsed callback.
+/// `callback_port`, selects one of the manifest-supported discovery targets,
+/// sends discovery to `knock_port`, and connects to the callback peer at the
+/// port returned by the parsed callback.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PcssRendezvousInfo {
     pub callback_port: u16,
     pub knock_port: u16,
     pub protocol: String,
+    pub default_discovery_target: PcssDiscoveryTarget,
+    pub supported_discovery_targets: Vec<PcssDiscoveryTarget>,
+    /// Whether an unavailable broadcast-discovered command endpoint or first
+    /// Init transport attempt may trigger a fresh unicast rendezvous to the
+    /// validated discovered address.
+    pub retry_discovered_unicast: bool,
     /// Exact manifest-derived bytes, including the final CRLF, that complete
     /// the callback even when the camera keeps the TCP socket open.
     pub callback_message_terminator: Vec<u8>,
@@ -1634,8 +1668,29 @@ pub struct PcssRendezvousInfo {
     pub init_retry_reasons: Vec<u32>,
 }
 
+/// Where a PCSS discovery datagram is addressed. `SubnetBroadcast` discovers
+/// the camera from callback DSC validated against the peer and therefore
+/// requires no camera address; `ExplicitUnicast` requires one and peer-matches
+/// the callback against it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PcssDiscoveryTarget {
+    SubnetBroadcast,
+    ExplicitUnicast,
+}
+
+impl From<cc::PcssDiscoveryTarget> for PcssDiscoveryTarget {
+    fn from(value: cc::PcssDiscoveryTarget) -> Self {
+        match value {
+            cc::PcssDiscoveryTarget::SubnetBroadcast => Self::SubnetBroadcast,
+            cc::PcssDiscoveryTarget::ExplicitUnicast => Self::ExplicitUnicast,
+        }
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PcssNotifyInfo {
+    /// Camera IPv4 from the required DSC header. The transport must verify it
+    /// equals the callback TCP peer before treating the callback as discovery.
     pub camera_ipv4: String,
     pub camera_name: String,
     pub command_port: u16,
@@ -2148,6 +2203,15 @@ impl ConfigStore {
             callback_port: knock.callback_port,
             knock_port: knock.knock_port,
             protocol: knock.protocol.clone(),
+            default_discovery_target: knock.discovery_targets.default.into(),
+            supported_discovery_targets: knock
+                .discovery_targets
+                .supported
+                .iter()
+                .copied()
+                .map(Into::into)
+                .collect(),
+            retry_discovered_unicast: knock.discovery_targets.retry_discovered_unicast,
             callback_message_terminator: protocol_primitives::pcss_notify_message_terminator(
                 &knock.protocol,
             ),
@@ -2159,7 +2223,7 @@ impl ConfigStore {
             init_retry_reasons: retries
                 .into_iter()
                 .flat_map(|retries| retries.when_reasons.iter())
-                .filter_map(|reason| parse_hex_code(reason).map(u32::from))
+                .filter_map(|reason| cc::model::parse_hex_u32(reason))
                 .collect(),
         })
     }
@@ -2617,6 +2681,9 @@ impl ConfigStore {
     /// deferred to the consumer-adoption work (#29).
     pub fn connection_init(&self, connection: String) -> Option<InitShapeInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
+        if c.init_shape.as_deref() != Some("app82") {
+            return None;
+        }
         let init = c.init.as_ref()?;
         let friendly_name = self.fixed_value(&init.identity.friendly_name)?;
         let guid = hex_value(&self.fixed_value(&init.identity.guid)?)?;
@@ -2645,6 +2712,9 @@ impl ConfigStore {
         runtime_scope: Vec<KeyValue>,
     ) -> Option<InitShapeInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
+        if c.init_shape.as_deref() != Some("app82") {
+            return None;
+        }
         let init = c.init.as_ref()?;
         let scope: BTreeMap<String, String> = runtime_scope
             .into_iter()
@@ -2667,6 +2737,60 @@ impl ConfigStore {
             name_field_byte_count: init.name_field_byte_count,
             tail,
             packet,
+        })
+    }
+
+    /// Resolve the manifest-owned initiator identity without assuming an init
+    /// packet shape. reference app and PCSS use the same identity policy but different
+    /// byte layouts.
+    pub fn connection_init_identity_with_runtime(
+        &self,
+        connection: String,
+        runtime_scope: Vec<KeyValue>,
+    ) -> Option<ResolvedInitIdentityInfo> {
+        let init = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)?
+            .init
+            .as_ref()?;
+        let scope: BTreeMap<String, String> = runtime_scope
+            .into_iter()
+            .map(|kv| (kv.key, kv.value))
+            .collect();
+        let friendly_name = value_with_runtime(&self.inner, &init.identity.friendly_name, &scope)?;
+        let guid = hex_value(&value_with_runtime(
+            &self.inner,
+            &init.identity.guid,
+            &scope,
+        )?)?;
+        if guid.len() != 16 {
+            return None;
+        }
+        Some(ResolvedInitIdentityInfo {
+            guid,
+            friendly_name,
+        })
+    }
+
+    /// Typed InitFail retry selection for one connection.
+    pub fn connection_init_retry_policy(&self, connection: String) -> Option<InitRetryPolicyInfo> {
+        let retries = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)?
+            .init_retries
+            .as_ref()?;
+        Some(InitRetryPolicyInfo {
+            max_retries: retries.max,
+            backoff_ms: retries.backoff_ms,
+            when_reasons: retries
+                .when_reasons
+                .iter()
+                .filter_map(|reason| cc::model::parse_hex_u32(reason))
+                .collect(),
         })
     }
 
@@ -3315,6 +3439,7 @@ fn map_capture(c: &cc::model::Capture) -> CaptureInfo {
             cc::model::CaptureSource::U32Le => CaptureSourceInfo::U32Le,
             cc::model::CaptureSource::U64Le => CaptureSourceInfo::U64Le,
             cc::model::CaptureSource::PtpU32Array => CaptureSourceInfo::PtpU32Array,
+            cc::model::CaptureSource::TransactionId => CaptureSourceInfo::TransactionId,
         },
     }
 }
@@ -3340,6 +3465,9 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
         ActionVerb::AutofocusRelease => cc::ActionVerb::AutofocusRelease,
         ActionVerb::ImportObjects => cc::ActionVerb::ImportObjects,
         ActionVerb::ReadDeviceInfo => cc::ActionVerb::ReadDeviceInfo,
+        ActionVerb::StartLiveView => cc::ActionVerb::StartLiveView,
+        ActionVerb::PollLiveView => cc::ActionVerb::PollLiveView,
+        ActionVerb::StopLiveView => cc::ActionVerb::StopLiveView,
         ActionVerb::Keepalive => cc::ActionVerb::Keepalive,
     }
 }
@@ -3356,6 +3484,9 @@ fn cc_to_ffi_verb(v: cc::ActionVerb) -> ActionVerb {
         cc::ActionVerb::AutofocusRelease => ActionVerb::AutofocusRelease,
         cc::ActionVerb::ImportObjects => ActionVerb::ImportObjects,
         cc::ActionVerb::ReadDeviceInfo => ActionVerb::ReadDeviceInfo,
+        cc::ActionVerb::StartLiveView => ActionVerb::StartLiveView,
+        cc::ActionVerb::PollLiveView => ActionVerb::PollLiveView,
+        cc::ActionVerb::StopLiveView => ActionVerb::StopLiveView,
         cc::ActionVerb::Keepalive => ActionVerb::Keepalive,
     }
 }

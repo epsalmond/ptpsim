@@ -26,19 +26,20 @@ pub use activity::{
 pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{enrich, generate_proposal};
 pub use model::{
-    parse_hex_bytes, parse_hex_code, Action, ActionEffect, ActionVerb, AvailableWhen, AwaitSource,
-    AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
-    CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
-    CameraInitiatedReceive, CameraInitiatedTransfer, CameraInitiatedTrigger, CameraManifest,
-    CaptureSource, CloseSession, Connection, ConnectionTransition, Control, ControlOwner,
-    ControlReadSource, ControlRole, ControlSurfaceEntry, ControlWriteEffect, Descriptor,
-    GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery,
-    LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, Mode,
-    ModeEntry, ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
-    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
-    ObjectTransferStrategy, ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssKnock,
-    PostviewEvent, Property, PropertyKind, PropertyValueEncoding, PropertyValueProfile,
-    PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
+    parse_hex_bytes, parse_hex_code, parse_hex_u32, Action, ActionEffect, ActionVerb,
+    AvailableWhen, AwaitSource, AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity,
+    CameraInitiatedData, CameraInitiatedHandoff, CameraInitiatedMetadata,
+    CameraInitiatedMetadataPhase, CameraInitiatedReceive, CameraInitiatedTransfer,
+    CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, Connection,
+    ConnectionTransition, Control, ControlOwner, ControlReadSource, ControlRole,
+    ControlSurfaceEntry, ControlWriteEffect, Descriptor, GateFailure, GateRequirement,
+    InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream,
+    Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, ModeEntryExecution,
+    ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
+    ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
+    ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssDiscoveryTarget,
+    PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyKind, PropertyValueEncoding,
+    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
     ReestablishConnection, ResponseRetry, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
     SocketBindings, SocketRole, Step, StepParam, StructuredTextField, StructuredTextLayout,
     StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy,
@@ -509,16 +510,49 @@ fn require_valid_pcss_rendezvous(
             "{path} retryIntervalMs, maxAttempts, and connectTimeoutMs must be non-zero"
         )));
     }
+    let targets = &knock.discovery_targets;
+    if targets.supported.is_empty() {
+        return Err(ManifestError::Contract(format!(
+            "{path}.discoveryTargets.supported must not be empty"
+        )));
+    }
+    if !targets.supported.contains(&targets.default) {
+        return Err(ManifestError::Contract(format!(
+            "{path}.discoveryTargets.default must be listed in supported"
+        )));
+    }
+    if targets
+        .supported
+        .iter()
+        .enumerate()
+        .any(|(index, target)| targets.supported[..index].contains(target))
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path}.discoveryTargets.supported must not contain duplicates"
+        )));
+    }
+    if targets.retry_discovered_unicast
+        && (!targets
+            .supported
+            .contains(&PcssDiscoveryTarget::SubnetBroadcast)
+            || !targets
+                .supported
+                .contains(&PcssDiscoveryTarget::ExplicitUnicast))
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path}.discoveryTargets.retryDiscoveredUnicast requires subnetBroadcast and explicitUnicast support"
+        )));
+    }
     if let Some(retries) = &connection.init_retries {
         let retry_path = format!("connections.{connection_id}.initRetries");
-        let parsed_reasons: Option<Vec<u16>> = retries
+        let parsed_reasons: Option<Vec<u32>> = retries
             .when_reasons
             .iter()
-            .map(|reason| parse_hex_code(reason))
+            .map(|reason| parse_hex_u32(reason))
             .collect();
         let Some(parsed_reasons) = parsed_reasons else {
             return Err(ManifestError::Contract(format!(
-                "{retry_path}.whenReasons entries must be 16-bit hexadecimal codes"
+                "{retry_path}.whenReasons entries must be 32-bit hexadecimal codes"
             )));
         };
         let incoherent = if retries.max == 0 {
@@ -823,6 +857,28 @@ fn require_valid_ptp_steps_with_collections(
         let step_path = format!("{path}.steps[{index}]");
         let mut array_binds = std::collections::BTreeSet::new();
         for capture in &step.captures {
+            if capture.source == CaptureSource::TransactionId {
+                if step.send_op.is_none() {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path} transactionId capture requires sendOp"
+                    )));
+                }
+                if step.repeat != 1 {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path} transactionId capture requires an unrepeated sendOp"
+                    )));
+                }
+                if step.tolerant {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path} transactionId capture must not be tolerant"
+                    )));
+                }
+                if capture.bind.trim().is_empty() {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path} transactionId capture bind must not be empty"
+                    )));
+                }
+            }
             if capture.source != CaptureSource::PtpU32Array {
                 continue;
             }
@@ -1253,6 +1309,53 @@ connections:
             }),
             "missing unknown transport-close sentinel lint; got {messages:?}"
         );
+    }
+
+    #[test]
+    fn pcss_discovery_targets_are_closed_and_consistent() {
+        let valid = format!(
+            "{SAMPLE}\n{}",
+            r#"
+connections:
+  wireless-tether:
+    knock:
+      callbackPort: 51560
+      knockPort: 51562
+      protocol: PCSS/1.0
+      discoveryTargets:
+        default: subnetBroadcast
+        supported: [subnetBroadcast, explicitUnicast]
+        retryDiscoveredUnicast: true
+"#
+        );
+        CameraManifest::from_yaml(&valid).expect("valid PCSS target modes load");
+
+        let missing_default = valid.replace(
+            "default: subnetBroadcast\n        supported: [subnetBroadcast, explicitUnicast]",
+            "default: explicitUnicast\n        supported: [subnetBroadcast]",
+        );
+        assert!(CameraManifest::from_yaml(&missing_default)
+            .unwrap_err()
+            .to_string()
+            .contains("default must be listed in supported"));
+
+        let duplicate = valid.replace(
+            "supported: [subnetBroadcast, explicitUnicast]",
+            "supported: [subnetBroadcast, subnetBroadcast]",
+        );
+        assert!(CameraManifest::from_yaml(&duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("must not contain duplicates"));
+
+        let recovery_without_unicast = valid.replace(
+            "supported: [subnetBroadcast, explicitUnicast]",
+            "supported: [subnetBroadcast]",
+        );
+        assert!(CameraManifest::from_yaml(&recovery_without_unicast)
+            .unwrap_err()
+            .to_string()
+            .contains("retryDiscoveredUnicast requires subnetBroadcast and explicitUnicast"));
     }
 
     #[test]

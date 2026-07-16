@@ -4,7 +4,8 @@
 
 use camera_config::{
     ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, ModeEntryExecution,
-    ObjectsAvailable, Predicate, PropView, PropertyKind, StepParam, ValuePolicy, VersionScheme,
+    ObjectsAvailable, PcssDiscoveryTarget, Predicate, PropView, PropertyKind, StepParam,
+    ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -63,11 +64,34 @@ fn app_slice_loads_and_schema_is_supported() {
 #[test]
 fn pcss_init_retry_policy_rejects_malformed_or_incoherent_values() {
     let manifest = data("fuji/gfx100ii/gfx100ii.yaml");
+    let full_width = manifest.replace("whenReasons: [\"0x2019\"]", "whenReasons: [\"0x00012019\"]");
+    let parsed = CameraManifest::from_yaml(&full_width).expect("u32 InitFail reason is valid");
+    assert_eq!(
+        parsed.connections["wireless-tether"]
+            .init_retries
+            .as_ref()
+            .expect("wireless-tether has an InitFail retry policy")
+            .when_reasons,
+        ["0x00012019"]
+    );
+
     let malformed = manifest.replace(
         "whenReasons: [\"0x2019\"]",
         "whenReasons: [not-a-response-code]",
     );
     assert!(CameraManifest::from_yaml(&malformed).is_err());
+
+    let overflow = manifest.replace(
+        "whenReasons: [\"0x2019\"]",
+        "whenReasons: [\"0x100000000\"]",
+    );
+    let overflow_error = CameraManifest::from_yaml(&overflow).unwrap_err();
+    assert!(
+        overflow_error
+            .to_string()
+            .contains("whenReasons entries must be 32-bit hexadecimal codes"),
+        "{overflow_error}"
+    );
 
     let missing_backoff = manifest.replace(
         "max: 3, backoffMs: 500, whenReasons: [\"0x2019\"]",
@@ -198,6 +222,12 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
     assert_eq!(steps[3].repeat, 4); // 902B ×4
     assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
+    assert_eq!(steps[4].captures.len(), 1);
+    assert_eq!(steps[4].captures[0].bind, "openCaptureTxId");
+    assert_eq!(
+        steps[4].captures[0].source,
+        camera_config::CaptureSource::TransactionId
+    );
     assert_eq!(
         steps[5].open_channel,
         Some(camera_config::SocketRole::Event)
@@ -207,6 +237,35 @@ fn live_view_entry_is_the_ground_truth_sequence() {
         Some(camera_config::SocketRole::LiveView)
     );
     assert!(steps.iter().all(camera_config::Step::is_well_formed));
+    let reverse = entries
+        .iter()
+        .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
+        .expect("image-transfer can return to live view");
+    let reverse_steps = reverse.ptp_steps().expect("reverse live-view entry");
+    let reverse_open_index = reverse_steps
+        .iter()
+        .position(|step| step.send_op.as_deref() == Some("0x101c"))
+        .expect("reverse live-view open-capture step");
+    let reverse_open = &reverse_steps[reverse_open_index];
+    assert_eq!(reverse_open.send_op.as_deref(), Some("0x101c"));
+    assert_eq!(reverse_open.captures.len(), 1);
+    assert_eq!(reverse_open.captures[0].bind, "openCaptureTxId");
+    assert_eq!(
+        reverse_open.captures[0].source,
+        camera_config::CaptureSource::TransactionId
+    );
+    assert_eq!(
+        reverse_steps
+            .get(reverse_open_index + 1)
+            .and_then(|step| step.open_channel),
+        Some(camera_config::SocketRole::Event)
+    );
+    assert_eq!(
+        reverse_steps
+            .get(reverse_open_index + 2)
+            .and_then(|step| step.open_channel),
+        Some(camera_config::SocketRole::LiveView)
+    );
     // A from-qualified image-transfer edge exists (teardown-first switch).
     assert!(entries
         .iter()
@@ -323,6 +382,19 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
     let wt = &m.connections["wireless-tether"];
     assert_eq!(wt.kind.as_deref(), Some("ptpip-direct"));
     assert_eq!(wt.establishment.as_deref(), Some("pcss-knock"));
+    let discovery_targets = &wt.knock.as_ref().unwrap().discovery_targets;
+    assert_eq!(
+        discovery_targets.default,
+        PcssDiscoveryTarget::SubnetBroadcast
+    );
+    assert_eq!(
+        discovery_targets.supported,
+        [
+            PcssDiscoveryTarget::SubnetBroadcast,
+            PcssDiscoveryTarget::ExplicitUnicast,
+        ]
+    );
+    assert!(discovery_targets.retry_discovered_unicast);
     assert_eq!(m.evidence["wireTether"].kind, "wire-capture");
     // Big-3 control mechanism is per-connection: absolute over the tether.
     let ap = m.control_for(0x5007, "wireless-tether").unwrap();
@@ -338,8 +410,16 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
         m.operation_available("app", "shooting/stills", 0x9018, &any),
         camera_config::Availability::WrongConnection
     );
+    for op in [0x101cu16, 0x1018] {
+        assert_eq!(
+            m.operation_available("wireless-tether", "shooting/stills", op, &any),
+            camera_config::Availability::Available,
+            "PCSS live-view lifecycle op 0x{op:04x} should be available"
+        );
+    }
     // Image-transfer triad (wirePCSSShootDownload20260523): standard PTP ops
-    // gated to the wireless-tether image-transfer mode. No 0x101B on PCSS.
+    // gated to the wireless-tether image-transfer mode. Enumeration is also
+    // wire-confirmed while shooting/stills live view remains open. No 0x101B on PCSS.
     for op in [0x1007u16, 0x1008, 0x1009, 0x100a, 0x100b] {
         assert_eq!(
             m.operation_available("wireless-tether", "image-transfer", op, &any),
@@ -347,6 +427,11 @@ fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
             "op 0x{op:04x} should be available on wireless-tether/image-transfer"
         );
     }
+    assert_eq!(
+        m.operation_available("wireless-tether", "shooting/stills", 0x1007, &any),
+        camera_config::Availability::Available,
+        "PCSS GetObjectHandles remains available while live view is open"
+    );
     assert_eq!(
         m.operation_available("wireless-tether", "image-transfer", 0x101b, &any),
         camera_config::Availability::WrongConnection,
@@ -461,6 +546,7 @@ fn wireless_tether_transfer_actions_bind_runtime_handle() {
     let enumerate = m
         .action("wireless-tether", ActionVerb::EnumerateObjects)
         .unwrap();
+    assert_eq!(enumerate.mode, "");
     assert!(enumerate.params.is_empty());
     assert_eq!(enumerate.steps[0].send_op.as_deref(), Some("0x1007"));
     assert_eq!(
@@ -483,6 +569,64 @@ fn action_query_misses_when_connection_does_not_declare_the_verb() {
     // reference app `app` does NOT model DeleteObject (no wire-truth) — verb-level
     // miss without polluting the negative list with explicit entries.
     assert!(m.action("app", ActionVerb::DeleteObject).is_none());
+}
+
+#[test]
+fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped() {
+    let m = gfx();
+    let start = m
+        .action("wireless-tether", ActionVerb::StartLiveView)
+        .expect("wireless-tether startLiveView action");
+    assert_eq!(start.mode, "shooting/stills");
+    assert!(start.params.is_empty());
+    assert_eq!(start.steps.len(), 2);
+    assert_eq!(start.steps[0].set_prop.as_deref(), Some("0xd1bc"));
+    assert_eq!(start.steps[0].value, Some(2));
+    assert_eq!(start.steps[1].send_op.as_deref(), Some("0x101c"));
+    assert_eq!(
+        start.steps[1].params,
+        [StepParam::Literal(0), StepParam::Literal(0)]
+    );
+    assert!(start.steps[1].captures.is_empty());
+    let selector = &m.properties["0xd1bc"];
+    assert_eq!(selector.ptype.as_deref(), Some("u16"));
+    assert_eq!(selector.access.as_deref(), Some("readWrite"));
+    assert_eq!(selector.kind, PropertyKind::Scaffold);
+
+    let poll = m
+        .action("wireless-tether", ActionVerb::PollLiveView)
+        .expect("wireless-tether pollLiveView action");
+    assert_eq!(poll.mode, "shooting/stills");
+    assert!(poll.params.is_empty());
+    assert_eq!(poll.steps.len(), 1);
+    let retry = poll.steps[0]
+        .retry
+        .as_ref()
+        .expect("pollLiveView has a bounded response-selected retry");
+    assert_eq!(retry.when_response_codes, ["0x2002"]);
+    assert_eq!(retry.max_attempts, 10);
+    assert_eq!(retry.retry_delay_ms, 100);
+    assert_eq!(retry.steps.len(), 1);
+    assert_eq!(retry.steps[0].send_op.as_deref(), Some("0x9018"));
+    assert!(retry.steps[0].params.is_empty());
+
+    let stop = m
+        .action("wireless-tether", ActionVerb::StopLiveView)
+        .expect("wireless-tether stopLiveView action");
+    assert_eq!(stop.mode, "shooting/stills");
+    assert!(stop.params.is_empty());
+    assert_eq!(stop.steps.len(), 1);
+    assert_eq!(stop.steps[0].send_op.as_deref(), Some("0x1018"));
+    assert_eq!(stop.steps[0].params, [StepParam::Literal(1)]);
+    assert!(stop.steps[0].captures.is_empty());
+
+    for verb in [
+        ActionVerb::StartLiveView,
+        ActionVerb::PollLiveView,
+        ActionVerb::StopLiveView,
+    ] {
+        assert!(m.action("app", verb).is_none());
+    }
 }
 
 #[test]
@@ -668,12 +812,12 @@ fn getobject_params_differ_per_connection_same_verb() {
 
 #[test]
 fn scaffold_props_are_tagged_so_clients_can_filter_them_out_of_settings_ui() {
-    // 0xD039 / 0xD21C / 0xD207 LOOK settable on the wire but are protocol
-    // scaffolding (virtual-shutter state machine + tethered keepalives) —
+    // 0xD039 / 0xD1BC / 0xD21C / 0xD207 LOOK settable on the wire but are
+    // protocol scaffolding (virtual shutter, live-view select, keepalives) —
     // wirePCSSShootDownload20260523. `kind: scaffold` lets clients filter
     // them from settings UI without re-deriving the negative list each time.
     let m = gfx();
-    for code in ["0xd039", "0xd21c", "0xd207"] {
+    for code in ["0xd039", "0xd1bc", "0xd21c", "0xd207"] {
         let p = m
             .properties
             .get(code)
@@ -1408,6 +1552,34 @@ reestablishConnection:
         serde_yaml::from_str::<camera_config::ModeEntry>(missing).is_err(),
         "a mode entry requires one execution variant"
     );
+}
+
+#[test]
+fn transaction_id_capture_rejects_ambiguous_steps() {
+    let manifest = |step: &str| {
+        format!(
+            r#"
+schema: camera-config/v1
+camera: {{ manufacturer: Test, model: Test, firmware: "1" }}
+connections:
+  app:
+    commandFraming: compressed
+    entries:
+      - to: test
+        steps:
+          - {{ {step} }}
+"#
+        )
+    };
+    for step in [
+        r#"getProp: "0x5001", captures: [{ bind: tx, as: transactionId }]"#,
+        r#"sendOp: "0x1001", repeat: 0, captures: [{ bind: tx, as: transactionId }]"#,
+        r#"sendOp: "0x1001", repeat: 2, captures: [{ bind: tx, as: transactionId }]"#,
+        r#"sendOp: "0x1001", tolerant: true, captures: [{ bind: tx, as: transactionId }]"#,
+    ] {
+        let error = CameraManifest::from_yaml(&manifest(step)).expect_err("invalid capture");
+        assert!(error.to_string().contains("transactionId"), "{error}");
+    }
 }
 
 #[test]

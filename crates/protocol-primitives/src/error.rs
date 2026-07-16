@@ -14,4 +14,6 @@ pub enum FramingError {
     ValueTooWide { value: i64, width: u8, signed: bool },
     #[error("InitCommandAck malformed: {0}")]
     InitAck(String),
+    #[error("InitCommandRequest malformed: {0}")]
+    InitRequest(String),
 }

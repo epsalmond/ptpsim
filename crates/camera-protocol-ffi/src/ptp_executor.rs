@@ -86,6 +86,21 @@ pub struct PtpDataOutput {
     pub response_params: Vec<u32>,
 }
 
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum PtpDataOutputSinkError {
+    #[error("data output sink failed: {detail}")]
+    Failed { detail: String },
+}
+
+/// Receives completed ordinary action outputs one at a time. The matching
+/// response has already been consumed, so a sink failure does not poison the
+/// command session.
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
+pub trait PtpDataOutputSink: Send + Sync {
+    async fn write(&self, output: PtpDataOutput) -> Result<(), PtpDataOutputSinkError>;
+}
+
 #[derive(Debug, uniffi::Record)]
 pub struct PtpExecutionOutcome {
     pub scope: Vec<PtpRuntimeValue>,
@@ -140,6 +155,7 @@ pub async fn run_mode_entry(
         observer,
         activity_observer,
         runtime_params,
+        None,
     )
     .await
 }
@@ -175,6 +191,7 @@ pub async fn run_mode_reestablishment_exit(
         observer,
         activity_observer,
         runtime_params,
+        None,
     )
     .await
 }
@@ -205,6 +222,39 @@ pub async fn run_action(
         observer,
         activity_observer,
         runtime_params,
+        None,
+    )
+    .await
+}
+
+#[uniffi::export]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_action_to_sink(
+    store: Arc<ConfigStore>,
+    connection: String,
+    action: ActionVerb,
+    transport: Arc<dyn PtpExecutorTransport>,
+    observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
+    sink: Arc<dyn PtpDataOutputSink>,
+    runtime_params: Vec<PtpRuntimeValue>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    let action =
+        store
+            .action(connection.clone(), action)
+            .ok_or_else(|| PtpExecutorError::UnknownPlan {
+                detail: format!("{connection}: action not found"),
+            })?;
+    run_steps(
+        store,
+        connection,
+        action.steps,
+        action.activities,
+        transport,
+        observer,
+        activity_observer,
+        runtime_params,
+        Some(sink),
     )
     .await
 }
@@ -236,6 +286,7 @@ pub async fn run_selected_object_preparation(
         observer,
         activity_observer,
         runtime_params,
+        None,
     )
     .await
 }
@@ -250,6 +301,7 @@ async fn run_steps(
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
     runtime_params: Vec<PtpRuntimeValue>,
+    output_sink: Option<Arc<dyn PtpDataOutputSink>>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
     let connection_config = store
         .inner
@@ -288,6 +340,7 @@ async fn run_steps(
         runtime_params,
         collections: BTreeMap::new(),
         outputs: Vec::new(),
+        output_sink,
         steps_run: 0,
         control_attempts: None,
         deferred_tolerance: None,
@@ -388,6 +441,7 @@ struct PtpCtx {
     runtime_params: BTreeMap<String, u64>,
     collections: BTreeMap<String, Vec<u64>>,
     outputs: Vec<PtpDataOutput>,
+    output_sink: Option<Arc<dyn PtpDataOutputSink>>,
     steps_run: u32,
     control_attempts: Option<u32>,
     deferred_tolerance: Option<StepError>,
@@ -743,7 +797,13 @@ impl PtpCtx {
                     for _ in 0..(*repeat).max(1) {
                         let reply = self.issue(here, *op, params.clone(), None, None).await?;
                         if reply.meta.response_code == resp::OK {
-                            self.apply_captures(here, *op, captures, &reply.payload)?;
+                            self.apply_captures(
+                                here,
+                                *op,
+                                reply.meta.transaction_id,
+                                captures,
+                                &reply.payload,
+                            )?;
                             last = Some(reply.meta);
                         } else {
                             last = Some(self.require_ok_or_tolerate(
@@ -1206,13 +1266,23 @@ impl PtpCtx {
                         transaction_id,
                     };
                     if had_data || !response.params.is_empty() {
-                        self.outputs.push(PtpDataOutput {
+                        let output = PtpDataOutput {
                             step_path: here.to_string(),
                             operation,
                             transaction_id,
                             payload: payload.clone(),
                             response_params: response.params.clone(),
-                        });
+                        };
+                        if let Some(sink) = self.output_sink.clone() {
+                            sink.write(output).await.map_err(|error| StepError {
+                                step: here.to_string(),
+                                detail: error.to_string(),
+                                class: FailureClass::Other,
+                                meta: Some(meta.clone()),
+                            })?;
+                        } else {
+                            self.outputs.push(output);
+                        }
                     }
                     return Ok(WireReply { meta, payload });
                 }
@@ -1346,6 +1416,7 @@ impl PtpCtx {
         &mut self,
         here: &str,
         operation: u16,
+        transaction_id: u32,
         captures: &[CaptureInfo],
         payload: &[u8],
     ) -> Result<(), StepError> {
@@ -1378,6 +1449,7 @@ impl PtpCtx {
                     self.collections.insert(capture.bind.clone(), collection);
                     continue;
                 }
+                CaptureSourceInfo::TransactionId => transaction_id as u64,
             };
             values.push((capture.bind.clone(), value));
         }
