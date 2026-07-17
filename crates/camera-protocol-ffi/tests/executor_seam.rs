@@ -20,6 +20,7 @@ use camera_protocol_ffi::{
 };
 use camera_sim::{BleEvent, BleResponder};
 use futures::executor::block_on;
+use protocol_primitives::{NikonLssAuthenticationSelection, NikonLssClient, NikonLssServer};
 
 mod common;
 
@@ -85,6 +86,99 @@ connections:
         }],
     )
     .expect("poll-timeout fixture loads")
+}
+
+fn nikon_lss_store() -> Arc<ConfigStore> {
+    let index = r#"
+manufacturer: NIKON
+families:
+  lss:
+    ble:
+      gatt:
+        auth: "00002000-3DD4-4255-8D62-6DC7B9BD5561"
+        config: "00002004-3DD4-4255-8D62-6DC7B9BD5561"
+      establishments:
+        pair:
+          mechanism: pair
+          params: [clientDeviceId, clientNonce]
+          activities:
+            - { id: camera.test.lss, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 4 } }
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - nikonLssAuthenticate:
+                gatt: auth
+                clientDeviceId: { runtime: clientDeviceId, encoding: bytes-raw }
+                nonce: { runtime: clientNonce, encoding: bytes-raw }
+                timeoutMs: 1000
+            - nikonLssReadConnectionConfiguration:
+                gatt: config
+                flagsCaptureAs: flags
+                ssidCaptureAs: ssid
+                passwordCaptureAs: password
+                securityModeCaptureAs: security
+                sppMaxLengthCaptureAs: sppMaximumLength
+models:
+  - id: d850
+    displayName: "D850"
+    inherits: [lss]
+    manifest: d850.yaml
+"#;
+    let body = r#"
+schema: camera-config/v1
+camera:
+  manufacturer: NIKON
+  model: D850
+connections:
+  ble:
+    kind: ble
+    establishment: pair
+"#;
+    ConfigStore::from_manufacturer_index(
+        index.into(),
+        vec![KeyValue {
+            key: "d850".into(),
+            value: body.into(),
+        }],
+    )
+    .expect("Nikon LSS fixture loads")
+}
+
+struct NikonLssScript {
+    stage1: Vec<u8>,
+    stage2: Vec<u8>,
+    stage3: Vec<u8>,
+    stage4: Vec<u8>,
+    configuration: Vec<u8>,
+}
+
+fn nikon_lss_script() -> NikonLssScript {
+    let device_id = [0x10; 8];
+    let client_nonce = [0x20; 8];
+    let mut client = NikonLssClient::new(device_id, client_nonce);
+    let stage1 = client.stage1_record().unwrap();
+    let selection = NikonLssAuthenticationSelection::new(3).unwrap();
+    let mut server = NikonLssServer::new(selection, [0x30; 8], [0x40; 8]);
+    let stage2 = server.handle_stage1(&stage1).unwrap();
+    let stage3 = client.handle_stage2(&stage2).unwrap();
+    let (stage4, session) = server.finish_stage3(&stage3).unwrap();
+
+    let mut ssid = b"D850_TEST_AP".to_vec();
+    ssid.resize(32, 0);
+    let mut password = b"snapbridge-password".to_vec();
+    password.resize(64, 0);
+    let mut config = vec![0x03];
+    config.extend(session.encrypt(&ssid).unwrap());
+    config.extend(session.encrypt(&password).unwrap());
+    config.push(1); // wpa2
+    config.extend(512_u32.to_le_bytes());
+    NikonLssScript {
+        stage1: stage1.to_vec(),
+        stage2: stage2.to_vec(),
+        stage3: stage3.to_vec(),
+        stage4: stage4.to_vec(),
+        configuration: config,
+    }
 }
 
 fn gfx100ii() -> ModelView {
@@ -1603,4 +1697,206 @@ fn connection_without_a_gate_resolves_immediately_with_no_io() {
     let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
     assert!(transport.into_log().is_empty(), "no I/O for an empty gate");
     assert!(recorder.0.lock().unwrap().is_empty(), "no step reports");
+}
+
+#[test]
+fn nikon_lss_executor_authenticates_and_binds_only_decoded_configuration() {
+    let auth = "00002000-3DD4-4255-8D62-6DC7B9BD5561";
+    let config_gatt = "00002004-3DD4-4255-8D62-6DC7B9BD5561";
+    let script = nikon_lss_script();
+    let responder = BleResponder::new([auth.into(), config_gatt.into()])
+        .expect_exact_write(auth, &script.stage1)
+        .queue_ordered_indication(auth, &script.stage2)
+        .expect_exact_write(auth, &script.stage3)
+        .queue_ordered_indication(auth, &script.stage4)
+        .serve_read(config_gatt, &script.configuration);
+    let transport = Arc::new(ResponderTransport::new(responder));
+    let outcome = block_on(run_establishment(
+        nikon_lss_store(),
+        "d850:ble".into(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![
+            KeyValue {
+                key: "clientDeviceId".into(),
+                value: "1010101010101010".into(),
+            },
+            KeyValue {
+                key: "clientNonce".into(),
+                value: "2020202020202020".into(),
+            },
+        ],
+    ))
+    .expect("LSS executor completes");
+
+    assert_eq!(scope_get(&outcome.scope, "flags"), Some("3"));
+    assert_eq!(scope_get(&outcome.scope, "ssid"), Some("D850_TEST_AP"));
+    assert_eq!(
+        scope_get(&outcome.scope, "password"),
+        Some("snapbridge-password")
+    );
+    assert_eq!(scope_get(&outcome.scope, "security"), Some("wpa2"));
+    assert_eq!(scope_get(&outcome.scope, "sppMaximumLength"), Some("512"));
+    assert_eq!(
+        outcome.scope.len(),
+        5,
+        "no cipher/key/runtime material in scope"
+    );
+
+    let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
+    let log = transport.into_log();
+    assert!(matches!(
+        &log[2],
+        BleEvent::Subscribe {
+            mode: CccdMode::Indicate,
+            ..
+        }
+    ));
+    assert_eq!(
+        log.iter()
+            .filter(|event| matches!(event, BleEvent::Write { uuid, .. } if uuid == auth))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn nikon_lss_executor_fails_when_fresh_nonce_is_missing() {
+    let error = block_on(run_establishment(
+        nikon_lss_store(),
+        "d850:ble".into(),
+        Arc::new(ResponderTransport::new(BleResponder::new([
+            "00002000-3DD4-4255-8D62-6DC7B9BD5561".into(),
+            "00002004-3DD4-4255-8D62-6DC7B9BD5561".into(),
+        ]))),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "clientDeviceId".into(),
+            value: "1010101010101010".into(),
+        }],
+    ))
+    .expect_err("fresh runtime entropy is mandatory");
+    assert!(matches!(
+        error,
+        ExecutorError::StepFailed { detail, .. }
+            if detail.contains("runtime slot 'clientNonce' unbound")
+    ));
+}
+
+#[test]
+fn nikon_lss_executor_clears_optional_configuration_slots_when_flags_are_absent() {
+    let auth = "00002000-3DD4-4255-8D62-6DC7B9BD5561";
+    let config_gatt = "00002004-3DD4-4255-8D62-6DC7B9BD5561";
+    let script = nikon_lss_script();
+    let responder = BleResponder::new([auth.into(), config_gatt.into()])
+        .expect_exact_write(auth, &script.stage1)
+        .queue_ordered_indication(auth, &script.stage2)
+        .expect_exact_write(auth, &script.stage3)
+        .queue_ordered_indication(auth, &script.stage4)
+        .serve_read(config_gatt, &[0]);
+    let outcome = block_on(run_establishment(
+        nikon_lss_store(),
+        "d850:ble".into(),
+        Arc::new(ResponderTransport::new(responder)),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![
+            KeyValue {
+                key: "ssid".into(),
+                value: "stale-ap".into(),
+            },
+            KeyValue {
+                key: "password".into(),
+                value: "stale-password".into(),
+            },
+            KeyValue {
+                key: "security".into(),
+                value: "wpa2".into(),
+            },
+            KeyValue {
+                key: "sppMaximumLength".into(),
+                value: "512".into(),
+            },
+        ],
+        vec![
+            KeyValue {
+                key: "ssid".into(),
+                value: "utf8".into(),
+            },
+            KeyValue {
+                key: "password".into(),
+                value: "utf8".into(),
+            },
+            KeyValue {
+                key: "security".into(),
+                value: "utf8".into(),
+            },
+            KeyValue {
+                key: "sppMaximumLength".into(),
+                value: "u32-le".into(),
+            },
+        ],
+        vec![
+            KeyValue {
+                key: "clientDeviceId".into(),
+                value: "1010101010101010".into(),
+            },
+            KeyValue {
+                key: "clientNonce".into(),
+                value: "2020202020202020".into(),
+            },
+        ],
+    ))
+    .expect("configuration without optional blocks completes");
+
+    assert_eq!(scope_get(&outcome.scope, "flags"), Some("0"));
+    for name in ["ssid", "password", "security", "sppMaximumLength"] {
+        assert_eq!(scope_get(&outcome.scope, name), None, "stale {name}");
+    }
+}
+
+#[test]
+fn nikon_lss_executor_rejects_malformed_configuration_lengths() {
+    let auth = "00002000-3DD4-4255-8D62-6DC7B9BD5561";
+    let config_gatt = "00002004-3DD4-4255-8D62-6DC7B9BD5561";
+    for malformed in [vec![0x00, 0xff], vec![0x02, 0x00, 0x02, 0x00]] {
+        let script = nikon_lss_script();
+        let responder = BleResponder::new([auth.into(), config_gatt.into()])
+            .expect_exact_write(auth, &script.stage1)
+            .queue_ordered_indication(auth, &script.stage2)
+            .expect_exact_write(auth, &script.stage3)
+            .queue_ordered_indication(auth, &script.stage4)
+            .serve_read(config_gatt, &malformed);
+        let error = block_on(run_establishment(
+            nikon_lss_store(),
+            "d850:ble".into(),
+            Arc::new(ResponderTransport::new(responder)),
+            Arc::new(Recorder::default()),
+            Arc::new(ActivityRecorder::default()),
+            vec![],
+            vec![],
+            vec![
+                KeyValue {
+                    key: "clientDeviceId".into(),
+                    value: "1010101010101010".into(),
+                },
+                KeyValue {
+                    key: "clientNonce".into(),
+                    value: "2020202020202020".into(),
+                },
+            ],
+        ))
+        .expect_err("malformed configuration length must fail");
+        assert!(matches!(
+            error,
+            ExecutorError::StepFailed { detail, .. }
+                if detail.contains("connection configuration")
+        ));
+    }
 }

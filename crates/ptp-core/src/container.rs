@@ -22,9 +22,23 @@ pub struct InitCommandAck {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitEventRequest {
+    pub connection_number: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InitEventAck;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitFail {
     pub reason: u32,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProbeRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProbeResponse;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationRequest {
@@ -76,6 +90,13 @@ fn remaining_params(r: &mut Reader) -> Result<Vec<u32>, DecodeError> {
     Ok(params)
 }
 
+fn require_end(r: &Reader) -> Result<(), DecodeError> {
+    match r.remaining() {
+        0 => Ok(()),
+        remaining => Err(DecodeError::TrailingBytes { remaining }),
+    }
+}
+
 impl InitCommandRequest {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
         let initiator_guid = guid(r)?;
@@ -117,6 +138,27 @@ impl InitCommandAck {
     }
 }
 
+impl InitEventRequest {
+    pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
+        let decoded = Self {
+            connection_number: r.u32()?,
+        };
+        require_end(r)?;
+        Ok(decoded)
+    }
+    pub(crate) fn encode_body(&self, w: &mut Writer) {
+        w.u32(self.connection_number);
+    }
+}
+
+impl InitEventAck {
+    pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
+        require_end(r)?;
+        Ok(Self)
+    }
+    pub(crate) fn encode_body(&self, _w: &mut Writer) {}
+}
+
 impl InitFail {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
         Ok(Self { reason: r.u32()? })
@@ -124,6 +166,22 @@ impl InitFail {
     pub(crate) fn encode_body(&self, w: &mut Writer) {
         w.u32(self.reason);
     }
+}
+
+impl ProbeRequest {
+    pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
+        require_end(r)?;
+        Ok(Self)
+    }
+    pub(crate) fn encode_body(&self, _w: &mut Writer) {}
+}
+
+impl ProbeResponse {
+    pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
+        require_end(r)?;
+        Ok(Self)
+    }
+    pub(crate) fn encode_body(&self, _w: &mut Writer) {}
 }
 
 impl OperationRequest {

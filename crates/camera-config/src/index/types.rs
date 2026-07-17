@@ -123,7 +123,7 @@ pub struct PcssDiscoveryPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FamilyBleBlock {
     /// `gattSymbolicName -> UUID string`. Steps reference `gatt: <name>` and
     /// the loader resolves to the UUID at index-build time (§11.3).
@@ -270,6 +270,13 @@ pub enum Step {
     AcquireFirmware(AcquireFirmwareStep),
     If(IfStep),
     Retry(RetryStep),
+    /// Nikon Linkage Setting Service authentication. Both byte inputs use the
+    /// ordinary finite value-source grammar; the nonce is validated as a
+    /// runtime source so manifests cannot bake in reusable entropy.
+    NikonLssAuthenticate(NikonLssAuthenticateStep),
+    /// Read and decrypt the finite LSS Wi-Fi connection-configuration fields
+    /// using the session established by [`Self::NikonLssAuthenticate`].
+    NikonLssReadConnectionConfiguration(NikonLssReadConnectionConfigurationStep),
 }
 
 impl Step {
@@ -292,6 +299,8 @@ impl Step {
             Step::AcquireFirmware(_) => "acquireFirmware",
             Step::If(_) => "if",
             Step::Retry(_) => "retry",
+            Step::NikonLssAuthenticate(_) => "nikonLssAuthenticate",
+            Step::NikonLssReadConnectionConfiguration(_) => "nikonLssReadConnectionConfiguration",
         }
     }
 
@@ -315,6 +324,8 @@ impl Step {
             Step::AcquireFirmware(s) => s.opts.clone(),
             Step::If(_) => StepOptions::default(),
             Step::Retry(_) => StepOptions::default(),
+            Step::NikonLssAuthenticate(s) => s.opts.clone(),
+            Step::NikonLssReadConnectionConfiguration(s) => s.opts.clone(),
         }
     }
 }
@@ -417,6 +428,44 @@ pub struct BleWriteStep {
     /// write. Notifications caused by the write remain consumable.
     #[serde(default)]
     pub notification_fence: Option<String>,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// Authenticate an LSS client over the indication-enabled authentication
+/// characteristic. Cipher state produced by this step is executor-private;
+/// it is intentionally not named or bound into manifest scope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NikonLssAuthenticateStep {
+    pub gatt: String,
+    pub client_device_id: StepValue,
+    pub nonce: StepValue,
+    /// Per-stage I/O/indication budget. Defaults to the executor's ordinary
+    /// GATT-operation budget so simple manifests need not tune it.
+    #[serde(default = "default_nikon_lss_timeout_ms")]
+    pub timeout_ms: u32,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+const fn default_nikon_lss_timeout_ms() -> u32 {
+    10_000
+}
+
+/// Read the fixed Nikon LSS Wi-Fi connection-configuration fields. Field
+/// sizes/encodings are part of this finite primitive rather than open
+/// manifest script.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NikonLssReadConnectionConfigurationStep {
+    pub gatt: String,
+    pub flags_capture_as: String,
+    pub ssid_capture_as: String,
+    pub password_capture_as: String,
+    pub security_mode_capture_as: String,
+    #[serde(default)]
+    pub spp_max_length_capture_as: Option<String>,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }
@@ -782,6 +831,10 @@ pub enum StepValue {
 ///
 /// The allowlist stays finite by design — same spirit as the encoding
 /// allowlist. No arbitrary expressions.
+/// Finite allocation ceiling for [`Transform::PadRight`]. The transform is
+/// intended for protocol fields, not arbitrary buffer allocation.
+pub const MAX_PAD_RIGHT_LENGTH: usize = u16::MAX as usize;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Transform {
     /// Input ≤ 8 bytes, read LE; result re-emitted at input width LE.
@@ -808,6 +861,12 @@ pub enum Transform {
     Bits {
         mask: u64,
         shift: u32,
+    },
+    /// Extend to exactly `length` bytes by appending `byte`. Input longer
+    /// than the target fails instead of truncating.
+    PadRight {
+        length: usize,
+        byte: u8,
     },
 }
 

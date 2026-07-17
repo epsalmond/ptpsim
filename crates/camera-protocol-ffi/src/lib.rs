@@ -218,6 +218,8 @@ fn ptpip_packet_kind(packet: &ptp_core::PtpIpPacket) -> &'static str {
     match packet {
         ptp_core::PtpIpPacket::InitCommandRequest(_) => "InitCommandRequest",
         ptp_core::PtpIpPacket::InitCommandAck(_) => "InitCommandAck",
+        ptp_core::PtpIpPacket::InitEventRequest(_) => "InitEventRequest",
+        ptp_core::PtpIpPacket::InitEventAck(_) => "InitEventAck",
         ptp_core::PtpIpPacket::InitFail(_) => "InitFail",
         ptp_core::PtpIpPacket::OperationRequest(_) => "OperationRequest",
         ptp_core::PtpIpPacket::OperationResponse(_) => "OperationResponse",
@@ -225,6 +227,8 @@ fn ptpip_packet_kind(packet: &ptp_core::PtpIpPacket) -> &'static str {
         ptp_core::PtpIpPacket::StartData(_) => "StartData",
         ptp_core::PtpIpPacket::Data(_) => "Data",
         ptp_core::PtpIpPacket::EndData(_) => "EndData",
+        ptp_core::PtpIpPacket::ProbeRequest(_) => "ProbeRequest",
+        ptp_core::PtpIpPacket::ProbeResponse(_) => "ProbeResponse",
     }
 }
 
@@ -1992,6 +1996,15 @@ impl ConfigStore {
         build_manufacturer_index_store(index_yaml, model_bodies, Some(manufacturer_yaml))
     }
 
+    /// Return a direct-query store for one body loaded through a manufacturer
+    /// index. The returned store preserves shared defaults and recognition data,
+    /// but APIs such as `connections` and `camera_identity` use `model_id`.
+    pub fn model_store(&self, model_id: String) -> Option<Arc<Self>> {
+        self.inner
+            .model_store(&model_id)
+            .map(|inner| Arc::new(Self { inner }))
+    }
+
     // -----------------------------------------------------------------------
     // Manufacturer-index pull model (§3.2 + §3.3 + §11)
     // -----------------------------------------------------------------------
@@ -2738,7 +2751,7 @@ impl ConfigStore {
     pub fn connection_init(&self, connection: String) -> Option<InitShapeInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
         let shape = c.init_shape.as_deref()?;
-        if !matches!(shape, "app82" | "legacyApp82") {
+        if !matches!(shape, "app82" | "legacyApp82" | "standardPtpIp") {
             return None;
         }
         let init = c.init.as_ref()?;
@@ -2764,6 +2777,7 @@ impl ConfigStore {
                 &friendly_name,
             )
             .ok()?,
+            "standardPtpIp" => standard_ptpip_init(&guid, &friendly_name)?,
             _ => unreachable!(),
         };
         Some(InitShapeInfo {
@@ -2789,7 +2803,7 @@ impl ConfigStore {
     ) -> Option<InitShapeInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
         let shape = c.init_shape.as_deref()?;
-        if !matches!(shape, "app82" | "legacyApp82") {
+        if !matches!(shape, "app82" | "legacyApp82" | "standardPtpIp") {
             return None;
         }
         let init = c.init.as_ref()?;
@@ -2823,6 +2837,7 @@ impl ConfigStore {
                 &friendly_name,
             )
             .ok()?,
+            "standardPtpIp" => standard_ptpip_init(&guid, &friendly_name)?,
             _ => unreachable!(),
         };
         Some(InitShapeInfo {
@@ -3353,12 +3368,13 @@ fn build_manufacturer_index_store(
 
 fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigError> {
     for (connection_id, connection) in &store.manifest.connections {
-        if connection.init_shape.as_deref() != Some("legacyApp82") {
+        let Some(shape @ ("legacyApp82" | "standardPtpIp")) = connection.init_shape.as_deref()
+        else {
             continue;
-        }
+        };
         let init = connection.init.as_ref().ok_or_else(|| {
             ConfigError::Contract(format!(
-                "connections.{connection_id}.init is required for legacyApp82"
+                "connections.{connection_id}.init is required for {shape}"
             ))
         })?;
         let path = format!("connections.{connection_id}.init");
@@ -3391,9 +3407,10 @@ fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigEr
                         "{path}.identity.friendlyName fixed value must be scalar"
                     ))
                 })?;
-                if name.contains('\0') || name.encode_utf16().count() > 26 {
+                let max_name_units = if shape == "legacyApp82" { 26 } else { 254 };
+                if name.contains('\0') || name.encode_utf16().count() > max_name_units {
                     return Err(ConfigError::Contract(format!(
-                        "{path}.identity.friendlyName must fit 26 UTF-16 units and contain no NUL"
+                        "{path}.identity.friendlyName must fit {max_name_units} UTF-16 units and contain no NUL"
                     )));
                 }
             }
@@ -3403,6 +3420,10 @@ fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigEr
                     "{path}.identity.friendlyName must resolve to fixed or client-derived text"
                 )))
             }
+        }
+
+        if shape == "standardPtpIp" {
+            continue;
         }
 
         let client_ip_key = init
@@ -4063,6 +4084,18 @@ fn hex_value(s: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&p[i..i + 2], 16).ok())
         .collect()
+}
+
+fn standard_ptpip_init(guid: &[u8], friendly_name: &str) -> Option<Vec<u8>> {
+    let initiator_guid: [u8; 16] = guid.try_into().ok()?;
+    ptp_core::encode(&ptp_core::PtpIpPacket::InitCommandRequest(
+        ptp_core::InitCommandRequest {
+            initiator_guid,
+            friendly_name: friendly_name.to_string(),
+            protocol_version: 0x0001_0000,
+        },
+    ))
+    .ok()
 }
 
 fn yaml_scalar(v: &serde_yaml::Value) -> Option<String> {

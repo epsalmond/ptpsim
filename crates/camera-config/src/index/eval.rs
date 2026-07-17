@@ -7,6 +7,7 @@
 
 use super::types::{
     AdvertByteSource, AdvertPredicate, BleAdvertSignature, Encoding, PayloadPredicate, Transform,
+    MAX_PAD_RIGHT_LENGTH,
 };
 
 /// Transport-neutral facts about one observed BLE advertisement — what the
@@ -242,6 +243,15 @@ fn apply_one(input: &[u8], t: &Transform) -> Option<Vec<u8>> {
             Some(uuid.into_bytes())
         }
         Transform::Bits { mask, shift } => int_op(input, |v| (v & mask) >> shift),
+        Transform::PadRight { length, byte } => {
+            if input.len() > *length || *length > MAX_PAD_RIGHT_LENGTH {
+                return None;
+            }
+            let mut out = Vec::with_capacity(*length);
+            out.extend_from_slice(input);
+            out.resize(*length, *byte);
+            Some(out)
+        }
     }
 }
 
@@ -743,6 +753,47 @@ mod tests {
         assert_eq!(
             apply_transforms(b"Pixel 8", &[Transform::AppendNul]),
             Some(b"Pixel 8\0".to_vec())
+        );
+    }
+
+    #[test]
+    fn pad_right_extends_to_exact_width_without_truncation() {
+        let mut expected = b"SnapBridge".to_vec();
+        expected.resize(32, 0);
+        assert_eq!(
+            apply_transforms(
+                b"SnapBridge",
+                &[Transform::PadRight {
+                    length: 32,
+                    byte: 0,
+                }]
+            ),
+            Some(expected)
+        );
+        assert_eq!(
+            apply_transforms(
+                &[1, 2, 3],
+                &[Transform::PadRight {
+                    length: 3,
+                    byte: 0xff,
+                }]
+            ),
+            Some(vec![1, 2, 3])
+        );
+        assert!(
+            apply_transforms(&[1, 2, 3, 4], &[Transform::PadRight { length: 3, byte: 0 }])
+                .is_none()
+        );
+        assert!(
+            apply_transforms(
+                &[],
+                &[Transform::PadRight {
+                    length: usize::MAX,
+                    byte: 0,
+                }]
+            )
+            .is_none(),
+            "programmatically constructed transforms must keep the same allocation ceiling"
         );
     }
 

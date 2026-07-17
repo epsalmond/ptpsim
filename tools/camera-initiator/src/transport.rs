@@ -14,7 +14,7 @@ use camera_protocol_ffi::{
 };
 use if_addrs::{get_if_addrs, IfAddr};
 use ptp_core::codes::{op, resp};
-use ptp_core::{PtpCodec, PtpIpPacket};
+use ptp_core::{DataBlock, DeviceInfo, InitEventRequest, ProbeRequest, PtpCodec, PtpIpPacket};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -26,6 +26,11 @@ use crate::TraceWriter;
 const INIT_FRAME_LIMIT: usize = 1024 * 1024;
 const EVENT_QUEUE_LIMIT: usize = 1024;
 const PCSS_CALLBACK_LIMIT: usize = 4096;
+const GET_VENDOR_CODES: u16 = 0x9439;
+/// SnapBridge's startup query asks 0x9439 for vendor operation codes. The
+/// operation also accepts selector 13 for vendor properties, but that is not
+/// part of the direct-camera startup sequence.
+const GET_VENDOR_CODES_DOMAIN: u32 = 0x0000_0009;
 
 #[derive(Debug, Clone, Copy)]
 struct PcssEndpoint {
@@ -303,7 +308,7 @@ impl NativePtpTransport {
                 let (reader, writer) = stream.into_split();
                 *event = Some(EventChannel {
                     reader: Mutex::new(FrameReader::new(reader)),
-                    _writer: writer,
+                    writer: Mutex::new(writer),
                     retained: Mutex::new(VecDeque::new()),
                     framing: self
                         .store
@@ -355,6 +360,57 @@ impl NativePtpTransport {
             .ok_or_else(|| failed("first live-view packet is not a valid JPEG frame"))?;
         self.trace.live_view(frame.len()).map_err(trace_error)?;
         Ok(frame.len())
+    }
+
+    /// Send a standard PTP/IP probe on the initialized event channel and wait
+    /// for its paired response.
+    pub async fn probe_event_channel(&self) -> Result<(), PtpTransportError> {
+        let event_guard = self.event.lock().await;
+        let channel = event_guard
+            .as_ref()
+            .ok_or_else(|| failed("event socket is not connected"))?;
+        if !matches!(channel.framing, PtpFraming::Standard) {
+            return Err(failed("probes require standard PTP/IP event framing"));
+        }
+        let request = ptp_core::encode(&PtpIpPacket::ProbeRequest(ProbeRequest))
+            .map_err(|error| failed(error.to_string()))?;
+        self.trace
+            .wire("tx", "event", &request)
+            .map_err(trace_error)?;
+        channel
+            .writer
+            .lock()
+            .await
+            .write_all(&request)
+            .await
+            .map_err(io_error)?;
+        loop {
+            let response = tokio::time::timeout(
+                self.config.connect_timeout,
+                channel
+                    .reader
+                    .lock()
+                    .await
+                    .read_frame(self.config.max_frame_bytes),
+            )
+            .await
+            .map_err(|_| timeout_error("probe response"))?
+            .map_err(io_error)?;
+            self.trace
+                .wire("rx", "event", &response)
+                .map_err(trace_error)?;
+            match PtpIpPacket::decode(&response) {
+                Ok(PtpIpPacket::ProbeResponse(_)) => return Ok(()),
+                Ok(PtpIpPacket::Event(_)) => {
+                    let mut retained = channel.retained.lock().await;
+                    if retained.len() >= EVENT_QUEUE_LIMIT {
+                        return Err(failed("unrelated event queue overflow"));
+                    }
+                    retained.push_back(response);
+                }
+                _ => return Err(failed("event socket returned a malformed ProbeResponse")),
+            }
+        }
     }
 
     pub async fn close_session_if_open(&self) -> Result<(), PtpTransportError> {
@@ -469,6 +525,20 @@ impl NativePtpTransport {
                     .ok_or_else(|| failed("legacy manufacturer app init identity could not be resolved"))?;
                 Ok((endpoint, init.packet))
             }
+            "standardPtpIp" => {
+                let init = self
+                    .store
+                    .connection_init_with_runtime(
+                        self.config.connection.clone(),
+                        self.runtime_key_values(),
+                    )
+                    .ok_or_else(|| failed("standard PTP/IP init identity could not be resolved"))?;
+                Ok((
+                    self.command_endpoint()
+                        .ok_or_else(|| failed("standard PTP/IP requires a camera address"))?,
+                    init.packet,
+                ))
+            }
             "pcssKnock" => Err(failed(
                 "PCSS establishment requires discovery before selecting an endpoint",
             )),
@@ -489,7 +559,7 @@ impl NativePtpTransport {
             .store
             .connection_init_retry_policy(self.config.connection.clone());
         let mut retries_used = 0;
-        loop {
+        let init_reply = loop {
             self.establishment_write(
                 &channel,
                 init_packet.clone(),
@@ -512,7 +582,7 @@ impl NativePtpTransport {
                 .connection_expected_responder_guid(self.config.connection.clone())
                 .unwrap_or_default();
             if init_ack_is_valid(&self.init_shape, &reply, &expected_responder_guid) {
-                break;
+                break reply;
             }
             let reason = match canonical_init_fail_reason(&reply) {
                 Some(reason) => reason,
@@ -541,7 +611,36 @@ impl NativePtpTransport {
                 .map_err(trace_error)
                 .map_err(EstablishConnectedError::protocol)?;
             tokio::time::sleep(Duration::from_millis(policy.backoff_ms as u64)).await;
-        }
+        };
+
+        let discover_vendor_codes = if self.init_shape == "standardPtpIp" {
+            let connection_number = standard_connection_number(&init_reply).ok_or_else(|| {
+                EstablishConnectedError::protocol(failed(
+                    "standard InitCommandAck omitted its connection number",
+                ))
+            })?;
+            self.open_standard_event_channel(connection_number)
+                .await
+                .map_err(EstablishConnectedError::protocol)?;
+            let device_info = self
+                .standard_get_device_info(&channel)
+                .await
+                .map_err(EstablishConnectedError::protocol)?;
+            self.trace
+                .session(
+                    "deviceInfo",
+                    json!({
+                        "model": device_info.model,
+                        "manufacturer": device_info.manufacturer,
+                        "operationsSupported": device_info.operations_supported,
+                    }),
+                )
+                .map_err(trace_error)
+                .map_err(EstablishConnectedError::protocol)?;
+            device_info.operations_supported.contains(&GET_VENDOR_CODES)
+        } else {
+            false
+        };
 
         let mut response = self
             .session_command(&channel, op::OPEN_SESSION, 1, vec![1], "OpenSession")
@@ -591,7 +690,198 @@ impl NativePtpTransport {
                 opened.response_code
             ))));
         }
+        if discover_vendor_codes {
+            let codes = self
+                .standard_get_vendor_codes(&channel, 2)
+                .await
+                .map_err(EstablishConnectedError::protocol)?;
+            channel.next_tid.store(3, Ordering::Release);
+            self.trace
+                .session(
+                    "vendorCodes",
+                    json!({ "count": codes.len(), "codes": codes }),
+                )
+                .map_err(trace_error)
+                .map_err(EstablishConnectedError::protocol)?;
+        }
         Ok((channel, opened))
+    }
+
+    async fn open_standard_event_channel(
+        &self,
+        connection_number: u32,
+    ) -> Result<(), PtpTransportError> {
+        let camera = self
+            .config
+            .camera
+            .ok_or_else(|| failed("standard event socket requires a camera address"))?;
+        let port = self
+            .event_port
+            .ok_or_else(|| failed("standard PTP/IP connection has no event socket binding"))?;
+        let stream = self.connect(SocketAddr::new(camera, port)).await?;
+        let (reader, mut writer) = stream.into_split();
+        let request = ptp_core::encode(&PtpIpPacket::InitEventRequest(InitEventRequest {
+            connection_number,
+        }))
+        .map_err(|error| failed(error.to_string()))?;
+        self.trace
+            .wire("tx", "eventInit", &request)
+            .map_err(trace_error)?;
+        writer.write_all(&request).await.map_err(io_error)?;
+        let mut reader = FrameReader::new(reader);
+        let ack = tokio::time::timeout(
+            self.config.connect_timeout,
+            reader.read_frame(INIT_FRAME_LIMIT),
+        )
+        .await
+        .map_err(|_| timeout_error("event init acknowledgement"))?
+        .map_err(io_error)?;
+        self.trace
+            .wire("rx", "eventInit", &ack)
+            .map_err(trace_error)?;
+        if !matches!(PtpIpPacket::decode(&ack), Ok(PtpIpPacket::InitEventAck(_))) {
+            return Err(failed("camera returned a malformed InitEventAck"));
+        }
+        *self.event.lock().await = Some(EventChannel {
+            reader: Mutex::new(reader),
+            writer: Mutex::new(writer),
+            retained: Mutex::new(VecDeque::new()),
+            framing: PtpFraming::Standard,
+        });
+        self.trace
+            .session(
+                "eventConnected",
+                json!({ "port": port, "connectionNumber": connection_number }),
+            )
+            .map_err(trace_error)
+    }
+
+    async fn standard_get_device_info(
+        &self,
+        channel: &CommandChannel,
+    ) -> Result<DeviceInfo, PtpTransportError> {
+        let frame = build_command(PtpFraming::Standard, op::GET_DEVICE_INFO, 0, Vec::new())
+            .map_err(|error| failed(error.to_string()))?;
+        self.timed_write(channel, frame, "command", "GetDeviceInfo write")
+            .await?;
+        let payload = self
+            .standard_read_data_in(channel, 0, "GetDeviceInfo")
+            .await?;
+        DeviceInfo::decode(&payload).map_err(|error| failed(error.to_string()))
+    }
+
+    async fn standard_get_vendor_codes(
+        &self,
+        channel: &CommandChannel,
+        transaction_id: u32,
+    ) -> Result<Vec<u32>, PtpTransportError> {
+        let frame = build_command(
+            PtpFraming::Standard,
+            GET_VENDOR_CODES,
+            transaction_id,
+            vec![GET_VENDOR_CODES_DOMAIN],
+        )
+        .map_err(|error| failed(error.to_string()))?;
+        self.timed_write(channel, frame, "command", "GetVendorCodes write")
+            .await?;
+        let payload = self
+            .standard_read_data_in(channel, transaction_id, "GetVendorCodes")
+            .await?;
+        decode_u32_array(&payload).map_err(|error| failed(format!("GetVendorCodes {error}")))
+    }
+
+    async fn standard_read_data_in(
+        &self,
+        channel: &CommandChannel,
+        transaction_id: u32,
+        stage: &str,
+    ) -> Result<Vec<u8>, PtpTransportError> {
+        let mut payload = Vec::new();
+        let mut declared: Option<u64> = None;
+        let mut ended = false;
+        loop {
+            let frame = self
+                .timed_read(
+                    channel,
+                    self.config.max_frame_bytes,
+                    "command",
+                    &format!("{stage} response"),
+                )
+                .await?;
+            match PtpIpPacket::decode(&frame).map_err(|error| failed(error.to_string()))? {
+                PtpIpPacket::StartData(start) if start.transaction_id == transaction_id => {
+                    if declared.is_some() {
+                        return Err(failed(format!("{stage} returned duplicate StartData")));
+                    }
+                    if start.total_length > self.config.max_frame_bytes as u64 {
+                        return Err(failed(format!(
+                            "{stage} declared data length {} exceeds limit {}",
+                            start.total_length, self.config.max_frame_bytes
+                        )));
+                    }
+                    declared = Some(start.total_length);
+                }
+                PtpIpPacket::Data(DataBlock {
+                    transaction_id: packet_transaction_id,
+                    payload: chunk,
+                }) if packet_transaction_id == transaction_id => {
+                    if declared.is_none() {
+                        return Err(failed(format!("{stage} data arrived before StartData")));
+                    }
+                    if ended {
+                        return Err(failed(format!("{stage} data arrived after EndData")));
+                    }
+                    append_standard_data_chunk(
+                        &mut payload,
+                        &chunk,
+                        declared.expect("declared length was checked"),
+                        self.config.max_frame_bytes,
+                        stage,
+                    )?;
+                }
+                PtpIpPacket::EndData(DataBlock {
+                    transaction_id: packet_transaction_id,
+                    payload: chunk,
+                }) if packet_transaction_id == transaction_id => {
+                    if declared.is_none() {
+                        return Err(failed(format!("{stage} EndData arrived before StartData")));
+                    }
+                    if ended {
+                        return Err(failed(format!("{stage} returned duplicate EndData")));
+                    }
+                    let declared = declared.expect("declared length was checked");
+                    append_standard_data_chunk(
+                        &mut payload,
+                        &chunk,
+                        declared,
+                        self.config.max_frame_bytes,
+                        stage,
+                    )?;
+                    if payload.len() as u64 != declared {
+                        return Err(failed(format!(
+                            "{stage} data length {} did not match declared length {declared}",
+                            payload.len()
+                        )));
+                    }
+                    ended = true;
+                }
+                PtpIpPacket::OperationResponse(response)
+                    if response.transaction_id == transaction_id =>
+                {
+                    if response.code != resp::OK {
+                        return Err(failed(format!("{stage} returned 0x{:04x}", response.code)));
+                    }
+                    if declared.is_none() {
+                        return Err(failed(format!("{stage} returned no data phase")));
+                    }
+                    if !ended {
+                        return Err(failed(format!("{stage} response arrived before EndData")));
+                    }
+                    return Ok(payload);
+                }
+                other => return Err(failed(format!("unexpected {stage} packet {other:?}"))),
+            }
+        }
     }
 
     async fn session_command(
@@ -1429,7 +1719,7 @@ impl CommandChannel {
 
 struct EventChannel {
     reader: Mutex<FrameReader<OwnedReadHalf>>,
-    _writer: OwnedWriteHalf,
+    writer: Mutex<OwnedWriteHalf>,
     retained: Mutex<VecDeque<Vec<u8>>>,
     framing: PtpFraming,
 }
@@ -1451,7 +1741,6 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
             buffered: BytesMut::new(),
         }
     }
-
     async fn read_frame(&mut self, max: usize) -> io::Result<Vec<u8>> {
         self.fill(4).await?;
         let length = u32::from_le_bytes(self.buffered[0..4].try_into().unwrap()) as usize;
@@ -1614,6 +1903,13 @@ fn init_ack_is_valid(init_shape: &str, packet: &[u8], expected_responder_guid: &
     }
 }
 
+fn standard_connection_number(packet: &[u8]) -> Option<u32> {
+    match PtpIpPacket::decode(packet).ok()? {
+        PtpIpPacket::InitCommandAck(ack) => Some(ack.connection_number),
+        _ => None,
+    }
+}
+
 fn canonical_init_fail_reason(packet: &[u8]) -> Option<u32> {
     if packet.len() != 12 {
         return None;
@@ -1622,6 +1918,54 @@ fn canonical_init_fail_reason(packet: &[u8]) -> Option<u32> {
         PtpIpPacket::InitFail(failure) => Some(failure.reason),
         _ => None,
     }
+}
+
+fn append_standard_data_chunk(
+    payload: &mut Vec<u8>,
+    chunk: &[u8],
+    declared: u64,
+    limit: usize,
+    stage: &str,
+) -> Result<(), PtpTransportError> {
+    let cumulative = payload
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| failed(format!("{stage} data length overflow")))?;
+    if cumulative > limit {
+        return Err(failed(format!(
+            "{stage} cumulative data length {cumulative} exceeds limit {limit}"
+        )));
+    }
+    if cumulative as u64 > declared {
+        return Err(failed(format!(
+            "{stage} cumulative data length {cumulative} exceeds declared length {declared}"
+        )));
+    }
+    payload.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn decode_u32_array(payload: &[u8]) -> Result<Vec<u32>, String> {
+    let count_bytes: [u8; 4] = payload
+        .get(..4)
+        .ok_or_else(|| "returned a truncated u32 array count".to_string())?
+        .try_into()
+        .expect("slice length was checked");
+    let count = u32::from_le_bytes(count_bytes) as usize;
+    let expected = count
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(4))
+        .ok_or_else(|| "returned an overflowing u32 array count".to_string())?;
+    if payload.len() != expected {
+        return Err(format!(
+            "u32 array length {} did not match count {count}",
+            payload.len()
+        ));
+    }
+    Ok(payload[4..]
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("chunk length is four")))
+        .collect())
 }
 
 fn current_platform() -> Platform {
@@ -1677,6 +2021,37 @@ fn trace_error(error: io::Error) -> PtpTransportError {
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn vendor_code_array_requires_an_exact_u32_count() {
+        assert_eq!(
+            decode_u32_array(&[2, 0, 0, 0, 1, 0, 0, 0, 1, 32, 0, 0,]).unwrap(),
+            vec![1, 0x2001]
+        );
+        for malformed in [
+            Vec::new(),
+            vec![1, 0, 0, 0],
+            vec![0, 0, 0, 0, 0],
+            vec![2, 0, 0, 0, 1, 0, 0, 0],
+        ] {
+            assert!(decode_u32_array(&malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn standard_data_chunks_cannot_exceed_declared_or_configured_length() {
+        let mut payload = vec![1, 2];
+        append_standard_data_chunk(&mut payload, &[3, 4], 4, 4, "test").unwrap();
+        assert_eq!(payload, vec![1, 2, 3, 4]);
+
+        let declared_error = append_standard_data_chunk(&mut payload, &[5], 4, 8, "test")
+            .expect_err("reject data beyond declared length");
+        assert!(declared_error.to_string().contains("declared length 4"));
+
+        let limit_error = append_standard_data_chunk(&mut payload, &[5], 8, 4, "test")
+            .expect_err("reject data beyond configured limit");
+        assert!(limit_error.to_string().contains("exceeds limit 4"));
+    }
 
     #[tokio::test]
     async fn frame_reader_handles_fragmentation_and_coalescing() {

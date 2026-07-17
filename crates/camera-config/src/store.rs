@@ -174,6 +174,22 @@ impl ConfigStore {
         self.bodies.get(model_id)
     }
 
+    /// Select one indexed model as the direct-query body while retaining the
+    /// manufacturer defaults and index context. This prevents APIs that read
+    /// `manifest` from silently operating on the index's first declared body.
+    pub fn model_store(&self, model_id: &str) -> Option<Self> {
+        let manifest = self.bodies.get(model_id)?.clone();
+        Some(Self {
+            manifest,
+            manufacturer: self.manufacturer.clone(),
+            index: self.index.clone(),
+            bodies: self.bodies.clone(),
+            resolved_camera_initiated_transfer_by_model: self
+                .resolved_camera_initiated_transfer_by_model
+                .clone(),
+        })
+    }
+
     pub fn camera_initiated_transfer(
         &self,
         model_id: &str,
@@ -557,5 +573,26 @@ values:
     fn connections_available_uses_camera_firmware() {
         // firmware "2.30" in the body -> instax available.
         assert!(store().connections_available().contains(&"instax-printer"));
+    }
+
+    #[test]
+    fn model_store_selects_requested_body_for_direct_queries() {
+        let mut indexed = store();
+        let second = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: X-T5, firmware: "4.20" }
+connections:
+  app: { kind: ptpip }
+"#,
+        )
+        .unwrap();
+        indexed.bodies.insert("xt5".into(), second);
+
+        let selected = indexed.model_store("xt5").expect("indexed body exists");
+        assert_eq!(selected.manifest.camera.model, "X-T5");
+        assert!(selected.manifest.connections.contains_key("app"));
+        assert!(selected.value("initiatorGuid").is_some());
+        assert!(indexed.model_store("missing").is_none());
     }
 }

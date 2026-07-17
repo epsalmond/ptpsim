@@ -1,11 +1,10 @@
 schema: camera-config/v1
 
-# Family fallback for an unknown SnapBridge-capable Nikon camera. The shared
-# BLE and PTP/IP establishment facts come from static app analysis only. This
-# body intentionally has no model-specific signature or operation claims.
+# Provisional explicit model-selection body. Connection behavior is inherited
+# registration, camera-side save/reconnect, or returned DeviceInfo was captured.
 camera:
   manufacturer: NIKON
-  model: Nikon camera (provisional)
+  model: D850
 
 connections:
   ble:
@@ -34,6 +33,7 @@ operations:
 properties: {}
 
 evidence:
-  apkMultivendorBle:
+  snapBridgeStatic:
 
     date: "2026-06-10"
+    note: "Family connection shape only; D850 remains unvalidated"

@@ -158,6 +158,214 @@ fn simulator_rejects_unsupported_init_shape_before_listening() {
 }
 
 #[test]
+fn standard_ptpip_demultiplexes_event_socket_and_coordinates_disconnect() {
+    const STANDARD_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: TEST, model: Standard Camera, firmware: "1.0" }
+values:
+  initiatorGuid: { type: fixed, value: "00112233445566778899aabbccddeeff" }
+  initiatorName: { type: fixed, value: SnapBridge }
+connections:
+  app:
+    kind: ptpip
+    initShape: standardPtpIp
+    init:
+      identity: { guid: initiatorGuid, friendlyName: initiatorName }
+    commandFraming: standard
+    eventFraming: standard
+    bindings: { command: 15740, event: 15740 }
+operations:
+  "0x1001": { name: GetDeviceInfo, connections: [app] }
+  "0x1002": { name: OpenSession, connections: [app] }
+properties: {}
+"#;
+
+    let root = tmp_card();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (address, shutdown_tx, handle) = runtime.block_on(async {
+        let server = Server::bind(Config {
+            instance_id: "standard-ptpip".into(),
+            profile: "test/standard".into(),
+            connection: "app".into(),
+            manifest_yaml: STANDARD_MANIFEST.into(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(server.command_addr(), server.event_addr_opt().unwrap());
+        let address = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(server.run(rx));
+        (address, tx, handle)
+    });
+
+    let mut command = TcpStream::connect(address).unwrap();
+    let init = PtpIpPacket::InitCommandRequest(ptp_core::InitCommandRequest {
+        initiator_guid: [0x11; 16],
+        friendly_name: "SnapBridge".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut command, &ptp_core::encode(&init).unwrap());
+    let connection_number = match PtpIpPacket::decode(&read_frame(&mut command)).unwrap() {
+        PtpIpPacket::InitCommandAck(ack) => ack.connection_number,
+        other => panic!("expected InitCommandAck, got {other:?}"),
+    };
+
+    let mut mismatched = TcpStream::connect(address).unwrap();
+    let bad_event = PtpIpPacket::InitEventRequest(ptp_core::InitEventRequest {
+        connection_number: connection_number.wrapping_add(1),
+    });
+    write_frame(&mut mismatched, &ptp_core::encode(&bad_event).unwrap());
+    mismatched
+        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .unwrap();
+    let mut eof = [0u8; 1];
+    assert_eq!(mismatched.read(&mut eof).unwrap(), 0);
+
+    let mut event = TcpStream::connect(address).unwrap();
+    let event_init =
+        PtpIpPacket::InitEventRequest(ptp_core::InitEventRequest { connection_number });
+    write_frame(&mut event, &ptp_core::encode(&event_init).unwrap());
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut event)).unwrap(),
+        PtpIpPacket::InitEventAck(_)
+    ));
+
+    let device_info = PtpIpPacket::OperationRequest(ptp_core::OperationRequest {
+        data_phase_info: 1,
+        code: 0x1001,
+        transaction_id: 0,
+        params: vec![],
+    });
+    write_frame(&mut command, &ptp_core::encode(&device_info).unwrap());
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut command)).unwrap(),
+        PtpIpPacket::StartData(start) if start.transaction_id == 0
+    ));
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut command)).unwrap(),
+        PtpIpPacket::EndData(data) if data.transaction_id == 0
+    ));
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut command)).unwrap(),
+        PtpIpPacket::OperationResponse(response)
+            if response.transaction_id == 0 && response.code == 0x2001
+    ));
+
+    write_frame(
+        &mut event,
+        &ptp_core::encode(&PtpIpPacket::ProbeRequest(ptp_core::ProbeRequest)).unwrap(),
+    );
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut event)).unwrap(),
+        PtpIpPacket::ProbeResponse(_)
+    ));
+
+    let open = PtpIpPacket::OperationRequest(ptp_core::OperationRequest {
+        data_phase_info: 1,
+        code: 0x1002,
+        transaction_id: 1,
+        params: vec![1],
+    });
+    write_frame(&mut command, &ptp_core::encode(&open).unwrap());
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut command)).unwrap(),
+        PtpIpPacket::OperationResponse(response)
+            if response.transaction_id == 1 && response.code == 0x2001
+    ));
+
+    drop(event);
+    command
+        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .unwrap();
+    assert_eq!(command.read(&mut eof).unwrap(), 0);
+
+    let mut command = TcpStream::connect(address).unwrap();
+    write_frame(&mut command, &ptp_core::encode(&init).unwrap());
+    let connection_number = match PtpIpPacket::decode(&read_frame(&mut command)).unwrap() {
+        PtpIpPacket::InitCommandAck(ack) => ack.connection_number,
+        other => panic!("expected second InitCommandAck, got {other:?}"),
+    };
+    let mut event = TcpStream::connect(address).unwrap();
+    write_frame(
+        &mut event,
+        &ptp_core::encode(&PtpIpPacket::InitEventRequest(ptp_core::InitEventRequest {
+            connection_number,
+        }))
+        .unwrap(),
+    );
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut event)).unwrap(),
+        PtpIpPacket::InitEventAck(_)
+    ));
+    drop(command);
+    event
+        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .unwrap();
+    assert_eq!(event.read(&mut eof).unwrap(), 0);
+
+    shutdown_tx.send(()).ok();
+    runtime.block_on(handle).unwrap();
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[tokio::test]
+async fn standard_explicit_ephemeral_overrides_bind_independent_listeners() {
+    const MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: TEST, model: Standard Camera }
+values:
+  initiatorGuid: { type: fixed, value: "00112233445566778899aabbccddeeff" }
+  initiatorName: { type: fixed, value: SnapBridge }
+connections:
+  app:
+    kind: ptpip
+    initShape: standardPtpIp
+    init: { identity: { guid: initiatorGuid, friendlyName: initiatorName } }
+    commandFraming: standard
+    eventFraming: standard
+    bindings: { command: 15740, event: 15740 }
+operations:
+  "0x1001": { name: GetDeviceInfo, connections: [app] }
+  "0x1002": { name: OpenSession, connections: [app] }
+properties: {}
+"#;
+    let root = tmp_card();
+    let ephemeral = "127.0.0.1:0".parse().unwrap();
+    let server = Server::bind(Config {
+        instance_id: "standard-explicit-ephemeral".into(),
+        profile: "test/standard".into(),
+        connection: "app".into(),
+        manifest_yaml: MANIFEST.into(),
+        media_root: root.clone(),
+        command_bind: Some(ephemeral),
+        liveview_bind: None,
+        event_bind: Some(ephemeral),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: ephemeral,
+        liveview_dir: None,
+        state_callback: None,
+    })
+    .await
+    .unwrap();
+
+    assert_ne!(server.command_addr(), server.event_addr_opt().unwrap());
+    drop(server);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn legacy_app_init_and_usb_ptp_list_images_over_loopback() {
     const RESPONDER: [u8; 16] = [
         0x08, 0x70, 0xb0, 0x61, 0x0a, 0x8b, 0x45, 0x93, 0xb2, 0xe7, 0x93, 0x57, 0xdd, 0x36, 0xe0,

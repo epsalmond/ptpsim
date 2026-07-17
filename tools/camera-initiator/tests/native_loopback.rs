@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -7,11 +8,18 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use camera_initiator::{NativePtpTransport, TraceFormat, TraceWriter, TransportConfig};
 use camera_protocol_ffi::{
     run_action, run_mode_entry, ActionVerb, ConfigStore, ConnectionActivityEvent,
-    ConnectionActivityObserver, PtpExecutorTransport, StepObserver, StepReport,
+    ConnectionActivityObserver, KeyValue, Observation, PtpExecutorTransport, Recognition,
+    StepObserver, StepReport,
 };
+#[cfg(target_os = "linux")]
+use camera_sim::{walk_establishment, BleResponder};
 use camera_sim_service::{Config, Server};
 #[cfg(target_os = "linux")]
 use if_addrs::{get_if_addrs, IfAddr};
+#[cfg(target_os = "linux")]
+use protocol_primitives::{NikonLssAuthenticationSelection, NikonLssClient, NikonLssServer};
+#[cfg(target_os = "linux")]
+use ptp_core::{PtpCodec, PtpIpPacket};
 #[cfg(target_os = "linux")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -110,6 +118,885 @@ fn replace_once(body: String, from: &str, to: String) -> String {
         "expected one manifest field matching {from:?}"
     );
     body.replacen(from, &to, 1)
+}
+
+#[cfg(target_os = "linux")]
+fn standard_loopback_body(port: u16, model: &str) -> String {
+    format!(
+        r#"
+schema: camera-config/v1
+camera: {{ manufacturer: TEST, model: {model}, firmware: "1.0" }}
+values:
+  initiatorGuid: {{ type: fixed, value: "00112233445566778899aabbccddeeff" }}
+  initiatorName: {{ type: fixed, value: SnapBridge }}
+connections:
+  app:
+    kind: ptpip
+    initShape: standardPtpIp
+    init:
+      identity: {{ guid: initiatorGuid, friendlyName: initiatorName }}
+    commandFraming: standard
+    eventFraming: standard
+    bindings: {{ command: {port}, event: {port} }}
+operations:
+  "0x1001": {{ name: GetDeviceInfo, connections: [app] }}
+  "0x1002": {{ name: OpenSession, connections: [app] }}
+  "0x1003": {{ name: CloseSession, connections: [app] }}
+properties: {{}}
+"#
+    )
+}
+
+#[tokio::test]
+async fn standard_ptpip_opens_event_reads_device_info_then_opens_session_and_probes() {
+    let reserved = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve standard PTP/IP port");
+    let port = reserved.local_addr().unwrap().port();
+    drop(reserved);
+    let body = format!(
+        r#"
+schema: camera-config/v1
+camera: {{ manufacturer: TEST, model: Standard Camera, firmware: "1.0" }}
+values:
+  initiatorGuid: {{ type: fixed, value: "00112233445566778899aabbccddeeff" }}
+  initiatorName: {{ type: fixed, value: SnapBridge }}
+connections:
+  app:
+    kind: ptpip
+    initShape: standardPtpIp
+    init:
+      identity: {{ guid: initiatorGuid, friendlyName: initiatorName }}
+    commandFraming: standard
+    eventFraming: standard
+    bindings: {{ command: {port}, event: {port} }}
+operations:
+  "0x1001": {{ name: GetDeviceInfo, connections: [app] }}
+  "0x1002": {{ name: OpenSession, connections: [app] }}
+  "0x1003": {{ name: CloseSession, connections: [app] }}
+properties: {{}}
+"#
+    );
+    let media = TempMediaRoot::new();
+    let server = Server::bind(Config {
+        instance_id: "standard-initiator-loopback".into(),
+        profile: "test/standard".into(),
+        connection: "app".into(),
+        manifest_yaml: body.clone(),
+        media_root: media.path().to_path_buf(),
+        command_bind: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)),
+        liveview_bind: None,
+        event_bind: None,
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        liveview_dir: None,
+        state_callback: None,
+    })
+    .await
+    .expect("bind standard simulator");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+
+    let store = ConfigStore::from_bundle(body, None).expect("load standard manifest");
+    let trace_buffer = TraceBuffer::default();
+    let transport = NativePtpTransport::new(
+        store,
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::new(TraceWriter::new(
+            TraceFormat::Jsonl,
+            Box::new(trace_buffer.clone()),
+        )),
+    )
+    .expect("construct standard transport");
+
+    let opened = transport
+        .open_command_session()
+        .await
+        .expect("open standard command and event session");
+    assert_eq!(opened.transaction_id, 1);
+    assert_eq!(opened.response_code, ptp_core::codes::resp::OK);
+    transport
+        .probe_event_channel()
+        .await
+        .expect("standard probe response");
+    transport
+        .close_session_if_open()
+        .await
+        .expect("close standard session");
+
+    let records = trace_buffer.records();
+    let wire_channels: Vec<_> = records
+        .iter()
+        .filter(|record| record["kind"] == "wire")
+        .filter_map(|record| record["channel"].as_str())
+        .collect();
+    assert!(wire_channels.starts_with(&["init", "init", "eventInit", "eventInit"]));
+    assert!(records.iter().any(|record| {
+        record["kind"] == "session"
+            && record["state"] == "deviceInfo"
+            && record["detail"]["model"] == "Standard Camera"
+    }));
+
+    shutdown_tx.send(()).ok();
+    server_task.await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn nikon_snapbridge_milestone_reaches_d850_device_info_and_probe() {
+    const AUTH: &str = "00002000-3DD4-4255-8D62-6DC7B9BD5561";
+    const CLIENT_NAME: &str = "00002002-3DD4-4255-8D62-6DC7B9BD5561";
+    const SERVER_NAME: &str = "00002003-3DD4-4255-8D62-6DC7B9BD5561";
+    const CONFIGURATION: &str = "00002004-3DD4-4255-8D62-6DC7B9BD5561";
+    const ESTABLISHMENT: &str = "00002005-3DD4-4255-8D62-6DC7B9BD5561";
+    const FEATURE: &str = "00002009-3DD4-4255-8D62-6DC7B9BD5561";
+    const SERIAL: &str = "0000200B-3DD4-4255-8D62-6DC7B9BD5561";
+    const MODEL: &str = "00002A24-0000-1000-8000-00805F9B34FB";
+    const FIRMWARE: &str = "00002A26-0000-1000-8000-00805F9B34FB";
+    const LSS_SERVICE: &str = "0000DE00-3DD4-4255-8D62-6DC7B9BD5561";
+
+    let index_yaml = data("nikon/index.yaml");
+    let ffi_store = ConfigStore::from_manufacturer_index_with_defaults(
+        index_yaml.clone(),
+        data("nikon/nikon.yaml"),
+        vec![
+            KeyValue {
+                key: "nikon-camera".into(),
+                value: data("nikon/nikon-camera/nikon-camera.yaml"),
+            },
+            KeyValue {
+                key: "d850".into(),
+                value: data("nikon/d850/d850.yaml"),
+            },
+        ],
+    )
+    .expect("load provisional Nikon index");
+    assert!(matches!(
+        ffi_store.recognize(Observation::BleAdvert {
+            service_uuids: vec![LSS_SERVICE.into()],
+            manufacturer_data: None,
+            service_data: vec![],
+            local_name: Some("D850".into()),
+            tx_power: None,
+            ad_records: vec![],
+        }),
+        Recognition::Candidate { model, .. } if model == "nikon-camera"
+    ));
+
+    let index = camera_config::index::ResolvedManufacturerIndex::from_yaml(&index_yaml)
+        .expect("resolve Nikon family plans");
+    let ble = index.models[0].ble.as_ref().expect("Nikon BLE family");
+    let pair = ble.establishment("ble-pair").expect("pair plan");
+    let wifi = ble
+        .establishment("ble-establish-wifi-ap")
+        .expect("Wi-Fi plan");
+    let catalog = || ble.gatt.values().cloned().collect::<Vec<_>>();
+
+    let client_device_id = [0x10; 8];
+    let pair_nonce = [0x20; 8];
+    let mut pair_client = NikonLssClient::new(client_device_id, pair_nonce);
+    let pair_stage1 = pair_client.stage1_record().unwrap();
+    let mut pair_server = NikonLssServer::new(
+        NikonLssAuthenticationSelection::new(7).unwrap(),
+        [0x30; 8],
+        [0x40; 8],
+    );
+    let pair_stage2 = pair_server.handle_stage1(&pair_stage1).unwrap();
+    let pair_stage3 = pair_client.handle_stage2(&pair_stage2).unwrap();
+    let (pair_stage4, _) = pair_server.finish_stage3(&pair_stage3).unwrap();
+    let snapbridge_name = "Android_Pixel_8_1234";
+    let mut padded_name = snapbridge_name.as_bytes().to_vec();
+    padded_name.resize(32, 0);
+    let mut pair_responder = BleResponder::new(catalog())
+        .expect_exact_write(AUTH, &pair_stage1)
+        .queue_ordered_indication(AUTH, &pair_stage2)
+        .expect_exact_write(AUTH, &pair_stage3)
+        .queue_ordered_indication(AUTH, &pair_stage4)
+        .expect_exact_write(CLIENT_NAME, &padded_name)
+        .serve_read(SERVER_NAME, b"D850\0")
+        .serve_read_sequence(
+            FEATURE,
+            vec![vec![0x01], vec![0x02], vec![0x04], vec![0x08]],
+        )
+        .serve_read(MODEL, b"D850\0")
+        .serve_read(SERIAL, b"D850-SIM-0001\0")
+        .serve_read(FIRMWARE, b"1.31\0");
+    let pair_runtime = BTreeMap::from([
+        ("clientDeviceId".into(), "1010101010101010".into()),
+        ("clientNonce".into(), "2020202020202020".into()),
+        ("snapBridgeClientName".into(), snapbridge_name.into()),
+    ]);
+    let pair_outcome = walk_establishment(
+        &mut pair_responder,
+        &pair.steps,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &pair_runtime,
+    )
+    .expect("walk Nikon pairing");
+    assert_eq!(
+        pair_outcome.scope.get("model").map(String::as_str),
+        Some("D850")
+    );
+    assert_eq!(
+        pair_responder.written(CLIENT_NAME),
+        vec![padded_name.as_slice()]
+    );
+
+    let wifi_nonce = [0x21; 8];
+    let mut wifi_client = NikonLssClient::new(client_device_id, wifi_nonce);
+    let wifi_stage1 = wifi_client.stage1_record().unwrap();
+    let mut wifi_server = NikonLssServer::new(
+        NikonLssAuthenticationSelection::new(6).unwrap(),
+        [0x31; 8],
+        [0x41; 8],
+    );
+    let wifi_stage2 = wifi_server.handle_stage1(&wifi_stage1).unwrap();
+    let wifi_stage3 = wifi_client.handle_stage2(&wifi_stage2).unwrap();
+    let (wifi_stage4, wifi_session) = wifi_server.finish_stage3(&wifi_stage3).unwrap();
+    let mut ssid = b"D850_SIM_AP".to_vec();
+    ssid.resize(32, 0);
+    let mut password = b"snapbridge-sim-password".to_vec();
+    password.resize(64, 0);
+    let mut encrypted_configuration = vec![0x03];
+    encrypted_configuration.extend(wifi_session.encrypt(&ssid).unwrap());
+    encrypted_configuration.extend(wifi_session.encrypt(&password).unwrap());
+    encrypted_configuration.push(1);
+    encrypted_configuration.extend(512_u32.to_le_bytes());
+    let mut wifi_responder = BleResponder::new(catalog())
+        .expect_exact_write(AUTH, &wifi_stage1)
+        .queue_ordered_indication(AUTH, &wifi_stage2)
+        .expect_exact_write(AUTH, &wifi_stage3)
+        .queue_ordered_indication(AUTH, &wifi_stage4)
+        .expect_exact_write(ESTABLISHMENT, &[0x02])
+        .serve_read(CONFIGURATION, &encrypted_configuration);
+    let wifi_runtime = BTreeMap::from([
+        ("clientDeviceId".into(), "1010101010101010".into()),
+        ("clientNonce".into(), "2121212121212121".into()),
+    ]);
+    let wifi_outcome = walk_establishment(
+        &mut wifi_responder,
+        &wifi.steps,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &wifi_runtime,
+    )
+    .expect("walk encrypted Nikon Wi-Fi handoff");
+    assert_eq!(
+        wifi_outcome.scope.get("ssid").map(String::as_str),
+        Some("D850_SIM_AP")
+    );
+    assert_eq!(
+        wifi_outcome.scope.get("password").map(String::as_str),
+        Some("snapbridge-sim-password")
+    );
+    assert_eq!(wifi_responder.written(ESTABLISHMENT), vec![&[0x02][..]]);
+
+    let reserved = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("reserve D850 standard PTP/IP port");
+    let port = reserved.local_addr().unwrap().port();
+    drop(reserved);
+    let body = data("nikon/d850/d850.yaml")
+        .replacen(
+            "connections:",
+            r#"values:
+  initiatorGuid: { type: fixed, value: "00112233445566778899aabbccddeeff" }
+  initFriendlyName: { type: fixed, value: "Android Device" }
+connections:"#,
+            1,
+        )
+        .replacen(
+            "bindings: { command: 15740, event: 15740 }",
+            &format!("bindings: {{ command: {port}, event: {port} }}"),
+            1,
+        );
+    let media = TempMediaRoot::new();
+    let server = Server::bind(Config {
+        instance_id: "nikon-d850-milestone".into(),
+        profile: "nikon/d850-provisional".into(),
+        connection: "app".into(),
+        manifest_yaml: body.clone(),
+        media_root: media.path().to_path_buf(),
+        command_bind: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)),
+        liveview_bind: None,
+        event_bind: None,
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        liveview_dir: None,
+        state_callback: None,
+    })
+    .await
+    .expect("bind provisional D850 simulator");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+    let transport_store = ConfigStore::from_bundle(body, None).expect("load D850 loopback body");
+    let trace_buffer = TraceBuffer::default();
+    let transport = NativePtpTransport::new(
+        transport_store,
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::new(TraceWriter::new(
+            TraceFormat::Jsonl,
+            Box::new(trace_buffer.clone()),
+        )),
+    )
+    .expect("construct D850 standard transport");
+    transport
+        .open_command_session()
+        .await
+        .expect("command init, event init, DeviceInfo, OpenSession");
+    transport
+        .probe_event_channel()
+        .await
+        .expect("D850 probe response");
+    let records = trace_buffer.records();
+    assert!(records.iter().any(|record| {
+        record["kind"] == "session"
+            && record["state"] == "deviceInfo"
+            && record["detail"]["model"] == "D850"
+    }));
+    transport.close_session_if_open().await.unwrap();
+    shutdown_tx.send(()).ok();
+    server_task.await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+async fn standard_vendor_discovery_case(advertised: bool) {
+    const GET_VENDOR_CODES: u16 = 0x9439;
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind standard PTP/IP vendor-code listener");
+    let port = listener.local_addr().unwrap().port();
+    let body = standard_loopback_body(port, "Vendor Code Camera");
+
+    let camera_task = tokio::spawn(async move {
+        let (mut command, _) = listener.accept().await.expect("accept command socket");
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::InitCommandRequest(_))
+        ));
+        command
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::InitCommandAck(ptp_core::InitCommandAck {
+                    connection_number: 52,
+                    responder_guid: [0x52; 16],
+                    friendly_name: "Vendor Code Camera".into(),
+                    protocol_version: 0x0001_0000,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let (mut event, _) = listener.accept().await.expect("accept event socket");
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut event).await),
+            Ok(PtpIpPacket::InitEventRequest(request)) if request.connection_number == 52
+        ));
+        event
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::InitEventAck(ptp_core::InitEventAck)).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::OperationRequest(request))
+                if request.code == ptp_core::codes::op::GET_DEVICE_INFO
+                    && request.transaction_id == 0
+        ));
+        let mut operations = vec![
+            ptp_core::codes::op::GET_DEVICE_INFO,
+            ptp_core::codes::op::OPEN_SESSION,
+            ptp_core::codes::op::CLOSE_SESSION,
+        ];
+        if advertised {
+            operations.push(GET_VENDOR_CODES);
+        }
+        let info = ptp_core::DeviceInfo {
+            standard_version: 100,
+            operations_supported: operations,
+            manufacturer: "TEST".into(),
+            model: "Vendor Code Camera".into(),
+            device_version: "1.0".into(),
+            ..Default::default()
+        };
+        let mut writer = ptp_core::Writer::new();
+        info.encode(&mut writer).unwrap();
+        let payload = writer.into_vec();
+        for packet in [
+            PtpIpPacket::StartData(ptp_core::StartData {
+                transaction_id: 0,
+                total_length: payload.len() as u64,
+            }),
+            PtpIpPacket::EndData(ptp_core::DataBlock {
+                transaction_id: 0,
+                payload,
+            }),
+            PtpIpPacket::OperationResponse(ptp_core::OperationResponse {
+                code: ptp_core::codes::resp::OK,
+                transaction_id: 0,
+                params: vec![],
+            }),
+        ] {
+            command
+                .write_all(&ptp_core::encode(&packet).unwrap())
+                .await
+                .unwrap();
+        }
+
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::OperationRequest(request))
+                if request.code == ptp_core::codes::op::OPEN_SESSION
+                    && request.transaction_id == 1
+        ));
+        command
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::OperationResponse(
+                    ptp_core::OperationResponse {
+                        code: ptp_core::codes::resp::OK,
+                        transaction_id: 1,
+                        params: vec![],
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        if advertised {
+            assert!(matches!(
+                PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+                Ok(PtpIpPacket::OperationRequest(request))
+                    if request.data_phase_info == 1
+                        && request.code == GET_VENDOR_CODES
+                        && request.transaction_id == 2
+                        && request.params == vec![0x0000_0009]
+            ));
+            let mut writer = ptp_core::Writer::new();
+            writer.ptp_array(&[0x0000_0001, 0x0000_2001], |writer, code| {
+                writer.u32(*code)
+            });
+            let payload = writer.into_vec();
+            for packet in [
+                PtpIpPacket::StartData(ptp_core::StartData {
+                    transaction_id: 2,
+                    total_length: payload.len() as u64,
+                }),
+                PtpIpPacket::Data(ptp_core::DataBlock {
+                    transaction_id: 2,
+                    payload: payload[..4].to_vec(),
+                }),
+                PtpIpPacket::EndData(ptp_core::DataBlock {
+                    transaction_id: 2,
+                    payload: payload[4..].to_vec(),
+                }),
+                PtpIpPacket::OperationResponse(ptp_core::OperationResponse {
+                    code: ptp_core::codes::resp::OK,
+                    transaction_id: 2,
+                    params: vec![],
+                }),
+            ] {
+                command
+                    .write_all(&ptp_core::encode(&packet).unwrap())
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let close_transaction_id = if advertised { 3 } else { 2 };
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::OperationRequest(request))
+                if request.code == ptp_core::codes::op::CLOSE_SESSION
+                    && request.transaction_id == close_transaction_id
+        ));
+        command
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::OperationResponse(
+                    ptp_core::OperationResponse {
+                        code: ptp_core::codes::resp::OK,
+                        transaction_id: close_transaction_id,
+                        params: vec![],
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let store = ConfigStore::from_bundle(body, None).expect("load standard manifest");
+    let trace_buffer = TraceBuffer::default();
+    let transport = NativePtpTransport::new(
+        store,
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::new(TraceWriter::new(
+            TraceFormat::Jsonl,
+            Box::new(trace_buffer.clone()),
+        )),
+    )
+    .unwrap();
+    transport.open_command_session().await.unwrap();
+    transport.close_session_if_open().await.unwrap();
+    camera_task.await.unwrap();
+
+    let vendor_trace = trace_buffer
+        .records()
+        .into_iter()
+        .find(|record| record["kind"] == "session" && record["state"] == "vendorCodes");
+    if advertised {
+        let trace = vendor_trace.expect("trace advertised vendor codes");
+        assert_eq!(trace["detail"]["count"], 2);
+        assert_eq!(trace["detail"]["codes"], serde_json::json!([1, 8193]));
+    } else {
+        assert!(vendor_trace.is_none(), "unadvertised discovery was traced");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn standard_ptpip_discovers_advertised_vendor_codes_after_open_session() {
+    standard_vendor_discovery_case(true).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn standard_ptpip_skips_unadvertised_vendor_codes() {
+    standard_vendor_discovery_case(false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum MalformedDeviceInfo {
+    DataBeforeStart,
+    OversizedDeclaration,
+}
+
+#[cfg(target_os = "linux")]
+async fn standard_malformed_device_info_case(malformed: MalformedDeviceInfo, expected_error: &str) {
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind malformed DeviceInfo listener");
+    let port = listener.local_addr().unwrap().port();
+    let body = standard_loopback_body(port, "Malformed DeviceInfo Camera");
+    let camera_task = tokio::spawn(async move {
+        let (mut command, _) = listener.accept().await.expect("accept command socket");
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::InitCommandRequest(_))
+        ));
+        command
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::InitCommandAck(ptp_core::InitCommandAck {
+                    connection_number: 63,
+                    responder_guid: [0x63; 16],
+                    friendly_name: "Malformed DeviceInfo Camera".into(),
+                    protocol_version: 0x0001_0000,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let (mut event, _) = listener.accept().await.expect("accept event socket");
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut event).await),
+            Ok(PtpIpPacket::InitEventRequest(request)) if request.connection_number == 63
+        ));
+        event
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::InitEventAck(ptp_core::InitEventAck)).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::OperationRequest(request))
+                if request.code == ptp_core::codes::op::GET_DEVICE_INFO
+                    && request.transaction_id == 0
+        ));
+        let packet = match malformed {
+            MalformedDeviceInfo::DataBeforeStart => PtpIpPacket::Data(ptp_core::DataBlock {
+                transaction_id: 0,
+                payload: vec![0],
+            }),
+            MalformedDeviceInfo::OversizedDeclaration => {
+                PtpIpPacket::StartData(ptp_core::StartData {
+                    transaction_id: 0,
+                    total_length: 65,
+                })
+            }
+        };
+        command
+            .write_all(&ptp_core::encode(&packet).unwrap())
+            .await
+            .unwrap();
+    });
+
+    let store = ConfigStore::from_bundle(body, None).expect("load standard manifest");
+    let transport = NativePtpTransport::new(
+        store,
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 64,
+        },
+        Arc::new(TraceWriter::new(TraceFormat::Jsonl, Box::new(io::sink()))),
+    )
+    .unwrap();
+    let error = transport
+        .open_command_session()
+        .await
+        .expect_err("reject malformed DeviceInfo data phase");
+    assert!(
+        error.to_string().contains(expected_error),
+        "unexpected malformed data error: {error}"
+    );
+    camera_task.await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn standard_ptpip_rejects_device_info_data_before_start() {
+    standard_malformed_device_info_case(
+        MalformedDeviceInfo::DataBeforeStart,
+        "data arrived before StartData",
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn standard_ptpip_rejects_oversized_device_info_declaration() {
+    standard_malformed_device_info_case(
+        MalformedDeviceInfo::OversizedDeclaration,
+        "declared data length 65 exceeds limit 64",
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn standard_probe_retains_event_that_arrives_before_response() {
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind standard PTP/IP loopback listener");
+    let port = listener.local_addr().unwrap().port();
+    let body = format!(
+        r#"
+schema: camera-config/v1
+camera: {{ manufacturer: TEST, model: Probe Camera, firmware: "1.0" }}
+values:
+  initiatorGuid: {{ type: fixed, value: "00112233445566778899aabbccddeeff" }}
+  initiatorName: {{ type: fixed, value: SnapBridge }}
+connections:
+  app:
+    kind: ptpip
+    initShape: standardPtpIp
+    init:
+      identity: {{ guid: initiatorGuid, friendlyName: initiatorName }}
+    commandFraming: standard
+    eventFraming: standard
+    bindings: {{ command: {port}, event: {port} }}
+operations:
+  "0x1001": {{ name: GetDeviceInfo, connections: [app] }}
+  "0x1002": {{ name: OpenSession, connections: [app] }}
+  "0x1003": {{ name: CloseSession, connections: [app] }}
+properties: {{}}
+"#
+    );
+
+    let camera_task = tokio::spawn(async move {
+        let (mut command, _) = listener.accept().await.expect("accept command socket");
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::InitCommandRequest(_))
+        ));
+        command
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::InitCommandAck(ptp_core::InitCommandAck {
+                    connection_number: 41,
+                    responder_guid: [0x22; 16],
+                    friendly_name: "Probe Camera".into(),
+                    protocol_version: 0x0001_0000,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let (mut event, _) = listener.accept().await.expect("accept event socket");
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut event).await),
+            Ok(PtpIpPacket::InitEventRequest(request)) if request.connection_number == 41
+        ));
+        event
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::InitEventAck(ptp_core::InitEventAck)).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::OperationRequest(request))
+                if request.code == ptp_core::codes::op::GET_DEVICE_INFO
+                    && request.transaction_id == 0
+        ));
+        let info = ptp_core::DeviceInfo {
+            standard_version: 100,
+            operations_supported: vec![
+                ptp_core::codes::op::GET_DEVICE_INFO,
+                ptp_core::codes::op::OPEN_SESSION,
+                ptp_core::codes::op::CLOSE_SESSION,
+            ],
+            manufacturer: "TEST".into(),
+            model: "Probe Camera".into(),
+            device_version: "1.0".into(),
+            ..Default::default()
+        };
+        let mut writer = ptp_core::Writer::new();
+        info.encode(&mut writer).unwrap();
+        let payload = writer.into_vec();
+        for packet in [
+            PtpIpPacket::StartData(ptp_core::StartData {
+                transaction_id: 0,
+                total_length: payload.len() as u64,
+            }),
+            PtpIpPacket::EndData(ptp_core::DataBlock {
+                transaction_id: 0,
+                payload,
+            }),
+            PtpIpPacket::OperationResponse(ptp_core::OperationResponse {
+                code: ptp_core::codes::resp::OK,
+                transaction_id: 0,
+                params: vec![],
+            }),
+        ] {
+            command
+                .write_all(&ptp_core::encode(&packet).unwrap())
+                .await
+                .unwrap();
+        }
+
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::OperationRequest(request))
+                if request.code == ptp_core::codes::op::OPEN_SESSION
+                    && request.transaction_id == 1
+        ));
+        command
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::OperationResponse(
+                    ptp_core::OperationResponse {
+                        code: ptp_core::codes::resp::OK,
+                        transaction_id: 1,
+                        params: vec![],
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut event).await),
+            Ok(PtpIpPacket::ProbeRequest(_))
+        ));
+        event
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::Event(ptp_core::EventPacket {
+                    code: 0xc005,
+                    transaction_id: 0,
+                    params: vec![],
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        event
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::ProbeResponse(ptp_core::ProbeResponse)).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            PtpIpPacket::decode(&read_declared_frame(&mut command).await),
+            Ok(PtpIpPacket::OperationRequest(request))
+                if request.code == ptp_core::codes::op::CLOSE_SESSION
+                    && request.transaction_id == 2
+        ));
+        command
+            .write_all(
+                &ptp_core::encode(&PtpIpPacket::OperationResponse(
+                    ptp_core::OperationResponse {
+                        code: ptp_core::codes::resp::OK,
+                        transaction_id: 2,
+                        params: vec![],
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    });
+
+    let store = ConfigStore::from_bundle(body, None).expect("load standard manifest");
+    let transport = NativePtpTransport::new(
+        store,
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::new(TraceWriter::new(TraceFormat::Jsonl, Box::new(io::sink()))),
+    )
+    .unwrap();
+    transport.open_command_session().await.unwrap();
+    transport.probe_event_channel().await.unwrap();
+    let retained = PtpExecutorTransport::next_event_frame(transport.as_ref(), 0xc005)
+        .await
+        .expect("racing event was retained");
+    assert!(matches!(
+        PtpIpPacket::decode(&retained),
+        Ok(PtpIpPacket::Event(event)) if event.code == 0xc005
+    ));
+    transport.close_session_if_open().await.unwrap();
+    camera_task.await.unwrap();
 }
 
 #[cfg(target_os = "linux")]

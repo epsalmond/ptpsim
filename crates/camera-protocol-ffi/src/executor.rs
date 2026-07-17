@@ -39,6 +39,7 @@ use camera_config::{
     ConnectionActivitySequence as ConfigActivitySequence,
 };
 use futures_util::future::{select, Either, FutureExt};
+use protocol_primitives::{NikonConnectionConfiguration, NikonLssClient, NikonLssSession};
 
 use crate::{ConfigStore, KeyValue};
 
@@ -364,6 +365,7 @@ pub async fn run_establishment(
             .map(|kv| (kv.key, kv.value))
             .collect(),
         subscriptions: BTreeSet::new(),
+        nikon_lss_session: None,
         steps_run: 0,
         refine: Some(RefineCtx {
             source: RefinementSource::Store(&store),
@@ -421,6 +423,7 @@ pub async fn run_post_exit_readiness(
             .map(|kv| (kv.key, kv.value))
             .collect(),
         subscriptions: BTreeSet::new(),
+        nikon_lss_session: None,
         steps_run: 0,
         refine: None,
     };
@@ -515,6 +518,7 @@ pub async fn run_ble_action(
             .map(|kv| (kv.key, kv.value))
             .collect(),
         subscriptions: BTreeSet::new(),
+        nikon_lss_session: None,
         steps_run: 0,
         refine: None,
     };
@@ -601,6 +605,9 @@ struct ExecCtx<'a> {
     runtime_params: BTreeMap<String, String>,
     /// Successful CCCD enables in this walk. A retry reuses transport state.
     subscriptions: BTreeSet<(String, bool)>,
+    /// Opaque authenticated Nikon LSS cipher state. It deliberately has no
+    /// scope/FFI/log representation and lives only for this executor walk.
+    nikon_lss_session: Option<NikonLssSession>,
     steps_run: u32,
     /// Present for establishment walks; `acquireFirmware` re-resolves the
     /// tail through it (§11.5). `None` for BLE actions.
@@ -1229,6 +1236,8 @@ fn step_characteristic(step: &Step) -> Option<String> {
         Step::BleSubscribe(s) => Some(s.gatt.clone()),
         Step::BleNotify(s) => Some(s.gatt.clone()),
         Step::BleWriteChunk(s) => Some(s.gatt.clone()),
+        Step::NikonLssAuthenticate(s) => Some(s.gatt.clone()),
+        Step::NikonLssReadConnectionConfiguration(s) => Some(s.gatt.clone()),
         Step::BleAwaitUntil(s) => Some(match &s.source {
             AwaitSource::Read { gatt } => gatt.clone(),
             AwaitSource::Notify { gatt, .. } => gatt.clone(),
@@ -1447,6 +1456,100 @@ async fn run_step_once(
                 }
                 Err(e) => Err(err(format!("refinement failed: {e}"))),
             }
+        }
+        Step::NikonLssAuthenticate(s) => {
+            // Re-authentication must fail closed: a failed exchange must never
+            // leave a prior session available to later encrypted reads.
+            ctx.nikon_lss_session = None;
+            let client_device_id: [u8; 8] = resolve_value(ctx, &s.client_device_id)
+                .map_err(&err)?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    err(format!(
+                        "clientDeviceId must resolve to exactly 8 bytes (got {})",
+                        bytes.len()
+                    ))
+                })?;
+            let nonce: [u8; 8] = resolve_value(ctx, &s.nonce)
+                .map_err(&err)?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    err(format!(
+                        "nonce must resolve to exactly 8 bytes (got {})",
+                        bytes.len()
+                    ))
+                })?;
+            ensure_subscribed(
+                ctx,
+                &s.gatt,
+                camera_config::index::CccdMode::Indicate,
+                s.timeout_ms,
+            )
+            .await
+            .map_err(op_err)?;
+
+            let mut client = NikonLssClient::new(client_device_id, nonce);
+            let stage1 = client
+                .stage1_record()
+                .map_err(|e| err(format!("LSS stage 1 failed: {e}")))?;
+            deadline(ctx.transport, s.timeout_ms, "LSS stage 1 write", async {
+                ctx.transport
+                    .write_with_notification_fence(s.gatt.clone(), stage1.to_vec(), s.gatt.clone())
+                    .await
+            })
+            .await
+            .map_err(op_err)?;
+            let stage2 = deadline(
+                ctx.transport,
+                s.timeout_ms,
+                "LSS stage 2 indication",
+                async { ctx.transport.next_notification(s.gatt.clone()).await },
+            )
+            .await
+            .map_err(op_err)?;
+            let stage3 = client
+                .handle_stage2(&stage2)
+                .map_err(|e| err(format!("LSS stage 2 failed: {e}")))?;
+            deadline(ctx.transport, s.timeout_ms, "LSS stage 3 write", async {
+                ctx.transport
+                    .write_with_notification_fence(s.gatt.clone(), stage3.to_vec(), s.gatt.clone())
+                    .await
+            })
+            .await
+            .map_err(op_err)?;
+            let stage4 = deadline(
+                ctx.transport,
+                s.timeout_ms,
+                "LSS stage 4 indication",
+                async { ctx.transport.next_notification(s.gatt.clone()).await },
+            )
+            .await
+            .map_err(op_err)?;
+            ctx.nikon_lss_session = Some(
+                client
+                    .finish_stage4(&stage4)
+                    .map_err(|e| err(format!("LSS stage 4 failed: {e}")))?,
+            );
+            Ok(None)
+        }
+        Step::NikonLssReadConnectionConfiguration(s) => {
+            let session = ctx
+                .nikon_lss_session
+                .as_ref()
+                .ok_or_else(|| err("Nikon LSS session is not authenticated".into()))?;
+            let wire = deadline(
+                ctx.transport,
+                DEFAULT_OP_TIMEOUT_MS,
+                "LSS config read",
+                async { ctx.transport.read(s.gatt.clone()).await },
+            )
+            .await
+            .map_err(op_err)?;
+            let config = session
+                .decode_connection_configuration(&wire)
+                .map_err(|e| err(format!("LSS connection configuration failed: {e}")))?;
+            bind_nikon_connection_configuration(ctx, s, config);
+            Ok(None)
         }
         Step::If(s) => {
             let holds = match ctx.scope.get(&s.condition.field) {
@@ -1990,6 +2093,49 @@ fn primary_capture_name(step: &Step) -> Option<&str> {
     }
 }
 
+fn bind_nikon_connection_configuration(
+    ctx: &mut ExecCtx<'_>,
+    step: &camera_config::index::NikonLssReadConnectionConfigurationStep,
+    config: NikonConnectionConfiguration,
+) {
+    for name in [
+        &step.ssid_capture_as,
+        &step.password_capture_as,
+        &step.security_mode_capture_as,
+    ] {
+        ctx.scope.remove(name);
+        ctx.encodings.remove(name);
+    }
+    if let Some(name) = &step.spp_max_length_capture_as {
+        ctx.scope.remove(name);
+        ctx.encodings.remove(name);
+    }
+    ctx.scope
+        .insert(step.flags_capture_as.clone(), config.flags.to_string());
+    ctx.encodings
+        .insert(step.flags_capture_as.clone(), Encoding::U8);
+    if let Some(wifi) = config.wifi {
+        ctx.scope.insert(step.ssid_capture_as.clone(), wifi.ssid);
+        ctx.encodings
+            .insert(step.ssid_capture_as.clone(), Encoding::Utf8);
+        ctx.scope
+            .insert(step.password_capture_as.clone(), wifi.password);
+        ctx.encodings
+            .insert(step.password_capture_as.clone(), Encoding::Utf8);
+        ctx.scope.insert(
+            step.security_mode_capture_as.clone(),
+            wifi.security.as_token().to_string(),
+        );
+        ctx.encodings
+            .insert(step.security_mode_capture_as.clone(), Encoding::Utf8);
+    }
+    if let (Some(name), Some(length)) = (&step.spp_max_length_capture_as, config.spp_maximum_length)
+    {
+        ctx.scope.insert(name.clone(), length.to_string());
+        ctx.encodings.insert(name.clone(), Encoding::U32Le);
+    }
+}
+
 /// Bind a value (read result / notification payload) into scope: the whole
 /// value under `capture_as` (hex), then each field capture through the §11.13
 /// pipeline (window → transform → encoding). Fail-soft: a capture whose
@@ -2336,6 +2482,7 @@ mod tests {
             encodings: BTreeMap::new(),
             runtime_params: BTreeMap::new(),
             subscriptions: BTreeSet::new(),
+            nikon_lss_session: None,
             steps_run: 0,
             refine: None,
         }

@@ -13,6 +13,8 @@ use crate::error::{DecodeError, EncodeError};
 pub enum PtpIpPacket {
     InitCommandRequest(InitCommandRequest),
     InitCommandAck(InitCommandAck),
+    InitEventRequest(InitEventRequest),
+    InitEventAck(InitEventAck),
     InitFail(InitFail),
     OperationRequest(OperationRequest),
     OperationResponse(OperationResponse),
@@ -20,6 +22,8 @@ pub enum PtpIpPacket {
     StartData(StartData),
     Data(DataBlock),
     EndData(DataBlock),
+    ProbeRequest(ProbeRequest),
+    ProbeResponse(ProbeResponse),
 }
 
 /// Decode/encode by-value over a byte buffer. Encode is fallible only because
@@ -34,6 +38,8 @@ impl PtpIpPacket {
         match self {
             PtpIpPacket::InitCommandRequest(_) => PacketType::InitCommandRequest,
             PtpIpPacket::InitCommandAck(_) => PacketType::InitCommandAck,
+            PtpIpPacket::InitEventRequest(_) => PacketType::InitEventRequest,
+            PtpIpPacket::InitEventAck(_) => PacketType::InitEventAck,
             PtpIpPacket::InitFail(_) => PacketType::InitFail,
             PtpIpPacket::OperationRequest(_) => PacketType::OperationRequest,
             PtpIpPacket::OperationResponse(_) => PacketType::OperationResponse,
@@ -41,6 +47,8 @@ impl PtpIpPacket {
             PtpIpPacket::StartData(_) => PacketType::StartData,
             PtpIpPacket::Data(_) => PacketType::Data,
             PtpIpPacket::EndData(_) => PacketType::EndData,
+            PtpIpPacket::ProbeRequest(_) => PacketType::ProbeRequest,
+            PtpIpPacket::ProbeResponse(_) => PacketType::ProbeResponse,
         }
     }
 
@@ -48,6 +56,8 @@ impl PtpIpPacket {
         match self {
             PtpIpPacket::InitCommandRequest(p) => p.encode_body(w)?,
             PtpIpPacket::InitCommandAck(p) => p.encode_body(w)?,
+            PtpIpPacket::InitEventRequest(p) => p.encode_body(w),
+            PtpIpPacket::InitEventAck(p) => p.encode_body(w),
             PtpIpPacket::InitFail(p) => p.encode_body(w),
             PtpIpPacket::OperationRequest(p) => p.encode_body(w),
             PtpIpPacket::OperationResponse(p) => p.encode_body(w),
@@ -55,6 +65,8 @@ impl PtpIpPacket {
             PtpIpPacket::StartData(p) => p.encode_body(w),
             PtpIpPacket::Data(p) => p.encode_body(w),
             PtpIpPacket::EndData(p) => p.encode_body(w),
+            PtpIpPacket::ProbeRequest(p) => p.encode_body(w),
+            PtpIpPacket::ProbeResponse(p) => p.encode_body(w),
         }
         Ok(())
     }
@@ -80,6 +92,12 @@ impl PtpCodec for PtpIpPacket {
             PacketType::InitCommandAck => {
                 PtpIpPacket::InitCommandAck(InitCommandAck::decode_body(&mut r)?)
             }
+            PacketType::InitEventRequest => {
+                PtpIpPacket::InitEventRequest(InitEventRequest::decode_body(&mut r)?)
+            }
+            PacketType::InitEventAck => {
+                PtpIpPacket::InitEventAck(InitEventAck::decode_body(&mut r)?)
+            }
             PacketType::InitFail => PtpIpPacket::InitFail(InitFail::decode_body(&mut r)?),
             PacketType::OperationRequest => {
                 PtpIpPacket::OperationRequest(OperationRequest::decode_body(&mut r)?)
@@ -91,6 +109,12 @@ impl PtpCodec for PtpIpPacket {
             PacketType::StartData => PtpIpPacket::StartData(StartData::decode_body(&mut r)?),
             PacketType::Data => PtpIpPacket::Data(DataBlock::decode_body(&mut r)?),
             PacketType::EndData => PtpIpPacket::EndData(DataBlock::decode_body(&mut r)?),
+            PacketType::ProbeRequest => {
+                PtpIpPacket::ProbeRequest(ProbeRequest::decode_body(&mut r)?)
+            }
+            PacketType::ProbeResponse => {
+                PtpIpPacket::ProbeResponse(ProbeResponse::decode_body(&mut r)?)
+            }
             other => return Err(DecodeError::UnknownPacketType(other as u32)),
         })
     }
@@ -189,6 +213,85 @@ mod tests {
             friendly_name: "GFX100 II".into(),
             protocol_version: 0x0001_0000,
         }));
+    }
+
+    #[test]
+    fn standard_init_packets_are_byte_exact() {
+        let command_request = PtpIpPacket::InitCommandRequest(InitCommandRequest {
+            initiator_guid: [0x11; 16],
+            friendly_name: "A".into(),
+            protocol_version: 0x0001_0000,
+        });
+        assert_eq!(
+            encode(&command_request).unwrap(),
+            vec![
+                0x21, 0, 0, 0, 1, 0, 0, 0, // length, type
+                0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+                0x11, 0x11, 2, b'A', 0, 0, 0, // PTP string "A" + terminator
+                0, 0, 1, 0, // protocol version
+            ]
+        );
+        round_trip(command_request);
+
+        let command_ack = PtpIpPacket::InitCommandAck(InitCommandAck {
+            connection_number: 7,
+            responder_guid: [0x22; 16],
+            friendly_name: "B".into(),
+            protocol_version: 0x0001_0000,
+        });
+        assert_eq!(
+            encode(&command_ack).unwrap(),
+            vec![
+                0x25, 0, 0, 0, 2, 0, 0, 0, // length, type
+                7, 0, 0, 0, // connection number
+                0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+                0x22, 0x22, 2, b'B', 0, 0, 0, // PTP string "B" + terminator
+                0, 0, 1, 0, // protocol version
+            ]
+        );
+        round_trip(command_ack);
+
+        let event_request = PtpIpPacket::InitEventRequest(InitEventRequest {
+            connection_number: 7,
+        });
+        assert_eq!(
+            encode(&event_request).unwrap(),
+            vec![12, 0, 0, 0, 3, 0, 0, 0, 7, 0, 0, 0]
+        );
+        round_trip(event_request);
+
+        let event_ack = PtpIpPacket::InitEventAck(InitEventAck);
+        assert_eq!(encode(&event_ack).unwrap(), vec![8, 0, 0, 0, 4, 0, 0, 0]);
+        round_trip(event_ack);
+    }
+
+    #[test]
+    fn standard_probe_packets_are_byte_exact() {
+        let request = PtpIpPacket::ProbeRequest(ProbeRequest);
+        assert_eq!(encode(&request).unwrap(), vec![8, 0, 0, 0, 13, 0, 0, 0]);
+        round_trip(request);
+        let response = PtpIpPacket::ProbeResponse(ProbeResponse);
+        assert_eq!(encode(&response).unwrap(), vec![8, 0, 0, 0, 14, 0, 0, 0]);
+        round_trip(response);
+    }
+
+    #[test]
+    fn standard_event_and_probe_init_reject_trailing_body_bytes() {
+        for packet_type in [3_u32, 4, 13, 14] {
+            let canonical_len = if packet_type == 3 { 12 } else { 8 };
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&(canonical_len + 1_u32).to_le_bytes());
+            bytes.extend_from_slice(&packet_type.to_le_bytes());
+            if packet_type == 3 {
+                bytes.extend_from_slice(&7_u32.to_le_bytes());
+            }
+            bytes.push(0xff);
+            assert_eq!(
+                PtpIpPacket::decode(&bytes),
+                Err(DecodeError::TrailingBytes { remaining: 1 }),
+                "packet type {packet_type}"
+            );
+        }
     }
 
     #[test]

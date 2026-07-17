@@ -493,6 +493,51 @@ fn require_valid_init_shape(
     connection: &Connection,
     connection_id: &str,
 ) -> Result<(), ManifestError> {
+    if connection.init_shape.as_deref() == Some("standardPtpIp") {
+        let path = format!("connections.{connection_id}.init");
+        let init = connection.init.as_ref().ok_or_else(|| {
+            ManifestError::Contract(format!("{path} is required for initShape standardPtpIp"))
+        })?;
+        if init.identity.guid.trim().is_empty() || init.identity.friendly_name.trim().is_empty() {
+            return Err(ManifestError::Contract(format!(
+                "{path}.identity requires non-empty guid and friendlyName value references"
+            )));
+        }
+        if init.identity.client_ipv4.is_some()
+            || init.tail.is_some()
+            || init.expected_responder_guid.is_some()
+        {
+            return Err(ManifestError::Contract(format!(
+                "{path} standardPtpIp does not use clientIpv4, tail, or expectedResponderGuid"
+            )));
+        }
+        if init.name_field_byte_count != 0 {
+            return Err(ManifestError::Contract(format!(
+                "{path}.nameFieldByteCount must be omitted for initShape standardPtpIp"
+            )));
+        }
+        if connection.command_framing != Some(WireFraming::Standard) {
+            return Err(ManifestError::Contract(format!(
+                "connections.{connection_id}.commandFraming must be standard for initShape standardPtpIp"
+            )));
+        }
+        if connection
+            .bindings
+            .as_ref()
+            .and_then(|bindings| bindings.event)
+            .is_none()
+        {
+            return Err(ManifestError::Contract(format!(
+                "connections.{connection_id}.bindings.event is required for initShape standardPtpIp"
+            )));
+        }
+        if connection.event_framing != Some(WireFraming::Standard) {
+            return Err(ManifestError::Contract(format!(
+                "connections.{connection_id}.eventFraming must be standard for initShape standardPtpIp"
+            )));
+        }
+        return Ok(());
+    }
     if connection.init_shape.as_deref() != Some("legacyApp82") {
         return Ok(());
     }

@@ -12,6 +12,7 @@ pub mod focus_area;
 pub mod fuji_framing;
 pub mod fuji_init;
 pub mod liveview;
+pub mod nikon_lss;
 pub mod pcss;
 pub mod quirk;
 pub mod usb_ptp;
@@ -25,6 +26,11 @@ pub use client_identity::normalize_client_name;
 pub use error::FramingError;
 pub use focus_area::pack_af_area;
 pub use fuji_init::{build_app_init, parse_app_init, validate_init_ack, AppInit};
+pub use nikon_lss::{
+    NikonConnectionConfiguration, NikonLssAuthenticationSelection, NikonLssClient, NikonLssContext,
+    NikonLssError, NikonLssServer, NikonLssSession, NikonWifiConfiguration, NikonWifiSecurity,
+    NIKON_LSS_AUTHENTICATION_KEY, NIKON_LSS_AUTHENTICATION_TABLE,
+};
 pub use pcss::{
     callback_ack_message as pcss_callback_ack_message, discovery_message as pcss_discovery_message,
     notify_message as pcss_notify_message,

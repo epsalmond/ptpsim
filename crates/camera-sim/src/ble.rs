@@ -18,6 +18,7 @@ use camera_config::index::{
     AcquireSource, AwaitSource, BleAwaitUntilStep, BleNotifyUntil, BleWriteChunkStep, CccdMode,
     ChunkField, Encoding, NotifyCapture, PredicateOp, RetryFailureKind, Step, StepValue,
 };
+use protocol_primitives::{NikonConnectionConfiguration, NikonLssClient, NikonLssSession};
 
 /// Reference-walker bound on a `bleAwaitUntil` loop: the deterministic
 /// analogue of the dispatcher's wall-clock `timeout_ms`. A sticky-unsatisfied
@@ -52,6 +53,13 @@ struct ScriptedNotification {
     after_fenced_write: Option<(String, u32)>,
 }
 
+/// One transport-neutral action in an exact GATT exchange script.
+#[derive(Debug, Clone)]
+enum ScriptedGattAction {
+    ExactWrite { uuid: String, value: Vec<u8> },
+    Indication { uuid: String, payload: Vec<u8> },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BleError {
     NotConnected,
@@ -61,6 +69,17 @@ pub enum BleError {
     /// read, has no value policy) — the in-memory analogue of a GATT
     /// attribute-not-found error.
     NotExposed(String),
+    /// An exact-write script was active and the next write did not match it.
+    UnexpectedWrite {
+        expected_uuid: String,
+        expected_value: Vec<u8>,
+        actual_uuid: String,
+        actual_value: Vec<u8>,
+    },
+    ScriptOutOfOrder {
+        expected: String,
+        actual: String,
+    },
 }
 
 impl std::fmt::Display for BleError {
@@ -70,6 +89,18 @@ impl std::fmt::Display for BleError {
             BleError::ServicesNotDiscovered => write!(f, "GATT services not discovered"),
             BleError::PeerDisconnectNotObserved => write!(f, "peer disconnect not observed"),
             BleError::NotExposed(uuid) => write!(f, "characteristic {uuid} not exposed"),
+            BleError::UnexpectedWrite {
+                expected_uuid,
+                expected_value,
+                actual_uuid,
+                actual_value,
+            } => write!(
+                f,
+                "unexpected write to {actual_uuid}: {actual_value:02x?}; expected {expected_uuid}: {expected_value:02x?}"
+            ),
+            BleError::ScriptOutOfOrder { expected, actual } => {
+                write!(f, "scripted GATT action out of order: expected {expected}, got {actual}")
+            }
         }
     }
 }
@@ -91,6 +122,9 @@ pub struct BleResponder {
     /// `read_values`.
     read_sequences: BTreeMap<String, Vec<Vec<u8>>>,
     notify_queues: BTreeMap<String, Vec<ScriptedNotification>>,
+    /// Global so scripts can assert ordering across characteristics. Empty
+    /// preserves the responder's historical permissive-write behavior.
+    gatt_script: Vec<ScriptedGattAction>,
     fenced_write_counts: BTreeMap<String, u32>,
     mtu_cap: u16,
     connected: bool,
@@ -117,6 +151,7 @@ impl BleResponder {
             read_values: BTreeMap::new(),
             read_sequences: BTreeMap::new(),
             notify_queues: BTreeMap::new(),
+            gatt_script: Vec::new(),
             fenced_write_counts: BTreeMap::new(),
             mtu_cap: 247,
             connected: false,
@@ -213,6 +248,29 @@ impl BleResponder {
         self
     }
 
+    /// Require the next scripted action to be this exact write. The global
+    /// action order makes this useful for any finite multi-characteristic
+    /// exchange without teaching the responder a vendor protocol.
+    pub fn expect_exact_write(mut self, uuid: &str, value: &[u8]) -> Self {
+        self.catalog.insert(uuid.to_string());
+        self.gatt_script.push(ScriptedGattAction::ExactWrite {
+            uuid: uuid.to_string(),
+            value: value.to_vec(),
+        });
+        self
+    }
+
+    /// Queue an indication as the next scripted action. It becomes available
+    /// only after every earlier exact write/indication has been consumed.
+    pub fn queue_ordered_indication(mut self, uuid: &str, payload: &[u8]) -> Self {
+        self.catalog.insert(uuid.to_string());
+        self.gatt_script.push(ScriptedGattAction::Indication {
+            uuid: uuid.to_string(),
+            payload: payload.to_vec(),
+        });
+        self
+    }
+
     /// Cap the negotiable ATT MTU (default 247, typical BLE 5 stack).
     pub fn with_mtu_cap(mut self, cap: u16) -> Self {
         self.mtu_cap = cap;
@@ -301,7 +359,13 @@ impl BleResponder {
     }
 
     pub fn write(&mut self, uuid: &str, value: &[u8]) -> Result<(), BleError> {
-        self.require_char(uuid)?;
+        self.preflight_write(uuid, value)?;
+        if matches!(
+            self.gatt_script.first(),
+            Some(ScriptedGattAction::ExactWrite { .. })
+        ) {
+            self.gatt_script.remove(0);
+        }
         self.log.push(BleEvent::Write {
             uuid: uuid.to_string(),
             value: value.to_vec(),
@@ -324,6 +388,31 @@ impl BleResponder {
         Ok(())
     }
 
+    fn preflight_write(&self, uuid: &str, value: &[u8]) -> Result<(), BleError> {
+        self.require_char(uuid)?;
+        match self.gatt_script.first() {
+            Some(ScriptedGattAction::ExactWrite {
+                uuid: expected_uuid,
+                value: expected_value,
+            }) if expected_uuid != uuid || expected_value != value => {
+                Err(BleError::UnexpectedWrite {
+                    expected_uuid: expected_uuid.clone(),
+                    expected_value: expected_value.clone(),
+                    actual_uuid: uuid.to_string(),
+                    actual_value: value.to_vec(),
+                })
+            }
+            Some(ScriptedGattAction::Indication {
+                uuid: expected_uuid,
+                ..
+            }) => Err(BleError::ScriptOutOfOrder {
+                expected: format!("indication from {expected_uuid}"),
+                actual: format!("write to {uuid}"),
+            }),
+            _ => Ok(()),
+        }
+    }
+
     /// Atomically discard the notification characteristic's buffered prefix
     /// and issue the write. Scripted notifications caused by this write become
     /// eligible only after the write is recorded.
@@ -335,7 +424,7 @@ impl BleResponder {
     ) -> Result<(), BleError> {
         // Validate both characteristics before mutating the queue or ordinal.
         // `write` has no remaining fallible work after this preflight.
-        self.require_char(uuid)?;
+        self.preflight_write(uuid, value)?;
         self.require_char(notification_uuid)?;
         let next_ordinal = self.fenced_write_counts.get(uuid).copied().unwrap_or(0) + 1;
         let fenced_write_counts = &self.fenced_write_counts;
@@ -371,6 +460,21 @@ impl BleResponder {
 
     /// Pop the next queued notification payload for `uuid`, if any.
     pub fn take_notification(&mut self, uuid: &str) -> Option<Vec<u8>> {
+        if let Some(action) = self.gatt_script.first() {
+            match action {
+                ScriptedGattAction::Indication {
+                    uuid: scripted_uuid,
+                    ..
+                } if scripted_uuid == uuid => {
+                    let ScriptedGattAction::Indication { payload, .. } = self.gatt_script.remove(0)
+                    else {
+                        unreachable!("matched indication above")
+                    };
+                    return Some(payload);
+                }
+                _ => return None,
+            }
+        }
         let queue = self.notify_queues.get_mut(uuid)?;
         let eligible = match &queue.first()?.after_fenced_write {
             None => true,
@@ -442,6 +546,8 @@ struct WalkCtx<'a> {
     encodings: BTreeMap<String, Encoding>,
     runtime_params: BTreeMap<String, String>,
     subscriptions: BTreeSet<(String, bool)>,
+    /// Opaque authenticated cipher state, never exposed through scope/logs.
+    nikon_lss_session: Option<NikonLssSession>,
     steps_run: usize,
 }
 
@@ -471,6 +577,7 @@ pub fn walk_establishment(
         encodings: initial_encodings.clone(),
         runtime_params: runtime_params.clone(),
         subscriptions: BTreeSet::new(),
+        nikon_lss_session: None,
         steps_run: 0,
     };
     walk_steps(&mut ctx, steps, "steps")?;
@@ -649,6 +756,72 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
                 "acquireFirmware source {other:?} unsupported in the reference walker"
             ))),
         },
+        Step::NikonLssAuthenticate(s) => {
+            // Match the async executor: a new authentication invalidates any
+            // prior session even when this attempt fails.
+            ctx.nikon_lss_session = None;
+            let client_device_id: [u8; 8] = resolve_value(ctx, &s.client_device_id)
+                .map_err(&err)?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    err(format!(
+                        "clientDeviceId must resolve to exactly 8 bytes (got {})",
+                        bytes.len()
+                    ))
+                })?;
+            let nonce: [u8; 8] = resolve_value(ctx, &s.nonce)
+                .map_err(&err)?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    err(format!(
+                        "nonce must resolve to exactly 8 bytes (got {})",
+                        bytes.len()
+                    ))
+                })?;
+            ensure_subscribed(ctx, &s.gatt, CccdMode::Indicate).map_err(|e| err(e.to_string()))?;
+            let mut client = NikonLssClient::new(client_device_id, nonce);
+            let stage1 = client
+                .stage1_record()
+                .map_err(|e| err(format!("LSS stage 1 failed: {e}")))?;
+            ctx.responder
+                .write_with_notification_fence(&s.gatt, &stage1, &s.gatt)
+                .map_err(|e| err(e.to_string()))?;
+            let stage2 = ctx
+                .responder
+                .take_notification(&s.gatt)
+                .ok_or_else(|| err("no LSS stage 2 indication arrived".into()))?;
+            let stage3 = client
+                .handle_stage2(&stage2)
+                .map_err(|e| err(format!("LSS stage 2 failed: {e}")))?;
+            ctx.responder
+                .write_with_notification_fence(&s.gatt, &stage3, &s.gatt)
+                .map_err(|e| err(e.to_string()))?;
+            let stage4 = ctx
+                .responder
+                .take_notification(&s.gatt)
+                .ok_or_else(|| err("no LSS stage 4 indication arrived".into()))?;
+            ctx.nikon_lss_session = Some(
+                client
+                    .finish_stage4(&stage4)
+                    .map_err(|e| err(format!("LSS stage 4 failed: {e}")))?,
+            );
+            Ok(())
+        }
+        Step::NikonLssReadConnectionConfiguration(s) => {
+            let session = ctx
+                .nikon_lss_session
+                .as_ref()
+                .ok_or_else(|| err("Nikon LSS session is not authenticated".into()))?;
+            let wire = ctx
+                .responder
+                .read(&s.gatt)
+                .map_err(|e| err(e.to_string()))?;
+            let config = session
+                .decode_connection_configuration(&wire)
+                .map_err(|e| err(format!("LSS connection configuration failed: {e}")))?;
+            bind_nikon_connection_configuration(ctx, s, config);
+            Ok(())
+        }
         Step::If(s) => {
             let field_value = ctx.scope.get(&s.condition.field);
             let holds = match field_value {
@@ -1041,5 +1214,48 @@ fn resolve_value(ctx: &WalkCtx<'_>, value: &StepValue) -> Result<Vec<u8>, String
             eval::apply_transforms(&bytes, transform)
                 .ok_or_else(|| "transform chain failed".to_string())
         }
+    }
+}
+
+fn bind_nikon_connection_configuration(
+    ctx: &mut WalkCtx<'_>,
+    step: &camera_config::index::NikonLssReadConnectionConfigurationStep,
+    config: NikonConnectionConfiguration,
+) {
+    for name in [
+        &step.ssid_capture_as,
+        &step.password_capture_as,
+        &step.security_mode_capture_as,
+    ] {
+        ctx.scope.remove(name);
+        ctx.encodings.remove(name);
+    }
+    if let Some(name) = &step.spp_max_length_capture_as {
+        ctx.scope.remove(name);
+        ctx.encodings.remove(name);
+    }
+    ctx.scope
+        .insert(step.flags_capture_as.clone(), config.flags.to_string());
+    ctx.encodings
+        .insert(step.flags_capture_as.clone(), Encoding::U8);
+    if let Some(wifi) = config.wifi {
+        ctx.scope.insert(step.ssid_capture_as.clone(), wifi.ssid);
+        ctx.encodings
+            .insert(step.ssid_capture_as.clone(), Encoding::Utf8);
+        ctx.scope
+            .insert(step.password_capture_as.clone(), wifi.password);
+        ctx.encodings
+            .insert(step.password_capture_as.clone(), Encoding::Utf8);
+        ctx.scope.insert(
+            step.security_mode_capture_as.clone(),
+            wifi.security.as_token().to_string(),
+        );
+        ctx.encodings
+            .insert(step.security_mode_capture_as.clone(), Encoding::Utf8);
+    }
+    if let (Some(name), Some(length)) = (&step.spp_max_length_capture_as, config.spp_maximum_length)
+    {
+        ctx.scope.insert(name.clone(), length.to_string());
+        ctx.encodings.insert(name.clone(), Encoding::U32Le);
     }
 }

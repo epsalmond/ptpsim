@@ -14,6 +14,8 @@ pub enum DecodeError {
     LengthMismatch { declared: usize, actual: usize },
     #[error("unknown PTP/IP packet type {0}")]
     UnknownPacketType(u32),
+    #[error("packet body has {remaining} trailing byte(s)")]
+    TrailingBytes { remaining: usize },
     #[error("array element count {0} is implausibly large")]
     ArrayTooLong(u32),
 }

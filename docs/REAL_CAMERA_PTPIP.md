@@ -163,6 +163,37 @@ Discovery traces record the selected target mode, UDP destination, callback
 peer, parsed `DSC`, and dynamic `DSCPORT`, so broadcast and explicit-unicast
 runs remain distinguishable without a packet capture.
 
+## Standard PTP/IP
+
+A connection with `initShape: standardPtpIp` uses the canonical PTP/IP command,
+event, operation, data, and probe packets. Its manifest must declare standard
+command/event framing and an initiator GUID/friendly-name identity. Command and
+event roles may name the same TCP port; the initiator opens two sockets to that
+address and the responder distinguishes them by `InitCommandRequest` versus
+`InitEventRequest`.
+
+Session startup is fixed: command init, event init using the command ack's
+connection number, pre-session `GetDeviceInfo` with transaction 0, then
+`OpenSession` with transaction 1. A mismatched event connection number is a
+terminal event-socket rejection and does not disturb an unrelated command
+session. `NativePtpTransport::probe_event_channel` sends a standard probe and
+requires the paired response.
+
+When `GetDeviceInfo.OperationsSupported` advertises Nikon operation `0x9439`,
+the standard startup path performs SnapBridge's post-session vendor-operation
+discovery with selector `9` and decodes the returned exact little-endian `u32`
+array. If the operation is not advertised, startup skips it; if it is advertised
+but fails, establishment fails rather than silently using an incomplete action
+catalog.
+
+The bundled Nikon bodies use the direct-camera defaults from SnapBridge 2.13.3:
+both socket roles target TCP 15740, the initiator GUID is
+`00112233445566778899aabbccddeeff`, and the friendly name is `Android Device`.
+Use `packages/camera-config-data/nikon/d850/d850.yaml` together with
+`packages/camera-config-data/nikon/nikon.yaml`. The D850 body is deliberately
+provisional: these values and the family flow are static application facts, not
+a successful D850 registration or interoperability claim.
+
 ## Reading a trace
 
 Each JSONL record has a monotonic elapsed time and a kind. `wire` records add

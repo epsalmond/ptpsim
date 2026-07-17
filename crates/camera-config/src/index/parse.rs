@@ -22,7 +22,7 @@ use serde_yaml::Value;
 use super::types::{
     AwaitSource, BleAdvertSignature, EstablishmentBlock, FamilyBleBlock, FamilyPcssBlock,
     IndexedModel, ManufacturerIndex, ModelView, PcssNotifySignature, Predicate, PredicateOp,
-    Signature, SignatureKind, Step, StepValue,
+    Signature, SignatureKind, Step, StepValue, MAX_PAD_RIGHT_LENGTH,
 };
 use crate::error::ConfigError;
 
@@ -431,6 +431,12 @@ fn resolve_gatt_names_in_steps(
                     }
                 }
             }
+            "nikonLssAuthenticate" => {
+                resolve_gatt_field(body, gatt, &here)?;
+            }
+            "nikonLssReadConnectionConfiguration" => {
+                resolve_gatt_field(body, gatt, &here)?;
+            }
             "retry" => {
                 if let Some(body_map) = body.as_mapping_mut() {
                     for key in ["steps", "onFailure"] {
@@ -459,7 +465,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry)"),
+                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"),
                 });
             }
         }
@@ -696,17 +702,33 @@ fn validate_establishment_activities(
 }
 
 fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
+    validate_step_with_repeatability(step, path, false)
+}
+
+fn validate_step_with_repeatability(
+    step: &Step,
+    path: &str,
+    repeatable_context: bool,
+) -> Result<(), ConfigError> {
     // Per-step structural checks beyond what serde already enforces.
     if let Step::If(s) = step {
         for (i, inner) in s.then.iter().enumerate() {
-            validate_step(inner, &format!("{path}.then[{i}]"))?;
+            validate_step_with_repeatability(
+                inner,
+                &format!("{path}.then[{i}]"),
+                repeatable_context,
+            )?;
         }
         for (i, inner) in s.else_branch.iter().enumerate() {
-            validate_step(inner, &format!("{path}.else[{i}]"))?;
+            validate_step_with_repeatability(
+                inner,
+                &format!("{path}.else[{i}]"),
+                repeatable_context,
+            )?;
         }
     }
     if let Step::Acquire(s) = step {
-        validate_step(&s.from, &format!("{path}.from"))?;
+        validate_step_with_repeatability(&s.from, &format!("{path}.from"), repeatable_context)?;
     }
     if let Step::BleAwaitUntil(s) = step {
         if s.timeout_ms == 0 {
@@ -752,7 +774,11 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
                 });
             }
             for (i, inner) in evidence.steps.iter().enumerate() {
-                validate_step(inner, &format!("{path}.failureEvidence.steps[{i}]"))?;
+                validate_step_with_repeatability(
+                    inner,
+                    &format!("{path}.failureEvidence.steps[{i}]"),
+                    true,
+                )?;
                 if let AwaitSource::Notify { gatt, .. } = &s.source {
                     forbid_read_of_notify_source(
                         inner,
@@ -763,7 +789,7 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
             }
         }
         for (i, inner) in s.on_each.iter().enumerate() {
-            validate_step(inner, &format!("{path}.onEach[{i}]"))?;
+            validate_step_with_repeatability(inner, &format!("{path}.onEach[{i}]"), true)?;
         }
     }
     if let Step::Retry(s) = step {
@@ -780,10 +806,10 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
             });
         }
         for (i, inner) in s.steps.iter().enumerate() {
-            validate_step(inner, &format!("{path}.steps[{i}]"))?;
+            validate_step_with_repeatability(inner, &format!("{path}.steps[{i}]"), true)?;
         }
         for (i, inner) in s.on_failure.iter().enumerate() {
-            validate_step(inner, &format!("{path}.onFailure[{i}]"))?;
+            validate_step_with_repeatability(inner, &format!("{path}.onFailure[{i}]"), true)?;
         }
     }
     if let Step::BleAwaitDisconnect(s) = step {
@@ -799,6 +825,62 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
             return Err(ConfigError::Validation {
                 path: format!("{path}.durationMs"),
                 message: "bleDelay durationMs must be > 0".to_string(),
+            });
+        }
+    }
+    if let Step::NikonLssAuthenticate(s) = step {
+        if repeatable_context {
+            return Err(ConfigError::Validation {
+                path: path.to_string(),
+                message: "nikonLssAuthenticate cannot appear in repeatable control flow because each execution requires a fresh runtime nonce".to_string(),
+            });
+        }
+        if s.timeout_ms == 0 {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.timeoutMs"),
+                message: "nikonLssAuthenticate timeoutMs must be > 0".to_string(),
+            });
+        }
+        if !matches!(s.nonce, StepValue::Runtime { .. }) {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.nonce"),
+                message: "nikonLssAuthenticate nonce must use a runtime value source".to_string(),
+            });
+        }
+        if !matches!(
+            s.client_device_id,
+            StepValue::Runtime { .. } | StepValue::Captured { .. }
+        ) {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.clientDeviceId"),
+                message: "nikonLssAuthenticate clientDeviceId must use a runtime or captured persistent value source".to_string(),
+            });
+        }
+        if s.opts.retries != 0 {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.retries"),
+                message: "nikonLssAuthenticate retries must be 0 because each attempt requires a fresh runtime nonce".to_string(),
+            });
+        }
+    }
+    if let Step::NikonLssReadConnectionConfiguration(s) = step {
+        for (field, value) in [
+            ("flagsCaptureAs", &s.flags_capture_as),
+            ("ssidCaptureAs", &s.ssid_capture_as),
+            ("passwordCaptureAs", &s.password_capture_as),
+            ("securityModeCaptureAs", &s.security_mode_capture_as),
+        ] {
+            if value.is_empty() {
+                return Err(ConfigError::Validation {
+                    path: format!("{path}.{field}"),
+                    message: "capture name must not be empty".to_string(),
+                });
+            }
+        }
+        if s.spp_max_length_capture_as.as_deref() == Some("") {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.sppMaxLengthCaptureAs"),
+                message: "capture name must not be empty".to_string(),
             });
         }
     }
@@ -1266,8 +1348,18 @@ impl<'de> serde::Deserialize<'de> for Step {
             "retry" => Ok(Step::Retry(
                 serde_yaml::from_value(body).map_err(|e| dec_err("retry", e))?,
             )),
+            "nikonLssAuthenticate" => Ok(Step::NikonLssAuthenticate(
+                serde_yaml::from_value(body)
+                    .map_err(|e| dec_err("nikonLssAuthenticate", e))?,
+            )),
+            "nikonLssReadConnectionConfiguration" => {
+                Ok(Step::NikonLssReadConnectionConfiguration(
+                    serde_yaml::from_value(body)
+                        .map_err(|e| dec_err("nikonLssReadConnectionConfiguration", e))?,
+                ))
+            }
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"
             ))),
         }
     }
@@ -1413,6 +1505,28 @@ impl<'de> serde::Deserialize<'de> for super::types::Transform {
             "uuidFromBytes" => {
                 empty_body(&val)?;
                 Ok(Transform::UuidFromBytes)
+            }
+            "padRight" => {
+                #[derive(serde::Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct R {
+                    length: usize,
+                    byte: u8,
+                }
+                let r: R = serde_yaml::from_value(val)
+                    .map_err(|e| D::Error::custom(format!("padRight: {e}")))?;
+                if r.length == 0 {
+                    return Err(D::Error::custom("padRight.length must be > 0"));
+                }
+                if r.length > MAX_PAD_RIGHT_LENGTH {
+                    return Err(D::Error::custom(format!(
+                        "padRight.length must be <= {MAX_PAD_RIGHT_LENGTH}"
+                    )));
+                }
+                Ok(Transform::PadRight {
+                    length: r.length,
+                    byte: r.byte,
+                })
             }
             "slice" => {
                 #[derive(serde::Deserialize)]

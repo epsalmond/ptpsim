@@ -16,8 +16,8 @@ pub mod error;
 pub mod framing;
 
 pub use container::{
-    DataBlock, EventPacket, InitCommandAck, InitCommandRequest, InitFail, OperationRequest,
-    OperationResponse, StartData,
+    DataBlock, EventPacket, InitCommandAck, InitCommandRequest, InitEventAck, InitEventRequest,
+    InitFail, OperationRequest, OperationResponse, ProbeRequest, ProbeResponse, StartData,
 };
 pub use dataset::{DeviceInfo, DevicePropDesc, ObjectInfo, PropForm, PropValue, StorageInfo};
 pub use datatype::{Reader, Writer};

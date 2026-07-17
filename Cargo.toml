@@ -39,8 +39,10 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+blowfish = { version = "0.10", features = ["zeroize"] }
 bytes = "1"
 if-addrs = "0.14"
+subtle = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"

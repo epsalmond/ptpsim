@@ -1,18 +1,14 @@
-# Nikon manufacturer index — PRELIMINARY, recognition only.
 #
 # (com.nikon.snapbridge.cmru 2.13.3), NOT a real camera advertisement or
-# wire capture. Validate against a real Nikon body before trusting
-# anything beyond "this advert is probably a Nikon camera".
+# wire capture. It describes the family protocol through the executor seams;
+# it makes no real-camera registration or interoperability claim.
 #
 # Evidence (operators tree, referenced by path per AGENTS.md):
 
 # Plan: docs/plans/manifest-schema-multivendor-risk-pass-2026-06-10.md (Phase 1)
 #
-# No establishment plan: SnapBridge's connection sequence (connect →
-# discover → enable notifications AND indications → LSS authentication)
-# ends in a four-stage secret-backed exchange on the Authentication
-# characteristic that must NOT become manifest script — it is deferred to
-# the `nikonLssAuthenticate` named primitive (epsalmond/ptpsim#31).
+# Authentication stays inside the finite `nikonLssAuthenticate` primitive.
+# No raw secret, expanded schedule, or cipher context appears in this data.
 
 manufacturer: NIKON
 
@@ -20,10 +16,31 @@ families:
   nikon:
     ble:
       gatt:
-        # Full UUIDs explicit in BleLssService; the rest of the
-        # 000020xx-3DD4-... characteristic range is catalogued in the
-        # operators doc and added here as establishment needs them.
-        lssAuthentication: "00002000-3DD4-4255-8D62-6DC7B9BD5561"
+        # Complete BleLssService catalog. Optional exposure varies by body and
+        # firmware; tolerant reads are used only where the app treats a field
+        # as optional.
+        lssAuthentication:           "00002000-3DD4-4255-8D62-6DC7B9BD5561"
+        lssPowerControl:             "00002001-3DD4-4255-8D62-6DC7B9BD5561"
+        lssClientDeviceName:         "00002002-3DD4-4255-8D62-6DC7B9BD5561"
+        lssServerDeviceName:         "00002003-3DD4-4255-8D62-6DC7B9BD5561"
+        lssConnectionConfiguration:  "00002004-3DD4-4255-8D62-6DC7B9BD5561"
+        lssConnectionEstablishment:  "00002005-3DD4-4255-8D62-6DC7B9BD5561"
+        lssCurrentTime:              "00002006-3DD4-4255-8D62-6DC7B9BD5561"
+        lssLocationInformation:      "00002007-3DD4-4255-8D62-6DC7B9BD5561"
+        lssControlPoint:             "00002008-3DD4-4255-8D62-6DC7B9BD5561"
+        lssFeature:                  "00002009-3DD4-4255-8D62-6DC7B9BD5561"
+        lssBatteryLevel:             "00002A19-3DD4-4255-8D62-6DC7B9BD5561"
+        lssCableAttachment:          "0000200A-3DD4-4255-8D62-6DC7B9BD5561"
+        lssSerialNumberString:       "0000200B-3DD4-4255-8D62-6DC7B9BD5561"
+        lssStatusForControl:         "00002020-3DD4-4255-8D62-6DC7B9BD5561"
+        lssControlPointForControl:   "00002021-3DD4-4255-8D62-6DC7B9BD5561"
+        lssCategoryInfo:             "00002080-3DD4-4255-8D62-6DC7B9BD5561"
+        lssStatusForCapture:         "00002081-3DD4-4255-8D62-6DC7B9BD5561"
+
+        # Standard Device Information characteristics used by the pairing
+        # sequence. Initial serial is the LSS 200B value above, not 2A25.
+        deviceInfoModelNumber:       "00002A24-0000-1000-8000-00805F9B34FB"
+        deviceInfoFirmwareRevision:  "00002A26-0000-1000-8000-00805F9B34FB"
       advert:
         # No manufacturerCompanyId: SnapBridge's scanner recognizes by the
         # LSS service UUID alone (BleScan.a() ScanFilter); manufacturer
@@ -31,13 +48,109 @@ families:
         # making companyId optional in the predicate model (§11.14).
         serviceUuids:
           lss: "0000DE00-3DD4-4255-8D62-6DC7B9BD5561"
-      establishment:
-        mechanism: recognition-only-preliminary
-        steps: []
+      establishments:
+        # Initial registration. The host provides a persisted eight-byte client
+        # id, fresh eight-byte nonce, and the already-composed printable ASCII
+        # `Android_<ClientName>` value. SnapBridge sources ClientName from its
+        # CameraPairingSettings preferences; there is no universal literal.
+        ble-pair:
+          mechanism: ble-pair
+          params: [clientDeviceId, clientNonce, snapBridgeClientName, currentTime]
+          persist: [clientDeviceId, snapBridgeClientName]
+          activities:
+            - id: camera.nikon.pair
+              version: 1
+              displayRole: confirmingPairing
+              defaultExpectedDurationMs: 15000
+              interactionRequired: true
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 19 }
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+
+            # Exact descriptor-write order from SnapBridge 2.13.3.
+            - bleSubscribe: { gatt: lssControlPoint,           mode: notify,   timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssCableAttachment,        mode: notify,   timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssStatusForCapture,       mode: notify,   timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssAuthentication,         mode: indicate, timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssStatusForControl,       mode: indicate, timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssControlPointForControl, mode: indicate, timeoutMs: 3000 }
+
+            - nikonLssAuthenticate:
+                gatt: lssAuthentication
+                clientDeviceId: { runtime: clientDeviceId, encoding: bytes-raw }
+                nonce: { runtime: clientNonce, encoding: bytes-raw }
+
+            # Serializer-equivalent fixed 32-byte client-name field. padRight
+            # never truncates: values over 32 bytes fail at the host contract.
+            - bleWrite:
+                gatt: lssClientDeviceName
+                value:
+                  runtime: snapBridgeClientName
+                  encoding: utf8
+                  transform: { padRight: { length: 32, byte: 0 } }
+            - bleRead: { gatt: lssServerDeviceName, encoding: utf8-cstring, captureAs: serverDeviceName }
+            # Host-packed 10-byte time is optional. Exact server name `D850` is
+            # in SnapBridge's no-time exception set; other bodies write only
+            # when the host supplied the runtime value.
+            - if:
+                condition: { serverDeviceName: { ne: "D850" } }
+                then:
+                  - bleWrite: { gatt: lssCurrentTime, value: { runtime: currentTime, encoding: bytes-raw }, tolerant: true }
+            - bleRead: { gatt: lssFeature, encoding: bytes, captureAs: wifiConfigurationFeature }
+            - bleRead: { gatt: deviceInfoModelNumber, encoding: utf8-cstring, captureAs: model }
+            - bleRead: { gatt: lssSerialNumberString, encoding: utf8-cstring, captureAs: serial }
+            - bleRead: { gatt: deviceInfoFirmwareRevision, encoding: utf8-cstring, captureAs: firmware }
+            - bleRead: { gatt: lssFeature, encoding: bytes, captureAs: cameraControlFeature }
+            - bleRead: { gatt: lssFeature, encoding: bytes, captureAs: firmwareUpdateTransferFeature }
+            - bleRead: { gatt: lssFeature, encoding: bytes, captureAs: btcCooperationFeature }
+
+        # On-demand Wi-Fi AP handoff. It is independently walkable and uses a
+        # fresh authentication session; cipher state never crosses plan walks.
+        ble-establish-wifi-ap:
+          mechanism: ble-establish-wifi-ap
+          prerequisite: ble-pair
+          onDemand: true
+          params: [clientDeviceId, clientNonce]
+          persist: [ssid, password, securityMode]
+          activities:
+            - id: camera.nikon.wifi-handoff
+              version: 1
+              displayRole: startingNetwork
+              defaultExpectedDurationMs: 12000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 11 }
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleSubscribe: { gatt: lssControlPoint,           mode: notify,   timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssCableAttachment,        mode: notify,   timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssStatusForCapture,       mode: notify,   timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssAuthentication,         mode: indicate, timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssStatusForControl,       mode: indicate, timeoutMs: 3000 }
+            - bleSubscribe: { gatt: lssControlPointForControl, mode: indicate, timeoutMs: 3000 }
+            - nikonLssAuthenticate:
+                gatt: lssAuthentication
+                clientDeviceId: { runtime: clientDeviceId, encoding: bytes-raw }
+                nonce: { runtime: clientNonce, encoding: bytes-raw }
+            - nikonLssReadConnectionConfiguration:
+                gatt: lssConnectionConfiguration
+                flagsCaptureAs: connectionFlags
+                ssidCaptureAs: ssid
+                passwordCaptureAs: password
+                securityModeCaptureAs: securityMode
+                sppMaxLengthCaptureAs: sppMaximumLength
+            # 0x02 is Wi-Fi. 0x01 is the separately scoped RFCOMM/SPP path,
+            # which this milestone deliberately does not implement.
+            - bleWrite: { gatt: lssConnectionEstablishment, value: { literal: "02" } }
 
 models:
   - id: nikon-camera
-    displayName: "Nikon camera (preliminary)"
+    displayName: "Nikon camera (provisional)"
+    # Family fallback only: the LSS service UUID identifies a Nikon camera,
+    # not a particular model. Specific bodies remain explicit selections
+    # until model-discriminating evidence is available.
+    fallback: true
     inherits: [nikon]
     manifest: nikon-camera/nikon-camera.yaml
     signatures:
@@ -66,3 +179,8 @@ models:
           vendor: "nikon"
           preliminary: "true"
         suggests: { connection: ble, confidence: medium }
+
+  - id: d850
+    displayName: "Nikon D850 (provisional)"
+    inherits: [nikon]
+    manifest: d850/d850.yaml

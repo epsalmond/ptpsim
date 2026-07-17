@@ -164,6 +164,12 @@ connections:
     )
     .expect("multi-model store loads");
 
+    let secondary = store
+        .model_store("secondary".into())
+        .expect("secondary direct-query store");
+    assert_eq!(secondary.camera_identity().model, "Secondary");
+    assert!(store.model_store("missing".into()).is_none());
+
     let plan = store
         .establishment("secondary".into(), "ble".into(), vec![])
         .expect("secondary establishment resolves");
@@ -2061,13 +2067,26 @@ fn baseline_only_match_is_a_plain_candidate() {
 // ---------------------------------------------------------------------------
 
 fn vendor_store(vendor: &str, model_id: &str) -> std::sync::Arc<ConfigStore> {
-    ConfigStore::from_manufacturer_index(
-        data(&format!("{vendor}/index.yaml")),
-        vec![KeyValue {
-            key: model_id.to_string(),
-            value: data(&format!("{vendor}/{model_id}/{model_id}.yaml")),
-        }],
-    )
+    let model_ids = match vendor {
+        "nikon" => &["nikon-camera", "d850"][..],
+        _ => std::slice::from_ref(&model_id),
+    };
+    let bodies = model_ids
+        .iter()
+        .map(|id| KeyValue {
+            key: (*id).to_string(),
+            value: data(&format!("{vendor}/{id}/{id}.yaml")),
+        })
+        .collect();
+    if vendor == "nikon" {
+        ConfigStore::from_manufacturer_index_with_defaults(
+            data("nikon/index.yaml"),
+            data("nikon/nikon.yaml"),
+            bodies,
+        )
+    } else {
+        ConfigStore::from_manufacturer_index(data(&format!("{vendor}/index.yaml")), bodies)
+    }
     .unwrap_or_else(|e| panic!("{vendor} index loads: {e:?}"))
 }
 
@@ -2230,6 +2249,22 @@ fn nikon_advert_recognised_by_lss_service_uuid_alone() {
 }
 
 #[test]
+fn nikon_d850_requires_explicit_model_selection() {
+    let store = vendor_store("nikon", "nikon-camera");
+    let selected = store
+        .model_store("d850".to_string())
+        .expect("D850 body is selectable");
+    assert_eq!(selected.camera_identity().model, "D850");
+    let init = selected
+        .connection_init("app".to_string())
+        .expect("D850 standard PTP/IP init resolves through Nikon defaults");
+    assert_eq!(init.guid, (0_u8..=0xff).step_by(0x11).collect::<Vec<_>>());
+    assert_eq!(init.friendly_name, "Android Device");
+    assert!(init.tail.is_empty());
+    assert!(store.model_store("missing".to_string()).is_none());
+}
+
+#[test]
 fn vendor_adverts_do_not_cross_match_fuji() {
     // A Sony advert against the Fuji index (and vice versa) must NoMatch —
     // company-id pinning in the data is what closes the #23 false-positive
@@ -2359,4 +2394,122 @@ fn index_model_refs_enumerates_declared_models_in_order() {
 #[test]
 fn index_model_refs_rejects_malformed_yaml() {
     assert!(index_model_refs("models: [".to_string()).is_err());
+}
+
+#[test]
+fn nikon_lss_steps_and_pad_right_cross_the_uniffi_mirror_whole() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        auth: "00002000-3DD4-4255-8D62-6DC7B9BD5561"
+        config: "00002004-3DD4-4255-8D62-6DC7B9BD5561"
+        clientName: "00002005-3DD4-4255-8D62-6DC7B9BD5561"
+      establishments:
+        test:
+          mechanism: test
+          params: [clientDeviceId, clientNonce, clientName]
+          activities:
+            - { id: camera.test.lss, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 } }
+          steps:
+            - bleWrite:
+                gatt: clientName
+                value:
+                  runtime: clientName
+                  encoding: utf8
+                  transform: { padRight: { length: 32, byte: 0 } }
+            - nikonLssAuthenticate:
+                gatt: auth
+                clientDeviceId: { runtime: clientDeviceId, encoding: bytes-raw }
+                nonce: { runtime: clientNonce, encoding: bytes-raw }
+                timeoutMs: 4321
+            - nikonLssReadConnectionConfiguration:
+                gatt: config
+                flagsCaptureAs: flags
+                ssidCaptureAs: ssid
+                passwordCaptureAs: password
+                securityModeCaptureAs: security
+                sppMaxLengthCaptureAs: sppMax
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let store = ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: tm1_body(),
+        }],
+    )
+    .expect("synthetic LSS index loads");
+    let plan = store
+        .establishment("tm1".into(), "ble".into(), vec![])
+        .expect("plan present");
+
+    match &plan.steps[0] {
+        Step::BleWrite {
+            value:
+                StepValue::Runtime {
+                    transform,
+                    slot,
+                    encoding,
+                },
+            ..
+        } => {
+            assert_eq!(slot, "clientName");
+            assert_eq!(encoding.as_deref(), Some("utf8"));
+            assert!(matches!(
+                transform.as_slice(),
+                [Transform::PadRight {
+                    length: 32,
+                    byte: 0
+                }]
+            ));
+        }
+        other => panic!("expected padded client-name write, got {other:?}"),
+    }
+    match &plan.steps[1] {
+        Step::NikonLssAuthenticate {
+            gatt,
+            client_device_id,
+            nonce,
+            timeout_ms,
+            ..
+        } => {
+            assert_eq!(gatt, "00002000-3DD4-4255-8D62-6DC7B9BD5561");
+            assert!(matches!(
+                client_device_id,
+                StepValue::Runtime { slot, .. } if slot == "clientDeviceId"
+            ));
+            assert!(matches!(
+                nonce,
+                StepValue::Runtime { slot, .. } if slot == "clientNonce"
+            ));
+            assert_eq!(*timeout_ms, 4321);
+        }
+        other => panic!("expected Nikon auth FFI step, got {other:?}"),
+    }
+    match &plan.steps[2] {
+        Step::NikonLssReadConnectionConfiguration {
+            gatt,
+            flags_capture_as,
+            ssid_capture_as,
+            password_capture_as,
+            security_mode_capture_as,
+            spp_max_length_capture_as,
+            ..
+        } => {
+            assert_eq!(gatt, "00002004-3DD4-4255-8D62-6DC7B9BD5561");
+            assert_eq!(flags_capture_as, "flags");
+            assert_eq!(ssid_capture_as, "ssid");
+            assert_eq!(password_capture_as, "password");
+            assert_eq!(security_mode_capture_as, "security");
+            assert_eq!(spp_max_length_capture_as.as_deref(), Some("sppMax"));
+        }
+        other => panic!("expected Nikon config FFI step, got {other:?}"),
+    }
 }

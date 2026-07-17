@@ -26,11 +26,12 @@ families:
       advert:
         # 301 = Bluetooth SIG company ID for Sony.
         manufacturerCompanyId: 0x012D
-      establishment:
+      establishments:
         # Recognition-only: no establishment steps until validated against
         # a real camera (see header). An empty plan is intentional.
-        mechanism: recognition-only-preliminary
-        steps: []
+        recognition-only-preliminary:
+          mechanism: recognition-only-preliminary
+          steps: []
 
 models:
   - id: sony-camera

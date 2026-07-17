@@ -1,0 +1,11 @@
+# Manufacturer-tier identity used by SnapBridge 2.13.3 on its direct-camera
+# PTP/IP path. Static application evidence only; this is not a D850 capture.
+manufacturer: NIKON
+
+values:
+  initiatorGuid:
+    type: fixed
+    value: "00112233445566778899aabbccddeeff"
+  initFriendlyName:
+    type: fixed
+    value: "Android Device"

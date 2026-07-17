@@ -19,4 +19,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
+camera-config = { path = "../../crates/camera-config" }
+camera-sim = { path = "../../crates/camera-sim" }
 camera-sim-service = { path = "../../services/camera-sim-service" }

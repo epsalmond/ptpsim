@@ -29,9 +29,10 @@ families:
         serviceUuids:
           # Scan filter UUID from C0240f.i() — present in camera adverts.
           canonCamera: "00010000-0000-1000-0000-D8492FFFA821"
-      establishment:
-        mechanism: recognition-only-preliminary
-        steps: []
+      establishments:
+        recognition-only-preliminary:
+          mechanism: recognition-only-preliminary
+          steps: []
 
 models:
   - id: canon-camera

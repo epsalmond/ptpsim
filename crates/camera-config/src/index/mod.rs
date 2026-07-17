@@ -35,8 +35,9 @@ pub use types::{
     BleReconnectPolicy, BleRequestMtuStep, BleSubscribeStep, BleWriteChunkStep, BleWriteStep,
     ByteAssertion, CccdMode, ChunkField, ChunkFrameField, Confidence, Encoding, EstablishmentBlock,
     FamilyBleBlock, FamilyBlock, FamilyPcssBlock, IfStep, IndexedModel, LocalNamePredicate,
-    ManufacturerIndex, MfgDataPredicate, ModelView, NotifyCapture, PayloadPredicate,
-    PcssDiscoveryPolicy, PcssNotifyPredicate, PcssNotifySignature, Predicate, PredicateOp,
-    ReconnectDisposition, ReconnectSuggestion, RetryFailureKind, RetryStep, Signature,
-    SignatureKind, Step, StepOptions, StepValue, SuggestsBlock, Transform,
+    ManufacturerIndex, MfgDataPredicate, ModelView, NikonLssAuthenticateStep,
+    NikonLssReadConnectionConfigurationStep, NotifyCapture, PayloadPredicate, PcssDiscoveryPolicy,
+    PcssNotifyPredicate, PcssNotifySignature, Predicate, PredicateOp, ReconnectDisposition,
+    ReconnectSuggestion, RetryFailureKind, RetryStep, Signature, SignatureKind, Step, StepOptions,
+    StepValue, SuggestsBlock, Transform,
 };

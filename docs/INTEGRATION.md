@@ -45,18 +45,19 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 |---|---|
 | `ConfigStore.from_bundle(body, manufacturer?)` | the loaded store (single-body) |
 | `ConfigStore.from_tiers(body, manufacturer?, fw_overlays)` | as above, with firmware-tier overlays merged onto the body |
+| `ConfigStore.model_store(modelId)` | a direct-query view whose body is the selected model from a manufacturer-index store. Use this after recognition before calling body-scoped APIs; otherwise those APIs intentionally retain the index's primary (first-declared) body. |
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
 | `ConnectionInfo.command_listener_volatile` | whether closing the active PTP/IP transport may remove the command listener, so a consumer must not assume it can immediately redial the same endpoint as generic recovery. A manifest-authored outer connection re-establishment may create a new listener. |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
 | `connection_transition(fromConnection, targetConnection, targetMode?)` | a mode-qualified connection edge plus fixed establishment bindings. legacy manufacturer app uses this to expose each feature's `launchMode` without app-side vendor literals. |
-| `connection_init_with_runtime(connection, runtimeScope)` / `connection_init_identity_with_runtime(connection, runtimeScope)` | resolve a manifest-owned reference app or legacy manufacturer app packet, or the shape-independent initiator GUID/friendly name. legacy manufacturer app additionally consumes the route-selected local IPv4 runtime value. Normalize the raw host name once with `normalize_client_name`, store that result in the shared `terminalName` runtime slot used during pairing, and use the identity query for PCSS and other layouts; do not reinterpret a returned packet. |
+| `connection_init_with_runtime(connection, runtimeScope)` / `connection_init_identity_with_runtime(connection, runtimeScope)` | resolve a manifest-owned reference app, legacy manufacturer app, or canonical `standardPtpIp` InitCommandRequest, or the shape-independent initiator GUID/friendly name. legacy manufacturer app additionally consumes the route-selected local IPv4 runtime value. Normalize the raw host name once with `normalize_client_name`, store that result in the shared `terminalName` runtime slot used during pairing, and use the identity query for PCSS and other layouts; do not reinterpret a returned packet. |
 | `connection_expected_responder_guid(connection)` | fixed responder identity required by init shapes that authenticate the camera acknowledgment. Pass it to `validate_legacy_app_init_ack`; an empty or mismatched GUID is a hard init failure. |
 | `connection_init_retry_policy(connection)` | typed InitFail retry limit, backoff, and selected u32 reason codes. Retry only listed reasons on the same socket; transport failures and unlisted reasons escape that retry loop. On auto PCSS only, first-Init transport unavailability may separately select the one manifest-authorized outer rendezvous recovery. |
 | `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` / `build_pcss_init` | typed discovery-target, callback/knock, and retry policy plus byte-exact PCSS packet codecs. The host supplies the route-selected local IPv4 address, initiator GUID, and friendly name. The camera may keep its callback TCP socket open: stop after receiving the rendezvous record's exact manifest-rendered terminator bytes, including the final CRLF, then pass the accumulated payload to `parse_pcss_notify`. `NOTIFY` supplies the camera address and command port; neither is inferred from a captured default. |
 | `run_pcss_auto_establishment` / `run_pcss_known_address_establishment` | Rust-owned PCSS discovery and establishment. Auto-discovery uses the first recognized broadcast callback directly; when manifest policy permits, an unavailable command endpoint or first Init transport attempt triggers one fresh rendezvous to the learned address by unicast. Known-address establishment starts with explicit unicast. The host implements raw socket I/O through `PcssExecutorTransport`; `next_callback` returns a typed `PcssCallback` containing the TCP peer IPv4 and payload. |
 | `decode_init_command_response(packet)` | a typed response for canonical standard PTP/IP Ack/InitFail packets and the fixed-width 68-byte PCSS Ack. `Acknowledged.protocol_version` is `Some(version)` for standard Ack and `None` for PCSS, whose wire shape omits that field. The InitFail reason drives manifest-owned retry policy; consumers do not inspect packet-type literals or offsets. |
 | `validate_legacy_app_init_ack(packet, expectedResponderGuid)` | legacy manufacturer app's APK-compatible 68-byte Ack check: exact length/type plus the fixed responder GUID. Bytes after the GUID are intentionally opaque rather than forced through PCSS's camera-name/padding grammar. |
-| `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
+| `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. Equal command/event ports mean both roles share one listener and are demultiplexed by their first standard PTP/IP init packet; do not bind the address twice. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
 | `camera_initiated_transfer(model)` | BLE trigger states, optional/cached handoff, resolved endpoint, reserved count/head, metadata/data operations, chunk limit, and completion policy for the camera-controlled pull queue. Requires a manufacturer-index store so symbolic GATT names resolve. |
 | `transport_close(connection)` | the manifest-resolved frame plus its declared `when` context (Fuji `app`: the 8-byte sentinel before image-transfer re-establishment), `None` when absent; malformed sentinel data is an error. Use it only in the declared context; sending it does not by itself guarantee that the endpoint is immediately redialable. |
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
@@ -474,6 +475,14 @@ cancelling the whole exported future does the same. Socket reads may therefore
 remain pending indefinitely: consumers must not add a second semantic timeout
 or retry policy around them.
 
+`standardPtpIp` is the exception whose event channel is part of transport
+initialization rather than a later manifest step. The native initiator sends
+`InitCommandRequest`, retains the acknowledged connection number, opens the
+event role with `InitEventRequest` and requires `InitEventAck`, reads
+`GetDeviceInfo` as transaction 0 before a session exists, then sends
+`OpenSession` as transaction 1. Standard probes use packet types 13/14 on the
+initialized event channel. Closing either associated socket closes the pair.
+
 | call | walks |
 |---|---|
 | `runModeEntry(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | a current-session `ptp` mode entry. `UserInstruction` and `ReestablishConnection` fail with `UnsupportedPlan` so the host cannot accidentally skip their outer lifecycle. |
@@ -601,6 +610,8 @@ retry loop and the same code handles all of them.
 | `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. |
 | `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |
 | `retry` | run `steps`; when a failure's stable kind equals `whenFailure`, run `onFailure` in the same scope and evaluate `retryWhen`. Retry only when it is true and `maxAttempts` is not exhausted, sleeping `retryDelayMs` first. Unselected failures escape unchanged. Terminal selected failures include only the named `failureContext` values. Repeated subscriptions to the same GATT characteristic and mode are reused within the walk. |
+| `nikonLssAuthenticate` | resolve `clientDeviceId` and fresh runtime `nonce` to exactly 8 bytes each; enable indications on `gatt`; perform the exact four 17-byte LSS stages. Retain the resulting opaque cipher session only inside the walk. Bind nothing to scope or FFI. Optional `timeoutMs` is the per-stage budget (default 10 seconds). |
+| `nikonLssReadConnectionConfiguration` | require the executor-private LSS session, read `gatt` once, decrypt/decode its fixed flags/Wi-Fi/security/optional-SPP layout, and bind only the declared `*CaptureAs` fields. Malformed lengths and calls before authentication fail the step. |
 
 ### 9.5 StepValue resolution
 
@@ -612,12 +623,16 @@ retry loop and the same code handles all of them.
 | `Captured{name, transform}` | look up `name` in scope, apply the transform chain |
 
 `transform`: a `Vec<Transform>` chain from the closed vocabulary (plan §11.13 —
-`bitOr`, `bitAnd`, `slice`, `dropPrefix`, `reverseBytes`, `appendNul`, `uuidFromBytes`,
+`bitOr`, `bitAnd`, `slice`, `dropPrefix`, `reverseBytes`, `appendNul`, `padRight`, `uuidFromBytes`,
 `bits`), applied in order; empty = no transform. Reference semantics live in
 `camera_config::index::eval::apply_transforms` — implement your dispatcher to
 match its unit tests; a failing chain counts as step failure under §11.6.
 `appendNul` appends exactly one zero byte and is used for peer-required C-string
 writes; it does not inspect or normalize an existing trailing byte.
+`padRight { length, byte }` extends input to exactly `length` bytes by appending
+`byte`; input already at the target is unchanged and longer input fails. The
+finite protocol-field ceiling is 65,535 bytes; larger authored or
+programmatically constructed targets fail without allocating.
 Models e.g. the RED `F557D96B` echo (read 4 bytes → `value | 0x20000000` →
 write); not iOS-specific (reference app Android does the same OR). The transform lives
 in the schema, not in your dispatcher logic — you just honour it.
@@ -639,6 +654,18 @@ but no Fuji manufacturer data; its reconnect identity is the captured
 The manufacturer-data form remains pairing-mode discovery. Clients do not add a
 post-registration power-property gate. See issue #264 for the wire evidence.
 
+For the provisional Nikon family, `ble-pair` and
+`ble-establish-wifi-ap` are separate walks. Each walk receives the persisted
+eight-byte client id plus a fresh eight-byte nonce and creates its own opaque
+LSS session. Pairing enables CCCDs in manifest order, authenticates, writes the
+32-byte `Android_<ClientName>` field, and reads the server/model/serial/firmware
+and four feature observations. The optional `currentTime` runtime value is left
+unbound for a D850 reporting server name `D850`, matching the app's exception.
+The on-demand Wi-Fi plan re-authenticates, decrypts connection configuration,
+and writes establishment byte `0x02`; `0x01` belongs to the out-of-scope
+Bluetooth RFCOMM path. The body profile is APK-static/provisional until a live
+D850 validates exposure, persistence, reconnect, and returned DeviceInfo.
+
 ### 9.6 Zero camera knowledge in app source
 
 If you find yourself hardcoding a UUID, byte literal, or Fuji-specific behaviour
@@ -647,8 +674,9 @@ the pull model is that the app source is identical with one manifest or fifty.
 
 ### 9.7 Out of scope (queued for P2+)
 
-USB / mDNS / TCP / UDP / WiFi-join verbs and their I/O primitives.
+USB / mDNS / UDP / WiFi-join verbs and their I/O primitives.
 `promptableModels()`. The `dev-direct` assertive PTP/IP flow. Full PTP session
-layer / live-view socket. The BLE→WiFi-AP handover (`ble-establish-wifi-ap`).
-Adding any of them is one schema verb + one dispatcher case — no other layer
-changes.
+layer / live-view socket. BLE plans can expose credentials and request camera
+AP establishment, but OS network association, DHCP, and AP management remain
+host-owned. Adding another I/O primitive is one schema verb + one dispatcher
+case — no other layer changes.

@@ -7,9 +7,10 @@
 //! switches to the manifest-selected standard, compressed, or USB/PIMA
 //! operation framing.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use camera_config::{
     parse_hex_bytes, parse_hex_code, parse_hex_u32, CameraManifest, LiveViewDeliveryKind,
@@ -26,7 +27,10 @@ use protocol_primitives::{
     pcss_callback_ack_message, pcss_init_ack_message, pcss_notify_message,
 };
 use ptp_core::codes::{op, resp};
-use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpCodec, PtpIpPacket};
+use ptp_core::{
+    EventPacket, InitCommandAck, InitEventAck, InitFail, OperationRequest, ProbeResponse, PtpCodec,
+    PtpIpPacket,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::broadcast;
@@ -110,6 +114,7 @@ pub struct Server {
     command: TcpListener,
     liveview: Option<TcpListener>,
     event: Option<TcpListener>,
+    shared_standard_event_listener: bool,
     knock: Option<UdpSocket>,
     knock_config: Option<PcssKnock>,
     command_framing: WireFraming,
@@ -147,6 +152,112 @@ struct CommandResources {
     context: CommandContext,
     trace: TraceLog,
     metrics: Metrics,
+    standard_connections: Arc<StandardConnections>,
+}
+
+#[derive(Default)]
+struct StandardConnections {
+    next: AtomicU32,
+    active: StdMutex<HashMap<u32, StandardConnection>>,
+}
+
+struct StandardConnection {
+    cancel: broadcast::Sender<()>,
+    event_attached: bool,
+}
+
+impl StandardConnections {
+    fn allocate(&self) -> (u32, broadcast::Receiver<()>) {
+        let connection_number = self.next.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        let (cancel, receiver) = broadcast::channel(1);
+        self.active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                connection_number,
+                StandardConnection {
+                    cancel,
+                    event_attached: false,
+                },
+            );
+        (connection_number, receiver)
+    }
+
+    fn attach(
+        self: &Arc<Self>,
+        connection_number: u32,
+    ) -> Option<(broadcast::Receiver<()>, StandardEventAttachGuard)> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let connection = active.get_mut(&connection_number)?;
+        if connection.event_attached {
+            return None;
+        }
+        connection.event_attached = true;
+        Some((
+            connection.cancel.subscribe(),
+            StandardEventAttachGuard {
+                connections: self.clone(),
+                connection_number,
+                armed: true,
+            },
+        ))
+    }
+
+    fn detach_event(&self, connection_number: u32) {
+        if let Some(connection) = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(&connection_number)
+        {
+            connection.event_attached = false;
+        }
+    }
+
+    fn close(&self, connection_number: u32) {
+        let connection = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&connection_number);
+        if let Some(connection) = connection {
+            let _ = connection.cancel.send(());
+        }
+    }
+}
+
+struct StandardEventAttachGuard {
+    connections: Arc<StandardConnections>,
+    connection_number: u32,
+    armed: bool,
+}
+
+impl StandardEventAttachGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StandardEventAttachGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.connections.detach_event(self.connection_number);
+        }
+    }
+}
+
+struct StandardCommandGuard {
+    connections: Arc<StandardConnections>,
+    connection_number: u32,
+}
+
+impl Drop for StandardCommandGuard {
+    fn drop(&mut self) {
+        self.connections.close(self.connection_number);
+    }
 }
 
 impl Server {
@@ -195,6 +306,7 @@ impl Server {
             ("app82", WireFraming::Compressed)
                 | ("pcssKnock", WireFraming::Compressed)
                 | ("legacyApp82", WireFraming::Usb)
+                | ("standardPtpIp", WireFraming::Standard)
         );
         if !supported_shape {
             return Err(invalid_config(format!(
@@ -266,8 +378,10 @@ impl Server {
                 })
                 .collect::<HashSet<_>>(),
         );
+        let command_override = config.command_bind;
+        let event_override = config.event_bind;
         let command_bind = role_bind(
-            config.command_bind,
+            command_override,
             bindings.port_for(SocketRole::Command),
             "command",
         )?
@@ -277,11 +391,24 @@ impl Server {
                 config.connection
             ))
         })?;
-        let event_bind = role_bind(
-            config.event_bind,
-            bindings.port_for(SocketRole::Event),
-            "event",
-        )?;
+        let manifest_shares_event_listener = bindings.port_for(SocketRole::Event)
+            == bindings.port_for(SocketRole::Command)
+            && bindings.port_for(SocketRole::Event).is_some();
+        let event_bind = if manifest_shares_event_listener && event_override.is_none() {
+            Some(command_bind)
+        } else {
+            role_bind(
+                event_override,
+                bindings.port_for(SocketRole::Event),
+                "event",
+            )?
+        };
+        let explicit_nonzero_shared_listener = command_override
+            .zip(event_override)
+            .is_some_and(|(command, event)| command == event && command.port() != 0);
+        let shared_standard_event_listener = init_shape == "standardPtpIp"
+            && ((manifest_shares_event_listener && event_override.is_none())
+                || explicit_nonzero_shared_listener);
         let liveview_bind = role_bind(
             config.liveview_bind,
             bindings.port_for(SocketRole::LiveView),
@@ -313,7 +440,7 @@ impl Server {
             Some(addr) => Some(TcpListener::bind(addr).await?),
             None => None,
         };
-        let event = match event_bind {
+        let event = match event_bind.filter(|_| !shared_standard_event_listener) {
             Some(addr) => Some(TcpListener::bind(addr).await?),
             None => None,
         };
@@ -328,6 +455,7 @@ impl Server {
             command,
             liveview,
             event,
+            shared_standard_event_listener,
             knock,
             knock_config,
             command_framing,
@@ -352,7 +480,11 @@ impl Server {
     }
 
     pub fn event_addr_opt(&self) -> Option<SocketAddr> {
-        self.event.as_ref().map(|l| l.local_addr().unwrap())
+        if self.shared_standard_event_listener {
+            Some(self.command.local_addr().unwrap())
+        } else {
+            self.event.as_ref().map(|l| l.local_addr().unwrap())
+        }
     }
 
     pub fn knock_addr_opt(&self) -> Option<SocketAddr> {
@@ -388,6 +520,7 @@ impl Server {
             command,
             liveview,
             event,
+            shared_standard_event_listener,
             knock,
             knock_config,
             command_framing,
@@ -438,6 +571,7 @@ impl Server {
         // app opens the event socket during session setup, before triggering a
         // capture, so the subscriber is live when the completion fires.
         let (event_tx, _) = broadcast::channel::<u16>(16);
+        let standard_connections = Arc::new(StandardConnections::default());
 
         // #126/#214 state-callback: one shared notify the command loop bumps
         // after every op. Cheap when nobody listens; the single push task
@@ -462,6 +596,7 @@ impl Server {
                 context: command_context.clone(),
                 trace: trace.clone(),
                 metrics: metrics.clone(),
+                standard_connections: standard_connections.clone(),
             };
             let mut sub = shutdown_tx.subscribe();
             async move {
@@ -470,7 +605,14 @@ impl Server {
                     tokio::select! {
                         accepted = command.accept() => {
                             if let Ok((stream, _)) = accepted {
-                                conns.spawn(handle_command_conn(stream, resources.clone()));
+                                if shared_standard_event_listener {
+                                    conns.spawn(handle_standard_listener_conn(
+                                        stream,
+                                        resources.clone(),
+                                    ));
+                                } else {
+                                    conns.spawn(handle_command_conn(stream, resources.clone(), None));
+                                }
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -554,6 +696,8 @@ impl Server {
             let engine = engine.clone();
             let shutdown_tx = shutdown_tx.clone();
             let metrics = metrics.clone();
+            let standard_connections = standard_connections.clone();
+            let standard_events = command_context.init_shape == "standardPtpIp";
             async move {
                 let mut sub = shutdown_tx.subscribe();
                 let Some(event) = event else {
@@ -569,12 +713,23 @@ impl Server {
                                     drop(stream);
                                     continue;
                                 }
-                                conns.spawn(handle_event_conn(
-                                    stream,
-                                    event_tx.subscribe(),
-                                    event_framing.expect("bound event socket has framing"),
-                                    metrics.clone(),
-                                ));
+                                if standard_events {
+                                    conns.spawn(handle_standard_event_conn(
+                                        stream,
+                                        None,
+                                        event_tx.subscribe(),
+                                        standard_connections.clone(),
+                                        metrics.clone(),
+                                    ));
+                                } else {
+                                    let events = event_tx.subscribe();
+                                    let framing = event_framing.expect("bound event socket has framing");
+                                    let metrics = metrics.clone();
+                                    conns.spawn(async move {
+                                        handle_event_conn(stream, events, framing, metrics).await;
+                                        Ok::<(), std::io::Error>(())
+                                    });
+                                }
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -682,7 +837,10 @@ async fn stream_liveview(
 }
 
 /// Read one length-prefixed PTP/IP frame (`u32` total length including itself).
-async fn read_frame(stream: &mut TcpStream, metrics: &Metrics) -> std::io::Result<Option<Vec<u8>>> {
+async fn read_frame<R: AsyncRead + Unpin>(
+    stream: &mut R,
+    metrics: &Metrics,
+) -> std::io::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 4];
     match stream.read_exact(&mut len_buf).await {
         Ok(_) => metrics.record_read(4),
@@ -710,9 +868,105 @@ fn has_data_in(code: u16) -> bool {
     code == op::SET_DEVICE_PROP_VALUE
 }
 
+async fn handle_standard_listener_conn(
+    mut stream: TcpStream,
+    resources: CommandResources,
+) -> std::io::Result<()> {
+    let Some(first) = read_frame(&mut stream, &resources.metrics).await? else {
+        return Ok(());
+    };
+    match PtpIpPacket::decode(&first) {
+        Ok(PtpIpPacket::InitCommandRequest(_)) => {
+            handle_command_conn(stream, resources, Some(first)).await
+        }
+        Ok(PtpIpPacket::InitEventRequest(_)) => {
+            handle_standard_event_conn(
+                stream,
+                Some(first),
+                resources.event_tx.subscribe(),
+                resources.standard_connections,
+                resources.metrics,
+            )
+            .await
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn handle_standard_event_conn(
+    mut stream: TcpStream,
+    first_frame: Option<Vec<u8>>,
+    mut events: broadcast::Receiver<u16>,
+    connections: Arc<StandardConnections>,
+    metrics: Metrics,
+) -> std::io::Result<()> {
+    let Some(first) = (match first_frame {
+        Some(frame) => Some(frame),
+        None => read_frame(&mut stream, &metrics).await?,
+    }) else {
+        return Ok(());
+    };
+    let connection_number = match PtpIpPacket::decode(&first) {
+        Ok(PtpIpPacket::InitEventRequest(request)) => request.connection_number,
+        _ => return Ok(()),
+    };
+    let Some((mut cancel, mut attach_guard)) = connections.attach(connection_number) else {
+        return Ok(());
+    };
+    acknowledge_standard_event(&mut stream, &metrics, &mut attach_guard).await?;
+
+    let (mut reader, mut writer) = stream.into_split();
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                let Ok(code) = event else { break };
+                let packet = PtpIpPacket::Event(EventPacket {
+                    code,
+                    transaction_id: 0,
+                    params: vec![],
+                });
+                let bytes = ptp_core::encode(&packet).map_err(to_io)?;
+                if writer.write_all(&bytes).await.is_err() {
+                    break;
+                }
+                metrics.record_write(bytes.len());
+                metrics.touch();
+            }
+            frame = read_frame(&mut reader, &metrics) => {
+                let Ok(Some(frame)) = frame else { break };
+                if matches!(PtpIpPacket::decode(&frame), Ok(PtpIpPacket::ProbeRequest(_))) {
+                    let response = ptp_core::encode(&PtpIpPacket::ProbeResponse(ProbeResponse))
+                        .map_err(to_io)?;
+                    if writer.write_all(&response).await.is_err() {
+                        break;
+                    }
+                    metrics.record_write(response.len());
+                }
+            }
+            _ = cancel.recv() => break,
+        }
+    }
+    connections.close(connection_number);
+    let _ = writer.shutdown().await;
+    Ok(())
+}
+
+async fn acknowledge_standard_event<W: AsyncWrite + Unpin>(
+    stream: &mut W,
+    metrics: &Metrics,
+    attach_guard: &mut StandardEventAttachGuard,
+) -> std::io::Result<()> {
+    let ack = ptp_core::encode(&PtpIpPacket::InitEventAck(InitEventAck)).map_err(to_io)?;
+    stream.write_all(&ack).await?;
+    metrics.record_write(ack.len());
+    attach_guard.disarm();
+    Ok(())
+}
+
 async fn handle_command_conn(
     mut stream: TcpStream,
     resources: CommandResources,
+    first_frame: Option<Vec<u8>>,
 ) -> std::io::Result<()> {
     let CommandResources {
         engine,
@@ -722,6 +976,7 @@ async fn handle_command_conn(
         context,
         trace,
         metrics,
+        standard_connections,
     } = resources;
     let endpoints = TraceEndpoints::connection(&stream);
     let is_pcss = context.init_shape == "pcssKnock";
@@ -737,7 +992,10 @@ async fn handle_command_conn(
     }
 
     // 1. Standard-framed init handshake.
-    let Some(mut first) = read_frame(&mut stream, &metrics).await? else {
+    let Some(mut first) = (match first_frame {
+        Some(frame) => Some(frame),
+        None => read_frame(&mut stream, &metrics).await?,
+    }) else {
         if is_pcss {
             trace.record(
                 "ptpip.init_request.rejected",
@@ -749,6 +1007,9 @@ async fn handle_command_conn(
         }
         return Ok(());
     };
+    let mut standard_connection_number = None;
+    let mut standard_cancel = None;
+    let mut standard_guard = None;
     match context.init_shape.as_str() {
         "pcssKnock" => {
             for attempt in 0..=context.pcss_init_fails {
@@ -850,6 +1111,21 @@ async fn handle_command_conn(
                 }
             }
         }
+        "standardPtpIp" => {
+            if !matches!(
+                PtpIpPacket::decode(&first),
+                Ok(PtpIpPacket::InitCommandRequest(_))
+            ) {
+                return Ok(());
+            }
+            let (connection_number, cancel) = standard_connections.allocate();
+            standard_connection_number = Some(connection_number);
+            standard_cancel = Some(cancel);
+            standard_guard = Some(StandardCommandGuard {
+                connections: standard_connections.clone(),
+                connection_number,
+            });
+        }
         _ => return Ok(()),
     }
     let camera_name = {
@@ -865,7 +1141,7 @@ async fn handle_command_conn(
         pcss_init_ack_message(1, responder_guid, &camera_name).map_err(to_io)?
     } else {
         let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
-            connection_number: 1,
+            connection_number: standard_connection_number.unwrap_or(1),
             responder_guid: [0; 16],
             friendly_name: camera_name,
             protocol_version: 0x0001_0000,
@@ -887,11 +1163,28 @@ async fn handle_command_conn(
     // 2. Manifest-framed operation loop.
     let mut first_operation_traced = false;
     loop {
-        let Some(frame) = read_frame(&mut stream, &metrics).await? else {
+        let next = if let Some(cancel) = standard_cancel.as_mut() {
+            tokio::select! {
+                frame = read_frame(&mut stream, &metrics) => frame?,
+                _ = cancel.recv() => None,
+            }
+        } else {
+            read_frame(&mut stream, &metrics).await?
+        };
+        let Some(frame) = next else {
             break;
         };
         let req = match decode_command_frame(context.command_framing, &frame) {
             Ok(PtpIpPacket::OperationRequest(req)) => req,
+            Ok(PtpIpPacket::ProbeRequest(_))
+                if context.command_framing == WireFraming::Standard =>
+            {
+                let response =
+                    ptp_core::encode(&PtpIpPacket::ProbeResponse(ProbeResponse)).map_err(to_io)?;
+                stream.write_all(&response).await?;
+                metrics.record_write(response.len());
+                continue;
+            }
             Ok(other) => {
                 if is_pcss && !first_operation_traced {
                     trace.record(
@@ -988,6 +1281,7 @@ async fn handle_command_conn(
             }
         }
     }
+    drop(standard_guard);
     Ok(())
 }
 
@@ -1160,6 +1454,8 @@ fn ptpip_packet_kind(packet: &PtpIpPacket) -> &'static str {
     match packet {
         PtpIpPacket::InitCommandRequest(_) => "InitCommandRequest",
         PtpIpPacket::InitCommandAck(_) => "InitCommandAck",
+        PtpIpPacket::InitEventRequest(_) => "InitEventRequest",
+        PtpIpPacket::InitEventAck(_) => "InitEventAck",
         PtpIpPacket::InitFail(_) => "InitFail",
         PtpIpPacket::OperationRequest(_) => "OperationRequest",
         PtpIpPacket::OperationResponse(_) => "OperationResponse",
@@ -1167,6 +1463,8 @@ fn ptpip_packet_kind(packet: &PtpIpPacket) -> &'static str {
         PtpIpPacket::StartData(_) => "StartData",
         PtpIpPacket::Data(_) => "Data",
         PtpIpPacket::EndData(_) => "EndData",
+        PtpIpPacket::ProbeRequest(_) => "ProbeRequest",
+        PtpIpPacket::ProbeResponse(_) => "ProbeResponse",
     }
 }
 
@@ -1602,6 +1900,33 @@ mod tests {
         });
 
         assert_eq!(ptpip_packet_kind(&packet), "Data");
+    }
+
+    #[tokio::test]
+    async fn failed_event_ack_attachment_can_be_replaced_without_closing_command() {
+        let connections = Arc::new(StandardConnections::default());
+        let (connection_number, mut command_cancel) = connections.allocate();
+
+        let (_event_cancel, mut attach_guard) = connections
+            .attach(connection_number)
+            .expect("first event attachment");
+        let mut writer = FailAfter { remaining: 0 };
+        assert_eq!(
+            acknowledge_standard_event(&mut writer, &Metrics::default(), &mut attach_guard)
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        drop(attach_guard); // matches the handler returning through `?`
+
+        assert!(command_cancel.try_recv().is_err());
+        let (_replacement_cancel, mut replacement_guard) = connections
+            .attach(connection_number)
+            .expect("replacement event attachment");
+        replacement_guard.disarm();
+        assert!(connections.attach(connection_number).is_none());
+        assert!(command_cancel.try_recv().is_err());
     }
 
     struct FailAfter {

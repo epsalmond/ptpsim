@@ -466,6 +466,25 @@ pub enum Step {
         duration_ms: u32,
         opts: StepOptions,
     },
+    /// Finite Nikon LSS authentication primitive. Cipher state remains inside
+    /// the Rust executor and is never surfaced through UniFFI or scope.
+    NikonLssAuthenticate {
+        gatt: String,
+        client_device_id: StepValue,
+        nonce: StepValue,
+        timeout_ms: u32,
+        opts: StepOptions,
+    },
+    /// Read/decrypt the fixed LSS Wi-Fi connection-configuration fields.
+    NikonLssReadConnectionConfiguration {
+        gatt: String,
+        flags_capture_as: String,
+        ssid_capture_as: String,
+        password_capture_as: String,
+        security_mode_capture_as: String,
+        spp_max_length_capture_as: Option<String>,
+        opts: StepOptions,
+    },
 }
 
 /// One field of a declared `bleWriteChunk` frame header (#112): a computed
@@ -559,6 +578,11 @@ pub enum Transform {
     /// Append one zero byte. Kept at the end to preserve existing UniFFI enum
     /// discriminants for generated clients.
     AppendNul,
+    /// Extend to exactly `length` bytes with `byte`; longer input fails.
+    PadRight {
+        length: u64,
+        byte: u8,
+    },
 }
 
 /// Where an `acquire` / `acquireFirmware` step pulls its value from.
@@ -720,6 +744,10 @@ impl From<&ix::Transform> for Transform {
             ix::Transform::Bits { mask, shift } => Transform::Bits {
                 mask: *mask,
                 shift: *shift,
+            },
+            ix::Transform::PadRight { length, byte } => Transform::PadRight {
+                length: *length as u64,
+                byte: *byte,
             },
         }
     }
@@ -948,6 +976,24 @@ impl From<&ix::Step> for Step {
                 retry_delay_ms: inner.retry_delay_ms,
                 failure_context: inner.failure_context.clone(),
             },
+            ix::Step::NikonLssAuthenticate(inner) => Step::NikonLssAuthenticate {
+                gatt: inner.gatt.clone(),
+                client_device_id: (&inner.client_device_id).into(),
+                nonce: (&inner.nonce).into(),
+                timeout_ms: inner.timeout_ms,
+                opts: (&inner.opts).into(),
+            },
+            ix::Step::NikonLssReadConnectionConfiguration(inner) => {
+                Step::NikonLssReadConnectionConfiguration {
+                    gatt: inner.gatt.clone(),
+                    flags_capture_as: inner.flags_capture_as.clone(),
+                    ssid_capture_as: inner.ssid_capture_as.clone(),
+                    password_capture_as: inner.password_capture_as.clone(),
+                    security_mode_capture_as: inner.security_mode_capture_as.clone(),
+                    spp_max_length_capture_as: inner.spp_max_length_capture_as.clone(),
+                    opts: (&inner.opts).into(),
+                }
+            }
         }
     }
 }

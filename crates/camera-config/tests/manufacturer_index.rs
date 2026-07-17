@@ -42,12 +42,27 @@ fn real_fuji_bodies() -> BTreeMap<String, String> {
 
 fn store_for(vendor: &str, model_id: &str) -> std::sync::Arc<ConfigStore> {
     let mut bodies = BTreeMap::new();
-    bodies.insert(
-        model_id.to_string(),
-        data(&format!("{vendor}/{model_id}/{model_id}.yaml")),
-    );
-    ConfigStore::from_manufacturer_index(&data(&format!("{vendor}/index.yaml")), bodies)
-        .unwrap_or_else(|e| panic!("{vendor}/{model_id} loads: {e:?}"))
+    let model_ids = match vendor {
+        "nikon" => &["nikon-camera", "d850"][..],
+        _ => std::slice::from_ref(&model_id),
+    };
+    for id in model_ids {
+        bodies.insert((*id).to_string(), data(&format!("{vendor}/{id}/{id}.yaml")));
+    }
+    let store =
+        ConfigStore::from_manufacturer_index(&data(&format!("{vendor}/index.yaml")), bodies)
+            .unwrap_or_else(|e| panic!("{vendor}/{model_id} loads: {e:?}"));
+    if vendor == "nikon" {
+        let store = std::sync::Arc::try_unwrap(store).unwrap_or_else(|arc| (*arc).clone());
+        std::sync::Arc::new(
+            store.with_manufacturer(
+                camera_config::ManufacturerDefaults::from_yaml(&data("nikon/nikon.yaml"))
+                    .expect("Nikon defaults load"),
+            ),
+        )
+    } else {
+        store
+    }
 }
 
 #[test]
@@ -528,6 +543,204 @@ models:
 }
 
 #[test]
+fn singular_family_establishment_field_is_rejected() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {}
+      establishment: {}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let error = ResolvedManufacturerIndex::from_yaml(yaml)
+        .expect_err("unknown family BLE fields must fail closed");
+    assert!(error.to_string().contains("establishment"), "got: {error}");
+}
+
+#[test]
+fn nikon_lss_steps_parse_resolve_gatt_and_keep_nonce_runtime_sourced() {
+    let yaml = r#"
+manufacturer: NIKON
+families:
+  lss:
+    ble:
+      gatt:
+        authentication: "00002000-3DD4-4255-8D62-6DC7B9BD5561"
+        connectionConfiguration: "00002004-3DD4-4255-8D62-6DC7B9BD5561"
+      establishments:
+        pair:
+          mechanism: pair
+          params: [clientDeviceId, clientNonce]
+          activities:
+            - { id: camera.test.lss, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 } }
+          steps:
+            - nikonLssAuthenticate:
+                gatt: authentication
+                clientDeviceId: { runtime: clientDeviceId, encoding: bytes-raw }
+                nonce: { runtime: clientNonce, encoding: bytes-raw }
+            - nikonLssReadConnectionConfiguration:
+                gatt: connectionConfiguration
+                flagsCaptureAs: connectionFlags
+                ssidCaptureAs: ssid
+                passwordCaptureAs: password
+                securityModeCaptureAs: securityMode
+                sppMaxLengthCaptureAs: sppMaximumLength
+models:
+  - id: d850
+    displayName: "D850"
+    inherits: [lss]
+    manifest: d850.yaml
+"#;
+    let index = ResolvedManufacturerIndex::from_yaml(yaml).expect("LSS schema loads");
+    let ble = index.models[0].ble.as_ref().unwrap();
+    let steps = &ble.establishments["pair"].steps;
+    match &steps[0] {
+        Step::NikonLssAuthenticate(step) => {
+            assert_eq!(step.gatt, "00002000-3DD4-4255-8D62-6DC7B9BD5561");
+            assert_eq!(step.timeout_ms, 10_000);
+            assert!(matches!(
+                step.nonce,
+                StepValue::Runtime {
+                    ref runtime,
+                    encoding: Some(Encoding::BytesRaw),
+                    ..
+                } if runtime == "clientNonce"
+            ));
+        }
+        other => panic!("expected Nikon auth step, got {other:?}"),
+    }
+    match &steps[1] {
+        Step::NikonLssReadConnectionConfiguration(step) => {
+            assert_eq!(step.gatt, "00002004-3DD4-4255-8D62-6DC7B9BD5561")
+        }
+        other => panic!("expected Nikon config step, got {other:?}"),
+    }
+}
+
+#[test]
+fn nikon_lss_nonce_cannot_be_manifest_literal() {
+    let yaml = r#"
+manufacturer: NIKON
+families:
+  lss:
+    ble:
+      gatt: { authentication: "00002000-3DD4-4255-8D62-6DC7B9BD5561" }
+      establishments:
+        pair:
+          mechanism: pair
+          activities:
+            - { id: camera.test.lss, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }
+          steps:
+            - nikonLssAuthenticate:
+                gatt: authentication
+                clientDeviceId: { literal: "0001020304050607" }
+                nonce: { literal: "08090a0b0c0d0e0f" }
+                timeoutMs: 1000
+models:
+  - id: d850
+    displayName: "D850"
+    inherits: [lss]
+    manifest: d850.yaml
+"#;
+    let error = ResolvedManufacturerIndex::from_yaml(yaml)
+        .expect_err("manifest-baked authentication entropy must fail");
+    assert!(
+        error.to_string().contains("nonce must use a runtime"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn nikon_lss_authentication_rejects_step_retries_that_would_reuse_nonce() {
+    let yaml = r#"
+manufacturer: NIKON
+families:
+  lss:
+    ble:
+      gatt: { authentication: "00002000-3DD4-4255-8D62-6DC7B9BD5561" }
+      establishments:
+        pair:
+          mechanism: pair
+          activities:
+            - { id: camera.test.lss, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }
+          steps:
+            - nikonLssAuthenticate:
+                gatt: authentication
+                clientDeviceId: { runtime: clientDeviceId, encoding: bytes-raw }
+                nonce: { runtime: clientNonce, encoding: bytes-raw }
+                retries: 1
+models:
+  - id: d850
+    displayName: "D850"
+    inherits: [lss]
+    manifest: d850.yaml
+"#;
+    let error = ResolvedManufacturerIndex::from_yaml(yaml)
+        .expect_err("an LSS retry would reuse runtime nonce material");
+    assert!(
+        error
+            .to_string()
+            .contains("each attempt requires a fresh runtime nonce"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn nikon_lss_authentication_rejects_repeatable_wrapper_control_flow() {
+    let fixture = |step: &str| {
+        format!(
+            r#"
+manufacturer: NIKON
+families:
+  lss:
+    ble:
+      gatt:
+        authentication: "00002000-3DD4-4255-8D62-6DC7B9BD5561"
+        status: "00002001-3DD4-4255-8D62-6DC7B9BD5561"
+      establishments:
+        pair:
+          mechanism: pair
+          activities:
+            - {{ id: camera.test.lss, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: {{ sequence: steps, startStep: 0, endStepExclusive: 1 }} }}
+          steps:
+{step}
+models:
+  - id: d850
+    displayName: "D850"
+    inherits: [lss]
+    manifest: d850.yaml
+"#
+        )
+    };
+    let auth = r#"                  - nikonLssAuthenticate:
+                      gatt: authentication
+                      clientDeviceId: { runtime: clientDeviceId, encoding: bytes-raw }
+                      nonce: { runtime: clientNonce, encoding: bytes-raw }"#;
+    let retry = format!(
+        "            - retry:\n                whenFailure: other\n                retryWhen: {{ state: {{ eq: 1 }} }}\n                maxAttempts: 2\n                steps:\n{auth}"
+    );
+    let await_on_each = format!(
+        "            - bleAwaitUntil:\n                source: {{ read: status }}\n                capture: {{ at: 0, length: 1, encoding: u8, name: state }}\n                until: {{ state: {{ eq: 1 }} }}\n                timeoutMs: 100\n                onEach:\n{auth}"
+    );
+
+    for (name, step) in [("retry", retry), ("onEach", await_on_each)] {
+        let error = ResolvedManufacturerIndex::from_yaml(&fixture(&step))
+            .expect_err("repeatable control flow would reuse the runtime nonce");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot appear in repeatable control flow"),
+            "{name}: got {error}"
+        );
+    }
+}
+
+#[test]
 fn unknown_encoding_is_a_load_error() {
     let yaml = r#"
 manufacturer: TESTCO
@@ -1000,6 +1213,10 @@ models:
         ("{ slice: { at: 0, length: 0 } }", "length 0"),
         ("{ bits: { mask: 0, shift: 1 } }", "mask 0"),
         ("{ reverseBytes: 7 }", "takes no operand"),
+        (
+            "{ padRight: { length: 65536, byte: 0 } }",
+            "padRight.length must be <= 65535",
+        ),
     ] {
         let err = ResolvedManufacturerIndex::from_yaml(&template(transform)).unwrap_err();
         let msg = err.to_string();
@@ -1385,6 +1602,116 @@ fn preliminary_vendor_indexes_load_in_camera_config() {
             "{vendor}/{model_id} body manifest is available"
         );
     }
+}
+
+#[test]
+fn nikon_d850_is_an_explicit_model_selection() {
+    let store = store_for("nikon", "nikon-camera");
+    let index = store.index.as_ref().expect("Nikon index is present");
+    let generic = index
+        .models
+        .iter()
+        .find(|model| model.id == "nikon-camera")
+        .expect("generic Nikon model exists");
+    let d850 = index
+        .models
+        .iter()
+        .find(|model| model.id == "d850")
+        .expect("D850 model exists");
+
+    assert!(generic.fallback);
+    assert!(!generic.signatures.is_empty());
+    assert!(!d850.fallback);
+    assert!(
+        d850.signatures.is_empty(),
+        "D850 must not claim generic Nikon adverts"
+    );
+
+    let selected = store.model_store("d850").expect("D850 body is selectable");
+    assert_eq!(selected.manifest.camera.model, "D850");
+    let app = &selected.manifest.connections["app"];
+    assert_eq!(app.init_shape.as_deref(), Some("standardPtpIp"));
+    assert_eq!(app.bindings.as_ref().unwrap().command, 15740);
+    assert_eq!(app.bindings.as_ref().unwrap().event, Some(15740));
+    let defaults = selected.manufacturer.as_ref().expect("Nikon defaults kept");
+    assert!(matches!(
+        &defaults.values["initiatorGuid"],
+        camera_config::ValuePolicy::Fixed { value }
+            if value.as_str() == Some("00112233445566778899aabbccddeeff")
+    ));
+    assert!(matches!(
+        &defaults.values["initFriendlyName"],
+        camera_config::ValuePolicy::Fixed { value }
+            if value.as_str() == Some("Android Device")
+    ));
+    assert!(store.model_store("missing").is_none());
+}
+
+#[test]
+fn nikon_real_plans_preserve_cccd_pairing_and_wifi_order() {
+    let store = store_for("nikon", "nikon-camera");
+    let ble = store.index.as_ref().unwrap().models[0]
+        .ble
+        .as_ref()
+        .expect("Nikon family BLE");
+    let pair = ble.establishment("ble-pair").expect("pair plan");
+    let wifi = ble
+        .establishment("ble-establish-wifi-ap")
+        .expect("Wi-Fi plan");
+
+    let expected_cccd = [
+        ("00002008-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Notify),
+        ("0000200A-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Notify),
+        ("00002081-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Notify),
+        ("00002000-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Indicate),
+        ("00002020-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Indicate),
+        ("00002021-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Indicate),
+    ];
+    for plan in [pair, wifi] {
+        for (step, (uuid, mode)) in plan.steps[2..8].iter().zip(expected_cccd) {
+            assert!(matches!(
+                step,
+                Step::BleSubscribe(subscribe)
+                    if subscribe.gatt == uuid && subscribe.mode == mode
+            ));
+        }
+        assert!(matches!(plan.steps[8], Step::NikonLssAuthenticate(_)));
+    }
+
+    assert!(matches!(
+        &pair.steps[9],
+        Step::BleWrite(write)
+            if matches!(
+                &write.value,
+                StepValue::Runtime { transform, .. }
+                    if matches!(transform.as_slice(), [Transform::PadRight { length: 32, byte: 0 }])
+            )
+    ));
+    assert!(matches!(
+        &pair.steps[11],
+        Step::If(branch)
+            if branch.condition.field == "serverDeviceName"
+                && branch.condition.op == PredicateOp::Ne
+                && branch.condition.value == "D850"
+                && matches!(branch.then.as_slice(), [Step::BleWrite(write)] if write.opts.tolerant)
+    ));
+    assert_eq!(
+        pair.steps
+            .iter()
+            .filter(|step| matches!(step, Step::BleRead(read) if read.gatt == "00002009-3DD4-4255-8D62-6DC7B9BD5561"))
+            .count(),
+        4,
+        "SnapBridge reads the feature characteristic four distinct times"
+    );
+    assert!(matches!(
+        &wifi.steps[9],
+        Step::NikonLssReadConnectionConfiguration(_)
+    ));
+    assert!(matches!(
+        &wifi.steps[10],
+        Step::BleWrite(write)
+            if matches!(&write.value, StepValue::Literal { literal, .. } if literal == "02")
+    ));
 }
 
 // ---------------------------------------------------------------------------
