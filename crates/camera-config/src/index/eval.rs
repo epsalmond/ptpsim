@@ -217,6 +217,11 @@ fn apply_one(input: &[u8], t: &Transform) -> Option<Vec<u8>> {
             out.reverse();
             Some(out)
         }
+        Transform::AppendNul => {
+            let mut out = input.to_vec();
+            out.push(0);
+            Some(out)
+        }
         Transform::UuidFromBytes => {
             if input.len() != 16 {
                 return None;
@@ -730,6 +735,14 @@ mod tests {
         assert_eq!(
             apply_transforms(&[1, 2, 3], &[Transform::ReverseBytes]),
             Some(vec![3, 2, 1])
+        );
+    }
+
+    #[test]
+    fn append_nul_emits_one_explicit_c_string_terminator() {
+        assert_eq!(
+            apply_transforms(b"Pixel 8", &[Transform::AppendNul]),
+            Some(b"Pixel 8\0".to_vec())
         );
     }
 

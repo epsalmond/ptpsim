@@ -87,6 +87,25 @@ fn init_command_response_decoder_accepts_fixed_pcss_ack() {
 }
 
 #[test]
+fn legacy_app_init_ack_validator_accepts_opaque_tail_and_checks_guid() {
+    let expected = vec![0x5a; 16];
+    let mut ack = vec![0xa5; 68];
+    ack[0..4].copy_from_slice(&68u32.to_le_bytes());
+    ack[4..8].copy_from_slice(&2u32.to_le_bytes());
+    ack[8..12].copy_from_slice(&1u32.to_le_bytes());
+    ack[12..28].copy_from_slice(&expected);
+
+    validate_legacy_app_init_ack(ack.clone(), expected.clone())
+        .expect("legacy manufacturer app tail is opaque");
+    assert!(decode_init_command_response(ack.clone()).is_err());
+
+    let mut wrong_guid = expected.clone();
+    wrong_guid[0] ^= 0xff;
+    assert!(validate_legacy_app_init_ack(ack.clone(), wrong_guid).is_err());
+    assert!(validate_legacy_app_init_ack(ack[..67].to_vec(), expected).is_err());
+}
+
+#[test]
 fn init_command_response_decoder_rejects_malformed_fixed_pcss_acks() {
     let valid = protocol_primitives::pcss_init_ack_message(0, [0x5a; 16], "GFX100 II").unwrap();
 
@@ -239,6 +258,14 @@ fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
                 then_steps,
                 tolerant: _,
             } => assert_no_gate_metadata_surfaces(then_steps),
+            EntryStep::IfElse {
+                then_steps,
+                else_steps,
+                ..
+            } => {
+                assert_no_gate_metadata_surfaces(then_steps);
+                assert_no_gate_metadata_surfaces(else_steps);
+            }
         }
     }
 }
@@ -1963,13 +1990,19 @@ fn build_command_is_byte_exact_per_framing() {
 #[test]
 fn build_data_round_trips_through_parse_data_payload() {
     let payload = vec![0xde, 0xad, 0xbe, 0xef, 0x01];
-    // USB data phases are a bulk-transfer concern, not a re-emittable container,
-    // so build_data covers the two framings that model a Data block.
-    for framing in [PtpFraming::Standard, PtpFraming::Compressed] {
+    for framing in [
+        PtpFraming::Standard,
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ] {
         let frame = build_data(framing, 0x1009, 9, payload.clone()).unwrap();
         assert_eq!(parse_data_payload(framing, frame).unwrap(), payload);
     }
-    // parse_data_payload still decodes a USB type-2 data container.
+    // USB retains the operation code in its type-2 container header.
+    assert_eq!(
+        build_data(PtpFraming::Usb, 0x1009, 7, vec![0xde, 0xad, 0xbe, 0xef]).unwrap(),
+        vec![0x10, 0, 0, 0, 0x02, 0x00, 0x09, 0x10, 0x07, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,]
+    );
     let usb_data = vec![
         0x10, 0, 0, 0, 0x02, 0x00, 0x09, 0x10, 0x07, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,
     ];

@@ -256,6 +256,7 @@ pub struct BleActionBlock {
 #[serde(rename_all = "camelCase")]
 pub enum Step {
     BleConnect(BleConnectStep),
+    BleDelay(BleDelayStep),
     BleAwaitDisconnect(BleAwaitDisconnectStep),
     BleRequestMtu(BleRequestMtuStep),
     BleDiscoverServices(BleDiscoverServicesStep),
@@ -277,6 +278,7 @@ impl Step {
     pub fn verb_name(&self) -> &'static str {
         match self {
             Step::BleConnect(_) => "bleConnect",
+            Step::BleDelay(_) => "bleDelay",
             Step::BleAwaitDisconnect(_) => "bleAwaitDisconnect",
             Step::BleRequestMtu(_) => "bleRequestMtu",
             Step::BleDiscoverServices(_) => "bleDiscoverServices",
@@ -299,6 +301,7 @@ impl Step {
     pub fn options(&self) -> StepOptions {
         match self {
             Step::BleConnect(s) => s.opts.clone(),
+            Step::BleDelay(s) => s.opts.clone(),
             Step::BleAwaitDisconnect(s) => s.opts.clone(),
             Step::BleRequestMtu(s) => s.opts.clone(),
             Step::BleDiscoverServices(s) => s.opts.clone(),
@@ -337,6 +340,17 @@ pub struct StepOptions {
 #[serde(rename_all = "camelCase", default)]
 pub struct BleConnectStep {
     #[serde(flatten)]
+    pub opts: StepOptions,
+}
+
+/// `bleDelay: { durationMs: 600 }` — wait between two manifest-authored BLE
+/// operations. legacy manufacturer app waits after `connectGatt` before requesting its
+/// MTU; keeping that timing in data avoids a vendor-specific executor branch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleDelayStep {
+    pub duration_ms: u32,
+    #[serde(flatten, default)]
     pub opts: StepOptions,
 }
 
@@ -783,6 +797,9 @@ pub enum Transform {
     /// Sugar for `Slice { at: n, length: None }`.
     DropPrefix(usize),
     ReverseBytes,
+    /// Append one NUL byte. Used for C-string writes where the peer, rather
+    /// than the fixed-width decoder, requires an explicit terminator.
+    AppendNul,
     /// Exactly 16 bytes → the 36 ASCII bytes of the canonical uppercase
     /// 8-4-4-4-12 UUID string (bind with `encoding: ascii`).
     UuidFromBytes,

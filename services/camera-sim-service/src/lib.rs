@@ -3,16 +3,18 @@
 
 //! `/shutdown` or `SIGTERM`.
 //!
-//! Wire convention: the command channel opens with a standard-framed
-//! `InitCommandRequest`/`Ack`, then switches to Fuji compressed framing for
-//! operations and data phases — matching `parse_v6_ptpip.py`. (Exact init
-//! payload bytes are reconciled against capture in the GFX100 II manifest work.)
+//! The command channel opens with the manifest-selected init shape and then
+//! switches to the manifest-selected standard, compressed, or USB/PIMA
+//! operation framing.
 
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use camera_config::{parse_hex_code, CameraManifest, LiveViewDeliveryKind, PcssKnock};
+use camera_config::{
+    parse_hex_bytes, parse_hex_code, parse_hex_u32, CameraManifest, LiveViewDeliveryKind,
+    PcssKnock, ValuePolicy,
+};
 use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::StateOverlay;
@@ -20,11 +22,11 @@ use camera_sim::{
     AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply, StreamCompletion,
 };
 use protocol_primitives::{
-    fuji_framing, parse_pcss_discovery, parse_pcss_init, parse_app_init,
+    fuji_framing, parse_legacy_app_init, parse_pcss_discovery, parse_pcss_init, parse_app_init,
     pcss_callback_ack_message, pcss_init_ack_message, pcss_notify_message,
 };
 use ptp_core::codes::{op, resp};
-use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpIpPacket};
+use ptp_core::{EventPacket, InitCommandAck, InitFail, OperationRequest, PtpCodec, PtpIpPacket};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::broadcast;
@@ -59,7 +61,8 @@ pub struct Config {
     /// Optional PCSS UDP knock listener. Hosted direct-connect instances leave
     /// this unset; LAN-fidelity tests opt in.
     pub knock_bind: Option<SocketAddr>,
-    /// Number of PCSS InitFail packets to emit before InitCommandAck.
+    /// Number of manifest-authorized InitFail packets to emit before ack.
+    /// The CLI flag retains its PCSS name for compatibility.
     pub pcss_init_fails: u32,
     /// When nonzero, standard object queues start empty and enqueue this many
     /// media handles after each manifest shutter action with objectsAvailable.
@@ -109,6 +112,9 @@ pub struct Server {
     event: Option<TcpListener>,
     knock: Option<UdpSocket>,
     knock_config: Option<PcssKnock>,
+    command_framing: WireFraming,
+    expected_responder_guid: Option<[u8; 16]>,
+    init_fail_reason: Option<u32>,
     event_framing: Option<WireFraming>,
     poll_live_view_op: Option<u16>,
     disallowed_ops: Arc<HashSet<u16>>,
@@ -124,6 +130,9 @@ pub struct Server {
 #[derive(Clone)]
 struct CommandContext {
     init_shape: String,
+    command_framing: WireFraming,
+    expected_responder_guid: Option<[u8; 16]>,
+    init_fail_reason: Option<u32>,
     pcss_init_fails: u32,
     poll_live_view_op: Option<u16>,
     disallowed_ops: Arc<HashSet<u16>>,
@@ -169,10 +178,44 @@ impl Server {
                 config.connection
             ))
         })?;
-        if !matches!(connection.command_framing, Some(WireFraming::Compressed)) {
+        let command_framing = connection.command_framing.ok_or_else(|| {
+            invalid_config(format!(
+                "selected connection '{}' has no command framing",
+                config.connection
+            ))
+        })?;
+        let init_shape = connection.init_shape.as_deref().ok_or_else(|| {
+            invalid_config(format!(
+                "selected connection '{}' has no init shape",
+                config.connection
+            ))
+        })?;
+        let supported_shape = matches!(
+            (init_shape, command_framing),
+            ("app82", WireFraming::Compressed)
+                | ("pcssKnock", WireFraming::Compressed)
+                | ("legacyApp82", WireFraming::Usb)
+        );
+        if !supported_shape {
             return Err(invalid_config(format!(
-                "selected connection '{}' uses unsupported command framing {:?}",
-                config.connection, connection.command_framing
+                "selected connection '{}' uses unsupported init shape/framing combination {init_shape}/{command_framing:?}",
+                config.connection
+            )));
+        }
+        let expected_responder_guid = match connection
+            .init
+            .as_ref()
+            .and_then(|init| init.expected_responder_guid.as_deref())
+        {
+            Some(key) => Some(fixed_manifest_guid(&manifest, key)?),
+            None => None,
+        };
+        if connection.init_shape.as_deref() == Some("legacyApp82")
+            && expected_responder_guid.is_none()
+        {
+            return Err(invalid_config(format!(
+                "selected connection '{}' legacyApp82 init has no expectedResponderGuid",
+                config.connection
             )));
         }
         if bindings.port_for(SocketRole::Event).is_some()
@@ -200,6 +243,11 @@ impl Server {
                 )));
             }
         }
+        let init_fail_reason = connection
+            .init_retries
+            .as_ref()
+            .and_then(|retries| retries.when_reasons.first())
+            .and_then(|reason| parse_hex_u32(reason));
         let poll_live_view_op = connection
             .live_view_delivery
             .as_ref()
@@ -282,6 +330,9 @@ impl Server {
             event,
             knock,
             knock_config,
+            command_framing,
+            expected_responder_guid,
+            init_fail_reason,
             event_framing,
             poll_live_view_op,
             disallowed_ops,
@@ -339,6 +390,9 @@ impl Server {
             event,
             knock,
             knock_config,
+            command_framing,
+            expected_responder_guid,
+            init_fail_reason,
             event_framing,
             poll_live_view_op,
             disallowed_ops,
@@ -365,9 +419,12 @@ impl Server {
                     .connections
                     .get(&config.connection)
                     .and_then(|c| c.init_shape.as_deref())
-                    .unwrap_or("app82")
+                    .expect("selected connection init shape validated at bind")
                     .to_string()
             },
+            command_framing,
+            expected_responder_guid,
+            init_fail_reason,
             pcss_init_fails: config.pcss_init_fails,
             poll_live_view_op,
             disallowed_ops,
@@ -668,6 +725,7 @@ async fn handle_command_conn(
     } = resources;
     let endpoints = TraceEndpoints::connection(&stream);
     let is_pcss = context.init_shape == "pcssKnock";
+    let is_legacy_app = context.init_shape == "legacyApp82";
     if is_pcss {
         trace.record(
             "ptpip.command.accepted",
@@ -714,9 +772,10 @@ async fn handle_command_conn(
                 if attempt == context.pcss_init_fails {
                     break;
                 }
-                let fail = PtpIpPacket::InitFail(InitFail {
-                    reason: resp::DEVICE_BUSY as u32,
-                });
+                let reason = context
+                    .init_fail_reason
+                    .ok_or_else(|| invalid_config("configured InitFail has no manifest reason"))?;
+                let fail = PtpIpPacket::InitFail(InitFail { reason });
                 let bytes = ptp_core::encode(&fail).map_err(to_io)?;
                 stream.write_all(&bytes).await?;
                 metrics.record_write(bytes.len());
@@ -724,11 +783,7 @@ async fn handle_command_conn(
                     "ptpip.init_fail.sent",
                     endpoints.clone(),
                     Some(&bytes),
-                    Some(format!(
-                        "attempt={};reason=0x{:04x}",
-                        attempt + 1,
-                        resp::DEVICE_BUSY
-                    )),
+                    Some(format!("attempt={};reason=0x{reason:08x}", attempt + 1)),
                     None,
                 );
                 let Some(next) = read_frame(&mut stream, &metrics).await? else {
@@ -763,6 +818,38 @@ async fn handle_command_conn(
                 }
             }
         }
+        "legacyApp82" => {
+            let mut parsed = None;
+            for attempt in 0..=context.pcss_init_fails {
+                let Ok(init_req) = parse_legacy_app_init(&first) else {
+                    return Ok(());
+                };
+                parsed = Some(init_req);
+                if attempt == context.pcss_init_fails {
+                    break;
+                }
+                let reason = context
+                    .init_fail_reason
+                    .ok_or_else(|| invalid_config("configured InitFail has no manifest reason"))?;
+                let fail = PtpIpPacket::InitFail(InitFail { reason });
+                let bytes = ptp_core::encode(&fail).map_err(to_io)?;
+                stream.write_all(&bytes).await?;
+                metrics.record_write(bytes.len());
+                let Some(next) = read_frame(&mut stream, &metrics).await? else {
+                    return Ok(());
+                };
+                first = next;
+            }
+            let init_req = parsed.expect("legacy manufacturer app loop parses at least once");
+            // legacy manufacturer app does not use reference app's IMAGE_TRANSFER_SETTING arming
+            // write. It does retain the registered BLE terminal-name check.
+            let registered_name = engine.lock().await.link().device_name();
+            if let Some(registered) = registered_name {
+                if registered != init_req.friendly_name {
+                    return Ok(());
+                }
+            }
+        }
         _ => return Ok(()),
     }
     let camera_name = {
@@ -771,6 +858,11 @@ async fn handle_command_conn(
     };
     let ack_bytes = if is_pcss {
         pcss_init_ack_message(0, [0; 16], &camera_name).map_err(to_io)?
+    } else if is_legacy_app {
+        let responder_guid = context.expected_responder_guid.ok_or_else(|| {
+            invalid_config("legacyApp82 init requires a manifest responder GUID")
+        })?;
+        pcss_init_ack_message(1, responder_guid, &camera_name).map_err(to_io)?
     } else {
         let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
             connection_number: 1,
@@ -792,13 +884,13 @@ async fn handle_command_conn(
         );
     }
 
-    // 2. Compressed-framed operation loop.
+    // 2. Manifest-framed operation loop.
     let mut first_operation_traced = false;
     loop {
         let Some(frame) = read_frame(&mut stream, &metrics).await? else {
             break;
         };
-        let req = match fuji_framing::decode(&frame) {
+        let req = match decode_command_frame(context.command_framing, &frame) {
             Ok(PtpIpPacket::OperationRequest(req)) => req,
             Ok(other) => {
                 if is_pcss && !first_operation_traced {
@@ -850,13 +942,20 @@ async fn handle_command_conn(
                     transaction_id: req.transaction_id,
                     params: vec![],
                 }),
+                context.command_framing,
                 &metrics,
             )
             .await?;
             continue;
         }
         let data_in = if has_data_in(req.code) {
-            collect_data_in(&mut stream, req.transaction_id, &metrics).await?
+            collect_data_in(
+                &mut stream,
+                req.transaction_id,
+                context.command_framing,
+                &metrics,
+            )
+            .await?
         } else {
             None
         };
@@ -881,7 +980,9 @@ async fn handle_command_conn(
             // completion is only meaningful to a listening client).
             let _ = event_tx.send(code);
         }
-        if let Some(completion) = write_reply(&mut stream, &req, reply, &metrics).await? {
+        if let Some(completion) =
+            write_reply(&mut stream, &req, reply, context.command_framing, &metrics).await?
+        {
             if engine.lock().await.complete_stream(completion) {
                 state_dirty.notify_one();
             }
@@ -1162,25 +1263,133 @@ async fn handle_event_conn(
 /// trusted, so a client cannot use the data-in channel for unbounded growth.
 const MAX_DATA_IN_BYTES: u64 = 1024 * 1024;
 
+fn decode_command_frame(framing: WireFraming, frame: &[u8]) -> Result<PtpIpPacket, String> {
+    match framing {
+        WireFraming::Standard => PtpIpPacket::decode(frame).map_err(|error| error.to_string()),
+        WireFraming::Compressed => fuji_framing::decode(frame).map_err(|error| error.to_string()),
+        WireFraming::Usb => {
+            protocol_primitives::usb_ptp::decode(frame).map_err(|error| error.to_string())
+        }
+    }
+}
+
+fn encode_control_frame(framing: WireFraming, packet: &PtpIpPacket) -> std::io::Result<Vec<u8>> {
+    match framing {
+        WireFraming::Standard => ptp_core::encode(packet).map_err(to_io),
+        WireFraming::Compressed => fuji_framing::encode(packet).map_err(to_io),
+        WireFraming::Usb => protocol_primitives::usb_ptp::encode(packet).map_err(to_io),
+    }
+}
+
+fn encode_data_frame(
+    framing: WireFraming,
+    op: u16,
+    transaction_id: u32,
+    payload: &[u8],
+) -> std::io::Result<Vec<u8>> {
+    match framing {
+        WireFraming::Standard => {
+            let mut bytes = ptp_core::encode(&PtpIpPacket::StartData(ptp_core::StartData {
+                transaction_id,
+                total_length: payload.len() as u64,
+            }))
+            .map_err(to_io)?;
+            bytes.extend_from_slice(
+                &ptp_core::encode(&PtpIpPacket::EndData(ptp_core::DataBlock {
+                    transaction_id,
+                    payload: payload.to_vec(),
+                }))
+                .map_err(to_io)?,
+            );
+            Ok(bytes)
+        }
+        WireFraming::Compressed => Ok(fuji_framing::encode_data(op, transaction_id, payload)),
+        WireFraming::Usb => Ok(protocol_primitives::usb_ptp::encode_data(
+            op,
+            transaction_id,
+            payload,
+        )),
+    }
+}
+
 fn data_in_err<S: Into<String>>(msg: S) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into())
 }
 
-/// Collect the data-in payload. The compressed channel carries a whole data
-/// phase in a single type-2 `Data` frame, so we read exactly one frame, require
-/// it to be a `Data` for this `tid`, and cap the payload at [`MAX_DATA_IN_BYTES`]
-/// (realistic data-in is a single property value). A transaction-id mismatch or
-/// any other packet type is a protocol error.
+/// Collect the data-in payload. Compressed and USB channels carry the whole
+/// phase in one type-2 `Data` container. Standard PTP/IP carries StartData,
+/// zero or more Data packets, and one EndData packet. Every shape is capped at
+/// [`MAX_DATA_IN_BYTES`] and must retain the request transaction id.
 async fn collect_data_in(
     stream: &mut TcpStream,
     tid: u32,
+    framing: WireFraming,
     metrics: &Metrics,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    let Some(frame) = read_frame(stream, metrics).await? else {
+    let Some(first) = read_frame(stream, metrics).await? else {
         return Err(data_in_err("data-in: stream closed before the data frame"));
     };
-    match fuji_framing::decode(&frame) {
-        Ok(PtpIpPacket::Data(d)) => {
+    let first = decode_command_frame(framing, &first)
+        .map_err(|error| data_in_err(format!("data-in: decode failed: {error}")))?;
+    if framing == WireFraming::Standard {
+        let PtpIpPacket::StartData(start) = first else {
+            return Err(data_in_err(format!(
+                "data-in: expected StartData, got {first:?}"
+            )));
+        };
+        if start.transaction_id != tid {
+            return Err(data_in_err(format!(
+                "data-in: StartData tid {} != request tid {}",
+                start.transaction_id, tid
+            )));
+        }
+        if start.total_length > MAX_DATA_IN_BYTES {
+            return Err(data_in_err(format!(
+                "data-in: declared payload {} exceeds cap {MAX_DATA_IN_BYTES}",
+                start.total_length
+            )));
+        }
+        let mut payload = Vec::with_capacity(start.total_length as usize);
+        loop {
+            let Some(frame) = read_frame(stream, metrics).await? else {
+                return Err(data_in_err("data-in: stream closed before EndData"));
+            };
+            let packet = decode_command_frame(framing, &frame)
+                .map_err(|error| data_in_err(format!("data-in: decode failed: {error}")))?;
+            let (data, ended) = match packet {
+                PtpIpPacket::Data(data) => (data, false),
+                PtpIpPacket::EndData(data) => (data, true),
+                other => {
+                    return Err(data_in_err(format!(
+                        "data-in: expected Data or EndData, got {other:?}"
+                    )))
+                }
+            };
+            if data.transaction_id != tid {
+                return Err(data_in_err(format!(
+                    "data-in: data tid {} != request tid {}",
+                    data.transaction_id, tid
+                )));
+            }
+            let next_len = payload.len().saturating_add(data.payload.len()) as u64;
+            if next_len > start.total_length || next_len > MAX_DATA_IN_BYTES {
+                return Err(data_in_err("data-in: payload exceeds declared length"));
+            }
+            payload.extend_from_slice(&data.payload);
+            if ended {
+                if payload.len() as u64 != start.total_length {
+                    return Err(data_in_err(format!(
+                        "data-in: received {} bytes, declared {}",
+                        payload.len(),
+                        start.total_length
+                    )));
+                }
+                return Ok(Some(payload));
+            }
+        }
+    }
+    match first {
+        PtpIpPacket::Data(d) => {
             if d.transaction_id != tid {
                 return Err(data_in_err(format!(
                     "data-in: Data tid {} != request tid {}",
@@ -1195,10 +1404,9 @@ async fn collect_data_in(
             }
             Ok(Some(d.payload))
         }
-        Ok(other) => Err(data_in_err(format!(
+        other => Err(data_in_err(format!(
             "data-in: expected a data frame, got {other:?}"
         ))),
-        Err(e) => Err(data_in_err(format!("data-in: decode failed: {e}"))),
     }
 }
 
@@ -1212,22 +1420,22 @@ async fn write_reply<W: AsyncWrite + Unpin>(
     stream: &mut W,
     req: &OperationRequest,
     reply: Reply,
+    framing: WireFraming,
     metrics: &Metrics,
 ) -> std::io::Result<Option<StreamCompletion>> {
     match reply {
         Reply::Response(resp) => {
-            let bytes =
-                fuji_framing::encode(&PtpIpPacket::OperationResponse(resp)).map_err(to_io)?;
+            let bytes = encode_control_frame(framing, &PtpIpPacket::OperationResponse(resp))?;
             stream.write_all(&bytes).await?;
             metrics.record_write(bytes.len());
         }
         Reply::Data { data, response } => {
             // The whole data phase is one type-2 frame whose code echoes the op.
-            let data_bytes = fuji_framing::encode_data(req.code, req.transaction_id, &data);
+            let data_bytes = encode_data_frame(framing, req.code, req.transaction_id, &data)?;
             stream.write_all(&data_bytes).await?;
             metrics.record_write(data_bytes.len());
             let response_bytes =
-                fuji_framing::encode(&PtpIpPacket::OperationResponse(response)).map_err(to_io)?;
+                encode_control_frame(framing, &PtpIpPacket::OperationResponse(response))?;
             stream.write_all(&response_bytes).await?;
             metrics.record_write(response_bytes.len());
         }
@@ -1236,9 +1444,17 @@ async fn write_reply<W: AsyncWrite + Unpin>(
             response,
             completion,
         } => {
-            stream_data_phase(stream, req.code, req.transaction_id, &source, metrics).await?;
+            stream_data_phase(
+                stream,
+                framing,
+                req.code,
+                req.transaction_id,
+                &source,
+                metrics,
+            )
+            .await?;
             let response_bytes =
-                fuji_framing::encode(&PtpIpPacket::OperationResponse(response)).map_err(to_io)?;
+                encode_control_frame(framing, &PtpIpPacket::OperationResponse(response))?;
             stream.write_all(&response_bytes).await?;
             metrics.record_write(response_bytes.len());
             return Ok(completion);
@@ -1258,6 +1474,7 @@ async fn write_reply<W: AsyncWrite + Unpin>(
 /// the frame's code field.
 async fn stream_data_phase<W: AsyncWrite + Unpin>(
     stream: &mut W,
+    framing: WireFraming,
     op: u16,
     transaction_id: u32,
     source: &ByteSource,
@@ -1266,7 +1483,27 @@ async fn stream_data_phase<W: AsyncWrite + Unpin>(
     let total_length = source.len();
     let payload_len = u32::try_from(total_length)
         .map_err(|_| std::io::Error::other("data-phase payload exceeds a single frame (u32)"))?;
-    let header = fuji_framing::data_frame_header(op, transaction_id, payload_len);
+    if framing == WireFraming::Standard {
+        let start = ptp_core::encode(&PtpIpPacket::StartData(ptp_core::StartData {
+            transaction_id,
+            total_length,
+        }))
+        .map_err(to_io)?;
+        stream.write_all(&start).await?;
+        metrics.record_write(start.len());
+    }
+    let header = match framing {
+        WireFraming::Standard => {
+            let mut header = [0u8; 12];
+            header[0..4].copy_from_slice(&(payload_len + 12).to_le_bytes());
+            header[4..8].copy_from_slice(&12u32.to_le_bytes()); // PTP/IP EndData
+            header[8..12].copy_from_slice(&transaction_id.to_le_bytes());
+            header
+        }
+        WireFraming::Compressed | WireFraming::Usb => {
+            fuji_framing::data_frame_header(op, transaction_id, payload_len)
+        }
+    };
     stream.write_all(&header).await?;
     metrics.record_write(header.len());
 
@@ -1298,6 +1535,23 @@ fn to_io<E: std::fmt::Display>(e: E) -> std::io::Error {
 
 fn invalid_config<S: Into<String>>(msg: S) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, msg.into())
+}
+
+fn fixed_manifest_guid(manifest: &CameraManifest, key: &str) -> std::io::Result<[u8; 16]> {
+    let Some(ValuePolicy::Fixed {
+        value: serde_yaml::Value::String(value),
+    }) = manifest.values.get(key)
+    else {
+        return Err(invalid_config(format!(
+            "init responder GUID value '{key}' is not a fixed string"
+        )));
+    };
+    let bytes = parse_hex_bytes(value)
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        .ok_or_else(|| {
+            invalid_config(format!("init responder GUID value '{key}' is not 16 bytes"))
+        })?;
+    Ok(bytes)
 }
 
 fn role_bind(
@@ -1398,7 +1652,14 @@ mod tests {
             completion: None,
         };
         let mut writer = FailAfter { remaining: 14 };
-        let result = write_reply(&mut writer, &req, reply, &Metrics::default()).await;
+        let result = write_reply(
+            &mut writer,
+            &req,
+            reply,
+            WireFraming::Compressed,
+            &Metrics::default(),
+        )
+        .await;
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
     }
 }

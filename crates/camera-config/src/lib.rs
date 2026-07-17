@@ -326,6 +326,8 @@ impl CameraManifest {
         }
         for (connection_id, connection) in &self.connections {
             require_valid_host_activities(connection, connection_id)?;
+            require_valid_init_shape(connection, connection_id)?;
+            require_valid_connection_transitions(self, connection, connection_id)?;
             require_valid_pcss_rendezvous(connection, connection_id)?;
             require_valid_object_transfer(self, connection, connection_id)?;
             require_valid_control_surfaces(self, connection, connection_id)?;
@@ -487,10 +489,118 @@ fn require_valid_structured_text(property: &Property, code: &str) -> Result<(), 
     Ok(())
 }
 
+fn require_valid_init_shape(
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    if connection.init_shape.as_deref() != Some("legacyApp82") {
+        return Ok(());
+    }
+    let path = format!("connections.{connection_id}.init");
+    let init = connection.init.as_ref().ok_or_else(|| {
+        ManifestError::Contract(format!("{path} is required for initShape legacyApp82"))
+    })?;
+    if init.identity.guid.trim().is_empty() || init.identity.friendly_name.trim().is_empty() {
+        return Err(ManifestError::Contract(format!(
+            "{path}.identity requires non-empty guid and friendlyName value references"
+        )));
+    }
+    if init
+        .identity
+        .client_ipv4
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path}.identity.clientIpv4 is required for initShape legacyApp82"
+        )));
+    }
+    if init.name_field_byte_count != 54 {
+        return Err(ManifestError::Contract(format!(
+            "{path}.nameFieldByteCount must be 54 for initShape legacyApp82"
+        )));
+    }
+    if init.tail.is_some() {
+        return Err(ManifestError::Contract(format!(
+            "{path}.tail is not part of initShape legacyApp82"
+        )));
+    }
+    init.expected_responder_guid
+        .as_deref()
+        .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| {
+            ManifestError::Contract(format!(
+                "{path}.expectedResponderGuid is required for initShape legacyApp82"
+            ))
+        })?;
+    if connection.command_framing != Some(WireFraming::Usb) {
+        return Err(ManifestError::Contract(format!(
+            "connections.{connection_id}.commandFraming must be usb for initShape legacyApp82"
+        )));
+    }
+    Ok(())
+}
+
+fn require_valid_connection_transitions(
+    manifest: &CameraManifest,
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (index, transition) in connection.enables.iter().enumerate() {
+        let path = format!("connections.{connection_id}.enables[{index}]");
+        let target = manifest.connections.get(&transition.to).ok_or_else(|| {
+            ManifestError::Contract(format!(
+                "{path}.to references unknown connection '{}'",
+                transition.to
+            ))
+        })?;
+        if transition.mechanism.is_none() && transition.user_instruction.is_none() {
+            return Err(ManifestError::Contract(format!(
+                "{path} requires mechanism or userInstruction"
+            )));
+        }
+        if !transition.params.is_empty() && transition.mechanism.is_none() {
+            return Err(ManifestError::Contract(format!(
+                "{path}.params require a mechanism-backed establishment edge"
+            )));
+        }
+        if let Some(mechanism) = &transition.mechanism {
+            if target.establishment.as_ref() != Some(mechanism) {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.mechanism '{mechanism}' does not match target connection '{}' establishment {:?}",
+                    transition.to, target.establishment
+                )));
+            }
+        }
+        if let Some(mode) = &transition.mode {
+            if !target.modes.contains(mode) {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.mode '{mode}' is not declared by target connection '{}'",
+                    transition.to
+                )));
+            }
+        }
+        if transition.params.keys().any(|key| key.trim().is_empty()) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.params keys must not be empty"
+            )));
+        }
+        if !seen.insert((transition.to.as_str(), transition.mode.as_deref())) {
+            return Err(ManifestError::Contract(format!(
+                "connections.{connection_id}.enables contains a duplicate target/mode edge to '{}' ({:?})",
+                transition.to, transition.mode
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn require_valid_pcss_rendezvous(
     connection: &Connection,
     connection_id: &str,
 ) -> Result<(), ManifestError> {
+    require_valid_init_retries(connection, connection_id)?;
     let Some(knock) = &connection.knock else {
         return Ok(());
     };
@@ -543,34 +653,42 @@ fn require_valid_pcss_rendezvous(
             "{path}.discoveryTargets.retryDiscoveredUnicast requires subnetBroadcast and explicitUnicast support"
         )));
     }
-    if let Some(retries) = &connection.init_retries {
-        let retry_path = format!("connections.{connection_id}.initRetries");
-        let parsed_reasons: Option<Vec<u32>> = retries
-            .when_reasons
-            .iter()
-            .map(|reason| parse_hex_u32(reason))
-            .collect();
-        let Some(parsed_reasons) = parsed_reasons else {
-            return Err(ManifestError::Contract(format!(
-                "{retry_path}.whenReasons entries must be 32-bit hexadecimal codes"
-            )));
-        };
-        let incoherent = if retries.max == 0 {
-            retries.backoff_ms != 0 || !retries.when_reasons.is_empty()
-        } else {
-            retries.backoff_ms == 0 || retries.when_reasons.is_empty()
-        };
-        if incoherent {
-            return Err(ManifestError::Contract(format!(
-                "{retry_path} requires non-empty whenReasons and non-zero backoffMs exactly when max is non-zero"
-            )));
-        }
-        let reasons: std::collections::BTreeSet<_> = parsed_reasons.iter().collect();
-        if reasons.len() != parsed_reasons.len() {
-            return Err(ManifestError::Contract(format!(
-                "{retry_path}.whenReasons must not contain duplicates"
-            )));
-        }
+    Ok(())
+}
+
+fn require_valid_init_retries(
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(retries) = &connection.init_retries else {
+        return Ok(());
+    };
+    let retry_path = format!("connections.{connection_id}.initRetries");
+    let parsed_reasons: Option<Vec<u32>> = retries
+        .when_reasons
+        .iter()
+        .map(|reason| parse_hex_u32(reason))
+        .collect();
+    let Some(parsed_reasons) = parsed_reasons else {
+        return Err(ManifestError::Contract(format!(
+            "{retry_path}.whenReasons entries must be 32-bit hexadecimal codes"
+        )));
+    };
+    let incoherent = if retries.max == 0 {
+        retries.backoff_ms != 0 || !retries.when_reasons.is_empty()
+    } else {
+        retries.backoff_ms == 0 || retries.when_reasons.is_empty()
+    };
+    if incoherent {
+        return Err(ManifestError::Contract(format!(
+            "{retry_path} requires non-empty whenReasons and non-zero backoffMs exactly when max is non-zero"
+        )));
+    }
+    let reasons: std::collections::BTreeSet<_> = parsed_reasons.iter().collect();
+    if reasons.len() != parsed_reasons.len() {
+        return Err(ManifestError::Contract(format!(
+            "{retry_path}.whenReasons must not contain duplicates"
+        )));
     }
     Ok(())
 }
@@ -977,12 +1095,23 @@ fn require_valid_ptp_steps_with_collections(
             )?;
         }
         if let Some(condition) = &step.if_step {
-            let mut nested = collections.clone();
+            let before = collections.clone();
+            let mut then_collections = before.clone();
             require_valid_ptp_steps_with_collections(
                 &condition.then_steps,
-                &format!("{step_path}.if"),
-                &mut nested,
+                &format!("{step_path}.if.then"),
+                &mut then_collections,
             )?;
+            let mut else_collections = before;
+            require_valid_ptp_steps_with_collections(
+                &condition.else_steps,
+                &format!("{step_path}.if.else"),
+                &mut else_collections,
+            )?;
+            // A collection is definitely bound after the conditional only if
+            // both possible branches bind it.
+            then_collections.retain(|collection| else_collections.contains(collection));
+            *collections = then_collections;
         }
     }
     Ok(())
@@ -1046,7 +1175,13 @@ fn require_valid_open_channels(
             require_valid_open_channels(
                 &condition.then_steps,
                 bindings,
-                &format!("{step_path}.if"),
+                &format!("{step_path}.if.then"),
+                false,
+            )?;
+            require_valid_open_channels(
+                &condition.else_steps,
+                bindings,
+                &format!("{step_path}.if.else"),
                 false,
             )?;
         }
@@ -1066,10 +1201,9 @@ fn contains_ptp_loop(steps: &[Step]) -> bool {
                 .await_until
                 .as_ref()
                 .is_some_and(|await_until| contains_ptp_loop(&await_until.on_each))
-            || step
-                .if_step
-                .as_ref()
-                .is_some_and(|condition| contains_ptp_loop(&condition.then_steps))
+            || step.if_step.as_ref().is_some_and(|condition| {
+                contains_ptp_loop(&condition.then_steps) || contains_ptp_loop(&condition.else_steps)
+            })
     })
 }
 

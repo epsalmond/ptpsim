@@ -48,11 +48,14 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
 | `ConnectionInfo.command_listener_volatile` | whether closing the active PTP/IP transport may remove the command listener, so a consumer must not assume it can immediately redial the same endpoint as generic recovery. A manifest-authored outer connection re-establishment may create a new listener. |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
-| `connection_init_with_runtime(connection, runtimeScope)` / `connection_init_identity_with_runtime(connection, runtimeScope)` | resolve the manifest-owned reference app packet or the shape-independent initiator GUID/friendly name. Normalize the raw host name once with `normalize_client_name`, store that result in the shared `terminalName` runtime slot used during pairing, and use the identity query for PCSS and other layouts; do not reinterpret an reference app packet. |
+| `connection_transition(fromConnection, targetConnection, targetMode?)` | a mode-qualified connection edge plus fixed establishment bindings. legacy manufacturer app uses this to expose each feature's `launchMode` without app-side vendor literals. |
+| `connection_init_with_runtime(connection, runtimeScope)` / `connection_init_identity_with_runtime(connection, runtimeScope)` | resolve a manifest-owned reference app or legacy manufacturer app packet, or the shape-independent initiator GUID/friendly name. legacy manufacturer app additionally consumes the route-selected local IPv4 runtime value. Normalize the raw host name once with `normalize_client_name`, store that result in the shared `terminalName` runtime slot used during pairing, and use the identity query for PCSS and other layouts; do not reinterpret a returned packet. |
+| `connection_expected_responder_guid(connection)` | fixed responder identity required by init shapes that authenticate the camera acknowledgment. Pass it to `validate_legacy_app_init_ack`; an empty or mismatched GUID is a hard init failure. |
 | `connection_init_retry_policy(connection)` | typed InitFail retry limit, backoff, and selected u32 reason codes. Retry only listed reasons on the same socket; transport failures and unlisted reasons escape that retry loop. On auto PCSS only, first-Init transport unavailability may separately select the one manifest-authorized outer rendezvous recovery. |
 | `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` / `build_pcss_init` | typed discovery-target, callback/knock, and retry policy plus byte-exact PCSS packet codecs. The host supplies the route-selected local IPv4 address, initiator GUID, and friendly name. The camera may keep its callback TCP socket open: stop after receiving the rendezvous record's exact manifest-rendered terminator bytes, including the final CRLF, then pass the accumulated payload to `parse_pcss_notify`. `NOTIFY` supplies the camera address and command port; neither is inferred from a captured default. |
 | `run_pcss_auto_establishment` / `run_pcss_known_address_establishment` | Rust-owned PCSS discovery and establishment. Auto-discovery uses the first recognized broadcast callback directly; when manifest policy permits, an unavailable command endpoint or first Init transport attempt triggers one fresh rendezvous to the learned address by unicast. Known-address establishment starts with explicit unicast. The host implements raw socket I/O through `PcssExecutorTransport`; `next_callback` returns a typed `PcssCallback` containing the TCP peer IPv4 and payload. |
 | `decode_init_command_response(packet)` | a typed response for canonical standard PTP/IP Ack/InitFail packets and the fixed-width 68-byte PCSS Ack. `Acknowledged.protocol_version` is `Some(version)` for standard Ack and `None` for PCSS, whose wire shape omits that field. The InitFail reason drives manifest-owned retry policy; consumers do not inspect packet-type literals or offsets. |
+| `validate_legacy_app_init_ack(packet, expectedResponderGuid)` | legacy manufacturer app's APK-compatible 68-byte Ack check: exact length/type plus the fixed responder GUID. Bytes after the GUID are intentionally opaque rather than forced through PCSS's camera-name/padding grammar. |
 | `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
 | `camera_initiated_transfer(model)` | BLE trigger states, optional/cached handoff, resolved endpoint, reserved count/head, metadata/data operations, chunk limit, and completion policy for the camera-controlled pull queue. Requires a manufacturer-index store so symbolic GATT names resolve. |
 | `transport_close(connection)` | the manifest-resolved frame plus its declared `when` context (Fuji `app`: the 8-byte sentinel before image-transfer re-establishment), `None` when absent; malformed sentinel data is an error. Use it only in the declared context; sending it does not by itself guarantee that the endpoint is immediately redialable. |
@@ -160,8 +163,9 @@ per-platform packaging:
 ## 5. Integration pattern
 
 1. **Embed the data bundle.** Ship `camera-config-data/fuji/fuji.yaml` (manufacturer)
-   + `…/gfx100ii/gfx100ii.yaml` (body) as app resources; pass their contents to
-   `from_bundle`. Each release attaches a `camera-config-data-<sha8>.tar.gz`
+   plus the body manifest selected by recognition (for example
+   `…/gfx100ii/gfx100ii.yaml` or `…/xa7/xa7.yaml`) as app resources; pass their
+   contents to `from_bundle`. Each release attaches a `camera-config-data-<sha8>.tar.gz`
    sibling alongside the xcframework, so the FFI binary and the YAML data come
    from the same commit and can't drift mid-integration; extract it to vendor
    the bundle without cloning the source tree. (Co-shipped pre-data-repo-split;
@@ -254,8 +258,9 @@ tracked by issue #164.
   (`app` WiFi-AP, `ble`, `wireless-tether` PCSS, `usb`, `xlv` HTTP); firmware-tier
   overlays via `ConfigStore.from_tiers(body, manufacturer, fw_overlays)` (e.g.
   `fw2.40.yaml` flips XLV to HTTPS).
-- **Codecs (§B) — G1–G3 landed + in the bindings.** G1: `build_app_init` (the 82-byte
-  init) + `validate_init_ack`; transport-close frames come from `transport_close`. G2:
+- **Codecs (§B) — G1–G3 landed + in the bindings.** G1: manifest-built reference app/Camera
+  Remote init packets plus `validate_init_ack` / `validate_legacy_app_init_ack`;
+  transport-close frames come from `transport_close`. G2:
   `encode_value(raw, width)` (generic 8-, 16-, and 32-bit scalar
   width encoder) plus `ConfigStore.encode_property(prop, label)` /
   `decode_property(prop, raw)` for manifest-backed property value rows and generic
@@ -336,16 +341,21 @@ tiebreaker). Handoff for the iOS planning agent: `docs/handoff-ios-ble-mvp.md`.
 ### 9.1 Load (manufacturer index + every model body it references)
 
 ```swift
-let store = try ConfigStore.fromManufacturerIndex(
+let store = try ConfigStore.fromManufacturerIndexWithDefaults(
     indexYaml: bundleString("fuji/index.yaml"),
+    manufacturerYaml: bundleString("fuji/fuji.yaml"),
     modelBodies: [
         KeyValue(key: "gfx100ii", value: bundleString("fuji/gfx100ii/gfx100ii.yaml")),
+        KeyValue(key: "xa7", value: bundleString("fuji/xa7/xa7.yaml")),
+        KeyValue(key: "fuji-generic", value: bundleString("fuji/fuji-generic/fuji-generic.yaml")),
     ]
 )
 ```
 
 Fail-fast: missing body → `MissingModelBody`; unknown family → `UnknownFamily`; bad
-YAML at any layer → `IndexParse` / `BodyParse`.
+YAML at any layer → `IndexParse` / `BodyParse`; unresolved or malformed transport
+identity values → `Contract`. The defaults-free `fromManufacturerIndex` remains
+available for manufacturers whose indexed bodies are entirely self-contained.
 
 ### 9.2 The four pull-model calls
 
@@ -375,6 +385,11 @@ scan. `Ready` means walk the returned reconnect plan. `NoMatch` is ignored. Stop
 after `reconnectPolicy.scanTimeoutMs` and surface unavailable/retry UI. Startup and
 already-paired signatures can be reconnect-only, so they do not appear in normal
 `recognize` results.
+
+X-A7 migration is intentionally one-time and explicit. Records created before
+the dedicated `xa7` model remain keyed as `fuji-generic`; persistence ids are
+never silently re-keyed. Delete the saved X-A7 and pair it again so recognition
+selects `xa7` and the legacy manufacturer app establishment/transport contract.
 
 ### 9.3 Walking plans — the Rust executor
 
@@ -572,6 +587,7 @@ retry loop and the same code handles all of them.
 | verb | what to do |
 |---|---|
 | `bleConnect` | connect to the peripheral your I/O primitive captured at recognize time. *No parameters* (§11.4 — peripheral binding is app-side). |
+| `bleDelay` | sleep for exactly `durationMs` using the transport clock. This is an authored inter-operation delay, distinct from retry backoff. |
 | `bleAwaitDisconnect` | wait up to `timeoutMs` for the connected peer to disconnect. A disconnect is success; expiry is a step failure. Used by wake plans where connecting to a startup advertisement triggers camera boot. |
 | `bleRequestMtu` | request ATT MTU `mtu` before GATT traffic. If your platform has no request API (CoreBluetooth negotiates on its own), treat as a checkpoint: succeed when the negotiated MTU ≥ `mtu`. |
 | `bleDiscoverServices` | explicit service-discovery state transition. If your stack auto-discovers, complete when discovery has completed — don't re-trigger. Discovery timeout is your policy. |
@@ -596,10 +612,12 @@ retry loop and the same code handles all of them.
 | `Captured{name, transform}` | look up `name` in scope, apply the transform chain |
 
 `transform`: a `Vec<Transform>` chain from the closed vocabulary (plan §11.13 —
-`bitOr`, `bitAnd`, `slice`, `dropPrefix`, `reverseBytes`, `uuidFromBytes`,
+`bitOr`, `bitAnd`, `slice`, `dropPrefix`, `reverseBytes`, `appendNul`, `uuidFromBytes`,
 `bits`), applied in order; empty = no transform. Reference semantics live in
 `camera_config::index::eval::apply_transforms` — implement your dispatcher to
 match its unit tests; a failing chain counts as step failure under §11.6.
+`appendNul` appends exactly one zero byte and is used for peer-required C-string
+writes; it does not inspect or normalize an existing trailing byte.
 Models e.g. the RED `F557D96B` echo (read 4 bytes → `value | 0x20000000` →
 write); not iOS-specific (reference app Android does the same OR). The transform lives
 in the schema, not in your dispatcher logic — you just honour it.

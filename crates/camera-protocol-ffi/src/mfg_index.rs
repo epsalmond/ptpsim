@@ -459,6 +459,13 @@ pub enum Step {
         retry_delay_ms: u32,
         failure_context: Vec<String>,
     },
+    /// Manifest-authored inter-operation delay, in milliseconds. New exported
+    /// variants stay appended so existing generated bindings keep their enum
+    /// discriminants.
+    BleDelay {
+        duration_ms: u32,
+        opts: StepOptions,
+    },
 }
 
 /// One field of a declared `bleWriteChunk` frame header (#112): a computed
@@ -549,6 +556,9 @@ pub enum Transform {
         mask: u64,
         shift: u32,
     },
+    /// Append one zero byte. Kept at the end to preserve existing UniFFI enum
+    /// discriminants for generated clients.
+    AppendNul,
 }
 
 /// Where an `acquire` / `acquireFirmware` step pulls its value from.
@@ -705,6 +715,7 @@ impl From<&ix::Transform> for Transform {
                 count: *count as u64,
             },
             ix::Transform::ReverseBytes => Transform::ReverseBytes,
+            ix::Transform::AppendNul => Transform::AppendNul,
             ix::Transform::UuidFromBytes => Transform::UuidFromBytes,
             ix::Transform::Bits { mask, shift } => Transform::Bits {
                 mask: *mask,
@@ -840,6 +851,10 @@ impl From<&ix::Step> for Step {
     fn from(s: &ix::Step) -> Self {
         match s {
             ix::Step::BleConnect(inner) => Step::BleConnect {
+                opts: (&inner.opts).into(),
+            },
+            ix::Step::BleDelay(inner) => Step::BleDelay {
+                duration_ms: inner.duration_ms,
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleAwaitDisconnect(inner) => Step::BleAwaitDisconnect {

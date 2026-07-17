@@ -10,7 +10,7 @@ use bytes::BytesMut;
 use camera_protocol_ffi::{
     build_command, parse_event, parse_response, ConfigStore, KeyValue, PcssDiscoveryTarget,
     PcssNotifyInfo, Platform, PtpExecutorTransport, PtpFraming, PtpSessionOpenResult,
-    PtpStreamingTransport, PtpTransportError, SocketRole,
+    PtpStreamingTransport, PtpTransportError, ResponseFrame, SocketRole,
 };
 use if_addrs::{get_if_addrs, IfAddr};
 use ptp_core::codes::{op, resp};
@@ -361,7 +361,18 @@ impl NativePtpTransport {
         let Some(channel) = self.active.read().await.clone() else {
             return Ok(());
         };
-        let close_result = if !self.session_poisoned.load(Ordering::Acquire) {
+        let orderly = !self.session_poisoned.load(Ordering::Acquire);
+        let transport_close_frame = if orderly {
+            self.store
+                .transport_close(self.config.connection.clone())
+                .map_err(|error| failed(error.to_string()))?
+                .and_then(|close| {
+                    (close.when.as_deref() == Some("feature-exit")).then_some(close.packet)
+                })
+        } else {
+            None
+        };
+        let close_result = if orderly {
             async {
                 let transaction_id = channel.next_tid.fetch_add(1, Ordering::AcqRel);
                 let frame =
@@ -397,7 +408,7 @@ impl NativePtpTransport {
         } else {
             Ok(())
         };
-        let channel_result = self.close_command_channel(None).await;
+        let channel_result = self.close_command_channel(transport_close_frame).await;
         close_result.and(channel_result)
     }
 
@@ -435,6 +446,28 @@ impl NativePtpTransport {
                         .ok_or_else(|| failed("reference app requires a camera address"))?,
                     init.packet,
                 ))
+            }
+            "legacyApp82" => {
+                let endpoint = self
+                    .command_endpoint()
+                    .ok_or_else(|| failed("legacy manufacturer app requires a camera address"))?;
+                let camera = match endpoint.ip() {
+                    IpAddr::V4(camera) => camera,
+                    IpAddr::V6(_) => {
+                        return Err(failed("legacy manufacturer app requires an IPv4 camera address"))
+                    }
+                };
+                let local_ip = route_selected_ipv4(camera)?;
+                let mut runtime = self.runtime_key_values();
+                runtime.push(KeyValue {
+                    key: "clientIpv4".into(),
+                    value: local_ip.to_string(),
+                });
+                let init = self
+                    .store
+                    .connection_init_with_runtime(self.config.connection.clone(), runtime)
+                    .ok_or_else(|| failed("legacy manufacturer app init identity could not be resolved"))?;
+                Ok((endpoint, init.packet))
             }
             "pcssKnock" => Err(failed(
                 "PCSS establishment requires discovery before selecting an endpoint",
@@ -474,7 +507,11 @@ impl NativePtpTransport {
                     retries_used == 0,
                 )
                 .await?;
-            if init_ack_is_valid(&self.init_shape, &reply) {
+            let expected_responder_guid = self
+                .store
+                .connection_expected_responder_guid(self.config.connection.clone())
+                .unwrap_or_default();
+            if init_ack_is_valid(&self.init_shape, &reply, &expected_responder_guid) {
                 break;
             }
             let reason = match canonical_init_fail_reason(&reply) {
@@ -506,27 +543,42 @@ impl NativePtpTransport {
             tokio::time::sleep(Duration::from_millis(policy.backoff_ms as u64)).await;
         }
 
-        let open = build_command(self.framing, op::OPEN_SESSION, 1, vec![1])
-            .map_err(|error| EstablishConnectedError::protocol(failed(error.to_string())))?;
-        self.timed_write(&channel, open, "command", "OpenSession write")
+        let mut response = self
+            .session_command(&channel, op::OPEN_SESSION, 1, vec![1], "OpenSession")
             .await
             .map_err(EstablishConnectedError::protocol)?;
-        let response = self
-            .timed_read(
-                &channel,
-                self.config.max_frame_bytes,
-                "command",
-                "OpenSession response",
-            )
-            .await
-            .map_err(EstablishConnectedError::protocol)?;
-        let response = parse_response(self.framing, response)
-            .map_err(|error| EstablishConnectedError::protocol(failed(error.to_string())))?;
-        if response.txn != 1 {
-            return Err(EstablishConnectedError::protocol(failed(format!(
-                "OpenSession response transaction {} != 1",
-                response.txn
-            ))));
+        if response.response_code == resp::SESSION_ALREADY_OPEN {
+            self.trace
+                .session(
+                    "sessionAlreadyOpen",
+                    json!({ "recovery": "close-and-retry", "retry": 1 }),
+                )
+                .map_err(trace_error)
+                .map_err(EstablishConnectedError::protocol)?;
+            let close = self
+                .session_command(
+                    &channel,
+                    op::CLOSE_SESSION,
+                    2,
+                    Vec::new(),
+                    "CloseSession recovery",
+                )
+                .await
+                .map_err(EstablishConnectedError::protocol)?;
+            if close.response_code != resp::OK {
+                return Err(EstablishConnectedError::protocol(failed(format!(
+                    "CloseSession recovery returned 0x{:04x}",
+                    close.response_code
+                ))));
+            }
+            response = self
+                .session_command(&channel, op::OPEN_SESSION, 1, vec![1], "OpenSession retry")
+                .await
+                .map_err(EstablishConnectedError::protocol)?;
+            // legacy manufacturer app resets its PTP transaction counter before every
+            // OpenSession call: the retry is transaction 1 and the next command
+            // starts at 2 again.
+            channel.next_tid.store(2, Ordering::Release);
         }
         let opened = PtpSessionOpenResult {
             transaction_id: response.txn,
@@ -540,6 +592,37 @@ impl NativePtpTransport {
             ))));
         }
         Ok((channel, opened))
+    }
+
+    async fn session_command(
+        &self,
+        channel: &CommandChannel,
+        operation: u16,
+        transaction_id: u32,
+        params: Vec<u32>,
+        stage: &str,
+    ) -> Result<ResponseFrame, PtpTransportError> {
+        let frame = build_command(self.framing, operation, transaction_id, params)
+            .map_err(|error| failed(error.to_string()))?;
+        self.timed_write(channel, frame, "command", &format!("{stage} write"))
+            .await?;
+        let frame = self
+            .timed_read(
+                channel,
+                self.config.max_frame_bytes,
+                "command",
+                &format!("{stage} response"),
+            )
+            .await?;
+        let response =
+            parse_response(self.framing, frame).map_err(|error| failed(error.to_string()))?;
+        if response.txn != transaction_id {
+            return Err(failed(format!(
+                "{stage} response transaction {} != {transaction_id}",
+                response.txn
+            )));
+        }
+        Ok(response)
     }
 
     async fn pcss_connected_target(&self) -> Result<PcssConnectedTarget, PtpTransportError> {
@@ -1520,11 +1603,14 @@ fn pcss_callback_matches(peer: IpAddr, dsc: Ipv4Addr, explicit_target: Option<Ip
     peer == IpAddr::V4(dsc) && explicit_target.is_none_or(|target| target == dsc)
 }
 
-fn init_ack_is_valid(init_shape: &str, packet: &[u8]) -> bool {
-    if init_shape == "pcssKnock" {
-        protocol_primitives::parse_pcss_init_ack(packet).is_ok()
-    } else {
-        protocol_primitives::validate_init_ack(packet).is_ok()
+fn init_ack_is_valid(init_shape: &str, packet: &[u8], expected_responder_guid: &[u8]) -> bool {
+    match init_shape {
+        "pcssKnock" => protocol_primitives::parse_pcss_init_ack(packet).is_ok(),
+        "legacyApp82" => {
+            protocol_primitives::validate_legacy_app_init_ack(packet, expected_responder_guid)
+                .is_ok()
+        }
+        _ => protocol_primitives::validate_init_ack(packet).is_ok(),
     }
 }
 
@@ -1685,11 +1771,11 @@ mod tests {
     fn pcss_init_ack_requires_the_complete_fixed_width_packet() {
         let header_only = [8, 0, 0, 0, 2, 0, 0, 0];
         assert!(protocol_primitives::validate_init_ack(&header_only).is_ok());
-        assert!(!init_ack_is_valid("pcssKnock", &header_only));
+        assert!(!init_ack_is_valid("pcssKnock", &header_only, &[]));
 
         let complete = protocol_primitives::pcss_init_ack_message(7, [0x5a; 16], "GFX100 II")
             .expect("build fixed-width PCSS acknowledgement");
-        assert!(init_ack_is_valid("pcssKnock", &complete));
+        assert!(init_ack_is_valid("pcssKnock", &complete, &[]));
     }
 
     #[test]

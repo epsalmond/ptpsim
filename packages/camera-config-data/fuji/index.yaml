@@ -41,6 +41,7 @@ families:
       gatt:
         # Standard BLE GATT — read triggers the iOS bond prompt.
         protectedSerialString: "00002A25-0000-1000-8000-00805F9B34FB"
+        gapDeviceName: "00002A00-0000-1000-8000-00805F9B34FB"
         # Standard BLE GATT — post-pair firmware version (e.g. "2.30").
         firmwareRevisionString: "00002A26-0000-1000-8000-00805F9B34FB"
         # CHARACTERISTIC_FF_PAIRING_KEY — same UUID, both styles,
@@ -49,6 +50,7 @@ families:
         # CHARACTERISTIC_FF_CONNECTED_DEVICE_NAME_STRING — phone display
         # name written by initiator (e.g. "iphone"). UTF-8 bytes.
         deviceNameString: "85B9163E-62D1-49FF-A6F5-054B4630D4A1"
+        connectedDeviceBleProtocolVersion: "EB4166B0-9CCA-445E-A4E4-75B3817FD57A"
         # CHARACTERISTIC_FF_CONNECTED_DEVICE_IDENTIFICATION_NUMBER —
         # RED-only first-pair read+echo challenge-response. Absent from
         # the discovered characteristic map on LEGACY bodies (reply §5).
@@ -88,11 +90,29 @@ families:
         # Source: client application FujiBLERegistration.swift (iosBLEReg).
         # CHARACTERISTIC_FF_SHOOTING_REQUEST — S1/S2/release state writes.
         shootingRequest: "7FCF49C6-4FF0-4777-A03D-1A79166AF7A8"
+        movieRecordRequest: "861442AB-B94E-4935-90D9-41E291D91374"
         # CHARACTERISTIC_FF_UTC_AND_TIMEZONE — 12-byte clock/timezone write.
         utcAndTimezone: "C52EDBCE-1FE2-4ECC-9483-907E6592BE9E"
         # CHARACTERISTIC_FF_LOCATION_AND_SPEED — 23-byte GPS write (payload
         # wire-verified, operators 2026-05-01 reference app run).
         locationAndSpeed: "0F36EC14-29E5-411A-A1B6-64EE8383F090"
+
+        # Legacy legacy manufacturer app registration queue (X-A7 generation). These
+        # characteristics and their exact order come from legacy manufacturer app 4.10.2,
+        # not reference app. Optional reads/subscriptions remain tolerant because the app
+        # filters its queues against the discovered service catalog.
+        reservationAfterShooting: "BD45F887-A6BE-4CB7-8565-390DF38BF5BF"
+        pairedSmartDeviceCount: "8814441B-1D7B-4046-891D-D8F80864CC8E"
+        lensProductName: "68887A7A-10A7-4A4A-AADD-6F9DB1ABAA0E"
+        lensFirmwareVersion: "621A98D8-6314-4C3E-A683-EEA1D6166606"
+        wakeupMode: "9C72C205-5740-4F17-9949-0D3FADF2F67A"
+        startupValue: "4BF16F6D-7264-4E76-B0D2-52CDE16D2C7D"
+        disconnectedReason: "7EDE1988-B27E-43FC-80F4-6FEC994F0552"
+        cardState: "34D8C8DE-E2A9-43FF-822C-7D945DD8D8E1"
+        movieButton: "CAE8C738-4BB6-4605-98C1-58331C87F3B6"
+        cameraBleProtocolVersion: "389363E4-712E-4CF2-A72E-BFCF7FB6ADC1"
+        firmwareUpdateState: "049EC406-EF75-4205-A390-08FE209C51F0"
+        firmwareUpdateRequest: "B1307521-7AC5-4199-AAEE-9D094781CE69"
 
         # Settings backup/restore characteristics (#112). The cameraSettings
         # blob is transferred in framed chunks over BLE — see the settings-backup
@@ -503,6 +523,108 @@ families:
             - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
             - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
 
+        # Legacy legacy manufacturer app 4.10.2 registration. This is deliberately a
+        # separate establishment from the reference app family path above: X-A7 is not an
+        # reference app-supported body and its queue ordering, MTU pacing, CCCD modes,
+        # and AP-state values differ.
+        legacy-app-pair:
+          mechanism: legacy-app-pair
+          persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
+          activities:
+            - id: camera.remote.registration
+              version: 1
+              displayRole: confirmingPairing
+              defaultExpectedDurationMs: 12000
+              interactionRequired: true
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 30 }
+          steps: &legacyAppRegistrationSteps
+            - bleConnect: {}
+            - bleDelay: { durationMs: 600 }
+            - bleRequestMtu: { mtu: 515 }
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: pairingKey, value: { captured: pairingKeyBytes } }
+            - bleWrite:
+                gatt: deviceNameString
+                value: { runtime: terminalName, encoding: utf8, transform: { appendNul: {} } }
+            - bleWrite:
+                gatt: connectedDeviceBleProtocolVersion
+                value: { literal: "0200" }
+                tolerant: true
+            - bleRead: { gatt: gapDeviceName, encoding: utf8-cstring, captureAs: cameraName }
+            # GAP-name completion starts this idempotent second name write while
+            # the app's read queue continues.
+            - bleWrite:
+                gatt: deviceNameString
+                value: { runtime: terminalName, encoding: utf8, transform: { appendNul: {} } }
+            - bleRead: { gatt: protectedSerialString, encoding: utf8-cstring, captureAs: cameraSerial }
+            - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
+            - bleRead: { gatt: reservationAfterShooting, encoding: bytes, captureAs: reservationAfterShooting }
+            - bleRead: { gatt: pairedSmartDeviceCount, encoding: bytes, captureAs: pairedSmartDeviceCount }
+            - bleRead: { gatt: firmwareRevisionString, encoding: utf8-cstring, captureAs: firmware }
+            - bleRead: { gatt: lensProductName, encoding: utf8-cstring, captureAs: lensProductName, tolerant: true }
+            - bleRead: { gatt: lensFirmwareVersion, encoding: utf8-cstring, captureAs: lensFirmware, tolerant: true }
+            - bleRead: { gatt: wakeupMode, encoding: bytes, captureAs: wakeupMode, tolerant: true }
+            - bleRead: { gatt: startupValue, encoding: bytes, captureAs: startupValue, tolerant: true }
+            - bleRead: { gatt: disconnectedReason, encoding: bytes, captureAs: disconnectedReason, tolerant: true }
+            - bleRead: { gatt: cardState, encoding: bytes, captureAs: cardState, tolerant: true }
+            - bleRead: { gatt: movieButton, encoding: bytes, captureAs: movieButton, tolerant: true }
+            - bleRead: { gatt: cameraBleProtocolVersion, encoding: u16-le, captureAs: cameraBleProtocolVersion, tolerant: true }
+            - bleSubscribe: { gatt: cameraSSIDNameString, timeoutMs: 3000, mode: indicate, tolerant: true }
+            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
+            - bleSubscribe: { gatt: transferState, timeoutMs: 3000, mode: indicate, tolerant: true }
+            - bleSubscribe: { gatt: dateSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
+            - bleSubscribe: { gatt: locationSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
+            - bleSubscribe: { gatt: firmwareUpdateState, timeoutMs: 3000, mode: indicate, tolerant: true }
+            - bleRead: { gatt: apState, encoding: u16-le, captureAs: apState }
+            - bleRead: { gatt: transferState, encoding: u16-le, captureAs: transferState, tolerant: true }
+
+        # A saved X-A7 record replays the exact same application registration
+        # queue with its persisted four raw key bytes; legacy manufacturer app does not
+        # have reference app's shortened warm-resume choreography.
+        legacy-app-reconnect:
+          mechanism: legacy-app-reconnect
+          persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
+          activities:
+            - id: camera.remote.reconnect
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 12000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 30 }
+          steps: *legacyAppRegistrationSteps
+
+        legacy-app-establish-wifi-ap:
+          mechanism: legacy-app-establish-wifi-ap
+          prerequisite: legacy-app-pair
+          onDemand: true
+          params: [launchMode]
+          persist: [ssid]
+          activities:
+            - id: camera.remote.ap-launch
+              version: 1
+              displayRole: startingNetwork
+              defaultExpectedDurationMs: 20000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 6 }
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            # No pre-read baseline and no reference app 0x8000 state family: Camera
+            # Remote subscribes, writes launch, then accepts u16-le state 1.
+            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
+            - bleWrite:
+                gatt: functionLaunchRequest
+                value: { runtime: launchMode, encoding: u16-le }
+                notificationFence: apState
+            - bleAwaitUntil:
+                source: { notify: { gatt: apState, mode: indicate } }
+                capture: { at: 0, length: 2, encoding: u16-le, name: apState }
+                captureAs: apStateRaw
+                until: { apState: { eq: "1" } }
+                failWhen: { apState: { eq: "0" } }
+                timeoutMs: 20000
+            - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
+
       # BLE-native control actions runnable from the resting BLE link without
       # Wi-Fi (#91). Source: client application FujiBLERegistration.swift (iosBLEReg);
       # GPS payload wire-verified (operators 2026-05-01). The cameraSettings
@@ -550,6 +672,15 @@ families:
             - bleWrite: { gatt: shootingRequest, value: { literal: "0200" } }   # S2 hold
             - bleWrite: { gatt: shootingRequest, value: { literal: "0100" } }   # S1 return
             - bleWrite: { gatt: shootingRequest, value: { literal: "0000" } }   # S0 release
+
+        # legacy manufacturer app's movie button is a one-way value-1 write on a separate
+        # characteristic. It is not the reference app remote-control protocol.
+        legacy-app-movie-record:
+          evidence: [legacyApp4102Static]
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: movieRecordRequest, value: { literal: "0100" } }
 
         # Clock/timezone write. The host packs the 12-byte payload (year u16-le,
         # month, day, hour, min, sec, tz-HHMM i32-le, DST flag) — its own clock —
@@ -801,6 +932,74 @@ models:
           style: "red"
         suggests: { connection: ble, confidence: high }
 
+  # X-A7 uses the legacy legacy manufacturer app application protocol. Keep this specific
+  # signature ahead of the family fallback so new pairings migrate from the old
+  # `fuji-generic` classification to the dedicated manifest. Existing saved
+  # generic records are intentionally not re-keyed; users delete and pair the
+  # X-A7 once so the dedicated route can be selected.
+  - id: xa7
+    displayName: "X-A7"
+    inherits: [fuji]
+    manifest: xa7/xa7.yaml
+    signatures:
+      bleXa7PairingAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 5
+                assertBits: { offset: 0, mask: 0x03, equals: 0x02 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
+            - localName: { contains: "X-A7-" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope: { style: legacy-legacy-app }
+        suggests: { connection: ble, confidence: high }
+
+      # Bit 0 announces a four-byte prefix before the key; bit 1 says the key
+      # follows. legacy manufacturer app accepts both bitfield layouts.
+      bleXa7PrefixedPairingAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 9
+                assertBits: { offset: 0, mask: 0x03, equals: 0x03 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
+            - localName: { contains: "X-A7-" }
+        capture:
+          - { source: manufacturerData, at: 5, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope: { style: legacy-legacy-app }
+        suggests: { connection: ble, confidence: high }
+
+      bleXa7KeylessReconnectAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
+            - localName: { contains: "X-A7-" }
+            - any:
+                - not:
+                    manufacturerData:
+                      companyId: "{ble.advert.manufacturerCompanyId}"
+                - manufacturerData:
+                    companyId: "{ble.advert.manufacturerCompanyId}"
+                    minLength: 1
+                    assertBits: { offset: 0, mask: 0x02, equals: 0x00 }
+        capture:
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope: { style: legacy-legacy-app }
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: ready
+          mechanism: legacy-app-reconnect
+          identity: [shortSerial]
+
   # FAMILY-BASELINE model (ptpsim#311). Declared LAST so file-declaration-order
   # precedence (§11.7) keeps every specific model's signatures ahead of these
   # name-guard-free family shapes. `fallback: true` marks it as the baseline;
@@ -823,10 +1022,11 @@ models:
   # per-model walk stops at the first match, so a reconnect state that also
   # matched a pairing-mode advert would make fresh bodies invisible.
   #
-  # Evidence scoping: every Fuji body advertises and connects the same way
-  # (product decision, #311). The pairing shapes are multi-body evidenced
-  # (GFX100 II captures + X-A7 field captures #306 + the body-agnostic reference app RE
-  # §2 detection rules). The reconnect-state shapes are observed on GFX100 II
+  # Evidence scoping: the legacy pairing-advert shape is multi-body evidenced
+  # (GFX100 II captures + X-A7 field captures #306), but that does not imply the
+  # same post-discovery registration or application protocol. reference app RE backs only
+  # its supported bodies and is not evidence for the X-A7 application protocol.
+  # The reconnect-state shapes are observed on GFX100 II
   # only (#264) and generalized family-wide per the #311 decision — pending
   # captures from other bonded bodies (#309 tracks gathering them).
   - id: fuji-generic

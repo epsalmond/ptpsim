@@ -336,7 +336,7 @@ impl Ctx<'_> {
             if actual == cond.equals {
                 self.walk_steps(&cond.then_steps, &format!("{here}.then"))
             } else {
-                Ok(())
+                self.walk_steps(&cond.else_steps, &format!("{here}.else"))
             }
         } else {
             Err(err("step sets no action verb".into()))
@@ -1397,6 +1397,7 @@ properties: {}
                         value: Some(13),
                         ..Default::default()
                     }],
+                    else_steps: Vec::new(),
                 }),
                 ..Default::default()
             },
@@ -1440,6 +1441,7 @@ properties: {}
                         value: Some(17),
                         ..Default::default()
                     }],
+                    else_steps: Vec::new(),
                 }),
                 ..Default::default()
             },
@@ -1486,6 +1488,7 @@ properties: {}
                         value: Some(11),
                         ..Default::default()
                     }],
+                    else_steps: Vec::new(),
                 }),
                 ..Default::default()
             },

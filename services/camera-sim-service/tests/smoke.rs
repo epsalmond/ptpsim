@@ -7,7 +7,10 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 
 use camera_sim_service::{Config, Server};
-use protocol_primitives::{build_app_init, fuji_framing, parse_pcss_init_ack};
+use protocol_primitives::{
+    build_legacy_app_init, build_app_init, fuji_framing, parse_pcss_init_ack, usb_ptp,
+    validate_legacy_app_init_ack,
+};
 use ptp_core::{PtpCodec, PtpIpPacket};
 
 const MANIFEST: &str = r#"
@@ -120,6 +123,149 @@ fn pcss_init_frame(hostname: &str) -> Vec<u8> {
         off += 2;
     }
     bytes
+}
+
+#[test]
+fn simulator_rejects_unsupported_init_shape_before_listening() {
+    let root = tmp_card();
+    let manifest = MANIFEST.replacen("initShape: app82", "initShape: unknown82", 1);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let result = runtime.block_on(Server::bind(Config {
+        instance_id: "invalid-shape".into(),
+        profile: "test".into(),
+        connection: "app".into(),
+        manifest_yaml: manifest,
+        media_root: root.clone(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: None,
+        event_bind: None,
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+        state_callback: None,
+    }));
+    let error = match result {
+        Ok(_) => panic!("unsupported init shape must fail bind"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("unsupported init shape/framing"),
+        "{error}"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn legacy_app_init_and_usb_ptp_list_images_over_loopback() {
+    const RESPONDER: [u8; 16] = [
+        0x08, 0x70, 0xb0, 0x61, 0x0a, 0x8b, 0x45, 0x93, 0xb2, 0xe7, 0x93, 0x57, 0xdd, 0x36, 0xe0,
+        0x50,
+    ];
+    const CAMERA_REMOTE_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: X-A7 }
+values:
+  unusedGuid: { type: fixed, value: "f2e4538fada5485d87b27f0bd3d5ded0" }
+  unusedName: { type: fixed, value: ptpsim }
+  unusedClientIpv4: { type: client-derived, runtime: clientIpv4 }
+  legacyAppResponderGuid: { type: fixed, value: "0870b0610a8b4593b2e79357dd36e050" }
+connections:
+  legacy-app:
+    kind: ptpip-legacy-app
+    initShape: legacyApp82
+    init:
+      identity: { guid: unusedGuid, friendlyName: unusedName, clientIpv4: unusedClientIpv4 }
+      nameFieldByteCount: 54
+      expectedResponderGuid: legacyAppResponderGuid
+    initRetries: { max: 5, backoffMs: 500, whenReasons: ["0x2019"] }
+    commandFraming: usb
+    bindings: { command: 55740 }
+operations:
+  "0x1002": { name: OpenSession, connections: [legacy-app] }
+  "0x1007": { name: GetObjectHandles, connections: [legacy-app] }
+properties: {}
+"#;
+
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let server = Server::bind(Config {
+            instance_id: "legacy-app-test".into(),
+            profile: "fuji/xa7/static".into(),
+            connection: "legacy-app".into(),
+            manifest_yaml: CAMERA_REMOTE_MANIFEST.into(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 1,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .unwrap();
+        let command = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(server.run(rx));
+        (command, tx, task)
+    });
+
+    let mut stream = TcpStream::connect(command_addr).unwrap();
+    let init = build_legacy_app_init(
+        &[
+            0xf2, 0xe4, 0x53, 0x8f, 0xad, 0xa5, 0x48, 0x5d, 0x87, 0xb2, 0x7f, 0x0b, 0xd3, 0xd5,
+            0xde, 0xd0,
+        ],
+        "127.0.0.1".parse().unwrap(),
+        "ptpsim",
+    )
+    .unwrap();
+    write_frame(&mut stream, &init);
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut stream)).unwrap(),
+        PtpIpPacket::InitFail(failure) if failure.reason == 0x2019
+    ));
+    write_frame(&mut stream, &init);
+    validate_legacy_app_init_ack(&read_frame(&mut stream), &RESPONDER).unwrap();
+
+    let open = PtpIpPacket::OperationRequest(ptp_core::OperationRequest {
+        data_phase_info: 1,
+        code: 0x1002,
+        transaction_id: 1,
+        params: vec![1],
+    });
+    write_frame(&mut stream, &usb_ptp::encode(&open).unwrap());
+    assert!(matches!(
+        usb_ptp::decode(&read_frame(&mut stream)).unwrap(),
+        PtpIpPacket::OperationResponse(response) if response.code == 0x2001
+    ));
+
+    let list = PtpIpPacket::OperationRequest(ptp_core::OperationRequest {
+        data_phase_info: 1,
+        code: 0x1007,
+        transaction_id: 2,
+        params: vec![0xffff_ffff, 0],
+    });
+    write_frame(&mut stream, &usb_ptp::encode(&list).unwrap());
+    let payload = match usb_ptp::decode(&read_frame(&mut stream)).unwrap() {
+        PtpIpPacket::Data(data) => data.payload,
+        other => panic!("expected USB data container, got {other:?}"),
+    };
+    let mut reader = ptp_core::Reader::new(&payload);
+    assert_eq!(reader.ptp_array(|reader| reader.u32()).unwrap().len(), 1);
+    assert!(matches!(
+        usb_ptp::decode(&read_frame(&mut stream)).unwrap(),
+        PtpIpPacket::OperationResponse(response) if response.code == 0x2001
+    ));
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
+    std::fs::remove_dir_all(&root).ok();
 }
 
 fn connect_pcss(command_addr: std::net::SocketAddr, hostname: &str) -> TcpStream {

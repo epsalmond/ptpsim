@@ -32,6 +32,7 @@ fn real_index() -> ResolvedManufacturerIndex {
 fn real_fuji_bodies() -> BTreeMap<String, String> {
     BTreeMap::from([
         ("gfx100ii".to_string(), data("fuji/gfx100ii/gfx100ii.yaml")),
+        ("xa7".to_string(), data("fuji/xa7/xa7.yaml")),
         (
             "fuji-generic".to_string(),
             data("fuji/fuji-generic/fuji-generic.yaml"),
@@ -565,16 +566,22 @@ fn config_store_loads_real_fuji_index_with_real_body() {
         .expect("loads");
     let index = store.index.as_ref().expect("index populated");
     assert_eq!(index.manufacturer, "FUJIFILM");
-    assert_eq!(index.models.len(), 2);
+    assert_eq!(index.models.len(), 3);
     assert_eq!(index.models[0].id, "gfx100ii");
-    assert_eq!(index.models[1].id, "fuji-generic");
+    assert_eq!(index.models[1].id, "xa7");
+    assert_eq!(index.models[2].id, "fuji-generic");
     // The family-baseline model carries the fallback marker; the specific model
     // does not (#311).
     assert!(!index.models[0].fallback);
-    assert!(index.models[1].fallback);
+    assert!(!index.models[1].fallback);
+    assert!(index.models[2].fallback);
     // Body lookup works.
     let body = store.body("gfx100ii").expect("body present");
     assert_eq!(body.camera.model, "GFX100 II");
+    assert_eq!(
+        store.body("xa7").expect("body present").camera.model,
+        "X-A7"
+    );
     assert_eq!(
         store
             .body("fuji-generic")

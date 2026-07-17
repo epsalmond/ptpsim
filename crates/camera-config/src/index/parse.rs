@@ -370,7 +370,11 @@ fn resolve_gatt_names_in_steps(
         let verb = verb_key.as_str().unwrap_or("");
         let here = format!("{path_ctx}[{i}].{verb}");
         match verb {
-            "bleConnect" | "bleAwaitDisconnect" | "bleRequestMtu" | "bleDiscoverServices" => {}
+            "bleConnect"
+            | "bleDelay"
+            | "bleAwaitDisconnect"
+            | "bleRequestMtu"
+            | "bleDiscoverServices" => {}
             "bleRead" | "bleWrite" | "bleSubscribe" | "bleNotify" | "bleWriteChunk" => {
                 resolve_gatt_field(body, gatt, &here)?;
                 if verb == "bleWrite" {
@@ -455,7 +459,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry)"),
+                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry)"),
                 });
             }
         }
@@ -787,6 +791,14 @@ fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
             return Err(ConfigError::Validation {
                 path: format!("{path}.timeoutMs"),
                 message: "bleAwaitDisconnect timeoutMs must be > 0".to_string(),
+            });
+        }
+    }
+    if let Step::BleDelay(s) = step {
+        if s.duration_ms == 0 {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.durationMs"),
+                message: "bleDelay durationMs must be > 0".to_string(),
             });
         }
     }
@@ -1212,6 +1224,9 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleConnect" => Ok(Step::BleConnect(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleConnect", e))?,
             )),
+            "bleDelay" => Ok(Step::BleDelay(
+                serde_yaml::from_value(body).map_err(|e| dec_err("bleDelay", e))?,
+            )),
             "bleAwaitDisconnect" => Ok(Step::BleAwaitDisconnect(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleAwaitDisconnect", e))?,
             )),
@@ -1252,7 +1267,7 @@ impl<'de> serde::Deserialize<'de> for Step {
                 serde_yaml::from_value(body).map_err(|e| dec_err("retry", e))?,
             )),
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (allowlist: bleConnect, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry)"
             ))),
         }
     }
@@ -1391,6 +1406,10 @@ impl<'de> serde::Deserialize<'de> for super::types::Transform {
                 empty_body(&val)?;
                 Ok(Transform::ReverseBytes)
             }
+            "appendNul" => {
+                empty_body(&val)?;
+                Ok(Transform::AppendNul)
+            }
             "uuidFromBytes" => {
                 empty_body(&val)?;
                 Ok(Transform::UuidFromBytes)
@@ -1435,7 +1454,7 @@ impl<'de> serde::Deserialize<'de> for super::types::Transform {
                 })
             }
             other => Err(D::Error::custom(format!(
-                "unknown transform '{other}' (allowlist: bitOr, bitAnd, slice, dropPrefix, reverseBytes, uuidFromBytes, bits)"
+                "unknown transform '{other}' (allowlist: bitOr, bitAnd, slice, dropPrefix, reverseBytes, appendNul, uuidFromBytes, bits)"
             ))),
         }
     }

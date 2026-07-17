@@ -45,6 +45,18 @@ fn store_with_standard_app_framing() -> Arc<ConfigStore> {
     store_from_body(body)
 }
 
+fn xa7_mode_selection_store() -> Arc<ConfigStore> {
+    let body = data("fuji/xa7/xa7.yaml")
+        .replace("          - { getProp: \"0xdf21\" }\n", "")
+        .replace("          - { setProp: \"0xdf21\", value: 4 }\n", "")
+        .replace("          - { getProp: \"0xdf22\" }\n", "")
+        .replace("          - { setProp: \"0xdf22\", value: 5 }\n", "")
+        .replace("          - { getProp: \"0xdf31\" }\n", "")
+        .replace("          - { setProp: \"0xdf31\", value: 2 }\n", "");
+    ConfigStore::from_bundle(body, Some(data("fuji/fuji.yaml")))
+        .expect("load focused X-A7 mode-selection manifest")
+}
+
 fn body_with_cold_entry_activities() -> String {
     data("fuji/gfx100ii/gfx100ii.yaml").replacen(
         "      - to: shooting/stills          # enter live-view from a cold App connection\n        steps:",
@@ -148,8 +160,9 @@ fn store_with_composite_poll_action() -> Arc<ConfigStore> {
 }
 
 fn store_from_body(body: String) -> Arc<ConfigStore> {
-    ConfigStore::from_manufacturer_index(
+    ConfigStore::from_manufacturer_index_with_defaults(
         common::data("fuji/index.yaml"),
+        common::data("fuji/fuji.yaml"),
         common::real_fuji_bodies_with("gfx100ii", body),
     )
     .expect("GFX store loads")
@@ -243,6 +256,7 @@ struct EngineState {
     replies: VecDeque<Vec<u8>>,
     operations: Vec<u16>,
     requests: Vec<(u16, Vec<u32>)>,
+    data_writes: Vec<(u16, Vec<u32>, Vec<u8>)>,
     opened_channels: Vec<SocketRole>,
     calls: Vec<ExecutorCall>,
     operations_by_tid: BTreeMap<u32, u16>,
@@ -289,6 +303,7 @@ impl EngineTransport {
                 replies: VecDeque::new(),
                 operations: Vec::new(),
                 requests: Vec::new(),
+                data_writes: Vec::new(),
                 opened_channels: Vec::new(),
                 calls: Vec::new(),
                 operations_by_tid: BTreeMap::new(),
@@ -326,6 +341,19 @@ impl EngineTransport {
                 *candidate == operation && candidate_params == params
             })
             .count()
+    }
+
+    fn data_writes(&self, operation: u16, params: &[u32]) -> Vec<Vec<u8>> {
+        self.state
+            .lock()
+            .expect("state")
+            .data_writes
+            .iter()
+            .filter(|(candidate, candidate_params, _)| {
+                *candidate == operation && candidate_params == params
+            })
+            .map(|(_, _, payload)| payload.clone())
+            .collect()
     }
 
     fn first_handle(&self) -> u32 {
@@ -432,12 +460,15 @@ impl EngineTransport {
                         ))?);
                     }
                 }
-                PtpFraming::Usb => state.replies.push_back(self.encode(&PtpIpPacket::Data(
-                    ptp_core::DataBlock {
-                        transaction_id: request.transaction_id,
-                        payload,
-                    },
-                ))?),
+                PtpFraming::Usb => {
+                    state
+                        .replies
+                        .push_back(protocol_primitives::usb_ptp::encode_data(
+                            request.code,
+                            request.transaction_id,
+                            &payload,
+                        ))
+                }
             }
             Ok(())
         };
@@ -544,6 +575,11 @@ impl PtpExecutorTransport for EngineTransport {
                 pending.payload.extend_from_slice(&data.payload);
                 if !matches!(self.framing, PtpFraming::Standard) {
                     let pending = state.pending_data_out.take().expect("checked above");
+                    state.data_writes.push((
+                        pending.request.code,
+                        pending.request.params.clone(),
+                        pending.payload.clone(),
+                    ));
                     let reply = state
                         .engine
                         .on_operation(&pending.request, Some(&pending.payload));
@@ -569,6 +605,11 @@ impl PtpExecutorTransport for EngineTransport {
                         detail: "standard data-out length mismatch".into(),
                     });
                 }
+                state.data_writes.push((
+                    pending.request.code,
+                    pending.request.params.clone(),
+                    pending.payload.clone(),
+                ));
                 let reply = state
                     .engine
                     .on_operation(&pending.request, Some(&pending.payload));
@@ -718,6 +759,49 @@ fn real_gfx_cold_entry_runs_in_manifest_wire_order() {
     assert_eq!(outcome.steps_run, 7);
     assert_eq!(reports.0.lock().expect("reports").len(), 14);
     assert!(activities.0.lock().expect("activities").is_empty());
+}
+
+#[test]
+fn xa7_neutral_mode_entries_write_exactly_one_selected_function_mode() {
+    let store = xa7_mode_selection_store();
+    for (target, function_mode, expected) in [
+        ("photo-receiver", 4u16, 8u16),
+        ("photo-receiver", 6, 8),
+        ("photo-receiver", 7, 1),
+        ("photo-viewer", 4, 9),
+        ("photo-viewer", 6, 9),
+        ("photo-viewer", 7, 2),
+        ("gps-assist", 4, 10),
+        ("gps-assist", 6, 10),
+        ("gps-assist", 7, 17),
+    ] {
+        let transport = Arc::new(EngineTransport::new(
+            "app",
+            PtpFraming::Usb,
+            PtpFraming::Usb,
+        ));
+        transport.override_next_data(
+            ptp_core::codes::op::GET_DEVICE_PROP_VALUE,
+            vec![0xdf00],
+            function_mode.to_le_bytes().to_vec(),
+        );
+        block_on(run_mode_entry(
+            Arc::clone(&store),
+            "legacy-app".into(),
+            None,
+            target.into(),
+            transport.clone(),
+            Arc::new(Reports::default()),
+            Arc::new(Activities::default()),
+            Vec::new(),
+        ))
+        .unwrap_or_else(|error| panic!("{target} DF00={function_mode}: {error}"));
+        assert_eq!(
+            transport.data_writes(ptp_core::codes::op::SET_DEVICE_PROP_VALUE, &[0xdf01]),
+            vec![expected.to_le_bytes().to_vec()],
+            "{target} DF00={function_mode}"
+        );
+    }
 }
 
 #[test]

@@ -1260,6 +1260,13 @@ async fn run_step_once(
             .map_err(op_err)?;
             Ok(None)
         }
+        Step::BleDelay(s) => {
+            ctx.transport
+                .sleep(s.duration_ms)
+                .await
+                .map_err(|error| StepError::transport(here, error))?;
+            Ok(None)
+        }
         Step::BleAwaitDisconnect(s) => {
             deadline(ctx.transport, s.timeout_ms, "awaitDisconnect", async {
                 ctx.transport.await_disconnect().await
@@ -2138,8 +2145,8 @@ fn summarize_observations(observations: &[String]) -> String {
 mod tests {
     use super::*;
     use camera_config::index::{
-        AcquireFirmwareStep, AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleReadStep,
-        BleRequestMtuStep, BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate,
+        AcquireFirmwareStep, AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleDelayStep,
+        BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate,
         RetryFailureKind, RetryStep, StepOptions,
     };
     use std::collections::VecDeque;
@@ -2395,6 +2402,26 @@ mod tests {
 
     fn block_on<T>(fut: impl Future<Output = T>) -> T {
         futures::executor::block_on(fut)
+    }
+
+    #[test]
+    fn manifest_delay_uses_transport_clock_once() {
+        let sleep_log = Arc::new(Mutex::new(Vec::new()));
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            sleep_log: sleep_log.clone(),
+            ..Default::default()
+        });
+        let mut context = ctx(&transport, &observer);
+        block_on(walk_plan(
+            &mut context,
+            vec![Step::BleDelay(BleDelayStep {
+                duration_ms: 600,
+                opts: StepOptions::default(),
+            })],
+        ))
+        .unwrap();
+        assert_eq!(*sleep_log.lock().unwrap(), vec![600]);
     }
 
     #[test]

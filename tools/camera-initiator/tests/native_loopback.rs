@@ -164,6 +164,161 @@ async fn receive_discovery_and_notify(
     assert!(acknowledged > 0, "callback acknowledgement was empty");
 }
 
+#[cfg(target_os = "linux")]
+async fn read_declared_frame(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut header = [0u8; 4];
+    tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut header))
+        .await
+        .expect("wait for frame header")
+        .expect("read frame header");
+    let length = u32::from_le_bytes(header) as usize;
+    assert!(length >= 4, "invalid declared frame length {length}");
+    let mut frame = vec![0u8; length];
+    frame[..4].copy_from_slice(&header);
+    tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut frame[4..]))
+        .await
+        .expect("wait for frame body")
+        .expect("read frame body");
+    frame
+}
+
+#[cfg(target_os = "linux")]
+fn usb_response(code: u16, transaction_id: u32) -> Vec<u8> {
+    protocol_primitives::usb_ptp::encode(&ptp_core::PtpIpPacket::OperationResponse(
+        ptp_core::OperationResponse {
+            code,
+            transaction_id,
+            params: Vec::new(),
+        },
+    ))
+    .expect("encode USB response")
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn legacy_app_recovers_stale_session_and_sends_close_sentinel() {
+    const RESPONDER: [u8; 16] = [
+        0x08, 0x70, 0xb0, 0x61, 0x0a, 0x8b, 0x45, 0x93, 0xb2, 0xe7, 0x93, 0x57, 0xdd, 0x36, 0xe0,
+        0x50,
+    ];
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind legacy manufacturer app loopback listener");
+    let command = listener.local_addr().expect("loopback command address");
+    let body = replace_once(
+        data("fuji/xa7/xa7.yaml"),
+        "command: 55740",
+        format!("command: {}", command.port()),
+    );
+    let store = ConfigStore::from_tiers(body, Some(data("fuji/fuji.yaml")), Vec::<String>::new())
+        .expect("load X-A7 legacy manufacturer app manifest");
+
+    let camera_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept command socket");
+        let init = read_declared_frame(&mut socket).await;
+        assert_eq!(&init[..8], &[82, 0, 0, 0, 1, 0, 0, 0]);
+
+        // Keep the post-GUID bytes deliberately non-PCSS-shaped: legacy manufacturer app
+        // constrains only length, type, and responder GUID.
+        let mut ack = vec![0xa5; 68];
+        ack[0..4].copy_from_slice(&68u32.to_le_bytes());
+        ack[4..8].copy_from_slice(&2u32.to_le_bytes());
+        ack[8..12].copy_from_slice(&1u32.to_le_bytes());
+        ack[12..28].copy_from_slice(&RESPONDER);
+        socket.write_all(&ack).await.expect("write init ack");
+
+        let open = protocol_primitives::usb_ptp::decode(&read_declared_frame(&mut socket).await)
+            .expect("decode first OpenSession");
+        assert!(matches!(
+            open,
+            ptp_core::PtpIpPacket::OperationRequest(ref request)
+                if request.code == ptp_core::codes::op::OPEN_SESSION
+                    && request.transaction_id == 1
+        ));
+        socket
+            .write_all(&usb_response(
+                ptp_core::codes::resp::SESSION_ALREADY_OPEN,
+                1,
+            ))
+            .await
+            .expect("write SessionAlreadyOpen");
+
+        let close = protocol_primitives::usb_ptp::decode(&read_declared_frame(&mut socket).await)
+            .expect("decode recovery CloseSession");
+        assert!(matches!(
+            close,
+            ptp_core::PtpIpPacket::OperationRequest(ref request)
+                if request.code == ptp_core::codes::op::CLOSE_SESSION
+                    && request.transaction_id == 2
+        ));
+        socket
+            .write_all(&usb_response(ptp_core::codes::resp::OK, 2))
+            .await
+            .expect("ack recovery CloseSession");
+
+        let retry = protocol_primitives::usb_ptp::decode(&read_declared_frame(&mut socket).await)
+            .expect("decode retried OpenSession");
+        assert!(matches!(
+            retry,
+            ptp_core::PtpIpPacket::OperationRequest(ref request)
+                if request.code == ptp_core::codes::op::OPEN_SESSION
+                    && request.transaction_id == 1
+        ));
+        socket
+            .write_all(&usb_response(ptp_core::codes::resp::OK, 1))
+            .await
+            .expect("ack retried OpenSession");
+
+        let cleanup = protocol_primitives::usb_ptp::decode(&read_declared_frame(&mut socket).await)
+            .expect("decode cleanup CloseSession");
+        assert!(matches!(
+            cleanup,
+            ptp_core::PtpIpPacket::OperationRequest(ref request)
+                if request.code == ptp_core::codes::op::CLOSE_SESSION
+                    && request.transaction_id == 2
+        ));
+        socket
+            .write_all(&usb_response(ptp_core::codes::resp::OK, 2))
+            .await
+            .expect("ack cleanup CloseSession");
+        assert_eq!(
+            read_declared_frame(&mut socket).await,
+            vec![0x08, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]
+        );
+    });
+
+    let trace_buffer = TraceBuffer::default();
+    let transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "legacy-app".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::new(TraceWriter::new(
+            TraceFormat::Jsonl,
+            Box::new(trace_buffer.clone()),
+        )),
+    )
+    .expect("construct legacy manufacturer app transport");
+    let opened = transport
+        .open_command_session()
+        .await
+        .expect("recover stale legacy manufacturer app session");
+    assert_eq!(opened.transaction_id, 1);
+    transport
+        .close_session_if_open()
+        .await
+        .expect("send orderly legacy manufacturer app cleanup");
+    camera_task.await.expect("join legacy manufacturer app responder");
+    assert!(trace_buffer.records().iter().any(|record| {
+        record.get("state").and_then(serde_json::Value::as_str) == Some("sessionAlreadyOpen")
+    }));
+}
+
 #[tokio::test]
 async fn native_transport_runs_real_gfx_entry_over_tcp() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");

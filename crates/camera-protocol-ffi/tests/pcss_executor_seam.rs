@@ -10,9 +10,11 @@ use futures::executor::block_on;
 use ptp_core::{InitFail, PtpCodec, PtpIpPacket};
 
 const INDEX: &str = include_str!("../../../packages/camera-config-data/fuji/index.yaml");
+const MANUFACTURER: &str = include_str!("../../../packages/camera-config-data/fuji/fuji.yaml");
 const BODY: &str = include_str!("../../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml");
 const GENERIC_BODY: &str =
     include_str!("../../../packages/camera-config-data/fuji/fuji-generic/fuji-generic.yaml");
+const XA7_BODY: &str = include_str!("../../../packages/camera-config-data/fuji/xa7/xa7.yaml");
 
 #[derive(Default)]
 struct State {
@@ -150,12 +152,17 @@ impl PcssExecutorTransport for FakeTransport {
 }
 
 fn store_with_body(body: &str) -> Arc<ConfigStore> {
-    ConfigStore::from_manufacturer_index(
+    ConfigStore::from_manufacturer_index_with_defaults(
         INDEX.into(),
+        MANUFACTURER.into(),
         vec![
             KeyValue {
                 key: "gfx100ii".into(),
                 value: body.into(),
+            },
+            KeyValue {
+                key: "xa7".into(),
+                value: XA7_BODY.into(),
             },
             KeyValue {
                 key: "fuji-generic".into(),

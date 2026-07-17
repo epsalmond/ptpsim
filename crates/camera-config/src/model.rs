@@ -1137,6 +1137,14 @@ pub struct ConnectionTransition {
     pub mechanism: Option<String>,
     #[serde(default)]
     pub user_instruction: Option<String>,
+    /// Optional target mode this establishment edge selects. Multiple edges may
+    /// reach the same connection when the handoff itself carries a feature
+    /// selector (legacy manufacturer app's function-launch request).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Fixed runtime bindings for the target establishment plan.
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
     #[serde(default)]
     pub requires: Option<Predicate>,
 }
@@ -1514,9 +1522,9 @@ pub struct Action {
 
 /// One wire action in a mode-entry sequence. A **closed step vocabulary** (not a
 /// script): exactly one action field is set; `value` parameterizes `setProp`;
-/// `repeat` (default 1) covers bounded loops like the live-view `902B ×4`. No
-/// runtime branches — the day a transition needs "if response X then Y", add a
-/// named action here, never a scripting hook.
+/// `repeat` (default 1) covers bounded loops like the live-view `902B ×4`.
+/// Runtime control flow is limited to the closed `if`/`retry`/`loop` forms below;
+/// manifests cannot inject arbitrary scripting hooks.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Step {
@@ -1645,6 +1653,11 @@ pub struct IfStep {
     pub equals: u64,
     #[serde(default, rename = "then")]
     pub then_steps: Vec<Step>,
+    /// Defaults to empty so existing `if` steps retain their skip-on-false
+    /// behavior. An explicit branch lets a manifest select exactly one wire
+    /// mutation from a captured value without issuing a speculative write.
+    #[serde(default, rename = "else")]
+    pub else_steps: Vec<Step>,
 }
 
 /// Response-selected retry for a logical PTP sequence (§11.21).
@@ -1991,7 +2004,7 @@ pub struct CloseSession {
 /// (resolved via `values:`) framed with a literal vendor tail into the 82-byte
 /// reference app init packet (`fuji_init::build_app_init`). #82.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InitShape {
     /// Named-value refs for the identity slots, resolved via `values:`.
     pub identity: InitIdentity,
@@ -2006,6 +2019,10 @@ pub struct InitShape {
     /// Evidence id(s) backing the tail bytes.
     #[serde(default)]
     pub tail_evidence: Option<String>,
+    /// Optional `values:` key naming the responder GUID an init ack must carry.
+    /// legacy manufacturer app validates this fixed identity before opening a session.
+    #[serde(default)]
+    pub expected_responder_guid: Option<String>,
 }
 
 /// Named-value refs for the [`InitShape`] identity slots.
@@ -2016,6 +2033,10 @@ pub struct InitIdentity {
     pub guid: String,
     /// `values:` key naming the friendly name (e.g. `initFriendlyName`).
     pub friendly_name: String,
+    /// Optional `values:` key naming the route-selected local IPv4 address.
+    /// Present for legacy manufacturer app's 82-byte request; absent for reference app.
+    #[serde(default)]
+    pub client_ipv4: Option<String>,
 }
 
 /// A `send_op` parameter: a literal, or a **named runtime slot** the client fills

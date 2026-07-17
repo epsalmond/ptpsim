@@ -7,8 +7,8 @@ schema: camera-config/v1
 # BLE camera, every firmware"; family `ble-pair` / `ble-establish-wifi-ap`).
 # Recognizing a Fuji advert therefore already tells us how to CONNECT: this body
 # carries only that shared connection stack so an unknown body (GFX100S, X-T4,
-# the X-A7 generation, …) pairs and reaches the family-universal feature slice
-# with zero shipping. A specific body manifest (e.g. gfx100ii) refines this with
+# …) pairs and reaches the family-universal feature slice with zero shipping. A
+# specific body manifest (e.g. gfx100ii or xa7) refines this with
 # body-specific features (operations, properties, live-view, D-codes,
 # expectations); those NEVER gate connection, so none of them belong here.
 #
@@ -17,10 +17,12 @@ schema: camera-config/v1
 #     `fuji:` block in fuji/index.yaml (READ_THIS_FIRST §3 §2 §5).
 #   - reference app Wi-Fi-AP establishment flow (join-confirmation / associate /
 #     session-open host checkpoints): the same reference app reference-app RE the
-#     gfx100ii `app` connection cites (iosStartupSeq / iosFujiPTPIP), which is
-#     the reference-app path for ALL Fuji bodies, not a GFX100 II specific.
+#     gfx100ii `app` connection cites (iosStartupSeq / iosFujiPTPIP), scoped to
+#     bodies reference app supports. It is not evidence for X-A7.
 #   - X-A7 field capture (ptpsim#306): confirms the legacy-pairing advert shape
-#     is body-agnostic (standard 0x02 + 4-byte key; the service UUID varies).
+#     (standard 0x02 + 4-byte key; the service UUID varies), not reference app protocol
+#     compatibility. Records saved as `fuji-generic` before the dedicated X-A7
+#     manifest must be deleted and paired once more to migrate.
 camera:
   manufacturer: FUJIFILM
   model: Fujifilm camera

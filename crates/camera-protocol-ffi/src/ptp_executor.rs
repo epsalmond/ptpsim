@@ -974,6 +974,25 @@ impl PtpCtx {
                         Ok(None)
                     }
                 }
+                EntryStep::IfElse {
+                    slot,
+                    equals,
+                    then_steps,
+                    else_steps,
+                    ..
+                } => {
+                    let actual =
+                        self.bindings.get(slot).copied().ok_or_else(|| {
+                            self.other(here, format!("if slot {slot:?} is unbound"))
+                        })?;
+                    if actual == *equals {
+                        self.walk_steps(then_steps, &format!("{here}.then"), false)
+                            .await
+                    } else {
+                        self.walk_steps(else_steps, &format!("{here}.else"), false)
+                            .await
+                    }
+                }
             }
         })
     }
@@ -1554,7 +1573,7 @@ fn step_verb(step: &EntryStep) -> &'static str {
         EntryStep::AwaitUntil { .. } => "awaitUntil",
         EntryStep::Retry { .. } => "retry",
         EntryStep::Loop { .. } => "loop",
-        EntryStep::If { .. } => "if",
+        EntryStep::If { .. } | EntryStep::IfElse { .. } => "if",
     }
 }
 
@@ -1570,7 +1589,7 @@ fn step_tolerant(step: &EntryStep) -> bool {
         | EntryStep::AwaitUntil { tolerant, .. }
         | EntryStep::Retry { tolerant, .. }
         | EntryStep::Loop { tolerant, .. } => *tolerant,
-        EntryStep::If { .. } => false,
+        EntryStep::If { .. } | EntryStep::IfElse { .. } => false,
     }
 }
 
@@ -1590,7 +1609,10 @@ fn step_codes(step: &EntryStep) -> (Option<u16>, Option<u16>) {
                 (then_poll.map(|_| op::GET_DEVICE_PROP_VALUE), *then_poll)
             }
         },
-        EntryStep::Retry { .. } | EntryStep::Loop { .. } | EntryStep::If { .. } => (None, None),
+        EntryStep::Retry { .. }
+        | EntryStep::Loop { .. }
+        | EntryStep::If { .. }
+        | EntryStep::IfElse { .. } => (None, None),
     }
 }
 

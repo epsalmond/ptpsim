@@ -313,6 +313,40 @@ fn validate_reestablishment_params(
     model_view: &crate::index::ModelView,
 ) -> Result<(), ConfigError> {
     for (connection_id, connection) in &body.connections {
+        for (index, transition) in connection.enables.iter().enumerate() {
+            if transition.params.is_empty() {
+                continue;
+            }
+            let path =
+                format!("models.{model_id}.connections.{connection_id}.enables[{index}].params");
+            let mechanism =
+                transition
+                    .mechanism
+                    .as_deref()
+                    .ok_or_else(|| ConfigError::Validation {
+                        path: path.clone(),
+                        message: "parameter bindings require an establishment mechanism".into(),
+                    })?;
+            let establishment = model_view
+                .ble
+                .as_ref()
+                .and_then(|ble| ble.establishment(mechanism))
+                .ok_or_else(|| ConfigError::Validation {
+                    path: path.clone(),
+                    message: format!("unknown establishment mechanism '{mechanism}'"),
+                })?;
+            let actual: Vec<&str> = transition.params.keys().map(String::as_str).collect();
+            let mut expected: Vec<&str> = establishment.params.iter().map(String::as_str).collect();
+            expected.sort_unstable();
+            if actual != expected {
+                return Err(ConfigError::Validation {
+                    path,
+                    message: format!(
+                        "parameter bindings {actual:?} do not exactly match establishment parameters {expected:?}"
+                    ),
+                });
+            }
+        }
         for (index, entry) in connection.entries.iter().enumerate() {
             let ModeEntryExecution::ReestablishConnection(reestablish) = &entry.execution else {
                 continue;

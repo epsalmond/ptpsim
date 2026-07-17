@@ -12,9 +12,9 @@
 //!
 //! On USB the data phase is its own bulk transfer (one type-2 container, often
 //! split across URBs by the host stack), not the StartData/EndData sequence of
-//! PTP/IP. We model the control containers (op/response/event) here; a decoded
-//! type-2 container surfaces as `Data` (its `code` is dropped — only the bytes
-//! matter to the simulator, and the bulk is never a golden packet).
+//! PTP/IP. A decoded type-2 container surfaces as `Data`; callers that create a
+//! data container provide the operation code explicitly because `ptp_core`'s
+//! logical `DataBlock` intentionally does not retain it.
 
 use crate::error::FramingError;
 use ptp_core::container::*;
@@ -67,6 +67,18 @@ pub fn encode(pkt: &PtpIpPacket) -> Result<Vec<u8>, FramingError> {
     Ok(w.into_vec())
 }
 
+/// Encode one USB/PIMA data container. The operation code is part of the USB
+/// header even though the generic logical DataBlock does not carry it.
+pub fn encode_data(code: u16, transaction_id: u32, payload: &[u8]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u32((12 + payload.len()) as u32);
+    w.u16(ty::DATA);
+    w.u16(code);
+    w.u32(transaction_id);
+    w.bytes(payload);
+    w.into_vec()
+}
+
 /// Decode one USB-PTP container.
 pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
     let mut r = Reader::new(bytes);
@@ -81,6 +93,13 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
     let code = r.u16()?;
     let tid = r.u32()?;
     let params = |r: &mut Reader| -> Result<Vec<u32>, DecodeError> {
+        let remaining = r.remaining();
+        if !remaining.is_multiple_of(4) {
+            return Err(DecodeError::UnexpectedEof {
+                offset: r.position(),
+                needed: 4 - (remaining % 4),
+            });
+        }
         let mut v = Vec::new();
         while r.remaining() >= 4 {
             v.push(r.u32()?);
@@ -165,6 +184,33 @@ mod tests {
                 assert_eq!(d.payload, vec![0xde, 0xad, 0xbe, 0xef]);
             }
             other => panic!("expected Data, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn data_container_encodes_byte_exact() {
+        let bytes = encode_data(0x1009, 7, &[0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(
+            bytes,
+            vec![0x10, 0, 0, 0, 0x02, 0x00, 0x09, 0x10, 0x07, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,]
+        );
+        assert!(matches!(decode(&bytes).unwrap(), PtpIpPacket::Data(_)));
+    }
+
+    #[test]
+    fn control_containers_reject_partial_trailing_parameters() {
+        for container_type in [ty::COMMAND, ty::RESPONSE, ty::EVENT] {
+            for trailing in 1..=3 {
+                let mut bytes = vec![0; 12 + trailing];
+                let length = bytes.len() as u32;
+                bytes[0..4].copy_from_slice(&length.to_le_bytes());
+                bytes[4..6].copy_from_slice(&container_type.to_le_bytes());
+                bytes[6..8].copy_from_slice(&0x1001u16.to_le_bytes());
+                assert!(matches!(
+                    decode(&bytes),
+                    Err(DecodeError::UnexpectedEof { .. })
+                ));
+            }
         }
     }
 }

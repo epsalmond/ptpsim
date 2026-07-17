@@ -525,6 +525,10 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
             ctx.responder.connect();
             Ok(())
         }
+        // The deterministic reference walker has no clock. Successful
+        // traversal is sufficient to prove the authored delay is accepted;
+        // the asynchronous dispatcher above owns elapsed-time behavior.
+        Step::BleDelay(_) => Ok(()),
         Step::BleAwaitDisconnect(_) => ctx
             .responder
             .await_disconnect()

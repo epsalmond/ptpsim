@@ -26,6 +26,10 @@ pub fn real_fuji_bodies() -> Vec<KeyValue> {
             value: data("fuji/gfx100ii/gfx100ii.yaml"),
         },
         KeyValue {
+            key: "xa7".to_string(),
+            value: data("fuji/xa7/xa7.yaml"),
+        },
+        KeyValue {
             key: "fuji-generic".to_string(),
             value: data("fuji/fuji-generic/fuji-generic.yaml"),
         },
@@ -34,8 +38,12 @@ pub fn real_fuji_bodies() -> Vec<KeyValue> {
 
 /// The real Fuji index + bodies, as a vendored consumer constructs it.
 pub fn real_fuji_store() -> Arc<ConfigStore> {
-    ConfigStore::from_manufacturer_index(data("fuji/index.yaml"), real_fuji_bodies())
-        .expect("manufacturer index loads")
+    ConfigStore::from_manufacturer_index_with_defaults(
+        data("fuji/index.yaml"),
+        data("fuji/fuji.yaml"),
+        real_fuji_bodies(),
+    )
+    .expect("manufacturer index loads")
 }
 
 /// `real_fuji_bodies()` with one model's body text replaced — for tests that

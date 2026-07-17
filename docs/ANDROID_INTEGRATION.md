@@ -84,6 +84,8 @@ val store = ConfigStore.fromManufacturerIndex(
     indexYaml = readAsset("fuji/index.yaml"),
     modelBodies = listOf(
         KeyValue("gfx100ii", readAsset("fuji/gfx100ii/gfx100ii.yaml")),
+        KeyValue("xa7", readAsset("fuji/xa7/xa7.yaml")),
+        KeyValue("fuji-generic", readAsset("fuji/fuji-generic/fuji-generic.yaml")),
     ),
 )
 ```

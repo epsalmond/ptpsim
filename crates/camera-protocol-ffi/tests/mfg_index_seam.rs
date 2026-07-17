@@ -538,8 +538,8 @@ fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
 
 /// X-A7 pairing-mode advert, byte-for-byte from the 2026-07-16 field capture
 /// (ptpsim#306): legacy mfg-data shape but the advertised service is
-/// SERVICE_FF_CAMERA_INFORMATION, not SERVICE_FF_FILE_TRANSFER. The X-A7 has no
-/// specific model anymore — it rides the family-baseline `fuji-generic` (#311).
+/// SERVICE_FF_CAMERA_INFORMATION, not SERVICE_FF_FILE_TRANSFER. Issue #315
+/// promotes the named X-A7 shape to its legacy manufacturer app-specific manifest.
 fn field_xa7_pairing_advert(local_name: Option<&str>) -> Observation {
     ble_advert(
         &["117C4142-EDD4-4C77-8696-DD18EEBB770A"],
@@ -550,7 +550,7 @@ fn field_xa7_pairing_advert(local_name: Option<&str>) -> Observation {
 }
 
 #[test]
-fn xa7_camera_information_advert_rides_the_family_baseline() {
+fn xa7_camera_information_advert_selects_legacy_app_manifest() {
     let s = store();
     match s.recognize(field_xa7_pairing_advert(Some("1361X-A7-1361"))) {
         Recognition::Candidate {
@@ -560,15 +560,13 @@ fn xa7_camera_information_advert_rides_the_family_baseline() {
             runtime_scope,
             ..
         } => {
-            // No specific X-A7 model: the baseline recognizes it and pairing
-            // proceeds via the family ble-pair walk.
-            assert_eq!(model, "fuji-generic");
+            assert_eq!(model, "xa7");
             assert_eq!(connection, "ble");
             assert!(matches!(confidence, Confidence::High));
             assert!(
                 runtime_scope
                     .iter()
-                    .any(|kv| kv.key == "style" && kv.value == "legacy"),
+                    .any(|kv| kv.key == "style" && kv.value == "legacy-legacy-app"),
                 "scope: {runtime_scope:?}"
             );
             assert!(
@@ -578,8 +576,7 @@ fn xa7_camera_information_advert_rides_the_family_baseline() {
                 "scope: {runtime_scope:?}"
             );
             // shortSerial is captured from the factory name prefix — the key
-            // the iOS persistence layer uses for saved entries (capture, not
-            // requirement; parity with the retired xa7 model's capture).
+            // the persistence layer uses for saved entries.
             assert!(
                 runtime_scope
                     .iter()
@@ -592,11 +589,292 @@ fn xa7_camera_information_advert_rides_the_family_baseline() {
 }
 
 #[test]
+fn xa7_prefixed_pairing_advert_captures_key_after_optional_section() {
+    let observation = ble_advert(
+        &["117C4142-EDD4-4C77-8696-DD18EEBB770A"],
+        0x04D8,
+        &[0x03, 0xaa, 0xbb, 0xcc, 0xdd, 0x09, 0x5e, 0xe9, 0x04],
+        Some("1361X-A7-1361"),
+    );
+    match store().recognize(observation) {
+        Recognition::Candidate {
+            model,
+            runtime_scope,
+            ..
+        } => {
+            assert_eq!(model, "xa7");
+            assert!(runtime_scope
+                .iter()
+                .any(|entry| { entry.key == "pairingKeyBytes" && entry.value == "095ee904" }));
+        }
+        other => panic!("expected prefixed X-A7 candidate, got {other:?}"),
+    }
+}
+
+#[test]
+fn xa7_registration_uses_legacy_app_queue_and_timing() {
+    let s = store();
+    let Recognition::Candidate {
+        model,
+        runtime_scope,
+        ..
+    } = s.recognize(field_xa7_pairing_advert(Some("1361X-A7-1361")))
+    else {
+        panic!("expected X-A7 candidate");
+    };
+    let plan = s
+        .establishment(model, "ble".into(), runtime_scope)
+        .expect("X-A7 BLE establishment");
+    assert_eq!(plan.plan_handle, "xa7:ble");
+    assert_eq!(plan.steps.len(), 30);
+    assert!(matches!(
+        &plan.steps[1],
+        Step::BleDelay {
+            duration_ms: 600,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &plan.steps[2],
+        Step::BleRequestMtu { mtu: 515, .. }
+    ));
+    match &plan.steps[5] {
+        Step::BleWrite { value, .. } => match value {
+            StepValue::Runtime {
+                slot, transform, ..
+            } => {
+                assert_eq!(slot, "terminalName");
+                assert!(matches!(transform.as_slice(), [Transform::AppendNul]));
+            }
+            other => panic!("expected runtime terminal name, got {other:?}"),
+        },
+        other => panic!("expected terminal-name write, got {other:?}"),
+    }
+    assert!(matches!(
+        &plan.steps[28],
+        Step::BleRead { encoding, .. } if encoding == "u16-le"
+    ));
+}
+
+#[test]
+fn xa7_keyless_advert_selects_legacy_app_reconnect_for_saved_identity() {
+    let observation = Observation::BleAdvert {
+        service_uuids: vec!["117C4142-EDD4-4C77-8696-DD18EEBB770A".into()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: Some("1361X-A7-1361".into()),
+        tx_power: None,
+        ad_records: vec![],
+    };
+    let persisted = vec![
+        KeyValue {
+            key: "shortSerial".into(),
+            value: "1361".into(),
+        },
+        KeyValue {
+            key: "pairingKeyBytes".into(),
+            value: "095ee904".into(),
+        },
+    ];
+    match store().reconnect_decision("xa7".into(), observation, persisted) {
+        ReconnectDecision::Ready {
+            plan,
+            runtime_scope,
+        } => {
+            assert_eq!(plan.plan_handle, "xa7:legacy-app-reconnect");
+            assert!(matches!(
+                &plan.steps[4],
+                Step::BleWrite {
+                    value: StepValue::Captured { name, .. },
+                    ..
+                } if name == "pairingKeyBytes"
+            ));
+            assert!(runtime_scope
+                .iter()
+                .any(|entry| entry.key == "shortSerial" && entry.value == "1361"));
+            // Reconnect runtime scope contains only fresh advert facts. The
+            // caller retains and supplies the persisted key scope when running
+            // this plan, as it does for every other saved-camera reconnect.
+            assert!(!runtime_scope
+                .iter()
+                .any(|entry| entry.key == "pairingKeyBytes"));
+        }
+        other => panic!("expected ready legacy manufacturer app reconnect, got {other:?}"),
+    }
+}
+
+#[test]
+fn xa7_keyless_fuji_company_advert_selects_saved_reconnect() {
+    let observation = Observation::BleAdvert {
+        service_uuids: vec!["117C4142-EDD4-4C77-8696-DD18EEBB770A".into()],
+        manufacturer_data: Some(BleManufacturerData {
+            company_id: 0x04d8,
+            // bit 1 clear: legacy manufacturer app reports no key in this advert.
+            payload: vec![0x01, 0xaa, 0xbb, 0xcc, 0xdd],
+        }),
+        service_data: vec![],
+        local_name: Some("1361X-A7-1361".into()),
+        tx_power: None,
+        ad_records: vec![],
+    };
+    let persisted = vec![
+        KeyValue {
+            key: "shortSerial".into(),
+            value: "1361".into(),
+        },
+        KeyValue {
+            key: "pairingKeyBytes".into(),
+            value: "095ee904".into(),
+        },
+    ];
+    match store().reconnect_decision("xa7".into(), observation, persisted) {
+        ReconnectDecision::Ready { plan, .. } => {
+            assert_eq!(plan.plan_handle, "xa7:legacy-app-reconnect");
+        }
+        other => panic!("expected keyless Fuji-company reconnect, got {other:?}"),
+    }
+}
+
+#[test]
+fn xa7_body_assembles_legacy_app_init_and_retry_contract() {
+    let s = ConfigStore::from_bundle(data("fuji/xa7/xa7.yaml"), Some(data("fuji/fuji.yaml")))
+        .expect("X-A7 body loads");
+    let init = s
+        .connection_init_with_runtime(
+            "legacy-app".into(),
+            vec![
+                KeyValue {
+                    key: "terminalName".into(),
+                    value: "Pixel 8".into(),
+                },
+                KeyValue {
+                    key: "clientIpv4".into(),
+                    value: "192.168.0.2".into(),
+                },
+            ],
+        )
+        .expect("legacy manufacturer app init resolves");
+    assert_eq!(init.packet.len(), 82);
+    assert_eq!(&init.packet[0..8], &[82, 0, 0, 0, 1, 0, 0, 0]);
+    assert_eq!(&init.packet[24..28], &[2, 0, 168, 192]);
+    assert_eq!(init.client_ipv4.as_deref(), Some("192.168.0.2"));
+    assert_eq!(
+        init.expected_responder_guid,
+        vec![
+            0x08, 0x70, 0xb0, 0x61, 0x0a, 0x8b, 0x45, 0x93, 0xb2, 0xe7, 0x93, 0x57, 0xdd, 0x36,
+            0xe0, 0x50,
+        ]
+    );
+    let retry = s
+        .connection_init_retry_policy("legacy-app".into())
+        .expect("retry policy");
+    assert_eq!(retry.max_retries, 5);
+    assert_eq!(retry.backoff_ms, 500);
+    assert_eq!(retry.when_reasons, vec![0x2019]);
+}
+
+#[test]
+fn legacy_app_init_value_references_fail_closed_after_defaults_resolve() {
+    for (from, to, expected) in [
+        ("guid: initiatorGuid", "guid: missingGuid", "identity.guid"),
+        (
+            "friendlyName: initFriendlyName",
+            "friendlyName: missingName",
+            "identity.friendlyName",
+        ),
+        (
+            "clientIpv4: legacyAppClientIpv4",
+            "clientIpv4: missingClientIpv4",
+            "identity.clientIpv4",
+        ),
+        (
+            "expectedResponderGuid: legacyAppResponderGuid",
+            "expectedResponderGuid: missingResponderGuid",
+            "expectedResponderGuid",
+        ),
+    ] {
+        let body = data("fuji/xa7/xa7.yaml").replacen(from, to, 1);
+        let error = match ConfigStore::from_bundle(body, Some(data("fuji/fuji.yaml"))) {
+            Ok(_) => panic!("unknown {expected} reference must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn legacy_app_responder_guid_may_resolve_from_manufacturer_defaults() {
+    let responder = r#"  legacyAppResponderGuid:
+    type: fixed
+    value: "0870b0610a8b4593b2e79357dd36e050"
+"#;
+    let body = data("fuji/xa7/xa7.yaml").replacen(responder, "", 1);
+    let manufacturer = format!("{}\n{}", data("fuji/fuji.yaml"), responder);
+    ConfigStore::from_bundle(body, Some(manufacturer))
+        .expect("responder GUID can be manufacturer-tier data");
+}
+
+#[test]
+fn manufacturer_index_fails_closed_without_required_transport_defaults() {
+    let error = match ConfigStore::from_manufacturer_index(
+        data("fuji/index.yaml"),
+        common::real_fuji_bodies(),
+    ) {
+        Ok(_) => panic!("index bodies with unresolved transport values must fail"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("identity.guid"), "{error}");
+
+    let broken_xa7 = data("fuji/xa7/xa7.yaml").replacen(
+        "expectedResponderGuid: legacyAppResponderGuid",
+        "expectedResponderGuid: missingResponderGuid",
+        1,
+    );
+    let error = match ConfigStore::from_manufacturer_index_with_defaults(
+        data("fuji/index.yaml"),
+        data("fuji/fuji.yaml"),
+        common::real_fuji_bodies_with("xa7", broken_xa7),
+    ) {
+        Ok(_) => panic!("resolved index validation must reject an unknown responder GUID"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("expectedResponderGuid"),
+        "{error}"
+    );
+}
+
+#[test]
+fn xa7_feature_launch_values_resolve_from_mode_qualified_transitions() {
+    let store = ConfigStore::from_bundle(data("fuji/xa7/xa7.yaml"), Some(data("fuji/fuji.yaml")))
+        .expect("X-A7 body loads");
+    for (mode, expected) in [
+        ("photo-receiver", "1"),
+        ("gps-assist", "2"),
+        ("photo-viewer", "3"),
+        ("remote-shooting", "4"),
+        ("firmware-update", "5"),
+    ] {
+        let transition = store
+            .connection_transition("ble".into(), "legacy-app".into(), Some(mode.into()))
+            .unwrap_or_else(|| panic!("transition for {mode}"));
+        assert_eq!(
+            transition.mechanism.as_deref(),
+            Some("legacy-app-establish-wifi-ap")
+        );
+        assert!(transition
+            .params
+            .iter()
+            .any(|param| { param.key == "launchMode" && param.value == expected }));
+    }
+}
+
+#[test]
 fn family_baseline_legacy_pairing_has_no_name_guard() {
     let s = store();
     // The baseline signature carries NO localName guard: the SAME advert with
     // the name absent still recognizes as the baseline Candidate (unlike the
-    // retired xa7 model, which required "X-A7-" in the name).
+    // dedicated xa7 signature, which requires "X-A7-" in the name).
     match s.recognize(field_xa7_pairing_advert(None)) {
         Recognition::Candidate {
             model,
@@ -2069,6 +2347,7 @@ fn index_model_refs_enumerates_declared_models_in_order() {
         pairs,
         vec![
             ("gfx100ii".to_string(), "gfx100ii/gfx100ii.yaml".to_string()),
+            ("xa7".to_string(), "xa7/xa7.yaml".to_string()),
             (
                 "fuji-generic".to_string(),
                 "fuji-generic/fuji-generic.yaml".to_string(),

@@ -128,6 +128,18 @@ pub fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError> {
     protocol_primitives::validate_init_ack(&packet).map_err(|e| CodecError::Encode(e.to_string()))
 }
 
+/// Validate legacy manufacturer app's fixed 68-byte InitCommandAck against the
+/// manifest-resolved responder GUID. Unlike PCSS, legacy manufacturer app does not
+/// constrain the bytes after the GUID as a UTF-16 camera name plus zero tail.
+#[uniffi::export]
+pub fn validate_legacy_app_init_ack(
+    packet: Vec<u8>,
+    expected_responder_guid: Vec<u8>,
+) -> Result<(), CodecError> {
+    protocol_primitives::validate_legacy_app_init_ack(&packet, &expected_responder_guid)
+        .map_err(|e| CodecError::Decode(e.to_string()))
+}
+
 /// Typed result of decoding a standard PTP/IP command-init response.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum InitCommandResponse {
@@ -320,7 +332,8 @@ pub fn build_data(
         PtpFraming::Compressed => Ok(protocol_primitives::fuji_framing::encode_data(
             op, txn, &payload,
         )),
-        PtpFraming::Standard | PtpFraming::Usb => {
+        PtpFraming::Usb => Ok(protocol_primitives::usb_ptp::encode_data(op, txn, &payload)),
+        PtpFraming::Standard => {
             let pkt = ptp_core::PtpIpPacket::Data(ptp_core::DataBlock {
                 transaction_id: txn,
                 payload,
@@ -841,8 +854,10 @@ impl From<cc::ShutterRecipe> for ShutterRecipe {
 pub struct InitShapeInfo {
     pub guid: Vec<u8>,
     pub friendly_name: String,
+    pub client_ipv4: Option<String>,
     pub name_field_byte_count: u32,
     pub tail: Vec<u8>,
+    pub expected_responder_guid: Vec<u8>,
     pub packet: Vec<u8>,
 }
 
@@ -1432,6 +1447,16 @@ pub enum EntryStep {
         then_steps: Vec<EntryStep>,
         tolerant: bool,
     },
+    /// Conditional with an explicit false branch. Appended rather than changing
+    /// `If`'s payload so previously generated UniFFI bindings retain their wire
+    /// layout and discriminants.
+    IfElse {
+        slot: String,
+        equals: u64,
+        then_steps: Vec<EntryStep>,
+        else_steps: Vec<EntryStep>,
+        tolerant: bool,
+    },
 }
 
 /// The two `Loop` shapes (#46). Mirrors `cc::Loop`. `ForEach` iterates a named
@@ -1952,20 +1977,19 @@ impl ConfigStore {
         index_yaml: String,
         model_bodies: Vec<KeyValue>,
     ) -> Result<Arc<Self>, ConfigError> {
-        let bodies: BTreeMap<String, String> = model_bodies
-            .into_iter()
-            .map(|kv| (kv.key, kv.value))
-            .collect();
-        let inner = cc::ConfigStore::from_manufacturer_index(&index_yaml, bodies)?;
-        // Unwrap the Arc<cc::ConfigStore> into a fresh FFI ConfigStore. The
-        // inner Arc is private to camera-config; here we own the FFI-level
-        // Arc<ConfigStore>.
-        let inner = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
-        validate_mode_entry_mappings(&inner.manifest)?;
-        for body in inner.bodies.values() {
-            validate_mode_entry_mappings(body)?;
-        }
-        Ok(Arc::new(ConfigStore { inner }))
+        build_manufacturer_index_store(index_yaml, model_bodies, None)
+    }
+
+    /// Load a manufacturer index and validate every model body after applying
+    /// shared manufacturer-tier defaults. Use this when indexed bodies refer
+    /// to shared transport values such as the initiator identity.
+    #[uniffi::constructor]
+    pub fn from_manufacturer_index_with_defaults(
+        index_yaml: String,
+        manufacturer_yaml: String,
+        model_bodies: Vec<KeyValue>,
+    ) -> Result<Arc<Self>, ConfigError> {
+        build_manufacturer_index_store(index_yaml, model_bodies, Some(manufacturer_yaml))
     }
 
     // -----------------------------------------------------------------------
@@ -2190,6 +2214,38 @@ impl ConfigStore {
             user_instruction: None,
             params,
             activities: c.activities.iter().map(Into::into).collect(),
+        })
+    }
+
+    /// Resolve a manifest-authored connection-bring-up edge, optionally
+    /// qualified by the target mode. The returned params are fixed bindings for
+    /// the target establishment plan, so callers never carry vendor feature
+    /// selector literals in app code.
+    pub fn connection_transition(
+        &self,
+        from_connection: String,
+        target_connection: String,
+        target_mode: Option<String>,
+    ) -> Option<ConnectionEstablishmentInfo> {
+        let source = self.inner.manifest.connections.get(&from_connection)?;
+        let transition = source
+            .enables
+            .iter()
+            .find(|candidate| candidate.to == target_connection && candidate.mode == target_mode)?;
+        let target = self.inner.manifest.connections.get(&target_connection)?;
+        Some(ConnectionEstablishmentInfo {
+            target_connection,
+            mechanism: transition.mechanism.clone(),
+            user_instruction: transition.user_instruction.clone(),
+            params: transition
+                .params
+                .iter()
+                .map(|(key, value)| KeyValue {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+            activities: target.activities.iter().map(Into::into).collect(),
         })
     }
 
@@ -2681,7 +2737,8 @@ impl ConfigStore {
     /// deferred to the consumer-adoption work (#29).
     pub fn connection_init(&self, connection: String) -> Option<InitShapeInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
-        if c.init_shape.as_deref() != Some("app82") {
+        let shape = c.init_shape.as_deref()?;
+        if !matches!(shape, "app82" | "legacyApp82") {
             return None;
         }
         let init = c.init.as_ref()?;
@@ -2691,12 +2748,31 @@ impl ConfigStore {
             Some(t) => hex_value(t)?,
             None => Vec::new(),
         };
-        let packet = protocol_primitives::build_app_init(&guid, &friendly_name, &tail).ok()?;
+        let client_ipv4 = match &init.identity.client_ipv4 {
+            Some(key) => Some(self.fixed_value(key)?),
+            None => None,
+        };
+        let expected_responder_guid = match &init.expected_responder_guid {
+            Some(key) => Some(hex_value(&self.fixed_value(key)?)?),
+            None => None,
+        };
+        let packet = match shape {
+            "app82" => protocol_primitives::build_app_init(&guid, &friendly_name, &tail).ok()?,
+            "legacyApp82" => protocol_primitives::build_legacy_app_init(
+                &guid,
+                client_ipv4.as_ref()?.parse().ok()?,
+                &friendly_name,
+            )
+            .ok()?,
+            _ => unreachable!(),
+        };
         Some(InitShapeInfo {
             guid,
             friendly_name,
+            client_ipv4,
             name_field_byte_count: init.name_field_byte_count,
             tail,
+            expected_responder_guid: expected_responder_guid.unwrap_or_default(),
             packet,
         })
     }
@@ -2712,7 +2788,8 @@ impl ConfigStore {
         runtime_scope: Vec<KeyValue>,
     ) -> Option<InitShapeInfo> {
         let c = self.inner.manifest.connections.get(&connection)?;
-        if c.init_shape.as_deref() != Some("app82") {
+        let shape = c.init_shape.as_deref()?;
+        if !matches!(shape, "app82" | "legacyApp82") {
             return None;
         }
         let init = c.init.as_ref()?;
@@ -2730,12 +2807,31 @@ impl ConfigStore {
             Some(t) => hex_value(t)?,
             None => Vec::new(),
         };
-        let packet = protocol_primitives::build_app_init(&guid, &friendly_name, &tail).ok()?;
+        let client_ipv4 = match &init.identity.client_ipv4 {
+            Some(key) => Some(value_with_runtime(&self.inner, key, &scope)?),
+            None => None,
+        };
+        let expected_responder_guid = match &init.expected_responder_guid {
+            Some(key) => Some(hex_value(&value_with_runtime(&self.inner, key, &scope)?)?),
+            None => None,
+        };
+        let packet = match shape {
+            "app82" => protocol_primitives::build_app_init(&guid, &friendly_name, &tail).ok()?,
+            "legacyApp82" => protocol_primitives::build_legacy_app_init(
+                &guid,
+                client_ipv4.as_ref()?.parse().ok()?,
+                &friendly_name,
+            )
+            .ok()?,
+            _ => unreachable!(),
+        };
         Some(InitShapeInfo {
             guid,
             friendly_name,
+            client_ipv4,
             name_field_byte_count: init.name_field_byte_count,
             tail,
+            expected_responder_guid: expected_responder_guid.unwrap_or_default(),
             packet,
         })
     }
@@ -2772,6 +2868,20 @@ impl ConfigStore {
             guid,
             friendly_name,
         })
+    }
+
+    /// Fixed responder GUID declared for an init shape, if any.
+    pub fn connection_expected_responder_guid(&self, connection: String) -> Option<Vec<u8>> {
+        let key = self
+            .inner
+            .manifest
+            .connections
+            .get(&connection)?
+            .init
+            .as_ref()?
+            .expected_responder_guid
+            .as_ref()?;
+        hex_value(&self.fixed_value(key)?)
     }
 
     /// Typed InitFail retry selection for one connection.
@@ -3203,7 +3313,145 @@ fn build_store(
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
         store = store.with_manufacturer(d);
     }
+    validate_resolved_init_shapes(&store)?;
     Ok(Arc::new(ConfigStore { inner: store }))
+}
+
+fn build_manufacturer_index_store(
+    index_yaml: String,
+    model_bodies: Vec<KeyValue>,
+    manufacturer_yaml: Option<String>,
+) -> Result<Arc<ConfigStore>, ConfigError> {
+    let bodies: BTreeMap<String, String> = model_bodies
+        .into_iter()
+        .map(|kv| (kv.key, kv.value))
+        .collect();
+    let inner = cc::ConfigStore::from_manufacturer_index(&index_yaml, bodies)?;
+    // Unwrap the Arc<cc::ConfigStore> into a fresh FFI ConfigStore. The
+    // inner Arc is private to camera-config; here we own the FFI-level store.
+    let mut inner = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+    let manufacturer = manufacturer_yaml
+        .map(|yaml| {
+            cc::ManufacturerDefaults::from_yaml(&yaml)
+                .map_err(|error| ConfigError::Parse(error.to_string()))
+        })
+        .transpose()?;
+
+    for body in inner.bodies.values() {
+        validate_mode_entry_mappings(body)?;
+        let mut resolved = cc::ConfigStore::new(body.clone());
+        if let Some(defaults) = &manufacturer {
+            resolved = resolved.with_manufacturer(defaults.clone());
+        }
+        validate_resolved_init_shapes(&resolved)?;
+    }
+    if let Some(defaults) = manufacturer {
+        inner = inner.with_manufacturer(defaults);
+    }
+    Ok(Arc::new(ConfigStore { inner }))
+}
+
+fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigError> {
+    for (connection_id, connection) in &store.manifest.connections {
+        if connection.init_shape.as_deref() != Some("legacyApp82") {
+            continue;
+        }
+        let init = connection.init.as_ref().ok_or_else(|| {
+            ConfigError::Contract(format!(
+                "connections.{connection_id}.init is required for legacyApp82"
+            ))
+        })?;
+        let path = format!("connections.{connection_id}.init");
+        let resolve = |key: &str, field: &str| {
+            store.value(key).ok_or_else(|| {
+                ConfigError::Contract(format!("{path}.{field} references unknown value '{key}'"))
+            })
+        };
+
+        let guid = resolve(&init.identity.guid, "identity.guid")?;
+        let cc::ValuePolicy::Fixed {
+            value: serde_yaml::Value::String(guid),
+        } = guid
+        else {
+            return Err(ConfigError::Contract(format!(
+                "{path}.identity.guid must resolve to fixed hexadecimal bytes"
+            )));
+        };
+        if cc::parse_hex_bytes(guid).is_none_or(|bytes| bytes.len() != 16) {
+            return Err(ConfigError::Contract(format!(
+                "{path}.identity.guid must resolve to exactly 16 bytes"
+            )));
+        }
+
+        let friendly = resolve(&init.identity.friendly_name, "identity.friendlyName")?;
+        match friendly {
+            cc::ValuePolicy::Fixed { value } => {
+                let name = yaml_scalar(value).ok_or_else(|| {
+                    ConfigError::Contract(format!(
+                        "{path}.identity.friendlyName fixed value must be scalar"
+                    ))
+                })?;
+                if name.contains('\0') || name.encode_utf16().count() > 26 {
+                    return Err(ConfigError::Contract(format!(
+                        "{path}.identity.friendlyName must fit 26 UTF-16 units and contain no NUL"
+                    )));
+                }
+            }
+            cc::ValuePolicy::ClientDerived { runtime } if !runtime.trim().is_empty() => {}
+            _ => {
+                return Err(ConfigError::Contract(format!(
+                    "{path}.identity.friendlyName must resolve to fixed or client-derived text"
+                )))
+            }
+        }
+
+        let client_ip_key = init
+            .identity
+            .client_ipv4
+            .as_deref()
+            .expect("legacyApp82 structural validation requires clientIpv4");
+        let client_ip = resolve(client_ip_key, "identity.clientIpv4")?;
+        match client_ip {
+            cc::ValuePolicy::Fixed { value } => {
+                let address = yaml_scalar(value).ok_or_else(|| {
+                    ConfigError::Contract(format!(
+                        "{path}.identity.clientIpv4 fixed value must be scalar"
+                    ))
+                })?;
+                address.parse::<std::net::Ipv4Addr>().map_err(|_| {
+                    ConfigError::Contract(format!(
+                        "{path}.identity.clientIpv4 fixed value is not an IPv4 address"
+                    ))
+                })?;
+            }
+            cc::ValuePolicy::ClientDerived { runtime } if !runtime.trim().is_empty() => {}
+            _ => {
+                return Err(ConfigError::Contract(format!(
+                "{path}.identity.clientIpv4 must resolve to a fixed or client-derived IPv4 value"
+            )))
+            }
+        }
+
+        let responder_key = init
+            .expected_responder_guid
+            .as_deref()
+            .expect("legacyApp82 structural validation requires expectedResponderGuid");
+        let responder = resolve(responder_key, "expectedResponderGuid")?;
+        let cc::ValuePolicy::Fixed {
+            value: serde_yaml::Value::String(responder),
+        } = responder
+        else {
+            return Err(ConfigError::Contract(format!(
+                "{path}.expectedResponderGuid must resolve to fixed hexadecimal bytes"
+            )));
+        };
+        if cc::parse_hex_bytes(responder).is_none_or(|bytes| bytes.len() != 16) {
+            return Err(ConfigError::Contract(format!(
+                "{path}.expectedResponderGuid must resolve to exactly 16 bytes"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_mode_entry_mappings(manifest: &cc::CameraManifest) -> Result<(), ConfigError> {
@@ -3403,12 +3651,25 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
         return Some(EntryStep::Loop { kind, tolerant });
     }
     if let Some(cond) = &s.if_step {
-        return Some(EntryStep::If {
-            slot: cond.slot.clone(),
-            equals: cond.equals,
-            then_steps: cond.then_steps.iter().filter_map(map_step).collect(),
-            tolerant,
-        });
+        let slot = cond.slot.clone();
+        let equals = cond.equals;
+        let then_steps = cond.then_steps.iter().filter_map(map_step).collect();
+        return if cond.else_steps.is_empty() {
+            Some(EntryStep::If {
+                slot,
+                equals,
+                then_steps,
+                tolerant,
+            })
+        } else {
+            Some(EntryStep::IfElse {
+                slot,
+                equals,
+                then_steps,
+                else_steps: cond.else_steps.iter().filter_map(map_step).collect(),
+                tolerant,
+            })
+        };
     }
     None
 }
@@ -3686,10 +3947,10 @@ fn steps_capture(steps: &[cc::Step], bind: &str, source: cc::model::CaptureSourc
                     steps_capture(body, bind, source)
                 }
             })
-            || step
-                .if_step
-                .as_ref()
-                .is_some_and(|condition| steps_capture(&condition.then_steps, bind, source))
+            || step.if_step.as_ref().is_some_and(|condition| {
+                steps_capture(&condition.then_steps, bind, source)
+                    || steps_capture(&condition.else_steps, bind, source)
+            })
     })
 }
 
@@ -3739,7 +4000,11 @@ fn validate_step_mapping(step: &cc::Step, context: &str) -> Result<(), ConfigErr
         }
     }
     if let Some(condition) = &step.if_step {
-        for nested in &condition.then_steps {
+        for nested in condition
+            .then_steps
+            .iter()
+            .chain(condition.else_steps.iter())
+        {
             validate_step_mapping(nested, context)?;
         }
     }
@@ -3889,6 +4154,7 @@ mod tests {
                     }],
                     ..Default::default()
                 }],
+                else_steps: Vec::new(),
             }),
             ..Default::default()
         };
