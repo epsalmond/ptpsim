@@ -104,10 +104,12 @@ steps:
         from_secret: oci_registry_username
       REGISTRY_PASSWORD:
         from_secret: oci_registry_password
-      REGCTL_VERSION: v0.11.5
     commands:
+      # Pin the regctl release inline: Woodpecker eats ${BRACE} variables at
+      # workflow-parse time (they resolve against pipeline metadata, not the
+      # step shell), so a ${REGCTL_VERSION} env would expand to empty here.
       - apk add --no-cache curl jq bash coreutils
-      - curl -fsSL "https://github.com/regclient/regclient/releases/download/${REGCTL_VERSION}/regctl-linux-amd64" -o /usr/local/bin/regctl
+      - curl -fsSL "https://github.com/regclient/regclient/releases/download/v0.11.5/regctl-linux-amd64" -o /usr/local/bin/regctl
       - chmod 0755 /usr/local/bin/regctl
       - regctl registry login "$REGISTRY" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
       - TAG_REF="$OCI_REPO:sha-${CI_COMMIT_SHA:0:8}"
