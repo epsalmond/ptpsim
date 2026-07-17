@@ -83,6 +83,11 @@ connections:
       whenReasons: ["0x2019"]
     commandFraming: usb
     eventFraming: usb
+    objectTransfer:
+      strategy: wholeObject
+      resumePolicy: restartFromZero
+      readAction: getObject
+      formats: { "0x3801": experimental }
     liveViewDelivery: { kind: stream }
     commandListenerVolatile: true
     discovery: { mechanism: ble, announces: camera }
@@ -271,6 +276,10 @@ operations:
   "0x100a": { name: GetThumb, owner: standard-ptp, modes: [photo-viewer], connections: [legacy-app], evidence: [legacyApp4102Static] }
   "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [remote-shooting], connections: [legacy-app], evidence: [legacyApp4102Static] }
   "0x101c": { name: InitiateOpenCapture, owner: standard-ptp, modes: [remote-shooting], connections: [legacy-app], evidence: [legacyApp4102Static] }
+
+media:
+  formats:
+    "0x3801": { name: exifJpeg, vendor: standard, isPhotosCompatible: true }
 
 properties:
   "0xdf00": { name: cameraFunctionMode, type: u16, access: readWrite, initialValue: 4, evidence: [legacyApp4102Static] }

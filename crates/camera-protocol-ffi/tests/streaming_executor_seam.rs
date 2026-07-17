@@ -15,6 +15,14 @@ fn store() -> Arc<ConfigStore> {
     common::real_fuji_store()
 }
 
+fn xa7_store() -> Arc<ConfigStore> {
+    ConfigStore::from_bundle(
+        common::data("fuji/xa7/xa7.yaml"),
+        Some(common::data("fuji/fuji.yaml")),
+    )
+    .expect("X-A7 manifest loads")
+}
+
 struct Transport {
     bytes: Mutex<VecDeque<u8>>,
     sent: Mutex<Vec<Vec<u8>>>,
@@ -27,17 +35,44 @@ struct Transport {
 
 impl Transport {
     fn new(payload: Vec<u8>, response_code: u16) -> Arc<Self> {
-        let mut bytes = protocol_primitives::fuji_framing::encode_data(0x1009, 7, &payload);
-        bytes.extend_from_slice(
-            &protocol_primitives::fuji_framing::encode(&ptp_core::PtpIpPacket::OperationResponse(
-                ptp_core::OperationResponse {
-                    code: response_code,
-                    transaction_id: 7,
-                    params: vec![11, 12],
-                },
-            ))
-            .unwrap(),
-        );
+        Self::new_with_framing(
+            payload,
+            response_code,
+            camera_protocol_ffi::PtpFraming::Compressed,
+        )
+    }
+
+    fn new_with_framing(
+        payload: Vec<u8>,
+        response_code: u16,
+        framing: camera_protocol_ffi::PtpFraming,
+    ) -> Arc<Self> {
+        let response = ptp_core::PtpIpPacket::OperationResponse(ptp_core::OperationResponse {
+            code: response_code,
+            transaction_id: 7,
+            params: vec![11, 12],
+        });
+        let mut bytes = match framing {
+            camera_protocol_ffi::PtpFraming::Compressed => {
+                protocol_primitives::fuji_framing::encode_data(0x1009, 7, &payload)
+            }
+            camera_protocol_ffi::PtpFraming::Usb => {
+                protocol_primitives::usb_ptp::encode_data(0x1009, 7, &payload)
+            }
+            camera_protocol_ffi::PtpFraming::Standard => {
+                panic!("standard framing does not use this streaming seam")
+            }
+        };
+        let response = match framing {
+            camera_protocol_ffi::PtpFraming::Compressed => {
+                protocol_primitives::fuji_framing::encode(&response).unwrap()
+            }
+            camera_protocol_ffi::PtpFraming::Usb => {
+                protocol_primitives::usb_ptp::encode(&response).unwrap()
+            }
+            camera_protocol_ffi::PtpFraming::Standard => unreachable!(),
+        };
+        bytes.extend_from_slice(&response);
         Arc::new(Self {
             bytes: Mutex::new(bytes.into()),
             sent: Mutex::new(Vec::new()),
@@ -220,6 +255,46 @@ fn whole_object_streams_in_bounded_chunks_then_validates_response() {
 
     let request =
         protocol_primitives::fuji_framing::decode(&transport.sent.lock().unwrap()[0]).unwrap();
+    assert!(matches!(
+        request,
+        ptp_core::PtpIpPacket::OperationRequest(ptp_core::OperationRequest {
+            code: 0x1009,
+            transaction_id: 7,
+            ref params,
+            ..
+        }) if params == &[0x1234]
+    ));
+}
+
+#[test]
+fn usb_whole_object_streams_from_the_manifest_selected_framing() {
+    let payload = (0..(2 * 1024 * 1024 + 17))
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let transport = Transport::new_with_framing(
+        payload.clone(),
+        0x2001,
+        camera_protocol_ffi::PtpFraming::Usb,
+    );
+    let sink = Arc::new(Sink::default());
+    let outcome = block_on(run_streaming_action(
+        xa7_store(),
+        "legacy-app".into(),
+        ActionVerb::GetObject,
+        transport.clone(),
+        sink.clone(),
+        runtime_handle(),
+        Some(payload.len() as u64),
+    ))
+    .expect("USB stream succeeds");
+
+    assert_eq!(outcome.operation, 0x1009);
+    assert_eq!(outcome.total_bytes, payload.len() as u64);
+    assert_eq!(*sink.bytes.lock().unwrap(), payload);
+    assert!(*sink.max_write.lock().unwrap() <= 1024 * 1024);
+    assert!(!transport.invalidated.load(Ordering::SeqCst));
+
+    let request = protocol_primitives::usb_ptp::decode(&transport.sent.lock().unwrap()[0]).unwrap();
     assert!(matches!(
         request,
         ptp_core::PtpIpPacket::OperationRequest(ptp_core::OperationRequest {

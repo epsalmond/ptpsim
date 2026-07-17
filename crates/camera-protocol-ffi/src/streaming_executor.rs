@@ -1,6 +1,7 @@
 //! Bounded-memory executor for a single whole-object action.
 //!
-//! Compressed PTP channels carry object data as one length-prefixed frame. The
+//! Compressed and USB/PIMA PTP channels carry object data as one
+//! length-prefixed frame. The
 //! ordinary executor accepts complete frames, so this separate seam lets the
 //! host provide bounded raw reads and a streaming sink without changing the
 //! action or framing contracts.
@@ -37,7 +38,7 @@ pub trait PtpStreamingTransport: Send + Sync {
     async fn receive_command_bytes(&self, max_bytes: u32) -> Result<Vec<u8>, PtpTransportError>;
     async fn sleep(&self, ms: u32) -> Result<(), PtpTransportError>;
     /// Synchronously cancel and poison the command session. The executor calls
-    /// this from its cancellation guard when a compressed frame is only partly
+    /// this from its cancellation guard when a frame is only partly
     /// consumed; the host must not return that session to its pool.
     fn invalidate_command_session(&self, reason: String);
 }
@@ -134,11 +135,17 @@ pub async fn run_streaming_action(
         .ok_or_else(|| PtpStreamingError::UnknownPlan {
             detail: format!("unknown connection '{connection}'"),
         })?;
-    if connection_config.command_framing != Some(camera_config::WireFraming::Compressed) {
-        return Err(PtpStreamingError::UnsupportedPlan {
-            detail: format!("connection '{connection}' is not compressed framed"),
-        });
-    }
+    let framing = match connection_config.command_framing {
+        Some(camera_config::WireFraming::Compressed) => PtpFraming::Compressed,
+        Some(camera_config::WireFraming::Usb) => PtpFraming::Usb,
+        _ => {
+            return Err(PtpStreamingError::UnsupportedPlan {
+                detail: format!(
+                    "connection '{connection}' does not use a whole-object streaming framing"
+                ),
+            })
+        }
+    };
     let action_verb = super::ffi_to_cc_verb(action);
     let transfer = connection_config.object_transfer.as_ref().ok_or_else(|| {
         PtpStreamingError::UnsupportedPlan {
@@ -173,10 +180,8 @@ pub async fn run_streaming_action(
         transaction_id,
         params,
     });
-    let frame = frame_encode(PtpFraming::Compressed, &request).map_err(|error| {
-        PtpStreamingError::Framing {
-            detail: error.to_string(),
-        }
+    let frame = frame_encode(framing, &request).map_err(|error| PtpStreamingError::Framing {
+        detail: error.to_string(),
     })?;
 
     let mut guard = SessionGuard::new(Arc::clone(&transport));
@@ -201,7 +206,7 @@ pub async fn run_streaming_action(
     if packet_type == 3 {
         if !valid_response_length(declared_length) {
             return Err(PtpStreamingError::Framing {
-                detail: format!("invalid compressed response length {declared_length}"),
+                detail: format!("invalid response length {declared_length}"),
             });
         }
         let mut response_frame = header;
@@ -213,7 +218,7 @@ pub async fn run_streaming_action(
             )
             .await?,
         );
-        let response = decode_response(&response_frame, transaction_id)?;
+        let response = decode_response(framing, &response_frame, transaction_id)?;
         guard.disarm();
         if response.code != resp::OK {
             return Err(PtpStreamingError::Response {
@@ -266,13 +271,13 @@ pub async fn run_streaming_action(
         u32::from_le_bytes(response_length_bytes[0..4].try_into().unwrap()) as usize;
     if !valid_response_length(response_length) {
         return Err(PtpStreamingError::Framing {
-            detail: format!("invalid compressed response length {response_length}"),
+            detail: format!("invalid response length {response_length}"),
         });
     }
     let mut response_frame = response_length_bytes;
     response_frame
         .extend_from_slice(&read_exact(&transport, response_length - 4, "response body").await?);
-    let response = decode_response(&response_frame, transaction_id)?;
+    let response = decode_response(framing, &response_frame, transaction_id)?;
     guard.disarm();
     if response.code != resp::OK {
         return Err(PtpStreamingError::Response {
@@ -290,10 +295,11 @@ pub async fn run_streaming_action(
 }
 
 fn decode_response(
+    framing: PtpFraming,
     frame: &[u8],
     transaction_id: u32,
 ) -> Result<ptp_core::OperationResponse, PtpStreamingError> {
-    let response = match crate::frame_decode(PtpFraming::Compressed, frame) {
+    let response = match crate::frame_decode(framing, frame) {
         Ok(ptp_core::PtpIpPacket::OperationResponse(response)) => response,
         Ok(other) => {
             return Err(PtpStreamingError::Framing {
