@@ -1,0 +1,143 @@
+# OCI image workflow — builds and publishes the deployable camera-sim-service
+# container image. Runs on the Docker-backend Linux agents (same trust class as
+# linux.yml, whose image lanes already push to the deployment registry).
+#
+# The registry hostname and repo path never appear in this file: they arrive
+# through the oci_registry / oci_repo repo secrets so this public repo stays
+# free of private endpoints. PRs build both architectures with dry_run (no
+# secrets, no push); pushes to the default branch publish, then verify and
+# smoke the published manifest.
+
+labels:
+  backend: docker
+  platform: linux/amd64
+  trust: host-root
+
+when:
+  - event: [push, pull_request]
+    path:
+      include:
+        - Dockerfile
+        - .dockerignore
+        - ci/container-healthcheck
+        - ci/verify-oci-image.sh
+        - ci/smoke-oci-image.sh
+        - .woodpecker/oci-image.yml
+        - 'crates/**'
+        - 'services/**'
+        - 'packages/camera-config-data/**'
+        - 'packages/fixtures/**'
+        - Cargo.toml
+        - Cargo.lock
+        - rust-toolchain.toml
+      on_empty: false
+  - event: manual
+
+steps:
+  # PRs only: cross-compile both arches through the Dockerfile with no push and
+  # no secrets. Proves the image builds before it can reach the registry.
+  - name: build-dry-run
+    image: woodpeckerci/plugin-docker-buildx
+    privileged: true
+    settings:
+      # Literal dummy repo — dry_run never contacts a registry, so no secret is
+      # needed and none is exposed to pull_request builds.
+      repo: localhost/ptpsim/camera-sim-service
+      platforms: linux/amd64,linux/arm64
+      provenance: false
+      dry_run: true
+      tag: sha-${CI_COMMIT_SHA:0:8}
+      # No BUILDER_IMAGE override: the buildx plugin builds inside a
+      # docker-container buildkit that does not inherit the host daemon's CA
+      # trust, so pulling the private toolchain base fails on x509. The
+      # Dockerfile's public rust:1.97.0-slim default is self-contained and
+      # installs cargo-chef/zigbuild/zig itself.
+      build_args:
+        SOURCE_COMMIT: ${CI_COMMIT_SHA}
+    when:
+      - event: pull_request
+
+  # Default-branch push (and manual): publish the multi-arch manifest. amd64 and
+  # arm64 both come from the Dockerfile's cargo-zigbuild cross-compile, so arm64
+  # is cheap and rides the same blocking build (no async merge path exists for
+  # this image the way the backend arm64 images use).
+  - name: publish
+    image: woodpeckerci/plugin-docker-buildx
+    privileged: true
+    settings:
+      repo:
+        from_secret: oci_repo
+      registry:
+        from_secret: oci_registry
+      username:
+        from_secret: oci_registry_username
+      password:
+        from_secret: oci_registry_password
+      platforms: linux/amd64,linux/arm64
+      provenance: false
+      tag: sha-${CI_COMMIT_SHA:0:8},latest
+      # See build-dry-run: no BUILDER_IMAGE override, so buildkit-in-container
+      # never pulls the private toolchain base it cannot verify. The public
+      # Dockerfile default builds self-contained.
+      build_args:
+        SOURCE_COMMIT: ${CI_COMMIT_SHA}
+    when:
+      - evaluate: 'CI_PIPELINE_EVENT == "push" && CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
+      - event: manual
+
+  # Assert the published manifest per architecture. regctl image inspect on a
+  # manifest list returns the index, not a platform config, so resolve each
+  # platform's digest first and hand the digest-pinned ref to the verifier —
+  # a digest addresses exactly one platform, which is what its jq expects.
+  # jq/bash/coreutils(od) come from apk; regctl is not an Alpine package, so
+  # pull the pinned release binary (the agent reaches GitHub — linux.yml uses
+  # gh releases). The step runs on the amd64 agent, so fetch the amd64 build.
+  - name: verify
+    image: alpine:3.22
+    depends_on: [publish]
+    environment:
+      REGISTRY:
+        from_secret: oci_registry
+      OCI_REPO:
+        from_secret: oci_repo
+      REGISTRY_USERNAME:
+        from_secret: oci_registry_username
+      REGISTRY_PASSWORD:
+        from_secret: oci_registry_password
+      REGCTL_VERSION: v0.11.5
+    commands:
+      - apk add --no-cache curl jq bash coreutils
+      - curl -fsSL "https://github.com/regclient/regclient/releases/download/${REGCTL_VERSION}/regctl-linux-amd64" -o /usr/local/bin/regctl
+      - chmod 0755 /usr/local/bin/regctl
+      - regctl registry login "$REGISTRY" -u "$REGISTRY_USERNAME" -p "$REGISTRY_PASSWORD"
+      - TAG_REF="$OCI_REPO:sha-${CI_COMMIT_SHA:0:8}"
+      - AMD64_DIGEST="$(regctl image digest --platform linux/amd64 "$TAG_REF")"
+      - ARM64_DIGEST="$(regctl image digest --platform linux/arm64 "$TAG_REF")"
+      - IMAGE_REF="$OCI_REPO@$AMD64_DIGEST" EXPECTED_ARCH=amd64 EXPECTED_REVISION="$CI_COMMIT_SHA" bash ci/verify-oci-image.sh
+      - IMAGE_REF="$OCI_REPO@$ARM64_DIGEST" EXPECTED_ARCH=arm64 EXPECTED_REVISION="$CI_COMMIT_SHA" bash ci/verify-oci-image.sh
+    when:
+      - evaluate: 'CI_PIPELINE_EVENT == "push" && CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
+      - event: manual
+
+  # Boot the amd64 image and drive it end to end: pull, run with a startup-state
+  # fixture, wait for the HEALTHCHECK, probe /state and the PTP/IP port, then
+  # confirm graceful SIGTERM. dind supplies the daemon smoke-oci-image.sh drives.
+  - name: smoke
+    image: docker:dind
+    privileged: true
+    depends_on: [verify]
+    environment:
+      REGISTRY:
+        from_secret: oci_registry
+      REGISTRY_USERNAME:
+        from_secret: oci_registry_username
+      REGISTRY_PASSWORD:
+        from_secret: oci_registry_password
+      OCI_REPO:
+        from_secret: oci_repo
+    commands:
+      - apk add --no-cache bash
+      - IMAGE_REF="$OCI_REPO:sha-${CI_COMMIT_SHA:0:8}" bash ci/smoke-oci-image.sh
+    when:
+      - evaluate: 'CI_PIPELINE_EVENT == "push" && CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
+      - event: manual
