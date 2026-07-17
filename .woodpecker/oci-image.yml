@@ -46,6 +46,10 @@ steps:
       platforms: linux/amd64,linux/arm64
       provenance: false
       dry_run: true
+      # Let the Dockerfile own the OCI labels. auto_label would derive
+      # org.opencontainers.image.source from the git remote as ".../ptpsim.git"
+      # and overwrite the Dockerfile's ".../ptpsim" — which verify asserts on.
+      auto_label: false
       tag: sha-${CI_COMMIT_SHA:0:8}
       # No BUILDER_IMAGE override: the buildx plugin builds inside a
       # docker-container buildkit that does not inherit the host daemon's CA
@@ -75,6 +79,9 @@ steps:
         from_secret: oci_registry_password
       platforms: linux/amd64,linux/arm64
       provenance: false
+      # See build-dry-run: the Dockerfile owns the OCI labels, so auto_label's
+      # ".git"-suffixed source must not overwrite the label verify checks.
+      auto_label: false
       tag: sha-${CI_COMMIT_SHA:0:8},latest
       # See build-dry-run: no BUILDER_IMAGE override, so buildkit-in-container
       # never pulls the private toolchain base it cannot verify. The public
