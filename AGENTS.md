@@ -1,8 +1,7 @@
 
 
-This file is the project-specific override layer for *all* CLI agents. It
-
-
+This file is the project-specific override layer for *all* CLI agents. Read any
+user- or tool-level instructions supplied by your environment too; this file
 takes precedence on anything ptpsim-specific.
 
 ## What ptpsim is
@@ -29,9 +28,8 @@ must stand alone for an outside contributor with no access to the authors'
 machines. Never add:
 
 - Private hostnames, IPs, or registry/CI endpoints (internal registries,
-  `*.internal.*` hosts, tailnet names, dev-machine hostnames).
-
-
+  tailnet names, and dev-machine hostnames).
+- Absolute or user-specific paths into private checkouts or trees.
 - Cross-links into private issue trackers (`<consumer-repo>#123`) — restate the
   durable fact in place instead of linking to where it came from.
 - A private consumer's internals (app source paths, backend/service topology).
@@ -92,45 +90,27 @@ Documentation SHOULD precede the code change, not follow it.
 
 Run the workspace checks (*Build + test*) before pushing.
 
-### Querying the Fuji operator cohort
+### Private evidence and operator-only tooling
 
-When a private protocol, firmware, wire-format, or mobile-RE question is not
-answered by this repo, ask the Fuji operator cohort instead of guessing or
-copying RE narrative into ptpsim. The tool runs on nas; from any other host,
-prefix with `ssh nas`.
+This public repository must remain usable without access to private hosts,
+operator trees, captures, or issue trackers. Search the repository and its
+public issues before requesting evidence that is not available here.
 
-- Discover routing with `fuji-ask-operator --list`.
-- Ask questions with `fuji-ask-operator <op> "<question>"`.
-  ASK mode runs with host access by default so operators can inspect local
-  captures, graph data, and sibling repos. The prompt contract still forbids
-  permanent changes: temporary scratch files are okay when needed, but repo
-  files, graph facts, devices, persistent config, and other durable state stay
-  untouched.
-- Delegate scoped work with `fuji-ask-operator --do <op> "<task>"`.
-- File async questions with `fuji-ask-operator --consult --as <role> <op> "<question>"`.
-  Use the cohort role whose work you represent, for example `--as W3` when the
-  question is on behalf of client application.
+If your environment separately provides a private evidence or operator system,
+follow that system's own current instructions. Do not copy its hostnames,
 
-Before using `--do`, confirm scope with the human when the work drives
-hardware, takes a new capture, writes persistence, or is otherwise irreversible.
-Analyzing already-captured data or static artifacts may proceed without that
-extra confirmation.
+narrative into this repository. Bring back only the scoped conclusion and the
+public-safe evidence needed to review the manifest, schema, test, or design
+change.
 
-Routing guide: USB-PTP/PTP-IP/BLE/XLV/propcodes/FW-update -> `wire` (D3);
-reference app APK/FF0018API.so/iOS RE -> `mobile` (D6); SCP108A Linux/Flask/rpmsg ->
-`linux` (D4); camera parser/dispatcher/ThreadX/cfgdata/FF80 -> `fw-ff80`
-(D1); X-Processor 5 hardware/MMU/bootrom/sensors -> `soc` (D5);
-ff80rs/codeexec tooling -> `tools` (X1); knowledge-graph hygiene ->
-`curator` (X2).
+When required evidence is unavailable, file an evidence-gated public issue that
+states the literal question, camera/body and firmware scope, existing public
+anchors, safety constraints, and completion condition. Do not guess protocol
+behavior or present private access as a prerequisite for outside contributors.
 
-Search first, spawn second: each call is a full operator session. Do not inline
-the operator's answer as RE narrative here. Lift the durable conclusion into
-the manifest comment, schema doc string, or `DESIGN.md`, and reference the
-operator/spec path that supports it.
-
-The existing `docs/consults/` flow remains for public-consumer contract
-negotiation with the client application app. `fuji-ask-operator` is for private RE lookups
-behind a manifest entry; it complements that process and does not replace it.
+The existing `docs/consults/` flow remains the public consumer-contract path.
+Private evidence systems may inform that work, but do not replace its durable,
+public review trail.
 
 ### Schema and manifest changes
 
@@ -154,9 +134,10 @@ Memory note expanding on this: `feedback-eager-schema-cleanup-preproduction`.
   camera-protocol-mapper → generator pipeline. Memory:
   `feedback-data-via-generator-not-agent-authoring`.
 
-
-  trees. Reference them by path in comments where load-bearing, but
-  don't inline the content. Memory: `feedback-no-operations-in-ptpsim-source`.
+  do NOT belong in ptpsim source.** Private analyses stay in their owning
+  systems and must not be referenced by private path. Promote only the
+  public-safe evidence, reduced fixture, or scoped conclusion needed to review
+  the manifest/code change. Memory: `feedback-no-operations-in-ptpsim-source`.
 - **FFI types are hand-written**, not derived. Every `camera-config`
   schema add needs a matching FFI variant (in
   `crates/camera-protocol-ffi/src/mfg_index.rs`'s `Step` /
@@ -189,16 +170,13 @@ When sources disagree about a protocol fact:
    primary checkout is read-only for agents; the pre-commit hook rejects
    commits made there.
 2. **Evaluate the host you're on — don't assume it from a doc.**
-
-   macOS). Check the platform your harness reports before relying on
+   Sessions run on different Linux and macOS machines. Check the platform your
+   harness reports before relying on
    host-specific paths, tools, or capabilities; static host facts
    written into docs go stale and have misled agents before.
-
-
-   the encoded path is the checkout's absolute path with `/` → `-`, so
-   it differs per host — e.g. `-home-eric-git-ptpsim` on the Linux
-   host). The index files name the project arc, conventions, and
-   references.
+3. **Read** your agent's project memory if the environment provides one. Do not
+   assume that another contributor has the same agent, memory location, or
+   checkout path; durable project instructions belong in this repository.
 4. **Check** `gh issue list` for open work. Pending operational tasks
    (CI, correctness, follow-ups) are filed there; this is the project
    backlog.
@@ -213,8 +191,8 @@ When sources disagree about a protocol fact:
 - iOS app UI / lifecycle — that's the consumer (client application). ptpsim's
   obligation ends at the FFI surface.
 
-  that tree's own sessions, surfaced to ptpsim as updated manifest
-  data + cited docs.
+  its owning system and surfaced here only as public-safe manifest data,
+  reduced evidence, and cited public docs.
 
   shutdown, and control endpoints; the lifecycle policy lives in the
   consumer.
