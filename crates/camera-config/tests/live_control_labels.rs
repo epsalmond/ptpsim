@@ -1,12 +1,12 @@
-//! #100 — the four live-control families (aperture, ISO, shutter, exposure-bias)
-//! carry value→label tables in the consolidated manifest, sourced from the
-//! client application catalog through the evidence→generator pipeline (app-source
-//! provenance). The labels live in the GENERATED consolidated (the manifest the
-//! service + app load), not the curated base, so this asserts against it.
+//! The four live-control families (aperture, ISO, shutter, exposure-bias) carry
+//! value→label tables in the consolidated manifest. ISO/shutter labels are
+//! curated in the base manifest; aperture and exposure-bias labels come from
+//! reviewed evidence at generation time — so these assertions exercise the
+//! generated artifact loaded by services and apps.
 //!
 //! Keys reflect each property's real wire datatype: aperture u16, ISO/shutter u32
 //! (0x80000000-flag forms), exposure-bias signed i16 (#88) — so its keys are the
-//! signed milliEV the codec decodes, not client application's u16 bit-pattern.
+//! signed milliEV the codec decodes, not a client's u16 bit-pattern.
 
 use std::path::PathBuf;
 
@@ -22,8 +22,9 @@ fn consolidated() -> CameraManifest {
 #[test]
 fn aperture_labels_resolve_from_the_consolidated_manifest() {
     let m = consolidated();
-    // u16 raw = f-stop × 100; labels are client application's catalog strings.
+    // u16 raw = f-stop × 100.
     assert_eq!(m.value_label(0x5007, 280), Some("F2.8"));
+    assert_eq!(m.value_label(0x5007, 1100), Some("F11"));
     assert_eq!(m.value_label(0x5007, 3200), Some("F32"));
     assert_eq!(m.value_label(0x5007, 999), None); // an unlabeled raw value
 }

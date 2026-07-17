@@ -1426,20 +1426,12 @@ fn action_returns_pcss_keepalive_recipe() {
     assert_eq!(keepalive.mode, "");
     assert!(keepalive.initiator.as_ref().unwrap().params.is_empty());
     assert!(keepalive.triggers.is_empty());
-    assert_eq!(keepalive.initiator.as_ref().unwrap().steps.len(), 2);
+    assert_eq!(keepalive.initiator.as_ref().unwrap().steps.len(), 1);
     assert!(matches!(
         keepalive.initiator.as_ref().unwrap().steps[0],
         EntryStep::SetProp {
             prop: 0xd21c,
             value: 0,
-            ..
-        }
-    ));
-    assert!(matches!(
-        keepalive.initiator.as_ref().unwrap().steps[1],
-        EntryStep::SetProp {
-            prop: 0xd207,
-            value: 1,
             ..
         }
     ));

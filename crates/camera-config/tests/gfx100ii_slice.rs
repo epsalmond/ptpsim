@@ -509,19 +509,59 @@ fn wireless_tether_keepalive_action_is_session_scaffold_not_settings() {
     assert_eq!(keepalive.mode, "");
     assert!(keepalive.initiator().unwrap().params.is_empty());
     assert!(keepalive.triggers.is_empty());
-    assert_eq!(keepalive.initiator().unwrap().steps.len(), 2);
+    assert_eq!(keepalive.initiator().unwrap().steps.len(), 1);
     assert_eq!(
         keepalive.initiator().unwrap().steps[0].set_prop.as_deref(),
         Some("0xd21c")
     );
     assert_eq!(keepalive.initiator().unwrap().steps[0].value, Some(0));
-    assert_eq!(
-        keepalive.initiator().unwrap().steps[1].set_prop.as_deref(),
-        Some("0xd207")
-    );
-    assert_eq!(keepalive.initiator().unwrap().steps[1].value, Some(1));
     assert_eq!(m.properties["0xd21c"].kind, PropertyKind::Scaffold);
-    assert_eq!(m.properties["0xd207"].kind, PropertyKind::Scaffold);
+    let priority_mode = &m.properties["0xd207"];
+    assert_eq!(priority_mode.name, "priorityMode");
+    assert_eq!(priority_mode.ptype.as_deref(), Some("u16"));
+    assert_eq!(priority_mode.access.as_deref(), Some("readWrite"));
+    assert_eq!(priority_mode.kind, PropertyKind::Scaffold);
+    assert_eq!(priority_mode.labels["1"], "cameraPriority");
+    assert_eq!(priority_mode.labels["2"], "pcPriority");
+    assert!(priority_mode.controls.is_empty());
+}
+
+#[test]
+fn standard_exposure_properties_have_display_labels() {
+    let m = gfx();
+    assert_eq!(m.value_label(0x500f, -1), Some("AUTO1"));
+    assert_eq!(m.value_label(0x500f, 320), Some("320"));
+    assert_eq!(m.value_label(0x500d, 244), Some("1/4000"));
+    assert_eq!(m.value_label(0x500d, 64_000_030), Some("2m"));
+    let generated = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml"))
+        .expect("consolidated manifest loads");
+    // Aperture and exposure-bias labels come from reviewed evidence at generation
+    // time, so they exist only on the consolidated manifest.
+    assert_eq!(generated.value_label(0x5007, 280), Some("F2.8"));
+    assert_eq!(generated.value_label(0x5010, 333), Some("+0.3"));
+    for code in [0x500f, 0x500d, 0x5007, 0x5010] {
+        let property = generated.property(code).expect("exposure property exists");
+        let descriptor = property
+            .descriptor
+            .as_ref()
+            .expect("enum descriptor exists");
+        for raw in &descriptor.values {
+            assert!(
+                generated.value_label(code, *raw).is_some(),
+                "property 0x{code:04x} descriptor value {raw} needs a label"
+            );
+        }
+    }
+
+    let shutter = generated.property(0x500d).unwrap();
+    let mut shutter_labels = std::collections::BTreeSet::new();
+    for raw in &shutter.descriptor.as_ref().unwrap().values {
+        let label = generated.value_label(0x500d, *raw).unwrap();
+        assert!(
+            shutter_labels.insert(label),
+            "shutter descriptor label {label:?} must not be duplicated"
+        );
+    }
 }
 
 #[test]
@@ -881,9 +921,10 @@ fn getobject_params_differ_per_connection_same_verb() {
 #[test]
 fn scaffold_props_are_tagged_so_clients_can_filter_them_out_of_settings_ui() {
     // 0xD039 / 0xD1BC / 0xD21C / 0xD207 LOOK settable on the wire but are
-    // protocol scaffolding (virtual shutter, live-view select, keepalives) —
-    // wirePCSSShootDownload20260523. `kind: scaffold` lets clients filter
-    // them from settings UI without re-deriving the negative list each time.
+    // protocol scaffolding (virtual shutter, live-view select, keepalive, and
+    // SDK priority selection) — wirePCSSShootDownload20260523. `kind: scaffold`
+    // lets clients filter them from settings UI without re-deriving the
+    // negative list each time.
     let m = gfx();
     for code in ["0xd039", "0xd1bc", "0xd21c", "0xd207"] {
         let p = m
