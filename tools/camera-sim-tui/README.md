@@ -18,11 +18,15 @@ same `PTPSIM_*` knobs that `./run` already accepts.
 
 The TUI registers `POST /callbacks {"url":"http://127.0.0.1:8770/state"}` with
 the simulator. The service sends the current snapshot immediately and then
-pushes later changes. The TUI also serves:
+pushes later changes. The TUI fetches the manifest action catalog from the
+simulator and also serves:
 
-- `GET /actions` — self-describing action registry with hotkeys and HTTP paths.
-- `POST /actions/<id>` — invoke the same generic simulator mutation as the
-  matching hotkey.
+- `GET /actions` — the fetched manifest action catalog, byte-for-byte in the
+  same JSON shape as the simulator service.
+- `POST /actions/<id>` — proxy a responder-role manifest action after exact
+  revision/mode/parameter validation.
+- `GET /operator/actions` and `POST /operator/actions/<id>` — inspect or invoke
+  process-local phase and quit controls; these are not camera actions.
 - `GET /state` — last state snapshot received by the TUI.
 
 The default visual style is `--theme cyberpunk --glyphs unicode`: black

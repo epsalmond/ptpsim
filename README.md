@@ -2,8 +2,8 @@
 
 A scriptable, open-source **camera-protocol simulator** (PTP/IP, responder role).
 ptpsim runs a believable camera from manifest **data** — one generic engine, no
-per-manufacturer code — and consumes observations produced by external probe
-tooling such as `camera-protocol-mapper`.
+per-manufacturer code — and records real-camera and simulator traffic through
+one fail-closed `camera-observation/v1` evidence contract.
 
 See [`DESIGN.md`](DESIGN.md) for the full design.
 

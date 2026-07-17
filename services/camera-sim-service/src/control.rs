@@ -5,6 +5,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use camera_config::{
+    ActionInvocationRequest, ActionOutcome, ActionRole, ExecutionContext, ObservationRecorder,
+    ResponderMutation,
+};
 use camera_sim::{Engine, StateOverlay};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -56,35 +60,14 @@ impl Health {
 
 #[derive(Clone)]
 pub struct Context {
-    health: Health,
-    engine: Arc<Mutex<Engine>>,
-    state_notify: Arc<Notify>,
-    callbacks: Registry,
-    trace: TraceLog,
-    metrics: Metrics,
-    shutdown: broadcast::Sender<()>,
-}
-
-impl Context {
-    pub fn new(
-        health: Health,
-        engine: Arc<Mutex<Engine>>,
-        state_notify: Arc<Notify>,
-        callbacks: Registry,
-        trace: TraceLog,
-        metrics: Metrics,
-        shutdown: broadcast::Sender<()>,
-    ) -> Self {
-        Self {
-            health,
-            engine,
-            state_notify,
-            callbacks,
-            trace,
-            metrics,
-            shutdown,
-        }
-    }
+    pub(crate) health: Health,
+    pub(crate) engine: Arc<Mutex<Engine>>,
+    pub(crate) state_notify: Arc<Notify>,
+    pub(crate) callbacks: Registry,
+    pub(crate) trace: TraceLog,
+    pub(crate) observations: ObservationRecorder,
+    pub(crate) metrics: Metrics,
+    pub(crate) shutdown: broadcast::Sender<()>,
 }
 
 pub async fn handle(mut stream: TcpStream, context: Context) {
@@ -119,6 +102,34 @@ pub async fn handle(mut stream: TcpStream, context: Context) {
                 Err(error) => Response::bad_request(error),
             }
         }
+        ("GET", path) if path == "/observations" || path.starts_with("/observations?") => {
+            match cursor_after(path, "observations") {
+                Ok(after) => match context.observations.export_json(after) {
+                    Ok(body) => Response::ok(body),
+                    Err(error) => Response::server_error(error.to_string()),
+                },
+                Err(error) => Response::bad_request(error),
+            }
+        }
+        ("GET", "/actions") => {
+            let catalog = context.engine.lock().await.manifest().action_catalog();
+            match serde_json::to_string(&catalog) {
+                Ok(body) => Response::ok(body),
+                Err(error) => Response::server_error(error.to_string()),
+            }
+        }
+        ("POST", path) if path.starts_with("/actions/") => {
+            let action_id = path.trim_start_matches("/actions/");
+            if action_id.is_empty() || action_id.contains('/') {
+                Response::not_found()
+            } else {
+                match invoke_action(&context, action_id, &req.body).await {
+                    Ok(body) => Response::ok(body),
+                    Err(ActionInvokeError::BadRequest(error)) => Response::bad_request(error),
+                    Err(ActionInvokeError::Internal(error)) => Response::server_error(error),
+                }
+            }
+        }
         ("PATCH", "/state") => {
             match apply_state_patch(&context.health, &context.engine, &req.body).await {
                 Ok(body) => {
@@ -148,22 +159,142 @@ pub async fn handle(mut stream: TcpStream, context: Context) {
 }
 
 fn trace_after(path: &str) -> Result<u64, String> {
+    cursor_after(path, "trace")
+}
+
+fn cursor_after(path: &str, endpoint: &str) -> Result<u64, String> {
     let Some((_, query)) = path.split_once('?') else {
         return Ok(0);
     };
     let mut after = 0;
     for pair in query.split('&') {
         let Some((key, value)) = pair.split_once('=') else {
-            return Err("trace query parameters must use key=value".to_string());
+            return Err(format!("{endpoint} query parameters must use key=value"));
         };
         if key != "after" {
-            return Err(format!("unknown trace query parameter '{key}'"));
+            return Err(format!("unknown {endpoint} query parameter '{key}'"));
         }
         after = value
             .parse::<u64>()
-            .map_err(|_| "trace 'after' cursor must be an unsigned integer".to_string())?;
+            .map_err(|_| format!("{endpoint} 'after' cursor must be an unsigned integer"))?;
     }
     Ok(after)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ActionRequestBody {
+    catalog_revision: String,
+    mode: String,
+    role: ActionRole,
+    #[serde(default)]
+    parameters: Vec<camera_config::ActionArgument>,
+}
+
+enum ActionInvokeError {
+    BadRequest(String),
+    Internal(String),
+}
+
+async fn invoke_action(
+    context: &Context,
+    action_id: &str,
+    body: &[u8],
+) -> Result<String, ActionInvokeError> {
+    let request: ActionRequestBody = serde_json::from_slice(body).map_err(|error| {
+        ActionInvokeError::BadRequest(format!("invalid JSON action request: {error}"))
+    })?;
+    let invocation = ActionInvocationRequest {
+        catalog_revision: request.catalog_revision.clone(),
+        action_id: action_id.to_string(),
+        connection: context.health.connection.clone(),
+        mode: request.mode.clone(),
+        role: request.role,
+        parameters: request.parameters.clone(),
+    };
+    let supplied = request
+        .parameters
+        .iter()
+        .map(|argument| (argument.name.clone(), serde_json::json!(argument.value)))
+        .collect();
+    let mut engine = context.engine.lock().await;
+    let resolved = match engine.manifest().resolve_action_invocation(&invocation) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            context
+                .observations
+                .record_action(
+                    execution_context(&context.health.connection, &request.mode, &engine),
+                    request.catalog_revision,
+                    action_id.to_string(),
+                    request.role,
+                    supplied,
+                    ActionOutcome::Rejected,
+                )
+                .map_err(|error| ActionInvokeError::Internal(error.to_string()))?;
+            return Err(ActionInvokeError::BadRequest(format!(
+                "{}: {error}",
+                error.code()
+            )));
+        }
+    };
+    let (count, affected) = match resolved.responder_mutation {
+        Some(ResponderMutation::EnqueueObjects { count_param }) => {
+            let count = resolved.parameters[&count_param];
+            let count = u32::try_from(count).map_err(|_| {
+                ActionInvokeError::Internal(format!(
+                    "resolved parameter '{count_param}' exceeds u32"
+                ))
+            })?;
+            let affected = engine
+                .pending_standard_object_enqueue(count)
+                .map_err(ActionInvokeError::Internal)?;
+            (count, affected)
+        }
+        None => {
+            return Err(ActionInvokeError::Internal(
+                "resolved responder action has no mutation".into(),
+            ));
+        }
+    };
+    let parameters = resolved
+        .parameters
+        .iter()
+        .map(|(name, value)| (name.clone(), serde_json::json!(value)))
+        .collect();
+    context
+        .observations
+        .record_action(
+            execution_context(&context.health.connection, &request.mode, &engine),
+            request.catalog_revision,
+            action_id.to_string(),
+            request.role,
+            parameters,
+            ActionOutcome::Succeeded,
+        )
+        .map_err(|error| ActionInvokeError::Internal(error.to_string()))?;
+    let applied = engine
+        .enqueue_standard_objects(count)
+        .map_err(ActionInvokeError::Internal)?;
+    debug_assert_eq!(applied, affected, "preflighted responder mutation drifted");
+    context.state_notify.notify_one();
+    context.metrics.touch();
+    Ok(serde_json::json!({
+        "ok": true,
+        "actionId": action_id,
+        "role": request.role,
+        "affectedObjects": affected,
+        "queue": engine.transfer_queue_stats(),
+    })
+    .to_string())
+}
+
+fn execution_context(connection: &str, mode: &str, engine: &Engine) -> ExecutionContext {
+    ExecutionContext {
+        connection: connection.to_string(),
+        mode: mode.to_string(),
+        state: engine.phase().state_name().to_string(),
+    }
 }
 
 async fn apply_state_patch(
@@ -211,6 +342,13 @@ impl Response {
     fn bad_request(error: String) -> Self {
         Self {
             status: "400 Bad Request".to_string(),
+            body: serde_json::json!({ "error": error }).to_string(),
+        }
+    }
+
+    fn server_error(error: String) -> Self {
+        Self {
+            status: "500 Internal Server Error".to_string(),
             body: serde_json::json!({ "error": error }).to_string(),
         }
     }

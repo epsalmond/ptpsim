@@ -6,47 +6,66 @@
 //! unresolved (they become lints, never load errors), which is what lets the
 //! public engine run manifests whose evidence lives in a private repo.
 
+pub mod action;
 pub mod activity;
 pub mod error;
 pub mod generate;
 pub mod index;
 pub mod model;
+pub mod observation;
 pub mod predicate;
 pub mod query;
+pub mod recorder;
 pub mod std_names;
 pub mod store;
 pub mod trace;
 pub mod version;
 
+pub use action::{
+    ActionArgument, ActionAvailability, ActionCatalog, ActionCatalogEntry, ActionCatalogParameter,
+    ActionCatalogParameterKind, ActionInvocationRequest, ActionResolutionError,
+    ActionRoleParameters, ResolvedActionInvocation,
+};
 pub use activity::{
     ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityDisplayRole,
     ConnectionActivityExecutorSpan, ConnectionActivityHostCheckpoint, ConnectionActivitySequence,
     ExecutorSpanBinding, HostCheckpointBinding,
 };
 pub use error::{ConfigError, Lint, ManifestError, Severity};
-pub use generate::{enrich, generate_proposal};
+pub use generate::{
+    apply_review, proposal_json, propose, validate_bundles, validation_report_json,
+    CandidateAssertion, GenerationError, Proposal, ProposalCandidate, ProposalRecordDisposition,
+    ProposalRecordStatus, ProposalReview, RecordDisposition, ReviewDisposition,
+    ValidatedObservations, ValidationReport, ValidationStatus, PROPOSAL_SCHEMA, REVIEW_SCHEMA,
+    VALIDATION_REPORT_SCHEMA,
+};
 pub use model::{
-    parse_hex_bytes, parse_hex_code, parse_hex_u32, Action, ActionEffect, ActionVerb,
-    AvailableWhen, AwaitSource, AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity,
-    CameraInitiatedData, CameraInitiatedHandoff, CameraInitiatedMetadata,
-    CameraInitiatedMetadataPhase, CameraInitiatedReceive, CameraInitiatedTransfer,
-    CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, Connection,
-    ConnectionTransition, Control, ControlOwner, ControlReadSource, ControlRole,
-    ControlSurfaceEntry, ControlWriteEffect, Descriptor, GateFailure, GateRequirement,
+    parse_hex_bytes, parse_hex_code, parse_hex_u32, Action, ActionEffect, ActionInitiator,
+    ActionParameter, ActionParameterKind, ActionResponder, ActionVerb, AvailableWhen, AwaitSource,
+    AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
+    CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
+    CameraInitiatedReceive, CameraInitiatedTransfer, CameraInitiatedTrigger, CameraManifest,
+    CaptureSource, CloseSession, Connection, ConnectionTransition, Control, ControlOwner,
+    ControlReadSource, ControlRole, ControlSurfaceEntry, Descriptor, GateFailure, GateRequirement,
     InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream,
     Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, ModeEntryExecution,
     ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
     ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
-    ObjectsAvailable, OpEffect, Operation, Payload, PayloadForm, PcssDiscoveryTarget,
-    PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyKind, PropertyValueEncoding,
-    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
-    ReestablishConnection, ResponseRetry, SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe,
-    SocketBindings, SocketRole, Step, StepParam, StructuredTextField, StructuredTextLayout,
-    StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy,
-    ValueSource, VersionCond, WireFraming, Workflow,
+    ObjectsAvailable, ObservedScope, OpEffect, Operation, Payload, PayloadForm,
+    PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyKind,
+    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
+    RecordLayout, RecordMemberRef, ReestablishConnection, ResponderMutation, ResponseRetry,
+    SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe, SocketBindings, SocketRole, Step,
+    StepParam, StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
+    TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
 };
+pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
 pub use query::{Availability, Support};
+pub use recorder::{
+    direct_epistemic, no_loss, payload_metadata, ObservationRecorder, PayloadMetadataBuilder,
+    RecorderError,
+};
 pub use store::{
     ConfigStore, ResolvedBleLiteralWrite, ResolvedBleStateTrigger, ResolvedCameraInitiatedTransfer,
 };
@@ -305,12 +324,14 @@ impl CameraManifest {
                 }
             }
             for (verb, action) in &conn.actions {
-                check_gate_steps(
-                    &action.steps,
-                    &format!("connection {id} action {verb:?}"),
-                    &defined_gates,
-                    &mut lints,
-                );
+                if let Some(initiator) = &action.initiator {
+                    check_gate_steps(
+                        &initiator.steps,
+                        &format!("connection {id} action {verb:?}"),
+                        &defined_gates,
+                        &mut lints,
+                    );
+                }
             }
         }
         lints
@@ -422,27 +443,28 @@ impl CameraManifest {
                 }
             }
             for (verb, action) in &connection.actions {
-                require_valid_ptp_steps(
-                    &action.steps,
-                    &format!("connections.{connection_id}.actions.{verb:?}"),
-                )?;
-                require_valid_open_channels(
-                    &action.steps,
-                    connection.bindings.as_ref(),
-                    &format!("connections.{connection_id}.actions.{verb:?}"),
-                    true,
-                )?;
-                require_valid_executor_activities(
-                    &action.activities,
-                    action.steps.len(),
-                    &format!("connections.{connection_id}.actions.{verb:?}.activities"),
-                )?;
-                for descriptor in &action.activities {
-                    require_consistent_activity_metadata(
-                        &mut activity_metadata,
-                        descriptor,
-                        &format!("connections.{connection_id}.actions.{verb:?}.activities"),
+                let path = format!("connections.{connection_id}.actions.{verb:?}");
+                require_valid_action_roles(action, &path)?;
+                if let Some(initiator) = &action.initiator {
+                    require_valid_ptp_steps(&initiator.steps, &path)?;
+                    require_valid_open_channels(
+                        &initiator.steps,
+                        connection.bindings.as_ref(),
+                        &path,
+                        true,
                     )?;
+                    require_valid_executor_activities(
+                        &initiator.activities,
+                        initiator.steps.len(),
+                        &format!("{path}.initiator.activities"),
+                    )?;
+                    for descriptor in &initiator.activities {
+                        require_consistent_activity_metadata(
+                            &mut activity_metadata,
+                            descriptor,
+                            &format!("{path}.initiator.activities"),
+                        )?;
+                    }
                 }
             }
         }
@@ -738,6 +760,99 @@ fn require_valid_init_retries(
     Ok(())
 }
 
+fn require_valid_action_roles(action: &Action, path: &str) -> Result<(), ManifestError> {
+    if action.initiator.is_none() && action.responder.is_none() {
+        return Err(ManifestError::Contract(format!(
+            "{path} must declare initiator or responder"
+        )));
+    }
+    if let Some(initiator) = &action.initiator {
+        let mut names = std::collections::BTreeSet::new();
+        if initiator
+            .params
+            .iter()
+            .any(|name| name.is_empty() || !names.insert(name.as_str()))
+        {
+            return Err(ManifestError::Contract(format!(
+                "{path}.initiator.params names must be non-empty and unique"
+            )));
+        }
+    }
+    for (index, trigger) in action.triggers.iter().enumerate() {
+        if !trigger.is_well_formed() {
+            return Err(ManifestError::Contract(format!(
+                "{path}.triggers[{index}] must contain exactly one trigger"
+            )));
+        }
+        if trigger
+            .objects_available
+            .is_some_and(|range| range.min > range.max)
+        {
+            return Err(ManifestError::Contract(format!(
+                "{path}.triggers[{index}].objectsAvailable min exceeds max"
+            )));
+        }
+    }
+    let Some(responder) = &action.responder else {
+        return Ok(());
+    };
+    let mut names = std::collections::BTreeSet::new();
+    for parameter in &responder.params {
+        if parameter.name.is_empty() || !names.insert(parameter.name.as_str()) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.responder.params names must be non-empty and unique"
+            )));
+        }
+        if parameter
+            .min
+            .zip(parameter.max)
+            .is_some_and(|(min, max)| min > max)
+        {
+            return Err(ManifestError::Contract(format!(
+                "{path}.responder parameter '{}' has min greater than max",
+                parameter.name
+            )));
+        }
+        if parameter.default.is_some_and(|default| {
+            parameter.min.is_some_and(|min| default < min)
+                || parameter.max.is_some_and(|max| default > max)
+        }) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.responder parameter '{}' default is out of range",
+                parameter.name
+            )));
+        }
+    }
+    match &responder.mutation {
+        ResponderMutation::EnqueueObjects { count_param } => {
+            let parameter = responder
+                .params
+                .iter()
+                .find(|parameter| parameter.name == *count_param)
+                .ok_or_else(|| {
+                    ManifestError::Contract(format!(
+                        "{path}.responder enqueueObjects references unknown countParam '{count_param}'"
+                    ))
+                })?;
+            let range = action
+                .triggers
+                .iter()
+                .find_map(|effect| effect.objects_available)
+                .ok_or_else(|| {
+                    ManifestError::Contract(format!(
+                        "{path}.responder enqueueObjects requires an objectsAvailable trigger"
+                    ))
+                })?;
+            if parameter.min != Some(range.min) || parameter.max != Some(range.max) {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.responder count parameter must use the objectsAvailable range"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn require_valid_object_transfer(
     manifest: &CameraManifest,
     connection: &Connection,
@@ -761,14 +876,20 @@ fn require_valid_object_transfer(
             read.mode
         )));
     }
+    let read_params = read
+        .initiator
+        .as_ref()
+        .map(|binding| binding.params.as_slice());
     match contract.strategy {
-        ObjectTransferStrategy::WholeObject if read.params.as_slice() != ["handle"] => {
+        ObjectTransferStrategy::WholeObject
+            if !read_params.is_some_and(|params| params == ["handle"]) =>
+        {
             return Err(ManifestError::Contract(format!(
                 "{path} wholeObject readAction must accept exactly [handle]"
             )));
         }
         ObjectTransferStrategy::Chunked
-            if read.params.as_slice() != ["handle", "offset", "length"] =>
+            if !read_params.is_some_and(|params| params == ["handle", "offset", "length"]) =>
         {
             return Err(ManifestError::Contract(format!(
                 "{path} chunked readAction must accept [handle, offset, length]"
@@ -791,7 +912,11 @@ fn require_valid_object_transfer(
                 "{path}.completion.action references a missing connection action"
             ))
         })?;
-        if action.params.as_slice() != ["handle"] {
+        if !action
+            .initiator
+            .as_ref()
+            .is_some_and(|binding| binding.params == ["handle"])
+        {
             return Err(ManifestError::Contract(format!(
                 "{path}.completion.action must accept exactly [handle]"
             )));
@@ -1018,6 +1143,11 @@ fn require_valid_ptp_steps_with_collections(
 ) -> Result<(), ManifestError> {
     for (index, step) in steps.iter().enumerate() {
         let step_path = format!("{path}.steps[{index}]");
+        if !step.is_well_formed() {
+            return Err(ManifestError::Contract(format!(
+                "{step_path} must contain exactly one action"
+            )));
+        }
         let mut array_binds = std::collections::BTreeSet::new();
         for capture in &step.captures {
             if capture.source == CaptureSource::TransactionId {

@@ -16,6 +16,7 @@ protocol-primitives = { workspace = true }
 ptp-core = { workspace = true }
 uniffi = "0.31"
 serde_yaml = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
@@ -30,4 +31,3 @@ protocol-primitives = { workspace = true }
 camera-sim = { workspace = true }
 camera-media-store = { workspace = true }
 futures = { workspace = true }
-serde_json = { workspace = true }

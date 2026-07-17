@@ -373,7 +373,7 @@ fn legacy_app_init_and_usb_ptp_list_images_over_loopback() {
     ];
     const CAMERA_REMOTE_MANIFEST: &str = r#"
 schema: camera-config/v1
-camera: { manufacturer: FUJIFILM, model: X-A7 }
+camera: { manufacturer: FUJIFILM, model: X-A7, firmware: "1.00" }
 values:
   unusedGuid: { type: fixed, value: "f2e4538fada5485d87b27f0bd3d5ded0" }
   unusedName: { type: fixed, value: ptpsim }
@@ -398,7 +398,7 @@ properties: {}
 
     let root = tmp_card();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let server = Server::bind(Config {
             instance_id: "legacy-app-test".into(),
             profile: "fuji/xa7/static".into(),
@@ -418,9 +418,10 @@ properties: {}
         .await
         .unwrap();
         let command = server.command_addr();
+        let control = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(server.run(rx));
-        (command, tx, task)
+        (command, control, tx, task)
     });
 
     let mut stream = TcpStream::connect(command_addr).unwrap();
@@ -470,6 +471,27 @@ properties: {}
         usb_ptp::decode(&read_frame(&mut stream)).unwrap(),
         PtpIpPacket::OperationResponse(response) if response.code == 0x2001
     ));
+
+    let observations = http_get(control_addr, "/observations?after=0");
+    let export: serde_json::Value = serde_json::from_str(
+        observations
+            .split_once("\r\n\r\n")
+            .expect("observation response body")
+            .1,
+    )
+    .unwrap();
+    let records = export["records"].as_array().unwrap();
+    let transaction = records
+        .iter()
+        .find(|record| record["kind"] == "ptpTransaction" && record["transactionId"] == 2)
+        .expect("USB-framed GetObjectHandles transaction observation");
+    assert_eq!(transaction["request"]["framing"], "usb");
+    let bundle = std::iter::once(export["header"].to_string())
+        .chain(records.iter().map(serde_json::Value::to_string))
+        .collect::<Vec<_>>()
+        .join("\n");
+    camera_config::validate_bundles(&[&bundle])
+        .expect("legacy manufacturer app USB export is canonical input");
 
     let _ = shutdown_tx.send(());
     rt.block_on(handle).unwrap();
@@ -679,6 +701,25 @@ fn service_drives_image_import_over_tcp() {
         health["metrics"]["idle_ms"].as_u64().is_some(),
         "health metrics should include idle time: {body}"
     );
+    let observations = http_get(control_addr, "/observations?after=0");
+    let export: serde_json::Value = serde_json::from_str(
+        observations
+            .split_once("\r\n\r\n")
+            .expect("observation response body")
+            .1,
+    )
+    .unwrap();
+    let bundle = std::iter::once(export["header"].to_string())
+        .chain(
+            export["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(serde_json::Value::to_string),
+        )
+        .collect::<Vec<_>>()
+        .join("\n");
+    camera_config::validate_bundles(&[&bundle]).expect("PTP export is canonical input");
 
     // Shutdown via control plane.
     let _ = http_post(control_addr, "/shutdown");
@@ -916,7 +957,7 @@ properties: {}
 "#;
     let root = tmp_card();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, event_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, event_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
@@ -938,9 +979,10 @@ properties: {}
         let evt = server
             .event_addr_opt()
             .expect("app connection has event socket");
+        let control = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
-        (cmd, evt, tx, h)
+        (cmd, evt, control, tx, h)
     });
 
     // Connect the event socket FIRST — the real app opens it during session
@@ -970,6 +1012,31 @@ properties: {}
         }
         other => panic!("expected Event packet, got {other:?}"),
     }
+
+    let observations = http_get(control_addr, "/observations?after=0");
+    let export: serde_json::Value = serde_json::from_str(
+        observations
+            .split_once("\r\n\r\n")
+            .expect("observation response body")
+            .1,
+    )
+    .unwrap();
+    let records = export["records"].as_array().unwrap();
+    let transaction = records
+        .iter()
+        .find(|record| record["kind"] == "ptpTransaction" && record["transactionId"] == 2)
+        .expect("AF transaction observation");
+    let event = records
+        .iter()
+        .find(|record| record["kind"] == "ptpEvent" && record["event"] == "0xc005")
+        .expect("AF event observation");
+    assert_eq!(event["transactionId"], 0);
+    assert_eq!(event["transactionRecordId"], transaction["recordId"]);
+    assert_eq!(
+        event["connectionInstance"],
+        transaction["connectionInstance"]
+    );
+    assert_eq!(event["session"], transaction["session"]);
 
     rt.block_on(async {
         let _ = shutdown_tx.send(());
@@ -1001,7 +1068,7 @@ fn service_serves_a_large_object_in_a_single_frame() {
     };
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+    let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
             instance_id: "test".into(),
             profile: "fuji/gfx100ii".into(),
@@ -1020,9 +1087,10 @@ fn service_serves_a_large_object_in_a_single_frame() {
         };
         let server = Server::bind(config).await.unwrap();
         let cmd = server.command_addr();
+        let control = server.control_addr();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let h = tokio::spawn(server.run(rx));
-        (cmd, tx, h)
+        (cmd, control, tx, h)
     });
 
     let mut s = TcpStream::connect(command_addr).unwrap();
@@ -1047,6 +1115,26 @@ fn service_serves_a_large_object_in_a_single_frame() {
     assert_eq!(payload.len(), 2 * 1024 * 1024);
     assert_eq!(&payload[0..2], &[0xFF, 0xD8]);
     assert_eq!(&payload[payload.len() - 2..], &[0xFF, 0xD9]);
+
+    let observations = http_get(control_addr, "/observations?after=0");
+    let export: serde_json::Value = serde_json::from_str(
+        observations
+            .split_once("\r\n\r\n")
+            .expect("observation response body")
+            .1,
+    )
+    .unwrap();
+    let transaction = export["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["kind"] == "ptpTransaction" && record["transactionId"] == 3)
+        .expect("GetObject transaction observation");
+    let metadata = &transaction["response"]["data"]["payload"];
+    let expected = camera_config::payload_metadata(&payload);
+    assert_eq!(transaction["outcome"], "ok");
+    assert_eq!(metadata["length"], expected.length);
+    assert_eq!(metadata["sha256"], expected.sha256);
 
     rt.block_on(async {
         let _ = shutdown_tx.send(());
@@ -2725,5 +2813,261 @@ fn control_patch_state_notifies_callback_observer() {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn action_catalog_preflights_responder_mutation_and_exports_observation() {
+    let root = tmp_card_with_jpegs(3);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (control_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "action-contract".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "wireless-tether".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 1,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let control = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(server.run(rx));
+        (control, tx, handle)
+    });
+
+    let catalog_response = http_get(control_addr, "/actions");
+    let catalog: serde_json::Value = serde_json::from_str(
+        catalog_response
+            .split_once("\r\n\r\n")
+            .expect("catalog response body")
+            .1,
+    )
+    .unwrap();
+    let revision = catalog["revision"].as_str().unwrap();
+    let shutter = catalog["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["connection"] == "wireless-tether" && action["actionId"] == "shutter")
+        .expect("wireless shutter in catalog");
+    assert_eq!(
+        shutter["supportedRoles"],
+        serde_json::json!(["initiator", "responder"])
+    );
+
+    let wrong_mode = serde_json::json!({
+        "catalogRevision": revision,
+        "mode": "image-transfer",
+        "role": "responder",
+        "parameters": [],
+    });
+    let rejected = http_post_json(control_addr, "/actions/shutter", &wrong_mode.to_string());
+    assert!(rejected.starts_with("HTTP/1.1 400"), "{rejected}");
+    assert!(rejected.contains("wrongMode"), "{rejected}");
+
+    let accepted = serde_json::json!({
+        "catalogRevision": revision,
+        "mode": "shooting/stills",
+        "role": "responder",
+        "parameters": [],
+    });
+    let response = http_post_json(control_addr, "/actions/shutter", &accepted.to_string());
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("\"affectedObjects\":1"), "{response}");
+
+    let observations = http_get(control_addr, "/observations?after=0");
+    let body: serde_json::Value = serde_json::from_str(
+        observations
+            .split_once("\r\n\r\n")
+            .expect("observation response body")
+            .1,
+    )
+    .unwrap();
+    assert_eq!(body["schema"], "camera-observation/v1");
+    let records = body["records"].as_array().unwrap();
+    assert!(records.iter().any(|record| {
+        record["kind"] == "actionInvocation"
+            && record["actionId"] == "shutter"
+            && record["outcome"] == "rejected"
+    }));
+    assert!(records.iter().any(|record| {
+        record["kind"] == "actionInvocation"
+            && record["actionId"] == "shutter"
+            && record["outcome"] == "succeeded"
+    }));
+    let bundle = std::iter::once(body["header"].to_string())
+        .chain(records.iter().map(serde_json::Value::to_string))
+        .collect::<Vec<_>>()
+        .join("\n");
+    camera_config::validate_bundles(&[&bundle]).expect("service export is canonical input");
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(async {
+        let _ = handle.await;
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn responder_action_has_no_side_effect_when_observation_append_fails() {
+    let root = tmp_card_with_jpegs(2);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (control_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "action-recording-failure".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "wireless-tether".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 1,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let control = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(server.run(rx));
+        (control, tx, handle)
+    });
+
+    let catalog_response = http_get(control_addr, "/actions");
+    let catalog: serde_json::Value = serde_json::from_str(
+        catalog_response
+            .split_once("\r\n\r\n")
+            .expect("catalog response body")
+            .1,
+    )
+    .unwrap();
+    let request = serde_json::json!({
+        "catalogRevision": catalog["revision"],
+        "mode": "shooting/stills",
+        "role": "responder",
+        "parameters": [],
+    });
+    let before = http_get(control_addr, "/state");
+    let before: serde_json::Value =
+        serde_json::from_str(before.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(before["transfer_queues"]["standard"]["queued"], 0);
+
+    std::fs::remove_file(
+        root.join(".ptpsim")
+            .join("observations-action-recording-failure.jsonl"),
+    )
+    .unwrap();
+    let response = http_post_json(control_addr, "/actions/shutter", &request.to_string());
+    assert!(response.starts_with("HTTP/1.1 500"), "{response}");
+    let after = http_get(control_addr, "/state");
+    let after: serde_json::Value =
+        serde_json::from_str(after.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(after["transfer_queues"]["standard"]["queued"], 0);
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(async {
+        let _ = handle.await;
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn observation_cursor_survives_service_restart() {
+    let root = tmp_card_with_jpegs(2);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let config = Config {
+        instance_id: "observation-restart".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "wireless-tether".into(),
+        manifest_yaml: real_gfx_manifest(),
+        media_root: root.clone(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: None,
+        event_bind: None,
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+        state_callback: None,
+    };
+
+    let start = |config: Config| async move {
+        let server = Server::bind(config).await.unwrap();
+        let control = server.control_addr();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(server.run(shutdown_rx));
+        (control, shutdown_tx, handle)
+    };
+    let (control, shutdown_tx, handle) = rt.block_on(start(config.clone()));
+    let catalog_response = http_get(control, "/actions");
+    let catalog: serde_json::Value = serde_json::from_str(
+        catalog_response
+            .split_once("\r\n\r\n")
+            .expect("catalog body")
+            .1,
+    )
+    .unwrap();
+    let request = serde_json::json!({
+        "catalogRevision": catalog["revision"],
+        "mode": "shooting/stills",
+        "role": "responder",
+        "parameters": [],
+    });
+    assert!(
+        http_post_json(control, "/actions/shutter", &request.to_string())
+            .starts_with("HTTP/1.1 200")
+    );
+    let export = http_get(control, "/observations?after=0");
+    let export: serde_json::Value =
+        serde_json::from_str(export.split_once("\r\n\r\n").expect("observation body").1).unwrap();
+    let cursor = export["cursor"].as_u64().unwrap();
+    assert!(cursor > 0);
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
+
+    let (control, shutdown_tx, handle) = rt.block_on(start(config));
+    let resumed = http_get(control, &format!("/observations?after={cursor}"));
+    let resumed: serde_json::Value = serde_json::from_str(
+        resumed
+            .split_once("\r\n\r\n")
+            .expect("resumed observation body")
+            .1,
+    )
+    .unwrap();
+    let resumed_records = resumed["records"].as_array().unwrap();
+    assert_eq!(resumed_records.len(), 1);
+    assert_eq!(resumed_records[0]["kind"], "lifecycle");
+    assert_eq!(resumed_records[0]["ordinal"], cursor + 1);
+    let restart_cursor = resumed["cursor"].as_u64().unwrap();
+    assert!(
+        http_post_json(control, "/actions/shutter", &request.to_string())
+            .starts_with("HTTP/1.1 200")
+    );
+    let advanced = http_get(control, &format!("/observations?after={restart_cursor}"));
+    let advanced: serde_json::Value = serde_json::from_str(
+        advanced
+            .split_once("\r\n\r\n")
+            .expect("advanced observation body")
+            .1,
+    )
+    .unwrap();
+    assert_eq!(advanced["records"].as_array().unwrap().len(), 1);
+    assert!(advanced["cursor"].as_u64().unwrap() > restart_cursor);
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
     let _ = std::fs::remove_dir_all(root);
 }

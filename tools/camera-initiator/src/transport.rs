@@ -192,7 +192,7 @@ impl NativePtpTransport {
                 init_packet,
                 recovery,
             } = target;
-            match self.establish_connected(stream, init_packet).await {
+            match self.establish_observed(stream, init_packet).await {
                 Ok(opened) => opened,
                 Err(error) if error.endpoint_unavailable && recovery.is_some() => {
                     let recovery = recovery.expect("recovery was checked as present");
@@ -211,7 +211,7 @@ impl NativePtpTransport {
                     // creates a wholly new command session.
                     self.session_poisoned.store(false, Ordering::Release);
                     let recovered = self.pcss_recovered_target(recovery).await?;
-                    self.establish_connected(recovered.stream, recovered.init_packet)
+                    self.establish_observed(recovered.stream, recovered.init_packet)
                         .await
                         .map_err(|error| error.error)?
                 }
@@ -220,7 +220,7 @@ impl NativePtpTransport {
         } else {
             let (endpoint, init_packet) = self.direct_command_target()?;
             let stream = self.connect(endpoint).await?;
-            self.establish_connected(stream, init_packet)
+            self.establish_observed(stream, init_packet)
                 .await
                 .map_err(|error| error.error)?
         };
@@ -239,7 +239,7 @@ impl NativePtpTransport {
         let (endpoint, init_packet) = self.direct_command_target()?;
         let stream = self.connect_until(endpoint, deadline).await?;
         let (channel, opened) = self
-            .establish_connected(stream, init_packet)
+            .establish_observed(stream, init_packet)
             .await
             .map_err(|error| error.error)?;
         self.install_command_session(channel, opened).await
@@ -255,6 +255,18 @@ impl NativePtpTransport {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = StreamTrace::default();
         Ok(())
+    }
+
+    async fn establish_observed(
+        &self,
+        stream: TcpStream,
+        init_packet: Vec<u8>,
+    ) -> Result<(Arc<CommandChannel>, PtpSessionOpenResult), EstablishConnectedError> {
+        self.trace
+            .begin_ptp_session()
+            .map_err(trace_error)
+            .map_err(EstablishConnectedError::protocol)?;
+        self.establish_connected(stream, init_packet).await
     }
 
     async fn install_command_session(
@@ -670,6 +682,10 @@ impl NativePtpTransport {
                     close.response_code
                 ))));
             }
+            self.trace
+                .retry_logical_ptp_session()
+                .map_err(trace_error)
+                .map_err(EstablishConnectedError::protocol)?;
             response = self
                 .session_command(&channel, op::OPEN_SESSION, 1, vec![1], "OpenSession retry")
                 .await
@@ -1349,10 +1365,13 @@ impl NativePtpTransport {
     ) -> Result<(), PtpTransportError> {
         tokio::time::timeout(
             self.config.connect_timeout,
-            channel.write_frame(frame, &self.trace, trace_channel),
+            channel.write_frame(&frame, &self.trace, trace_channel),
         )
         .await
-        .map_err(|_| timeout_error(stage))?
+        .map_err(|_| timeout_error(stage))??;
+        self.trace
+            .ptp_frame("tx", self.framing, &frame)
+            .map_err(trace_error)
     }
 
     /// Establishment I/O keeps local trace failures terminal while allowing
@@ -1429,12 +1448,16 @@ impl NativePtpTransport {
         trace_channel: &str,
         stage: &str,
     ) -> Result<Vec<u8>, PtpTransportError> {
-        tokio::time::timeout(
+        let frame = tokio::time::timeout(
             self.config.connect_timeout,
             channel.read_frame(max, &self.trace, trace_channel),
         )
         .await
-        .map_err(|_| timeout_error(stage))?
+        .map_err(|_| timeout_error(stage))??;
+        self.trace
+            .ptp_frame("rx", self.framing, &frame)
+            .map_err(trace_error)?;
+        Ok(frame)
     }
 
     fn runtime_key_values(&self) -> Vec<KeyValue> {
@@ -1531,15 +1554,23 @@ impl PtpExecutorTransport for NativePtpTransport {
     async fn send_command_frame(&self, frame: Vec<u8>) -> Result<(), PtpTransportError> {
         self.active_channel()
             .await?
-            .write_frame(frame, &self.trace, "command")
-            .await
+            .write_frame(&frame, &self.trace, "command")
+            .await?;
+        self.trace
+            .ptp_frame("tx", self.framing, &frame)
+            .map_err(trace_error)
     }
 
     async fn next_command_frame(&self) -> Result<Vec<u8>, PtpTransportError> {
-        self.active_channel()
+        let frame = self
+            .active_channel()
             .await?
             .read_frame(self.config.max_frame_bytes, &self.trace, "command")
-            .await
+            .await?;
+        self.trace
+            .ptp_frame("rx", self.framing, &frame)
+            .map_err(trace_error)?;
+        Ok(frame)
     }
 
     async fn next_event_frame(&self, event_code: u16) -> Result<Vec<u8>, PtpTransportError> {
@@ -1572,6 +1603,7 @@ impl PtpExecutorTransport for NativePtpTransport {
             let event = parse_event(channel.framing, frame.clone())
                 .map_err(|error| failed(error.to_string()))?
                 .ok_or_else(|| failed("event socket returned a non-event frame"))?;
+            self.trace.ptp_event(&event).map_err(trace_error)?;
             if event.code == event_code {
                 return Ok(frame);
             }
@@ -1596,7 +1628,7 @@ impl PtpExecutorTransport for NativePtpTransport {
             .ok_or(PtpTransportError::NotConnected)?;
         if let Some(frame) = transport_close_frame {
             channel
-                .write_frame(frame, &self.trace, "transportClose")
+                .write_frame(&frame, &self.trace, "transportClose")
                 .await?;
         }
         channel.shutdown().await?;
@@ -1680,15 +1712,15 @@ impl CommandChannel {
 
     async fn write_frame(
         &self,
-        frame: Vec<u8>,
+        frame: &[u8],
         trace: &TraceWriter,
         channel: &str,
     ) -> Result<(), PtpTransportError> {
         self.require_usable()?;
         let mut writer = self.writer.lock().await;
-        trace.wire("tx", channel, &frame).map_err(trace_error)?;
+        trace.wire("tx", channel, frame).map_err(trace_error)?;
         let mut poison = WritePoison::new(&self.poisoned);
-        writer.write_all(&frame).await.map_err(io_error)?;
+        writer.write_all(frame).await.map_err(io_error)?;
         poison.disarm();
         Ok(())
     }

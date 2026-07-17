@@ -420,10 +420,13 @@ struct SharedSurface {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let registry = ActionRegistry::core();
+    let client = ControlClient::new(args.control.clone());
+    let catalog = client
+        .action_catalog()
+        .context("fetch simulator action catalog")?;
+    let registry = ActionRegistry::from_catalog(catalog);
     registry.parity_report()?;
 
-    let client = ControlClient::new(args.control.clone());
     let (tx, rx) = mpsc::channel::<RuntimeEvent>();
     let shared = Arc::new(SharedSurface {
         registry: registry.clone(),
@@ -628,10 +631,12 @@ fn perform_action(app: &mut App, shared: &Arc<SharedSurface>, action: Action) {
         app.quit = true;
         return;
     }
-    let Some(body) = action.patch_body() else {
-        return;
+    let result = match &action.kind {
+        ActionKind::Manifest { body } => app.client.invoke_action(action.id(), body),
+        ActionKind::Patch { body } => app.client.patch_state(body),
+        ActionKind::Quit => return,
     };
-    match app.client.patch_state(body) {
+    match result {
         Ok(_) => {
             app.log(LogKind::Action, format!("sent action {}", action.id()));
             match app.client.state() {
@@ -1376,6 +1381,9 @@ fn handle_http(stream: &mut TcpStream, shared: &Arc<SharedSurface>) -> Result<()
             .to_string(),
         )?,
         ("GET", "/actions") => write_json(stream, "200 OK", &shared.registry.actions_json())?,
+        ("GET", "/operator/actions") => {
+            write_json(stream, "200 OK", &shared.registry.operator_actions_json())?
+        }
         ("GET", "/state") => {
             let latest = shared.latest.lock().unwrap().clone();
             write_json(
@@ -1393,7 +1401,7 @@ fn handle_http(stream: &mut TcpStream, shared: &Arc<SharedSurface>) -> Result<()
         }
         _ if req.method == "POST" => match shared.registry.by_http_path("POST", &req.path) {
             Some(action) => {
-                dispatch_http_action(action, shared)?;
+                dispatch_http_action(action, shared, Some(&req.body))?;
                 write_json(
                     stream,
                     "200 OK",
@@ -1407,14 +1415,33 @@ fn handle_http(stream: &mut TcpStream, shared: &Arc<SharedSurface>) -> Result<()
     Ok(())
 }
 
-fn dispatch_http_action(action: Action, shared: &Arc<SharedSurface>) -> Result<()> {
-    match action.kind {
+fn dispatch_http_action(
+    action: Action,
+    shared: &Arc<SharedSurface>,
+    request_body: Option<&[u8]>,
+) -> Result<()> {
+    match &action.kind {
         ActionKind::Quit => {
             shared.quit.store(true, Ordering::Relaxed);
             let _ = shared.tx.send(RuntimeEvent::Quit);
         }
         ActionKind::Patch { body } => {
             shared.client.patch_state(body)?;
+            let state = shared.client.state()?;
+            *shared.latest.lock().unwrap() = Some(state.clone());
+            let _ = shared
+                .tx
+                .send(RuntimeEvent::Action(format!("http action {}", action.id())));
+            let _ = shared.tx.send(RuntimeEvent::State(state));
+        }
+        ActionKind::Manifest { body } => {
+            let body = request_body
+                .filter(|body| !body.is_empty())
+                .map(std::str::from_utf8)
+                .transpose()
+                .context("action proxy body is not UTF-8")?
+                .unwrap_or(body);
+            shared.client.invoke_action(action.id(), body)?;
             let state = shared.client.state()?;
             *shared.latest.lock().unwrap() = Some(state.clone());
             let _ = shared

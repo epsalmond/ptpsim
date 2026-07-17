@@ -51,6 +51,14 @@ toolkit ([`epsalmond/camera-protocol-mapper`](https://github.com/epsalmond/camer
 produced the JSONL observation bundles behind existing manifests but is no
 longer where new probe work should land.
 
+New evidence uses `camera-observation/v1`. Run `camera-config-generate validate`
+before proposing a manifest change, inspect the deterministic output from
+`propose`, and record `accept`, `reject`, or `defer` for every candidate in a
+digest-bound review file. `apply` is the only supported generated-data write
+path. It applies accepted candidates, validates the result, and replaces the
+destination atomically. Unsupported, malformed, lossy, or unaccounted input is
+an error; it must never be filtered out or converted into a partial manifest.
+
 ## Security
 
 If you find a security issue, please open a private advisory on GitHub rather

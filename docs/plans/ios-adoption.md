@@ -154,8 +154,9 @@ loop tunes the exact path that ships. Two pieces:
 - **Capture the engine's resolution-trace into telemetry** (`camera-config.md` §5b):
   an error and the manifest's answer that produced it surface together, so you see "what
   the manifest delivered" and edit accordingly.
-Automated mutate→observe→converge iteration is a protocol-mapper concern (a gRPC resolver
-wrapping the sans-io engine over the simulator), NOT an app path — avoids dev/prod skew.
+Automated observe→review→apply iteration uses the shipping `camera-initiator`
+and `camera-observation/v1`, not an app path or a second remote resolver. This
+keeps the execution grammar identical to the path that ships.
 
 ## Parity harness
 Single source of truth = `packages/protocol-spec/golden/*.yaml`. Extend with

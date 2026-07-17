@@ -24,10 +24,11 @@ pub use executor::{
 };
 pub mod ptp_executor;
 pub use ptp_executor::{
-    run_action, run_action_to_sink, run_mode_entry, run_mode_reestablishment_exit,
-    run_selected_object_preparation, PtpCollectionValue, PtpDataOutput, PtpDataOutputSink,
-    PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
-    PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError,
+    run_initiator_action, run_initiator_action_to_sink, run_mode_entry,
+    run_mode_reestablishment_exit, run_selected_object_preparation, PtpCollectionValue,
+    PtpDataOutput, PtpDataOutputSink, PtpDataOutputSinkError, PtpExecutionOutcome,
+    PtpExecutorError, PtpExecutorTransport, PtpRuntimeValue, PtpSessionOpenResult,
+    PtpTransportError,
 };
 pub mod pcss_executor;
 pub use pcss_executor::{
@@ -48,6 +49,8 @@ pub use mfg_index::{
     PredicateOp, Recognition, ReconnectDecision, ReconnectPolicy, Step, StepOptions, StepValue,
     Transform,
 };
+mod observation_ffi;
+pub use observation_ffi::*;
 
 uniffi::setup_scaffolding!();
 
@@ -928,12 +931,18 @@ pub enum ControlRole {
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
-pub enum ControlWriteEffect {
-    Confirmed,
+pub enum ControlEvidenceBasis {
     DescriptorOnly,
+    WriteProbe,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ControlObservedEffect {
+    Confirmed,
     AckNoEffect,
-    Refused,
+    ProtocolRefused,
     DestructiveClamp,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, uniffi::Enum)]
@@ -956,7 +965,8 @@ pub struct ControlSurfaceInfo {
     pub role: ControlRole,
     pub property: u16,
     pub read_source: ControlReadSource,
-    pub write_effect: ControlWriteEffect,
+    pub evidence_basis: ControlEvidenceBasis,
+    pub observed_effect: ControlObservedEffect,
     pub effective_owner: Option<ControlOwner>,
     pub control: ControlInfo,
 }
@@ -1586,19 +1596,121 @@ pub enum ActionEffect {
     LiveViewStream,
 }
 
-/// A parameterized recipe runnable within a mode. Returned by
-/// [`ConfigStore::action`]. The consumer reads `params` to know which
-/// runtime slots to bind for `EntryParam::Runtime` references in `steps`,
-/// then executes `steps` via its own I/O. `triggers` declares what arrives
-/// after the action completes.
+/// One shared action identity with explicit initiator and responder bindings.
 #[derive(Debug, uniffi::Record)]
 pub struct Action {
     pub mode: String,
+    pub initiator: Option<ActionInitiator>,
+    pub responder: Option<ActionResponder>,
+    pub triggers: Vec<ActionEffect>,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct ActionInitiator {
     pub params: Vec<String>,
     pub steps: Vec<EntryStep>,
     pub activities: Vec<ConnectionActivityDescriptor>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionResponder {
+    pub params: Vec<ActionParameter>,
+    pub mutation: ResponderMutation,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionParameter {
+    pub name: String,
+    pub kind: ActionParameterKind,
+    pub default: Option<u32>,
+    pub min: Option<u32>,
+    pub max: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ActionParameterKind {
+    U32,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum ResponderMutation {
+    EnqueueObjects { count_param: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ActionRole {
+    Initiator,
+    Responder,
+}
+
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum ActionCatalogParameterKind {
+    U32,
+    U64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionCatalogParameter {
+    pub name: String,
+    pub kind: ActionCatalogParameterKind,
+    pub required: bool,
+    pub default: Option<u64>,
+    pub min: Option<u64>,
+    pub max: Option<u64>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionRoleParameters {
+    pub role: ActionRole,
+    pub parameters: Vec<ActionCatalogParameter>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionCatalogEntry {
+    pub action_id: String,
+    pub connection: String,
+    pub mode: String,
+    pub supported_roles: Vec<ActionRole>,
+    pub parameters: Vec<ActionRoleParameters>,
     pub triggers: Vec<ActionEffect>,
-    pub evidence: Vec<String>,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionCatalog {
+    pub revision: String,
+    pub actions: Vec<ActionCatalogEntry>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionArgument {
+    pub name: String,
+    pub value: u64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionInvocationRequest {
+    pub catalog_revision: String,
+    pub action_id: String,
+    pub connection: String,
+    pub mode: String,
+    pub role: ActionRole,
+    pub parameters: Vec<ActionArgument>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ResolvedActionInvocation {
+    pub action: ActionVerb,
+    pub role: ActionRole,
+    pub parameters: Vec<ActionArgument>,
+    pub responder_mutation: Option<ResponderMutation>,
+}
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum ActionResolutionError {
+    #[error("action invocation rejected ({code}): {detail}")]
+    Rejected { code: String, detail: String },
 }
 
 /// Typed view of the per-object prefix inside the manifest's canonical
@@ -2572,6 +2684,43 @@ impl ConfigStore {
         Some(map_action(a))
     }
 
+    /// Deterministic manifest action registry. Its revision binds invocation
+    /// requests to the exact catalog the caller displayed.
+    pub fn action_catalog(&self) -> ActionCatalog {
+        map_action_catalog(self.inner.manifest.action_catalog())
+    }
+
+    /// Resolve and validate an invocation without performing transport I/O or
+    /// simulator mutation.
+    pub fn resolve_action_invocation(
+        &self,
+        request: ActionInvocationRequest,
+    ) -> Result<ResolvedActionInvocation, ActionResolutionError> {
+        let request = cc::ActionInvocationRequest {
+            catalog_revision: request.catalog_revision,
+            action_id: request.action_id,
+            connection: request.connection,
+            mode: request.mode,
+            role: ffi_to_cc_action_role(request.role),
+            parameters: request
+                .parameters
+                .into_iter()
+                .map(|argument| cc::ActionArgument {
+                    name: argument.name,
+                    value: argument.value,
+                })
+                .collect(),
+        };
+        self.inner
+            .manifest
+            .resolve_action_invocation(&request)
+            .map(map_resolved_action)
+            .map_err(|error| ActionResolutionError::Rejected {
+                code: error.code().to_string(),
+                detail: error.to_string(),
+            })
+    }
+
     /// Typed object-transfer policy for a connection.
     pub fn object_transfer_contract(
         &self,
@@ -2709,7 +2858,8 @@ impl ConfigStore {
                     role: (*role).into(),
                     property,
                     read_source: entry.read_source.into(),
-                    write_effect: entry.write_effect.into(),
+                    evidence_basis: entry.evidence_basis.into(),
+                    observed_effect: entry.observed_effect.into(),
                     effective_owner: entry.effective_owner.map(Into::into),
                     control,
                 })
@@ -3625,7 +3775,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
         return Some(EntryStep::AwaitUntil {
             source,
             until: (&aw.until).into(),
-            on_each: aw.on_each.iter().filter_map(map_step).collect(),
+            on_each: aw.on_each.iter().map(map_step).collect::<Option<_>>()?,
             timeout_ms: aw.timeout_ms,
             interval_ms: aw.interval_ms,
             tolerant,
@@ -3633,7 +3783,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
     }
     if let Some(retry) = &s.retry {
         return Some(EntryStep::Retry {
-            steps: retry.steps.iter().filter_map(map_step).collect(),
+            steps: retry.steps.iter().map(map_step).collect::<Option<_>>()?,
             when_response_codes: retry
                 .when_response_codes
                 .iter()
@@ -3653,7 +3803,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
             } => FfiLoopKind::ForEach {
                 collection: collection.clone(),
                 bind: bind.clone(),
-                body: body.iter().filter_map(map_step).collect(),
+                body: body.iter().map(map_step).collect::<Option<_>>()?,
             },
             cc::Loop::Chunk {
                 total,
@@ -3666,7 +3816,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
                 size: map_chunk_size(size),
                 offset_bind: offset_bind.clone(),
                 length_bind: length_bind.clone(),
-                body: body.iter().filter_map(map_step).collect(),
+                body: body.iter().map(map_step).collect::<Option<_>>()?,
             },
         };
         return Some(EntryStep::Loop { kind, tolerant });
@@ -3674,7 +3824,11 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
     if let Some(cond) = &s.if_step {
         let slot = cond.slot.clone();
         let equals = cond.equals;
-        let then_steps = cond.then_steps.iter().filter_map(map_step).collect();
+        let then_steps = cond
+            .then_steps
+            .iter()
+            .map(map_step)
+            .collect::<Option<_>>()?;
         return if cond.else_steps.is_empty() {
             Some(EntryStep::If {
                 slot,
@@ -3687,7 +3841,11 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
                 slot,
                 equals,
                 then_steps,
-                else_steps: cond.else_steps.iter().filter_map(map_step).collect(),
+                else_steps: cond
+                    .else_steps
+                    .iter()
+                    .map(map_step)
+                    .collect::<Option<_>>()?,
                 tolerant,
             })
         };
@@ -3773,6 +3931,94 @@ fn cc_to_ffi_verb(v: cc::ActionVerb) -> ActionVerb {
     }
 }
 
+fn cc_to_ffi_action_role(role: cc::ActionRole) -> ActionRole {
+    match role {
+        cc::ActionRole::Initiator => ActionRole::Initiator,
+        cc::ActionRole::Responder => ActionRole::Responder,
+    }
+}
+
+fn ffi_to_cc_action_role(role: ActionRole) -> cc::ActionRole {
+    match role {
+        ActionRole::Initiator => cc::ActionRole::Initiator,
+        ActionRole::Responder => cc::ActionRole::Responder,
+    }
+}
+
+fn map_responder_mutation(mutation: cc::ResponderMutation) -> ResponderMutation {
+    match mutation {
+        cc::ResponderMutation::EnqueueObjects { count_param } => {
+            ResponderMutation::EnqueueObjects { count_param }
+        }
+    }
+}
+
+fn map_action_catalog(catalog: cc::ActionCatalog) -> ActionCatalog {
+    ActionCatalog {
+        revision: catalog.revision,
+        actions: catalog
+            .actions
+            .into_iter()
+            .map(|entry| ActionCatalogEntry {
+                action_id: entry.action_id,
+                connection: entry.connection,
+                mode: entry.mode,
+                supported_roles: entry
+                    .supported_roles
+                    .into_iter()
+                    .map(cc_to_ffi_action_role)
+                    .collect(),
+                parameters: entry
+                    .parameters
+                    .into_iter()
+                    .map(|role| ActionRoleParameters {
+                        role: cc_to_ffi_action_role(role.role),
+                        parameters: role
+                            .parameters
+                            .into_iter()
+                            .map(|parameter| ActionCatalogParameter {
+                                name: parameter.name,
+                                kind: match parameter.kind {
+                                    cc::ActionCatalogParameterKind::U32 => {
+                                        ActionCatalogParameterKind::U32
+                                    }
+                                    cc::ActionCatalogParameterKind::U64 => {
+                                        ActionCatalogParameterKind::U64
+                                    }
+                                },
+                                required: parameter.required,
+                                default: parameter.default,
+                                min: parameter.min,
+                                max: parameter.max,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                triggers: entry
+                    .triggers
+                    .iter()
+                    .map(map_action_effect)
+                    .collect::<Result<_, _>>()
+                    .expect("catalog actions validated at store load"),
+                available: matches!(entry.availability, cc::ActionAvailability::Available),
+            })
+            .collect(),
+    }
+}
+
+fn map_resolved_action(resolved: cc::ResolvedActionInvocation) -> ResolvedActionInvocation {
+    ResolvedActionInvocation {
+        action: cc_to_ffi_verb(resolved.action),
+        role: cc_to_ffi_action_role(resolved.role),
+        parameters: resolved
+            .parameters
+            .into_iter()
+            .map(|(name, value)| ActionArgument { name, value })
+            .collect(),
+        responder_mutation: resolved.responder_mutation.map(map_responder_mutation),
+    }
+}
+
 impl From<cc::ControlRole> for ControlRole {
     fn from(value: cc::ControlRole) -> Self {
         match value {
@@ -3794,14 +4040,23 @@ impl From<cc::ControlReadSource> for ControlReadSource {
     }
 }
 
-impl From<cc::ControlWriteEffect> for ControlWriteEffect {
-    fn from(value: cc::ControlWriteEffect) -> Self {
+impl From<cc::ControlEvidenceBasis> for ControlEvidenceBasis {
+    fn from(value: cc::ControlEvidenceBasis) -> Self {
         match value {
-            cc::ControlWriteEffect::Confirmed => Self::Confirmed,
-            cc::ControlWriteEffect::DescriptorOnly => Self::DescriptorOnly,
-            cc::ControlWriteEffect::AckNoEffect => Self::AckNoEffect,
-            cc::ControlWriteEffect::Refused => Self::Refused,
-            cc::ControlWriteEffect::DestructiveClamp => Self::DestructiveClamp,
+            cc::ControlEvidenceBasis::DescriptorOnly => Self::DescriptorOnly,
+            cc::ControlEvidenceBasis::WriteProbe => Self::WriteProbe,
+        }
+    }
+}
+
+impl From<cc::ControlObservedEffect> for ControlObservedEffect {
+    fn from(value: cc::ControlObservedEffect) -> Self {
+        match value {
+            cc::ControlObservedEffect::Confirmed => Self::Confirmed,
+            cc::ControlObservedEffect::AckNoEffect => Self::AckNoEffect,
+            cc::ControlObservedEffect::ProtocolRefused => Self::ProtocolRefused,
+            cc::ControlObservedEffect::DestructiveClamp => Self::DestructiveClamp,
+            cc::ControlObservedEffect::Unknown => Self::Unknown,
         }
     }
 }
@@ -3858,6 +4113,9 @@ fn project_selected_object_transfer(
     import: &cc::Action,
     read: &cc::Action,
 ) -> Result<SelectedObjectTransferInfo, ConfigError> {
+    let import = import
+        .initiator()
+        .ok_or_else(|| ConfigError::Contract("importObjects has no initiator binding".into()))?;
     let (handle_slot, body) = import
         .steps
         .iter()
@@ -3976,12 +4234,48 @@ fn steps_capture(steps: &[cc::Step], bind: &str, source: cc::model::CaptureSourc
 }
 
 fn try_map_action(a: &cc::Action, context: &str) -> Result<Action, ConfigError> {
+    let initiator = a
+        .initiator
+        .as_ref()
+        .map(|binding| -> Result<ActionInitiator, ConfigError> {
+            Ok(ActionInitiator {
+                params: binding.params.clone(),
+                steps: try_map_steps(&binding.steps, context)?,
+                activities: binding.activities.iter().map(Into::into).collect(),
+            })
+        })
+        .transpose()?;
+    let responder = a.responder.as_ref().map(|binding| ActionResponder {
+        params: binding
+            .params
+            .iter()
+            .map(|parameter| ActionParameter {
+                name: parameter.name.clone(),
+                kind: match parameter.kind {
+                    cc::ActionParameterKind::U32 => ActionParameterKind::U32,
+                },
+                default: parameter.default,
+                min: parameter.min,
+                max: parameter.max,
+            })
+            .collect(),
+        mutation: match &binding.mutation {
+            cc::ResponderMutation::EnqueueObjects { count_param } => {
+                ResponderMutation::EnqueueObjects {
+                    count_param: count_param.clone(),
+                }
+            }
+        },
+    });
     Ok(Action {
         mode: a.mode.clone(),
-        params: a.params.clone(),
-        steps: try_map_steps(&a.steps, context)?,
-        activities: a.activities.iter().map(Into::into).collect(),
-        triggers: a.triggers.iter().filter_map(map_action_effect).collect(),
+        initiator,
+        responder,
+        triggers: a
+            .triggers
+            .iter()
+            .map(map_action_effect)
+            .collect::<Result<_, _>>()?,
         evidence: a.evidence.clone(),
     })
 }
@@ -3997,7 +4291,7 @@ fn try_map_steps(steps: &[cc::Step], context: &str) -> Result<Vec<EntryStep>, Co
 }
 
 fn validate_step_mapping(step: &cc::Step, context: &str) -> Result<(), ConfigError> {
-    if map_step(step).is_none() {
+    if !step.is_well_formed() || map_step(step).is_none() {
         return Err(ConfigError::Contract(format!(
             "{context} contains an unmappable step"
         )));
@@ -4033,34 +4327,32 @@ fn validate_step_mapping(step: &cc::Step, context: &str) -> Result<(), ConfigErr
 }
 
 fn map_action(a: &cc::Action) -> Action {
-    Action {
-        mode: a.mode.clone(),
-        params: a.params.clone(),
-        steps: a.steps.iter().filter_map(map_step).collect(),
-        activities: a.activities.iter().map(Into::into).collect(),
-        triggers: a.triggers.iter().filter_map(map_action_effect).collect(),
-        evidence: a.evidence.clone(),
-    }
+    try_map_action(a, "validated action").expect("actions validated at store load")
 }
 
 /// Translate camera-config's flat-struct `ActionEffect` (one optional
-/// field per variant) to the FFI's tagged-enum form. Returns `None` for
-/// malformed effects (no variant set) — `is_well_formed()` is the
-/// camera-config-side check that's expected to hold.
-fn map_action_effect(e: &cc::ActionEffect) -> Option<ActionEffect> {
+/// field per variant) to the FFI's tagged-enum form.
+fn map_action_effect(e: &cc::ActionEffect) -> Result<ActionEffect, ConfigError> {
+    if !e.is_well_formed() {
+        return Err(ConfigError::Contract(
+            "action trigger must contain exactly one variant".into(),
+        ));
+    }
     if let Some(ip) = &e.objects_available {
-        return Some(ActionEffect::ObjectsAvailable {
+        return Ok(ActionEffect::ObjectsAvailable {
             min: ip.min,
             max: ip.max,
         });
     }
     if e.postview_event.is_some() {
-        return Some(ActionEffect::PostviewEvent);
+        return Ok(ActionEffect::PostviewEvent);
     }
     if e.live_view_stream.is_some() {
-        return Some(ActionEffect::LiveViewStream);
+        return Ok(ActionEffect::LiveViewStream);
     }
-    None
+    Err(ConfigError::Contract(
+        "action contains an unmappable trigger".into(),
+    ))
 }
 
 fn platform_ok(c: &cc::Connection, p: &Platform) -> bool {
@@ -4212,24 +4504,27 @@ mod tests {
             ..Default::default()
         };
         let import = cc::Action {
-            steps: vec![
-                cc::Step {
-                    get_prop: Some("0xd621".into()),
-                    captures: vec![cc::model::Capture {
-                        bind: "objectHandles".into(),
-                        source: cc::model::CaptureSource::PtpU32Array,
-                    }],
-                    ..Default::default()
-                },
-                cc::Step {
-                    r#loop: Some(cc::Loop::ForEach {
-                        collection: "objectHandles".into(),
-                        bind: "handle".into(),
-                        body: vec![object_info, true_size, chunk_size, chunk],
-                    }),
-                    ..Default::default()
-                },
-            ],
+            initiator: Some(cc::ActionInitiator {
+                steps: vec![
+                    cc::Step {
+                        get_prop: Some("0xd621".into()),
+                        captures: vec![cc::model::Capture {
+                            bind: "objectHandles".into(),
+                            source: cc::model::CaptureSource::PtpU32Array,
+                        }],
+                        ..Default::default()
+                    },
+                    cc::Step {
+                        r#loop: Some(cc::Loop::ForEach {
+                            collection: "objectHandles".into(),
+                            bind: "handle".into(),
+                            body: vec![object_info, true_size, chunk_size, chunk],
+                        }),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
             ..Default::default()
         };
         (import, cc::Action::default())
@@ -4246,13 +4541,19 @@ mod tests {
 
     #[test]
     fn selected_transfer_projection_rejects_missing_for_each() {
-        assert_selected_transfer_contract_error(&cc::Action::default(), "forEach");
+        let action = cc::Action {
+            initiator: Some(cc::ActionInitiator::default()),
+            ..Default::default()
+        };
+        assert_selected_transfer_contract_error(&action, "forEach");
     }
 
     #[test]
     fn selected_transfer_projection_rejects_missing_chunk() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) =
+            import.initiator.as_mut().unwrap().steps[1].r#loop.as_mut()
+        else {
             panic!("fixture forEach");
         };
         body.pop();
@@ -4262,7 +4563,9 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_literal_chunk_size() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) =
+            import.initiator.as_mut().unwrap().steps[1].r#loop.as_mut()
+        else {
             panic!("fixture forEach");
         };
         let Some(cc::Loop::Chunk { size, .. }) = body[3].r#loop.as_mut() else {
@@ -4275,7 +4578,9 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_missing_object_info_capture() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) =
+            import.initiator.as_mut().unwrap().steps[1].r#loop.as_mut()
+        else {
             panic!("fixture forEach");
         };
         body[0].captures.clear();
@@ -4285,7 +4590,9 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_mismatched_total_capture() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) =
+            import.initiator.as_mut().unwrap().steps[1].r#loop.as_mut()
+        else {
             panic!("fixture forEach");
         };
         body[0].captures[1].bind = "differentSlot".into();
@@ -4295,7 +4602,9 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_missing_true_size_override() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) =
+            import.initiator.as_mut().unwrap().steps[1].r#loop.as_mut()
+        else {
             panic!("fixture forEach");
         };
         body[1].if_step = None;
@@ -4306,7 +4615,9 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_missing_chunk_size_capture() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) =
+            import.initiator.as_mut().unwrap().steps[1].r#loop.as_mut()
+        else {
             panic!("fixture forEach");
         };
         body[2].captures.clear();
@@ -4316,7 +4627,9 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_unmappable_nested_step() {
         let (mut import, _) = selected_transfer_actions();
-        let Some(cc::Loop::ForEach { body, .. }) = import.steps[1].r#loop.as_mut() else {
+        let Some(cc::Loop::ForEach { body, .. }) =
+            import.initiator.as_mut().unwrap().steps[1].r#loop.as_mut()
+        else {
             panic!("fixture forEach");
         };
         let Some(condition) = body[1].if_step.as_mut() else {
@@ -4329,10 +4642,13 @@ mod tests {
     #[test]
     fn selected_transfer_projection_rejects_unmappable_read_step() {
         let (import, mut read) = selected_transfer_actions();
-        read.steps.push(cc::Step {
-            send_op: Some("not-a-hex-op".into()),
-            ..Default::default()
-        });
+        read.initiator
+            .get_or_insert_with(cc::ActionInitiator::default)
+            .steps
+            .push(cc::Step {
+                send_op: Some("not-a-hex-op".into()),
+                ..Default::default()
+            });
         let error = project_selected_object_transfer(&import, &read)
             .expect_err("malformed read action must fail");
         assert!(matches!(
@@ -4343,8 +4659,8 @@ mod tests {
     }
 
     /// The hand-mirror seam: an `awaitUntil` step (with a nested `onEach` and a
-    /// multi-leaf `all` predicate) must map to `EntryStep::AwaitUntil` and NOT
-    /// be silently dropped by `map_step`'s `filter_map`.
+    /// multi-leaf `all` predicate) must map to `EntryStep::AwaitUntil` and fail
+    /// validation instead of disappearing if any nested step is unmappable.
     #[test]
     fn close_session_step_maps_and_is_not_dropped() {
         // An EntryStep that can't represent a step would silently DROP it; the

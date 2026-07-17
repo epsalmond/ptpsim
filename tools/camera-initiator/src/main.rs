@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, Write};
 use std::net::IpAddr;
@@ -9,14 +9,19 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
+use camera_config::{
+    direct_epistemic, no_loss, ActionOutcome, BundleHeader, CameraContext, CaptureClock,
+    CaptureContext, CaptureInterface, CaptureInterfaceType, ClientContext, ClockType, ClockUnit,
+    ObservationRecorder, PayloadMetadata, PayloadMetadataBuilder, Redaction, RedactionMethod,
+};
 use camera_initiator::{NativePtpTransport, TraceFormat, TraceWriter, TransportConfig};
 use camera_protocol_ffi::{
-    parse_action_verb, run_action, run_action_to_sink, run_mode_entry,
-    run_mode_reestablishment_exit, run_streaming_action, ActionVerb, ConfigStore,
-    ConnectionActivityEvent, ConnectionActivityObserver, ModeEntryExecution,
-    ObjectTransferStrategy, PtpDataOutput, PtpDataOutputSink, PtpDataOutputSinkError,
-    PtpExecutionOutcome, PtpExecutorTransport, PtpRuntimeValue, PtpStreamingSink,
-    PtpStreamingSinkError, PtpStreamingTransport, StepObserver, StepReport,
+    parse_action_verb, run_initiator_action, run_initiator_action_to_sink, run_mode_entry,
+    run_mode_reestablishment_exit, run_streaming_action, ActionArgument, ActionInvocationRequest,
+    ActionRole, ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityObserver,
+    ModeEntryExecution, ObjectTransferStrategy, PtpDataOutput, PtpDataOutputSink,
+    PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorTransport, PtpRuntimeValue,
+    PtpStreamingSink, PtpStreamingSinkError, PtpStreamingTransport, StepObserver, StepReport,
 };
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -53,6 +58,15 @@ struct Cli {
     trace: String,
     #[arg(long, value_enum, default_value_t = TraceFormat::Jsonl)]
     trace_format: TraceFormat,
+    /// Canonical camera-observation/v1 JSONL bundle path.
+    #[arg(long, default_value = "camera-observation.jsonl")]
+    observation: PathBuf,
+    /// Stable run identifier used by the observation bundle.
+    #[arg(long, default_value = "local-initiator")]
+    run_id: String,
+    /// Sanitized stable pseudonym for the physical camera body.
+    #[arg(long, default_value = "sanitized-body")]
+    body_id: String,
     #[arg(long, default_value_t = 10_000)]
     connect_timeout_ms: u64,
     #[arg(long, default_value_t = 120_000)]
@@ -97,11 +111,21 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let trace = Arc::new(TraceWriter::new(
+    let store = load_store(&cli)?;
+    let observation_mode = match &cli.command {
+        Command::Entry { to, .. } | Command::Switch { to, .. } => to.clone(),
+        Command::Action { action, .. } => parse_action_verb(action.clone())
+            .and_then(|verb| store.action(cli.connection.clone(), verb))
+            .map(|action| action.mode)
+            .unwrap_or_else(|| "unknown".into()),
+    };
+    let trace = Arc::new(TraceWriter::with_observations(
         cli.trace_format,
         trace_output(&cli.trace)?,
+        initiator_observation_recorder(&cli, &store)?,
+        cli.connection.clone(),
+        observation_mode,
     ));
-    let store = load_store(&cli)?;
     let params = RuntimeParams::parse(&cli.params)?;
     let transport = NativePtpTransport::new(
         Arc::clone(&store),
@@ -122,11 +146,15 @@ async fn main() -> Result<()> {
         trace: Arc::clone(&trace),
     });
 
+    let observed_action = match &cli.command {
+        Command::Action { action, .. } => Some(action.clone()),
+        Command::Entry { .. } | Command::Switch { .. } => None,
+    };
     let result = match cli.command {
         Command::Entry { to, from } => {
             run_entry(
                 &cli.connection,
-                store,
+                Arc::clone(&store),
                 Arc::clone(&transport),
                 observer,
                 activity_observer,
@@ -139,7 +167,7 @@ async fn main() -> Result<()> {
         Command::Switch { from, to } => {
             run_switch(
                 &cli.connection,
-                store,
+                Arc::clone(&store),
                 Arc::clone(&transport),
                 observer,
                 activity_observer,
@@ -160,7 +188,7 @@ async fn main() -> Result<()> {
         } => {
             run_named_action(
                 &cli.connection,
-                store,
+                Arc::clone(&store),
                 Arc::clone(&transport),
                 observer,
                 activity_observer,
@@ -170,10 +198,28 @@ async fn main() -> Result<()> {
                 payload_out,
                 payload_dir,
                 expected_bytes,
+                Arc::clone(&trace),
             )
             .await
         }
     };
+
+    if let Some(action_id) = observed_action {
+        trace.action(
+            store.action_catalog().revision,
+            action_id,
+            params
+                .raw
+                .iter()
+                .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                .collect(),
+            if result.is_ok() {
+                ActionOutcome::Succeeded
+            } else {
+                ActionOutcome::Failed
+            },
+        )?;
+    }
 
     let cleanup_warning = transport
         .close_session_if_open()
@@ -360,6 +406,7 @@ async fn run_named_action(
     payload_out: Option<PathBuf>,
     payload_dir: Option<PathBuf>,
     expected_bytes: Option<u64>,
+    trace: Arc<TraceWriter>,
 ) -> Result<Value> {
     if !then.is_empty() {
         return run_action_sequence(
@@ -382,7 +429,20 @@ async fn run_named_action(
     let plan = store
         .action(connection.to_string(), action)
         .with_context(|| format!("connection '{connection}' has no action '{action_name}'"))?;
-    params.require_numeric(&plan.params)?;
+    let action_params = &plan
+        .initiator
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("action has no initiator binding"))?
+        .params;
+    let declared_action_params = action_params.iter().cloned().collect();
+    params.reject_undeclared_numeric(&declared_action_params)?;
+    let request = preflight_action_request(
+        &store,
+        connection,
+        action,
+        &plan.mode,
+        params.action_arguments(action_params)?,
+    )?;
     if action == ActionVerb::ImportObjects && payload_dir.is_none() {
         bail!("importObjects requires --payload-dir")
     }
@@ -402,16 +462,13 @@ async fn run_named_action(
         }
         let sink = Arc::new(StreamingFileSink::new(destination));
         let raw: Arc<dyn PtpStreamingTransport> = transport;
-        let outcome = run_streaming_action(
-            store,
-            connection.to_string(),
-            action,
-            raw,
-            sink.clone(),
-            params.numeric_values(),
-            expected_bytes,
-        )
-        .await?;
+        let outcome =
+            run_streaming_action(store, request, raw, sink.clone(), expected_bytes).await?;
+        trace.complete_streaming_transaction(
+            outcome.transaction_id,
+            outcome.response_params.clone(),
+            sink.payload_metadata().await,
+        )?;
         sink.commit().await?;
         return Ok(json!({
             "transactionId": outcome.transaction_id,
@@ -428,28 +485,9 @@ async fn run_named_action(
                 .await
                 .context("prepare payload destination")?,
         );
-        run_action_to_sink(
-            store,
-            connection.to_string(),
-            action,
-            raw,
-            observer,
-            activity_observer,
-            sink,
-            params.numeric_values(),
-        )
-        .await?
+        run_initiator_action_to_sink(store, request, raw, observer, activity_observer, sink).await?
     } else {
-        run_action(
-            store,
-            connection.to_string(),
-            action,
-            raw,
-            observer,
-            activity_observer,
-            params.numeric_values(),
-        )
-        .await?
+        run_initiator_action(store, request, raw, observer, activity_observer).await?
     };
     Ok(execution_outcome_detail(&outcome))
 }
@@ -480,13 +518,26 @@ async fn run_action_sequence(
         .collect::<Vec<_>>();
     let contract = store.object_transfer_contract(connection.to_string());
     let mut actions = Vec::with_capacity(names.len());
+    let mut declared_action_params = BTreeSet::new();
     for name in &names {
         let action = parse_action_verb((*name).to_string())
             .with_context(|| format!("unknown action '{name}'; use exact camelCase"))?;
         let plan = store
             .action(connection.to_string(), action)
             .with_context(|| format!("connection '{connection}' has no action '{name}'"))?;
-        params.require_numeric(&plan.params)?;
+        let action_params = &plan
+            .initiator
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("action has no initiator binding"))?
+            .params;
+        declared_action_params.extend(action_params.iter().cloned());
+        let request = preflight_action_request(
+            &store,
+            connection,
+            action,
+            &plan.mode,
+            params.action_arguments(action_params)?,
+        )?;
         let streaming = contract.as_ref().is_some_and(|contract| {
             contract.strategy == ObjectTransferStrategy::WholeObject
                 && contract.read_action == action
@@ -497,8 +548,9 @@ async fn run_action_sequence(
         if action == ActionVerb::ImportObjects && payload_dir.is_none() {
             bail!("importObjects requires --payload-dir")
         }
-        actions.push(action);
+        actions.push((action, request));
     }
+    params.reject_undeclared_numeric(&declared_action_params)?;
 
     let sink = if payload_dir.is_some() {
         Some(Arc::new(
@@ -511,32 +563,29 @@ async fn run_action_sequence(
     };
 
     transport.open_command_session().await?;
-    let mut scope = params.numeric_values();
     let mut outcomes = Vec::with_capacity(actions.len());
     let mut live_view_started = false;
-    for (index, (name, action)) in names.into_iter().zip(actions.iter().copied()).enumerate() {
+    for (index, (name, (action, request))) in
+        names.into_iter().zip(actions.iter().cloned()).enumerate()
+    {
         let raw: Arc<dyn PtpExecutorTransport> = transport.clone();
         let result = if let Some(sink) = &sink {
-            run_action_to_sink(
+            run_initiator_action_to_sink(
                 Arc::clone(&store),
-                connection.to_string(),
-                action,
+                request.clone(),
                 raw,
                 Arc::clone(&observer),
                 Arc::clone(&activity_observer),
                 Arc::clone(sink),
-                scope.clone(),
             )
             .await
         } else {
-            run_action(
+            run_initiator_action(
                 Arc::clone(&store),
-                connection.to_string(),
-                action,
+                request,
                 raw,
                 Arc::clone(&observer),
                 Arc::clone(&activity_observer),
-                scope.clone(),
             )
             .await
         };
@@ -546,18 +595,24 @@ async fn run_action_sequence(
                 if should_run_requested_stop_cleanup(
                     live_view_started,
                     action,
-                    &actions[index + 1..],
+                    &actions[index + 1..]
+                        .iter()
+                        .map(|(action, _)| *action)
+                        .collect::<Vec<_>>(),
                 ) {
                     eprintln!("action '{name}' failed; attempting requested stopLiveView cleanup");
                     let raw: Arc<dyn PtpExecutorTransport> = transport.clone();
-                    match run_action(
+                    let cleanup_request = actions[index + 1..]
+                        .iter()
+                        .find(|(action, _)| *action == ActionVerb::StopLiveView)
+                        .map(|(_, request)| request.clone())
+                        .expect("requested cleanup action was preflighted");
+                    match run_initiator_action(
                         Arc::clone(&store),
-                        connection.to_string(),
-                        ActionVerb::StopLiveView,
+                        cleanup_request,
                         raw,
                         Arc::clone(&observer),
                         Arc::clone(&activity_observer),
-                        scope.clone(),
                     )
                     .await
                     {
@@ -577,7 +632,6 @@ async fn run_action_sequence(
             ActionVerb::StopLiveView => live_view_started = false,
             _ => {}
         }
-        scope = outcome.scope.clone();
         outcomes.push(json!({
             "action": name,
             "outcome": execution_outcome_detail(&outcome),
@@ -615,6 +669,53 @@ fn load_store(cli: &Cli) -> Result<Arc<ConfigStore>> {
         })
         .collect::<Result<Vec<_>>>()?;
     ConfigStore::from_tiers(body, manufacturer, overlays).map_err(Into::into)
+}
+
+fn initiator_observation_recorder(cli: &Cli, store: &ConfigStore) -> Result<ObservationRecorder> {
+    let identity = store.camera_identity();
+    let header = BundleHeader {
+        schema: camera_config::OBSERVATION_SCHEMA_VERSION.into(),
+        run_id: cli.run_id.clone(),
+        record_id: "bundle-header".into(),
+        ordinal: 0,
+        camera: CameraContext {
+            manufacturer: identity.manufacturer,
+            model: identity.model,
+            body_id: cli.body_id.clone(),
+            firmware: identity.firmware,
+        },
+        client: ClientContext {
+            artifact: "camera-initiator".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            platform: std::env::consts::OS.into(),
+        },
+        capture: CaptureContext {
+            interfaces: vec![CaptureInterface {
+                id: "manifest-transport".into(),
+                interface_type: CaptureInterfaceType::Tcp,
+                role: "initiator".into(),
+            }],
+            clocks: vec![CaptureClock {
+                id: "process-monotonic".into(),
+                clock_type: ClockType::Monotonic,
+                unit: ClockUnit::Milliseconds,
+            }],
+            clock_mappings: Vec::new(),
+            loss: no_loss(),
+            redactions: vec![Redaction {
+                field: "network.addresses".into(),
+                method: RedactionMethod::Removed,
+            }],
+            tool_versions: BTreeMap::from([(
+                "camera-initiator".into(),
+                env!("CARGO_PKG_VERSION").into(),
+            )]),
+            artifacts: Vec::new(),
+        },
+        epistemic: direct_epistemic(),
+    };
+    ObservationRecorder::open(Some(cli.observation.clone()), header)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 fn trace_output(path: &str) -> Result<Box<dyn Write + Send>> {
@@ -683,17 +784,64 @@ impl RuntimeParams {
             .collect()
     }
 
-    fn require_numeric(&self, required: &[String]) -> Result<()> {
-        for key in required {
-            let value = self
-                .raw
-                .get(key)
-                .with_context(|| format!("action requires --param {key}=VALUE"))?;
-            parse_u64(value)
-                .with_context(|| format!("action parameter '{key}' must be decimal or 0x hex"))?;
+    fn action_arguments(&self, required: &[String]) -> Result<Vec<ActionArgument>> {
+        required
+            .iter()
+            .filter_map(|key| self.raw.get(key).map(|value| (key, value)))
+            .map(|(key, value)| {
+                let value = parse_u64(value).with_context(|| {
+                    format!("action parameter '{key}' must be decimal or 0x hex")
+                })?;
+                Ok(ActionArgument {
+                    name: key.clone(),
+                    value,
+                })
+            })
+            .collect()
+    }
+
+    fn reject_undeclared_numeric(&self, declared: &BTreeSet<String>) -> Result<()> {
+        if let Some(key) = self
+            .raw
+            .iter()
+            .find(|(key, value)| !declared.contains(key.as_str()) && parse_u64(value).is_some())
+            .map(|(key, _)| key)
+        {
+            bail!("action does not declare numeric --param {key}")
         }
         Ok(())
     }
+}
+
+fn preflight_action_request(
+    store: &ConfigStore,
+    connection: &str,
+    action: ActionVerb,
+    mode: &str,
+    parameters: Vec<ActionArgument>,
+) -> Result<ActionInvocationRequest> {
+    let catalog = store.action_catalog();
+    let action_id = catalog
+        .actions
+        .iter()
+        .find(|entry| {
+            entry.connection == connection
+                && parse_action_verb(entry.action_id.clone()) == Some(action)
+        })
+        .map(|entry| entry.action_id.clone())
+        .with_context(|| format!("connection '{connection}' has no cataloged action"))?;
+    let request = ActionInvocationRequest {
+        catalog_revision: catalog.revision,
+        action_id,
+        connection: connection.to_string(),
+        mode: mode.to_string(),
+        role: ActionRole::Initiator,
+        parameters,
+    };
+    store
+        .resolve_action_invocation(request.clone())
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(request)
 }
 
 fn parse_u64(value: &str) -> Option<u64> {
@@ -785,6 +933,7 @@ struct StreamingFileSink {
     final_path: PathBuf,
     partial_path: PathBuf,
     file: Mutex<Option<tokio::fs::File>>,
+    payload: Mutex<PayloadMetadataBuilder>,
 }
 
 impl StreamingFileSink {
@@ -796,6 +945,7 @@ impl StreamingFileSink {
             final_path,
             partial_path,
             file: Mutex::new(None),
+            payload: Mutex::new(PayloadMetadataBuilder::new()),
         }
     }
 
@@ -815,6 +965,10 @@ impl StreamingFileSink {
                     self.final_path.display()
                 )
             })
+    }
+
+    async fn payload_metadata(&self) -> PayloadMetadata {
+        self.payload.lock().await.metadata()
     }
 }
 
@@ -842,7 +996,9 @@ impl PtpStreamingSink for StreamingFileSink {
             .await
             .map_err(|error| PtpStreamingSinkError::Failed {
                 detail: format!("write {}: {error}", self.partial_path.display()),
-            })
+            })?;
+        self.payload.lock().await.update(&chunk);
+        Ok(())
     }
 }
 
@@ -875,6 +1031,27 @@ mod tests {
     fn rejects_duplicate_runtime_keys() {
         let error = RuntimeParams::parse(&["handle=1".into(), "handle=2".into()]).unwrap_err();
         assert!(error.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn action_params_reject_undeclared_numeric_values_but_keep_transport_identity() {
+        let params = RuntimeParams::parse(&[
+            "terminalName=probe-host".into(),
+            "handle=1".into(),
+            "unexpected=2".into(),
+        ])
+        .unwrap();
+        let declared = BTreeSet::from(["handle".to_string()]);
+        let error = params.reject_undeclared_numeric(&declared).unwrap_err();
+        assert!(error.to_string().contains("unexpected"));
+
+        let params =
+            RuntimeParams::parse(&["terminalName=probe-host".into(), "handle=1".into()]).unwrap();
+        params.reject_undeclared_numeric(&declared).unwrap();
+        assert_eq!(
+            params.action_arguments(&["handle".into()]).unwrap()[0].value,
+            1
+        );
     }
 
     #[test]

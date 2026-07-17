@@ -11,11 +11,11 @@ use ptp_core::codes::{op, resp};
 
 use crate::executor::ActiveActivity;
 use crate::{
-    frame_decode, frame_encode, ActionVerb, CaptureInfo, CaptureSourceInfo, ConfigStore,
-    ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityFailure,
-    ConnectionActivityObserver, ConnectionActivityRetry, EntryParam, EntryStep,
-    ExecutorStepFailureKind, FfiAwaitSource, FfiChunkSize, FfiLoopKind, FfiPredicate, KeyValue,
-    PtpFraming, SocketRole, StepObserver, StepOutcome, StepReport, ValueWidth,
+    frame_decode, frame_encode, ActionInvocationRequest, ActionRole, CaptureInfo,
+    CaptureSourceInfo, ConfigStore, ConnectionActivityBinding, ConnectionActivityDescriptor,
+    ConnectionActivityFailure, ConnectionActivityObserver, ConnectionActivityRetry, EntryParam,
+    EntryStep, ExecutorStepFailureKind, FfiAwaitSource, FfiChunkSize, FfiLoopKind, FfiPredicate,
+    KeyValue, PtpFraming, SocketRole, StepObserver, StepOutcome, StepReport, ValueWidth,
 };
 
 const DEFAULT_OP_TIMEOUT_MS: u32 = 10_000;
@@ -111,6 +111,8 @@ pub struct PtpExecutionOutcome {
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum PtpExecutorError {
+    #[error("action invocation rejected ({code}): {detail}")]
+    ActionRejected { code: String, detail: String },
     #[error("unknown plan: {detail}")]
     UnknownPlan { detail: String },
     #[error("unsupported plan: {detail}")]
@@ -198,26 +200,24 @@ pub async fn run_mode_reestablishment_exit(
 
 #[uniffi::export]
 #[allow(clippy::too_many_arguments)]
-pub async fn run_action(
+pub async fn run_initiator_action(
     store: Arc<ConfigStore>,
-    connection: String,
-    action: ActionVerb,
+    request: ActionInvocationRequest,
     transport: Arc<dyn PtpExecutorTransport>,
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
-    runtime_params: Vec<PtpRuntimeValue>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
-    let action =
-        store
-            .action(connection.clone(), action)
-            .ok_or_else(|| PtpExecutorError::UnknownPlan {
-                detail: format!("{connection}: action not found"),
-            })?;
+    let (connection, action, runtime_params) = resolve_initiator(&store, request)?;
+    let initiator = action
+        .initiator
+        .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
+            detail: format!("{connection}: action has no initiator binding"),
+        })?;
     run_steps(
         store,
         connection,
-        action.steps,
-        action.activities,
+        initiator.steps,
+        initiator.activities,
         transport,
         observer,
         activity_observer,
@@ -229,27 +229,25 @@ pub async fn run_action(
 
 #[uniffi::export]
 #[allow(clippy::too_many_arguments)]
-pub async fn run_action_to_sink(
+pub async fn run_initiator_action_to_sink(
     store: Arc<ConfigStore>,
-    connection: String,
-    action: ActionVerb,
+    request: ActionInvocationRequest,
     transport: Arc<dyn PtpExecutorTransport>,
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
     sink: Arc<dyn PtpDataOutputSink>,
-    runtime_params: Vec<PtpRuntimeValue>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
-    let action =
-        store
-            .action(connection.clone(), action)
-            .ok_or_else(|| PtpExecutorError::UnknownPlan {
-                detail: format!("{connection}: action not found"),
-            })?;
+    let (connection, action, runtime_params) = resolve_initiator(&store, request)?;
+    let initiator = action
+        .initiator
+        .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
+            detail: format!("{connection}: action has no initiator binding"),
+        })?;
     run_steps(
         store,
         connection,
-        action.steps,
-        action.activities,
+        initiator.steps,
+        initiator.activities,
         transport,
         observer,
         activity_observer,
@@ -257,6 +255,40 @@ pub async fn run_action_to_sink(
         Some(sink),
     )
     .await
+}
+
+fn resolve_initiator(
+    store: &ConfigStore,
+    request: ActionInvocationRequest,
+) -> Result<(String, crate::Action, Vec<PtpRuntimeValue>), PtpExecutorError> {
+    if request.role != ActionRole::Initiator {
+        return Err(PtpExecutorError::ActionRejected {
+            code: "wrongRole".into(),
+            detail: "initiator execution requires the initiator role".into(),
+        });
+    }
+    let connection = request.connection.clone();
+    let resolved = store
+        .resolve_action_invocation(request)
+        .map_err(|error| match error {
+            crate::ActionResolutionError::Rejected { code, detail } => {
+                PtpExecutorError::ActionRejected { code, detail }
+            }
+        })?;
+    let action = store
+        .action(connection.clone(), resolved.action)
+        .ok_or_else(|| PtpExecutorError::UnknownPlan {
+            detail: format!("{connection}: resolved action disappeared"),
+        })?;
+    let runtime_params = resolved
+        .parameters
+        .into_iter()
+        .map(|argument| PtpRuntimeValue {
+            key: argument.name,
+            value: argument.value,
+        })
+        .collect();
+    Ok((connection, action, runtime_params))
 }
 
 #[uniffi::export]

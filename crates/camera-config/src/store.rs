@@ -307,14 +307,17 @@ fn validate_activity_metadata_consistency(
                     }
                 }
                 for (verb, action) in &connection.actions {
-                    for (activity_index, descriptor) in action.activities.iter().enumerate() {
-                        check(
-                            descriptor,
-                            format!(
-                                "models.{}.connections.{connection_id}.actions.{verb:?}.activities[{activity_index}]",
-                                model.id
-                            ),
-                        )?;
+                    if let Some(initiator) = &action.initiator {
+                        for (activity_index, descriptor) in initiator.activities.iter().enumerate()
+                        {
+                            check(
+                                descriptor,
+                                format!(
+                                    "models.{}.connections.{connection_id}.actions.{verb:?}.initiator.activities[{activity_index}]",
+                                    model.id
+                                ),
+                            )?;
+                        }
                     }
                 }
             }

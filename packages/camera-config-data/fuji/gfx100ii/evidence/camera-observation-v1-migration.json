@@ -1,0 +1,80 @@
+{
+  "schema": "camera-observation-migration/v1",
+  "bundles": 10,
+  "legacyNonblank": 1708,
+  "canonicalNonblank": 1718,
+  "rejected": 0,
+  "runs": [
+    {
+      "runId": "legacy-20260527T095126Z",
+      "legacyRecords": 312,
+      "canonicalRecords": 313,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-20260527T095815Z",
+      "legacyRecords": 312,
+      "canonicalRecords": 313,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-20260527T101227Z",
+      "legacyRecords": 312,
+      "canonicalRecords": 313,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-20260527T102616Z",
+      "legacyRecords": 82,
+      "canonicalRecords": 83,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-20260527T103610Z",
+      "legacyRecords": 30,
+      "canonicalRecords": 31,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-20260527T104135Z",
+      "legacyRecords": 30,
+      "canonicalRecords": 31,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-20260527T104927Z",
+      "legacyRecords": 312,
+      "canonicalRecords": 313,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-20260527T110148Z",
+      "legacyRecords": 312,
+      "canonicalRecords": 313,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-7bc93f14fe2a211e13d9",
+      "legacyRecords": 1,
+      "canonicalRecords": 2,
+      "rejected": 0
+    },
+    {
+      "runId": "legacy-ac35595608f73c3210d4",
+      "legacyRecords": 5,
+      "canonicalRecords": 6,
+      "rejected": 0
+    }
+  ],
+  "scopedDescriptorNormalizations": 40,
+  "scopedDescriptorCodes": [
+    "0xd037",
+    "0xd039",
+    "0xd1bc",
+    "0xd201",
+    "0xd208",
+    "0xd228",
+    "0xd23c",
+    "0xd369"
+  ]
+}

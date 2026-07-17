@@ -7,6 +7,12 @@ Model + Transport/Mode matrix), `docs/TRANSPORTS.md`, `docs/plans/manifest-syste
 `docs/plans/ios-adoption.md`, and the current `crates/camera-manifest/` source.
 A delta on what exists, not greenfield.
 
+> Historical note: the standalone `protocol-mapper` design in this plan was
+> superseded by the shipping `camera-initiator` plus
+> `camera-observation/v1` loop in
+> [`canonical-observation-loop.md`](canonical-observation-loop.md). It is not a
+> current protocol or evidence authority.
+
 ## Context (orientation)
 
 **What this is.** `camera-config` is the data + engine that answers per-camera

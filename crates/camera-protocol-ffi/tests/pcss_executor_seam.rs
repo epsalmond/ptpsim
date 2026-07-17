@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use camera_config::{CapabilitySubject, ObservationLine};
 use camera_protocol_ffi::{
     run_pcss_auto_establishment, run_pcss_known_address_establishment, ConfigStore,
     ConnectionActivityEvent, ConnectionActivityObserver, KeyValue, PcssCallback, PcssExecutorError,
@@ -948,19 +949,36 @@ fn libgphoto2_parity_inventory_is_machine_reviewable() {
     let capture = include_str!(
         "../../../packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl"
     );
-    let captured: Vec<serde_json::Value> = capture
+    let captured: Vec<ObservationLine> = capture
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     let captured_operations: BTreeSet<String> = captured
         .iter()
-        .filter(|row| row["kind"] == "operation" && row["supported"] == true)
-        .map(|row| row["code"].as_str().unwrap().to_ascii_lowercase())
+        .filter_map(|row| match row {
+            ObservationLine::Capability(capability) => match &capability.subject {
+                CapabilitySubject::Operation {
+                    code,
+                    supported: true,
+                } => Some(code.to_ascii_lowercase()),
+                _ => None,
+            },
+            _ => None,
+        })
         .collect();
     let captured_properties: BTreeSet<String> = captured
         .iter()
-        .filter(|row| row["kind"] == "property" && row["supported"] == true)
-        .map(|row| row["code"].as_str().unwrap().to_ascii_lowercase())
+        .filter_map(|row| match row {
+            ObservationLine::Capability(capability) => match &capability.subject {
+                CapabilitySubject::Property {
+                    code,
+                    supported: true,
+                    ..
+                } => Some(code.to_ascii_lowercase()),
+                _ => None,
+            },
+            _ => None,
+        })
         .collect();
     assert_eq!(captured_operations.len(), 24);
     assert_eq!(captured_properties.len(), 287);

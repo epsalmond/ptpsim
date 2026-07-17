@@ -1,83 +1,261 @@
-//! `camera-config-generate [--enrich <base.yaml>] <evidence.jsonl>...`
+//! Fail-closed camera observation intake.
 //!
-//! Concatenate `camera-config-evidence/v1` files (protocol-mapper output) and emit a
-//! reviewable manifest **proposal** (YAML) to stdout. With `--enrich <base.yaml>`, the
-//! proposal is merged INTO a curated base (curated structure wins; the probe adds
-//! properties/operations and fills missing type/access/descriptor) — the
-//! generator→merge→review step. Output is a first-pass for human reconciliation, never
-//! a silent drop-in. See the generator module docs + docs/plans/camera-config.md.
-use std::io::Read;
+//! ```text
+//! camera-config-generate validate <bundle.jsonl>...
+//! camera-config-generate propose [--output FILE] <bundle.jsonl>...
+//! camera-config-generate apply --base MANIFEST --proposal FILE --review FILE --output MANIFEST
+//! camera-config-generate schema [--check FILE | --output FILE]
+//! ```
+
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::Path;
+
+use camera_config::{
+    apply_review, generated_json_schema, proposal_json, propose, validate_bundles,
+    validation_report_json, CameraManifest, Proposal, ProposalReview,
+};
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let mut base: Option<String> = None;
-    let mut evidence_paths: Vec<String> = Vec::new();
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--enrich" => {
-                base = Some(args.next().unwrap_or_else(|| {
-                    eprintln!("--enrich requires a <base.yaml> path");
-                    std::process::exit(2);
-                }));
-            }
-            _ => evidence_paths.push(a),
-        }
+    if let Err(error) = run(std::env::args().skip(1).collect()) {
+        eprintln!("{error}");
+        std::process::exit(1);
     }
-    if evidence_paths.is_empty() {
-        eprintln!("usage: camera-config-generate [--enrich <base.yaml>] <evidence.jsonl>...");
-        std::process::exit(2);
-    }
+}
 
-    let mut jsonl = String::new();
-    for path in &evidence_paths {
-        let mut s = String::new();
-        if let Err(e) = std::fs::File::open(path).and_then(|mut f| f.read_to_string(&mut s)) {
-            eprintln!("read {path}: {e}");
-            std::process::exit(1);
-        }
-        jsonl.push_str(&s);
-        jsonl.push('\n');
-    }
-
-    let proposal = camera_config::generate_proposal(&jsonl);
-    let manifest = match base {
-        Some(path) => {
-            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                eprintln!("read {path}: {e}");
-                std::process::exit(1);
-            });
-            let curated = camera_config::CameraManifest::from_yaml(&text).unwrap_or_else(|e| {
-                eprintln!("parse {path}: {e}");
-                std::process::exit(1);
-            });
-            camera_config::enrich(curated, proposal)
-        }
-        None => proposal,
+fn run(args: Vec<String>) -> Result<(), String> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Err(help());
     };
-
-    match manifest.to_yaml() {
-        Ok(y) => {
-            print!("{HEADER}");
-            print!("{y}");
+    match command {
+        "validate" => validate_command(&args[1..]),
+        "propose" => propose_command(&args[1..]),
+        "apply" => apply_command(&args[1..]),
+        "schema" => schema_command(&args[1..]),
+        "help" | "--help" | "-h" => {
+            println!("{}", help());
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("serialize: {e}");
-            std::process::exit(1);
+        other => Err(format!("unknown command {other:?}\n\n{}", help())),
+    }
+}
+
+fn validate_command(args: &[String]) -> Result<(), String> {
+    if args.is_empty() || args.iter().any(|arg| arg.starts_with('-')) {
+        return Err("validate requires one or more bundle paths".to_string());
+    }
+    let inputs = read_inputs(args)?;
+    let refs = inputs.iter().map(String::as_str).collect::<Vec<_>>();
+    match validate_bundles(&refs) {
+        Ok(validated) => {
+            print_json(&validation_report_json(&validated.report).map_err(|e| e.to_string())?)?;
+            Ok(())
+        }
+        Err(report) => {
+            print_json(&validation_report_json(&report).map_err(|e| e.to_string())?)?;
+            Err(format!("validation rejected {} record(s)", report.rejected))
         }
     }
 }
 
-const HEADER: &str = "\
-# GENERATED — do NOT hand-edit. The rich GFX100 II manifest the simulator loads
-# (camera-sim-service --manifest …/gfx100ii.consolidated.yaml). Reproduce with:
-#   cargo run -p camera-config --bin camera-config-generate -- \\
-#     --enrich packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml \\
-#     packages/camera-config-data/fuji/gfx100ii/evidence/probe/*.jsonl \\
-#     packages/camera-config-data/fuji/gfx100ii/evidence/labels/*.jsonl \\
-#     packages/camera-config-data/fuji/gfx100ii/evidence/value-profiles/*.jsonl
-#
-# = curated gfx100ii.yaml (connections/modes/entries/establishment + curated names,
-#   labels, value profiles, gating) ENRICHED with active-probe evidence (props/descriptors/ops).
-# Mode-naming convention applied; standard PTP codes auto-named. Remaining curation:
-# ~306 vendor raw_0x props carry camera-sourced descriptors but still need names/labels.
-";
+fn propose_command(args: &[String]) -> Result<(), String> {
+    let mut output = None;
+    let mut paths = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--output" => {
+                index += 1;
+                output = Some(
+                    args.get(index)
+                        .ok_or_else(|| "--output requires a path".to_string())?
+                        .clone(),
+                );
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown propose option {value:?}"));
+            }
+            path => paths.push(path.to_string()),
+        }
+        index += 1;
+    }
+    if paths.is_empty() {
+        return Err("propose requires one or more bundle paths".to_string());
+    }
+    let inputs = read_inputs(&paths)?;
+    let refs = inputs.iter().map(String::as_str).collect::<Vec<_>>();
+    let proposal = propose(&refs).map_err(|report| {
+        format!(
+            "validation rejected {} record(s); run validate for coded diagnostics",
+            report.rejected
+        )
+    })?;
+    let json = proposal_json(&proposal).map_err(|error| error.to_string())?;
+    if let Some(path) = output {
+        std::fs::write(&path, json).map_err(|error| format!("write {path}: {error}"))
+    } else {
+        print_json(&json)
+    }
+}
+
+fn apply_command(args: &[String]) -> Result<(), String> {
+    let mut base = None;
+    let mut proposal = None;
+    let mut review = None;
+    let mut output = None;
+    let mut index = 0;
+    while index < args.len() {
+        let option = args[index].as_str();
+        let target = match option {
+            "--base" => &mut base,
+            "--proposal" => &mut proposal,
+            "--review" => &mut review,
+            "--output" => &mut output,
+            other => return Err(format!("unknown apply option {other:?}")),
+        };
+        index += 1;
+        *target = Some(
+            args.get(index)
+                .ok_or_else(|| format!("{option} requires a path"))?
+                .clone(),
+        );
+        index += 1;
+    }
+    let base = required(base, "--base")?;
+    let proposal_path = required(proposal, "--proposal")?;
+    let review_path = required(review, "--review")?;
+    let output = required(output, "--output")?;
+    let base_manifest =
+        CameraManifest::from_file(&base).map_err(|error| format!("load base {base}: {error}"))?;
+    let proposal: Proposal = read_json(&proposal_path)?;
+    let review: ProposalReview = read_json(&review_path)?;
+    let manifest = apply_review(&base_manifest, &proposal, &review)
+        .map_err(|error| format!("apply review: {error}"))?;
+    let yaml = manifest
+        .to_yaml()
+        .map_err(|error| format!("serialize manifest: {error}"))?;
+    let yaml = format!(
+        "# Generated by camera-config-generate apply.\n# Proposal digest: {}\n{yaml}",
+        proposal.digest
+    );
+    atomic_write(Path::new(&output), yaml.as_bytes())
+        .map_err(|error| format!("atomic write {output}: {error}"))
+}
+
+fn schema_command(args: &[String]) -> Result<(), String> {
+    let schema = generated_json_schema().map_err(|error| error.to_string())?;
+    match args {
+        [] => print_json(&schema),
+        [option, path] if option == "--check" => {
+            let committed = std::fs::read_to_string(path)
+                .map_err(|error| format!("read schema {path}: {error}"))?;
+            if committed == schema {
+                Ok(())
+            } else {
+                Err(format!(
+                    "schema drift: regenerate {path} with camera-config-generate schema"
+                ))
+            }
+        }
+        [option, path] if option == "--output" => atomic_write(Path::new(path), schema.as_bytes())
+            .map_err(|error| format!("atomic write {path}: {error}")),
+        _ => Err("schema accepts only optional '--check FILE' or '--output FILE'".to_string()),
+    }
+}
+
+fn required(value: Option<String>, name: &str) -> Result<String, String> {
+    value.ok_or_else(|| format!("apply requires {name} PATH"))
+}
+
+fn read_inputs(paths: &[String]) -> Result<Vec<String>, String> {
+    paths
+        .iter()
+        .map(|path| {
+            let mut input = String::new();
+            File::open(path)
+                .and_then(|mut file| file.read_to_string(&mut input))
+                .map_err(|error| format!("read {path}: {error}"))?;
+            Ok(input)
+        })
+        .collect()
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, String> {
+    let text = std::fs::read_to_string(path).map_err(|error| format!("read {path}: {error}"))?;
+    serde_json::from_str(&text).map_err(|error| format!("parse {path}: {error}"))
+}
+
+fn print_json(value: &str) -> Result<(), String> {
+    std::io::stdout()
+        .write_all(value.as_bytes())
+        .map_err(|error| format!("write stdout: {error}"))
+}
+
+fn atomic_write(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("manifest");
+    let temporary = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, destination)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn help() -> String {
+    "camera-config-generate — fail-closed canonical observation intake\n\n\
+     USAGE:\n  \
+       camera-config-generate validate <bundle.jsonl>...\n  \
+       camera-config-generate propose [--output FILE] <bundle.jsonl>...\n  \
+       camera-config-generate apply --base MANIFEST --proposal FILE --review FILE --output MANIFEST\n  \
+       camera-config-generate schema [--check FILE | --output FILE]\n\n\
+     validate accounts for every nonblank record with stable diagnostic codes.\n\
+     propose emits no candidates when any record is rejected and disposes every\n\
+     accepted record as candidate-linked or evidence-only. Its digest and candidate\n\
+     ids are independent of input paths, timestamps, and record order. apply\n\
+     recomputes proposal integrity, requires accept/reject/defer coverage for every\n\
+     candidate, applies only accepted assertions, validates, and replaces output\n\
+     atomically.\n\
+     schema prints the JSON Schema generated from the Rust observation model;\n\
+     --check fails if the committed copy has drifted."
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::atomic_write;
+    use std::path::PathBuf;
+
+    #[test]
+    fn atomic_write_replaces_complete_destination() {
+        let directory = std::env::temp_dir().join(format!(
+            "ptpsim-observation-atomic-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("manifest.yaml");
+        atomic_write(&destination, b"complete\n").unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"complete\n");
+        let temporary = PathBuf::from(format!(
+            "{}/.manifest.yaml.{}.tmp",
+            directory.display(),
+            std::process::id()
+        ));
+        assert!(!temporary.exists());
+        std::fs::remove_file(destination).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+}

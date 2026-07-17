@@ -22,6 +22,13 @@ Two seams ship from this crate:
 Both seams coexist on `ConfigStore` — different constructors choose which one you
 get.
 
+Both also expose the same deterministic action catalog. A catalog record carries
+its revision, action id, mode, supported roles, exact parameters, triggers, and
+availability. Resolve an invocation against that revision before creating any
+transport request or simulator mutation. Unknown action or connection, wrong
+mode or role, stale revision, and duplicate, missing, or extra parameters are
+typed failures with zero side effects.
+
 ## 1. Mental model — ptpsim is the brain, you are the hands (sans-io)
 
 ptpsim does **no I/O**. It never opens a socket, USB endpoint, BLE GATT, or Wi-Fi
@@ -113,7 +120,7 @@ LIB=target/release/libcamera_protocol_ffi.a   # .so on Linux; .a is canonical on
 # Kotlin (Android)
 "$BINDGEN" generate -l kotlin -o generated/kotlin "$LIB"
 
-# Python (Linux — consumed by the standalone camera-protocol-mapper repo)
+# Python (Linux — optional external adapters)
 "$BINDGEN" generate -l python -o generated/python "$LIB"
 ```
 
@@ -156,10 +163,17 @@ per-platform packaging:
   `@aar`. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Built by
   `ci/build-android.sh` on the `ci-android` image (`kotlinc` + JNA; `android.jar`
   from the cimg Android image).
-- **Linux / Python:** the `.so` + the generated `camera_protocol_ffi.py`. Consumed
-  across a repo boundary by the standalone `epsalmond/camera-protocol-mapper` (probe
-  tooling), which pulls the generated binding — it is no longer built, tested, or
-  shipped from ptpsim CI.
+- **Linux / Python:** the `.so` + generated `camera_protocol_ffi.py` remain an
+  adapter surface. New first-party observations come from the shipping Rust
+  initiator; an external adapter must emit the same canonical contract and does
+  not own a parallel action vocabulary.
+
+`parseObservationRecord(json)` validates the exact
+`camera-observation/v1` discriminator through the Rust model and returns the
+complete hand-written typed mirror. Closed record variants, nested outcome and
+readback enums, capture metadata, payload streaming ranges, and action roles are
+all explicit in generated bindings. Arbitrary JSON values are preserved as
+canonical JSON leaves so foreign bindings do not invent a second value grammar.
 
 ## 5. Integration pattern
 
@@ -487,8 +501,9 @@ initialized event channel. Closing either associated socket closes the pair.
 |---|---|
 | `runModeEntry(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | a current-session `ptp` mode entry. `UserInstruction` and `ReestablishConnection` fail with `UnsupportedPlan` so the host cannot accidentally skip their outer lifecycle. |
 | `runModeReestablishmentExit(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | only the old-session `exitSteps` of a `ReestablishConnection` entry. Establishment replay, network association, fresh session creation, and the cold entry remain explicit host orchestration. |
-| `runAction(store, connection, action, transport, observer, activityObserver, runtimeParams)` | one named manifest action on the current session. |
-| `runActionToSink(store, connection, action, transport, observer, activityObserver, sink, runtimeParams)` | the same action walker, delivering each completed ordinary data output to `PtpDataOutputSink` after its response has been consumed instead of accumulating payloads in the outcome. A sink failure fails the step but leaves the synchronized command session reusable. |
+| `actionCatalog()` / `resolveActionInvocation(request)` | fetch the deterministic role-aware registry, then reject stale revisions, wrong connection/mode/role, and parameter-shape errors before any effect. |
+| `runInitiatorAction(store, connection, action, transport, observer, activityObserver, runtimeParams)` | execute one action's explicit initiator binding on the current session. |
+| `runInitiatorActionToSink(store, connection, action, transport, observer, activityObserver, sink, runtimeParams)` | the same initiator walker, delivering each completed ordinary data output to `PtpDataOutputSink` after its response has been consumed instead of accumulating payloads in the outcome. A sink failure fails the step but leaves the synchronized command session reusable. |
 | `runSelectedObjectPreparation(store, connection, transport, observer, activityObserver, runtimeParams)` | the selected-object prefix projected from the canonical import action, preserving capture bindings for later chunk reads. |
 | `runStreamingAction(store, connection, action, transport, sink, runtimeParams, expectedPayloadBytes)` | one compressed, single-`sendOp` data-in action through bounded raw reads. Rust validates the 12-byte data header, streams the exact body to `PtpStreamingSink` in chunks no larger than 1 MiB, then validates the separate final response. |
 
@@ -585,11 +600,11 @@ infer the same disposition from `DeadlineExceeded`, `Other`, the step path, or
 the diagnostic text. A transport/link failure is not a refusal; release the
 failed BLE link before offering a scan/reconnect path.
 
-### 9.4 The Step grammar (reference; legacy dispatcher)
+### 9.4 The Step grammar (reference)
 
 The executor implements this grammar for you — read this section as the verb
-reference. It is also the contract for the legacy alternative, a hand-built
-app-side dispatcher, if you cannot adopt the executor path. Each verb carries
+reference, not permission to create a second app-side protocol authority. Each
+verb carries
 `StepOptions { tolerant, retries, retryDelayMs }` — wrap each verb body in one
 retry loop and the same code handles all of them.
 

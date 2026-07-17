@@ -7,14 +7,18 @@
 //! switches to the manifest-selected standard, compressed, or USB/PIMA
 //! operation framing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use camera_config::{
-    parse_hex_bytes, parse_hex_code, parse_hex_u32, CameraManifest, LiveViewDeliveryKind,
-    PcssKnock, ValuePolicy,
+    direct_epistemic, no_loss, parse_hex_bytes, parse_hex_code, parse_hex_u32, BundleHeader,
+    CameraContext, CameraManifest, CaptureClock, CaptureContext, CaptureInterface,
+    CaptureInterfaceType, ClientContext, ClockType, ClockUnit, DataDirection, ExecutionContext,
+    LifecycleMarker, LiveViewDeliveryKind, ObservationLine, ObservationRecorder, PayloadMetadata,
+    PayloadMetadataBuilder, PcssKnock, PtpDataPhase, PtpEventRecord, PtpRequest, PtpResponse,
+    PtpTransactionRecord, PtpTransport, TransactionOutcome, ValuePolicy,
 };
 use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
@@ -107,6 +111,67 @@ fn load_liveview_frames(dir: Option<&std::path::Path>) -> std::io::Result<Vec<Ve
     Ok(out)
 }
 
+fn observation_recorder(
+    config: &Config,
+    manifest: &CameraManifest,
+) -> std::io::Result<ObservationRecorder> {
+    let file_id = config
+        .instance_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let path = config
+        .media_root
+        .join(".ptpsim")
+        .join(format!("observations-{file_id}.jsonl"));
+    let header = BundleHeader {
+        schema: camera_config::OBSERVATION_SCHEMA_VERSION.into(),
+        run_id: config.instance_id.clone(),
+        record_id: "bundle-header".into(),
+        ordinal: 0,
+        camera: CameraContext {
+            manufacturer: manifest.camera.manufacturer.clone(),
+            model: manifest.camera.model.clone(),
+            body_id: "simulated-body".into(),
+            firmware: manifest.camera.firmware.clone(),
+        },
+        client: ClientContext {
+            artifact: "camera-sim-service".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            platform: std::env::consts::OS.into(),
+        },
+        capture: CaptureContext {
+            interfaces: vec![CaptureInterface {
+                id: "simulator".into(),
+                interface_type: CaptureInterfaceType::Synthetic,
+                role: "responder".into(),
+            }],
+            clocks: vec![CaptureClock {
+                id: "process-monotonic".into(),
+                clock_type: ClockType::Monotonic,
+                unit: ClockUnit::Milliseconds,
+            }],
+            clock_mappings: Vec::new(),
+            loss: no_loss(),
+            redactions: Vec::new(),
+            tool_versions: BTreeMap::from([(
+                "camera-sim-service".into(),
+                env!("CARGO_PKG_VERSION").into(),
+            )]),
+            artifacts: Vec::new(),
+        },
+        epistemic: direct_epistemic(),
+    };
+    ObservationRecorder::open(Some(path), header)
+        .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
 /// A bound, not-yet-serving instance. Binding first lets callers (tests) learn
 /// the OS-assigned ports before the serve loop starts.
 pub struct Server {
@@ -130,10 +195,12 @@ pub struct Server {
     /// the normal lease shape is one camera = one client; cursor sharing is
     /// harmless if a smoke client connects alongside the real one).
     frames: Arc<Mutex<LoopingFrameSource>>,
+    observations: ObservationRecorder,
 }
 
 #[derive(Clone)]
 struct CommandContext {
+    connection: String,
     init_shape: String,
     command_framing: WireFraming,
     expected_responder_guid: Option<[u8; 16]>,
@@ -151,6 +218,7 @@ struct CommandResources {
     state_dirty: Arc<Notify>,
     context: CommandContext,
     trace: TraceLog,
+    observations: ObservationRecorder,
     metrics: Metrics,
     standard_connections: Arc<StandardConnections>,
 }
@@ -425,6 +493,7 @@ impl Server {
             None
         };
         let event_framing = connection.event_framing;
+        let observations = observation_recorder(&config, &manifest)?;
         let mut engine_value = Engine::new(manifest, store);
         engine_value.bind_connection(&config.connection);
         engine_value
@@ -468,6 +537,7 @@ impl Server {
             engine,
             metrics,
             frames,
+            observations,
         })
     }
 
@@ -533,6 +603,7 @@ impl Server {
             engine,
             metrics,
             frames,
+            observations,
         } = self;
         let health = control::Health {
             instance_id: config.instance_id.clone(),
@@ -546,6 +617,7 @@ impl Server {
             metrics: metrics.clone(),
         };
         let command_context = CommandContext {
+            connection: config.connection.clone(),
             init_shape: {
                 let e = engine.lock().await;
                 e.manifest()
@@ -579,6 +651,20 @@ impl Server {
         let state_dirty = Arc::new(Notify::new());
         let state_callbacks = state_callback::Registry::default();
         let trace = TraceLog::default();
+        if let Err(error) = observations.record_lifecycle(
+            ExecutionContext {
+                connection: config.connection.clone(),
+                mode: "unselected".into(),
+                state: "ready".into(),
+            },
+            LifecycleMarker::ConnectionOpened,
+            None,
+            None,
+            BTreeMap::new(),
+        ) {
+            tracing::error!(%error, "canonical observation recording failed");
+            return;
+        }
 
         // Per-connection tasks live in a JoinSet per accept loop (audit in
         // docs/internal-async-notes.md): the `Some(_) = join_next()` arm reaps
@@ -595,6 +681,7 @@ impl Server {
                 state_dirty: state_dirty.clone(),
                 context: command_context.clone(),
                 trace: trace.clone(),
+                observations: observations.clone(),
                 metrics: metrics.clone(),
                 standard_connections: standard_connections.clone(),
             };
@@ -611,7 +698,22 @@ impl Server {
                                         resources.clone(),
                                     ));
                                 } else {
-                                    conns.spawn(handle_command_conn(stream, resources.clone(), None));
+                                    match reserve_command_session_identity(
+                                        &resources.observations,
+                                        &resources.context.connection,
+                                    ) {
+                                        Ok(session_sequence) => {
+                                            conns.spawn(handle_command_conn(
+                                                stream,
+                                                resources.clone(),
+                                                None,
+                                                session_sequence,
+                                            ));
+                                        }
+                                        Err(error) => {
+                                            tracing::error!(%error, "canonical connection identity recording failed");
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -623,15 +725,16 @@ impl Server {
         };
 
         let control_loop = {
-            let context = control::Context::new(
+            let context = control::Context {
                 health,
-                engine.clone(),
-                state_dirty.clone(),
-                state_callbacks.clone(),
-                trace.clone(),
-                metrics.clone(),
-                ctl_shutdown.clone(),
-            );
+                engine: engine.clone(),
+                state_notify: state_dirty.clone(),
+                callbacks: state_callbacks.clone(),
+                trace: trace.clone(),
+                observations: observations.clone(),
+                metrics: metrics.clone(),
+                shutdown: ctl_shutdown.clone(),
+            };
             let mut sub = shutdown_tx.subscribe();
             async move {
                 let mut conns = tokio::task::JoinSet::new();
@@ -868,6 +971,37 @@ fn has_data_in(code: u16) -> bool {
     code == op::SET_DEVICE_PROP_VALUE
 }
 
+fn response_outcome(code: u16) -> TransactionOutcome {
+    if code == resp::OK {
+        TransactionOutcome::Ok
+    } else {
+        TransactionOutcome::NonOk
+    }
+}
+
+/// Persist the physical connection allocation before handing its socket to an
+/// asynchronous task. Using the lifecycle record's ordinal makes the identity
+/// unique across concurrent accepts and service restarts, including accepted
+/// connections that close before producing a PTP transaction.
+fn reserve_command_session_identity(
+    observations: &ObservationRecorder,
+    connection: &str,
+) -> std::io::Result<u64> {
+    observations
+        .record_lifecycle(
+            ExecutionContext {
+                connection: connection.into(),
+                mode: "unselected".into(),
+                state: "command-accepted".into(),
+            },
+            LifecycleMarker::ConnectionOpened,
+            None,
+            None,
+            BTreeMap::new(),
+        )
+        .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
 async fn handle_standard_listener_conn(
     mut stream: TcpStream,
     resources: CommandResources,
@@ -877,7 +1011,17 @@ async fn handle_standard_listener_conn(
     };
     match PtpIpPacket::decode(&first) {
         Ok(PtpIpPacket::InitCommandRequest(_)) => {
-            handle_command_conn(stream, resources, Some(first)).await
+            let session_sequence = match reserve_command_session_identity(
+                &resources.observations,
+                &resources.context.connection,
+            ) {
+                Ok(session_sequence) => session_sequence,
+                Err(error) => {
+                    tracing::error!(%error, "canonical connection identity recording failed");
+                    return Ok(());
+                }
+            };
+            handle_command_conn(stream, resources, Some(first), session_sequence).await
         }
         Ok(PtpIpPacket::InitEventRequest(_)) => {
             handle_standard_event_conn(
@@ -967,6 +1111,7 @@ async fn handle_command_conn(
     mut stream: TcpStream,
     resources: CommandResources,
     first_frame: Option<Vec<u8>>,
+    session_sequence: u64,
 ) -> std::io::Result<()> {
     let CommandResources {
         engine,
@@ -975,9 +1120,12 @@ async fn handle_command_conn(
         state_dirty,
         context,
         trace,
+        observations,
         metrics,
         standard_connections,
     } = resources;
+    let connection_instance = format!("simulator-connection-{session_sequence:016x}");
+    let session = format!("ptp-session-{session_sequence:016x}");
     let endpoints = TraceEndpoints::connection(&stream);
     let is_pcss = context.init_shape == "pcssKnock";
     let is_legacy_app = context.init_shape == "legacyApp82";
@@ -1252,19 +1400,82 @@ async fn handle_command_conn(
         } else {
             None
         };
-        let (reply, events, is_poll_live_view) = {
+        let (reply, events, is_poll_live_view, observation_context) = {
             let mut e = engine.lock().await;
             let is_poll_live_view = context.poll_live_view_op == Some(req.code);
             let reply = e.on_operation(&req, data_in.as_deref());
+            let observation_context = ExecutionContext {
+                connection: context.connection.clone(),
+                mode: e.state().manifest_mode_path().to_string(),
+                state: e.phase().state_name().to_string(),
+            };
             // Drain under the same lock so the queue is emptied atomically with
             // the op that produced it; forward (broadcast, non-blocking) outside.
-            (reply, e.drain_events(), is_poll_live_view)
+            (
+                reply,
+                e.drain_events(),
+                is_poll_live_view,
+                observation_context,
+            )
         };
         let reply = if is_poll_live_view {
             poll_live_view_reply(reply, &frames).await
         } else {
             reply
         };
+        let request = PtpRequest {
+            framing: observation_framing(context.command_framing).into(),
+            operation: format!("0x{:04x}", req.code),
+            parameters: req.params.clone(),
+            data: data_in.as_deref().map(|bytes| PtpDataPhase {
+                direction: DataDirection::HostToCamera,
+                payload: camera_config::payload_metadata(bytes),
+            }),
+        };
+        let (response, outcome, completion, write_error) =
+            match write_reply(&mut stream, &req, reply, context.command_framing, &metrics).await {
+                Ok(written) => (written.response, written.outcome, written.completion, None),
+                Err(error) => (None, TransactionOutcome::TransportAbort, None, Some(error)),
+            };
+        let transaction_record = observations
+            .append(observation_context.clone(), |common| {
+                ObservationLine::PtpTransaction(Box::new(PtpTransactionRecord {
+                    common,
+                    transport: PtpTransport::PtpIp,
+                    connection_instance: connection_instance.clone(),
+                    session: session.clone(),
+                    endpoint_set: "command".into(),
+                    transaction_id: req.transaction_id,
+                    request,
+                    response,
+                    outcome,
+                    evidence_basis: None,
+                    observed_effect: None,
+                    readback: None,
+                }))
+            })
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let transaction_record_id = format!("record-{transaction_record:016x}");
+        for code in &events {
+            observations
+                .append(observation_context.clone(), |common| {
+                    ObservationLine::PtpEvent(PtpEventRecord {
+                        common,
+                        connection_instance: connection_instance.clone(),
+                        session: session.clone(),
+                        endpoint_set: "event".into(),
+                        // Event packets are emitted with the protocol-defined
+                        // zero transaction ID. The record link carries the
+                        // independently known causal transaction.
+                        transaction_id: 0,
+                        transaction_record_id: Some(transaction_record_id.clone()),
+                        event: format!("0x{code:04x}"),
+                        parameters: Vec::new(),
+                        payload: None,
+                    })
+                })
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
         // #126: the one hook — nudge the state-callback task that the camera
         // state may have changed. Cheap; a no-op when no push task is running.
         state_dirty.notify_one();
@@ -1273,9 +1484,10 @@ async fn handle_command_conn(
             // completion is only meaningful to a listening client).
             let _ = event_tx.send(code);
         }
-        if let Some(completion) =
-            write_reply(&mut stream, &req, reply, context.command_framing, &metrics).await?
-        {
+        if let Some(error) = write_error {
+            return Err(error);
+        }
+        if let Some(completion) = completion {
             if engine.lock().await.complete_stream(completion) {
                 state_dirty.notify_one();
             }
@@ -1571,6 +1783,14 @@ fn decode_command_frame(framing: WireFraming, frame: &[u8]) -> Result<PtpIpPacke
     }
 }
 
+fn observation_framing(framing: WireFraming) -> &'static str {
+    match framing {
+        WireFraming::Standard => "standard",
+        WireFraming::Compressed => "compressed",
+        WireFraming::Usb => "usb",
+    }
+}
+
 fn encode_control_frame(framing: WireFraming, packet: &PtpIpPacket) -> std::io::Result<Vec<u8>> {
     match framing {
         WireFraming::Standard => ptp_core::encode(packet).map_err(to_io),
@@ -1714,20 +1934,40 @@ async fn collect_data_in(
 /// bounded chunk buffers") even for a multi-GB object.
 const DATA_CHUNK_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug)]
+struct WrittenReply {
+    response: Option<PtpResponse>,
+    outcome: TransactionOutcome,
+    completion: Option<StreamCompletion>,
+}
+
 async fn write_reply<W: AsyncWrite + Unpin>(
     stream: &mut W,
     req: &OperationRequest,
     reply: Reply,
     framing: WireFraming,
     metrics: &Metrics,
-) -> std::io::Result<Option<StreamCompletion>> {
+) -> std::io::Result<WrittenReply> {
     match reply {
         Reply::Response(resp) => {
+            let observed = PtpResponse {
+                code: format!("0x{:04x}", resp.code),
+                parameters: resp.params.clone(),
+                data: None,
+            };
+            let outcome = response_outcome(resp.code);
             let bytes = encode_control_frame(framing, &PtpIpPacket::OperationResponse(resp))?;
             stream.write_all(&bytes).await?;
             metrics.record_write(bytes.len());
+            Ok(WrittenReply {
+                response: Some(observed),
+                outcome,
+                completion: None,
+            })
         }
         Reply::Data { data, response } => {
+            let code = response.code;
+            let parameters = response.params.clone();
             // The whole data phase is one type-2 frame whose code echoes the op.
             let data_bytes = encode_data_frame(framing, req.code, req.transaction_id, &data)?;
             stream.write_all(&data_bytes).await?;
@@ -1736,13 +1976,27 @@ async fn write_reply<W: AsyncWrite + Unpin>(
                 encode_control_frame(framing, &PtpIpPacket::OperationResponse(response))?;
             stream.write_all(&response_bytes).await?;
             metrics.record_write(response_bytes.len());
+            Ok(WrittenReply {
+                response: Some(PtpResponse {
+                    code: format!("0x{code:04x}"),
+                    parameters,
+                    data: Some(PtpDataPhase {
+                        direction: DataDirection::CameraToHost,
+                        payload: camera_config::payload_metadata(&data),
+                    }),
+                }),
+                outcome: response_outcome(code),
+                completion: None,
+            })
         }
         Reply::DataStream {
             source,
             response,
             completion,
         } => {
-            stream_data_phase(
+            let code = response.code;
+            let parameters = response.params.clone();
+            let payload = stream_data_phase(
                 stream,
                 framing,
                 req.code,
@@ -1755,12 +2009,30 @@ async fn write_reply<W: AsyncWrite + Unpin>(
                 encode_control_frame(framing, &PtpIpPacket::OperationResponse(response))?;
             stream.write_all(&response_bytes).await?;
             metrics.record_write(response_bytes.len());
-            return Ok(completion);
+            Ok(WrittenReply {
+                response: Some(PtpResponse {
+                    code: format!("0x{code:04x}"),
+                    parameters,
+                    data: Some(PtpDataPhase {
+                        direction: DataDirection::CameraToHost,
+                        payload,
+                    }),
+                }),
+                outcome: response_outcome(code),
+                completion,
+            })
         }
-        Reply::NoResponse => {}
-        Reply::Close => {}
+        Reply::NoResponse => Ok(WrittenReply {
+            response: None,
+            outcome: TransactionOutcome::Timeout,
+            completion: None,
+        }),
+        Reply::Close => Ok(WrittenReply {
+            response: None,
+            outcome: TransactionOutcome::TransportAbort,
+            completion: None,
+        }),
     }
-    Ok(None)
 }
 
 /// Emit the data phase as a single type-2 `Data` frame — the whole payload
@@ -1777,7 +2049,7 @@ async fn stream_data_phase<W: AsyncWrite + Unpin>(
     transaction_id: u32,
     source: &ByteSource,
     metrics: &Metrics,
-) -> std::io::Result<()> {
+) -> std::io::Result<PayloadMetadata> {
     let total_length = source.len();
     let payload_len = u32::try_from(total_length)
         .map_err(|_| std::io::Error::other("data-phase payload exceeds a single frame (u32)"))?;
@@ -1806,6 +2078,7 @@ async fn stream_data_phase<W: AsyncWrite + Unpin>(
     metrics.record_write(header.len());
 
     let mut offset: u64 = 0;
+    let mut metadata = PayloadMetadataBuilder::new();
     while offset < total_length {
         let take = ((total_length - offset) as usize).min(DATA_CHUNK_BYTES);
         let chunk = source
@@ -1814,9 +2087,10 @@ async fn stream_data_phase<W: AsyncWrite + Unpin>(
         if chunk.is_empty() {
             break;
         }
-        offset += chunk.len() as u64;
         stream.write_all(&chunk).await?;
         metrics.record_write(chunk.len());
+        metadata.update(&chunk);
+        offset += chunk.len() as u64;
     }
     if offset != total_length {
         return Err(std::io::Error::new(
@@ -1824,7 +2098,7 @@ async fn stream_data_phase<W: AsyncWrite + Unpin>(
             "stream source ended before its declared length",
         ));
     }
-    Ok(())
+    Ok(metadata.metadata())
 }
 
 fn to_io<E: std::fmt::Display>(e: E) -> std::io::Error {
@@ -1986,5 +2260,99 @@ mod tests {
         )
         .await;
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
+    async fn successful_bounded_stream_metadata_matches_delivered_bytes() {
+        let length = DATA_CHUNK_BYTES as u64 + 17;
+        let source = ByteSource::Generated {
+            len: length,
+            seed: 0x5a,
+        };
+        let req = OperationRequest {
+            data_phase_info: 1,
+            code: op::GET_OBJECT,
+            transaction_id: 9,
+            params: vec![1],
+        };
+        let reply = Reply::DataStream {
+            source: source.clone(),
+            response: ptp_core::OperationResponse {
+                code: resp::OK,
+                transaction_id: 9,
+                params: Vec::new(),
+            },
+            completion: None,
+        };
+        let mut delivered = Vec::new();
+
+        let written = write_reply(
+            &mut delivered,
+            &req,
+            reply,
+            WireFraming::Compressed,
+            &Metrics::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(written.outcome, TransactionOutcome::Ok);
+        let metadata = written.response.unwrap().data.unwrap().payload;
+        let body_end = 12 + length as usize;
+        assert_eq!(delivered.len(), body_end + 12);
+        assert_eq!(metadata.length, length);
+        assert_eq!(
+            metadata,
+            camera_config::payload_metadata(&delivered[12..body_end])
+        );
+        assert_eq!(delivered[12..body_end], source.read().unwrap());
+    }
+
+    #[tokio::test]
+    async fn failed_stream_source_cannot_return_success_or_completion() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let missing = std::env::temp_dir().join(format!(
+            "ptpsim-missing-stream-source-{}-{nonce}",
+            std::process::id(),
+        ));
+        let req = OperationRequest {
+            data_phase_info: 1,
+            code: op::GET_OBJECT,
+            transaction_id: 10,
+            params: vec![1],
+        };
+        let reply = Reply::DataStream {
+            source: ByteSource::FileRange {
+                path: missing,
+                offset: 0,
+                len: 32,
+            },
+            response: ptp_core::OperationResponse {
+                code: resp::OK,
+                transaction_id: 10,
+                params: Vec::new(),
+            },
+            completion: None,
+        };
+        let mut delivered = Vec::new();
+
+        let result = write_reply(
+            &mut delivered,
+            &req,
+            reply,
+            WireFraming::Compressed,
+            &Metrics::default(),
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Other);
+        assert_eq!(
+            delivered.len(),
+            12,
+            "only the declared frame header was sent"
+        );
     }
 }

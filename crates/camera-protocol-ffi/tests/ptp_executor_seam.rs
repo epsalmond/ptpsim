@@ -11,12 +11,15 @@ use std::task::{Context, Poll};
 use camera_config::CameraManifest;
 use camera_media_store::{MediaStore, ObjectQuery};
 use camera_protocol_ffi::{
-    run_action, run_action_to_sink, run_mode_entry, run_mode_reestablishment_exit,
-    run_selected_object_preparation, ActionVerb, ConfigStore, ConnectionActivityEvent,
+    parse_action_verb, run_initiator_action as execute_initiator_action,
+    run_initiator_action_to_sink as execute_initiator_action_to_sink, run_mode_entry,
+    run_mode_reestablishment_exit, run_selected_object_preparation, ActionArgument,
+    ActionInvocationRequest, ActionRole, ActionVerb, ConfigStore, ConnectionActivityEvent,
     ConnectionActivityFailure, ConnectionActivityObserver, ConnectionActivityRetry,
     ConnectionActivityTerminalSummary, ExecutorStepFailureKind, PtpDataOutput, PtpDataOutputSink,
-    PtpDataOutputSinkError, PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpRuntimeValue,
-    PtpSessionOpenResult, PtpTransportError, SocketRole, StepObserver, StepOutcome, StepReport,
+    PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
+    PtpFraming, PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError, SocketRole, StepObserver,
+    StepOutcome, StepReport,
 };
 use camera_sim::{Engine, Fault, Reply};
 use futures::executor::block_on;
@@ -117,14 +120,14 @@ fn store_with_tolerant_reopen() -> Arc<ConfigStore> {
 
 fn store_with_tolerant_prime_retry() -> Arc<ConfigStore> {
     let body = data("fuji/gfx100ii/gfx100ii.yaml").replacen(
-        r#"          - { sendOp: "0x9022" }"#,
-        r#"          - tolerant: true
-            retry:
-              whenResponseCodes: ["0x2019"]
-              maxAttempts: 3
-              retryDelayMs: 0
-              steps:
-                - { sendOp: "0x9022" }"#,
+        r#"            - { sendOp: "0x9022" }"#,
+        r#"            - tolerant: true
+              retry:
+                whenResponseCodes: ["0x2019"]
+                maxAttempts: 3
+                retryDelayMs: 0
+                steps:
+                  - { sendOp: "0x9022" }"#,
         1,
     );
     store_from_body(body)
@@ -133,14 +136,14 @@ fn store_with_tolerant_prime_retry() -> Arc<ConfigStore> {
 fn store_with_uncaptured_scalar_event_predicate() -> Arc<ConfigStore> {
     let body = data("fuji/gfx100ii/gfx100ii.yaml")
         .replacen(
-            r#"          - { sendOp: "0x100e", params: [0, 0] }"#,
-            r#"          - { getProp: "0xdf01" }
-          - { sendOp: "0x100e", params: [0, 0] }"#,
+            r#"            - { sendOp: "0x100e", params: [0, 0] }"#,
+            r#"            - { getProp: "0xdf01" }
+            - { sendOp: "0x100e", params: [0, 0] }"#,
             1,
         )
         .replacen(
-            "              until: { all: [] }",
-            r#"              until: { prop: "0xdf01", eq: 0x16 }"#,
+            "                until: { all: [] }",
+            r#"                until: { prop: "0xdf01", eq: 0x16 }"#,
             1,
         );
     store_from_body(body)
@@ -148,12 +151,12 @@ fn store_with_uncaptured_scalar_event_predicate() -> Arc<ConfigStore> {
 
 fn store_with_composite_poll_action() -> Arc<ConfigStore> {
     let body = data("fuji/gfx100ii/gfx100ii.yaml").replacen(
-        r#"          - { sendOp: "0x100e", params: [0, 0] }"#,
-        r#"          - awaitUntil:
-              source: { poll: "0xd212" }
-              until: { prop: "0xd209", eq: 0 }
-              timeoutMs: 1000
-          - { sendOp: "0x100e", params: [0, 0] }"#,
+        r#"            - { sendOp: "0x100e", params: [0, 0] }"#,
+        r#"            - awaitUntil:
+                source: { poll: "0xd212" }
+                until: { prop: "0xd209", eq: 0 }
+                timeoutMs: 1000
+            - { sendOp: "0x100e", params: [0, 0] }"#,
         1,
     );
     store_from_body(body)
@@ -166,6 +169,127 @@ fn store_from_body(body: String) -> Arc<ConfigStore> {
         common::real_fuji_bodies_with("gfx100ii", body),
     )
     .expect("GFX store loads")
+}
+
+fn action_request(
+    store: &ConfigStore,
+    connection: &str,
+    action: ActionVerb,
+    runtime_params: Vec<PtpRuntimeValue>,
+) -> ActionInvocationRequest {
+    let catalog = store.action_catalog();
+    let action_id = catalog
+        .actions
+        .iter()
+        .find(|entry| {
+            entry.connection == connection
+                && parse_action_verb(entry.action_id.clone()) == Some(action)
+        })
+        .expect("cataloged action")
+        .action_id
+        .clone();
+    let mode = store
+        .action(connection.into(), action)
+        .expect("manifest action")
+        .mode;
+    ActionInvocationRequest {
+        catalog_revision: catalog.revision,
+        action_id,
+        connection: connection.into(),
+        mode,
+        role: ActionRole::Initiator,
+        parameters: runtime_params
+            .into_iter()
+            .map(|value| ActionArgument {
+                name: value.key,
+                value: value.value,
+            })
+            .collect(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_initiator_action(
+    store: Arc<ConfigStore>,
+    connection: String,
+    action: ActionVerb,
+    transport: Arc<dyn PtpExecutorTransport>,
+    observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
+    runtime_params: Vec<PtpRuntimeValue>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    let request = action_request(&store, &connection, action, runtime_params);
+    execute_initiator_action(store, request, transport, observer, activity_observer).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_initiator_action_to_sink(
+    store: Arc<ConfigStore>,
+    connection: String,
+    action: ActionVerb,
+    transport: Arc<dyn PtpExecutorTransport>,
+    observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
+    sink: Arc<dyn PtpDataOutputSink>,
+    runtime_params: Vec<PtpRuntimeValue>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    let request = action_request(&store, &connection, action, runtime_params);
+    execute_initiator_action_to_sink(store, request, transport, observer, activity_observer, sink)
+        .await
+}
+
+#[derive(Default)]
+struct TripwireExecutorTransport(AtomicUsize);
+
+impl TripwireExecutorTransport {
+    fn touched(&self) -> PtpTransportError {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        PtpTransportError::Failed {
+            detail: "preflight reached transport".into(),
+        }
+    }
+
+    fn touches(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl PtpExecutorTransport for TripwireExecutorTransport {
+    async fn reserve_transaction_id(&self) -> Result<u32, PtpTransportError> {
+        Err(self.touched())
+    }
+
+    async fn send_command_frame(&self, _frame: Vec<u8>) -> Result<(), PtpTransportError> {
+        Err(self.touched())
+    }
+
+    async fn next_command_frame(&self) -> Result<Vec<u8>, PtpTransportError> {
+        Err(self.touched())
+    }
+
+    async fn next_event_frame(&self, _event_code: u16) -> Result<Vec<u8>, PtpTransportError> {
+        Err(self.touched())
+    }
+
+    async fn open_channel(&self, _role: SocketRole) -> Result<(), PtpTransportError> {
+        Err(self.touched())
+    }
+
+    async fn close_command_channel(
+        &self,
+        _transport_close_frame: Option<Vec<u8>>,
+    ) -> Result<(), PtpTransportError> {
+        Err(self.touched())
+    }
+
+    async fn reopen_command_session(&self) -> Result<PtpSessionOpenResult, PtpTransportError> {
+        Err(self.touched())
+    }
+
+    async fn sleep(&self, _ms: u32) -> Result<(), PtpTransportError> {
+        Err(self.touched())
+    }
 }
 
 fn engine(connection: &str) -> (Engine, u32) {
@@ -805,6 +929,97 @@ fn xa7_neutral_mode_entries_write_exactly_one_selected_function_mode() {
 }
 
 #[test]
+fn rejected_action_invocations_never_touch_the_transport_or_observers() {
+    let store = store();
+    let base = action_request(
+        &store,
+        "wireless-tether",
+        ActionVerb::GetObject,
+        vec![PtpRuntimeValue {
+            key: "handle".into(),
+            value: 1,
+        }],
+    );
+    let cases = [
+        (
+            {
+                let mut request = base.clone();
+                request.catalog_revision = "stale".into();
+                request
+            },
+            "staleCatalogRevision",
+        ),
+        (
+            {
+                let mut request = base.clone();
+                request.mode = "shooting/stills".into();
+                request
+            },
+            "wrongMode",
+        ),
+        (
+            {
+                let mut request = base.clone();
+                request.role = ActionRole::Responder;
+                request
+            },
+            "wrongRole",
+        ),
+        (
+            {
+                let mut request = base.clone();
+                request.parameters.push(ActionArgument {
+                    name: "handle".into(),
+                    value: 2,
+                });
+                request
+            },
+            "duplicateParameter",
+        ),
+        (
+            {
+                let mut request = base.clone();
+                request.parameters.clear();
+                request
+            },
+            "missingParameter",
+        ),
+        (
+            {
+                let mut request = base;
+                request.parameters.push(ActionArgument {
+                    name: "extra".into(),
+                    value: 2,
+                });
+                request
+            },
+            "extraParameter",
+        ),
+    ];
+
+    for (request, expected_code) in cases {
+        let transport = Arc::new(TripwireExecutorTransport::default());
+        let reports = Arc::new(Reports::default());
+        let activities = Arc::new(Activities::default());
+        let error = block_on(execute_initiator_action(
+            Arc::clone(&store),
+            request,
+            transport.clone(),
+            reports.clone(),
+            activities.clone(),
+        ))
+        .expect_err("catalog rejection must precede execution");
+        assert!(
+            matches!(error, PtpExecutorError::ActionRejected { ref code, .. } if code == expected_code),
+            "expected {expected_code}, got {error:?}"
+        );
+        assert_eq!(transport.touches(), 0, "{expected_code}");
+        assert!(reports.0.lock().expect("reports").is_empty());
+        assert!(activities.0.lock().expect("activities").is_empty());
+    }
+}
+
+#[test]
 fn real_gfx_autofocus_runs_event_then_poll_in_rust() {
     let transport = Arc::new(EngineTransport::new(
         "app",
@@ -824,7 +1039,7 @@ fn real_gfx_autofocus_runs_event_then_poll_in_rust() {
     .expect("cold entry succeeds");
     let before = transport.operations().len();
 
-    let outcome = block_on(run_action(
+    let outcome = block_on(run_initiator_action(
         store(),
         "app".into(),
         ActionVerb::AutofocusLock,
@@ -870,7 +1085,7 @@ fn uncaptured_scalar_get_seeds_a_later_event_predicate() {
     ))
     .expect("cold entry succeeds");
 
-    block_on(run_action(
+    block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::Shutter,
@@ -902,7 +1117,7 @@ fn composite_poll_populates_manifest_declared_member_scope() {
     ))
     .expect("cold entry succeeds");
 
-    block_on(run_action(
+    block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::Shutter,
@@ -934,7 +1149,7 @@ fn await_deadline_covers_the_pending_event_pull() {
     .expect("cold entry succeeds");
     transport.force_event_deadline();
 
-    let error = block_on(run_action(
+    let error = block_on(run_initiator_action(
         store(),
         "app".into(),
         ActionVerb::AutofocusLock,
@@ -1245,7 +1460,7 @@ fn real_import_action_captures_collection_then_chunks_each_object() {
     ))
     .expect("image-transfer entry succeeds");
 
-    let outcome = block_on(run_action(
+    let outcome = block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::ImportObjects,
@@ -1287,7 +1502,7 @@ fn ordinary_action_sink_receives_completed_outputs_in_wire_order() {
     .expect("image-transfer entry succeeds");
     let sink = Arc::new(RecordingSink::default());
 
-    let outcome = block_on(run_action_to_sink(
+    let outcome = block_on(run_initiator_action_to_sink(
         store,
         "app".into(),
         ActionVerb::ImportObjects,
@@ -1331,7 +1546,7 @@ fn ordinary_sink_failure_leaves_command_session_synchronized() {
     ))
     .expect("image-transfer entry succeeds");
 
-    let error = block_on(run_action_to_sink(
+    let error = block_on(run_initiator_action_to_sink(
         store.clone(),
         "app".into(),
         ActionVerb::EnumerateObjects,
@@ -1357,7 +1572,7 @@ fn ordinary_sink_failure_leaves_command_session_synchronized() {
         .any(|value| value.key == "response" && value.value == "0x2001"));
     assert!(context.iter().any(|value| value.key == "transactionId"));
 
-    block_on(run_action(
+    block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::EnumerateObjects,
@@ -1392,7 +1607,7 @@ fn malformed_collection_capture_fails_before_iteration() {
     malformed.extend_from_slice(&7_u32.to_le_bytes());
     transport.override_next_data(0x1015, vec![0xd621], malformed);
 
-    let error = block_on(run_action(
+    let error = block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::EnumerateObjects,
@@ -1433,7 +1648,7 @@ fn collection_capture_rejects_trailing_bytes() {
     malformed.push(0xff);
     transport.override_next_data(0x1015, vec![0xd621], malformed);
 
-    let error = block_on(run_action(
+    let error = block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::EnumerateObjects,
@@ -1471,7 +1686,7 @@ fn collection_capture_rejects_over_ceiling_count_before_payload_allocation() {
     .expect("image-transfer entry succeeds");
     transport.override_next_data(0x1015, vec![0xd621], (100_001_u32).to_le_bytes().to_vec());
 
-    let error = block_on(run_action(
+    let error = block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::EnumerateObjects,
@@ -1504,7 +1719,7 @@ fn wireless_tether_enumeration_captures_send_op_collection() {
         .configure_standard_object_queue("wireless-tether", 1)
         .expect("queue config");
 
-    block_on(run_action(
+    block_on(run_initiator_action(
         store.clone(),
         "wireless-tether".into(),
         ActionVerb::Shutter,
@@ -1515,7 +1730,7 @@ fn wireless_tether_enumeration_captures_send_op_collection() {
     ))
     .expect("shutter feeds the standard object queue");
 
-    let outcome = block_on(run_action(
+    let outcome = block_on(run_initiator_action(
         store,
         "wireless-tether".into(),
         ActionVerb::EnumerateObjects,
@@ -1551,7 +1766,7 @@ fn malformed_send_op_collection_capture_fails_loud() {
     malformed.extend_from_slice(&transport.first_handle().to_le_bytes());
     transport.override_next_data(0x1007, vec![u32::MAX, 0], malformed);
 
-    let error = block_on(run_action(
+    let error = block_on(run_initiator_action(
         store,
         "wireless-tether".into(),
         ActionVerb::EnumerateObjects,
@@ -1595,7 +1810,7 @@ fn collection_iteration_limit_fails_before_any_element_body() {
     transport.override_next_data(0x1015, vec![0xd621], oversized);
 
     let before = transport.operations().len();
-    let error = block_on(run_action(
+    let error = block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::ImportObjects,
@@ -1637,7 +1852,7 @@ fn import_with_enumeration_fault(response: u16) -> (Result<(), PtpExecutorError>
         response,
         remaining: 1,
     });
-    let result = block_on(run_action(
+    let result = block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::ImportObjects,
@@ -1684,7 +1899,7 @@ fn exhausted_retry_can_be_tolerated_only_by_its_outer_step() {
     });
     let reports = Arc::new(Reports::default());
 
-    block_on(run_action(
+    block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::Shutter,

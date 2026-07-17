@@ -33,15 +33,17 @@ cargo run -p camera-initiator -- \
 ```
 
 `--overlay` may be repeated; overlays apply in command-line order. The default
-trace destination is standard output in JSON Lines format. `--trace FILE` keeps
-the wire record separate from progress written to standard error, and
-`--trace-format text` selects a compact human-readable form.
+observation destination is `camera-observation.jsonl` in canonical
+`camera-observation/v1` JSON Lines format. `--observation FILE` selects another
+bundle path. The trace defaults to standard output, remains a bounded operator
+projection, and is not generator input.
 
 ## Named actions and payloads
 
-Action names are the exact camelCase manifest verbs. Ordinary single-output
-actions can write one payload, while looped or multi-output actions write one
-file per step path and transaction.
+Action names are discovered from the manifest catalog and use their stable
+camelCase ids. This command always resolves the `initiator` role. Ordinary
+single-output actions can write one payload, while looped or multi-output
+actions write one file per step path and transaction.
 
 ```sh
 cargo run -p camera-initiator -- \
@@ -159,7 +161,7 @@ cargo run -p camera-initiator -- \
   --payload-dir pcss-output
 ```
 
-Discovery traces record the selected target mode, UDP destination, callback
+Discovery observations record the selected target mode, UDP destination, callback
 peer, parsed `DSC`, and dynamic `DSCPORT`, so broadcast and explicit-unicast
 runs remain distinguishable without a packet capture.
 
@@ -194,22 +196,21 @@ Use `packages/camera-config-data/nikon/d850/d850.yaml` together with
 provisional: these values and the family flow are static application facts, not
 a successful D850 registration or interoperability claim.
 
-## Reading a trace
+## Reading observations
 
-Each JSONL record has a monotonic elapsed time and a kind. `wire` records add
-direction, channel, frame ID, byte length and lowercase hex. Large streamed
-frames are split into offset-tagged chunks that remain byte-for-byte
-reconstructable. `step` records are emitted as the executor starts and
-completes each step, including operation, response and transaction correlation
-when available. `checkpoint`, `session` and terminal `outcome` records make
-outer lifecycle stalls distinguishable from command stalls.
+Each bundle begins with a required header followed by stable-id, ordinal-tagged
+records. PTP records correlate commands, data phases, responses, and separately
+linked events. Large streamed frames carry a streaming length, whole-payload
+SHA-256, and contiguous per-range hashes rather than being held in memory;
+optional artifact ranges point to retained capture bytes. Lifecycle and
+action-invocation records make outer stalls distinguishable from command stalls.
 
 The live-view socket is the one deliberate exception to full payload logging:
 the trace records frame length and first-frame readiness, not high-rate JPEG
 bytes. Packet capture remains the right tool when TCP-level timing or live-view
 payload inspection is required.
 
-The last `command` wire record and terminal `step` record answer the first
+The last PTP transaction and terminal lifecycle record answer the first
 debugging questions: which operation was sent, whether a data/reply frame
 arrived, which transaction owned it, and whether the stop was a response
 failure, EOF, or a deadline. Orderly process-exit frames use the `cleanup`
@@ -220,8 +221,9 @@ channel, and the final record is the terminal `outcome` after cleanup.
 Copy the body manifest to a temporary path, make one evidence-backed step
 change, and point `--manifest` at that copy. The initiator reloads all tiers on
 every invocation; no build, app vendoring, install, or re-pair step is involved.
-Bulk camera observations still flow through the generator intake rather than
-being hand-authored into repository manifests.
+Camera observations flow through `camera-config-generate validate`, `propose`,
+and digest-bound `apply` rather than being hand-authored into repository
+manifests.
 
 BLE control, operating-system Wi-Fi association, packet capture, and automated
 camera-menu interaction are outside this tool's scope.

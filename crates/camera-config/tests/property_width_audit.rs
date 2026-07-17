@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use camera_config::CameraManifest;
+use camera_config::{CameraManifest, CapabilitySubject, ObservationLine};
 
 /// Codes where the curated width intentionally differs from the probe
 /// descriptor, with the wire evidence that justifies keeping the curated value.
@@ -99,15 +99,8 @@ fn curated_types() -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Probe `code -> set(type)` across all `evidence/probe/*.jsonl` files.
+/// Probe `code -> set(type)` across all canonical evidence bundles.
 fn probe_types() -> BTreeMap<String, BTreeSet<String>> {
-    #[derive(serde::Deserialize)]
-    struct Rec {
-        kind: String,
-        code: Option<String>,
-        #[serde(rename = "type")]
-        ptype: Option<String>,
-    }
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let probe_dir = data_dir().join("fuji/gfx100ii/evidence/probe");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&probe_dir)
@@ -125,10 +118,18 @@ fn probe_types() -> BTreeMap<String, BTreeSet<String>> {
             if line.trim().is_empty() {
                 continue;
             }
-            let r: Rec = serde_json::from_str(line).unwrap_or_else(|e| panic!("{f:?}: {e}"));
-            if r.kind == "property" {
-                if let (Some(code), Some(t)) = (r.code, r.ptype) {
-                    out.entry(code.to_ascii_lowercase()).or_default().insert(t);
+            let record: ObservationLine =
+                serde_json::from_str(line).unwrap_or_else(|error| panic!("{f:?}: {error}"));
+            if let ObservationLine::Capability(capability) = record {
+                if let CapabilitySubject::Property {
+                    code,
+                    property_type: Some(property_type),
+                    ..
+                } = capability.subject
+                {
+                    out.entry(code.to_ascii_lowercase())
+                        .or_default()
+                        .insert(property_type);
                 }
             }
         }

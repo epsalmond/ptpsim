@@ -1,0 +1,1692 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ObservationLine",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/CameraContext"
+        },
+        "capture": {
+          "$ref": "#/$defs/CaptureContext"
+        },
+        "client": {
+          "$ref": "#/$defs/ClientContext"
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "kind": {
+          "type": "string",
+          "const": "bundleHeader"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "camera",
+        "client",
+        "capture",
+        "epistemic"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "artifactRanges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "attempt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionContext"
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "kind": {
+          "type": "string",
+          "const": "lifecycle"
+        },
+        "marker": {
+          "$ref": "#/$defs/LifecycleMarker"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "physicalContext": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/ClockPoint"
+        },
+        "transition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StateTransition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "context",
+        "time",
+        "epistemic",
+        "marker"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "artifactRanges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "characteristic": {
+          "type": "string"
+        },
+        "connectionInstance": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionContext"
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "kind": {
+          "type": "string",
+          "const": "bleGatt"
+        },
+        "operation": {
+          "$ref": "#/$defs/BleGattOperation"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outcome": {
+          "$ref": "#/$defs/TransportOutcome"
+        },
+        "payload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PayloadMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "physicalContext": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/ClockPoint"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "context",
+        "time",
+        "epistemic",
+        "connectionInstance",
+        "operation",
+        "service",
+        "characteristic",
+        "outcome"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "artifactRanges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "connectionInstance": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionContext"
+        },
+        "endpointSet": {
+          "type": "string"
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "evidenceBasis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlEvidenceBasis"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "type": "string",
+          "const": "ptpTransaction"
+        },
+        "observedEffect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlObservedEffect"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outcome": {
+          "$ref": "#/$defs/TransactionOutcome"
+        },
+        "physicalContext": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "readback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Readback"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/PtpRequest"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PtpResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/ClockPoint"
+        },
+        "transactionId": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "transport": {
+          "$ref": "#/$defs/PtpTransport"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "context",
+        "time",
+        "epistemic",
+        "transport",
+        "connectionInstance",
+        "session",
+        "endpointSet",
+        "transactionId",
+        "request",
+        "outcome"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "artifactRanges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "connectionInstance": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionContext"
+        },
+        "endpointSet": {
+          "type": "string"
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "event": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "ptpEvent"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "parameters": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "payload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PayloadMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "physicalContext": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/ClockPoint"
+        },
+        "transactionId": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "transactionRecordId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "context",
+        "time",
+        "epistemic",
+        "connectionInstance",
+        "session",
+        "endpointSet",
+        "transactionId",
+        "event"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "artifactRanges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "connectionInstance": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionContext"
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "kind": {
+          "type": "string",
+          "const": "httpExchange"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outcome": {
+          "$ref": "#/$defs/TransportOutcome"
+        },
+        "physicalContext": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/HttpRequest"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HttpResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/ClockPoint"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "context",
+        "time",
+        "epistemic",
+        "connectionInstance",
+        "request",
+        "outcome"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "artifactRanges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionContext"
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "evidenceBasis": {
+          "$ref": "#/$defs/ControlEvidenceBasis"
+        },
+        "kind": {
+          "type": "string",
+          "const": "capability"
+        },
+        "observedEffect": {
+          "$ref": "#/$defs/ControlObservedEffect"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "physicalContext": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "readback": {
+          "$ref": "#/$defs/Readback"
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/CapabilitySubject"
+        },
+        "time": {
+          "$ref": "#/$defs/ClockPoint"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "context",
+        "time",
+        "epistemic",
+        "subject",
+        "evidenceBasis",
+        "observedEffect",
+        "readback"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "actionId": {
+          "type": "string"
+        },
+        "artifactRanges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "catalogRevision": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionContext"
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "kind": {
+          "type": "string",
+          "const": "actionInvocation"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outcome": {
+          "$ref": "#/$defs/ActionOutcome"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "physicalContext": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ActionRole"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/ClockPoint"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "context",
+        "time",
+        "epistemic",
+        "catalogRevision",
+        "actionId",
+        "role",
+        "parameters",
+        "outcome"
+      ]
+    }
+  ],
+  "$defs": {
+    "ActionOutcome": {
+      "type": "string",
+      "enum": [
+        "succeeded",
+        "failed",
+        "rejected"
+      ]
+    },
+    "ActionRole": {
+      "type": "string",
+      "enum": [
+        "initiator",
+        "responder"
+      ]
+    },
+    "ArtifactMetadata": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "length",
+        "sha256",
+        "mediaType"
+      ]
+    },
+    "ArtifactRange": {
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "type": "string"
+        },
+        "length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artifact",
+        "offset",
+        "length"
+      ]
+    },
+    "BleGattOperation": {
+      "type": "string",
+      "enum": [
+        "discover",
+        "read",
+        "write",
+        "subscribe",
+        "notify",
+        "indicate"
+      ]
+    },
+    "CameraContext": {
+      "type": "object",
+      "properties": {
+        "bodyId": {
+          "description": "Sanitized stable pseudonym for the physical body; never a serial number.",
+          "type": "string"
+        },
+        "firmware": {
+          "type": "string"
+        },
+        "manufacturer": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "manufacturer",
+        "model",
+        "bodyId",
+        "firmware"
+      ]
+    },
+    "CapabilityDescriptor": {
+      "type": "object",
+      "properties": {
+        "form": {
+          "type": "string"
+        },
+        "values": {
+          "type": "array",
+          "default": [],
+          "items": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "form"
+      ]
+    },
+    "CapabilitySubject": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "deviceVersion": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "identity"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "deviceVersion"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "supported": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "operation"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "code",
+            "supported"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "access": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "code": {
+              "type": "string"
+            },
+            "descriptor": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CapabilityDescriptor"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {}
+            },
+            "propertyType": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "supported": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "property"
+            },
+            "valueProfiles": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/CapabilityValueProfile"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "code",
+            "supported"
+          ]
+        }
+      ]
+    },
+    "CapabilityValueProfile": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapabilityValueProfileRow"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rows"
+      ]
+    },
+    "CapabilityValueProfileRow": {
+      "type": "object",
+      "properties": {
+        "aliases": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "label": {
+          "type": "string"
+        },
+        "legal": {
+          "type": "boolean",
+          "default": true
+        },
+        "raw": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "writeStoreRaw": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "raw"
+      ]
+    },
+    "CaptureClock": {
+      "type": "object",
+      "properties": {
+        "clockType": {
+          "$ref": "#/$defs/ClockType"
+        },
+        "id": {
+          "type": "string"
+        },
+        "unit": {
+          "$ref": "#/$defs/ClockUnit"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "clockType",
+        "unit"
+      ]
+    },
+    "CaptureContext": {
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactMetadata"
+          }
+        },
+        "clockMappings": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ClockMapping"
+          }
+        },
+        "clocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CaptureClock"
+          }
+        },
+        "interfaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CaptureInterface"
+          }
+        },
+        "loss": {
+          "$ref": "#/$defs/LossCounters"
+        },
+        "redactions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Redaction"
+          }
+        },
+        "toolVersions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "interfaces",
+        "clocks",
+        "loss",
+        "toolVersions"
+      ]
+    },
+    "CaptureInterface": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "interfaceType": {
+          "$ref": "#/$defs/CaptureInterfaceType"
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "interfaceType",
+        "role"
+      ]
+    },
+    "CaptureInterfaceType": {
+      "type": "string",
+      "enum": [
+        "ble",
+        "tcp",
+        "usb",
+        "http",
+        "synthetic"
+      ]
+    },
+    "ClientContext": {
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artifact",
+        "version",
+        "platform"
+      ]
+    },
+    "ClockMapping": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "to": {
+          "type": "string"
+        },
+        "uncertainty": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "offset",
+        "uncertainty"
+      ]
+    },
+    "ClockPoint": {
+      "type": "object",
+      "properties": {
+        "clock": {
+          "type": "string"
+        },
+        "value": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "clock",
+        "value"
+      ]
+    },
+    "ClockType": {
+      "type": "string",
+      "enum": [
+        "monotonic",
+        "wall",
+        "device"
+      ]
+    },
+    "ClockUnit": {
+      "type": "string",
+      "enum": [
+        "nanoseconds",
+        "microseconds",
+        "milliseconds"
+      ]
+    },
+    "Confidence": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "high",
+        "medium",
+        "low",
+        "unknown"
+      ]
+    },
+    "ControlEvidenceBasis": {
+      "type": "string",
+      "enum": [
+        "descriptorOnly",
+        "writeProbe"
+      ]
+    },
+    "ControlObservedEffect": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "ackNoEffect",
+        "protocolRefused",
+        "destructiveClamp",
+        "unknown"
+      ]
+    },
+    "DataDirection": {
+      "type": "string",
+      "enum": [
+        "hostToCamera",
+        "cameraToHost"
+      ]
+    },
+    "EpistemicClass": {
+      "type": "string",
+      "enum": [
+        "directObservation",
+        "deterministicReduction",
+        "inference",
+        "syntheticFixture"
+      ]
+    },
+    "EpistemicMetadata": {
+      "type": "object",
+      "properties": {
+        "alternatives": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "class": {
+          "$ref": "#/$defs/EpistemicClass"
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "falsifier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "unknowns": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "confidence"
+      ]
+    },
+    "ExecutionContext": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "connection",
+        "mode",
+        "state"
+      ]
+    },
+    "HttpRequest": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PayloadMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "method": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "target"
+      ]
+    },
+    "HttpResponse": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PayloadMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "status": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ]
+    },
+    "LifecycleMarker": {
+      "type": "string",
+      "enum": [
+        "discovery",
+        "association",
+        "connectionOpened",
+        "sessionOpened",
+        "modeTransition",
+        "stateTransition",
+        "retry",
+        "teardown",
+        "sessionClosed",
+        "connectionClosed"
+      ]
+    },
+    "LossCounters": {
+      "type": "object",
+      "properties": {
+        "droppedBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "droppedRecords": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "truncatedPayloads": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "droppedRecords",
+        "droppedBytes",
+        "truncatedPayloads"
+      ]
+    },
+    "PayloadMetadata": {
+      "type": "object",
+      "properties": {
+        "inlineHex": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "ranges": {
+          "description": "Optional references into capture artifacts that retain the payload.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "streamRanges": {
+          "description": "Contiguous byte ranges hashed as the payload crossed the recorder.\nLarge transfers use these instead of retaining the body in memory.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PayloadRange"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "length",
+        "sha256"
+      ]
+    },
+    "PayloadRange": {
+      "type": "object",
+      "properties": {
+        "length": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "offset",
+        "length",
+        "sha256"
+      ]
+    },
+    "PtpDataPhase": {
+      "type": "object",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/DataDirection"
+        },
+        "payload": {
+          "$ref": "#/$defs/PayloadMetadata"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "payload"
+      ]
+    },
+    "PtpRequest": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PtpDataPhase"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "framing": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "framing",
+        "operation"
+      ]
+    },
+    "PtpResponse": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PtpDataPhase"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parameters": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ]
+    },
+    "PtpTransport": {
+      "type": "string",
+      "enum": [
+        "ptpIp",
+        "usb"
+      ]
+    },
+    "Readback": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "baseline": true,
+            "observed": true,
+            "observedAt": {
+              "$ref": "#/$defs/ClockPoint"
+            },
+            "request": true,
+            "settling": {
+              "$ref": "#/$defs/SettlingRule"
+            },
+            "source": {
+              "$ref": "#/$defs/ReadbackSource"
+            },
+            "status": {
+              "type": "string",
+              "const": "observed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "baseline",
+            "request",
+            "settling",
+            "observed",
+            "observedAt",
+            "source"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "const": "notObserved"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "ReadbackSource": {
+      "type": "string",
+      "enum": [
+        "directProperty",
+        "declaredReadback",
+        "event",
+        "httpResponse"
+      ]
+    },
+    "Redaction": {
+      "type": "object",
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "method": {
+          "$ref": "#/$defs/RedactionMethod"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "method"
+      ]
+    },
+    "RedactionMethod": {
+      "type": "string",
+      "enum": [
+        "removed",
+        "pseudonymized",
+        "hashed"
+      ]
+    },
+    "SettlingRule": {
+      "type": "object",
+      "properties": {
+        "deadlineMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pollIntervalMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "stableSamples": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "deadlineMs"
+      ]
+    },
+    "StateTransition": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "TransactionOutcome": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "nonOk",
+        "timeout",
+        "transportAbort",
+        "incomplete"
+      ]
+    },
+    "TransportOutcome": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "timeout",
+        "abort",
+        "incomplete"
+      ]
+    }
+  }
+}

@@ -48,9 +48,12 @@ model swaps, and the user does swap between models and agents. Anything worth
 remembering across sessions goes in `gh` so it's discoverable from
 `gh issue list`.
 
-This means: when you surface a follow-up, a deferred fix, a code-review
-finding, or a "we should do X later" — file an issue. The in-process
-list is for *this turn's* working memory, not the project backlog.
+This means: when you surface a follow-up, a deferred fix, or a "we should do X
+later" — file an issue. An actionable finding against an open pull request is
+tracked first as a durable PR review thread under the workflow below; if it is
+deferred from that PR, create an issue and link it before resolving the thread.
+The in-process list is for *this turn's* working memory, not the project
+backlog.
 
 **Priority labels:** `priority:P1` — on the active release or program critical
 path, pick these up first; `priority:P2` — consumers hit it soon, schedule next;
@@ -73,7 +76,7 @@ path, pick these up first; `priority:P2` — consumers hit it soon, schedule nex
    home while in flight; don't wait for polish to push. Before marking it
    ready: run the workspace checks (*Build + test*), then get a reviewer-agent
 
-   medium. Address or file every finding.
+   medium — and complete the durable review-thread workflow below.
 4. **Single-line commit messages.** Imperative (`Add logging for X`), no
    body. The *why* goes in the PR description — or a durable `docs/*.md` if
    it's load-bearing past the merge. Commits should not have "and."
@@ -89,6 +92,49 @@ path, pick these up first; `priority:P2` — consumers hit it soon, schedule nex
 Documentation SHOULD precede the code change, not follow it.
 
 Run the workspace checks (*Build + test*) before pushing.
+
+### Code review — durable PR threads, bounded fixes
+
+Review state lives on the pull request, not in agent chat or an in-process task
+list. Context compaction, session restarts, and model changes must not trigger a
+new full review merely because the prior conversation is unavailable.
+
+1. **Pin the review to a commit.** Run one full reviewer-agent pass against an
+   exact candidate SHA. The reviewer does not edit code. It posts one PR review
+   thread per actionable finding, inline on the affected line where GitHub
+   permits. Otherwise it posts a PR comment naming the exact `path:line`,
+   symbol, and reviewed SHA. Every finding states severity, evidence, the
+   expected correction, and a verification test. A finding that exists only in
+   chat does not count as review state.
+2. **Triage every thread durably.** The planning/running agent replies with one
+   of: `Accepted`, `Deferred to #N`, `Rejected` with a reason, or `Duplicate`
+   with a thread link. Deferred findings require a GitHub issue before the PR
+   thread is resolved. Keep accepted threads open while work is in flight.
+3. **Delegate accepted findings narrowly.** Give a fixer agent the review-thread
+   URL or id, exact base SHA, affected area, and acceptance test. Use a separate
+   worktree and branch for each agent; parallelize only non-overlapping fixes.
+   The fixer changes only the accepted finding, runs focused tests, makes an
+   intentional commit, and replies to the thread with its commit and evidence.
+   It does not run another broad review.
+4. **Integrate before resolving.** The planning/running agent lands the fixer
+   commit on the PR branch, runs proportionate integration checks, pushes it,
+   and then resolves the thread. A thread is never resolved merely because a
+   fix exists in an unintegrated worktree.
+5. **Review deltas, not the whole PR again.** After fixes, review only the range
+   from the previously reviewed SHA to the current head. The delta review checks
+   that accepted findings were fixed and that their fixes introduced no
+   regression. A newly noticed issue in unchanged code becomes a follow-up issue
+   unless it is a genuine merge-blocking correctness or safety defect. Record
+   the reviewed SHA range on the PR.
+6. **Use explicit readiness gates.** A PR is review-complete only when no
+   accepted or blocking thread remains unresolved, every deferred thread links
+   to an issue, required checks pass on the current head, and the final delta
+   review reports no blocking findings. A human still merges.
+
+After context loss, resume from the PR head/base SHAs, unresolved review
+threads and their triage replies, linked deferred issues, local `git status` and
+recent commits, and CI state. Do not reconstruct the review queue from chat and
+do not start a fresh full review solely because the session was compacted.
 
 ### Private evidence and operator-only tooling
 
@@ -126,12 +172,13 @@ Memory note expanding on this: `feedback-eager-schema-cleanup-preproduction`.
 
 ### Where things live, where things don't
 
-- **Manifest data** lives in `packages/camera-config-data/`. Authored
-  by people, generated from `camera-protocol-mapper` runs, reviewed before
-  merge. Agents don't hand-author YAML manifests — they can edit small
-  curated entries (gatt catalog additions, establishment-step
-  ordering), but bulk data flows through the
-  camera-protocol-mapper → generator pipeline. Memory:
+- **Manifest data** lives in `packages/camera-config-data/`. Authored by
+  people, proposed from `camera-observation/v1` runs, and reviewed before
+  merge. Agents don't hand-author YAML manifests — they can edit small curated
+  entries (gatt catalog additions, establishment-step ordering), but bulk data
+  flows through `camera-config-generate propose` → digest-bound review →
+  `camera-config-generate apply`. The archived standalone mapper is historical
+  provenance only. Memory:
   `feedback-data-via-generator-not-agent-authoring`.
 
   do NOT belong in ptpsim source.** Private analyses stay in their owning
@@ -153,8 +200,8 @@ Memory note expanding on this: `feedback-eager-schema-cleanup-preproduction`.
 
 When sources disagree about a protocol fact:
 
-1. **Live wire captures > everything.** A `camera-protocol-mapper` capture or
-   btsnoop log is ground truth.
+1. **Live wire captures > everything.** A canonical `camera-initiator`
+   observation or btsnoop log is ground truth.
    App-side labels (reference app Java symbol names, Apple `NSString` constants)
    come from human-written source, are more trustworthy than the names
    embedded in camera firmware RAM dumps. Memory:

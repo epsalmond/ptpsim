@@ -731,8 +731,13 @@ fn image_import_full_bootstrap_unlocks_count_and_handle_properties() {
     let enumerate = m
         .action("app", ActionVerb::EnumerateObjects)
         .expect("enumerateObjects action");
-    walk_ptpip_in(&mut e, &enumerate.steps[..1], &BTreeMap::new(), Some("app"))
-        .expect("enumeration prime succeeds");
+    walk_ptpip_in(
+        &mut e,
+        &enumerate.initiator().unwrap().steps[..1],
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("enumeration prime succeeds");
 
     let count = data_of(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
     let mut r = Reader::new(&count);
@@ -761,7 +766,7 @@ fn image_import_retries_transient_prime_and_count_responses() {
     });
     let prime = walk_ptpip_in(
         &mut engine,
-        &enumerate.steps[..1],
+        &enumerate.initiator().unwrap().steps[..1],
         &BTreeMap::new(),
         Some("app"),
     )
@@ -776,7 +781,7 @@ fn image_import_retries_transient_prime_and_count_responses() {
     });
     let count = walk_ptpip_in(
         &mut engine,
-        &enumerate.steps[1..2],
+        &enumerate.initiator().unwrap().steps[1..2],
         &BTreeMap::new(),
         Some("app"),
     )
@@ -788,8 +793,13 @@ fn image_import_retries_transient_prime_and_count_responses() {
 #[test]
 fn enumerate_objects_executes_the_captured_handle_collection() {
     let (mut engine, enumerate) = image_import_ready();
-    let outcome = walk_ptpip_in(&mut engine, &enumerate.steps, &BTreeMap::new(), Some("app"))
-        .expect("complete enumerateObjects action succeeds");
+    let outcome = walk_ptpip_in(
+        &mut engine,
+        &enumerate.initiator().unwrap().steps,
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("complete enumerateObjects action succeeds");
     assert_eq!(outcome.observed.get(0xd620), Some(1));
 }
 
@@ -831,8 +841,13 @@ fn import_objects_recovers_each_shared_enumeration_boundary() {
     for (fault, expected_delay) in cases {
         let mut engine = engine_with_jpegs(1);
         engine.install_fault(fault);
-        let outcome = walk_ptpip_in(&mut engine, &action.steps, &BTreeMap::new(), Some("app"))
-            .expect("shared recovery succeeds without replaying transfer work");
+        let outcome = walk_ptpip_in(
+            &mut engine,
+            &action.initiator().unwrap().steps,
+            &BTreeMap::new(),
+            Some("app"),
+        )
+        .expect("shared recovery succeeds without replaying transfer work");
         assert_eq!(outcome.retry_delays_ms, [expected_delay]);
         assert_eq!(outcome.loop_iterations, [1, 1]);
     }
@@ -847,8 +862,13 @@ fn image_import_handle_retry_exhausts_with_typed_response() {
         response: 0x2002,
         remaining: 3,
     });
-    let error = walk_ptpip_in(&mut engine, &enumerate.steps, &BTreeMap::new(), Some("app"))
-        .expect_err("three GeneralError handle reads exhaust the declared budget");
+    let error = walk_ptpip_in(
+        &mut engine,
+        &enumerate.initiator().unwrap().steps,
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect_err("three GeneralError handle reads exhaust the declared budget");
     assert_eq!(error.response_code, Some(0x2002));
 }
 
@@ -857,7 +877,7 @@ fn image_import_count_retry_exhausts_with_typed_response() {
     let (mut engine, enumerate) = image_import_ready();
     walk_ptpip_in(
         &mut engine,
-        &enumerate.steps[..1],
+        &enumerate.initiator().unwrap().steps[..1],
         &BTreeMap::new(),
         Some("app"),
     )
@@ -869,7 +889,7 @@ fn image_import_count_retry_exhausts_with_typed_response() {
     });
     let error = walk_ptpip_in(
         &mut engine,
-        &enumerate.steps[1..2],
+        &enumerate.initiator().unwrap().steps[1..2],
         &BTreeMap::new(),
         Some("app"),
     )
@@ -890,7 +910,7 @@ fn image_import_count_does_not_retry_unselected_or_transport_failures() {
         let (mut engine, enumerate) = image_import_ready();
         walk_ptpip_in(
             &mut engine,
-            &enumerate.steps[..1],
+            &enumerate.initiator().unwrap().steps[..1],
             &BTreeMap::new(),
             Some("app"),
         )
@@ -898,7 +918,7 @@ fn image_import_count_does_not_retry_unselected_or_transport_failures() {
         engine.install_fault(fault.clone());
         let error = walk_ptpip_in(
             &mut engine,
-            &enumerate.steps[1..2],
+            &enumerate.initiator().unwrap().steps[1..2],
             &BTreeMap::new(),
             Some("app"),
         )
@@ -1109,7 +1129,7 @@ fn live_view_to_image_transfer_reestablishes_then_runs_cold_entry() {
         .expect("enumerateObjects action");
     walk_ptpip_in(
         &mut fresh,
-        &enumerate.steps[..1],
+        &enumerate.initiator().unwrap().steps[..1],
         &BTreeMap::new(),
         Some("app"),
     )
@@ -1242,8 +1262,13 @@ fn import_objects_runs_the_full_transfer_from_the_consolidated() {
         .action("app", ActionVerb::ImportObjects)
         .expect("app.actions.importObjects in the consolidated");
     let mut e = engine_with_jpegs(3);
-    let outcome = walk_ptpip_in(&mut e, &action.steps, &BTreeMap::new(), Some("app"))
-        .expect("importObjects walks the armed enumerate→forEach→chunk path");
+    let outcome = walk_ptpip_in(
+        &mut e,
+        &action.initiator().unwrap().steps,
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("importObjects walks the armed enumerate→forEach→chunk path");
     assert_eq!(
         outcome.loop_iterations,
         vec![1, 1, 1, 3],
@@ -1265,8 +1290,13 @@ fn import_objects_never_retries_a_per_handle_body_failure() {
         response: 0x2019,
         remaining: 1,
     });
-    let error = walk_ptpip_in(&mut engine, &action.steps, &BTreeMap::new(), Some("app"))
-        .expect_err("a body failure escapes instead of replaying the collection loop");
+    let error = walk_ptpip_in(
+        &mut engine,
+        &action.initiator().unwrap().steps,
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect_err("a body failure escapes instead of replaying the collection loop");
     assert_eq!(error.response_code, Some(0x2019));
     assert!(error.step.contains("forEach[1]"));
 }
@@ -1279,8 +1309,13 @@ fn import_objects_uses_extension_true_size_for_sentinel_mov() {
         .action("app", ActionVerb::ImportObjects)
         .expect("app.actions.importObjects in the consolidated");
     let (mut e, _) = engine_with_sparse_mov(TRUE_SIZE);
-    let outcome = walk_ptpip_in(&mut e, &action.steps, &BTreeMap::new(), Some("app"))
-        .expect("large MOV import walks through the true 64-bit size");
+    let outcome = walk_ptpip_in(
+        &mut e,
+        &action.initiator().unwrap().steps,
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("large MOV import walks through the true 64-bit size");
     assert_eq!(
         outcome.loop_iterations,
         vec![389, 1],
@@ -1298,8 +1333,13 @@ fn import_objects_does_not_query_extension_size_below_sentinel() {
         code: 0x9803,
         response: 0x2002,
     });
-    let outcome = walk_ptpip_in(&mut e, &action.steps, &BTreeMap::new(), Some("app"))
-        .expect("sub-sentinel MOV import must not call the extension-size op");
+    let outcome = walk_ptpip_in(
+        &mut e,
+        &action.initiator().unwrap().steps,
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("sub-sentinel MOV import must not call the extension-size op");
     assert_eq!(
         outcome.loop_iterations,
         vec![323, 1],
@@ -1315,8 +1355,13 @@ fn import_objects_over_empty_card_downloads_nothing() {
     let m = consolidated();
     let action = m.action("app", ActionVerb::ImportObjects).unwrap();
     let mut e = engine_with_jpegs(0);
-    let outcome = walk_ptpip_in(&mut e, &action.steps, &BTreeMap::new(), Some("app"))
-        .expect("importObjects walks even with nothing to transfer");
+    let outcome = walk_ptpip_in(
+        &mut e,
+        &action.initiator().unwrap().steps,
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("importObjects walks even with nothing to transfer");
     assert_eq!(
         outcome.loop_iterations,
         vec![0],

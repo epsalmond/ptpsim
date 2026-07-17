@@ -203,30 +203,35 @@ connections:
     actions:
       enumerateObjects:
         mode: photo-viewer
-        steps:
-          - sendOp: "0x1007"
-            params: [0xffffffff, 0]
-            captures: [{ bind: objectHandles, as: ptpU32Array }]
+        initiator:
+          steps:
+            - sendOp: "0x1007"
+              params: [0xffffffff, 0]
+              captures: [{ bind: objectHandles, as: ptpU32Array }]
         evidence: [legacyApp4102Static]
       getObjectInfo:
         mode: photo-viewer
-        params: [handle]
-        steps: [{ sendOp: "0x1008", params: [{ runtime: handle }] }]
+        initiator:
+          params: [handle]
+          steps: [{ sendOp: "0x1008", params: [{ runtime: handle }] }]
         evidence: [legacyApp4102Static]
       getThumb:
         mode: photo-viewer
-        params: [handle]
-        steps: [{ sendOp: "0x100a", params: [{ runtime: handle }] }]
+        initiator:
+          params: [handle]
+          steps: [{ sendOp: "0x100a", params: [{ runtime: handle }] }]
         evidence: [legacyApp4102Static]
       getObject:
         mode: photo-viewer
-        params: [handle]
-        steps: [{ sendOp: "0x1009", params: [{ runtime: handle }] }]
+        initiator:
+          params: [handle]
+          steps: [{ sendOp: "0x1009", params: [{ runtime: handle }] }]
         evidence: [legacyApp4102Static]
       stopLiveView:
         mode: remote-shooting
-        params: [openCaptureTxId]
-        steps: [{ sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }]
+        initiator:
+          params: [openCaptureTxId]
+          steps: [{ sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }]
         evidence: [legacyApp4102Static]
     evidence: [legacyApp4102Static]
 

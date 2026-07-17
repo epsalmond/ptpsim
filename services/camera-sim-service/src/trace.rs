@@ -42,6 +42,9 @@ struct TraceEvent {
 struct TraceState {
     next_sequence: u64,
     events: VecDeque<TraceEvent>,
+    dropped_events: u64,
+    truncated_payloads: u64,
+    truncated_texts: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +60,9 @@ impl Default for TraceLog {
             state: Arc::new(Mutex::new(TraceState {
                 next_sequence: 1,
                 events: VecDeque::new(),
+                dropped_events: 0,
+                truncated_payloads: 0,
+                truncated_texts: 0,
             })),
         }
     }
@@ -92,8 +98,11 @@ impl TraceLog {
             error,
             error_truncated,
         });
+        state.truncated_payloads += u64::from(payload_truncated);
+        state.truncated_texts += u64::from(outcome_truncated) + u64::from(error_truncated);
         while state.events.len() > MAX_EVENTS {
             state.events.pop_front();
+            state.dropped_events += 1;
         }
     }
 
@@ -124,6 +133,9 @@ impl TraceLog {
         serde_json::json!({
             "instance_id": instance_id,
             "cursor": state.next_sequence.saturating_sub(1),
+            "dropped_events": state.dropped_events,
+            "truncated_payloads": state.truncated_payloads,
+            "truncated_texts": state.truncated_texts,
             "events": events,
         })
         .to_string()

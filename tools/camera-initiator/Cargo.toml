@@ -7,6 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+camera-config = { workspace = true }
 camera-protocol-ffi = { path = "../../crates/camera-protocol-ffi" }
 ptp-core = { workspace = true }
 protocol-primitives = { workspace = true }

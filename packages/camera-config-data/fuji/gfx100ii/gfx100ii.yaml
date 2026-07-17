@@ -254,18 +254,19 @@ connections:
       # polls for / awaits.
       shutter:
         mode: shooting/stills
-        steps:
-          - { sendOp: "0x100e", params: [0, 0] }
-          # Wait for the camera's PostviewComplete event (JPEG saved to card,
-          # fires ~400-750ms after 0x100E) before reading the postview — the
-          # event IS the readiness signal, the 0x9022 below is the data read.
-          # Makes the take cycle manifest-scripted, not client responsibility
-          # (#29). Evidence: operators FUJI_PTP_PROP_REFERENCE §6 + MODE_CHANGES §6b.
-          - awaitUntil:
-              source: { event: { code: "0xc001" } }
-              until: { all: [] }          # event arrival alone satisfies (no value to check)
-              timeoutMs: 8000
-          - { sendOp: "0x9022" }
+        initiator:
+          steps:
+            - { sendOp: "0x100e", params: [0, 0] }
+            # Wait for the camera's PostviewComplete event (JPEG saved to card,
+            # fires ~400-750ms after 0x100E) before reading the postview — the
+            # event IS the readiness signal, the 0x9022 below is the data read.
+            # Makes the take cycle manifest-scripted, not client responsibility
+            # (#29). Evidence: operators FUJI_PTP_PROP_REFERENCE §6 + MODE_CHANGES §6b.
+            - awaitUntil:
+                source: { event: { code: "0xc001" } }
+                until: { all: [] }          # event arrival alone satisfies (no value to check)
+                timeoutMs: 8000
+            - { sendOp: "0x9022" }
         triggers:
           - postviewEvent: {}
         evidence: [wireReopenTrace, iosLiveControls, docLiveControls]
@@ -275,26 +276,28 @@ connections:
       # (StepParam carries no arithmetic), so ptpsim grows no packing vocabulary.
       autofocusLock:
         mode: shooting/stills
-        params: [afArea]
-        steps:
-          - { sendOp: "0x9026", params: [{ runtime: afArea }] }
-          - awaitUntil:
-              source: { event: { code: "0xc005", thenPoll: "0xd209" } }
-              until:
-                any:
-                  - { prop: "0xd209", eq: 1 }   # 0xD209 S1LockColor: 1 = locked
-                  - { prop: "0xd209", eq: 2 }   # 2 = AF failed, still a terminal focus result
-              timeoutMs: 5000
-              # 0xC005 acknowledges the AF cycle, it does NOT carry the result:
-              # fw02.30 fires it ~100ms after 0x9026 while 0xD209 still reads
-              # pre-settle, so the post-event read re-polls at this cadence
-              # within timeoutMs (client application#157, #185).
-              intervalMs: 100
+        initiator:
+          params: [afArea]
+          steps:
+            - { sendOp: "0x9026", params: [{ runtime: afArea }] }
+            - awaitUntil:
+                source: { event: { code: "0xc005", thenPoll: "0xd209" } }
+                until:
+                  any:
+                    - { prop: "0xd209", eq: 1 }   # 0xD209 S1LockColor: 1 = locked
+                    - { prop: "0xd209", eq: 2 }   # 2 = AF failed, still a terminal focus result
+                timeoutMs: 5000
+                # 0xC005 acknowledges the AF cycle, it does NOT carry the result:
+                # fw02.30 fires it ~100ms after 0x9026 while 0xD209 still reads
+                # pre-settle, so the post-event read re-polls at this cadence
+                # within timeoutMs (client application#157, #185).
+                intervalMs: 100
         evidence: [iosLiveControls, docLiveControls]
       autofocusRelease:
         mode: shooting/stills
-        steps:
-          - { sendOp: "0x9027" }
+        initiator:
+          steps:
+            - { sendOp: "0x9027" }
         evidence: [iosLiveControls, docLiveControls]
       # reference-app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW230.md
       # §"Confirmed enumeration": reference-app **never** calls 0x1007
@@ -306,34 +309,35 @@ connections:
       # the buffer for 0xD621.
       enumerateObjects:
         mode: image-transfer
-        steps:
-          # The camera may still be settling after mode entry. Replay the whole
-          # page-selection operation for the observed busy/store responses.
-          - retry: &imageImportPrimeRetry
-              whenResponseCodes: ["0x2013", "0x2019"]
-              maxAttempts: 5
-              retryDelayMs: 100
-              steps:
-                - { sendOp: "0x9050", startsGate: imageImportBootstrap }
-                - { getProp: "0xd212", tolerant: true }
-                - { getProp: "0xd22b", tolerant: true }
-                - { sendOp: "0x9053", params: [0, 0x7530] }
-                - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
-          # Field evidence shows 0x2002 can be transient here even though the
-          # reference client treats it as terminal. Prefer bounded recovery.
-          - retry: &imageImportCountRetry
-              whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
-              maxAttempts: 3
-              retryDelayMs: 1000
-              steps:
-                - { getProp: "0xd620" }
-          - retry: &imageImportHandlesRetry
-              whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
-              maxAttempts: 3
-              retryDelayMs: 1000
-              steps:
-                - getProp: "0xd621"
-                  captures: [{ bind: objectHandles, as: ptpU32Array }]
+        initiator:
+          steps:
+            # The camera may still be settling after mode entry. Replay the whole
+            # page-selection operation for the observed busy/store responses.
+            - retry: &imageImportPrimeRetry
+                whenResponseCodes: ["0x2013", "0x2019"]
+                maxAttempts: 5
+                retryDelayMs: 100
+                steps:
+                  - { sendOp: "0x9050", startsGate: imageImportBootstrap }
+                  - { getProp: "0xd212", tolerant: true }
+                  - { getProp: "0xd22b", tolerant: true }
+                  - { sendOp: "0x9053", params: [0, 0x7530] }
+                  - { getProp: "0xd212", tolerant: true, completesGate: imageImportBootstrap }
+            # Field evidence shows 0x2002 can be transient here even though the
+            # reference client treats it as terminal. Prefer bounded recovery.
+            - retry: &imageImportCountRetry
+                whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
+                maxAttempts: 3
+                retryDelayMs: 1000
+                steps:
+                  - { getProp: "0xd620" }
+            - retry: &imageImportHandlesRetry
+                whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
+                maxAttempts: 3
+                retryDelayMs: 1000
+                steps:
+                  - getProp: "0xd621"
+                    captures: [{ bind: objectHandles, as: ptpU32Array }]
         evidence: [docImageTransfer]
       # Per-handle metadata + thumbnail — same wire shape as PCSS, different
       # surface (reference-app goes through the image-transfer mode-entry first).
@@ -343,15 +347,17 @@ connections:
       # command socket closed mid-stream on a real GFX100 II.
       getObjectInfo:
         mode: image-transfer
-        params: [handle]
-        steps:
-          - { sendOp: "0x1008", params: [{ runtime: handle }] }
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x1008", params: [{ runtime: handle }] }
         evidence: [docImageTransfer]
       getThumb:
         mode: image-transfer
-        params: [handle]
-        steps:
-          - { sendOp: "0x100a", params: [{ runtime: handle }] }
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x100a", params: [{ runtime: handle }] }
         evidence: [docImageTransfer]
       # Chunked download. The action params are the logical caller inputs:
       # handle plus a 64-bit offset and length. The wire step derives
@@ -361,14 +367,15 @@ connections:
       # transfer size comes from 0x9803(handle, 0xdc04).
       getObject:
         mode: image-transfer
-        params: [handle, offset, length]
-        steps:
-          - sendOp: "0x101b"
-            params:
-              - { runtime: handle }
-              - { runtime: offset, mask: 0xffffffff }
-              - { runtime: length }
-              - { runtime: offset, shift: 32 }
+        initiator:
+          params: [handle, offset, length]
+          steps:
+            - sendOp: "0x101b"
+              params:
+                - { runtime: handle }
+                - { runtime: offset, mask: 0xffffffff }
+                - { runtime: length }
+                - { runtime: offset, shift: 32 }
         evidence: [docImageTransfer, docLargeMovObjectInfo]
       # #46: the FULL image-transfer choreography as ONE manifest-owned loop, so
       # the reference executor walks arm → enumerate → for-each handle
@@ -383,56 +390,57 @@ connections:
       # NOT in this loop. Wire shape: IMAGE_TRANSFER_FW230.md (0x101B, 12 MiB chunks).
       importObjects:
         mode: image-transfer
-        steps:
-          # --- arm (mirrors the to:image-transfer mode-entry; idempotent, tolerant) ---
-          - { getProp: "0xd212", tolerant: true }
-          - { setProp: "0xdf01", value: 0x14 }
-          - { getProp: "0xdf28", tolerant: true }
-          - { setProp: "0xdf28", value: 3, tolerant: true }
-          - { setProp: "0xd226", value: 0, tolerant: true }
-          - { setProp: "0xd227", value: 0, tolerant: true }
-          - { getProp: "0xd244", tolerant: true }
-          - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
-          - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
-          # --- enumerate (shared recovery with enumerateObjects) ---
-          - retry: *imageImportPrimeRetry
-          - retry: *imageImportCountRetry
-          - retry: *imageImportHandlesRetry
-          # --- per-handle: learn reported/true size, then chunk-download until exhausted ---
-          - loop:
-              forEach:
-                in: objectHandles      # captured descending handle list
-                bind: handle
-                body:
-                  - sendOp: "0x1008"
-                    params: [{ runtime: handle }]
-                    captures:
-                      - { bind: objectReportedSize, as: objectInfoCompressedSize }
-                      - { bind: objectTransferSize, as: objectInfoCompressedSize }
-                  - if:
-                      slot: objectReportedSize
-                      equals: 0xffffffff
-                      then:
-                        - sendOp: "0x9803"
-                          params: [{ runtime: handle }, 0xdc04]
-                          captures:
-                            - { bind: objectTransferSize, as: u64Le }
-                  - getProp: "0xd235"
-                    captures:
-                      - { bind: chunkSize, as: propValue }
-                  - loop:
-                      chunk:
-                        total: objectTransferSize
-                        size: { runtime: chunkSize }
-                        offsetBind: offset
-                        lengthBind: length
-                        body:
-                          - sendOp: "0x101b"  # GetPartialObject(handle, offset_low, length, offset_high)
-                            params:
-                              - { runtime: handle }
-                              - { runtime: offset, mask: 0xffffffff }
-                              - { runtime: length }
-                              - { runtime: offset, shift: 32 }
+        initiator:
+          steps:
+            # --- arm (mirrors the to:image-transfer mode-entry; idempotent, tolerant) ---
+            - { getProp: "0xd212", tolerant: true }
+            - { setProp: "0xdf01", value: 0x14 }
+            - { getProp: "0xdf28", tolerant: true }
+            - { setProp: "0xdf28", value: 3, tolerant: true }
+            - { setProp: "0xd226", value: 0, tolerant: true }
+            - { setProp: "0xd227", value: 0, tolerant: true }
+            - { getProp: "0xd244", tolerant: true }
+            - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
+            - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
+            # --- enumerate (shared recovery with enumerateObjects) ---
+            - retry: *imageImportPrimeRetry
+            - retry: *imageImportCountRetry
+            - retry: *imageImportHandlesRetry
+            # --- per-handle: learn reported/true size, then chunk-download until exhausted ---
+            - loop:
+                forEach:
+                  in: objectHandles      # captured descending handle list
+                  bind: handle
+                  body:
+                    - sendOp: "0x1008"
+                      params: [{ runtime: handle }]
+                      captures:
+                        - { bind: objectReportedSize, as: objectInfoCompressedSize }
+                        - { bind: objectTransferSize, as: objectInfoCompressedSize }
+                    - if:
+                        slot: objectReportedSize
+                        equals: 0xffffffff
+                        then:
+                          - sendOp: "0x9803"
+                            params: [{ runtime: handle }, 0xdc04]
+                            captures:
+                              - { bind: objectTransferSize, as: u64Le }
+                    - getProp: "0xd235"
+                      captures:
+                        - { bind: chunkSize, as: propValue }
+                    - loop:
+                        chunk:
+                          total: objectTransferSize
+                          size: { runtime: chunkSize }
+                          offsetBind: offset
+                          lengthBind: length
+                          body:
+                            - sendOp: "0x101b"  # GetPartialObject(handle, offset_low, length, offset_high)
+                              params:
+                                - { runtime: handle }
+                                - { runtime: offset, mask: 0xffffffff }
+                                - { runtime: length }
+                                - { runtime: offset, shift: 32 }
         triggers: []
         evidence: [docImageTransfer, docLargeMovObjectInfo]
 
@@ -530,11 +538,11 @@ connections:
       formats: { "0x3801": experimental, "0xb103": experimental, "0xb105": confirmed, "0x300d": experimental }
     controlSurfaces:
       shooting/stills:
-        iso:          { property: "0x500f", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
-        shutterSpeed: { property: "0x500d", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
-        aperture:     { property: "0x5007", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
-        exposureBias: { property: "0x5010", readSource: directProperty, writeEffect: descriptorOnly, effectiveOwner: client }
-        focusArea:    { property: "0xd395", readSource: directProperty, writeEffect: confirmed,      effectiveOwner: client }
+        iso:          { property: "0x500f", readSource: directProperty, evidenceBasis: writeProbe,     observedEffect: confirmed, effectiveOwner: client }
+        shutterSpeed: { property: "0x500d", readSource: directProperty, evidenceBasis: writeProbe,     observedEffect: confirmed, effectiveOwner: client }
+        aperture:     { property: "0x5007", readSource: directProperty, evidenceBasis: writeProbe,     observedEffect: confirmed, effectiveOwner: client }
+        exposureBias: { property: "0x5010", readSource: directProperty, evidenceBasis: descriptorOnly, observedEffect: unknown,   effectiveOwner: client }
+        focusArea:    { property: "0xd395", readSource: directProperty, evidenceBasis: writeProbe,     observedEffect: confirmed, effectiveOwner: client }
     # Wire-confirmed NOT-supported on this connection (per the 05-27 capability snapshot
     # `wireTetherCaps20260527` + wire-capture 2026-06-02 replies). Don't author entries that
     # rely on these — the camera will reject them:
@@ -560,8 +568,9 @@ connections:
       # a capture.
       readDeviceInfo:
         mode: ""
-        steps:
-          - { sendOp: "0x1001", params: [] }
+        initiator:
+          steps:
+            - { sendOp: "0x1001", params: [] }
         evidence: [wireTetherCaps20260527]
       # PCSS selects live-view delivery with D1BC=2, then starts its poll-based
       # live view with InitiateOpenCapture(0, 0).
@@ -569,9 +578,10 @@ connections:
       # transaction id; the PCSS capture uses a connection-specific literal.
       startLiveView:
         mode: shooting/stills
-        steps:
-          - { setProp: "0xd1bc", value: 2 }
-          - { sendOp: "0x101c", params: [0, 0] }
+        initiator:
+          steps:
+            - { setProp: "0xd1bc", value: 2 }
+            - { sendOp: "0x101c", params: [0, 0] }
         evidence: [wirePCSSShootDownload20260523]
       # Exactly one polled PCSS live-view payload. Callers own repetition and
       # may follow this with another action on the same open session. General
@@ -579,29 +589,32 @@ connections:
       # selects replay for this opcode.
       pollLiveView:
         mode: shooting/stills
-        steps:
-          - retry:
-              whenResponseCodes: ["0x2002"]
-              maxAttempts: 10
-              retryDelayMs: 100
-              steps:
-                - { sendOp: "0x9018", params: [] }
+        initiator:
+          steps:
+            - retry:
+                whenResponseCodes: ["0x2002"]
+                maxAttempts: 10
+                retryDelayMs: 100
+                steps:
+                  - { sendOp: "0x9018", params: [] }
         evidence: [wireTether, wirePCSSShootDownload20260523]
       # Every PCSS TerminateOpenCapture request in the full-session capture
       # carries literal 1 even though the request transaction ids vary.
       stopLiveView:
         mode: shooting/stills
-        steps:
-          - { sendOp: "0x1018", params: [1] }
+        initiator:
+          steps:
+            - { sendOp: "0x1018", params: [1] }
         evidence: [wirePCSSShootDownload20260523]
       # One caller-scheduled PCSS session keepalive iteration. Captures show
       # variable bursts/periodic intervals, so cadence is deliberately not
       # modeled here; clients loop this recipe while the PCSS session is alive.
       keepalive:
         mode: ""
-        steps:
-          - { setProp: "0xd21c", value: 0 }
-          - { setProp: "0xd207", value: 1 }
+        initiator:
+          steps:
+            - { setProp: "0xd21c", value: 0 }
+            - { setProp: "0xd207", value: 1 }
         evidence: [wirePCSSShootDownload20260523]
       # 3-beat virtual-shutter sequence. Each beat is `setProp 0xD039 = <phase>` +
       # `0x100E InitiateCapture(0,0)`. Phase byte layout is `[lo0, lo1, hi0, hi1]`
@@ -611,19 +624,24 @@ connections:
       # the client should poll after invoking the action.
       shutter:
         mode: shooting/stills
-        steps:
-          - { setProp: "0xd039", value: 0x00010000 }
-          - { sendOp:  "0x100e", params: [0, 0] }
-          - { setProp: "0xd039", value: 0x00020000 }
-          - { sendOp:  "0x100e", params: [0, 0] }
-          - { setProp: "0xd039", value: 0x00000001 }
-          - { sendOp:  "0x100e", params: [0, 0] }
-        # User's format selection (JPEG / HEIF / RAW) determines how many
-        # objects become available per press — 1 to 3. The app already knows
-        # its own selection state and can predict the exact count; the manifest
-        # declares the bounded range so a generic queue poller can budget
-        # timeouts + progress UI without app-side knowledge of which formats
-        # are selected.
+        initiator:
+          steps:
+            - { setProp: "0xd039", value: 0x00010000 }
+            - { sendOp:  "0x100e", params: [0, 0] }
+            - { setProp: "0xd039", value: 0x00020000 }
+            - { sendOp:  "0x100e", params: [0, 0] }
+            - { setProp: "0xd039", value: 0x00000001 }
+            - { sendOp:  "0x100e", params: [0, 0] }
+          # User's format selection (JPEG / HEIF / RAW) determines how many
+          # objects become available per press — 1 to 3. The app already knows
+          # its own selection state and can predict the exact count; the manifest
+          # declares the bounded range so a generic queue poller can budget
+          # timeouts + progress UI without app-side knowledge of which formats
+          # are selected.
+        responder:
+          params:
+            - { name: objectCount, kind: u32, default: 1, min: 1, max: 3 }
+          mutation: { kind: enqueueObjects, countParam: objectCount }
         triggers:
           - objectsAvailable: { min: 1, max: 3 }
         evidence: [wirePCSSShootDownload20260523]
@@ -633,36 +651,41 @@ connections:
       # sequence enumerates while shooting/stills live view remains open.
       enumerateObjects:
         mode: ""
-        steps:
-          - sendOp: "0x1007"
-            params: [0xffffffff, 0]
-            captures:
-              - { bind: objectHandles, as: ptpU32Array }
+        initiator:
+          steps:
+            - sendOp: "0x1007"
+              params: [0xffffffff, 0]
+              captures:
+                - { bind: objectHandles, as: ptpU32Array }
         evidence: [wirePCSSShootDownload20260523]
       getObjectInfo:
         mode: image-transfer
-        params: [handle]
-        steps:
-          - { sendOp: "0x1008", params: [{ runtime: handle }] }
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x1008", params: [{ runtime: handle }] }
         evidence: [wirePCSSShootDownload20260523]
       getThumb:
         mode: image-transfer
-        params: [handle]
-        steps:
-          - { sendOp: "0x100a", params: [{ runtime: handle }] }
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x100a", params: [{ runtime: handle }] }
         evidence: [wirePCSSShootDownload20260523]
       # Whole-object download — 0x101B chunking is NOT supported on PCSS.
       getObject:
         mode: image-transfer
-        params: [handle]
-        steps:
-          - { sendOp: "0x1009", params: [{ runtime: handle }] }
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x1009", params: [{ runtime: handle }] }
         evidence: [wirePCSSShootDownload20260523]
       deleteObject:
         mode: image-transfer
-        params: [handle]
-        steps:
-          - { sendOp: "0x100b", params: [{ runtime: handle }] }
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x100b", params: [{ runtime: handle }] }
         evidence: [wirePCSSShootDownload20260523]
     evidence: [wireTether]
 
@@ -1007,7 +1030,7 @@ properties:
   # 0xD246 — reference-app Take in-screen toggle (`0`=stills, `1`=video). PCSS equivalent
   # is 0xD037 above. DevicePropDesc enum reports `[0x00, 0x00]` (Fuji bool quirk).
   "0xd246": { name: appInShooterStillsVideo, type: u8, access: readWrite, initialValue: 0,
-              descriptor: { form: enum, values: [0, 1] },
+              descriptor: { form: enum, values: [0, 1], source: manifest },
               labels: { "0": stills, "1": video },
               evidence: [docFujiPtpPropReference] }
   # 0xD22B — read during Get-mode bootstrap, between 0x9050 and 0x9053

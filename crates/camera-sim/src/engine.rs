@@ -174,14 +174,20 @@ impl TransferQueue {
         drained
     }
 
-    fn enqueue_next(&mut self) {
-        for _ in 0..self.enqueue_per_shutter {
+    fn enqueue_count(&mut self, count: u32) -> usize {
+        let before = self.available.len();
+        for _ in 0..count {
             let Some(handle) = self.handles.get(self.next_index).copied() else {
                 break;
             };
             self.available.insert(handle);
             self.next_index += 1;
         }
+        self.available.len() - before
+    }
+
+    fn enqueue_next(&mut self) {
+        self.enqueue_count(self.enqueue_per_shutter);
     }
 }
 
@@ -357,6 +363,30 @@ impl Engine {
         }
     }
 
+    /// Apply the closed responder action primitive after catalog resolution.
+    /// No validation happens here: callers must resolve the action first.
+    pub fn enqueue_standard_objects(&mut self, count: u32) -> Result<usize, String> {
+        let queue = self
+            .transfer_queue
+            .as_mut()
+            .ok_or_else(|| "standard object queue is not configured".to_string())?;
+        Ok(queue.enqueue_count(count))
+    }
+
+    /// Return the number of objects an enqueue would make available without
+    /// mutating the queue. The control service uses this while holding the
+    /// engine lock so it can durably record the resolved action before applying
+    /// the closed responder mutation.
+    pub fn pending_standard_object_enqueue(&self, count: u32) -> Result<usize, String> {
+        let queue = self
+            .transfer_queue
+            .as_ref()
+            .ok_or_else(|| "standard object queue is not configured".to_string())?;
+        Ok(usize::try_from(count)
+            .unwrap_or(usize::MAX)
+            .min(queue.handles.len().saturating_sub(queue.next_index)))
+    }
+
     /// Enable standard PTP object-queue behavior for a connection whose manifest
     /// enumerates with `0x1007`. `shutter_enqueue_count == 0` seeds transferable
     /// non-movie media at startup; nonzero starts empty and enqueues after the
@@ -411,7 +441,12 @@ impl Engine {
                             "selected connection '{connection_id}' shutter action has no objectsAvailable trigger"
                         )
                     })?;
-                (max, shutter.steps.clone())
+                let initiator = shutter.initiator().ok_or_else(|| {
+                    format!(
+                        "selected connection '{connection_id}' shutter action has no initiator binding"
+                    )
+                })?;
+                (max, initiator.steps.clone())
             };
             if shutter_enqueue_count > max {
                 return Err(format!(
@@ -1447,7 +1482,9 @@ fn compile_gate_sequences(manifest: &CameraManifest) -> Vec<GateSequence> {
             }
         }
         for action in connection.actions.values() {
-            collect_gate_sequences(&action.steps, &mut out);
+            if let Some(initiator) = &action.initiator {
+                collect_gate_sequences(&initiator.steps, &mut out);
+            }
         }
     }
     out
@@ -1466,7 +1503,9 @@ fn compile_channel_sequences(manifest: &CameraManifest) -> Vec<GateSequence> {
             }
         }
         for action in connection.actions.values() {
-            collect_channel_sequences(connection_name, &action.steps, &mut out);
+            if let Some(initiator) = &action.initiator {
+                collect_channel_sequences(connection_name, &initiator.steps, &mut out);
+            }
         }
     }
     out
@@ -1574,8 +1613,9 @@ fn matcher_sequence_for_steps(steps: &[Step]) -> Option<Vec<GateMatcher>> {
 
 fn action_sends_op(action: &Action, code: u16) -> bool {
     action
-        .steps
-        .iter()
+        .initiator()
+        .into_iter()
+        .flat_map(|binding| &binding.steps)
         .any(|step| step.send_op.as_deref().and_then(parse_hex_code) == Some(code))
 }
 

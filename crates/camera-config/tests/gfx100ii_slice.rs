@@ -464,14 +464,21 @@ fn wireless_tether_shutter_action_is_the_3_beat_pcss_sequence() {
         .action("wireless-tether", ActionVerb::Shutter)
         .expect("wireless-tether.actions.shutter must exist");
     assert_eq!(shutter.mode, "shooting/stills");
-    assert!(shutter.params.is_empty(), "shutter takes no runtime params");
-    assert_eq!(shutter.steps.len(), 6, "3 beats × 2 ops each");
+    assert!(
+        shutter.initiator().unwrap().params.is_empty(),
+        "shutter takes no runtime params"
+    );
+    assert_eq!(
+        shutter.initiator().unwrap().steps.len(),
+        6,
+        "3 beats × 2 ops each"
+    );
     let phase_values = [0x00010000_i64, 0x00020000, 0x00000001];
     for (beat, phase) in phase_values.iter().enumerate() {
-        let setprop = &shutter.steps[beat * 2];
+        let setprop = &shutter.initiator().unwrap().steps[beat * 2];
         assert_eq!(setprop.set_prop.as_deref(), Some("0xd039"));
         assert_eq!(setprop.value, Some(*phase), "beat {} phase value", beat + 1);
-        let sendop = &shutter.steps[beat * 2 + 1];
+        let sendop = &shutter.initiator().unwrap().steps[beat * 2 + 1];
         assert_eq!(sendop.send_op.as_deref(), Some("0x100e"));
         assert_eq!(
             sendop.params,
@@ -500,13 +507,19 @@ fn wireless_tether_keepalive_action_is_session_scaffold_not_settings() {
         .action("wireless-tether", ActionVerb::Keepalive)
         .expect("wireless-tether.actions.keepalive must exist");
     assert_eq!(keepalive.mode, "");
-    assert!(keepalive.params.is_empty());
+    assert!(keepalive.initiator().unwrap().params.is_empty());
     assert!(keepalive.triggers.is_empty());
-    assert_eq!(keepalive.steps.len(), 2);
-    assert_eq!(keepalive.steps[0].set_prop.as_deref(), Some("0xd21c"));
-    assert_eq!(keepalive.steps[0].value, Some(0));
-    assert_eq!(keepalive.steps[1].set_prop.as_deref(), Some("0xd207"));
-    assert_eq!(keepalive.steps[1].value, Some(1));
+    assert_eq!(keepalive.initiator().unwrap().steps.len(), 2);
+    assert_eq!(
+        keepalive.initiator().unwrap().steps[0].set_prop.as_deref(),
+        Some("0xd21c")
+    );
+    assert_eq!(keepalive.initiator().unwrap().steps[0].value, Some(0));
+    assert_eq!(
+        keepalive.initiator().unwrap().steps[1].set_prop.as_deref(),
+        Some("0xd207")
+    );
+    assert_eq!(keepalive.initiator().unwrap().steps[1].value, Some(1));
     assert_eq!(m.properties["0xd21c"].kind, PropertyKind::Scaffold);
     assert_eq!(m.properties["0xd207"].kind, PropertyKind::Scaffold);
 }
@@ -526,10 +539,10 @@ fn wireless_tether_transfer_actions_bind_runtime_handle() {
             .action("wireless-tether", verb)
             .unwrap_or_else(|| panic!("missing action {verb:?}"));
         assert_eq!(a.mode, "image-transfer");
-        assert_eq!(a.params, vec!["handle".to_string()]);
-        assert_eq!(a.steps.len(), 1);
+        assert_eq!(a.initiator().unwrap().params, vec!["handle".to_string()]);
+        assert_eq!(a.initiator().unwrap().steps.len(), 1);
         assert_eq!(
-            a.steps[0].params,
+            a.initiator().unwrap().steps[0].params,
             vec![StepParam::Runtime {
                 runtime: "handle".into(),
                 shift: 0,
@@ -547,10 +560,13 @@ fn wireless_tether_transfer_actions_bind_runtime_handle() {
         .action("wireless-tether", ActionVerb::EnumerateObjects)
         .unwrap();
     assert_eq!(enumerate.mode, "");
-    assert!(enumerate.params.is_empty());
-    assert_eq!(enumerate.steps[0].send_op.as_deref(), Some("0x1007"));
+    assert!(enumerate.initiator().unwrap().params.is_empty());
     assert_eq!(
-        enumerate.steps[0].params,
+        enumerate.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x1007")
+    );
+    assert_eq!(
+        enumerate.initiator().unwrap().steps[0].params,
         vec![StepParam::Literal(0xffffffff), StepParam::Literal(0)]
     );
 }
@@ -578,16 +594,22 @@ fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped(
         .action("wireless-tether", ActionVerb::StartLiveView)
         .expect("wireless-tether startLiveView action");
     assert_eq!(start.mode, "shooting/stills");
-    assert!(start.params.is_empty());
-    assert_eq!(start.steps.len(), 2);
-    assert_eq!(start.steps[0].set_prop.as_deref(), Some("0xd1bc"));
-    assert_eq!(start.steps[0].value, Some(2));
-    assert_eq!(start.steps[1].send_op.as_deref(), Some("0x101c"));
+    assert!(start.initiator().unwrap().params.is_empty());
+    assert_eq!(start.initiator().unwrap().steps.len(), 2);
     assert_eq!(
-        start.steps[1].params,
+        start.initiator().unwrap().steps[0].set_prop.as_deref(),
+        Some("0xd1bc")
+    );
+    assert_eq!(start.initiator().unwrap().steps[0].value, Some(2));
+    assert_eq!(
+        start.initiator().unwrap().steps[1].send_op.as_deref(),
+        Some("0x101c")
+    );
+    assert_eq!(
+        start.initiator().unwrap().steps[1].params,
         [StepParam::Literal(0), StepParam::Literal(0)]
     );
-    assert!(start.steps[1].captures.is_empty());
+    assert!(start.initiator().unwrap().steps[1].captures.is_empty());
     let selector = &m.properties["0xd1bc"];
     assert_eq!(selector.ptype.as_deref(), Some("u16"));
     assert_eq!(selector.access.as_deref(), Some("readWrite"));
@@ -597,9 +619,9 @@ fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped(
         .action("wireless-tether", ActionVerb::PollLiveView)
         .expect("wireless-tether pollLiveView action");
     assert_eq!(poll.mode, "shooting/stills");
-    assert!(poll.params.is_empty());
-    assert_eq!(poll.steps.len(), 1);
-    let retry = poll.steps[0]
+    assert!(poll.initiator().unwrap().params.is_empty());
+    assert_eq!(poll.initiator().unwrap().steps.len(), 1);
+    let retry = poll.initiator().unwrap().steps[0]
         .retry
         .as_ref()
         .expect("pollLiveView has a bounded response-selected retry");
@@ -614,11 +636,17 @@ fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped(
         .action("wireless-tether", ActionVerb::StopLiveView)
         .expect("wireless-tether stopLiveView action");
     assert_eq!(stop.mode, "shooting/stills");
-    assert!(stop.params.is_empty());
-    assert_eq!(stop.steps.len(), 1);
-    assert_eq!(stop.steps[0].send_op.as_deref(), Some("0x1018"));
-    assert_eq!(stop.steps[0].params, [StepParam::Literal(1)]);
-    assert!(stop.steps[0].captures.is_empty());
+    assert!(stop.initiator().unwrap().params.is_empty());
+    assert_eq!(stop.initiator().unwrap().steps.len(), 1);
+    assert_eq!(
+        stop.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x1018")
+    );
+    assert_eq!(
+        stop.initiator().unwrap().steps[0].params,
+        [StepParam::Literal(1)]
+    );
+    assert!(stop.initiator().unwrap().steps[0].captures.is_empty());
 
     for verb in [
         ActionVerb::StartLiveView,
@@ -640,16 +668,19 @@ fn app_shutter_action_scripts_the_postview_await_take_cycle() {
         .action("app", ActionVerb::Shutter)
         .expect("app.actions.shutter must exist");
     assert_eq!(shutter.mode, "shooting/stills");
-    assert!(shutter.params.is_empty());
-    assert_eq!(shutter.steps.len(), 3);
-    assert_eq!(shutter.steps[0].send_op.as_deref(), Some("0x100e"));
+    assert!(shutter.initiator().unwrap().params.is_empty());
+    assert_eq!(shutter.initiator().unwrap().steps.len(), 3);
     assert_eq!(
-        shutter.steps[0].params,
+        shutter.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x100e")
+    );
+    assert_eq!(
+        shutter.initiator().unwrap().steps[0].params,
         vec![StepParam::Literal(0), StepParam::Literal(0)]
     );
     // The middle step waits for the camera's postview event (arrival alone gates
     // the read — the 0x9022 below is the data read).
-    let aw = shutter.steps[1]
+    let aw = shutter.initiator().unwrap().steps[1]
         .await_until
         .as_ref()
         .expect("postview await step between capture and cleanup");
@@ -660,8 +691,13 @@ fn app_shutter_action_scripts_the_postview_await_take_cycle() {
         }
         other => panic!("expected an event source, got {other:?}"),
     }
-    assert_eq!(shutter.steps[2].send_op.as_deref(), Some("0x9022"));
+    assert_eq!(
+        shutter.initiator().unwrap().steps[2].send_op.as_deref(),
+        Some("0x9022")
+    );
     assert!(shutter
+        .initiator()
+        .unwrap()
         .steps
         .iter()
         .all(camera_config::Step::is_well_formed));
@@ -684,14 +720,20 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         .action("app", ActionVerb::EnumerateObjects)
         .expect("app.actions.enumerateObjects");
     assert_eq!(enumerate.mode, "image-transfer");
-    assert!(enumerate.params.is_empty());
-    assert_eq!(enumerate.steps.len(), 3);
-    let prime = enumerate.steps[0].retry.as_ref().expect("prime retry");
+    assert!(enumerate.initiator().unwrap().params.is_empty());
+    assert_eq!(enumerate.initiator().unwrap().steps.len(), 3);
+    let prime = enumerate.initiator().unwrap().steps[0]
+        .retry
+        .as_ref()
+        .expect("prime retry");
     assert_eq!(prime.when_response_codes, ["0x2013", "0x2019"]);
     assert_eq!(prime.max_attempts, 5);
     assert_eq!(prime.retry_delay_ms, 100);
     assert_image_import_bootstrap_gate(&prime.steps);
-    for (step, prop) in enumerate.steps[1..].iter().zip(["0xd620", "0xd621"]) {
+    for (step, prop) in enumerate.initiator().unwrap().steps[1..]
+        .iter()
+        .zip(["0xd620", "0xd621"])
+    {
         let retry = step.retry.as_ref().expect("enumeration property retry");
         assert_eq!(retry.when_response_codes, ["0x2002", "0x2013", "0x2019"]);
         assert_eq!(retry.max_attempts, 3);
@@ -699,7 +741,7 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         assert_eq!(retry.steps[0].get_prop.as_deref(), Some(prop));
     }
     assert!(matches!(
-        enumerate.steps[2].retry.as_ref().unwrap().steps[0].captures.as_slice(),
+        enumerate.initiator().unwrap().steps[2].retry.as_ref().unwrap().steps[0].captures.as_slice(),
         [camera_config::model::Capture {
             bind,
             source: camera_config::CaptureSource::PtpU32Array,
@@ -713,10 +755,10 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
             .action("app", verb)
             .unwrap_or_else(|| panic!("missing action {verb:?}"));
         assert_eq!(a.mode, "image-transfer");
-        assert_eq!(a.params, vec!["handle".to_string()]);
-        assert_eq!(a.steps.len(), 1);
+        assert_eq!(a.initiator().unwrap().params, vec!["handle".to_string()]);
+        assert_eq!(a.initiator().unwrap().steps.len(), 1);
         assert_eq!(
-            a.steps[0].params,
+            a.initiator().unwrap().steps[0].params,
             vec![StepParam::Runtime {
                 runtime: "handle".into(),
                 shift: 0,
@@ -731,7 +773,7 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         .expect("app.actions.getObject");
     assert_eq!(get.mode, "image-transfer");
     assert_eq!(
-        get.params,
+        get.initiator().unwrap().params,
         vec![
             "handle".to_string(),
             "offset".to_string(),
@@ -739,10 +781,13 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         ],
         "reference app getObject is chunked — caller binds offset+length per iteration"
     );
-    assert_eq!(get.steps.len(), 1);
-    assert_eq!(get.steps[0].send_op.as_deref(), Some("0x101b"));
+    assert_eq!(get.initiator().unwrap().steps.len(), 1);
     assert_eq!(
-        get.steps[0].params,
+        get.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x101b")
+    );
+    assert_eq!(
+        get.initiator().unwrap().steps[0].params,
         vec![
             StepParam::Runtime {
                 runtime: "handle".into(),
@@ -782,18 +827,32 @@ fn getobject_params_differ_per_connection_same_verb() {
     let app = m
         .action("app", ActionVerb::GetObject)
         .expect("app.actions.getObject");
-    assert_eq!(pcss.params.len(), 1, "PCSS getObject is whole-object");
-    assert_eq!(app.params.len(), 3, "reference app getObject is chunked");
-    assert_eq!(pcss.steps[0].send_op.as_deref(), Some("0x1009"));
-    assert_eq!(pcss.steps[0].params.len(), 1);
-    assert_eq!(app.steps[0].send_op.as_deref(), Some("0x101b"));
     assert_eq!(
-        app.steps[0].params.len(),
+        pcss.initiator().unwrap().params.len(),
+        1,
+        "PCSS getObject is whole-object"
+    );
+    assert_eq!(
+        app.initiator().unwrap().params.len(),
+        3,
+        "reference app getObject is chunked"
+    );
+    assert_eq!(
+        pcss.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x1009")
+    );
+    assert_eq!(pcss.initiator().unwrap().steps[0].params.len(), 1);
+    assert_eq!(
+        app.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x101b")
+    );
+    assert_eq!(
+        app.initiator().unwrap().steps[0].params.len(),
         4,
         "reference app derives offset_high from the logical offset slot for the wire call"
     );
     assert_eq!(
-        app.steps[0].params[1],
+        app.initiator().unwrap().steps[0].params[1],
         StepParam::Runtime {
             runtime: "offset".into(),
             shift: 0,
@@ -801,7 +860,7 @@ fn getobject_params_differ_per_connection_same_verb() {
         }
     );
     assert_eq!(
-        app.steps[0].params[3],
+        app.initiator().unwrap().steps[0].params[3],
         StepParam::Runtime {
             runtime: "offset".into(),
             shift: 32,
@@ -1002,29 +1061,73 @@ fn xlv_models_protocol_shape_with_access_gate_kept_private() {
 
 #[test]
 fn generator_ingests_real_probe_evidence_into_a_proposal() {
-    // Concatenate the committed camera-config-evidence/v1 probe files and run the generator.
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/camera-config-data/fuji/gfx100ii/evidence/probe");
-    let mut jsonl = String::new();
+    // Load every committed camera-observation/v1 reduction bundle.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/camera-config-data/fuji/gfx100ii/evidence");
+    let mut bundles = Vec::new();
     let mut files = 0;
-    for entry in std::fs::read_dir(&dir).expect("probe dir") {
-        let p = entry.unwrap().path();
-        if p.extension().is_some_and(|e| e == "jsonl") {
-            jsonl.push_str(&std::fs::read_to_string(&p).unwrap());
-            jsonl.push('\n');
+    for directory in ["probe", "labels", "value-profiles"] {
+        let mut paths = std::fs::read_dir(root.join(directory))
+            .expect("evidence directory")
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        for path in paths {
+            bundles.push(std::fs::read_to_string(path).unwrap());
             files += 1;
         }
     }
-    assert!(files >= 8, "expected the 8 probe files, got {files}");
+    assert_eq!(files, 10, "expected the migrated corpus");
+    let refs = bundles.iter().map(String::as_str).collect::<Vec<_>>();
 
-    let m = camera_config::generate_proposal(&jsonl);
+    let proposal = camera_config::propose(&refs).expect("canonical corpus validates");
+    let committed_proposal: camera_config::Proposal = serde_json::from_str(
+        &std::fs::read_to_string(root.join("camera-observation-v1.proposal.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        proposal, committed_proposal,
+        "proposal regeneration drifted"
+    );
+
+    let review: camera_config::ProposalReview = serde_json::from_str(
+        &std::fs::read_to_string(root.join("camera-observation-v1.review.json")).unwrap(),
+    )
+    .unwrap();
+    let migration: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("camera-observation-v1-migration.json")).unwrap(),
+    )
+    .unwrap();
+    let scoped_descriptor_codes = [
+        "0xd037", "0xd039", "0xd1bc", "0xd201", "0xd208", "0xd228", "0xd23c", "0xd369",
+    ];
+    assert_eq!(migration["scopedDescriptorNormalizations"], 40);
+    assert_eq!(
+        migration["scopedDescriptorCodes"],
+        serde_json::json!(scoped_descriptor_codes)
+    );
+    assert_eq!(
+        review
+            .decisions
+            .values()
+            .filter(|decision| **decision == camera_config::ReviewDisposition::Reject)
+            .count(),
+        10,
+        "review rejects nine stale type claims and the incompatible D246 descriptor"
+    );
+    let base = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.yaml")).unwrap();
+    let m = camera_config::apply_review(&base, &proposal, &review).expect("review applies");
+
     m.require_supported_schema()
-        .expect("proposal uses the current schema");
+        .expect("applied manifest uses the current schema");
 
-    // Identity derived from the evidence.
+    // Identity and curated graph survive reviewed generation.
     assert_eq!(m.camera.model, "GFX100 II");
     assert_eq!(m.camera.firmware, "2.30");
-    // Both probed connections + the hierarchical modes show up as bare nodes.
     assert!(m.connections.contains_key("usb"));
     assert!(m.connections.contains_key("wireless-tether"));
     assert!(m.modes.contains_key("shooting/stills"));
@@ -1032,18 +1135,49 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
     // Substantial op/prop coverage from the enumeration.
     assert!(m.operations.len() >= 20, "ops: {}", m.operations.len());
     assert!(m.properties.len() >= 50, "props: {}", m.properties.len());
-    // GetDevicePropDesc (0x1014) was exercised across scopes → multi-connection gating.
+    for code in scoped_descriptor_codes {
+        let property = &m.properties[code];
+        assert!(
+            property.descriptor.is_none(),
+            "scoped values for {code} must not become a global descriptor"
+        );
+        assert_eq!(
+            property.value_profiles.len(),
+            5,
+            "each exact connection/mode profile survives for {code}"
+        );
+    }
+    // GetDevicePropDesc (0x1014) preserves exact evidence tuples.
     let dpd = &m.operations["0x1014"];
-    assert!(dpd.connections.contains(&"usb".to_string()));
-    assert!(dpd.connections.contains(&"wireless-tether".to_string()));
-    // The generator emits NO sequences (preludes/chords are curated, not probed).
-    assert!(m.connections.values().all(|c| c.entries.is_empty()));
+    assert!(dpd
+        .observed_scopes
+        .iter()
+        .any(|scope| scope.connection == "usb" && scope.mode == "shooting/stills"));
+    assert!(dpd
+        .observed_scopes
+        .iter()
+        .any(|scope| { scope.connection == "wireless-tether" && scope.mode == "shooting/video" }));
     // Properties are camera-sourced (GetDevicePropDesc).
-    assert!(m
+    for (code, descriptor) in m
         .properties
-        .values()
-        .filter_map(|p| p.descriptor.as_ref())
-        .all(|d| d.source == Some(camera_config::ValueSource::Camera)));
+        .iter()
+        .filter_map(|(code, property)| property.descriptor.as_ref().map(|value| (code, value)))
+    {
+        let expected = if code == "0xd246" {
+            camera_config::ValueSource::Manifest
+        } else {
+            camera_config::ValueSource::Camera
+        };
+        assert_eq!(
+            descriptor.source,
+            Some(expected),
+            "descriptor source {code}"
+        );
+    }
+    assert!(
+        data("fuji/gfx100ii/gfx100ii.consolidated.yaml").ends_with(&m.to_yaml().unwrap()),
+        "reviewed manifest regeneration drifted"
+    );
 }
 
 #[test]
@@ -1079,7 +1213,13 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
     let enumerate = m
         .action("app", ActionVerb::EnumerateObjects)
         .expect("enumeration action");
-    assert_image_import_bootstrap_gate(&enumerate.steps[0].retry.as_ref().unwrap().steps);
+    assert_image_import_bootstrap_gate(
+        &enumerate.initiator().unwrap().steps[0]
+            .retry
+            .as_ref()
+            .unwrap()
+            .steps,
+    );
     // from-live-view entry binds the runtime open-capture txid into 0x1018.
     let from = entries
         .iter()
@@ -1174,6 +1314,8 @@ fn image_import_bootstrap_gate_covers_import_action_and_enumeration_props() {
         .action("app", ActionVerb::ImportObjects)
         .expect("app importObjects action");
     let prime_pos = import
+        .initiator()
+        .unwrap()
         .steps
         .iter()
         .position(|step| {
@@ -1185,9 +1327,14 @@ fn image_import_bootstrap_gate_covers_import_action_and_enumeration_props() {
             })
         })
         .expect("import action reuses the enumeration prime");
-    let import_prime = import.steps[prime_pos].retry.as_ref().unwrap();
+    let import_prime = import.initiator().unwrap().steps[prime_pos]
+        .retry
+        .as_ref()
+        .unwrap();
     assert_image_import_bootstrap_gate(&import_prime.steps);
     let d620_pos = import
+        .initiator()
+        .unwrap()
         .steps
         .iter()
         .position(|step| {
@@ -1207,7 +1354,10 @@ fn image_import_bootstrap_gate_covers_import_action_and_enumeration_props() {
     let enumerate = m
         .action("app", ActionVerb::EnumerateObjects)
         .expect("enumerateObjects action");
-    let prime = enumerate.steps[0].retry.as_ref().expect("prime retry");
+    let prime = enumerate.initiator().unwrap().steps[0]
+        .retry
+        .as_ref()
+        .expect("prime retry");
     assert_image_import_bootstrap_gate(&prime.steps);
     assert_eq!(import_prime.when_response_codes, prime.when_response_codes);
     assert_eq!(import_prime.max_attempts, prime.max_attempts);
@@ -1454,12 +1604,14 @@ connections:
     actions:
       getObject:
         mode: {read_mode}
-        params: [handle]
-        steps: [{{ sendOp: "0x1009", params: [{{ runtime: handle }}] }}]
+        initiator:
+          params: [handle]
+          steps: [{{ sendOp: "0x1009", params: [{{ runtime: handle }}] }}]
       deleteObject:
         mode: {completion_mode}
-        params: [handle]
-        steps: [{{ sendOp: "0x100b", params: [{{ runtime: handle }}] }}]
+        initiator:
+          params: [handle]
+          steps: [{{ sendOp: "0x100b", params: [{{ runtime: handle }}] }}]
 "#
         )
     };
@@ -1663,17 +1815,23 @@ fn app_autofocus_actions_lock_await_and_release() {
         .action("app", ActionVerb::AutofocusLock)
         .expect("app.actions.autofocusLock");
     assert_eq!(lock.mode, "shooting/stills");
-    assert_eq!(lock.params, vec!["afArea".to_string()]);
-    assert_eq!(lock.steps[0].send_op.as_deref(), Some("0x9026"));
+    assert_eq!(lock.initiator().unwrap().params, vec!["afArea".to_string()]);
     assert_eq!(
-        lock.steps[0].params,
+        lock.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x9026")
+    );
+    assert_eq!(
+        lock.initiator().unwrap().steps[0].params,
         vec![StepParam::Runtime {
             runtime: "afArea".into(),
             shift: 0,
             mask: None,
         }]
     );
-    let aw = lock.steps[1].await_until.as_ref().expect("AF await step");
+    let aw = lock.initiator().unwrap().steps[1]
+        .await_until
+        .as_ref()
+        .expect("AF await step");
     match &aw.source {
         AwaitSource::Event { code, then_poll } => {
             assert_eq!(code, "0xc005");
@@ -1698,14 +1856,22 @@ fn app_autofocus_actions_lock_await_and_release() {
         }
         other => panic!("expected AF terminal predicate to be any(locked, failed), got {other:?}"),
     }
-    assert!(lock.steps.iter().all(camera_config::Step::is_well_formed));
+    assert!(lock
+        .initiator()
+        .unwrap()
+        .steps
+        .iter()
+        .all(camera_config::Step::is_well_formed));
 
     // Release recipe: single 0x9027.
     let release = m
         .action("app", ActionVerb::AutofocusRelease)
         .expect("app.actions.autofocusRelease");
-    assert_eq!(release.steps.len(), 1);
-    assert_eq!(release.steps[0].send_op.as_deref(), Some("0x9027"));
+    assert_eq!(release.initiator().unwrap().steps.len(), 1);
+    assert_eq!(
+        release.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x9027")
+    );
 }
 
 /// #101: the RAF embedded-JPEG locator parses from the media table — magic +

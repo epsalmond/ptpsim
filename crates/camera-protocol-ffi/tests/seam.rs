@@ -32,6 +32,175 @@ fn ids(cs: &[ConnectionInfo]) -> Vec<&str> {
 }
 
 #[test]
+fn action_catalog_and_resolution_cross_the_hand_written_ffi_seam() {
+    let store = consolidated_store();
+    let catalog = store.action_catalog();
+    assert_eq!(catalog.revision.len(), 64);
+    let shutter = catalog
+        .actions
+        .iter()
+        .find(|entry| entry.connection == "wireless-tether" && entry.action_id == "shutter")
+        .expect("wireless shutter catalog entry");
+    assert_eq!(
+        shutter.supported_roles,
+        [ActionRole::Initiator, ActionRole::Responder]
+    );
+
+    let resolved = store
+        .resolve_action_invocation(ActionInvocationRequest {
+            catalog_revision: catalog.revision,
+            action_id: "shutter".into(),
+            connection: "wireless-tether".into(),
+            mode: "shooting/stills".into(),
+            role: ActionRole::Responder,
+            parameters: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(resolved.role, ActionRole::Responder);
+    assert_eq!(resolved.parameters[0].name, "objectCount");
+    assert_eq!(resolved.parameters[0].value, 1);
+    assert!(matches!(
+        resolved.responder_mutation,
+        Some(ResponderMutation::EnqueueObjects { ref count_param }) if count_param == "objectCount"
+    ));
+}
+
+fn assert_observation_mirror_matches_kind(record: &ObservationRecord) {
+    assert!(matches!(
+        (&record.kind, &record.value),
+        (
+            ObservationKind::BundleHeader,
+            ObservationValue::BundleHeader { .. }
+        ) | (
+            ObservationKind::Lifecycle,
+            ObservationValue::Lifecycle { .. }
+        ) | (ObservationKind::BleGatt, ObservationValue::BleGatt { .. })
+            | (
+                ObservationKind::PtpTransaction,
+                ObservationValue::PtpTransaction { .. }
+            )
+            | (ObservationKind::PtpEvent, ObservationValue::PtpEvent { .. })
+            | (
+                ObservationKind::HttpExchange,
+                ObservationValue::HttpExchange { .. }
+            )
+            | (
+                ObservationKind::Capability,
+                ObservationValue::Capability { .. }
+            )
+            | (
+                ObservationKind::ActionInvocation,
+                ObservationValue::ActionInvocation { .. }
+            )
+    ));
+}
+
+#[test]
+fn every_observation_variant_has_a_complete_hand_written_ffi_mirror() {
+    let mut kinds = Vec::new();
+    for fixture in [
+        "observations/fixtures/positive/ptpip-lifecycle-retry.jsonl",
+        "observations/fixtures/positive/pcss-500d-write-readback.jsonl",
+        "observations/fixtures/positive/usb-descriptor.jsonl",
+        "observations/fixtures/positive/shared-action-roles.jsonl",
+    ] {
+        for line in data(fixture).lines().filter(|line| !line.is_empty()) {
+            let mapped = parse_observation_record(line.to_string()).unwrap();
+            let round_trip: serde_json::Value =
+                serde_json::from_str(&mapped.canonical_json).unwrap();
+            assert_eq!(round_trip["schema"], "camera-observation/v1");
+            assert_observation_mirror_matches_kind(&mapped);
+            kinds.push(mapped.kind);
+        }
+    }
+
+    let common = serde_json::json!({
+        "schema": "camera-observation/v1",
+        "runId": "ffi-run",
+        "recordId": "record",
+        "ordinal": 1,
+        "context": {"connection":"test","mode":"test","state":"test"},
+        "time": {"clock":"mono","value":1},
+        "epistemic": {"class":"directObservation","confidence":"exact"}
+    });
+    let mut ble = common.clone();
+    let object = ble.as_object_mut().unwrap();
+    object.insert("kind".into(), serde_json::json!("bleGatt"));
+    object.insert("connectionInstance".into(), serde_json::json!("ble"));
+    object.insert("operation".into(), serde_json::json!("read"));
+    object.insert("service".into(), serde_json::json!("service"));
+    object.insert("characteristic".into(), serde_json::json!("characteristic"));
+    object.insert("outcome".into(), serde_json::json!("ok"));
+    kinds.push(parse_observation_record(ble.to_string()).unwrap().kind);
+
+    let mut event = common.clone();
+    let object = event.as_object_mut().unwrap();
+    object.insert("kind".into(), serde_json::json!("ptpEvent"));
+    object.insert("connectionInstance".into(), serde_json::json!("event"));
+    object.insert("session".into(), serde_json::json!("session"));
+    object.insert("endpointSet".into(), serde_json::json!("event"));
+    object.insert("transactionId".into(), serde_json::json!(0));
+    object.insert(
+        "transactionRecordId".into(),
+        serde_json::json!("transaction"),
+    );
+    object.insert("event".into(), serde_json::json!("0xc001"));
+    let event = parse_observation_record(event.to_string()).unwrap();
+    let ObservationValue::PtpEvent { value } = &event.value else {
+        panic!("expected typed PTP event")
+    };
+    assert_eq!(value.transaction_id, 0);
+    assert_eq!(value.transaction_record_id.as_deref(), Some("transaction"));
+    kinds.push(event.kind);
+
+    let mut http = common;
+    let object = http.as_object_mut().unwrap();
+    object.insert("kind".into(), serde_json::json!("httpExchange"));
+    object.insert("connectionInstance".into(), serde_json::json!("http"));
+    object.insert(
+        "request".into(),
+        serde_json::json!({"method":"GET","target":"/","headers":{}}),
+    );
+    object.insert(
+        "response".into(),
+        serde_json::json!({"status":200,"headers":{}}),
+    );
+    object.insert("outcome".into(), serde_json::json!("ok"));
+    kinds.push(parse_observation_record(http.to_string()).unwrap().kind);
+
+    let pcss = data("observations/fixtures/positive/pcss-500d-write-readback.jsonl");
+    let mapped = parse_observation_record(pcss.lines().nth(1).unwrap().into()).unwrap();
+    let ObservationValue::PtpTransaction { value } = mapped.value else {
+        panic!("expected typed PTP transaction")
+    };
+    assert!(matches!(
+        value.evidence_basis,
+        Some(ControlEvidenceBasis::WriteProbe)
+    ));
+    assert!(matches!(
+        value.observed_effect,
+        Some(ControlObservedEffect::Confirmed)
+    ));
+    let Some(ObservationReadback::Observed { baseline, .. }) = value.readback else {
+        panic!("expected typed observed readback")
+    };
+    assert_eq!(baseline.canonical_json, "100");
+
+    for expected in [
+        ObservationKind::BundleHeader,
+        ObservationKind::Lifecycle,
+        ObservationKind::BleGatt,
+        ObservationKind::PtpTransaction,
+        ObservationKind::PtpEvent,
+        ObservationKind::HttpExchange,
+        ObservationKind::Capability,
+        ObservationKind::ActionInvocation,
+    ] {
+        assert!(kinds.contains(&expected), "missing {expected:?}");
+    }
+}
+
+#[test]
 fn init_command_response_decoder_distinguishes_ack_and_fail() {
     let ack = ptp_core::encode(&ptp_core::PtpIpPacket::InitCommandAck(
         ptp_core::InitCommandAck {
@@ -634,8 +803,12 @@ fn pcss_transfer_and_semantic_controls_surface_evidence_state() {
         ControlReadSource::DirectProperty
     ));
     assert!(matches!(
-        exposure_bias.write_effect,
-        ControlWriteEffect::DescriptorOnly
+        exposure_bias.evidence_basis,
+        ControlEvidenceBasis::DescriptorOnly
+    ));
+    assert!(matches!(
+        exposure_bias.observed_effect,
+        ControlObservedEffect::Unknown
     ));
     assert_eq!(exposure_bias.control.operation, Some(0x1016));
 }
@@ -1061,7 +1234,7 @@ fn read_device_info_action_pairs_with_the_device_info_codec() {
         .expect("wireless-tether.actions.readDeviceInfo");
     assert_eq!(read.mode, "", "identity read is not mode-gated");
     assert!(matches!(
-        read.steps[0],
+        read.initiator.as_ref().unwrap().steps[0],
         EntryStep::SendOp { op: 0x1001, .. }
     ));
     // NOT authored on `app`: the reference app never sends 0x1001 on the reference app
@@ -1112,9 +1285,9 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
         .action("wireless-tether".into(), ActionVerb::StartLiveView)
         .expect("wireless-tether.actions.startLiveView");
     assert_eq!(start.mode, "shooting/stills");
-    assert!(start.params.is_empty());
+    assert!(start.initiator.as_ref().unwrap().params.is_empty());
     assert!(matches!(
-        start.steps.as_slice(),
+        start.initiator.as_ref().unwrap().steps.as_slice(),
         [
             EntryStep::SetProp {
                 prop: 0xd1bc,
@@ -1141,9 +1314,9 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
         .action("wireless-tether".into(), ActionVerb::PollLiveView)
         .expect("wireless-tether.actions.pollLiveView");
     assert_eq!(poll.mode, "shooting/stills");
-    assert!(poll.params.is_empty());
+    assert!(poll.initiator.as_ref().unwrap().params.is_empty());
     assert!(matches!(
-        poll.steps.as_slice(),
+        poll.initiator.as_ref().unwrap().steps.as_slice(),
         [EntryStep::Retry {
             steps,
             when_response_codes,
@@ -1167,9 +1340,9 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
         .action("wireless-tether".into(), ActionVerb::StopLiveView)
         .expect("wireless-tether.actions.stopLiveView");
     assert_eq!(stop.mode, "shooting/stills");
-    assert!(stop.params.is_empty());
+    assert!(stop.initiator.as_ref().unwrap().params.is_empty());
     assert!(matches!(
-        stop.steps.as_slice(),
+        stop.initiator.as_ref().unwrap().steps.as_slice(),
         [EntryStep::SendOp {
             op: 0x1018,
             params,
@@ -1187,7 +1360,7 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
         .expect("wireless-tether.actions.enumerateObjects");
     assert_eq!(enumerate.mode, "");
     assert!(matches!(
-        enumerate.steps.as_slice(),
+        enumerate.initiator.as_ref().unwrap().steps.as_slice(),
         [EntryStep::SendOp {
             op: 0x1007,
             params,
@@ -1228,9 +1401,9 @@ fn action_returns_pcss_shutter_with_objects_available_trigger() {
         .action("wireless-tether".into(), ActionVerb::Shutter)
         .expect("wireless-tether.actions.shutter");
     assert_eq!(shutter.mode, "shooting/stills");
-    assert!(shutter.params.is_empty());
-    assert_eq!(shutter.steps.len(), 6); // 3 beats × 2 ops each
-                                        // Trigger surfaces as a tagged enum with min/max payload.
+    assert!(shutter.initiator.as_ref().unwrap().params.is_empty());
+    assert_eq!(shutter.initiator.as_ref().unwrap().steps.len(), 6); // 3 beats × 2 ops each
+                                                                    // Trigger surfaces as a tagged enum with min/max payload.
     assert_eq!(shutter.triggers.len(), 1);
     assert!(
         matches!(
@@ -1249,11 +1422,11 @@ fn action_returns_pcss_keepalive_recipe() {
         .action("wireless-tether".into(), ActionVerb::Keepalive)
         .expect("wireless-tether.actions.keepalive");
     assert_eq!(keepalive.mode, "");
-    assert!(keepalive.params.is_empty());
+    assert!(keepalive.initiator.as_ref().unwrap().params.is_empty());
     assert!(keepalive.triggers.is_empty());
-    assert_eq!(keepalive.steps.len(), 2);
+    assert_eq!(keepalive.initiator.as_ref().unwrap().steps.len(), 2);
     assert!(matches!(
-        keepalive.steps[0],
+        keepalive.initiator.as_ref().unwrap().steps[0],
         EntryStep::SetProp {
             prop: 0xd21c,
             value: 0,
@@ -1261,7 +1434,7 @@ fn action_returns_pcss_keepalive_recipe() {
         }
     ));
     assert!(matches!(
-        keepalive.steps[1],
+        keepalive.initiator.as_ref().unwrap().steps[1],
         EntryStep::SetProp {
             prop: 0xd207,
             value: 1,
@@ -1278,15 +1451,15 @@ fn action_returns_app_shutter_with_postview_event_trigger() {
     let shutter = s
         .action("app".into(), ActionVerb::Shutter)
         .expect("app.actions.shutter");
-    assert_eq!(shutter.steps.len(), 3);
+    assert_eq!(shutter.initiator.as_ref().unwrap().steps.len(), 3);
     assert!(matches!(
-        shutter.steps[0],
+        shutter.initiator.as_ref().unwrap().steps[0],
         EntryStep::SendOp { op: 0x100e, .. }
     ));
     // The postview await surfaces as an event-source AwaitUntil; a dropped step
     // would silently break the manifest-scripted take cycle.
     assert!(matches!(
-        &shutter.steps[1],
+        &shutter.initiator.as_ref().unwrap().steps[1],
         EntryStep::AwaitUntil {
             source: FfiAwaitSource::Event {
                 code: 0xc001,
@@ -1296,7 +1469,7 @@ fn action_returns_app_shutter_with_postview_event_trigger() {
         }
     ));
     assert!(matches!(
-        shutter.steps[2],
+        shutter.initiator.as_ref().unwrap().steps[2],
         EntryStep::SendOp { op: 0x9022, .. }
     ));
     assert!(matches!(shutter.triggers[0], ActionEffect::PostviewEvent));
@@ -1314,9 +1487,12 @@ fn action_getobject_params_differ_per_connection_same_verb() {
     let app = s
         .action("app".into(), ActionVerb::GetObject)
         .expect("app.actions.getObject");
-    assert_eq!(pcss.params, vec!["handle".to_string()]);
     assert_eq!(
-        app.params,
+        pcss.initiator.as_ref().unwrap().params,
+        vec!["handle".to_string()]
+    );
+    assert_eq!(
+        app.initiator.as_ref().unwrap().params,
         vec![
             "handle".to_string(),
             "offset".to_string(),
@@ -1324,7 +1500,7 @@ fn action_getobject_params_differ_per_connection_same_verb() {
         ]
     );
     assert!(matches!(
-        pcss.steps[0],
+        pcss.initiator.as_ref().unwrap().steps[0],
         EntryStep::SendOp {
             op: 0x1009,
             ref params,
@@ -1332,7 +1508,7 @@ fn action_getobject_params_differ_per_connection_same_verb() {
         } if params.len() == 1
     ));
     assert!(matches!(
-        app.steps[0],
+        app.initiator.as_ref().unwrap().steps[0],
         EntryStep::SendOp {
             op: 0x101b,
             ref params,
@@ -1361,6 +1537,9 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
         .expect("app.actions.importObjects");
     assert_eq!(plan.mode, "image-transfer");
     let bootstrap = plan
+        .initiator
+        .as_ref()
+        .unwrap()
         .steps
         .iter()
         .find_map(|step| match step {
@@ -1376,7 +1555,7 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
         .expect("importObjects reuses the enumeration-prime retry");
     assert_bootstrap_tail_surfaces(bootstrap);
 
-    assert!(plan.steps.iter().any(|step| matches!(
+    assert!(plan.initiator.as_ref().unwrap().steps.iter().any(|step| matches!(
         step,
         EntryStep::Retry { steps, .. }
             if matches!(steps.as_slice(), [EntryStep::GetProp { prop: 0xd621, captures, .. }]
@@ -1386,6 +1565,9 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
 
     // The forEach iterates the captured handle list, binding `handle`.
     let for_each = plan
+        .initiator
+        .as_ref()
+        .unwrap()
         .steps
         .iter()
         .find_map(|st| match st {
@@ -1475,14 +1657,14 @@ fn enumerate_objects_surfaces_response_selected_retries() {
     let plan = store()
         .action("app".into(), ActionVerb::EnumerateObjects)
         .expect("app.actions.enumerateObjects");
-    assert_eq!(plan.steps.len(), 3);
+    assert_eq!(plan.initiator.as_ref().unwrap().steps.len(), 3);
     let EntryStep::Retry {
         steps,
         when_response_codes,
         max_attempts,
         retry_delay_ms,
         tolerant,
-    } = &plan.steps[0]
+    } = &plan.initiator.as_ref().unwrap().steps[0]
     else {
         panic!("expected enumeration-prime retry")
     };
@@ -1492,7 +1674,10 @@ fn enumerate_objects_surfaces_response_selected_retries() {
     assert!(!tolerant);
     assert_bootstrap_tail_surfaces(steps);
 
-    for (step, prop) in plan.steps[1..].iter().zip([0xd620, 0xd621]) {
+    for (step, prop) in plan.initiator.as_ref().unwrap().steps[1..]
+        .iter()
+        .zip([0xd620, 0xd621])
+    {
         let EntryStep::Retry {
             steps,
             when_response_codes,
@@ -1554,9 +1739,12 @@ fn selected_object_transfer_projects_the_canonical_per_handle_contract() {
         }
     )));
 
-    assert_eq!(selected.read.params, ["handle", "offset", "length"]);
+    assert_eq!(
+        selected.read.initiator.as_ref().unwrap().params,
+        ["handle", "offset", "length"]
+    );
     assert!(matches!(
-        selected.read.steps.as_slice(),
+        selected.read.initiator.as_ref().unwrap().steps.as_slice(),
         [EntryStep::SendOp { params, .. }]
             if matches!(params.as_slice(), [
                 EntryParam::Runtime { slot: h, shift: 0, mask: None },
@@ -1806,14 +1994,17 @@ fn autofocus_lock_action_surfaces_the_event_source_recipe() {
     let lock = s
         .action("app".into(), ActionVerb::AutofocusLock)
         .expect("app autofocusLock action");
-    assert_eq!(lock.params, vec!["afArea".to_string()]);
+    assert_eq!(
+        lock.initiator.as_ref().unwrap().params,
+        vec!["afArea".to_string()]
+    );
     assert!(matches!(
-        lock.steps[0],
+        lock.initiator.as_ref().unwrap().steps[0],
         EntryStep::SendOp { op: 0x9026, .. }
     ));
     // The AF await surfaces as an event-source AwaitUntil (event 0xC005 → read 0xD209).
     assert!(matches!(
-        &lock.steps[1],
+        &lock.initiator.as_ref().unwrap().steps[1],
         EntryStep::AwaitUntil {
             source: FfiAwaitSource::Event {
                 code: 0xc005,
@@ -1826,7 +2017,7 @@ fn autofocus_lock_action_surfaces_the_event_source_recipe() {
         .action("app".into(), ActionVerb::AutofocusRelease)
         .expect("app autofocusRelease action");
     assert!(matches!(
-        release.steps[0],
+        release.initiator.as_ref().unwrap().steps[0],
         EntryStep::SendOp { op: 0x9027, .. }
     ));
     // A connection without the verb returns None.

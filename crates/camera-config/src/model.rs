@@ -4,6 +4,7 @@
 //! and append-only growth are valid.
 
 use crate::activity::ConnectionActivityDescriptor;
+use crate::observation::{ControlEvidenceBasis, ControlObservedEffect};
 use crate::predicate::Predicate;
 use crate::version::{compare, VersionScheme};
 use serde::{Deserialize, Serialize};
@@ -218,6 +219,18 @@ pub struct Operation {
     pub emits: Vec<HexCode>,
     #[serde(default)]
     pub evidence: Vec<String>,
+    /// Exact observation tuples backing generated availability. Kept atomic so
+    /// independent connection/mode sets cannot invent a Cartesian product.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observed_scopes: Vec<ObservedScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObservedScope {
+    pub connection: String,
+    pub mode: String,
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,6 +356,9 @@ pub struct Property {
     pub requires_gate: Option<GateRequirement>,
     #[serde(default)]
     pub evidence: Vec<String>,
+    /// Exact observation tuples that supplied generated property facts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observed_scopes: Vec<ObservedScope>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -558,17 +574,6 @@ pub enum ControlRole {
     FocusArea,
 }
 
-/// What a successful write response is known to mean on this surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ControlWriteEffect {
-    Confirmed,
-    DescriptorOnly,
-    AckNoEffect,
-    Refused,
-    DestructiveClamp,
-}
-
 /// Who ultimately owns the effective value after a client writes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -595,7 +600,8 @@ pub enum ControlReadSource {
 pub struct ControlSurfaceEntry {
     pub property: HexCode,
     pub read_source: ControlReadSource,
-    pub write_effect: ControlWriteEffect,
+    pub evidence_basis: ControlEvidenceBasis,
+    pub observed_effect: ControlObservedEffect,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_owner: Option<ControlOwner>,
 }
@@ -1477,7 +1483,7 @@ impl ActionEffect {
 /// Parameters for the `ObjectsAvailable` effect: bounded count of captured
 /// objects the camera will make available after `Shutter`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObjectsAvailable {
     pub min: u32,
     pub max: u32,
@@ -1485,33 +1491,29 @@ pub struct ObjectsAvailable {
 
 /// Marker for the `PostviewEvent` effect (no fields).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PostviewEvent {}
 
 /// Marker for the `LiveViewStream` effect (no fields).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveViewStream {}
 
-/// A parameterized recipe runnable within a mode. Step sequence is the same
-/// `Step` grammar as `ModeEntry.steps`; `params` declares runtime slots the
-/// caller MUST bind for `StepParam::Runtime` references in `steps` to resolve;
-/// `triggers` declares post-conditions the app uses to plan UX.
+/// One shared action identity with explicit execution-role bindings. Triggers
+/// and evidence are declarative and belong to the identity, never to one role.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Action {
     /// Mode this action is valid in (gating; same path-prefix match as
     /// `Operation.modes`). Empty = not mode-gated: valid in any mode while
     /// the connection is up (e.g. `readDeviceInfo`).
     pub mode: String,
-    /// Runtime slot names the caller binds; each must be referenced by at
-    /// least one `StepParam::Runtime { runtime: <slot> }` in `steps`.
-    #[serde(default)]
-    pub params: Vec<String>,
-    /// The wire sequence. Reuses the `Step` vocabulary unchanged.
-    #[serde(default)]
-    pub steps: Vec<Step>,
-    /// Optional semantic spans over `steps`.
-    #[serde(default)]
-    pub activities: Vec<ConnectionActivityDescriptor>,
+    /// Real-camera execution through the Rust-owned PTP executor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiator: Option<ActionInitiator>,
+    /// Optional simulator mutation/replay proof for the same action identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responder: Option<ActionResponder>,
     /// Post-conditions the camera produces after this action completes —
     /// the app plans UX around them without connection-specific knowledge.
     #[serde(default)]
@@ -1520,13 +1522,70 @@ pub struct Action {
     pub evidence: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActionInitiator {
+    /// Runtime slot names the caller binds; each must be referenced by at least
+    /// one `StepParam::Runtime` in `steps`.
+    #[serde(default)]
+    pub params: Vec<String>,
+    #[serde(default)]
+    pub steps: Vec<Step>,
+    #[serde(default)]
+    pub activities: Vec<ConnectionActivityDescriptor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActionResponder {
+    #[serde(default)]
+    pub params: Vec<ActionParameter>,
+    pub mutation: ResponderMutation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActionParameter {
+    pub name: String,
+    pub kind: ActionParameterKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionParameterKind {
+    U32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResponderMutation {
+    EnqueueObjects { count_param: String },
+}
+
+impl Action {
+    pub fn initiator(&self) -> Option<&ActionInitiator> {
+        self.initiator.as_ref()
+    }
+}
+
 /// One wire action in a mode-entry sequence. A **closed step vocabulary** (not a
 /// script): exactly one action field is set; `value` parameterizes `setProp`;
 /// `repeat` (default 1) covers bounded loops like the live-view `902B ×4`.
 /// Runtime control flow is limited to the closed `if`/`retry`/`loop` forms below;
 /// manifests cannot inject arbitrary scripting hooks.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Step {
     /// `SetDevicePropValue prop = value` (width from the property's `type`).
     #[serde(default)]
@@ -1647,7 +1706,7 @@ pub enum CaptureSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IfStep {
     pub slot: String,
     pub equals: u64,
@@ -2064,8 +2123,7 @@ fn is_zero(v: &u32) -> bool {
 }
 
 impl Step {
-    /// Whether exactly one action field is set (a structural lint, not enforced
-    /// at load — keeps loading total).
+    /// Whether exactly one action field is set.
     pub fn is_well_formed(&self) -> bool {
         let n = [
             self.set_prop.is_some(),

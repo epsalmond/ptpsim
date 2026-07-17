@@ -176,53 +176,79 @@ pub struct QueueSnapshot {
     pub total: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HttpBinding {
-    pub method: &'static str,
-    pub path: &'static str,
+    pub method: String,
+    pub path: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActionDescriptor {
-    pub id: &'static str,
-    pub label: &'static str,
+    pub id: String,
+    pub label: String,
     pub hotkey: Option<char>,
-    pub description: &'static str,
+    pub description: String,
     pub http: HttpBinding,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionKind {
-    Patch { body: &'static str },
+    Manifest { body: String },
+    Patch { body: String },
     Quit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
     pub descriptor: ActionDescriptor,
     pub kind: ActionKind,
 }
 
 impl Action {
-    pub fn id(self) -> &'static str {
-        self.descriptor.id
+    pub fn id(&self) -> &str {
+        &self.descriptor.id
     }
 
-    pub fn patch_body(self) -> Option<&'static str> {
-        match self.kind {
-            ActionKind::Patch { body } => Some(body),
+    pub fn request_body(&self) -> Option<&str> {
+        match &self.kind {
+            ActionKind::Manifest { body } | ActionKind::Patch { body } => Some(body),
             ActionKind::Quit => None,
         }
     }
 
-    pub fn is_quit(self) -> bool {
+    pub fn is_quit(&self) -> bool {
         matches!(self.kind, ActionKind::Quit)
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestActionCatalog {
+    pub revision: String,
+    #[serde(default)]
+    pub actions: Vec<ManifestAction>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestAction {
+    pub action_id: String,
+    pub connection: String,
+    pub mode: String,
+    #[serde(default)]
+    pub supported_roles: Vec<String>,
+    #[serde(default)]
+    pub parameters: serde_json::Value,
+    #[serde(default)]
+    pub triggers: serde_json::Value,
+    #[serde(default)]
+    pub availability: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
 pub struct ActionRegistry {
     actions: Vec<Action>,
+    catalog: ManifestActionCatalog,
 }
 
 impl Default for ActionRegistry {
@@ -236,40 +262,40 @@ impl ActionRegistry {
         Self {
             actions: vec![
                 patch_action(
-                    "session-open",
-                    "/actions/session-open",
+                    "operator:session-open",
+                    "/operator/actions/session-open",
                     "Session",
                     's',
                     "Open a generic simulator session",
                     r#"{"phase":"sessionOpen","session_open":true}"#,
                 ),
                 patch_action(
-                    "live-view",
-                    "/actions/live-view",
+                    "operator:live-view",
+                    "/operator/actions/live-view",
                     "Live View",
                     'v',
                     "Move the simulator to live-view ready state",
                     r#"{"phase":"liveView","session_open":true}"#,
                 ),
                 patch_action(
-                    "streaming",
-                    "/actions/streaming",
+                    "operator:streaming",
+                    "/operator/actions/streaming",
                     "Stream",
                     'r',
                     "Move the simulator to active streaming state",
                     r#"{"phase":"streaming","session_open":true}"#,
                 ),
                 patch_action(
-                    "image-import",
-                    "/actions/image-import",
+                    "operator:image-import",
+                    "/operator/actions/image-import",
                     "Import",
                     'i',
                     "Move the simulator to image import state",
                     r#"{"phase":"imageImport","session_open":true}"#,
                 ),
                 patch_action(
-                    "disconnect",
-                    "/actions/disconnect",
+                    "operator:disconnect",
+                    "/operator/actions/disconnect",
                     "Disconnect",
                     'd',
                     "Return the simulator to disconnected state",
@@ -277,19 +303,61 @@ impl ActionRegistry {
                 ),
                 Action {
                     descriptor: ActionDescriptor {
-                        id: "quit",
-                        label: "Quit",
+                        id: "operator:quit".into(),
+                        label: "Quit".into(),
                         hotkey: Some('q'),
-                        description: "Exit the operator console",
+                        description: "Exit the operator console".into(),
                         http: HttpBinding {
-                            method: "POST",
-                            path: "/actions/quit",
+                            method: "POST".into(),
+                            path: "/operator/actions/quit".into(),
                         },
                     },
                     kind: ActionKind::Quit,
                 },
             ],
+            catalog: ManifestActionCatalog::default(),
         }
+    }
+
+    pub fn from_catalog(catalog: ManifestActionCatalog) -> Self {
+        let mut registry = Self::core();
+        let mut key_index = 1u32;
+        for entry in &catalog.actions {
+            if !entry.supported_roles.iter().any(|role| role == "responder") {
+                continue;
+            }
+            let hotkey = char::from_digit(key_index, 10);
+            key_index = key_index.saturating_add(1);
+            registry.actions.insert(
+                registry.actions.len().saturating_sub(1),
+                Action {
+                    descriptor: ActionDescriptor {
+                        id: entry.action_id.clone(),
+                        label: entry.action_id.clone(),
+                        hotkey,
+                        description: format!(
+                            "Manifest responder action on {} in {}",
+                            entry.connection, entry.mode
+                        ),
+                        http: HttpBinding {
+                            method: "POST".into(),
+                            path: format!("/actions/{}", entry.action_id),
+                        },
+                    },
+                    kind: ActionKind::Manifest {
+                        body: serde_json::json!({
+                            "catalogRevision": catalog.revision,
+                            "mode": entry.mode,
+                            "role": "responder",
+                            "parameters": [],
+                        })
+                        .to_string(),
+                    },
+                },
+            );
+        }
+        registry.catalog = catalog;
+        registry
     }
 
     pub fn actions(&self) -> &[Action] {
@@ -299,7 +367,7 @@ impl ActionRegistry {
     pub fn descriptors(&self) -> Vec<ActionDescriptor> {
         self.actions
             .iter()
-            .map(|action| action.descriptor)
+            .map(|action| action.descriptor.clone())
             .collect()
     }
 
@@ -307,61 +375,86 @@ impl ActionRegistry {
         let key = key.to_ascii_lowercase();
         self.actions
             .iter()
-            .copied()
             .find(|action| action.descriptor.hotkey == Some(key))
+            .cloned()
     }
 
     pub fn by_http_path(&self, method: &str, path: &str) -> Option<Action> {
-        self.actions.iter().copied().find(|action| {
-            action.descriptor.http.method.eq_ignore_ascii_case(method)
-                && action.descriptor.http.path == path
-        })
+        self.actions
+            .iter()
+            .find(|action| {
+                action.descriptor.http.method.eq_ignore_ascii_case(method)
+                    && action.descriptor.http.path == path
+            })
+            .cloned()
     }
 
     pub fn actions_json(&self) -> String {
-        serde_json::json!({ "actions": self.descriptors() }).to_string()
+        serde_json::to_string(&self.catalog).expect("action catalog serializes")
+    }
+
+    pub fn operator_actions_json(&self) -> String {
+        let descriptors = self
+            .actions
+            .iter()
+            .filter(|action| action.id().starts_with("operator:"))
+            .map(|action| action.descriptor.clone())
+            .collect::<Vec<_>>();
+        serde_json::json!({ "actions": descriptors }).to_string()
     }
 
     pub fn parity_report(&self) -> Result<()> {
-        let hotkey_ids = self
-            .actions
-            .iter()
-            .filter(|action| action.descriptor.hotkey.is_some())
-            .map(|action| action.descriptor.id)
-            .collect::<BTreeSet<_>>();
-        let http_ids = self
-            .actions
-            .iter()
-            .filter(|action| !action.descriptor.http.path.is_empty())
-            .map(|action| action.descriptor.id)
-            .collect::<BTreeSet<_>>();
-        if hotkey_ids != http_ids {
-            bail!("visible hotkeys and HTTP actions drifted");
+        let mut hotkeys = BTreeSet::new();
+        let mut routes = BTreeSet::new();
+        for action in &self.actions {
+            let route = (
+                action.descriptor.http.method.to_ascii_uppercase(),
+                action.descriptor.http.path.as_str(),
+            );
+            if action.descriptor.http.path.is_empty() || !routes.insert(route) {
+                bail!("action HTTP routes are empty or duplicated");
+            }
+            if self
+                .by_http_path(&action.descriptor.http.method, &action.descriptor.http.path)
+                .as_ref()
+                .map(Action::id)
+                != Some(action.id())
+            {
+                bail!("HTTP action lookup drifted from the fetched registry");
+            }
+            if let Some(hotkey) = action.descriptor.hotkey {
+                if !hotkeys.insert(hotkey) {
+                    bail!("visible action hotkeys are duplicated");
+                }
+                if self.by_hotkey(hotkey).as_ref().map(Action::id) != Some(action.id()) {
+                    bail!("hotkey action lookup drifted from the HTTP action");
+                }
+            }
         }
         Ok(())
     }
 }
 
 fn patch_action(
-    id: &'static str,
-    path: &'static str,
-    label: &'static str,
+    id: &str,
+    path: &str,
+    label: &str,
     hotkey: char,
-    description: &'static str,
-    body: &'static str,
+    description: &str,
+    body: &str,
 ) -> Action {
     Action {
         descriptor: ActionDescriptor {
-            id,
-            label,
+            id: id.into(),
+            label: label.into(),
             hotkey: Some(hotkey),
-            description,
+            description: description.into(),
             http: HttpBinding {
-                method: "POST",
-                path,
+                method: "POST".into(),
+                path: path.into(),
             },
         },
-        kind: ActionKind::Patch { body },
+        kind: ActionKind::Patch { body: body.into() },
     }
 }
 
@@ -392,6 +485,15 @@ impl ControlClient {
     pub fn trace(&self, after: u64) -> Result<TraceSnapshot> {
         let body = self.request_json("GET", &format!("/trace?after={after}"), None)?;
         serde_json::from_str(&body).context("parse /trace JSON")
+    }
+
+    pub fn action_catalog(&self) -> Result<ManifestActionCatalog> {
+        let body = self.request_json("GET", "/actions", None)?;
+        serde_json::from_str(&body).context("parse /actions JSON")
+    }
+
+    pub fn invoke_action(&self, action_id: &str, body: &str) -> Result<String> {
+        self.request_json("POST", &format!("/actions/{action_id}"), Some(body))
     }
 
     pub fn patch_state(&self, body: &str) -> Result<String> {
@@ -469,7 +571,8 @@ pub fn callback_url_for(bound: SocketAddr) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionRegistry, CameraSnapshot, HealthSnapshot, LifecycleTraceEvent, TraceSnapshot,
+        ActionRegistry, CameraSnapshot, HealthSnapshot, LifecycleTraceEvent, ManifestAction,
+        ManifestActionCatalog, TraceSnapshot,
     };
     use std::collections::BTreeSet;
 
@@ -488,7 +591,7 @@ mod tests {
                 action
                     .descriptor
                     .hotkey
-                    .and_then(|key| registry.by_hotkey(key).map(|found| found.id()))
+                    .and_then(|key| registry.by_hotkey(key).map(|found| found.id().to_string()))
             })
             .collect::<BTreeSet<_>>();
         let path_ids = registry
@@ -496,8 +599,8 @@ mod tests {
             .iter()
             .filter_map(|action| {
                 registry
-                    .by_http_path(action.descriptor.http.method, action.descriptor.http.path)
-                    .map(|found| found.id())
+                    .by_http_path(&action.descriptor.http.method, &action.descriptor.http.path)
+                    .map(|found| found.id().to_string())
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(hotkey_ids, path_ids);
@@ -505,10 +608,52 @@ mod tests {
 
     #[test]
     fn actions_surface_is_self_describing_json() {
-        let json = ActionRegistry::core().actions_json();
-        assert!(json.contains("\"id\":\"streaming\""));
-        assert!(json.contains("\"path\":\"/actions/streaming\""));
-        assert!(json.contains("\"hotkey\":\"r\""));
+        let registry = ActionRegistry::from_catalog(ManifestActionCatalog {
+            revision: "revision".into(),
+            actions: vec![ManifestAction {
+                action_id: "shutter".into(),
+                connection: "wireless-tether".into(),
+                mode: "shooting/stills".into(),
+                supported_roles: vec!["initiator".into(), "responder".into()],
+                ..ManifestAction::default()
+            }],
+        });
+        registry.parity_report().unwrap();
+        let json = registry.actions_json();
+        assert!(json.contains("\"actionId\":\"shutter\""));
+        assert!(registry.by_http_path("POST", "/actions/shutter").is_some());
+        assert!(registry
+            .by_http_path("POST", "/operator/actions/streaming")
+            .is_some());
+    }
+
+    #[test]
+    fn catalogs_larger_than_the_numeric_hotkey_set_remain_http_addressable() {
+        let actions = (0..12)
+            .map(|index| ManifestAction {
+                action_id: format!("action-{index}"),
+                connection: "wireless-tether".into(),
+                mode: "shooting/stills".into(),
+                supported_roles: vec!["responder".into()],
+                ..ManifestAction::default()
+            })
+            .collect();
+        let registry = ActionRegistry::from_catalog(ManifestActionCatalog {
+            revision: "revision".into(),
+            actions,
+        });
+        registry.parity_report().unwrap();
+        assert!(registry
+            .by_http_path("POST", "/actions/action-11")
+            .is_some());
+        assert!(registry
+            .actions()
+            .iter()
+            .find(|action| action.id() == "action-11")
+            .unwrap()
+            .descriptor
+            .hotkey
+            .is_none());
     }
 
     #[test]

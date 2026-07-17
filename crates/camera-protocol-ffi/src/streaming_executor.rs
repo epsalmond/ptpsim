@@ -13,7 +13,8 @@ use futures_util::future::{select, Either};
 use ptp_core::codes::resp;
 
 use crate::{
-    frame_encode, ActionVerb, ConfigStore, PtpFraming, PtpRuntimeValue, PtpTransportError,
+    frame_encode, ActionInvocationRequest, ActionRole, ConfigStore, PtpFraming, PtpRuntimeValue,
+    PtpTransportError,
 };
 
 const HEADER_BYTES: usize = 12;
@@ -61,6 +62,8 @@ pub struct PtpStreamingOutcome {
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum PtpStreamingError {
+    #[error("action invocation rejected ({code}): {detail}")]
+    ActionRejected { code: String, detail: String },
     #[error("unknown streaming action: {detail}")]
     UnknownPlan { detail: String },
     #[error("unsupported streaming action: {detail}")]
@@ -120,13 +123,34 @@ impl Drop for SessionGuard {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_streaming_action(
     store: Arc<ConfigStore>,
-    connection: String,
-    action: ActionVerb,
+    request: ActionInvocationRequest,
     transport: Arc<dyn PtpStreamingTransport>,
     sink: Arc<dyn PtpStreamingSink>,
-    runtime_params: Vec<PtpRuntimeValue>,
     expected_payload_bytes: Option<u64>,
 ) -> Result<PtpStreamingOutcome, PtpStreamingError> {
+    if request.role != ActionRole::Initiator {
+        return Err(PtpStreamingError::ActionRejected {
+            code: "wrongRole".into(),
+            detail: "streaming execution requires the initiator role".into(),
+        });
+    }
+    let connection = request.connection.clone();
+    let resolved = store
+        .resolve_action_invocation(request)
+        .map_err(|error| match error {
+            crate::ActionResolutionError::Rejected { code, detail } => {
+                PtpStreamingError::ActionRejected { code, detail }
+            }
+        })?;
+    let action = resolved.action;
+    let runtime_params = resolved
+        .parameters
+        .into_iter()
+        .map(|argument| PtpRuntimeValue {
+            key: argument.name,
+            value: argument.value,
+        })
+        .collect();
     let connection_config = store
         .inner
         .manifest
@@ -332,12 +356,17 @@ fn streaming_request(
     action: &camera_config::Action,
     runtime_params: Vec<PtpRuntimeValue>,
 ) -> Result<(u16, Vec<u32>), PtpStreamingError> {
-    if action.steps.len() != 1 || action.steps[0].repeat != 1 {
+    let initiator = action
+        .initiator()
+        .ok_or_else(|| PtpStreamingError::UnsupportedPlan {
+            detail: "streaming action has no initiator binding".into(),
+        })?;
+    if initiator.steps.len() != 1 || initiator.steps[0].repeat != 1 {
         return Err(PtpStreamingError::UnsupportedPlan {
             detail: "streaming action must contain exactly one unrepeated step".into(),
         });
     }
-    let step = &action.steps[0];
+    let step = &initiator.steps[0];
     let operation = step
         .send_op
         .as_deref()
@@ -443,16 +472,19 @@ mod tests {
     #[test]
     fn runtime_shift_beyond_value_width_resolves_to_zero() {
         let action = camera_config::Action {
-            steps: vec![camera_config::Step {
-                send_op: Some("0x1009".into()),
-                params: vec![camera_config::StepParam::Runtime {
-                    runtime: "handle".into(),
-                    shift: 64,
-                    mask: None,
+            initiator: Some(camera_config::ActionInitiator {
+                steps: vec![camera_config::Step {
+                    send_op: Some("0x1009".into()),
+                    params: vec![camera_config::StepParam::Runtime {
+                        runtime: "handle".into(),
+                        shift: 64,
+                        mask: None,
+                    }],
+                    repeat: 1,
+                    ..Default::default()
                 }],
-                repeat: 1,
                 ..Default::default()
-            }],
+            }),
             ..Default::default()
         };
         let (_, params) = streaming_request(

@@ -5,11 +5,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use camera_config::{
+    direct_epistemic, no_loss, validate_bundles, BundleHeader, CameraContext, CaptureClock,
+    CaptureContext, CaptureInterface, CaptureInterfaceType, ClientContext, ClockType, ClockUnit,
+    ObservationLine, ObservationRecorder,
+};
 use camera_initiator::{NativePtpTransport, TraceFormat, TraceWriter, TransportConfig};
 use camera_protocol_ffi::{
-    run_action, run_mode_entry, ActionVerb, ConfigStore, ConnectionActivityEvent,
-    ConnectionActivityObserver, KeyValue, Observation, PtpExecutorTransport, Recognition,
-    StepObserver, StepReport,
+    run_initiator_action, run_mode_entry, ActionInvocationRequest, ActionRole, ConfigStore,
+    ConnectionActivityEvent, ConnectionActivityObserver, KeyValue, Observation,
+    PtpExecutorTransport, Recognition, StepObserver, StepReport,
 };
 #[cfg(target_os = "linux")]
 use camera_sim::{walk_establishment, BleResponder};
@@ -31,6 +36,14 @@ impl StepObserver for NoopObserver {
 
 impl ConnectionActivityObserver for NoopObserver {
     fn on_activity(&self, _event: ConnectionActivityEvent) {}
+}
+
+struct TraceObserver(Arc<TraceWriter>);
+
+impl StepObserver for TraceObserver {
+    fn on_step(&self, report: StepReport) {
+        self.0.step(&report).expect("record executor step");
+    }
 }
 
 #[derive(Clone, Default)]
@@ -94,6 +107,51 @@ fn data(relative: &str) -> String {
         .join(relative);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+fn observation_recorder(path: PathBuf, run_id: &str) -> ObservationRecorder {
+    ObservationRecorder::open(
+        Some(path),
+        BundleHeader {
+            schema: camera_config::OBSERVATION_SCHEMA_VERSION.into(),
+            run_id: run_id.into(),
+            record_id: "header".into(),
+            ordinal: 0,
+            camera: CameraContext {
+                manufacturer: "FUJIFILM".into(),
+                model: "GFX100 II".into(),
+                body_id: "loopback-body".into(),
+                firmware: "2.30".into(),
+            },
+            client: ClientContext {
+                artifact: "camera-initiator-test".into(),
+                version: "test".into(),
+                platform: "test".into(),
+            },
+            capture: CaptureContext {
+                interfaces: vec![CaptureInterface {
+                    id: "loopback".into(),
+                    interface_type: CaptureInterfaceType::Tcp,
+                    role: "initiator".into(),
+                }],
+                clocks: vec![CaptureClock {
+                    id: "process-monotonic".into(),
+                    clock_type: ClockType::Monotonic,
+                    unit: ClockUnit::Milliseconds,
+                }],
+                clock_mappings: Vec::new(),
+                loss: no_loss(),
+                redactions: Vec::new(),
+                tool_versions: std::collections::BTreeMap::from([(
+                    "camera-initiator-test".into(),
+                    "test".into(),
+                )]),
+                artifacts: Vec::new(),
+            },
+            epistemic: direct_epistemic(),
+        },
+    )
+    .expect("open test observation recorder")
 }
 
 fn with_loopback_ports(
@@ -1099,6 +1157,8 @@ async fn legacy_app_recovers_stale_session_and_sends_close_sentinel() {
     );
     let store = ConfigStore::from_tiers(body, Some(data("fuji/fuji.yaml")), Vec::<String>::new())
         .expect("load X-A7 legacy manufacturer app manifest");
+    let media = TempMediaRoot::new();
+    let observation_path = media.path().join("legacy-app-recovery.jsonl");
 
     let camera_task = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("accept command socket");
@@ -1175,6 +1235,13 @@ async fn legacy_app_recovers_stale_session_and_sends_close_sentinel() {
     });
 
     let trace_buffer = TraceBuffer::default();
+    let trace = Arc::new(TraceWriter::with_observations(
+        TraceFormat::Jsonl,
+        Box::new(trace_buffer.clone()),
+        observation_recorder(observation_path.clone(), "legacy-app-session-recovery"),
+        "legacy-app".into(),
+        "connection".into(),
+    ));
     let transport = NativePtpTransport::new(
         Arc::clone(&store),
         TransportConfig {
@@ -1185,10 +1252,7 @@ async fn legacy_app_recovers_stale_session_and_sends_close_sentinel() {
             connect_timeout: Duration::from_secs(2),
             max_frame_bytes: 1024 * 1024,
         },
-        Arc::new(TraceWriter::new(
-            TraceFormat::Jsonl,
-            Box::new(trace_buffer.clone()),
-        )),
+        trace,
     )
     .expect("construct legacy manufacturer app transport");
     let opened = transport
@@ -1204,6 +1268,30 @@ async fn legacy_app_recovers_stale_session_and_sends_close_sentinel() {
     assert!(trace_buffer.records().iter().any(|record| {
         record.get("state").and_then(serde_json::Value::as_str) == Some("sessionAlreadyOpen")
     }));
+
+    let observation_bundle = std::fs::read_to_string(observation_path)
+        .expect("reconstruct legacy manufacturer app recovery observation bundle");
+    let validated = validate_bundles(&[&observation_bundle])
+        .expect("legacy manufacturer app recovery observations are canonical");
+    let transactions = validated
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::PtpTransaction(transaction) => Some(transaction),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(transactions.len(), 4);
+    assert!(transactions
+        .iter()
+        .all(|transaction| transaction.connection_instance == transactions[0].connection_instance));
+    let tid_one_sessions = transactions
+        .iter()
+        .filter(|transaction| transaction.transaction_id == 1)
+        .map(|transaction| transaction.session.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(tid_one_sessions.len(), 2);
+    assert_ne!(tid_one_sessions[0], tid_one_sessions[1]);
 }
 
 #[tokio::test]
@@ -1260,7 +1348,7 @@ async fn native_transport_runs_real_gfx_entry_over_tcp() {
             connect_timeout: Duration::from_secs(2),
             max_frame_bytes: 1024 * 1024,
         },
-        trace,
+        Arc::clone(&trace),
     )
     .expect("construct native transport");
 
@@ -1377,9 +1465,13 @@ async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server_task = tokio::spawn(server.run(shutdown_rx));
     let trace_buffer = TraceBuffer::default();
-    let trace = Arc::new(TraceWriter::new(
+    let observation_path = media.path().join("initiator-observation.jsonl");
+    let trace = Arc::new(TraceWriter::with_observations(
         TraceFormat::Jsonl,
         Box::new(trace_buffer.clone()),
+        observation_recorder(observation_path.clone(), "pcss-initiator-loopback"),
+        "wireless-tether".into(),
+        "connection".into(),
     ));
     let transport = NativePtpTransport::new(
         Arc::clone(&store),
@@ -1391,7 +1483,7 @@ async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
             connect_timeout: Duration::from_secs(2),
             max_frame_bytes: 1024 * 1024,
         },
-        trace,
+        Arc::clone(&trace),
     )
     .expect("construct native PCSS transport");
     assert_eq!(
@@ -1418,14 +1510,20 @@ async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
     assert_eq!(opened.response_code, 0x2001);
 
     let raw_transport: Arc<dyn PtpExecutorTransport> = transport.clone();
-    let outcome = run_action(
+    let catalog = store.action_catalog();
+    let outcome = run_initiator_action(
         Arc::clone(&store),
-        "wireless-tether".into(),
-        ActionVerb::ReadDeviceInfo,
+        ActionInvocationRequest {
+            catalog_revision: catalog.revision,
+            action_id: "readDeviceInfo".into(),
+            connection: "wireless-tether".into(),
+            mode: String::new(),
+            role: ActionRole::Initiator,
+            parameters: Vec::new(),
+        },
         raw_transport,
+        Arc::new(TraceObserver(Arc::clone(&trace))),
         Arc::new(NoopObserver),
-        Arc::new(NoopObserver),
-        Vec::new(),
     )
     .await
     .expect("run wireless-tether action through FFI executor");
@@ -1457,6 +1555,22 @@ async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
     assert!(records.iter().any(|record| {
         record.get("channel").and_then(serde_json::Value::as_str) == Some("pcssDiscovery")
             && record.get("direction").and_then(serde_json::Value::as_str) == Some("tx")
+    }));
+
+    let observation_bundle = std::fs::read_to_string(observation_path).unwrap();
+    let validated = validate_bundles(&[&observation_bundle]).unwrap();
+    assert!(validated.records.iter().any(|record| {
+        matches!(
+            record,
+            ObservationLine::PtpTransaction(transaction)
+                if transaction.request.operation == "0x1001"
+                    && transaction.request.parameters.is_empty()
+                    && transaction
+                        .response
+                        .as_ref()
+                        .and_then(|response| response.data.as_ref())
+                        .is_some_and(|data| data.payload.length > 0)
+        )
     }));
     assert!(records.iter().any(|record| {
         record.get("channel").and_then(serde_json::Value::as_str) == Some("pcssCallback")

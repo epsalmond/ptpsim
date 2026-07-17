@@ -1,11 +1,13 @@
 use std::collections::VecDeque;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use camera_protocol_ffi::{
-    run_streaming_action, ActionVerb, ConfigStore, PtpRuntimeValue, PtpStreamingError,
-    PtpStreamingSink, PtpStreamingSinkError, PtpStreamingTransport, PtpTransportError,
+    parse_action_verb, run_streaming_action as execute_streaming_action, ActionArgument,
+    ActionInvocationRequest, ActionRole, ActionVerb, ConfigStore, PtpRuntimeValue,
+    PtpStreamingError, PtpStreamingOutcome, PtpStreamingSink, PtpStreamingSinkError,
+    PtpStreamingTransport, PtpTransportError,
 };
 use futures::executor::block_on;
 
@@ -23,10 +25,62 @@ fn xa7_store() -> Arc<ConfigStore> {
     .expect("X-A7 manifest loads")
 }
 
+fn action_request(
+    store: &ConfigStore,
+    connection: &str,
+    action: ActionVerb,
+    runtime_params: Vec<PtpRuntimeValue>,
+) -> ActionInvocationRequest {
+    let catalog = store.action_catalog();
+    let action_id = catalog
+        .actions
+        .iter()
+        .find(|entry| {
+            entry.connection == connection
+                && parse_action_verb(entry.action_id.clone()) == Some(action)
+        })
+        .expect("cataloged action")
+        .action_id
+        .clone();
+    let mode = store
+        .action(connection.into(), action)
+        .expect("manifest action")
+        .mode;
+    ActionInvocationRequest {
+        catalog_revision: catalog.revision,
+        action_id,
+        connection: connection.into(),
+        mode,
+        role: ActionRole::Initiator,
+        parameters: runtime_params
+            .into_iter()
+            .map(|value| ActionArgument {
+                name: value.key,
+                value: value.value,
+            })
+            .collect(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_streaming_action(
+    store: Arc<ConfigStore>,
+    connection: String,
+    action: ActionVerb,
+    transport: Arc<dyn PtpStreamingTransport>,
+    sink: Arc<dyn PtpStreamingSink>,
+    runtime_params: Vec<PtpRuntimeValue>,
+    expected_payload_bytes: Option<u64>,
+) -> Result<PtpStreamingOutcome, PtpStreamingError> {
+    let request = action_request(&store, &connection, action, runtime_params);
+    execute_streaming_action(store, request, transport, sink, expected_payload_bytes).await
+}
+
 struct Transport {
     bytes: Mutex<VecDeque<u8>>,
     sent: Mutex<Vec<Vec<u8>>>,
     requested: Mutex<Vec<u32>>,
+    touches: AtomicUsize,
     invalidated: AtomicBool,
     fragment_limit: usize,
     hang_reads: bool,
@@ -77,6 +131,7 @@ impl Transport {
             bytes: Mutex::new(bytes.into()),
             sent: Mutex::new(Vec::new()),
             requested: Mutex::new(Vec::new()),
+            touches: AtomicUsize::new(0),
             invalidated: AtomicBool::new(false),
             fragment_limit: 37_019,
             hang_reads: false,
@@ -89,6 +144,7 @@ impl Transport {
             bytes: Mutex::new(VecDeque::new()),
             sent: Mutex::new(Vec::new()),
             requested: Mutex::new(Vec::new()),
+            touches: AtomicUsize::new(0),
             invalidated: AtomicBool::new(false),
             fragment_limit: 1,
             hang_reads: true,
@@ -109,6 +165,7 @@ impl Transport {
             bytes: Mutex::new(bytes.into()),
             sent: Mutex::new(Vec::new()),
             requested: Mutex::new(Vec::new()),
+            touches: AtomicUsize::new(0),
             invalidated: AtomicBool::new(false),
             fragment_limit: 37_019,
             hang_reads: false,
@@ -127,6 +184,7 @@ impl Transport {
             bytes: Mutex::new(bytes.into()),
             sent: Mutex::new(Vec::new()),
             requested: Mutex::new(Vec::new()),
+            touches: AtomicUsize::new(0),
             invalidated: AtomicBool::new(false),
             fragment_limit: 37_019,
             hang_reads: false,
@@ -139,6 +197,7 @@ impl Transport {
             bytes: Mutex::new(VecDeque::new()),
             sent: Mutex::new(Vec::new()),
             requested: Mutex::new(Vec::new()),
+            touches: AtomicUsize::new(0),
             invalidated: AtomicBool::new(false),
             fragment_limit: 1,
             hang_reads: true,
@@ -150,15 +209,18 @@ impl Transport {
 #[async_trait::async_trait]
 impl PtpStreamingTransport for Transport {
     async fn reserve_transaction_id(&self) -> Result<u32, PtpTransportError> {
+        self.touches.fetch_add(1, Ordering::SeqCst);
         Ok(7)
     }
 
     async fn send_command_frame(&self, frame: Vec<u8>) -> Result<(), PtpTransportError> {
+        self.touches.fetch_add(1, Ordering::SeqCst);
         self.sent.lock().unwrap().push(frame);
         Ok(())
     }
 
     async fn receive_command_bytes(&self, max_bytes: u32) -> Result<Vec<u8>, PtpTransportError> {
+        self.touches.fetch_add(1, Ordering::SeqCst);
         self.requested.lock().unwrap().push(max_bytes);
         if self.hang_reads {
             futures::future::pending().await
@@ -172,6 +234,7 @@ impl PtpStreamingTransport for Transport {
     }
 
     async fn sleep(&self, _ms: u32) -> Result<(), PtpTransportError> {
+        self.touches.fetch_add(1, Ordering::SeqCst);
         if self.fire_deadline && !self.sent.lock().unwrap().is_empty() {
             Ok(())
         } else {
@@ -180,6 +243,7 @@ impl PtpStreamingTransport for Transport {
     }
 
     fn invalidate_command_session(&self, _reason: String) {
+        self.touches.fetch_add(1, Ordering::SeqCst);
         self.invalidated.store(true, Ordering::SeqCst);
     }
 }
@@ -218,6 +282,100 @@ fn runtime_handle() -> Vec<PtpRuntimeValue> {
         key: "handle".into(),
         value: 0x1234,
     }]
+}
+
+#[test]
+fn rejected_streaming_invocations_have_zero_transport_and_sink_effects() {
+    let store = store();
+    let base = action_request(
+        &store,
+        "wireless-tether",
+        ActionVerb::GetObject,
+        runtime_handle(),
+    );
+    let cases = [
+        (
+            {
+                let mut request = base.clone();
+                request.catalog_revision = "stale".into();
+                request
+            },
+            "staleCatalogRevision",
+        ),
+        (
+            {
+                let mut request = base.clone();
+                request.mode = "shooting/stills".into();
+                request
+            },
+            "wrongMode",
+        ),
+        (
+            {
+                let mut request = base.clone();
+                request.role = ActionRole::Responder;
+                request
+            },
+            "wrongRole",
+        ),
+        (
+            {
+                let mut request = base.clone();
+                request.parameters.push(ActionArgument {
+                    name: "handle".into(),
+                    value: 2,
+                });
+                request
+            },
+            "duplicateParameter",
+        ),
+        (
+            {
+                let mut request = base.clone();
+                request.parameters.clear();
+                request
+            },
+            "missingParameter",
+        ),
+        (
+            {
+                let mut request = base;
+                request.parameters.push(ActionArgument {
+                    name: "extra".into(),
+                    value: 2,
+                });
+                request
+            },
+            "extraParameter",
+        ),
+    ];
+
+    for (request, expected_code) in cases {
+        let transport = Transport::new(Vec::new(), 0x2001);
+        let sink = Arc::new(Sink::default());
+        let error = block_on(execute_streaming_action(
+            Arc::clone(&store),
+            request,
+            transport.clone(),
+            sink.clone(),
+            None,
+        ))
+        .expect_err("catalog rejection must precede streaming I/O");
+        assert!(
+            matches!(error, PtpStreamingError::ActionRejected { ref code, .. } if code == expected_code),
+            "expected {expected_code}, got {error:?}"
+        );
+        assert_eq!(
+            transport.touches.load(Ordering::SeqCst),
+            0,
+            "{expected_code}"
+        );
+        assert!(transport.sent.lock().unwrap().is_empty());
+        assert!(transport.requested.lock().unwrap().is_empty());
+        assert!(!transport.invalidated.load(Ordering::SeqCst));
+        assert_eq!(*sink.expected.lock().unwrap(), None);
+        assert!(sink.bytes.lock().unwrap().is_empty());
+    }
 }
 
 #[test]
