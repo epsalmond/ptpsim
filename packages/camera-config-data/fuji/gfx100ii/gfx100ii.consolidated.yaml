@@ -13783,6 +13783,8 @@ connections:
               whenResponseCodes:
               - '0x2013'
               - '0x2019'
+              whenFailureClasses:
+              - decode
               maxAttempts: 5
               retryDelayMs: 100
           - setProp: null
@@ -13813,6 +13815,8 @@ connections:
               - '0x2002'
               - '0x2013'
               - '0x2019'
+              whenFailureClasses:
+              - decode
               maxAttempts: 3
               retryDelayMs: 1000
           - setProp: null
@@ -13846,6 +13850,8 @@ connections:
               - '0x2002'
               - '0x2013'
               - '0x2019'
+              whenFailureClasses:
+              - decode
               maxAttempts: 3
               retryDelayMs: 1000
           activities: []
@@ -14175,6 +14181,8 @@ connections:
               whenResponseCodes:
               - '0x2013'
               - '0x2019'
+              whenFailureClasses:
+              - decode
               maxAttempts: 5
               retryDelayMs: 100
           - setProp: null
@@ -14205,6 +14213,8 @@ connections:
               - '0x2002'
               - '0x2013'
               - '0x2019'
+              whenFailureClasses:
+              - decode
               maxAttempts: 3
               retryDelayMs: 1000
           - setProp: null
@@ -14238,6 +14248,8 @@ connections:
               - '0x2002'
               - '0x2013'
               - '0x2019'
+              whenFailureClasses:
+              - decode
               maxAttempts: 3
               retryDelayMs: 1000
           - setProp: null

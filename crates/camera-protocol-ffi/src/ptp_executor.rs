@@ -15,7 +15,8 @@ use crate::{
     CaptureSourceInfo, ConfigStore, ConnectionActivityBinding, ConnectionActivityDescriptor,
     ConnectionActivityFailure, ConnectionActivityObserver, ConnectionActivityRetry, EntryParam,
     EntryStep, ExecutorStepFailureKind, FfiAwaitSource, FfiChunkSize, FfiLoopKind, FfiPredicate,
-    KeyValue, PtpFraming, SocketRole, StepObserver, StepOutcome, StepReport, ValueWidth,
+    FfiRetryFailureClass, KeyValue, PtpFraming, SocketRole, StepObserver, StepOutcome, StepReport,
+    ValueWidth,
 };
 
 const DEFAULT_OP_TIMEOUT_MS: u32 = 10_000;
@@ -397,6 +398,9 @@ enum FailureClass {
     Response,
     Deadline,
     Transport,
+    /// OK response, undecodable data payload — the only non-response class a
+    /// manifest retry may select (§11.21 `whenFailureClasses: ["decode"]`).
+    Decode,
     Other,
 }
 
@@ -438,9 +442,10 @@ impl From<StepError> for PtpExecutorError {
             step: error.step,
             kind: match error.class {
                 FailureClass::Deadline => ExecutorStepFailureKind::DeadlineExceeded,
-                FailureClass::Response | FailureClass::Transport | FailureClass::Other => {
-                    ExecutorStepFailureKind::Other
-                }
+                FailureClass::Response
+                | FailureClass::Transport
+                | FailureClass::Decode
+                | FailureClass::Other => ExecutorStepFailureKind::Other,
             },
             detail: error.detail,
             context,
@@ -949,10 +954,23 @@ impl PtpCtx {
                 EntryStep::Retry {
                     steps,
                     when_response_codes,
+                    when_failure_classes,
                     max_attempts,
                     retry_delay_ms,
                     ..
                 } => {
+                    let selects = |error: &StepError| match error.class {
+                        FailureClass::Response => error
+                            .meta
+                            .as_ref()
+                            .is_some_and(|meta| when_response_codes.contains(&meta.response_code)),
+                        FailureClass::Decode => {
+                            when_failure_classes.contains(&FfiRetryFailureClass::Decode)
+                        }
+                        FailureClass::Deadline | FailureClass::Transport | FailureClass::Other => {
+                            false
+                        }
+                    };
                     let limit = (*max_attempts).max(1);
                     for attempt in 1..=limit {
                         match self
@@ -963,13 +981,7 @@ impl PtpCtx {
                                 self.control_attempts = Some(attempt - 1);
                                 return Ok(meta);
                             }
-                            Err(error)
-                                if error.class == FailureClass::Response
-                                    && error.meta.as_ref().is_some_and(|meta| {
-                                        when_response_codes.contains(&meta.response_code)
-                                    })
-                                    && attempt < limit =>
-                            {
+                            Err(error) if selects(&error) && attempt < limit => {
                                 self.retry_activity(attempt + 1, limit, &error);
                                 if *retry_delay_ms > 0 {
                                     self.transport_deadline(
@@ -1400,8 +1412,9 @@ impl PtpCtx {
             .iter()
             .any(|capture| matches!(capture.source, CaptureSourceInfo::PtpU32Array))
         {
-            let values = decode_u32_array(payload)
-                .map_err(|detail| self.other(here, format!("property {prop:#06x}: {detail}")))?;
+            let values = decode_u32_array(payload).map_err(|detail| {
+                self.decode_failure(here, format!("property {prop:#06x}: {detail}"))
+            })?;
             for capture in captures {
                 if !matches!(capture.source, CaptureSourceInfo::PtpU32Array) {
                     return Err(self.other(here, "mixed scalar and collection captures".into()));
@@ -1438,7 +1451,7 @@ impl PtpCtx {
         if let Some(info) = self.store.property_payload(prop) {
             let members = info.members.clone();
             let status = crate::parse_record_stream(payload.to_vec(), info)
-                .map_err(|error| self.other(here, error.to_string()))?;
+                .map_err(|error| self.decode_failure(here, error.to_string()))?;
             for observation in status
                 .records
                 .into_iter()
@@ -1460,7 +1473,7 @@ impl PtpCtx {
             .property_value_width(prop)
             .ok_or_else(|| self.other(here, format!("property {prop:#06x} has no scalar width")))?;
         decode_scalar(width, payload)
-            .map_err(|detail| self.other(here, format!("property {prop:#06x}: {detail}")))
+            .map_err(|detail| self.decode_failure(here, format!("property {prop:#06x}: {detail}")))
     }
 
     fn apply_captures(
@@ -1482,21 +1495,23 @@ impl PtpCtx {
                         ));
                     }
                     ptp_core::ObjectInfo::decode(payload)
-                        .map_err(|error| self.other(here, format!("decode ObjectInfo: {error:?}")))?
+                        .map_err(|error| {
+                            self.decode_failure(here, format!("decode ObjectInfo: {error:?}"))
+                        })?
                         .object_compressed_size as u64
                 }
                 CaptureSourceInfo::U32Le => {
-                    read_u32(payload).map_err(|detail| self.other(here, detail))? as u64
+                    read_u32(payload).map_err(|detail| self.decode_failure(here, detail))? as u64
                 }
                 CaptureSourceInfo::U64Le => {
-                    read_u64(payload).map_err(|detail| self.other(here, detail))?
+                    read_u64(payload).map_err(|detail| self.decode_failure(here, detail))?
                 }
                 CaptureSourceInfo::PropValue => {
                     return Err(self.other(here, "propValue requires getProp".into()))
                 }
                 CaptureSourceInfo::PtpU32Array => {
-                    let collection =
-                        decode_u32_array(payload).map_err(|detail| self.other(here, detail))?;
+                    let collection = decode_u32_array(payload)
+                        .map_err(|detail| self.decode_failure(here, detail))?;
                     self.collections.insert(capture.bind.clone(), collection);
                     continue;
                 }
@@ -1574,6 +1589,15 @@ impl PtpCtx {
             step: here.to_string(),
             detail,
             class: FailureClass::Other,
+            meta: None,
+        }
+    }
+
+    fn decode_failure(&self, here: &str, detail: String) -> StepError {
+        StepError {
+            step: here.to_string(),
+            detail,
+            class: FailureClass::Decode,
             meta: None,
         }
     }

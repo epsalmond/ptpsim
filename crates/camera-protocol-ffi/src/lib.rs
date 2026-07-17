@@ -1288,6 +1288,14 @@ pub enum CaptureSourceInfo {
     TransactionId,
 }
 
+/// FFI mirror of [`camera_config::RetryFailureClass`] (§11.21): a whole class
+/// of step failure a `retry` may select. `Decode` = OK response, undecodable
+/// data payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiRetryFailureClass {
+    Decode,
+}
+
 /// The PTP condition vocabulary (`cc::Predicate`) mirrored for the app: a
 /// closed tree of property-value comparisons used by `awaitUntil`'s `until`.
 /// Distinct from the BLE-recognition `Predicate` (a string-scope compare in
@@ -1441,11 +1449,12 @@ pub enum EntryStep {
         interval_ms: u32,
         tolerant: bool,
     },
-    /// Replay a complete logical PTP sequence only after one of the exact
-    /// manifest-declared non-OK response codes (§11.21).
+    /// Replay a complete logical PTP sequence only after an exact
+    /// manifest-declared non-OK response code or failure class (§11.21).
     Retry {
         steps: Vec<EntryStep>,
         when_response_codes: Vec<u16>,
+        when_failure_classes: Vec<FfiRetryFailureClass>,
         max_attempts: u32,
         retry_delay_ms: u32,
         tolerant: bool,
@@ -3789,6 +3798,13 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
                 .iter()
                 .map(|code| parse_hex_code(code))
                 .collect::<Option<Vec<_>>>()?,
+            when_failure_classes: retry
+                .when_failure_classes
+                .iter()
+                .map(|class| match class {
+                    cc::RetryFailureClass::Decode => FfiRetryFailureClass::Decode,
+                })
+                .collect(),
             max_attempts: retry.max_attempts,
             retry_delay_ms: retry.retry_delay_ms,
             tolerant,

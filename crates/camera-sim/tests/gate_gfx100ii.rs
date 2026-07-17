@@ -30,11 +30,18 @@ fn consolidated() -> CameraManifest {
         .unwrap_or_else(|e| panic!("consolidated loads: {e}"))
 }
 
+fn without_decode_retry() -> CameraManifest {
+    let yaml = data("fuji/gfx100ii/gfx100ii.yaml")
+        .replace("                whenFailureClasses: [\"decode\"]\n", "");
+    CameraManifest::from_yaml(&yaml)
+        .unwrap_or_else(|error| panic!("manifest without decode retry loads: {error}"))
+}
+
 fn entry_steps(entry: &ModeEntry) -> &[Step] {
     entry.ptp_steps().expect("PTP mode entry")
 }
 
-fn engine() -> Engine {
+fn engine_with_manifest(manifest: CameraManifest) -> Engine {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -45,31 +52,34 @@ fn engine() -> Engine {
     std::fs::write(dir.join("DSCF0001.JPG"), b"\xFF\xD8HELLOJPEG\xFF\xD9").unwrap();
     let mut store = MediaStore::open(&root).unwrap();
     store.scan().unwrap();
-    Engine::new(consolidated(), store)
+    Engine::new(manifest, store)
 }
 
-fn image_import_ready() -> (Engine, camera_config::Action) {
-    let manifest = consolidated();
+fn engine() -> Engine {
+    engine_with_manifest(consolidated())
+}
+
+fn image_import_ready_with_manifest(manifest: CameraManifest) -> (Engine, camera_config::Action) {
     let app = &manifest.connections["app"];
     let cold = app
         .entries
         .iter()
         .find(|entry| entry.to == "image-transfer" && entry.from.is_none())
         .expect("cold image-transfer entry");
+    let cold_steps = entry_steps(cold).to_vec();
     let enumerate = app
         .actions
         .get(&ActionVerb::EnumerateObjects)
         .expect("enumerateObjects action")
         .clone();
-    let mut engine = engine();
-    walk_ptpip_in(
-        &mut engine,
-        entry_steps(cold),
-        &BTreeMap::new(),
-        Some("app"),
-    )
-    .expect("cold image-transfer entry succeeds");
+    let mut engine = engine_with_manifest(manifest);
+    walk_ptpip_in(&mut engine, &cold_steps, &BTreeMap::new(), Some("app"))
+        .expect("cold image-transfer entry succeeds");
     (engine, enumerate)
+}
+
+fn image_import_ready() -> (Engine, camera_config::Action) {
+    image_import_ready_with_manifest(consolidated())
 }
 
 fn engine_with_two_jpegs() -> Engine {
@@ -791,6 +801,44 @@ fn image_import_retries_transient_prime_and_count_responses() {
 }
 
 #[test]
+fn image_import_prime_retries_selected_decode_failure() {
+    let (mut engine, enumerate) = image_import_ready();
+    engine.install_fault(Fault::TruncateDataParamsTimes {
+        code: 0x1015,
+        params: vec![0xd212],
+        keep: 4,
+        remaining: 1,
+    });
+    let outcome = walk_ptpip_in(
+        &mut engine,
+        &enumerate.initiator().unwrap().steps[..1],
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("selected transient decode failure retries");
+    assert_eq!(outcome.retry_delays_ms, [100]);
+}
+
+#[test]
+fn image_import_prime_does_not_retry_unselected_decode_failure() {
+    let (mut engine, enumerate) = image_import_ready_with_manifest(without_decode_retry());
+    engine.install_fault(Fault::TruncateDataParamsTimes {
+        code: 0x1015,
+        params: vec![0xd212],
+        keep: 4,
+        remaining: 1,
+    });
+    let error = walk_ptpip_in(
+        &mut engine,
+        &enumerate.initiator().unwrap().steps[..1],
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect_err("unselected decode failure escapes without retry");
+    assert!(error.message.contains("decode prop 0xd212"));
+}
+
+#[test]
 fn enumerate_objects_executes_the_captured_handle_collection() {
     let (mut engine, enumerate) = image_import_ready();
     let outcome = walk_ptpip_in(
@@ -926,7 +974,9 @@ fn image_import_count_does_not_retry_unselected_or_transport_failures() {
         match fault {
             Fault::FailOperationTimes { .. } => assert_eq!(error.response_code, Some(0x2005)),
             Fault::CloseOnOperation { .. } => assert_eq!(error.response_code, None),
-            Fault::FailOperation { .. } | Fault::FailOperationParamsTimes { .. } => unreachable!(),
+            Fault::FailOperation { .. }
+            | Fault::FailOperationParamsTimes { .. }
+            | Fault::TruncateDataParamsTimes { .. } => unreachable!(),
         }
     }
 }

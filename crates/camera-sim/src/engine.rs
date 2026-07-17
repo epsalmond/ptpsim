@@ -509,6 +509,16 @@ impl Engine {
     /// Handle one operation. `data_in` carries an initiator data phase (e.g. the
     /// value for `SetDevicePropValue`).
     pub fn on_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) -> Reply {
+        let mut reply = self.dispatch_operation(req, data_in);
+        if let Reply::Data { data, .. } = &mut reply {
+            if let Some(keep) = self.faults.take_truncation(req.code, &req.params) {
+                data.truncate(keep);
+            }
+        }
+        reply
+    }
+
+    fn dispatch_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) -> Reply {
         let tid = req.transaction_id;
         let p = |i: usize| req.params.get(i).copied().unwrap_or(0);
 
@@ -521,6 +531,9 @@ impl Engine {
                 | Fault::FailOperationTimes { response, .. }
                 | Fault::FailOperationParamsTimes { response, .. } => Self::err(tid, response),
                 Fault::CloseOnOperation { .. } => Reply::Close,
+                Fault::TruncateDataParamsTimes { .. } => {
+                    unreachable!("truncation faults never replace dispatch")
+                }
             };
         }
 

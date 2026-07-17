@@ -1651,10 +1651,11 @@ pub struct Step {
     /// over a collection (a distinct future construct). See [`AwaitUntil`].
     #[serde(default)]
     pub await_until: Option<AwaitUntil>,
-    /// Replay a logical PTP sequence only after explicitly selected non-OK
-    /// response codes. Transport failures and unselected responses escape.
+    /// Replay a logical PTP sequence only after explicitly selected failures:
+    /// named non-OK response codes and/or whole failure classes. Transport
+    /// failures and unselected failures escape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry: Option<ResponseRetry>,
+    pub retry: Option<StepRetry>,
     /// A closed declarative loop (#46): `forEach` over a captured collection (each
     /// element binds a runtime slot), or `chunk`-by-size over the current object
     /// (the executor owns the offset/length cursor). The sanctioned for-each
@@ -1719,15 +1720,29 @@ pub struct IfStep {
     pub else_steps: Vec<Step>,
 }
 
-/// Response-selected retry for a logical PTP sequence (§11.21).
+/// Failure-selected retry for a logical PTP sequence (§11.21). At least one of
+/// `when_response_codes`/`when_failure_classes` must be non-empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResponseRetry {
+pub struct StepRetry {
     pub steps: Vec<Step>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub when_response_codes: Vec<HexCode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_failure_classes: Vec<RetryFailureClass>,
     pub max_attempts: u32,
     #[serde(default)]
     pub retry_delay_ms: u32,
+}
+
+/// A whole class of step failure a `retry` may select (§11.21). Closed
+/// vocabulary; `decode` is the only member: the step's PTP response was OK but
+/// its data payload failed to decode. Shape/contract errors and transport
+/// failures are never selectable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RetryFailureClass {
+    Decode,
 }
 
 /// Where a PTP-IP `awaitUntil` observes (§11.16): a property `poll` or an `event`

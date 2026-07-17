@@ -133,6 +133,12 @@ fn store_with_tolerant_prime_retry() -> Arc<ConfigStore> {
     store_from_body(body)
 }
 
+fn store_without_decode_retry() -> Arc<ConfigStore> {
+    let body = data("fuji/gfx100ii/gfx100ii.yaml")
+        .replace("                whenFailureClasses: [\"decode\"]\n", "");
+    store_from_body(body)
+}
+
 fn store_with_uncaptured_scalar_event_predicate() -> Arc<ConfigStore> {
     let body = data("fuji/gfx100ii/gfx100ii.yaml")
         .replacen(
@@ -1586,7 +1592,7 @@ fn ordinary_sink_failure_leaves_command_session_synchronized() {
 
 #[test]
 fn malformed_collection_capture_fails_before_iteration() {
-    let store = store();
+    let store = store_without_decode_retry();
     let transport = Arc::new(EngineTransport::new(
         "app",
         PtpFraming::Compressed,
@@ -1626,7 +1632,7 @@ fn malformed_collection_capture_fails_before_iteration() {
 
 #[test]
 fn collection_capture_rejects_trailing_bytes() {
-    let store = store();
+    let store = store_without_decode_retry();
     let transport = Arc::new(EngineTransport::new(
         "app",
         PtpFraming::Compressed,
@@ -1667,7 +1673,7 @@ fn collection_capture_rejects_trailing_bytes() {
 
 #[test]
 fn collection_capture_rejects_over_ceiling_count_before_payload_allocation() {
-    let store = store();
+    let store = store_without_decode_retry();
     let transport = Arc::new(EngineTransport::new(
         "app",
         PtpFraming::Compressed,
@@ -1786,7 +1792,7 @@ fn malformed_send_op_collection_capture_fails_loud() {
 
 #[test]
 fn collection_iteration_limit_fails_before_any_element_body() {
-    let store = store();
+    let store = store_without_decode_retry();
     let transport = Arc::new(EngineTransport::new(
         "app",
         PtpFraming::Compressed,
@@ -1920,6 +1926,118 @@ fn unselected_response_fails_without_retry() {
     let (result, attempts) = import_with_enumeration_fault(0x2005);
     assert!(matches!(result, Err(PtpExecutorError::StepFailed { .. })));
     assert_eq!(attempts, 1);
+}
+
+fn enumerate_with_truncated_d212(
+    store: Arc<ConfigStore>,
+    truncated_reads: u32,
+) -> (Result<(), PtpExecutorError>, usize, Arc<Reports>) {
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(run_mode_entry(
+        store.clone(),
+        "app".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("image-transfer entry succeeds");
+    let entry_reads = transport.request_count(0x1015, &[0xd212]);
+    transport.install_fault(Fault::TruncateDataParamsTimes {
+        code: 0x1015,
+        params: vec![0xd212],
+        keep: 4,
+        remaining: truncated_reads,
+    });
+    let reports = Arc::new(Reports::default());
+    let result = block_on(run_initiator_action(
+        store,
+        "app".into(),
+        ActionVerb::EnumerateObjects,
+        transport.clone(),
+        reports.clone(),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .map(|_| ());
+    let action_reads = transport.request_count(0x1015, &[0xd212]) - entry_reads;
+    (result, action_reads, reports)
+}
+
+#[test]
+fn selected_decode_failure_retries_the_enumeration_sequence() {
+    let (result, d212_reads, reports) = enumerate_with_truncated_d212(store(), 1);
+    result.expect("selected transient decode failure retries");
+    // Attempt one dies on its first truncated D212 read; attempt two completes
+    // both tolerant D212 reads of the priming sequence.
+    assert_eq!(d212_reads, 3);
+    assert!(reports.0.lock().expect("reports").iter().any(|report| {
+        report.verb == "retry"
+            && report.attempts == 1
+            && matches!(report.outcome, StepOutcome::Succeeded)
+    }));
+}
+
+#[test]
+fn exhausted_decode_retry_fails_loud_with_the_decode_detail() {
+    let (result, d212_reads, _) = enumerate_with_truncated_d212(store(), u32::MAX);
+    assert!(matches!(
+        result,
+        Err(PtpExecutorError::StepFailed { ref detail, .. })
+            if detail.contains("unexpected end of input")
+    ));
+    // Every attempt of the maxAttempts: 5 budget dies on its first D212 read.
+    assert_eq!(d212_reads, 5);
+}
+
+#[test]
+fn unselected_decode_failure_fails_without_retry() {
+    let (result, d212_reads, _) = enumerate_with_truncated_d212(store_without_decode_retry(), 1);
+    assert!(matches!(
+        result,
+        Err(PtpExecutorError::StepFailed { ref detail, .. })
+            if detail.contains("unexpected end of input")
+    ));
+    assert_eq!(d212_reads, 1);
+}
+
+#[test]
+fn transport_failure_is_not_selected_by_a_decode_retry() {
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(run_mode_entry(
+        store().clone(),
+        "app".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("image-transfer entry succeeds");
+    transport.install_fault(Fault::CloseOnOperation { code: 0x9050 });
+    let error = block_on(run_initiator_action(
+        store(),
+        "app".into(),
+        ActionVerb::EnumerateObjects,
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("transport failure escapes the decode-selecting retry");
+    assert!(matches!(error, PtpExecutorError::StepFailed { .. }));
+    assert_eq!(transport.request_count(0x9050, &[]), 1);
 }
 
 #[test]

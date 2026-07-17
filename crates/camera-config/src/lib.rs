@@ -54,10 +54,11 @@ pub use model::{
     ObjectsAvailable, ObservedScope, OpEffect, Operation, Payload, PayloadForm,
     PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyKind,
     PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
-    RecordLayout, RecordMemberRef, ReestablishConnection, ResponderMutation, ResponseRetry,
+    RecordLayout, RecordMemberRef, ReestablishConnection, ResponderMutation, RetryFailureClass,
     SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe, SocketBindings, SocketRole, Step,
-    StepParam, StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
-    TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
+    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
+    WireFraming, Workflow,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -1204,9 +1205,10 @@ fn require_valid_ptp_steps_with_collections(
                     "{step_path}.retry steps must not be empty"
                 )));
             }
-            if retry.when_response_codes.is_empty() {
+            if retry.when_response_codes.is_empty() && retry.when_failure_classes.is_empty() {
                 return Err(ManifestError::Contract(format!(
-                    "{step_path}.retry whenResponseCodes must not be empty"
+                    "{step_path}.retry must select at least one of \
+                     whenResponseCodes/whenFailureClasses"
                 )));
             }
             if retry.max_attempts == 0 {

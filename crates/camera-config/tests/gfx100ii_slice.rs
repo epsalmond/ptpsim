@@ -626,6 +626,7 @@ fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped(
         .as_ref()
         .expect("pollLiveView has a bounded response-selected retry");
     assert_eq!(retry.when_response_codes, ["0x2002"]);
+    assert!(retry.when_failure_classes.is_empty());
     assert_eq!(retry.max_attempts, 10);
     assert_eq!(retry.retry_delay_ms, 100);
     assert_eq!(retry.steps.len(), 1);
@@ -727,6 +728,10 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         .as_ref()
         .expect("prime retry");
     assert_eq!(prime.when_response_codes, ["0x2013", "0x2019"]);
+    assert_eq!(
+        prime.when_failure_classes,
+        [camera_config::RetryFailureClass::Decode]
+    );
     assert_eq!(prime.max_attempts, 5);
     assert_eq!(prime.retry_delay_ms, 100);
     assert_image_import_bootstrap_gate(&prime.steps);
@@ -736,6 +741,10 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
     {
         let retry = step.retry.as_ref().expect("enumeration property retry");
         assert_eq!(retry.when_response_codes, ["0x2002", "0x2013", "0x2019"]);
+        assert_eq!(
+            retry.when_failure_classes,
+            [camera_config::RetryFailureClass::Decode]
+        );
         assert_eq!(retry.max_attempts, 3);
         assert_eq!(retry.retry_delay_ms, 1000);
         assert_eq!(retry.steps[0].get_prop.as_deref(), Some(prop));
@@ -1360,6 +1369,10 @@ fn image_import_bootstrap_gate_covers_import_action_and_enumeration_props() {
         .expect("prime retry");
     assert_image_import_bootstrap_gate(&prime.steps);
     assert_eq!(import_prime.when_response_codes, prime.when_response_codes);
+    assert_eq!(
+        import_prime.when_failure_classes,
+        prime.when_failure_classes
+    );
     assert_eq!(import_prime.max_attempts, prime.max_attempts);
     assert_eq!(import_prime.retry_delay_ms, prime.retry_delay_ms);
 }
@@ -1544,8 +1557,13 @@ fn response_retry_requires_a_finite_selected_body() {
         "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              retryDelayMs: 10\n              steps: [{ getProp: \"0xd620\" }]",
     );
     assert!(CameraManifest::from_yaml(&valid).is_ok());
+    let classes_only = manifest(
+        "              whenFailureClasses: [\"decode\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
+    );
+    assert!(CameraManifest::from_yaml(&classes_only).is_ok());
     for invalid in [
         "              whenResponseCodes: []\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
+        "              whenFailureClasses: [\"transport\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenResponseCodes: [\"not-hex\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 0\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              steps: []",

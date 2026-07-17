@@ -20,8 +20,9 @@ use std::collections::BTreeMap;
 use camera_config::model::{
     AwaitSource, AwaitUntil, Capture, CaptureSource, ChunkSize, Loop, Step, StepParam,
 };
-use camera_config::{parse_hex_code, PropView};
+use camera_config::{parse_hex_code, PropView, RetryFailureClass};
 use camera_media_store::ByteSource;
+use protocol_primitives::quirk::{parse_record_stream, RecordStreamLayout};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
 use ptp_core::{ObjectInfo, OperationRequest, Reader, Writer};
@@ -126,6 +127,7 @@ pub fn walk_ptpip_in(
         loop_iterations: Vec::new(),
         retry_delays_ms: Vec::new(),
         last_response_code: None,
+        last_failure_class: None,
         bindings: BTreeMap::new(),
         command_listener_volatile,
     };
@@ -170,6 +172,9 @@ struct Ctx<'a> {
     /// Captured directly from the last wire reply; retry control never parses
     /// a diagnostic string.
     last_response_code: Option<u16>,
+    /// Payload-decode classification for the current step. Reset before each
+    /// step so transport and shape failures cannot inherit an earlier decode.
+    last_failure_class: Option<RetryFailureClass>,
     /// The active connection's `command_listener_volatile` trait (#103): when set,
     /// a live-view `reopenSession` is refused because that transport-close tears
     /// down the command-port listener, so the reconnect gets "Connection refused".
@@ -202,6 +207,7 @@ impl Ctx<'_> {
             // is 1 (the poll loop is its own iteration); the cap below is a no-op.
             for _ in 0..step.repeat.max(1) {
                 self.last_response_code = None;
+                self.last_failure_class = None;
                 if let Err(mut error) = self.run_step(step, &here) {
                     if error.response_code.is_none() {
                         error.response_code = self
@@ -273,11 +279,13 @@ impl Ctx<'_> {
                 if let Err(message) =
                     self.apply_captures(&step.captures, code, transaction_id, &reply)
                 {
+                    self.last_failure_class = Some(RetryFailureClass::Decode);
                     if !step.tolerant {
                         return Err(err(message));
                     }
                 } else if code == op::GET_OBJECT_INFO && step.captures.is_empty() {
                     if let Err(message) = self.capture_object_info(OBJECT_SIZE_SLOT, &reply) {
+                        self.last_failure_class = Some(RetryFailureClass::Decode);
                         if !step.tolerant {
                             return Err(err(message));
                         }
@@ -323,7 +331,7 @@ impl Ctx<'_> {
             self.simple_op(op::CLOSE_SESSION, vec![], step.tolerant)
                 .map_err(err)
         } else if let Some(retry) = &step.retry {
-            self.run_response_retry(retry, step.tolerant, here)
+            self.run_step_retry(retry, step.tolerant, here)
         } else if let Some(aw) = &step.await_until {
             self.run_await_until(aw, step.tolerant, here)
         } else if let Some(lp) = &step.r#loop {
@@ -343,9 +351,9 @@ impl Ctx<'_> {
         }
     }
 
-    fn run_response_retry(
+    fn run_step_retry(
         &mut self,
-        retry: &camera_config::ResponseRetry,
+        retry: &camera_config::StepRetry,
         tolerant: bool,
         here: &str,
     ) -> Result<(), PtpIpError> {
@@ -359,16 +367,27 @@ impl Ctx<'_> {
             match self.walk_steps(&retry.steps, &format!("{here}.steps")) {
                 Ok(()) => return Ok(()),
                 Err(mut error) => {
+                    let decode_selected = self.last_failure_class
+                        == Some(RetryFailureClass::Decode)
+                        && retry
+                            .when_failure_classes
+                            .contains(&RetryFailureClass::Decode);
                     let response_code = error.response_code.or_else(|| {
                         self.last_response_code
                             .filter(|response| *response != resp::OK)
                     });
                     error.response_code = response_code;
-                    if !response_code.is_some_and(|code| selected.contains(&code)) {
+                    let response_selected =
+                        response_code.is_some_and(|code| selected.contains(&code));
+                    if !response_selected && !decode_selected {
                         return Err(error);
                     }
                     if attempt + 1 == max_attempts {
-                        return if tolerant { Ok(()) } else { Err(error) };
+                        return if tolerant && response_selected {
+                            Ok(())
+                        } else {
+                            Err(error)
+                        };
                     }
                     self.retry_delays_ms.push(retry.retry_delay_ms);
                 }
@@ -470,10 +489,13 @@ impl Ctx<'_> {
         match reply {
             Reply::Data { data, response } if response.code == resp::OK => {
                 let mut r = Reader::new(&data);
-                let items = r
+                let decoded = r
                     .ptp_array(|r| r.u32())
-                    .map_err(|e| format!("decode array prop {code:#06x}: {e:?}"))?;
-                Ok(items.into_iter().map(|v| v as u64).collect())
+                    .map_err(|e| format!("decode array prop {code:#06x}: {e:?}"));
+                if decoded.is_err() {
+                    self.last_failure_class = Some(RetryFailureClass::Decode);
+                }
+                decoded.map(|items| items.into_iter().map(|v| v as u64).collect())
             }
             other => Err(format!(
                 "GetDevicePropValue({code:#06x}) -> {}",
@@ -610,11 +632,36 @@ impl Ctx<'_> {
         self.last_response_code = response_code(&reply);
         match reply {
             Reply::Data { data, response } if response.code == resp::OK => {
+                if let Some((count_width, code_width, value_width)) = self
+                    .engine
+                    .manifest()
+                    .property(code)
+                    .and_then(|property| property.payload.as_ref())
+                    .map(|payload| payload.record_widths())
+                {
+                    let decoded = RecordStreamLayout::new(count_width, code_width, value_width)
+                        .map_err(|error| error.to_string())
+                        .and_then(|layout| {
+                            parse_record_stream(&data, &layout)
+                                .map(|_| ())
+                                .map_err(|error| format!("decode prop {code:#06x}: {error:?}"))
+                        });
+                    if let Err(message) = decoded {
+                        self.last_failure_class = Some(RetryFailureClass::Decode);
+                        return Err(message);
+                    }
+                }
                 let mut r = Reader::new(&data);
-                let v = PropValue::decode(&mut r, dt)
-                    .map_err(|e| format!("decode prop {code:#06x}: {e:?}"))?;
-                prop_value_to_i64(&v)
-                    .ok_or_else(|| format!("prop {code:#06x} is non-numeric (string)"))
+                let decoded = PropValue::decode(&mut r, dt)
+                    .map_err(|e| format!("decode prop {code:#06x}: {e:?}"))
+                    .and_then(|value| {
+                        prop_value_to_i64(&value)
+                            .ok_or_else(|| format!("prop {code:#06x} is non-numeric (string)"))
+                    });
+                if decoded.is_err() {
+                    self.last_failure_class = Some(RetryFailureClass::Decode);
+                }
+                decoded
             }
             other => Err(format!(
                 "GetDevicePropValue({code:#06x}) -> {}",

@@ -513,7 +513,7 @@ number of completed steps. Runtime values cross the FFI as unsigned 64-bit
 values so object sizes and offsets are not truncated. Collection loop bindings
 are lexical: the prior value is restored after each element, and a failure on
 one element never replays completed elements. A `retry` may not contain a
-`loop`; put response-selected retry inside the per-element body so a later
+`loop`; put failure-selected retry inside the per-element body so a later
 failure cannot restart earlier elements.
 
 `StepReport` is shared by the BLE and PTP executors. PTP reports add optional

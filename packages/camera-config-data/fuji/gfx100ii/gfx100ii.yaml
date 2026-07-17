@@ -315,6 +315,7 @@ connections:
             # page-selection operation for the observed busy/store responses.
             - retry: &imageImportPrimeRetry
                 whenResponseCodes: ["0x2013", "0x2019"]
+                whenFailureClasses: ["decode"]
                 maxAttempts: 5
                 retryDelayMs: 100
                 steps:
@@ -327,12 +328,14 @@ connections:
             # reference client treats it as terminal. Prefer bounded recovery.
             - retry: &imageImportCountRetry
                 whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
+                whenFailureClasses: ["decode"]
                 maxAttempts: 3
                 retryDelayMs: 1000
                 steps:
                   - { getProp: "0xd620" }
             - retry: &imageImportHandlesRetry
                 whenResponseCodes: ["0x2002", "0x2013", "0x2019"]
+                whenFailureClasses: ["decode"]
                 maxAttempts: 3
                 retryDelayMs: 1000
                 steps:

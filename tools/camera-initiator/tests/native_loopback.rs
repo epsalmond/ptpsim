@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -13,9 +14,11 @@ use camera_config::{
 use camera_initiator::{NativePtpTransport, TraceFormat, TraceWriter, TransportConfig};
 use camera_protocol_ffi::{
     run_initiator_action, run_mode_entry, ActionInvocationRequest, ActionRole, ConfigStore,
-    ConnectionActivityEvent, ConnectionActivityObserver, KeyValue, Observation,
-    PtpExecutorTransport, Recognition, StepObserver, StepReport,
+    ConnectionActivityEvent, ConnectionActivityObserver, PtpExecutorTransport, StepObserver,
+    StepReport,
 };
+#[cfg(target_os = "linux")]
+use camera_protocol_ffi::{KeyValue, Observation, Recognition};
 #[cfg(target_os = "linux")]
 use camera_sim::{walk_establishment, BleResponder};
 use camera_sim_service::{Config, Server};

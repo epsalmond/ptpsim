@@ -1320,10 +1320,12 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
         [EntryStep::Retry {
             steps,
             when_response_codes,
+            when_failure_classes,
             max_attempts: 10,
             retry_delay_ms: 100,
             tolerant: false,
         }] if when_response_codes.as_slice() == [0x2002]
+            && when_failure_classes.is_empty()
             && matches!(
                 steps.as_slice(),
                 [EntryStep::SendOp {
@@ -1661,6 +1663,7 @@ fn enumerate_objects_surfaces_response_selected_retries() {
     let EntryStep::Retry {
         steps,
         when_response_codes,
+        when_failure_classes,
         max_attempts,
         retry_delay_ms,
         tolerant,
@@ -1669,6 +1672,7 @@ fn enumerate_objects_surfaces_response_selected_retries() {
         panic!("expected enumeration-prime retry")
     };
     assert_eq!(when_response_codes, &[0x2013, 0x2019]);
+    assert_eq!(when_failure_classes, &[FfiRetryFailureClass::Decode]);
     assert_eq!(*max_attempts, 5);
     assert_eq!(*retry_delay_ms, 100);
     assert!(!tolerant);
@@ -1681,6 +1685,7 @@ fn enumerate_objects_surfaces_response_selected_retries() {
         let EntryStep::Retry {
             steps,
             when_response_codes,
+            when_failure_classes,
             max_attempts,
             retry_delay_ms,
             ..
@@ -1689,6 +1694,7 @@ fn enumerate_objects_surfaces_response_selected_retries() {
             panic!("expected property retry")
         };
         assert_eq!(when_response_codes, &[0x2002, 0x2013, 0x2019]);
+        assert_eq!(when_failure_classes, &[FfiRetryFailureClass::Decode]);
         assert_eq!(*max_attempts, 3);
         assert_eq!(*retry_delay_ms, 1000);
         assert!(
