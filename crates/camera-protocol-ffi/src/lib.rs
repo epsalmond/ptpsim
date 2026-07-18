@@ -19,8 +19,9 @@ pub mod executor;
 pub use executor::{
     run_ble_action, run_establishment, run_post_exit_readiness, BleExecutorTransport,
     ConnectionActivityEvent, ConnectionActivityFailure, ConnectionActivityObserver,
-    ConnectionActivityRetry, ConnectionActivityTerminalSummary, ExecutionOutcome, ExecutorError,
-    ExecutorStepFailureKind, StepObserver, StepOutcome, StepReport, TransportError,
+    ConnectionActivityRetry, ConnectionActivityTerminalSummary, EstablishmentConfirmOutcome,
+    EstablishmentWalkSummary, ExecutionOutcome, ExecutorError, ExecutorStepFailureKind,
+    StepObserver, StepOutcome, StepReport, TransportError,
 };
 pub mod ptp_executor;
 pub use ptp_executor::{
@@ -46,8 +47,8 @@ pub use mfg_index::{
     BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, ConnectionActivityBinding,
     ConnectionActivityDescriptor, ConnectionActivityDisplayRole, ConnectionActivitySequence,
     EstablishmentPlan, EstablishmentRefinement, ModelMatch, NotifyCapture, Observation, Predicate,
-    PredicateOp, Recognition, ReconnectDecision, ReconnectPolicy, Step, StepOptions, StepValue,
-    Transform,
+    PredicateOp, Recognition, ReconnectDecision, ReconnectPolicy, Step, StepConfirmation,
+    StepOptions, StepValue, Transform,
 };
 mod observation_ffi;
 pub use observation_ffi::*;

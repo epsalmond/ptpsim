@@ -530,11 +530,29 @@ impl std::fmt::Display for WalkError {
     }
 }
 
-/// Result of a completed walk: the final scope (recognition seed + step
-/// captures) and how many steps ran (if-branches counted inside-out).
+/// Whether a completed establishment walk observed its declared registration
+/// confirmation signal (plan §11.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EstablishmentConfirmOutcome {
+    Satisfied,
+    Unsatisfied,
+    NotDeclared,
+}
+
+/// Per-walk confirmation verdict plus terminal tolerated-step reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EstablishmentWalkSummary {
+    pub confirm_outcome: EstablishmentConfirmOutcome,
+    pub tolerated_step_count: u32,
+    pub tolerated_step_paths: Vec<String>,
+}
+
+/// Result of a completed walk: final scope, step count, and establishment
+/// confirmation/tolerance summary.
 pub struct WalkOutcome {
     pub scope: BTreeMap<String, String>,
     pub steps_run: usize,
+    pub summary: EstablishmentWalkSummary,
 }
 
 struct WalkCtx<'a> {
@@ -549,6 +567,8 @@ struct WalkCtx<'a> {
     /// Opaque authenticated cipher state, never exposed through scope/logs.
     nikon_lss_session: Option<NikonLssSession>,
     steps_run: usize,
+    confirm_outcome: EstablishmentConfirmOutcome,
+    tolerated_step_paths: Vec<String>,
 }
 
 /// Execute an establishment plan against the responder — the reference
@@ -571,6 +591,11 @@ pub fn walk_establishment(
     initial_encodings: &BTreeMap<String, Encoding>,
     runtime_params: &BTreeMap<String, String>,
 ) -> Result<WalkOutcome, WalkError> {
+    let confirm_outcome = if steps.iter().any(step_declares_confirmation) {
+        EstablishmentConfirmOutcome::Unsatisfied
+    } else {
+        EstablishmentConfirmOutcome::NotDeclared
+    };
     let mut ctx = WalkCtx {
         responder,
         scope: initial_scope.clone(),
@@ -579,11 +604,18 @@ pub fn walk_establishment(
         subscriptions: BTreeSet::new(),
         nikon_lss_session: None,
         steps_run: 0,
+        confirm_outcome,
+        tolerated_step_paths: Vec::new(),
     };
     walk_steps(&mut ctx, steps, "steps")?;
     Ok(WalkOutcome {
         scope: ctx.scope,
         steps_run: ctx.steps_run,
+        summary: EstablishmentWalkSummary {
+            confirm_outcome: ctx.confirm_outcome,
+            tolerated_step_count: ctx.tolerated_step_paths.len() as u32,
+            tolerated_step_paths: ctx.tolerated_step_paths,
+        },
     })
 }
 
@@ -595,16 +627,48 @@ fn walk_steps(ctx: &mut WalkCtx<'_>, steps: &[Step], path: &str) -> Result<(), W
             other => other.options().tolerant,
         };
         match run_step(ctx, step, &here) {
-            Ok(()) => ctx.steps_run += 1,
+            Ok(()) => {
+                ctx.steps_run += 1;
+                if step.options().confirms.is_some() {
+                    ctx.confirm_outcome = EstablishmentConfirmOutcome::Satisfied;
+                }
+            }
             Err(e) if tolerant && !matches!(step, Step::If(_)) => {
                 // Tolerant step failure: skip and continue (§11.6).
                 let _ = e;
                 ctx.steps_run += 1;
+                ctx.tolerated_step_paths.push(here);
             }
             Err(e) => return Err(e),
         }
     }
     Ok(())
+}
+
+fn step_declares_confirmation(step: &Step) -> bool {
+    if step.options().confirms.is_some() {
+        return true;
+    }
+    match step {
+        Step::Acquire(step) => step_declares_confirmation(&step.from),
+        Step::If(step) => step
+            .then
+            .iter()
+            .chain(&step.else_branch)
+            .any(step_declares_confirmation),
+        Step::BleAwaitUntil(step) => step
+            .failure_evidence
+            .iter()
+            .flat_map(|evidence| &evidence.steps)
+            .chain(&step.on_each)
+            .any(step_declares_confirmation),
+        Step::Retry(step) => step
+            .steps
+            .iter()
+            .chain(&step.on_failure)
+            .any(step_declares_confirmation),
+        _ => false,
+    }
 }
 
 /// The scope slot an `acquire` delegate binds its result to — the delegate's

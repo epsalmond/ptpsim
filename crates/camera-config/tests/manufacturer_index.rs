@@ -12,8 +12,8 @@ use camera_config::error::ConfigError;
 use camera_config::index::eval::{advert_matches, BleAdvertFacts};
 use camera_config::index::{
     AdvertByteSource, AdvertPredicate, AwaitSource, BleNotifyUntil, CccdMode, Confidence, Encoding,
-    PredicateOp, ReconnectDisposition, ResolvedManufacturerIndex, Signature, Step, StepValue,
-    Transform,
+    PredicateOp, ReconnectDisposition, ResolvedManufacturerIndex, Signature, Step,
+    StepConfirmation, StepValue, Transform,
 };
 use camera_config::ConfigStore;
 
@@ -243,6 +243,95 @@ fn gatt_symbolic_names_inside_if_branches_also_resolve() {
             .iter()
             .all(|u| *u == "F557D96B-8284-4667-8793-B971C1DECA2A"),
         "then-branch gatt references resolve through nested steps (§11.3 walks into if:.then)",
+    );
+}
+
+fn confirmation_index(steps: &str, top_level_step_count: usize) -> String {
+    format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        status: "00002A25-0000-1000-8000-00805F9B34FB"
+      establishments:
+        pair:
+          mechanism: pair
+          activities:
+            - {{ id: camera.test.confirm, version: 1, displayRole: confirmingPairing, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: {{ sequence: steps, startStep: 0, endStepExclusive: {top_level_step_count} }} }}
+          steps:
+{steps}
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+    )
+}
+
+#[test]
+fn registration_confirmation_marker_parses_on_signal_step_and_nested_if() {
+    let idx = real_index();
+    let pair = idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("ble-pair")
+        .unwrap();
+    let anchor = pair
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            Step::BleRead(read) if read.capture_as == "transferState" => Some(read),
+            _ => None,
+        })
+        .expect("Fuji ble-pair declares the post-CCCD read");
+    assert_eq!(anchor.opts.confirms, Some(StepConfirmation::Registration));
+
+    let nested = confirmation_index(
+        "            - if:\n                condition: { style: { eq: legacy } }\n                tolerant: true\n                then:\n                  - bleRead: { gatt: status, encoding: bytes, captureAs: status, confirms: registration }",
+        1,
+    );
+    ResolvedManufacturerIndex::from_yaml(&nested)
+        .expect("a signal-bearing confirmation inside a one-shot if branch is legal");
+}
+
+#[test]
+fn registration_confirmation_marker_rejects_illegal_verb_and_duplicates() {
+    let illegal = confirmation_index(
+        "            - bleWrite: { gatt: status, value: { literal: 00 }, confirms: registration }",
+        1,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&illegal)
+        .expect_err("a write cannot be a registration confirmation signal");
+    assert!(
+        error
+            .to_string()
+            .contains("confirms is allowed only on one-shot establishment bleRead"),
+        "got: {error}"
+    );
+
+    let control_flow = confirmation_index(
+        "            - if: { condition: { style: { eq: legacy } }, confirms: registration }",
+        1,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&control_flow)
+        .expect_err("a control-flow step cannot carry a confirmation marker");
+    assert!(error.to_string().contains("confirms"), "got: {error}");
+
+    let duplicate = confirmation_index(
+        "            - bleRead: { gatt: status, encoding: bytes, captureAs: first, confirms: registration }\n            - bleNotify: { gatt: status, until: any, timeoutMs: 1, confirms: registration }",
+        2,
+    );
+    let error = ResolvedManufacturerIndex::from_yaml(&duplicate)
+        .expect_err("an establishment may declare at most one confirmation marker");
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate establishment confirmation marker"),
+        "got: {error}"
     );
 }
 

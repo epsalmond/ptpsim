@@ -436,7 +436,7 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 
 | call | walks |
 |---|---|
-| `runEstablishment(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `steps`, including §11.5 `acquireFirmware` refinement. `initialScope` / `initialEncodings` are the `Candidate`'s `runtimeScope` / `runtimeScopeEncodings` — thread both verbatim so a `{ captured: … }` write-back re-encodes with the capture's true encoding instead of an app-side guess (#43). |
+| `runEstablishment(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `steps`, including §11.5 `acquireFirmware` refinement. `initialScope` / `initialEncodings` are the `Candidate`'s `runtimeScope` / `runtimeScopeEncodings` — thread both verbatim so a `{ captured: … }` write-back re-encodes with the capture's true encoding instead of an app-side guess (#43). The returned `ExecutionOutcome.summary` carries the establishment confirmation verdict and tolerated-step aggregate described below. |
 | `runBleAction(store, model, action, transport, observer, initialScope, runtimeParams)` | a named BLE-native control action (#91) over an already-established link; no refinement. |
 | `runPostExitReadiness(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `postExitReadiness` gate. Run it after an orderly feature exit, before replaying `runEstablishment`. A plan whose establishment declares no gate returns immediately with `stepsRun == 0` and touches no I/O; a handle with no establishment at all is `UnknownPlan`, same as `runEstablishment`. |
 
@@ -463,6 +463,19 @@ events.
 Firmware refinement preserves one activity lifecycle across the splice when
 the first replacement span repeats the active descriptor's id, version, and
 metadata; a different identity or version starts a new lifecycle.
+
+`ExecutionOutcome.summary` is an `EstablishmentWalkSummary` with
+`confirmOutcome`, `toleratedStepCount`, and `toleratedStepPaths`.
+`confirmOutcome` is `Satisfied` only when the one manifest step marked
+`confirms: registration` succeeds, `Unsatisfied` when that step fails or its
+`if` branch is skipped, and `NotDeclared` when the plan has no marker. A
+tolerated anchor failure still completes the walk. Tolerated paths are the same
+strings emitted by `StepObserver` (for example,
+`steps[5].if.then[0].bleRead`), ordered as executed. Hosts that walk the
+loader-visible `EstablishmentPlan.steps` themselves receive the same marker as
+`StepOptions.confirms` and must apply these semantics. The loader permits the
+marker only on `bleRead`, `bleNotify`, and `bleAwaitUntil`, including inside a
+one-shot `if` branch, and rejects duplicate markers.
 
 ### 9.4 Walking PTP entry and action plans
 
@@ -607,8 +620,10 @@ failed BLE link before offering a scan/reconnect path.
 The executor implements this grammar for you — read this section as the verb
 reference, not permission to create a second app-side protocol authority. Each
 verb carries
-`StepOptions { tolerant, retries, retryDelayMs }` — wrap each verb body in one
-retry loop and the same code handles all of them.
+`StepOptions { tolerant, retries, retryDelayMs, confirms }` — wrap each verb
+body in one retry loop and the same code handles all of them. `confirms` is
+normally absent; `registration` is legal only on the signal-bearing verbs
+called out above.
 
 | verb | what to do |
 |---|---|

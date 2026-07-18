@@ -273,12 +273,14 @@ families:
             # Immediately after first-round drain the reference app reads
             # TRANSFER_STATE. Mirroring it here exercises the
             # camera-side path that gates persistence on the post-CCCD
-            # handshake completing, not on the writes alone.
+            # handshake completing, not on the writes alone. Its successful
+            # read is therefore the registration confirmation anchor.
             - bleRead:
                 gatt: transferState
                 encoding: bytes
                 captureAs: transferState
                 tolerant: true
+                confirms: registration
 
             # Second register-notify round. Same tolerant-filter semantics as
             # the first round.

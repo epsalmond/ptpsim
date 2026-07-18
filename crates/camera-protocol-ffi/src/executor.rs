@@ -323,6 +323,90 @@ pub enum ExecutorError {
 pub struct ExecutionOutcome {
     pub scope: Vec<KeyValue>,
     pub steps_run: u32,
+    pub summary: EstablishmentWalkSummary,
+}
+
+/// Whether a completed establishment walk observed its declared registration
+/// confirmation signal (plan §11.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum EstablishmentConfirmOutcome {
+    Satisfied,
+    Unsatisfied,
+    NotDeclared,
+}
+
+/// Per-walk confirmation verdict plus the terminal tolerated-step aggregate.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct EstablishmentWalkSummary {
+    pub confirm_outcome: EstablishmentConfirmOutcome,
+    pub tolerated_step_count: u32,
+    pub tolerated_step_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeEstablishmentConfirmOutcome {
+    Satisfied,
+    Unsatisfied,
+    NotDeclared,
+}
+
+#[derive(Debug)]
+struct NativeEstablishmentWalkSummary {
+    confirm_outcome: NativeEstablishmentConfirmOutcome,
+    tolerated_step_paths: Vec<String>,
+}
+
+impl Default for NativeEstablishmentWalkSummary {
+    fn default() -> Self {
+        Self {
+            confirm_outcome: NativeEstablishmentConfirmOutcome::NotDeclared,
+            tolerated_step_paths: Vec::new(),
+        }
+    }
+}
+
+impl NativeEstablishmentWalkSummary {
+    fn for_steps(steps: &[Step]) -> Self {
+        let mut summary = Self::default();
+        summary.declare_for_steps(steps);
+        summary
+    }
+
+    fn declare_for_steps(&mut self, steps: &[Step]) {
+        if steps.iter().any(step_declares_confirmation)
+            && self.confirm_outcome == NativeEstablishmentConfirmOutcome::NotDeclared
+        {
+            self.confirm_outcome = NativeEstablishmentConfirmOutcome::Unsatisfied;
+        }
+    }
+
+    fn satisfy(&mut self) {
+        self.confirm_outcome = NativeEstablishmentConfirmOutcome::Satisfied;
+    }
+
+    fn tolerated(&mut self, step_path: &str) {
+        self.tolerated_step_paths.push(step_path.to_string());
+    }
+}
+
+impl From<NativeEstablishmentConfirmOutcome> for EstablishmentConfirmOutcome {
+    fn from(value: NativeEstablishmentConfirmOutcome) -> Self {
+        match value {
+            NativeEstablishmentConfirmOutcome::Satisfied => Self::Satisfied,
+            NativeEstablishmentConfirmOutcome::Unsatisfied => Self::Unsatisfied,
+            NativeEstablishmentConfirmOutcome::NotDeclared => Self::NotDeclared,
+        }
+    }
+}
+
+impl From<NativeEstablishmentWalkSummary> for EstablishmentWalkSummary {
+    fn from(value: NativeEstablishmentWalkSummary) -> Self {
+        Self {
+            confirm_outcome: value.confirm_outcome.into(),
+            tolerated_step_count: value.tolerated_step_paths.len() as u32,
+            tolerated_step_paths: value.tolerated_step_paths,
+        }
+    }
 }
 
 /// Execute the establishment plan behind `plan_handle` (`model:selector`,
@@ -345,6 +429,7 @@ pub async fn run_establishment(
     runtime_params: Vec<KeyValue>,
 ) -> Result<ExecutionOutcome, ExecutorError> {
     let block = resolve_establishment(&store, &plan_handle)?;
+    let summary = NativeEstablishmentWalkSummary::for_steps(&block.steps);
     let encodings = initial_encodings
         .into_iter()
         .filter_map(|kv| Encoding::from_token(&kv.value).map(|enc| (kv.key, enc)))
@@ -367,6 +452,7 @@ pub async fn run_establishment(
         subscriptions: BTreeSet::new(),
         nikon_lss_session: None,
         steps_run: 0,
+        summary,
         refine: Some(RefineCtx {
             source: RefinementSource::Store(&store),
             plan_handle: plan_handle.clone(),
@@ -425,6 +511,7 @@ pub async fn run_post_exit_readiness(
         subscriptions: BTreeSet::new(),
         nikon_lss_session: None,
         steps_run: 0,
+        summary: NativeEstablishmentWalkSummary::default(),
         refine: None,
     };
     walk_plan_with_activities(
@@ -520,6 +607,7 @@ pub async fn run_ble_action(
         subscriptions: BTreeSet::new(),
         nikon_lss_session: None,
         steps_run: 0,
+        summary: NativeEstablishmentWalkSummary::default(),
         refine: None,
     };
     walk_plan_with_activities(
@@ -540,6 +628,7 @@ fn outcome(ctx: ExecCtx<'_>) -> ExecutionOutcome {
             .map(|(key, value)| KeyValue { key, value })
             .collect(),
         steps_run: ctx.steps_run,
+        summary: ctx.summary.into(),
     }
 }
 
@@ -609,6 +698,7 @@ struct ExecCtx<'a> {
     /// scope/FFI/log representation and lives only for this executor walk.
     nikon_lss_session: Option<NikonLssSession>,
     steps_run: u32,
+    summary: NativeEstablishmentWalkSummary,
     /// Present for establishment walks; `acquireFirmware` re-resolves the
     /// tail through it (§11.5). `None` for BLE actions.
     refine: Option<RefineCtx<'a>>,
@@ -882,6 +972,7 @@ async fn walk_plan_with_activities(
         let mut refined_activity_continues = false;
         match run_step(ctx, &step, &here, (i + 1) as u32).await {
             Ok(Some(tail)) => {
+                ctx.summary.declare_for_steps(&tail.steps);
                 steps.truncate(i + 1);
                 steps.extend(tail.steps);
                 refined_activity_continues = splice_refined_activities(
@@ -1040,6 +1131,11 @@ fn run_step<'a>(
 ) -> Pin<Box<dyn std::future::Future<Output = Result<RefinedTail, StepError>> + Send + 'a>> {
     Box::pin(async move {
         let opts = step.options();
+        let confirms = opts.confirms.is_some();
+        if confirms && ctx.summary.confirm_outcome == NativeEstablishmentConfirmOutcome::NotDeclared
+        {
+            ctx.summary.confirm_outcome = NativeEstablishmentConfirmOutcome::Unsatisfied;
+        }
         let verb = step.verb_name();
         let characteristic = step_characteristic(step);
         let (activity_id, activity_version) = ctx.activity_correlation();
@@ -1071,6 +1167,9 @@ fn run_step<'a>(
             return match run_retry_control(ctx, retry, here, top_next, &mut terminal_guard).await {
                 Ok((tail, retries_consumed)) => {
                     ctx.steps_run += 1;
+                    if confirms {
+                        ctx.summary.satisfy();
+                    }
                     terminal_guard.finish();
                     ctx.observer
                         .on_step(report(StepOutcome::Succeeded, None, retries_consumed));
@@ -1078,6 +1177,7 @@ fn run_step<'a>(
                 }
                 Err((error, retries_consumed)) if tolerant => {
                     ctx.steps_run += 1;
+                    ctx.summary.tolerated(here);
                     terminal_guard.finish();
                     ctx.observer.on_step(report(
                         StepOutcome::Tolerated,
@@ -1104,6 +1204,9 @@ fn run_step<'a>(
             match run_step_once(ctx, step, here, top_next).await {
                 Ok(tail) => {
                     ctx.steps_run += 1;
+                    if confirms {
+                        ctx.summary.satisfy();
+                    }
                     terminal_guard.finish();
                     ctx.observer
                         .on_step(report(StepOutcome::Succeeded, None, attempt));
@@ -1123,6 +1226,7 @@ fn run_step<'a>(
                 }
                 Err(e) if tolerant => {
                     ctx.steps_run += 1;
+                    ctx.summary.tolerated(here);
                     terminal_guard.finish();
                     ctx.observer
                         .on_step(report(StepOutcome::Tolerated, Some(e.message), attempt));
@@ -1140,6 +1244,32 @@ fn run_step<'a>(
             }
         }
     })
+}
+
+fn step_declares_confirmation(step: &Step) -> bool {
+    if step.options().confirms.is_some() {
+        return true;
+    }
+    match step {
+        Step::Acquire(step) => step_declares_confirmation(&step.from),
+        Step::If(step) => step
+            .then
+            .iter()
+            .chain(&step.else_branch)
+            .any(step_declares_confirmation),
+        Step::BleAwaitUntil(step) => step
+            .failure_evidence
+            .iter()
+            .flat_map(|evidence| &evidence.steps)
+            .chain(&step.on_each)
+            .any(step_declares_confirmation),
+        Step::Retry(step) => step
+            .steps
+            .iter()
+            .chain(&step.on_failure)
+            .any(step_declares_confirmation),
+        _ => false,
+    }
 }
 
 async fn run_retry_control(
@@ -2293,7 +2423,7 @@ mod tests {
     use camera_config::index::{
         AcquireFirmwareStep, AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleDelayStep,
         BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate,
-        RetryFailureKind, RetryStep, StepOptions,
+        RetryFailureKind, RetryStep, StepConfirmation, StepOptions,
     };
     use std::collections::VecDeque;
     use std::future::Future;
@@ -2484,6 +2614,7 @@ mod tests {
             subscriptions: BTreeSet::new(),
             nikon_lss_session: None,
             steps_run: 0,
+            summary: NativeEstablishmentWalkSummary::default(),
             refine: None,
         }
     }
@@ -2594,6 +2725,7 @@ mod tests {
                 tolerant: false,
                 retries: 2,
                 retry_delay_ms: 7,
+                confirms: None,
             },
         )];
         block_on(walk_plan_with_activities(
@@ -2666,6 +2798,7 @@ mod tests {
             tolerant: false,
             retries: 1,
             retry_delay_ms: 0,
+            confirms: None,
         };
 
         block_on(walk_plan_with_activities(
@@ -2986,6 +3119,7 @@ mod tests {
                     tolerant: true,
                     retries: 0,
                     retry_delay_ms: 0,
+                    confirms: None,
                 },
             ),
             Step::BleWrite(BleWriteStep {
@@ -3013,6 +3147,111 @@ mod tests {
             ]
         );
         assert!(reports[1].error.as_deref().unwrap().contains("not exposed"));
+    }
+
+    #[test]
+    fn establishment_summary_reproduces_withheld_anchor_and_all_outcomes() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([
+                Io::Fail("optional characteristic absent"),
+                Io::Fail("anchor characteristic absent"),
+            ])),
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let mut context = ctx(&transport, &observer);
+        let withheld = vec![
+            read_step(
+                "optional",
+                StepOptions {
+                    tolerant: true,
+                    ..Default::default()
+                },
+            ),
+            read_step(
+                "anchor",
+                StepOptions {
+                    tolerant: true,
+                    confirms: Some(StepConfirmation::Registration),
+                    ..Default::default()
+                },
+            ),
+        ];
+        context.summary = NativeEstablishmentWalkSummary::for_steps(&withheld);
+        block_on(walk_plan(&mut context, withheld))
+            .expect("withholding a tolerant anchor does not abort the walk");
+        assert_eq!(
+            context.summary.confirm_outcome,
+            NativeEstablishmentConfirmOutcome::Unsatisfied
+        );
+        assert_eq!(
+            context.summary.tolerated_step_paths,
+            vec!["steps[0].bleRead", "steps[1].bleRead"]
+        );
+
+        let (transport, _recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([Io::Value(b"confirmed".to_vec())])),
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let mut context = ctx(&transport, &observer);
+        let satisfied = vec![read_step(
+            "anchor",
+            StepOptions {
+                confirms: Some(StepConfirmation::Registration),
+                ..Default::default()
+            },
+        )];
+        context.summary = NativeEstablishmentWalkSummary::for_steps(&satisfied);
+        block_on(walk_plan(&mut context, satisfied)).expect("anchor succeeds");
+        assert_eq!(
+            context.summary.confirm_outcome,
+            NativeEstablishmentConfirmOutcome::Satisfied
+        );
+        assert!(context.summary.tolerated_step_paths.is_empty());
+
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let mut context = ctx(&transport, &observer);
+        context.scope.insert("style".into(), "legacy".into());
+        let skipped = vec![Step::If(IfStep {
+            condition: Predicate {
+                field: "style".into(),
+                op: PredicateOp::Eq,
+                value: "red".into(),
+            },
+            then: vec![read_step(
+                "anchor",
+                StepOptions {
+                    confirms: Some(StepConfirmation::Registration),
+                    ..Default::default()
+                },
+            )],
+            else_branch: vec![],
+            tolerant: false,
+        })];
+        context.summary = NativeEstablishmentWalkSummary::for_steps(&skipped);
+        block_on(walk_plan(&mut context, skipped)).expect("untaken anchor branch is a valid walk");
+        assert_eq!(
+            context.summary.confirm_outcome,
+            NativeEstablishmentConfirmOutcome::Unsatisfied
+        );
+
+        let (transport, _recorder, observer) = harness(MockTransport {
+            reads: Mutex::new(VecDeque::from([Io::Value(b"ordinary".to_vec())])),
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let mut context = ctx(&transport, &observer);
+        let unmarked = vec![read_step("ordinary", StepOptions::default())];
+        context.summary = NativeEstablishmentWalkSummary::for_steps(&unmarked);
+        block_on(walk_plan(&mut context, unmarked)).expect("ordinary walk succeeds");
+        assert_eq!(
+            context.summary.confirm_outcome,
+            NativeEstablishmentConfirmOutcome::NotDeclared
+        );
     }
 
     #[test]
@@ -3169,6 +3408,7 @@ mod tests {
                         tolerant: false,
                         retries: 1,
                         retry_delay_ms: 7,
+                        confirms: None,
                     },
                 )],
                 vec![activity_descriptor("camera.test.cancel-retry", 1)],

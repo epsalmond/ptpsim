@@ -342,6 +342,17 @@ pub struct StepOptions {
     pub tolerant: bool,
     pub retries: u32,
     pub retry_delay_ms: u32,
+    /// A successful signal-bearing step confirms the named establishment
+    /// condition. Loader validation restricts this to one marker in the
+    /// one-shot establishment step tree (plan §11.6).
+    pub confirms: Option<StepConfirmation>,
+}
+
+/// Closed confirmation vocabulary for establishment steps (plan §11.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StepConfirmation {
+    Registration,
 }
 
 /// `bleConnect: {}` — no fields. The peripheral is already in app scope
@@ -688,7 +699,7 @@ pub enum RetryFailureKind {
 /// Predicate-gated recovery around a group of steps. Diagnostics run in the
 /// same scope after a selected failure and before the retry predicate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RetryStep {
     pub steps: Vec<Step>,
     pub when_failure: RetryFailureKind,
@@ -742,7 +753,7 @@ pub struct AcquireFirmwareStep {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IfStep {
     pub condition: Predicate,
     #[serde(default)]

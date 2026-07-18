@@ -308,6 +308,13 @@ pub struct StepOptions {
     pub tolerant: bool,
     pub retries: u32,
     pub retry_delay_ms: u32,
+    pub confirms: Option<StepConfirmation>,
+}
+
+/// Closed confirmation marker vocabulary mirrored from camera-config §11.6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum StepConfirmation {
+    Registration,
 }
 
 /// The BLE step verbs (plan §3.3 + §11). Externally inlined so each variant
@@ -698,6 +705,15 @@ impl From<&ix::StepOptions> for StepOptions {
             tolerant: o.tolerant,
             retries: o.retries,
             retry_delay_ms: o.retry_delay_ms,
+            confirms: o.confirms.map(Into::into),
+        }
+    }
+}
+
+impl From<ix::StepConfirmation> for StepConfirmation {
+    fn from(value: ix::StepConfirmation) -> Self {
+        match value {
+            ix::StepConfirmation::Registration => Self::Registration,
         }
     }
 }

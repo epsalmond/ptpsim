@@ -1189,6 +1189,18 @@ fn establishment_returns_walkable_ble_plan() {
         }
         other => panic!("expected If, got {other:?}"),
     }
+
+    let confirmation = plan.steps.iter().find_map(|step| match step {
+        Step::BleRead {
+            capture_as, opts, ..
+        } if capture_as == "transferState" => opts.confirms,
+        _ => None,
+    });
+    assert_eq!(
+        confirmation,
+        Some(StepConfirmation::Registration),
+        "the loader-visible StepOptions mirror carries the registration anchor"
+    );
 }
 
 #[test]

@@ -15,7 +15,7 @@ use camera_config::index::eval::{self, BleAdvertFacts};
 use camera_config::index::{
     CccdMode, Encoding, FamilyBleBlock, ModelView, ResolvedManufacturerIndex, Signature,
 };
-use camera_sim::{walk_establishment, BleEvent, BleResponder};
+use camera_sim::{walk_establishment, BleEvent, BleResponder, EstablishmentConfirmOutcome};
 
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -197,6 +197,59 @@ fn legacy_pair_plan_round_trips_against_the_responder() {
         Some("00")
     );
     assert!(!outcome.scope.contains_key("idNumber"));
+    assert_eq!(
+        outcome.summary.confirm_outcome,
+        EstablishmentConfirmOutcome::Satisfied
+    );
+    assert_eq!(outcome.summary.tolerated_step_count, 0);
+}
+
+#[test]
+fn pair_plan_completes_but_is_unsatisfied_when_anchor_is_withheld() {
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let (scope, encodings) = recognize(&view, &legacy_facts(ble));
+    let transfer_state = uuid(ble, "transferState");
+    let catalog = ble
+        .gatt
+        .values()
+        .filter(|candidate| **candidate != transfer_state)
+        .cloned();
+    let mut responder =
+        BleResponder::new(catalog).serve_read(&uuid(ble, "protectedSerialString"), b"FF123456");
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &ble.establishment("ble-pair").unwrap().steps,
+        &scope,
+        &encodings,
+        &runtime_params(),
+    )
+    .expect("the tolerant anchor failure must not abort the walk");
+
+    assert_eq!(
+        outcome.summary.confirm_outcome,
+        EstablishmentConfirmOutcome::Unsatisfied
+    );
+    assert_eq!(outcome.summary.tolerated_step_count, 2);
+    assert_eq!(
+        outcome.summary.tolerated_step_paths,
+        vec!["steps[7].bleSubscribe", "steps[10].bleRead"]
+    );
+
+    let mut empty_responder = BleResponder::new(Vec::<String>::new());
+    let empty = walk_establishment(
+        &mut empty_responder,
+        &[],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("an unmarked empty plan completes");
+    assert_eq!(
+        empty.summary.confirm_outcome,
+        EstablishmentConfirmOutcome::NotDeclared
+    );
 }
 
 #[test]

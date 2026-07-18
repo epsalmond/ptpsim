@@ -14,9 +14,9 @@ use camera_config::index::{CccdMode, FamilyBleBlock, ModelView, ResolvedManufact
 use camera_protocol_ffi::{
     run_establishment, run_post_exit_readiness, BleManufacturerData, ConfigStore,
     ConnectionActivityEvent, ConnectionActivityFailure, ConnectionActivityObserver,
-    ConnectionActivityRetry, ConnectionActivityTerminalSummary, EstablishmentRefinement,
-    ExecutorError, ExecutorStepFailureKind, KeyValue, Observation, Recognition, ReconnectDecision,
-    StepObserver, StepOutcome, StepReport, TransportError,
+    ConnectionActivityRetry, ConnectionActivityTerminalSummary, EstablishmentConfirmOutcome,
+    EstablishmentRefinement, ExecutorError, ExecutorStepFailureKind, KeyValue, Observation,
+    Recognition, ReconnectDecision, StepObserver, StepOutcome, StepReport, TransportError,
 };
 use camera_sim::{BleEvent, BleResponder};
 use futures::executor::block_on;
@@ -652,6 +652,10 @@ fn wake_decision_handle_runs_and_refines() {
     ))
     .expect("the mechanism-backed wake handle resolves");
     assert_eq!(outcome.steps_run, 2);
+    assert_eq!(
+        outcome.summary.confirm_outcome,
+        EstablishmentConfirmOutcome::NotDeclared
+    );
 
     let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
     assert_eq!(
@@ -816,9 +820,64 @@ fn legacy_pair_plan_round_trips_through_the_executor() {
     );
     assert_eq!(scope_get(&outcome.scope, "transferState"), Some("00"));
     assert!(scope_get(&outcome.scope, "idNumber").is_none());
+    assert_eq!(
+        outcome.summary.confirm_outcome,
+        EstablishmentConfirmOutcome::Satisfied
+    );
+    assert_eq!(outcome.summary.tolerated_step_count, 0);
+    assert!(outcome.summary.tolerated_step_paths.is_empty());
 
     let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
     assert_app_order(ble, &transport.into_log(), false);
+}
+
+#[test]
+fn withheld_registration_anchor_completes_with_unsatisfied_ffi_summary() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let (handle, scope, encodings) = recognize(&store, legacy_advert(ble));
+    let transfer_state = uuid(ble, "transferState");
+    let catalog = ble
+        .gatt
+        .values()
+        .filter(|candidate| candidate.as_str() != transfer_state)
+        .cloned();
+    let responder =
+        BleResponder::new(catalog).serve_read(&uuid(ble, "protectedSerialString"), b"FF123456");
+    let transport = Arc::new(ResponderTransport::new(responder));
+    let recorder = Arc::new(Recorder::default());
+
+    let outcome = block_on(run_establishment(
+        store,
+        handle,
+        transport,
+        recorder.clone(),
+        Arc::new(ActivityRecorder::default()),
+        scope,
+        encodings,
+        runtime_params(),
+    ))
+    .expect("the tolerant anchor failure does not abort establishment");
+
+    assert_eq!(
+        outcome.summary.confirm_outcome,
+        EstablishmentConfirmOutcome::Unsatisfied
+    );
+    assert_eq!(outcome.summary.tolerated_step_count, 2);
+    assert_eq!(
+        outcome.summary.tolerated_step_paths,
+        vec!["steps[7].bleSubscribe", "steps[10].bleRead"]
+    );
+    let tolerated_paths: Vec<String> = recorder
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|report| report.outcome == StepOutcome::Tolerated)
+        .map(|report| report.step_path.clone())
+        .collect();
+    assert_eq!(outcome.summary.tolerated_step_paths, tolerated_paths);
 }
 
 #[test]

@@ -578,10 +578,12 @@ fn validate_establishment(
         validate_step(step, &path)?;
         forbid_acquire_firmware(step, &path)?;
     }
+    let mut confirmation_path = None;
     for (i, step) in est.steps.iter().enumerate() {
-        validate_step(
+        validate_establishment_step(
             step,
             &format!("models.{model_id}.establishments.{mechanism}.steps[{i}]"),
+            &mut confirmation_path,
         )?;
     }
     Ok(())
@@ -702,33 +704,80 @@ fn validate_establishment_activities(
 }
 
 fn validate_step(step: &Step, path: &str) -> Result<(), ConfigError> {
-    validate_step_with_repeatability(step, path, false)
+    let mut confirmation_path = None;
+    validate_step_with_context(step, path, false, false, &mut confirmation_path)
 }
 
-fn validate_step_with_repeatability(
+fn validate_establishment_step(
+    step: &Step,
+    path: &str,
+    confirmation_path: &mut Option<String>,
+) -> Result<(), ConfigError> {
+    validate_step_with_context(step, path, false, true, confirmation_path)
+}
+
+fn validate_step_with_context(
     step: &Step,
     path: &str,
     repeatable_context: bool,
+    confirmation_allowed: bool,
+    confirmation_path: &mut Option<String>,
 ) -> Result<(), ConfigError> {
     // Per-step structural checks beyond what serde already enforces.
+    if step.options().confirms.is_some() {
+        if !confirmation_allowed
+            || !matches!(
+                step,
+                Step::BleRead(_) | Step::BleNotify(_) | Step::BleAwaitUntil(_)
+            )
+        {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.confirms"),
+                message: concat!(
+                    "confirms is allowed only on one-shot establishment bleRead, ",
+                    "bleNotify, or bleAwaitUntil steps"
+                )
+                .to_string(),
+            });
+        }
+        if let Some(first) = confirmation_path {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.confirms"),
+                message: format!(
+                    "duplicate establishment confirmation marker; first marker is at {first}.confirms"
+                ),
+            });
+        }
+        *confirmation_path = Some(path.to_string());
+    }
     if let Step::If(s) = step {
         for (i, inner) in s.then.iter().enumerate() {
-            validate_step_with_repeatability(
+            validate_step_with_context(
                 inner,
                 &format!("{path}.then[{i}]"),
                 repeatable_context,
+                confirmation_allowed,
+                confirmation_path,
             )?;
         }
         for (i, inner) in s.else_branch.iter().enumerate() {
-            validate_step_with_repeatability(
+            validate_step_with_context(
                 inner,
                 &format!("{path}.else[{i}]"),
                 repeatable_context,
+                confirmation_allowed,
+                confirmation_path,
             )?;
         }
     }
     if let Step::Acquire(s) = step {
-        validate_step_with_repeatability(&s.from, &format!("{path}.from"), repeatable_context)?;
+        validate_step_with_context(
+            &s.from,
+            &format!("{path}.from"),
+            repeatable_context,
+            false,
+            confirmation_path,
+        )?;
     }
     if let Step::BleAwaitUntil(s) = step {
         if s.timeout_ms == 0 {
@@ -774,10 +823,12 @@ fn validate_step_with_repeatability(
                 });
             }
             for (i, inner) in evidence.steps.iter().enumerate() {
-                validate_step_with_repeatability(
+                validate_step_with_context(
                     inner,
                     &format!("{path}.failureEvidence.steps[{i}]"),
                     true,
+                    false,
+                    confirmation_path,
                 )?;
                 if let AwaitSource::Notify { gatt, .. } = &s.source {
                     forbid_read_of_notify_source(
@@ -789,7 +840,13 @@ fn validate_step_with_repeatability(
             }
         }
         for (i, inner) in s.on_each.iter().enumerate() {
-            validate_step_with_repeatability(inner, &format!("{path}.onEach[{i}]"), true)?;
+            validate_step_with_context(
+                inner,
+                &format!("{path}.onEach[{i}]"),
+                true,
+                false,
+                confirmation_path,
+            )?;
         }
     }
     if let Step::Retry(s) = step {
@@ -806,10 +863,22 @@ fn validate_step_with_repeatability(
             });
         }
         for (i, inner) in s.steps.iter().enumerate() {
-            validate_step_with_repeatability(inner, &format!("{path}.steps[{i}]"), true)?;
+            validate_step_with_context(
+                inner,
+                &format!("{path}.steps[{i}]"),
+                true,
+                false,
+                confirmation_path,
+            )?;
         }
         for (i, inner) in s.on_failure.iter().enumerate() {
-            validate_step_with_repeatability(inner, &format!("{path}.onFailure[{i}]"), true)?;
+            validate_step_with_context(
+                inner,
+                &format!("{path}.onFailure[{i}]"),
+                true,
+                false,
+                confirmation_path,
+            )?;
         }
     }
     if let Step::BleAwaitDisconnect(s) = step {

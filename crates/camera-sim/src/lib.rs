@@ -12,7 +12,10 @@ pub mod ptpip;
 pub mod state;
 pub mod state_overlay;
 
-pub use ble::{walk_establishment, BleError, BleEvent, BleResponder, WalkError, WalkOutcome};
+pub use ble::{
+    walk_establishment, BleError, BleEvent, BleResponder, EstablishmentConfirmOutcome,
+    EstablishmentWalkSummary, WalkError, WalkOutcome,
+};
 pub use engine::{Engine, QueueStats, Reply, StreamCompletion, TransferQueueStats};
 pub use fault::{Fault, FaultSet};
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};

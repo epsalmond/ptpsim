@@ -38,6 +38,6 @@ pub use types::{
     ManufacturerIndex, MfgDataPredicate, ModelView, NikonLssAuthenticateStep,
     NikonLssReadConnectionConfigurationStep, NotifyCapture, PayloadPredicate, PcssDiscoveryPolicy,
     PcssNotifyPredicate, PcssNotifySignature, Predicate, PredicateOp, ReconnectDisposition,
-    ReconnectSuggestion, RetryFailureKind, RetryStep, Signature, SignatureKind, Step, StepOptions,
-    StepValue, SuggestsBlock, Transform,
+    ReconnectSuggestion, RetryFailureKind, RetryStep, Signature, SignatureKind, Step,
+    StepConfirmation, StepOptions, StepValue, SuggestsBlock, Transform,
 };
