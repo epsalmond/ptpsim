@@ -65,6 +65,10 @@ evidence:
     kind: ios-source
     path: client application/.../client applicationApp/FujiCameraAPISession.swift
     date: 2026-05-26
+  sdkPcssAutofocus20260718:
+    kind: vendor-sdk
+    path: evidence/PCSS_PARITY_20260714.md
+    date: 2026-07-18
   sdkPcssParity20260714:
     kind: vendor-sdk
     path: evidence/PCSS_PARITY_20260714.md
@@ -96,6 +100,10 @@ evidence:
     kind: wire-capture
 
     date: 2026-06-02
+  wirePcssAutofocus20260718:
+    kind: wire-capture
+    path: evidence/PCSS_PARITY_20260714.md
+    date: 2026-07-18
   wirePcssParity20260714:
     kind: wire-capture
     path: evidence/PCSS_PARITY_20260714.md
@@ -2726,7 +2734,7 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0xd01b':
-    name: raw_0xd01b
+    name: liveViewMagnification
     ptpName: null
     type: u16
     access: readWrite
@@ -2737,8 +2745,25 @@ properties:
       source: camera
     controls: {}
     labels: {}
+    valueProfiles:
+    - connection: wireless-tether
+      mode: shooting/stills
+      rows:
+      - label: x1.0
+        raw: 1
+        legal: true
+      - label: x2.5
+        raw: 2
+        legal: true
+      - label: x4.0
+        raw: 4
+        legal: true
+      evidence:
+      - wirePcssAutofocus20260718
+      - sdkPcssAutofocus20260718
     evidence:
-    - canonicalObservation
+    - wirePcssAutofocus20260718
+    - sdkPcssAutofocus20260718
     observedScopes:
     - connection: usb
       mode: shooting/stills
@@ -6618,13 +6643,25 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0xd208':
-    name: raw_0xd208
+    name: pcssCaptureFunction
     ptpName: null
     type: u16
     access: readWrite
+    kind: scaffold
     descriptor: null
     controls: {}
     labels: {}
+    valueRows:
+    - label: instantAf
+      raw: 40960
+      evidence:
+      - wirePcssAutofocus20260718
+      - sdkPcssAutofocus20260718
+    - label: aeOffS1Off
+      raw: 6
+      evidence:
+      - wirePcssAutofocus20260718
+      - sdkPcssAutofocus20260718
     valueProfiles:
     - connection: usb
       mode: shooting/stills
@@ -6907,7 +6944,8 @@ properties:
       evidence:
       - canonicalObservation
     evidence:
-    - canonicalObservation
+    - wirePcssAutofocus20260718
+    - sdkPcssAutofocus20260718
     observedScopes:
     - connection: usb
       mode: raw-conv-backup-restore
@@ -6938,6 +6976,25 @@ properties:
       source: camera
     controls: {}
     labels: {}
+    valueProfiles:
+    - connection: wireless-tether
+      mode: shooting/stills
+      rows:
+      - label: operating
+        raw: 1
+        legal: true
+      - label: success
+        raw: 2
+        legal: true
+      - label: failure
+        raw: 3
+        legal: true
+      - label: noOperation
+        raw: 4
+        legal: true
+      evidence:
+      - wirePcssAutofocus20260718
+      - sdkPcssAutofocus20260718
     evidence:
     - iosLiveControls
     - docLiveControls
@@ -7815,10 +7872,11 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0xd230':
-    name: raw_0xd230
+    name: pcssForceMode
     ptpName: null
     type: u16
     access: readWrite
+    kind: scaffold
     descriptor:
       form: enum
       values:
@@ -7827,8 +7885,15 @@ properties:
       source: camera
     controls: {}
     labels: {}
+    valueRows:
+    - label: shootMode
+      raw: 1
+      evidence:
+      - wirePcssAutofocus20260718
+      - sdkPcssAutofocus20260718
     evidence:
-    - canonicalObservation
+    - wirePcssAutofocus20260718
+    - sdkPcssAutofocus20260718
     observedScopes:
     - connection: usb
       mode: shooting/stills
@@ -12987,6 +13052,7 @@ properties:
         scalar: signedInteger
     evidence:
     - wirePcssParity20260714
+    - wirePcssAutofocus20260718
     observedScopes:
     - connection: usb
       mode: shooting/stills
@@ -14916,6 +14982,172 @@ connections:
         triggers: []
         evidence:
         - wirePCSSShootDownload20260523
+      autofocusLock:
+        mode: shooting/stills
+        initiator:
+          params:
+          - name: focusArea
+            kind: string
+            required: false
+          steps:
+          - setProp: '0xd395'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value:
+              runtime: focusArea
+              ifMissing: skip
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          - setProp: '0xd230'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 1
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          - setProp: '0xd208'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 40960
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x100e'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params:
+            - 0
+            - 0
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            captures:
+            - bind: autofocusResult
+              as: propValue
+            tolerant: false
+            repeat: 1
+            awaitUntil:
+              source:
+                poll: '0xd209'
+              until:
+                any:
+                - prop: '0xd209'
+                  eq: 2
+                - prop: '0xd209'
+                  eq: 3
+              onEach: []
+              timeoutMs: 3000
+              intervalMs: 25
+          activities: []
+        responder:
+          params:
+          - name: result
+            kind: u32
+            default: 3
+            min: 2
+            max: 3
+          mutation:
+            kind: propertyTransition
+            target: '0xd209'
+            initial: 1
+            terminal:
+              kind: parameter
+              parameter: result
+            settleAfterPolls: 2
+        triggers: []
+        evidence:
+        - wirePcssAutofocus20260718
+        - sdkPcssAutofocus20260718
+      autofocusRelease:
+        mode: shooting/stills
+        initiator:
+          params: []
+          steps:
+          - setProp: '0xd230'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 1
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: '0xd21c'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 0
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          - setProp: '0xd208'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 6
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x100e'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params:
+            - 0
+            - 0
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          activities: []
+        responder:
+          params: []
+          mutation:
+            kind: propertyTransition
+            target: '0xd209'
+            terminal:
+              kind: fixed
+              value: 4
+            settleAfterPolls: 0
+        triggers: []
+        evidence:
+        - wirePcssAutofocus20260718
+        - sdkPcssAutofocus20260718
       readDeviceInfo:
         mode: ''
         initiator:

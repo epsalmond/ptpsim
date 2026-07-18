@@ -61,6 +61,10 @@ evidence:
 
   wirePcssParity20260714: { kind: wire-capture, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-14" }
   sdkPcssParity20260714: { kind: vendor-sdk, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-14" }
+  # Public-safe PCSS autofocus sequence, captured values, and cleanup responses.
+  wirePcssAutofocus20260718: { kind: wire-capture, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-18" }
+  # Public-safe vendor SDK labels for PCSS autofocus and live-view magnification values.
+  sdkPcssAutofocus20260718: { kind: vendor-sdk, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-18" }
 
 sentinels:
   # PTP/IP length-8 frame with body 0xffffffff. Sent and flushed before the
@@ -618,8 +622,8 @@ connections:
       # One caller-scheduled PCSS session keepalive iteration. D21C=0 is the
       # high-cadence write; cadence remains caller-owned because the capture
       # shows variable bursts/periodic intervals. D207 is the SDK priority-mode
-      # selector, written separately and rarely. Its busy rejection was not a
-      # rejected keepalive write in the reference capture.
+      # selector, written separately and rarely. The tolerated 0xA002 cleanup
+      # response belongs to D230, not D207.
       keepalive:
         mode: ""
         initiator:
@@ -672,6 +676,58 @@ connections:
         triggers:
           - objectsAvailable: { min: 1, max: 3 }
         evidence: [wirePCSSShootDownload20260523]
+      # PCSS focus placement is an optional exact PTP string write. The lock
+      # result is captured from the satisfying poll so consumers do not read
+      # D209 again. Only success/failure are terminal; D209=4 is not.
+      autofocusLock:
+        mode: shooting/stills
+        initiator:
+          params:
+            - { name: focusArea, kind: string, required: false }
+          steps:
+            - setProp: "0xd395"
+              value: { runtime: focusArea, ifMissing: skip }
+            - { setProp: "0xd230", value: 1 }
+            - { setProp: "0xd208", value: 0xa000 }
+            - { sendOp: "0x100e", params: [0, 0] }
+            - awaitUntil:
+                source: { poll: "0xd209" }
+                until:
+                  any:
+                    - { prop: "0xd209", eq: 2 }
+                    - { prop: "0xd209", eq: 3 }
+                intervalMs: 25
+                timeoutMs: 3000
+              captures:
+                - { bind: autofocusResult, as: propValue }
+        responder:
+          params:
+            - { name: result, kind: u32, default: 3, min: 2, max: 3 }
+          mutation:
+            kind: propertyTransition
+            target: "0xd209"
+            initial: 1
+            terminal: { kind: parameter, parameter: result }
+            settleAfterPolls: 2
+        evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718]
+      # Always invoke this cleanup in a finally-style path after either lock
+      # outcome. D21C remains opaque cleanup/keepalive, not an AF-release label.
+      autofocusRelease:
+        mode: shooting/stills
+        initiator:
+          steps:
+            - { setProp: "0xd230", value: 1, tolerant: true }
+            - { setProp: "0xd21c", value: 0 }
+            - { setProp: "0xd208", value: 0x0006 }
+            - { sendOp: "0x100e", params: [0, 0] }
+        responder:
+          params: []
+          mutation:
+            kind: propertyTransition
+            target: "0xd209"
+            terminal: { kind: fixed, value: 4 }
+            settleAfterPolls: 0
+        evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718]
       # Standard PTP enumeration. Returns a u32 count + u32 handle list. Client
       # iterates the result and calls getObjectInfo / getThumb / getObject /
       # deleteObject per handle. Mode-neutral because the live PCSS acceptance
@@ -923,10 +979,23 @@ properties:
   # bytes (3,2) = (aspect_w, aspect_h), low bytes (1,0) = (col, row) of the last AF
   # tap. (asp_w, asp_h) feed the 0x9026 LockS1Lock packed-param high bytes.
   "0xd17c": { name: s1Lock,            type: u32, access: readOnly,  evidence: [iosLiveControls, docLiveControls] }  # sub-property carried in 0xd212
-  # AF box color, carried in the 0xd212 poll bundle. PTP_PROPERTIES_REFERENCE.md
-  # §5.3 (setForcusColor mapping): 0 = white/none (no AF active), 1 = green/locked
-  # (AF succeeded), 2 = red/failed. Flips 0→1/2 ~one poll after the 0xC005 event.
-  "0xd209": { name: s1LockColor,       type: u16, access: readOnly,  evidence: [iosLiveControls, docLiveControls] }  # sub-property carried in 0xd212
+  # Keep the global display-color name for other connections. The PCSS profile
+  # uses SDK result labels; only operating=1 and failure=3 were wire-captured in
+  # the five autofocus attempts.
+  "0xd209":
+    name: s1LockColor
+    type: u16
+    access: readOnly
+    valueProfiles:
+      - connection: wireless-tether
+        mode: shooting/stills
+        rows:
+          - { label: operating, raw: 1 }
+          - { label: success, raw: 2 }
+          - { label: failure, raw: 3 }
+          - { label: noOperation, raw: 4 }
+        evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718]
+    evidence: [iosLiveControls, docLiveControls]
   "0xd226": { name: imageImportFilter, type: u16, access: readWrite, evidence: [docImageTransfer] }
   "0xd227": { name: imageImportSort,   type: u16, access: readWrite, evidence: [docImageTransfer] }
   "0xdf29": { name: reservedPhotoReceiveVersion, type: u32, access: readWrite, evidence: [wireAutoImageTransfer, staticAutoImageTransfer] }
@@ -1126,8 +1195,24 @@ properties:
       - { label: processedOnly, raw: 3, evidence: [sdkPcssParity20260714] }
       - { label: noCardRecording, raw: 4, evidence: [sdkPcssParity20260714] }
     evidence: [wirePcssParity20260714, sdkPcssParity20260714]
+  # Writes of 1, 2, and 4 are captured; the x1.0/x2.5/x4.0 meanings are static
+  # SDK labels. No UI or control effect is claimed from those writes.
+  "0xd01b":
+    name: liveViewMagnification
+    type: u16
+    access: readWrite
+    valueProfiles:
+      - connection: wireless-tether
+        mode: shooting/stills
+        rows:
+          - { label: x1.0, raw: 1 }
+          - { label: x2.5, raw: 2 }
+          - { label: x4.0, raw: 4 }
+        evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718]
+    evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718]
   # Live View "Move Focus Area" sends the click coordinates as a PTP string
-  # value on this property. Other click modes remain evidence gaps.
+  # value on this property. It is placement, not the autofocus trigger; captured
+  # omission reused prior state, while clean-session omission remains unknown.
   "0xd395": { name: liveViewFocusArea, type: str, access: readWrite,
               structuredText: { delimiter: ",", fields: [
                 { name: x, scalar: signedInteger },
@@ -1135,7 +1220,7 @@ properties:
                 { name: size, scalar: signedInteger }
               ] },
               controls: { wireless-tether: { setMethod: absolute, operation: "0x1016" } },
-              evidence: [wirePcssParity20260714] }
+              evidence: [wirePcssParity20260714, wirePcssAutofocus20260718] }
 
   # ------------------------------------------------------------------------------
   # PROTOCOL SCAFFOLDING — these props look like settings (RW, accept arbitrary
@@ -1151,9 +1236,28 @@ properties:
               evidence: [wirePCSSShootDownload20260523] }   # write 2 before PCSS 0x101C(0,0)
   "0xd21c": { name: pcssKeepalive21c,   type: u16, access: readWrite, kind: scaffold,
               evidence: [wirePCSSShootDownload20260523] }   # high-cadence tethered-mode keepalive; write 0 in the keepalive action
+  "0xd208":
+    name: pcssCaptureFunction
+    type: u16
+    access: readWrite
+    kind: scaffold
+    valueRows:
+      - { label: instantAf, raw: 0xa000, evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718] }
+      - { label: aeOffS1Off, raw: 0x0006, evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718] }
+    evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718]
+  # The captured descriptor also advertises raw value 2, whose meaning remains
+  # unlabeled. Only raw 1 is curated from the static SDK label.
+  "0xd230":
+    name: pcssForceMode
+    type: u16
+    access: readWrite
+    kind: scaffold
+    valueRows:
+      - { label: shootMode, raw: 1, evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718] }
+    evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718]
   # XSDK_SetPriorityMode selector: 1=camera priority, 2=PC priority. It is
-  # written rarely and can return 0xA002 while the camera is busy; it is not a
-  # keepalive write and is intentionally absent from connection controls.
+  # written rarely; it is not a keepalive write and is intentionally absent
+  # from connection controls. The captured 0xA002 cleanup response was D230.
   "0xd207":
     name: priorityMode
     type: u16

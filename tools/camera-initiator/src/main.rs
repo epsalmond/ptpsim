@@ -17,8 +17,9 @@ use camera_config::{
 use camera_initiator::{NativePtpTransport, TraceFormat, TraceWriter, TransportConfig};
 use camera_protocol_ffi::{
     parse_action_verb, run_initiator_action, run_initiator_action_to_sink, run_mode_entry,
-    run_mode_reestablishment_exit, run_streaming_action, ActionArgument, ActionInvocationRequest,
-    ActionRole, ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityObserver,
+    run_mode_reestablishment_exit, run_streaming_action, ActionArgument,
+    ActionCatalogParameterKind, ActionInitiatorParameter, ActionInvocationRequest, ActionRole,
+    ActionValue, ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityObserver,
     ModeEntryExecution, ObjectTransferStrategy, PtpDataOutput, PtpDataOutputSink,
     PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorTransport, PtpRuntimeValue,
     PtpStreamingSink, PtpStreamingSinkError, PtpStreamingTransport, StepObserver, StepReport,
@@ -341,6 +342,20 @@ async fn run_switch(
     let frame_bytes = transport.confirm_live_view_frame().await?;
     eprintln!("live view ready ({frame_bytes} byte frame)");
 
+    let source_scope = source_outcome
+        .scope
+        .into_iter()
+        .map(|value| {
+            Ok(PtpRuntimeValue {
+                key: value.key.clone(),
+                value: value
+                    .value
+                    .as_u64()
+                    .with_context(|| format!("mode-entry scope '{}' is not numeric", value.key))?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     run_mode_reestablishment_exit(
         Arc::clone(&store),
         connection.to_string(),
@@ -349,7 +364,7 @@ async fn run_switch(
         raw,
         observer,
         activity_observer,
-        source_outcome.scope,
+        source_scope,
     )
     .await?;
 
@@ -434,7 +449,10 @@ async fn run_named_action(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("action has no initiator binding"))?
         .params;
-    let declared_action_params = action_params.iter().cloned().collect();
+    let declared_action_params = action_params
+        .iter()
+        .map(|parameter| parameter.name.clone())
+        .collect();
     params.reject_undeclared_numeric(&declared_action_params)?;
     let request = preflight_action_request(
         &store,
@@ -530,7 +548,7 @@ async fn run_action_sequence(
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("action has no initiator binding"))?
             .params;
-        declared_action_params.extend(action_params.iter().cloned());
+        declared_action_params.extend(action_params.iter().map(|parameter| parameter.name.clone()));
         let request = preflight_action_request(
             &store,
             connection,
@@ -731,7 +749,13 @@ fn trace_output(path: &str) -> Result<Box<dyn Write + Send>> {
 fn execution_outcome_detail(outcome: &PtpExecutionOutcome) -> Value {
     json!({
         "stepsRun": outcome.steps_run,
-        "scope": outcome.scope.iter().map(|value| json!({"key": value.key, "value": value.value})).collect::<Vec<_>>(),
+        "scope": outcome.scope.iter().map(|entry| {
+            let value = match &entry.value {
+                ActionValue::U64 { value } => json!(value),
+                ActionValue::String { value } => json!(value),
+            };
+            json!({"key": entry.key, "value": value})
+        }).collect::<Vec<_>>(),
         "collections": outcome.collections.iter().map(|value| json!({"key": value.key, "values": value.values})).collect::<Vec<_>>(),
         "outputs": outcome.outputs.iter().map(|value| json!({
             "stepPath": value.step_path,
@@ -784,16 +808,35 @@ impl RuntimeParams {
             .collect()
     }
 
-    fn action_arguments(&self, required: &[String]) -> Result<Vec<ActionArgument>> {
-        required
+    fn action_arguments(
+        &self,
+        declarations: &[ActionInitiatorParameter],
+    ) -> Result<Vec<ActionArgument>> {
+        declarations
             .iter()
-            .filter_map(|key| self.raw.get(key).map(|value| (key, value)))
-            .map(|(key, value)| {
-                let value = parse_u64(value).with_context(|| {
-                    format!("action parameter '{key}' must be decimal or 0x hex")
-                })?;
+            .filter_map(|parameter| {
+                self.raw
+                    .get(&parameter.name)
+                    .map(|value| (parameter, value))
+            })
+            .map(|(parameter, value)| {
+                let value = match parameter.kind {
+                    ActionCatalogParameterKind::U32 | ActionCatalogParameterKind::U64 => {
+                        ActionValue::U64 {
+                            value: parse_u64(value).with_context(|| {
+                                format!(
+                                    "action parameter '{}' must be decimal or 0x hex",
+                                    parameter.name
+                                )
+                            })?,
+                        }
+                    }
+                    ActionCatalogParameterKind::String => ActionValue::String {
+                        value: value.clone(),
+                    },
+                };
                 Ok(ActionArgument {
-                    name: key.clone(),
+                    name: parameter.name.clone(),
                     value,
                 })
             })
@@ -1049,8 +1092,15 @@ mod tests {
             RuntimeParams::parse(&["terminalName=probe-host".into(), "handle=1".into()]).unwrap();
         params.reject_undeclared_numeric(&declared).unwrap();
         assert_eq!(
-            params.action_arguments(&["handle".into()]).unwrap()[0].value,
-            1
+            params
+                .action_arguments(&[ActionInitiatorParameter {
+                    name: "handle".into(),
+                    kind: ActionCatalogParameterKind::U64,
+                    required: true,
+                }])
+                .unwrap()[0]
+                .value,
+            1_u64
         );
     }
 

@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use camera_config::{
     ActionInvocationRequest, ActionOutcome, ActionRole, ExecutionContext, ObservationRecorder,
-    ResponderMutation,
 };
-use camera_sim::{Engine, StateOverlay};
+use camera_sim::{Engine, PreparedResponderMutation, StateOverlay};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, Notify};
@@ -238,24 +237,23 @@ async fn invoke_action(
             )));
         }
     };
-    let (count, affected) = match resolved.responder_mutation {
-        Some(ResponderMutation::EnqueueObjects { count_param }) => {
-            let count = resolved.parameters[&count_param];
-            let count = u32::try_from(count).map_err(|_| {
-                ActionInvokeError::Internal(format!(
-                    "resolved parameter '{count_param}' exceeds u32"
-                ))
-            })?;
-            let affected = engine
-                .pending_standard_object_enqueue(count)
-                .map_err(ActionInvokeError::Internal)?;
-            (count, affected)
-        }
-        None => {
-            return Err(ActionInvokeError::Internal(
-                "resolved responder action has no mutation".into(),
-            ));
-        }
+    let mutation = resolved.responder_mutation.as_ref().ok_or_else(|| {
+        ActionInvokeError::Internal("resolved responder action has no mutation".into())
+    })?;
+    let prepared = engine
+        .prepare_responder_mutation(mutation, &resolved.parameters)
+        .map_err(ActionInvokeError::Internal)?;
+    let (affected_objects, affected_properties) = match &prepared {
+        PreparedResponderMutation::EnqueueObjects { affected, .. } => (*affected, Vec::new()),
+        PreparedResponderMutation::PropertyTransition(transition) => (
+            0,
+            vec![serde_json::json!({
+                "target": format!("0x{:04x}", transition.target),
+                "initial": transition.initial,
+                "terminal": transition.terminal,
+                "settleAfterPolls": transition.settle_after_polls,
+            })],
+        ),
     };
     let parameters = resolved
         .parameters
@@ -273,17 +271,17 @@ async fn invoke_action(
             ActionOutcome::Succeeded,
         )
         .map_err(|error| ActionInvokeError::Internal(error.to_string()))?;
-    let applied = engine
-        .enqueue_standard_objects(count)
+    engine
+        .apply_responder_mutation(&prepared)
         .map_err(ActionInvokeError::Internal)?;
-    debug_assert_eq!(applied, affected, "preflighted responder mutation drifted");
     context.state_notify.notify_one();
     context.metrics.touch();
     Ok(serde_json::json!({
         "ok": true,
         "actionId": action_id,
         "role": request.role,
-        "affectedObjects": affected,
+        "affectedObjects": affected_objects,
+        "affectedProperties": affected_properties,
         "queue": engine.transfer_queue_stats(),
     })
     .to_string())

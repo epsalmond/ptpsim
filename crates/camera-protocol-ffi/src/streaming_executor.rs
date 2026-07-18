@@ -143,14 +143,22 @@ pub async fn run_streaming_action(
             }
         })?;
     let action = resolved.action;
-    let runtime_params = resolved
-        .parameters
-        .into_iter()
-        .map(|argument| PtpRuntimeValue {
+    let mut runtime_params = Vec::with_capacity(resolved.parameters.len());
+    for argument in resolved.parameters {
+        let value = match argument.value {
+            crate::ActionValue::U64 { value } => value,
+            crate::ActionValue::String { .. } => {
+                return Err(PtpStreamingError::ActionRejected {
+                    code: "wrongParameterType".into(),
+                    detail: format!("parameter {:?} requires U64, got String", argument.name),
+                })
+            }
+        };
+        runtime_params.push(PtpRuntimeValue {
             key: argument.name,
-            value: argument.value,
-        })
-        .collect();
+            value,
+        });
+    }
     let connection_config = store
         .inner
         .manifest

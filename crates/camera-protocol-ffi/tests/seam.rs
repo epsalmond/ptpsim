@@ -58,10 +58,98 @@ fn action_catalog_and_resolution_cross_the_hand_written_ffi_seam() {
         .unwrap();
     assert_eq!(resolved.role, ActionRole::Responder);
     assert_eq!(resolved.parameters[0].name, "objectCount");
-    assert_eq!(resolved.parameters[0].value, 1);
+    assert_eq!(resolved.parameters[0].value, 1_u64);
     assert!(matches!(
         resolved.responder_mutation,
         Some(ResponderMutation::EnqueueObjects { ref count_param }) if count_param == "objectCount"
+    ));
+}
+
+#[test]
+fn every_property_transition_variant_crosses_the_hand_written_ffi_seam() {
+    let store = ConfigStore::from_bundle(
+        r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd001": { name: result, type: u16, access: readOnly }
+connections:
+  app:
+    actions:
+      autofocusLock:
+        mode: shooting/stills
+        responder:
+          params:
+            - { name: result, kind: u32, min: 2, max: 3 }
+          mutation:
+            kind: propertyTransition
+            target: "0xd001"
+            initial: 1
+            terminal: { kind: parameter, parameter: result }
+            settleAfterPolls: 2
+        triggers: []
+      autofocusRelease:
+        mode: shooting/stills
+        responder:
+          params: []
+          mutation:
+            kind: propertyTransition
+            target: "0xd001"
+            terminal: { kind: fixed, value: 4 }
+        triggers: []
+"#
+        .into(),
+        None,
+    )
+    .expect("synthetic transition manifest loads");
+
+    let lock = store
+        .action("app".into(), ActionVerb::AutofocusLock)
+        .expect("lock action");
+    assert!(matches!(
+        lock.responder.expect("responder").mutation,
+        ResponderMutation::PropertyTransition {
+            target: 0xd001,
+            initial: Some(1),
+            terminal: PropertyTransitionTerminal::Parameter { ref parameter },
+            settle_after_polls: 2,
+        } if parameter == "result"
+    ));
+
+    let release = store
+        .action("app".into(), ActionVerb::AutofocusRelease)
+        .expect("release action");
+    assert!(matches!(
+        release.responder.expect("responder").mutation,
+        ResponderMutation::PropertyTransition {
+            target: 0xd001,
+            initial: None,
+            terminal: PropertyTransitionTerminal::Fixed { value: 4 },
+            settle_after_polls: 0,
+        }
+    ));
+
+    let catalog = store.action_catalog();
+    let resolved = store
+        .resolve_action_invocation(ActionInvocationRequest {
+            catalog_revision: catalog.revision,
+            action_id: "autofocusLock".into(),
+            connection: "app".into(),
+            mode: "shooting/stills".into(),
+            role: ActionRole::Responder,
+            parameters: vec![ActionArgument {
+                name: "result".into(),
+                value: ActionValue::U64 { value: 3 },
+            }],
+        })
+        .expect("responder invocation resolves");
+    assert!(matches!(
+        resolved.responder_mutation,
+        Some(ResponderMutation::PropertyTransition {
+            target: 0xd001,
+            terminal: PropertyTransitionTerminal::Parameter { ref parameter },
+            ..
+        }) if parameter == "result"
     ));
 }
 
@@ -372,6 +460,12 @@ fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
                 value: _,
                 tolerant: _,
             }
+            | EntryStep::SetPropRuntime {
+                prop: _,
+                slot: _,
+                if_missing: _,
+                tolerant: _,
+            }
             | EntryStep::GetProp {
                 prop: _,
                 captures: _,
@@ -405,6 +499,7 @@ fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
                 timeout_ms: _,
                 interval_ms: _,
                 tolerant: _,
+                captures: _,
             } => assert_no_gate_metadata_surfaces(on_each),
             EntryStep::Retry { steps, .. } => assert_no_gate_metadata_surfaces(steps),
             EntryStep::Loop { kind, tolerant: _ } => match kind {
@@ -2011,7 +2106,7 @@ fn connection_info_carries_per_connection_traits() {
 }
 
 #[test]
-fn autofocus_lock_action_surfaces_the_event_source_recipe() {
+fn autofocus_actions_cross_the_hand_written_ffi_seam() {
     let s = store();
     let lock = s
         .action("app".into(), ActionVerb::AutofocusLock)
@@ -2042,10 +2137,83 @@ fn autofocus_lock_action_surfaces_the_event_source_recipe() {
         release.initiator.as_ref().unwrap().steps[0],
         EntryStep::SendOp { op: 0x9027, .. }
     ));
-    // A connection without the verb returns None.
-    assert!(s
+    let pcss_lock = s
         .action("wireless-tether".into(), ActionVerb::AutofocusLock)
-        .is_none());
+        .expect("wireless-tether autofocusLock action");
+    let pcss_initiator = pcss_lock.initiator.as_ref().expect("PCSS lock initiator");
+    assert_eq!(pcss_initiator.params.len(), 1);
+    assert_eq!(pcss_initiator.params[0].name, "focusArea");
+    assert!(matches!(
+        pcss_initiator.params[0].kind,
+        ActionCatalogParameterKind::String
+    ));
+    assert!(!pcss_initiator.params[0].required);
+    assert!(matches!(
+        &pcss_initiator.steps[0],
+        EntryStep::SetPropRuntime {
+            prop: 0xd395,
+            slot,
+            if_missing: FfiMissingRuntimeValue::Skip,
+            ..
+        } if slot == "focusArea"
+    ));
+    assert!(matches!(
+        &pcss_initiator.steps[4],
+        EntryStep::AwaitUntil {
+            source: FfiAwaitSource::Poll { prop: 0xd209 },
+            captures,
+            timeout_ms: 3000,
+            interval_ms: 25,
+            ..
+        } if captures.len() == 1
+            && captures[0].bind == "autofocusResult"
+            && matches!(captures[0].source, CaptureSourceInfo::PropValue)
+    ));
+    assert!(matches!(
+        pcss_lock.responder.expect("PCSS lock responder").mutation,
+        ResponderMutation::PropertyTransition {
+            target: 0xd209,
+            initial: Some(1),
+            terminal: PropertyTransitionTerminal::Parameter { ref parameter },
+            settle_after_polls: 2,
+        } if parameter == "result"
+    ));
+
+    let pcss_release = s
+        .action("wireless-tether".into(), ActionVerb::AutofocusRelease)
+        .expect("wireless-tether autofocusRelease action");
+    assert!(matches!(
+        pcss_release
+            .responder
+            .expect("PCSS release responder")
+            .mutation,
+        ResponderMutation::PropertyTransition {
+            target: 0xd209,
+            initial: None,
+            terminal: PropertyTransitionTerminal::Fixed { value: 4 },
+            settle_after_polls: 0,
+        }
+    ));
+
+    let properties = s.properties();
+    let d208 = properties
+        .iter()
+        .find(|property| property.code == 0xd208)
+        .expect("D208 crosses FFI");
+    assert_eq!(d208.name, "pcssCaptureFunction");
+    assert_eq!(d208.kind, PropertyKind::Scaffold);
+    assert!(d208
+        .value_rows
+        .iter()
+        .any(|row| row.raw == 0xa000 && row.label == "instantAf"));
+    let d230 = properties
+        .iter()
+        .find(|property| property.code == 0xd230)
+        .expect("D230 crosses FFI");
+    assert_eq!(d230.name, "pcssForceMode");
+    assert_eq!(d230.kind, PropertyKind::Scaffold);
+    assert_eq!(d230.value_rows.len(), 1);
+    assert_eq!(d230.value_rows[0].raw, 1);
 }
 
 #[test]
@@ -2079,7 +2247,7 @@ fn property_catalog_enumerates_through_ffi() {
     assert_eq!(aperture.ptype.as_deref(), Some("u16"));
     assert_eq!(aperture.access.as_deref(), Some("readWrite"));
     assert_eq!(aperture.kind, PropertyKind::Setting);
-    for code in [0xd039, 0xd1bc, 0xd21c, 0xd207] {
+    for code in [0xd039, 0xd1bc, 0xd208, 0xd21c, 0xd230, 0xd207] {
         let property = cat
             .iter()
             .find(|property| property.code == code)

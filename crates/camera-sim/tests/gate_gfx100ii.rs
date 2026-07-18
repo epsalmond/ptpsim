@@ -6,8 +6,8 @@
 use camera_config::index::ResolvedManufacturerIndex;
 use camera_config::model::ReopenSession;
 use camera_config::{
-    ActionVerb, AwaitSource, AwaitUntil, CameraManifest, Leaf, ModeEntry, ModeEntryExecution,
-    Predicate, Step, StepParam,
+    ActionArgument, ActionInvocationRequest, ActionRole, ActionVerb, AwaitSource, AwaitUntil,
+    CameraManifest, Leaf, ModeEntry, ModeEntryExecution, Predicate, Step, StepParam,
 };
 use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
 use camera_sim::{
@@ -206,6 +206,41 @@ fn write_u32(e: &mut Engine, tid: u32, code: u16, value: u32) {
 fn read_u32(e: &mut Engine, tid: u32, code: u16) -> u32 {
     let bytes = data_of(e.on_operation(&req(0x1015, tid, vec![code as u32]), None));
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn read_u16(e: &mut Engine, tid: u32, code: u16) -> u16 {
+    let bytes = data_of(e.on_operation(&req(0x1015, tid, vec![code as u32]), None));
+    u16::from_le_bytes([bytes[0], bytes[1]])
+}
+
+fn invoke_pcss_autofocus_responder(engine: &mut Engine, action_id: &str, result: Option<u64>) {
+    let manifest = consolidated();
+    let request = ActionInvocationRequest {
+        catalog_revision: manifest.action_catalog().revision,
+        action_id: action_id.into(),
+        connection: "wireless-tether".into(),
+        mode: "shooting/stills".into(),
+        role: ActionRole::Responder,
+        parameters: result
+            .map(|value| ActionArgument {
+                name: "result".into(),
+                value: value.into(),
+            })
+            .into_iter()
+            .collect(),
+    };
+    let resolved = manifest
+        .resolve_action_invocation(&request)
+        .expect("bundled responder invocation resolves");
+    let mutation = resolved
+        .responder_mutation
+        .expect("bundled responder mutation");
+    let prepared = engine
+        .prepare_responder_mutation(&mutation, &resolved.parameters)
+        .expect("responder mutation prepares");
+    engine
+        .apply_responder_mutation(&prepared)
+        .expect("responder mutation applies");
 }
 
 fn standard_object_handles(e: &mut Engine, tid: u32) -> Vec<u32> {
@@ -528,7 +563,7 @@ fn default_ptpip_walk_rebinds_app_connection_for_value_profiles() {
     let steps = vec![
         Step {
             set_prop: Some("0xd02a".into()),
-            value: Some(50),
+            value: Some(50.into()),
             ..Default::default()
         },
         Step {
@@ -1267,6 +1302,121 @@ fn af_lock_round_trips_from_the_consolidated_manifest() {
     // retired the old "settle ≤1 event-coupling" invariant from #42).
     assert_eq!(out.await_iterations, vec![2]);
     assert_eq!(out.observed.get(0xd209), Some(1));
+}
+
+#[test]
+fn pcss_autofocus_responder_transitions_use_bundled_invocations() {
+    let mut e = engine();
+    e.bind_connection("wireless-tether");
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+
+    invoke_pcss_autofocus_responder(&mut e, "autofocusLock", None);
+    assert_eq!(read_u16(&mut e, 2, 0xd209), 1);
+    assert_eq!(
+        read_u16(&mut e, 3, 0xd209),
+        3,
+        "default responder result is failure"
+    );
+
+    invoke_pcss_autofocus_responder(&mut e, "autofocusLock", Some(2));
+    assert_eq!(read_u16(&mut e, 4, 0xd209), 1);
+    assert_eq!(
+        read_u16(&mut e, 5, 0xd209),
+        2,
+        "explicit responder result is success"
+    );
+
+    invoke_pcss_autofocus_responder(&mut e, "autofocusRelease", None);
+    assert_eq!(
+        read_u16(&mut e, 6, 0xd209),
+        4,
+        "release reset is immediate simulator policy"
+    );
+}
+
+#[test]
+fn pcss_autofocus_initiator_encodes_runtime_focus_area_as_ptp_string() {
+    let manifest = consolidated();
+    let action = manifest
+        .action("wireless-tether", ActionVerb::AutofocusLock)
+        .expect("bundled PCSS autofocusLock")
+        .clone();
+    let mut e = engine();
+    e.bind_connection("wireless-tether");
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    invoke_pcss_autofocus_responder(&mut e, "autofocusLock", Some(2));
+
+    walk_ptpip_in(
+        &mut e,
+        &action.initiator().expect("lock initiator").steps,
+        &BTreeMap::from([("focusArea".into(), "-12,34,5".into())]),
+        Some("wireless-tether"),
+    )
+    .expect("runtime focus area executes");
+
+    assert_eq!(
+        data_of(e.on_operation(&req(0x1015, 100, vec![0xd395]), None)),
+        vec![9, b'-', 0, b'1', 0, b'2', 0, b',', 0, b'3', 0, b'4', 0, b',', 0, b'5', 0, 0, 0,]
+    );
+}
+
+#[test]
+fn pcss_autofocus_initiator_times_out_while_d209_remains_operating() {
+    let manifest = consolidated();
+    let action = manifest
+        .action("wireless-tether", ActionVerb::AutofocusLock)
+        .expect("bundled PCSS autofocusLock")
+        .clone();
+    let mut e = engine();
+    e.bind_connection("wireless-tether");
+    let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
+        "props": { "0xd209": 1 }
+    }))
+    .unwrap();
+    e.apply_state_overlay(&overlay).unwrap();
+
+    let error = walk_ptpip_in(
+        &mut e,
+        &action.initiator().expect("lock initiator").steps,
+        &BTreeMap::new(),
+        Some("wireless-tether"),
+    )
+    .expect_err("D209=1 never satisfies the success/failure predicate");
+    assert_eq!(error.step, "steps[4].awaitUntil");
+    assert!(
+        error.message.contains("not satisfied polling 0xd209"),
+        "{error:?}"
+    );
+    assert_eq!(read_u16(&mut e, 100, 0xd209), 1);
+}
+
+#[test]
+fn autofocus_transitions_do_not_change_shared_initiate_capture_behavior() {
+    let manifest = consolidated();
+    assert!(manifest.operations["0x100e"].effects.is_empty());
+    assert!(manifest.connections["wireless-tether"]
+        .bindings
+        .as_ref()
+        .is_some_and(|bindings| bindings.event.is_none()));
+    let app_shutter = manifest
+        .action("app", ActionVerb::Shutter)
+        .expect("ordinary app shutter remains modeled");
+    assert_eq!(app_shutter.initiator().expect("app shutter").steps.len(), 3);
+
+    let mut e = engine();
+    e.bind_connection("wireless-tether");
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
+        "props": { "0xd209": 1 }
+    }))
+    .unwrap();
+    e.apply_state_overlay(&overlay).unwrap();
+    assert_ok(&e.on_operation(&req(0x100e, 2, vec![0, 0]), None));
+    assert_eq!(
+        read_u16(&mut e, 3, 0xd209),
+        1,
+        "0x100E does not arm an autofocus transition"
+    );
 }
 
 #[test]

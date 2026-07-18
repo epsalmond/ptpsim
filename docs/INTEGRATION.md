@@ -23,11 +23,14 @@ Both seams coexist on `ConfigStore` — different constructors choose which one 
 get.
 
 Both also expose the same deterministic action catalog. A catalog record carries
-its revision, action id, mode, supported roles, exact parameters, triggers, and
-availability. Resolve an invocation against that revision before creating any
-transport request or simulator mutation. Unknown action or connection, wrong
-mode or role, stale revision, and duplicate, missing, or extra parameters are
-typed failures with zero side effects.
+its revision, action id, mode, supported roles, exact typed parameter
+declarations, triggers, and availability. Initiator declarations normalize to
+`{ name, kind, required }`; a bare name means required `u64`, while the
+expanded form can declare `string` and optional parameters. Resolve an
+invocation against that revision before creating any transport request or
+simulator mutation. Unknown action or connection, wrong mode or role, stale
+revision, duplicate, missing required, extra, or wrong-typed parameters are
+typed failures with zero side effects. Omitting an optional parameter is valid.
 
 ## 1. Mental model — ptpsim is the brain, you are the hands (sans-io)
 
@@ -70,7 +73,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
 | `mode_entry(connection, from, to)` | a closed execution plan: PTP wire steps, a manual instruction, or an outer connection re-establishment that exits the old session and reuses the target mode's cold entry |
-| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.params` names runtime slots to bind, `Action.steps` is the wire sequence, `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). A `PtpU32Array` capture binds a count-prefixed property reply as a collection; `TransactionId` binds the executor-allocated id of one unrepeated `sendOp`; `ForEach.collection` names a captured collection and performs no additional read. See `docs/plans/action-verbs.md` and schema §11.22. |
+| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.initiator.params` declares normalized `{ name, kind, required }` runtime slots, `Action.initiator.steps` is the wire sequence, and `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). A bare parameter name remains required `u64`; expanded declarations add `string` and optional values. A `PtpU32Array` capture binds a count-prefixed property reply as a collection; `TransactionId` binds the executor-allocated id of one unrepeated `sendOp`; `ForEach.collection` names a captured collection and performs no additional read. See schema §§11.22 and 11.27. |
 | `selected_object_transfer(connection)` | typed lazy-gallery projection of the canonical `importObjects` per-handle preparation plus the existing chunk-read action; exposes the preparation-step index whose response is ObjectInfo and manifest-owned u64 transfer-size/u32 chunk-size slots without requiring consumers to inspect nested action ASTs; returns a contract error when a connection declares the actions with an invalid shape |
 | `object_transfer_contract(connection)` | transfer strategy (`chunked` or `wholeObject`), resume policy, read/completion actions, completion timing, and per-format confidence. A completion action is eligible only after the host has atomically committed the object locally. |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
@@ -516,20 +519,52 @@ initialized event channel. Closing either associated socket closes the pair.
 |---|---|
 | `runModeEntry(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | a current-session `ptp` mode entry. `UserInstruction` and `ReestablishConnection` fail with `UnsupportedPlan` so the host cannot accidentally skip their outer lifecycle. |
 | `runModeReestablishmentExit(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | only the old-session `exitSteps` of a `ReestablishConnection` entry. Establishment replay, network association, fresh session creation, and the cold entry remain explicit host orchestration. |
-| `actionCatalog()` / `resolveActionInvocation(request)` | fetch the deterministic role-aware registry, then reject stale revisions, wrong connection/mode/role, and parameter-shape errors before any effect. |
+| `actionCatalog()` / `resolveActionInvocation(request)` | fetch the deterministic role-aware registry, then reject stale revisions, wrong connection/mode/role, missing required or extra parameters, and argument-kind mismatches before any effect. Optional parameters may be absent. |
 | `runInitiatorAction(store, connection, action, transport, observer, activityObserver, runtimeParams)` | execute one action's explicit initiator binding on the current session. |
 | `runInitiatorActionToSink(store, connection, action, transport, observer, activityObserver, sink, runtimeParams)` | the same initiator walker, delivering each completed ordinary data output to `PtpDataOutputSink` after its response has been consumed instead of accumulating payloads in the outcome. A sink failure fails the step but leaves the synchronized command session reusable. |
 | `runSelectedObjectPreparation(store, connection, transport, observer, activityObserver, runtimeParams)` | the selected-object prefix projected from the canonical import action, preserving capture bindings for later chunk reads. |
 | `runStreamingAction(store, connection, action, transport, sink, runtimeParams, expectedPayloadBytes)` | one compressed, single-`sendOp` data-in action through bounded raw reads. Rust validates the 12-byte data header, streams the exact body to `PtpStreamingSink` in chunks no larger than 1 MiB, then validates the separate final response. |
 
-`PtpExecutionOutcome` returns scalar scope, captured collections, ordered data
-outputs (payload plus final response parameters and transaction id), and the
-number of completed steps. Runtime values cross the FFI as unsigned 64-bit
-values so object sizes and offsets are not truncated. Collection loop bindings
-are lexical: the prior value is restored after each element, and a failure on
-one element never replays completed elements. A `retry` may not contain a
-`loop`; put failure-selected retry inside the per-element body so a later
-failure cannot restart earlier elements.
+Invocation parameter values are `ActionArgument`: untagged unsigned numbers or
+strings in serde/HTTP, and a closed `U64`/`String` enum across UniFFI. Catalog
+parameter kinds include `String`; callers must send the declared kind rather
+than stringify numeric values. The resolver performs this check before the
+initiator transport or responder mutation is selected.
+
+For PTP actions, `setProp.value` accepts an integer literal or a runtime slot.
+Runtime values default to `ifMissing: error`; `ifMissing: skip` is valid only
+for a declared optional parameter and makes absence a successful no-I/O step.
+A present value is checked against the target property before transport I/O:
+numeric property types accept numeric arguments, while `str` accepts strings
+and applies any `structuredText` grammar, including its exact signed-decimal
+field count.
+
+`awaitUntil` may apply its enclosing `captures` to the final polled property.
+Only `propValue` is valid, and only for a `poll` source or an event source with
+`thenPoll`; capture reuses the reply that satisfied the predicate and performs
+no additional read. An event source without `thenPoll` cannot declare such a
+capture.
+
+The generic responder `PropertyTransition` mutation identifies a target
+property, an optional initial scalar, a terminal fixed or parameter-supplied
+scalar, and `settleAfterPolls`. It is installed only by an explicit responder-
+role invocation. Simulator contract tests invoke that role to seed the state
+observed by the initiator; they do not add unconditional effects to shared
+operations.
+
+For the #340 PCSS action, `0xD395` is optional on every attempt. Absence skips
+its write; presence must encode exactly three signed decimal fields according
+to the property's `structuredText` declaration. The action polls `0xD209` and
+captures the terminal value from the satisfying poll without a follow-up read.
+
+`PtpExecutionOutcome` returns numeric and string scalar scope, captured
+collections, ordered data outputs (payload plus final response parameters and
+transaction id), and the number of completed steps. Numeric runtime values
+cross the FFI as unsigned 64-bit values so object sizes and offsets are not
+truncated. Collection loop bindings are lexical: the prior value is restored
+after each element, and a failure on one element never replays completed
+elements. A `retry` may not contain a `loop`; put failure-selected retry inside
+the per-element body so a later failure cannot restart earlier elements.
 
 `StepReport` is shared by the BLE and PTP executors. PTP reports add optional
 operation, property, response-code, and transaction-id correlation plus the

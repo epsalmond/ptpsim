@@ -1525,14 +1525,69 @@ pub struct Action {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActionInitiator {
-    /// Runtime slot names the caller binds; each must be referenced by at least
-    /// one `StepParam::Runtime` in `steps`.
+    /// Runtime slots the caller binds. A bare name is shorthand for a required
+    /// `u64`; the expanded form also supports strings and optional values.
     #[serde(default)]
-    pub params: Vec<String>,
+    pub params: Vec<ActionInitiatorParameter>,
     #[serde(default)]
     pub steps: Vec<Step>,
     #[serde(default)]
     pub activities: Vec<ConnectionActivityDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ActionInitiatorParameter {
+    Shorthand(String),
+    Expanded(ActionInitiatorParameterDeclaration),
+}
+
+impl ActionInitiatorParameter {
+    pub fn normalized(&self) -> ActionInitiatorParameterDeclaration {
+        match self {
+            Self::Shorthand(name) => ActionInitiatorParameterDeclaration {
+                name: name.clone(),
+                kind: ActionInitiatorParameterKind::U64,
+                required: true,
+            },
+            Self::Expanded(declaration) => declaration.clone(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Shorthand(name) => name,
+            Self::Expanded(declaration) => &declaration.name,
+        }
+    }
+}
+
+impl PartialEq<String> for ActionInitiatorParameter {
+    fn eq(&self, other: &String) -> bool {
+        self.name() == other
+    }
+}
+
+impl PartialEq<&str> for ActionInitiatorParameter {
+    fn eq(&self, other: &&str) -> bool {
+        self.name() == *other
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActionInitiatorParameterDeclaration {
+    pub name: String,
+    pub kind: ActionInitiatorParameterKind,
+    #[serde(default = "default_true")]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionInitiatorParameterKind {
+    U64,
+    String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1570,7 +1625,29 @@ pub enum ActionParameterKind {
     deny_unknown_fields
 )]
 pub enum ResponderMutation {
-    EnqueueObjects { count_param: String },
+    EnqueueObjects {
+        count_param: String,
+    },
+    PropertyTransition {
+        target: HexCode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        initial: Option<i64>,
+        terminal: PropertyTransitionTerminal,
+        #[serde(default)]
+        settle_after_polls: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum PropertyTransitionTerminal {
+    Fixed { value: i64 },
+    Parameter { parameter: String },
 }
 
 impl Action {
@@ -1616,9 +1693,9 @@ pub struct Step {
     /// orderly transport-close frame (#82/#244).
     #[serde(default)]
     pub close_session: Option<CloseSession>,
-    /// Value for `set_prop`.
+    /// Value for `set_prop`: a legacy integer literal or an action runtime slot.
     #[serde(default)]
-    pub value: Option<i64>,
+    pub value: Option<SetPropValue>,
     /// Operation parameters for `send_op`: literals, or a named runtime slot the
     /// I/O-owning client binds (e.g. the live-view open-capture txid for `0x1018`).
     #[serde(default)]
@@ -1665,6 +1742,50 @@ pub struct Step {
     pub r#loop: Option<Loop>,
     #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
     pub if_step: Option<IfStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SetPropValue {
+    Literal(i64),
+    Runtime(RuntimeSetPropValue),
+}
+
+impl SetPropValue {
+    pub const fn literal(&self) -> Option<i64> {
+        match self {
+            Self::Literal(value) => Some(*value),
+            Self::Runtime(_) => None,
+        }
+    }
+}
+
+impl From<i64> for SetPropValue {
+    fn from(value: i64) -> Self {
+        Self::Literal(value)
+    }
+}
+
+impl PartialEq<i64> for SetPropValue {
+    fn eq(&self, other: &i64) -> bool {
+        self.literal() == Some(*other)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeSetPropValue {
+    pub runtime: String,
+    #[serde(default)]
+    pub if_missing: MissingRuntimeValue,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MissingRuntimeValue {
+    #[default]
+    Error,
+    Skip,
 }
 
 impl Step {
@@ -2133,6 +2254,10 @@ fn one() -> u32 {
     1
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn is_zero(v: &u32) -> bool {
     *v == 0
 }
@@ -2381,7 +2506,7 @@ connections:
         let steps = lv.ptp_steps().expect("PTP execution");
         assert_eq!(steps.len(), 5);
         assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf00"));
-        assert_eq!(steps[0].value, Some(6));
+        assert_eq!(steps[0].value, Some(6.into()));
         assert_eq!(steps[3].repeat, 4); // 902B ×4
         assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
         assert!(steps.iter().all(Step::is_well_formed));

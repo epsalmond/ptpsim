@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    ActionEffect, ActionParameterKind, ActionRole, ActionVerb, CameraManifest, ResponderMutation,
+    ActionEffect, ActionInitiatorParameterKind, ActionParameterKind, ActionRole, ActionVerb,
+    CameraManifest, ResponderMutation,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,6 +56,7 @@ pub struct ActionCatalogParameter {
 pub enum ActionCatalogParameterKind {
     U32,
     U64,
+    String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,7 +69,20 @@ pub enum ActionAvailability {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActionArgument {
     pub name: String,
-    pub value: u64,
+    pub value: ActionArgumentValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ActionArgumentValue {
+    U64(u64),
+    String(String),
+}
+
+impl From<u64> for ActionArgumentValue {
+    fn from(value: u64) -> Self {
+        Self::U64(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,7 +101,7 @@ pub struct ActionInvocationRequest {
 pub struct ResolvedActionInvocation {
     pub action: ActionVerb,
     pub role: ActionRole,
-    pub parameters: BTreeMap<String, u64>,
+    pub parameters: BTreeMap<String, ActionArgumentValue>,
     pub responder_mutation: Option<ResponderMutation>,
 }
 
@@ -110,6 +125,12 @@ pub enum ActionResolutionError {
     ExtraParameter(String),
     #[error("parameter {name:?} value {value} is outside its declaration")]
     InvalidParameter { name: String, value: u64 },
+    #[error("parameter {name:?} requires {expected:?}, got {actual:?}")]
+    WrongParameterType {
+        name: String,
+        expected: ActionCatalogParameterKind,
+        actual: ActionCatalogParameterKind,
+    },
 }
 
 impl ActionResolutionError {
@@ -124,6 +145,7 @@ impl ActionResolutionError {
             Self::MissingParameter(_) => "missingParameter",
             Self::ExtraParameter(_) => "extraParameter",
             Self::InvalidParameter { .. } => "invalidParameter",
+            Self::WrongParameterType { .. } => "wrongParameterType",
         }
     }
 }
@@ -142,13 +164,23 @@ impl CameraManifest {
                         parameters: initiator
                             .params
                             .iter()
-                            .map(|name| ActionCatalogParameter {
-                                name: name.clone(),
-                                kind: ActionCatalogParameterKind::U64,
-                                required: true,
-                                default: None,
-                                min: None,
-                                max: None,
+                            .map(|parameter| {
+                                let parameter = parameter.normalized();
+                                ActionCatalogParameter {
+                                    name: parameter.name,
+                                    kind: match parameter.kind {
+                                        ActionInitiatorParameterKind::U64 => {
+                                            ActionCatalogParameterKind::U64
+                                        }
+                                        ActionInitiatorParameterKind::String => {
+                                            ActionCatalogParameterKind::String
+                                        }
+                                    },
+                                    required: parameter.required,
+                                    default: None,
+                                    min: None,
+                                    max: None,
+                                }
                             })
                             .collect(),
                     });
@@ -240,7 +272,7 @@ impl CameraManifest {
         let mut supplied = BTreeMap::new();
         for argument in &request.parameters {
             if supplied
-                .insert(argument.name.clone(), argument.value)
+                .insert(argument.name.clone(), argument.value.clone())
                 .is_some()
             {
                 return Err(ActionResolutionError::DuplicateParameter(
@@ -262,21 +294,41 @@ impl CameraManifest {
         for parameter in &declaration.parameters {
             if !supplied.contains_key(&parameter.name) {
                 if let Some(default) = parameter.default {
-                    supplied.insert(parameter.name.clone(), default);
-                } else {
+                    supplied.insert(parameter.name.clone(), default.into());
+                } else if parameter.required {
                     return Err(ActionResolutionError::MissingParameter(
                         parameter.name.clone(),
                     ));
+                } else {
+                    continue;
                 }
             }
-            let value = supplied[&parameter.name];
-            if (parameter.kind == ActionCatalogParameterKind::U32 && value > u32::MAX as u64)
-                || parameter.min.is_some_and(|min| value < min)
-                || parameter.max.is_some_and(|max| value > max)
-            {
+            let value = &supplied[&parameter.name];
+            let numeric = match (parameter.kind, value) {
+                (
+                    ActionCatalogParameterKind::U32 | ActionCatalogParameterKind::U64,
+                    ActionArgumentValue::U64(value),
+                ) => Some(*value),
+                (ActionCatalogParameterKind::String, ActionArgumentValue::String(_)) => None,
+                (expected, actual) => {
+                    return Err(ActionResolutionError::WrongParameterType {
+                        name: parameter.name.clone(),
+                        expected,
+                        actual: match actual {
+                            ActionArgumentValue::U64(_) => ActionCatalogParameterKind::U64,
+                            ActionArgumentValue::String(_) => ActionCatalogParameterKind::String,
+                        },
+                    });
+                }
+            };
+            if numeric.is_some_and(|value| {
+                (parameter.kind == ActionCatalogParameterKind::U32 && value > u32::MAX as u64)
+                    || parameter.min.is_some_and(|min| value < min)
+                    || parameter.max.is_some_and(|max| value > max)
+            }) {
                 return Err(ActionResolutionError::InvalidParameter {
                     name: parameter.name.clone(),
-                    value,
+                    value: numeric.expect("numeric declaration checked above"),
                 });
             }
         }

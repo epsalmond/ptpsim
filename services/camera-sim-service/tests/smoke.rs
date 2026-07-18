@@ -32,6 +32,37 @@ operations:
 properties: {}
 "#;
 
+const PROPERTY_TRANSITION_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings: { command: 15740, event: 15741, liveView: 15742 }
+    actions:
+      autofocusLock:
+        mode: shooting/stills
+        responder:
+          params:
+            - { name: result, kind: u32, min: 2, max: 3 }
+          mutation:
+            kind: propertyTransition
+            target: "0xd001"
+            initial: 1
+            terminal: { kind: parameter, parameter: result }
+            settleAfterPolls: 2
+        triggers: []
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+  "0x1015": { name: GetDevicePropValue, connections: [app] }
+properties:
+  "0xd001": { name: result, type: u16, access: readOnly }
+"#;
+
 fn tmp_card() -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -566,6 +597,13 @@ fn read_d620_count(s: &mut TcpStream, tid: u32) -> u32 {
     let bytes = read_data_reply(s);
     let mut r = ptp_core::Reader::new(&bytes);
     r.u32().unwrap()
+}
+
+fn read_u16_prop(s: &mut TcpStream, tid: u32, property: u16) -> u16 {
+    write_frame(s, &op(0x1015, tid, vec![u32::from(property)]));
+    let bytes = read_data_reply(s);
+    let mut reader = ptp_core::Reader::new(&bytes);
+    reader.u16().unwrap()
 }
 
 fn read_d621_handles(s: &mut TcpStream, tid: u32) -> Vec<u32> {
@@ -2975,6 +3013,113 @@ fn responder_action_has_no_side_effect_when_observation_append_fails() {
     let after: serde_json::Value =
         serde_json::from_str(after.split_once("\r\n\r\n").unwrap().1).unwrap();
     assert_eq!(after["transfer_queues"]["standard"]["queued"], 0);
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(async {
+        let _ = handle.await;
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn property_transition_is_atomic_and_state_reads_do_not_advance_it() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
+        let server = Server::bind(Config {
+            instance_id: "property-transition-atomic".into(),
+            profile: "test/property-transition".into(),
+            connection: "app".into(),
+            manifest_yaml: PROPERTY_TRANSITION_MANIFEST.into(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .unwrap();
+        let command = server.command_addr();
+        let control = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(server.run(rx));
+        (command, control, tx, handle)
+    });
+
+    let catalog_response = http_get(control_addr, "/actions");
+    let catalog: serde_json::Value = serde_json::from_str(
+        catalog_response
+            .split_once("\r\n\r\n")
+            .expect("catalog response body")
+            .1,
+    )
+    .unwrap();
+    let invoke = |result| {
+        serde_json::json!({
+            "catalogRevision": catalog["revision"],
+            "mode": "shooting/stills",
+            "role": "responder",
+            "parameters": [{ "name": "result", "value": result }],
+        })
+    };
+
+    let response = http_post_json(
+        control_addr,
+        "/actions/autofocusLock",
+        &invoke(2).to_string(),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let response: serde_json::Value =
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(response["affectedObjects"], 0);
+    assert_eq!(
+        response["affectedProperties"],
+        serde_json::json!([{
+            "target": "0xd001",
+            "initial": 1,
+            "terminal": 2,
+            "settleAfterPolls": 2,
+        }])
+    );
+
+    let mut stream = connect_ptpip(command_addr, "transition-smoke");
+    open_session(&mut stream);
+
+    for _ in 0..2 {
+        let state = http_get(control_addr, "/state");
+        let state: serde_json::Value =
+            serde_json::from_str(state.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(state["props"]["0xd001"], 1);
+    }
+
+    let observation_path = root
+        .join(".ptpsim")
+        .join("observations-property-transition-atomic.jsonl");
+    std::fs::remove_file(&observation_path).unwrap();
+    let failed = http_post_json(
+        control_addr,
+        "/actions/autofocusLock",
+        &invoke(3).to_string(),
+    );
+    assert!(failed.starts_with("HTTP/1.1 500"), "{failed}");
+
+    let state = http_get(control_addr, "/state");
+    let state: serde_json::Value =
+        serde_json::from_str(state.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(state["props"]["0xd001"], 1);
+
+    std::fs::File::create(observation_path).unwrap();
+    assert_eq!(read_u16_prop(&mut stream, 2, 0xd001), 1);
+    assert_eq!(
+        read_u16_prop(&mut stream, 3, 0xd001),
+        2,
+        "failed re-arm must not replace the pending terminal"
+    );
 
     let _ = shutdown_tx.send(());
     rt.block_on(async {

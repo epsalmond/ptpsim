@@ -16,7 +16,10 @@ pub use ble::{
     walk_establishment, BleError, BleEvent, BleResponder, EstablishmentConfirmOutcome,
     EstablishmentWalkSummary, WalkError, WalkOutcome,
 };
-pub use engine::{Engine, QueueStats, Reply, StreamCompletion, TransferQueueStats};
+pub use engine::{
+    Engine, PreparedPropertyTransition, PreparedResponderMutation, QueueStats, Reply,
+    StreamCompletion, TransferQueueStats,
+};
 pub use fault::{Fault, FaultSet};
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
 pub use link::{CameraLink, SharedLink};

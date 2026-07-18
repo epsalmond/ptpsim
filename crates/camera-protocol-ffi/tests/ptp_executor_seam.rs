@@ -14,12 +14,12 @@ use camera_protocol_ffi::{
     parse_action_verb, run_initiator_action as execute_initiator_action,
     run_initiator_action_to_sink as execute_initiator_action_to_sink, run_mode_entry,
     run_mode_reestablishment_exit, run_selected_object_preparation, ActionArgument,
-    ActionInvocationRequest, ActionRole, ActionVerb, ConfigStore, ConnectionActivityEvent,
-    ConnectionActivityFailure, ConnectionActivityObserver, ConnectionActivityRetry,
-    ConnectionActivityTerminalSummary, ExecutorStepFailureKind, PtpDataOutput, PtpDataOutputSink,
-    PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
-    PtpFraming, PtpRuntimeValue, PtpSessionOpenResult, PtpTransportError, SocketRole, StepObserver,
-    StepOutcome, StepReport,
+    ActionInvocationRequest, ActionRole, ActionValue, ActionVerb, ConfigStore,
+    ConnectionActivityEvent, ConnectionActivityFailure, ConnectionActivityObserver,
+    ConnectionActivityRetry, ConnectionActivityTerminalSummary, ExecutorStepFailureKind,
+    PtpDataOutput, PtpDataOutputSink, PtpDataOutputSinkError, PtpExecutionOutcome,
+    PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpRuntimeValue, PtpSessionOpenResult,
+    PtpTransportError, SocketRole, StepObserver, StepOutcome, StepReport,
 };
 use camera_sim::{Engine, Fault, Reply};
 use futures::executor::block_on;
@@ -181,6 +181,70 @@ fn store_from_body(body: String) -> Arc<ConfigStore> {
     .expect("GFX store loads")
 }
 
+fn typed_action_store(steps: &str) -> Arc<ConfigStore> {
+    ConfigStore::from_bundle(
+        format!(
+            r#"schema: camera-config/v1
+camera: {{ manufacturer: Test, model: Typed, firmware: "1" }}
+properties:
+  "0xd209": {{ name: autofocusResult, type: u16, access: readWrite }}
+  "0xd395":
+    name: focusArea
+    type: str
+    access: readWrite
+    structuredText:
+      delimiter: ","
+      fields:
+        - {{ name: x, scalar: signedInteger }}
+        - {{ name: y, scalar: signedInteger }}
+        - {{ name: size, scalar: signedInteger }}
+connections:
+  app:
+    commandFraming: compressed
+    actions:
+      autofocusLock:
+        mode: ""
+        initiator:
+          params:
+            - {{ name: focusArea, kind: string, required: false }}
+          steps:
+{steps}
+"#
+        ),
+        None,
+    )
+    .expect("typed action store")
+}
+
+fn typed_action_request(
+    store: &ConfigStore,
+    parameters: Vec<ActionArgument>,
+) -> ActionInvocationRequest {
+    ActionInvocationRequest {
+        catalog_revision: store.action_catalog().revision,
+        action_id: "autofocusLock".into(),
+        connection: "app".into(),
+        mode: String::new(),
+        role: ActionRole::Initiator,
+        parameters,
+    }
+}
+
+fn pcss_autofocus_request(
+    store: &ConfigStore,
+    action_id: &str,
+    parameters: Vec<ActionArgument>,
+) -> ActionInvocationRequest {
+    ActionInvocationRequest {
+        catalog_revision: store.action_catalog().revision,
+        action_id: action_id.into(),
+        connection: "wireless-tether".into(),
+        mode: "shooting/stills".into(),
+        role: ActionRole::Initiator,
+        parameters,
+    }
+}
+
 fn action_request(
     store: &ConfigStore,
     connection: &str,
@@ -212,7 +276,7 @@ fn action_request(
             .into_iter()
             .map(|value| ActionArgument {
                 name: value.key,
-                value: value.value,
+                value: ActionValue::U64 { value: value.value },
             })
             .collect(),
     }
@@ -300,6 +364,270 @@ impl PtpExecutorTransport for TripwireExecutorTransport {
     async fn sleep(&self, _ms: u32) -> Result<(), PtpTransportError> {
         Err(self.touched())
     }
+}
+
+#[test]
+fn optional_runtime_set_prop_skip_succeeds_without_io_metadata() {
+    let store = typed_action_store(
+        r#"            - setProp: "0xd395"
+              value: { runtime: focusArea, ifMissing: skip }"#,
+    );
+    let transport = Arc::new(TripwireExecutorTransport::default());
+    let reports = Arc::new(Reports::default());
+    let outcome = block_on(execute_initiator_action(
+        store.clone(),
+        typed_action_request(&store, Vec::new()),
+        transport.clone(),
+        reports.clone(),
+        Arc::new(Activities::default()),
+    ))
+    .expect("omitted optional setProp skips");
+
+    assert_eq!(transport.touches(), 0);
+    assert_eq!(outcome.steps_run, 1);
+    let reports = reports.0.lock().expect("reports");
+    assert_eq!(reports.len(), 2);
+    assert!(reports
+        .iter()
+        .all(|report| report.operation.is_none() && report.property.is_none()));
+}
+
+#[test]
+fn runtime_set_prop_type_and_structure_fail_before_io() {
+    let store = typed_action_store(
+        r#"            - setProp: "0xd395"
+              value: { runtime: focusArea, ifMissing: skip }"#,
+    );
+    let transport = Arc::new(TripwireExecutorTransport::default());
+    let wrong_type = block_on(execute_initiator_action(
+        store.clone(),
+        typed_action_request(
+            &store,
+            vec![ActionArgument {
+                name: "focusArea".into(),
+                value: ActionValue::U64 { value: 1 },
+            }],
+        ),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+    ))
+    .expect_err("wrong type must fail");
+    assert!(matches!(
+        wrong_type,
+        PtpExecutorError::ActionRejected { ref code, .. } if code == "wrongParameterType"
+    ));
+    assert_eq!(transport.touches(), 0);
+
+    let malformed = block_on(execute_initiator_action(
+        store.clone(),
+        typed_action_request(
+            &store,
+            vec![ActionArgument {
+                name: "focusArea".into(),
+                value: ActionValue::String {
+                    value: "1,not-a-number,3".into(),
+                },
+            }],
+        ),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+    ))
+    .expect_err("malformed structured text must fail");
+    assert!(matches!(malformed, PtpExecutorError::StepFailed { .. }));
+    assert_eq!(transport.touches(), 0);
+}
+
+#[test]
+fn runtime_string_set_prop_uses_exact_ptp_str_payload() {
+    let store = typed_action_store(
+        r#"            - setProp: "0xd395"
+              value: { runtime: focusArea, ifMissing: skip }"#,
+    );
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(execute_initiator_action(
+        store.clone(),
+        typed_action_request(
+            &store,
+            vec![ActionArgument {
+                name: "focusArea".into(),
+                value: ActionValue::String {
+                    value: "1,2,-3".into(),
+                },
+            }],
+        ),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+    ))
+    .expect("valid structured string write");
+
+    assert_eq!(
+        transport.data_writes(0x1016, &[0xd395]),
+        [vec![
+            7, b'1', 0, b',', 0, b'2', 0, b',', 0, b'-', 0, b'3', 0, 0, 0,
+        ]]
+    );
+}
+
+#[test]
+fn await_until_capture_reuses_terminal_poll_value() {
+    let store = typed_action_store(
+        r#"            - awaitUntil:
+                source: { poll: "0xd209" }
+                until: { prop: "0xd209", eq: 0 }
+                timeoutMs: 1000
+              captures: [{ bind: autofocusResult, as: propValue }]"#,
+    );
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    let outcome = block_on(execute_initiator_action(
+        store.clone(),
+        typed_action_request(&store, Vec::new()),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+    ))
+    .expect("await captures terminal property");
+
+    assert_eq!(transport.request_count(0x1015, &[0xd209]), 1);
+    assert!(outcome.scope.iter().any(|value| {
+        value.key == "autofocusResult" && matches!(value.value, ActionValue::U64 { value: 0 })
+    }));
+}
+
+#[test]
+fn bundled_pcss_autofocus_omits_or_encodes_focus_area_and_captures_terminal_poll() {
+    let store = store();
+
+    let omitted_transport = Arc::new(EngineTransport::new(
+        "wireless-tether",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    omitted_transport.invoke_pcss_autofocus_responder(None);
+    let omitted = block_on(execute_initiator_action(
+        store.clone(),
+        pcss_autofocus_request(&store, "autofocusLock", Vec::new()),
+        omitted_transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+    ))
+    .expect("omitted focusArea skips D395");
+    assert_eq!(omitted_transport.request_count(0x1016, &[0xd395]), 0);
+    assert_eq!(omitted_transport.request_count(0x1015, &[0xd209]), 2);
+    assert!(omitted.scope.iter().any(|value| {
+        value.key == "autofocusResult" && matches!(value.value, ActionValue::U64 { value: 3 })
+    }));
+
+    let present_transport = Arc::new(EngineTransport::new(
+        "wireless-tether",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    present_transport.invoke_pcss_autofocus_responder(Some(2));
+    let present = block_on(execute_initiator_action(
+        store.clone(),
+        pcss_autofocus_request(
+            &store,
+            "autofocusLock",
+            vec![ActionArgument {
+                name: "focusArea".into(),
+                value: ActionValue::String {
+                    value: "-12,34,5".into(),
+                },
+            }],
+        ),
+        present_transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+    ))
+    .expect("valid focusArea executes");
+    assert_eq!(
+        present_transport.data_writes(0x1016, &[0xd395]),
+        [vec![
+            9, b'-', 0, b'1', 0, b'2', 0, b',', 0, b'3', 0, b'4', 0, b',', 0, b'5', 0, 0, 0,
+        ]]
+    );
+    assert_eq!(
+        present_transport.request_count(0x1015, &[0xd209]),
+        2,
+        "the satisfying poll value is captured without an extra D209 read"
+    );
+    assert!(present.scope.iter().any(|value| {
+        value.key == "autofocusResult" && matches!(value.value, ActionValue::U64 { value: 2 })
+    }));
+}
+
+#[test]
+fn bundled_pcss_autofocus_rejects_invalid_focus_area_before_io() {
+    let store = store();
+    for value in [
+        ActionValue::U64 { value: 7 },
+        ActionValue::String {
+            value: "1,invalid,3".into(),
+        },
+    ] {
+        let transport = Arc::new(TripwireExecutorTransport::default());
+        block_on(execute_initiator_action(
+            store.clone(),
+            pcss_autofocus_request(
+                &store,
+                "autofocusLock",
+                vec![ActionArgument {
+                    name: "focusArea".into(),
+                    value,
+                }],
+            ),
+            transport.clone(),
+            Arc::new(Reports::default()),
+            Arc::new(Activities::default()),
+        ))
+        .expect_err("invalid focusArea must fail");
+        assert_eq!(transport.touches(), 0, "invalid input reached transport");
+    }
+}
+
+#[test]
+fn bundled_pcss_autofocus_release_tolerates_d230_cleanup_response() {
+    let store = store();
+    let transport = Arc::new(EngineTransport::new(
+        "wireless-tether",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    transport.install_fault(Fault::FailOperationParamsTimes {
+        code: 0x1016,
+        params: vec![0xd230],
+        response: 0xa002,
+        remaining: 1,
+    });
+    let reports = Arc::new(Reports::default());
+    block_on(execute_initiator_action(
+        store.clone(),
+        pcss_autofocus_request(&store, "autofocusRelease", Vec::new()),
+        transport.clone(),
+        reports.clone(),
+        Arc::new(Activities::default()),
+    ))
+    .expect("tolerated D230 response continues cleanup");
+    assert_eq!(transport.request_count(0x1016, &[0xd230]), 1);
+    assert_eq!(transport.request_count(0x1016, &[0xd21c]), 1);
+    assert_eq!(transport.request_count(0x1016, &[0xd208]), 1);
+    assert_eq!(transport.request_count(0x100e, &[0, 0]), 1);
+    assert!(reports.0.lock().expect("reports").iter().any(|report| {
+        report.property == Some(0xd230)
+            && report.response_code == Some(0xa002)
+            && matches!(report.outcome, StepOutcome::Tolerated)
+    }));
 }
 
 fn engine(connection: &str) -> (Engine, u32) {
@@ -500,6 +828,40 @@ impl EngineTransport {
             .expect("state")
             .engine
             .install_fault(fault);
+    }
+
+    fn invoke_pcss_autofocus_responder(&self, result: Option<u64>) {
+        let manifest = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml"))
+            .expect("consolidated manifest");
+        let request = camera_config::ActionInvocationRequest {
+            catalog_revision: manifest.action_catalog().revision,
+            action_id: "autofocusLock".into(),
+            connection: "wireless-tether".into(),
+            mode: "shooting/stills".into(),
+            role: camera_config::ActionRole::Responder,
+            parameters: result
+                .map(|value| camera_config::ActionArgument {
+                    name: "result".into(),
+                    value: value.into(),
+                })
+                .into_iter()
+                .collect(),
+        };
+        let resolved = manifest
+            .resolve_action_invocation(&request)
+            .expect("responder invocation resolves");
+        let mutation = resolved
+            .responder_mutation
+            .expect("responder mutation resolves");
+        let mut state = self.state.lock().expect("state");
+        let prepared = state
+            .engine
+            .prepare_responder_mutation(&mutation, &resolved.parameters)
+            .expect("responder transition prepares");
+        state
+            .engine
+            .apply_responder_mutation(&prepared)
+            .expect("responder transition applies");
     }
 
     fn force_event_deadline(&self) {
@@ -982,7 +1344,7 @@ fn rejected_action_invocations_never_touch_the_transport_or_observers() {
                 let mut request = base.clone();
                 request.parameters.push(ActionArgument {
                     name: "handle".into(),
-                    value: 2,
+                    value: ActionValue::U64 { value: 2 },
                 });
                 request
             },
@@ -1001,7 +1363,7 @@ fn rejected_action_invocations_never_touch_the_transport_or_observers() {
                 let mut request = base;
                 request.parameters.push(ActionArgument {
                     name: "extra".into(),
-                    value: 2,
+                    value: ActionValue::U64 { value: 2 },
                 });
                 request
             },
@@ -1341,7 +1703,17 @@ fn outer_reestablishment_entry_runs_only_its_exit_steps() {
         .iter()
         .find(|value| value.key == "openCaptureTxId")
         .expect("cold entry captures open-capture transaction")
-        .value;
+        .value
+        .as_u64()
+        .expect("transaction capture is numeric");
+    let runtime_scope = source
+        .scope
+        .into_iter()
+        .map(|value| PtpRuntimeValue {
+            key: value.key,
+            value: value.value.as_u64().expect("entry scope is numeric"),
+        })
+        .collect();
 
     let outcome = block_on(run_mode_reestablishment_exit(
         store,
@@ -1351,7 +1723,7 @@ fn outer_reestablishment_entry_runs_only_its_exit_steps() {
         transport.clone(),
         Arc::new(Reports::default()),
         Arc::new(Activities::default()),
-        source.scope,
+        runtime_scope,
     ))
     .expect("outer transition exit succeeds");
     assert!(outcome.steps_run > 0);
@@ -1442,7 +1814,7 @@ fn selected_object_preparation_returns_transfer_bindings() {
         outcome
             .scope
             .iter()
-            .map(|value| (&value.key, value.value))
+            .map(|value| (&value.key, value.value.as_u64()))
             .collect::<Vec<_>>()
     );
     assert!(outcome

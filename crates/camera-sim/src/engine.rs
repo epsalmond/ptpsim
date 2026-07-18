@@ -3,10 +3,13 @@
 //! exist, which properties have which forms, and which workflow they belong to
 //! are all manifest data. The handlers here are generic PTP semantics.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use camera_config::model::{Action, ScalarEncoding, Step, StepParam};
-use camera_config::{parse_hex_code, ActionVerb, CameraInitiatedMetadataPhase, CameraManifest};
+use camera_config::model::{Action, ScalarEncoding, SetPropValue, Step, StepParam};
+use camera_config::{
+    parse_hex_code, ActionArgumentValue, ActionVerb, CameraInitiatedMetadataPhase, CameraManifest,
+    PropertyTransitionTerminal, ResponderMutation,
+};
 use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
@@ -120,6 +123,20 @@ pub struct QueueStats {
 pub struct TransferQueueStats {
     pub standard: Option<QueueStats>,
     pub camera_initiated: Option<QueueStats>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedPropertyTransition {
+    pub target: u16,
+    pub initial: Option<i64>,
+    pub terminal: i64,
+    pub settle_after_polls: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreparedResponderMutation {
+    EnqueueObjects { count: u32, affected: usize },
+    PropertyTransition(PreparedPropertyTransition),
 }
 
 #[derive(Clone, Copy)]
@@ -373,6 +390,109 @@ impl Engine {
                     total: queue.handles.len(),
                 }),
         }
+    }
+
+    /// Resolve one closed responder mutation without changing camera state.
+    pub fn prepare_responder_mutation(
+        &self,
+        mutation: &ResponderMutation,
+        parameters: &BTreeMap<String, ActionArgumentValue>,
+    ) -> Result<PreparedResponderMutation, String> {
+        match mutation {
+            ResponderMutation::EnqueueObjects { count_param } => {
+                let Some(ActionArgumentValue::U64(count)) = parameters.get(count_param) else {
+                    return Err(format!(
+                        "resolved responder parameter '{count_param}' is not numeric"
+                    ));
+                };
+                let count = u32::try_from(*count)
+                    .map_err(|_| format!("resolved parameter '{count_param}' exceeds u32"))?;
+                let affected = self.pending_standard_object_enqueue(count)?;
+                Ok(PreparedResponderMutation::EnqueueObjects { count, affected })
+            }
+            ResponderMutation::PropertyTransition {
+                target,
+                initial,
+                terminal,
+                settle_after_polls,
+            } => {
+                let target = parse_hex_code(target)
+                    .ok_or_else(|| format!("invalid property transition target '{target}'"))?;
+                let property = self
+                    .manifest
+                    .property(target)
+                    .ok_or_else(|| format!("unknown property transition target {target:#06x}"))?;
+                if property.payload.is_some() {
+                    return Err(format!(
+                        "property transition target {target:#06x} is not a scalar"
+                    ));
+                }
+                let terminal = match terminal {
+                    PropertyTransitionTerminal::Fixed { value } => *value,
+                    PropertyTransitionTerminal::Parameter { parameter } => {
+                        let Some(ActionArgumentValue::U64(value)) = parameters.get(parameter)
+                        else {
+                            return Err(format!(
+                                "resolved terminal parameter '{parameter}' is not numeric"
+                            ));
+                        };
+                        i64::try_from(*value).map_err(|_| {
+                            format!("resolved terminal parameter '{parameter}' exceeds i64")
+                        })?
+                    }
+                };
+                if initial
+                    .is_some_and(|value| !scalar_fits_property(property.ptype.as_deref(), value))
+                    || !scalar_fits_property(property.ptype.as_deref(), terminal)
+                {
+                    return Err(format!(
+                        "resolved property transition value does not fit target {target:#06x}"
+                    ));
+                }
+                Ok(PreparedResponderMutation::PropertyTransition(
+                    PreparedPropertyTransition {
+                        target,
+                        initial: *initial,
+                        terminal,
+                        settle_after_polls: *settle_after_polls,
+                    },
+                ))
+            }
+        }
+    }
+
+    /// Apply a previously prepared mutation. Callers can record the resolved
+    /// action between preparation and this state-changing step.
+    pub fn apply_responder_mutation(
+        &mut self,
+        prepared: &PreparedResponderMutation,
+    ) -> Result<(), String> {
+        match prepared {
+            PreparedResponderMutation::EnqueueObjects { count, affected } => {
+                let applied = self.enqueue_standard_objects(*count)?;
+                debug_assert_eq!(applied, *affected, "preflighted responder mutation drifted");
+            }
+            PreparedResponderMutation::PropertyTransition(transition) => {
+                let ptype = self
+                    .manifest
+                    .property(transition.target)
+                    .and_then(|property| property.ptype.as_deref());
+                if let Some(initial) = transition.initial {
+                    self.state.props.insert(
+                        transition.target,
+                        property_transition_value(ptype, initial)
+                            .expect("prepared initial transition value must encode"),
+                    );
+                }
+                self.state.arm_effect(
+                    transition.target,
+                    property_transition_value(ptype, transition.terminal)
+                        .expect("prepared terminal transition value must encode"),
+                    transition.settle_after_polls,
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Apply the closed responder action primitive after catalog resolution.
@@ -1301,7 +1421,7 @@ impl Engine {
             .is_some_and(|initiator| {
                 initiator.steps.iter().any(|step| {
                     step.set_prop.as_deref().and_then(parse_hex_code) == Some(code)
-                        && step.value == Some(value)
+                        && step.value.as_ref().and_then(SetPropValue::literal) == Some(value)
                 })
             })
     }
@@ -1755,9 +1875,14 @@ fn matcher_for_step(step: &Step) -> Option<GateMatcher> {
         return None;
     }
     if let Some(prop) = &step.set_prop {
+        let value = match step.value.as_ref() {
+            None => None,
+            Some(SetPropValue::Literal(value)) => Some(*value),
+            Some(SetPropValue::Runtime(_)) => return None,
+        };
         return Some(GateMatcher::SetProp {
             prop: parse_hex_code(prop)?,
-            value: step.value,
+            value,
         });
     }
     if let Some(prop) = &step.get_prop {
@@ -1851,6 +1976,30 @@ fn literal_params(params: &[StepParam]) -> Option<Vec<u32>> {
         .collect()
 }
 
+fn scalar_fits_property(ptype: Option<&str>, value: i64) -> bool {
+    match ptype {
+        Some("u8") => u8::try_from(value).is_ok(),
+        Some("u16") => u16::try_from(value).is_ok(),
+        Some("u32") => u32::try_from(value).is_ok(),
+        Some("u64") => value >= 0,
+        Some("i16") => i16::try_from(value).is_ok(),
+        Some("i32") => i32::try_from(value).is_ok(),
+        _ => false,
+    }
+}
+
+fn property_transition_value(ptype: Option<&str>, value: i64) -> Option<PropValue> {
+    Some(match ptype {
+        Some("u8") => PropValue::U8(u8::try_from(value).ok()?),
+        Some("u16") => PropValue::U16(u16::try_from(value).ok()?),
+        Some("u32") => PropValue::U32(u32::try_from(value).ok()?),
+        Some("u64") => PropValue::U64(u64::try_from(value).ok()?),
+        Some("i16") => PropValue::U16(i16::try_from(value).ok()? as u16),
+        Some("i32") => PropValue::U32(i32::try_from(value).ok()? as u32),
+        _ => return None,
+    })
+}
+
 fn value_to_i64(v: &PropValue) -> Option<i64> {
     Some(match v {
         PropValue::U8(x) => *x as i64,
@@ -1864,7 +2013,7 @@ fn value_to_i64(v: &PropValue) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use camera_config::CameraManifest;
+    use camera_config::{CameraManifest, PropertyTransitionTerminal, ResponderMutation};
     use camera_media_store::MediaStore;
 
     fn empty_store() -> MediaStore {
@@ -1907,6 +2056,97 @@ mod tests {
     /// Same, decoding a u32 property (e.g. 0xD17C S1LockAreaState).
     fn poll_u32(engine: &mut Engine, code: u16, tid: u32) -> i64 {
         poll_dt(engine, code, tid, ptp_core::codes::datatype_code::UINT32)
+    }
+
+    fn transition_engine() -> Engine {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd001": { name: result, type: u16, access: readOnly }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        engine
+    }
+
+    fn transition(terminal: i64, settle_after_polls: u32) -> ResponderMutation {
+        ResponderMutation::PropertyTransition {
+            target: "0xd001".into(),
+            initial: Some(1),
+            terminal: PropertyTransitionTerminal::Fixed { value: terminal },
+            settle_after_polls,
+        }
+    }
+
+    #[test]
+    fn responder_property_transition_immediate_value_wins_over_initial() {
+        let mut engine = transition_engine();
+        let prepared = engine
+            .prepare_responder_mutation(&transition(2, 0), &BTreeMap::new())
+            .unwrap();
+        engine.apply_responder_mutation(&prepared).unwrap();
+        assert_eq!(poll(&mut engine, 0xd001, 1), 2);
+    }
+
+    #[test]
+    fn responder_property_transition_settles_on_exact_poll() {
+        let mut engine = transition_engine();
+        let prepared = engine
+            .prepare_responder_mutation(&transition(2, 2), &BTreeMap::new())
+            .unwrap();
+        engine.apply_responder_mutation(&prepared).unwrap();
+        assert_eq!(poll(&mut engine, 0xd001, 1), 1);
+        assert_eq!(poll(&mut engine, 0xd001, 2), 2);
+        assert_eq!(poll(&mut engine, 0xd001, 3), 2);
+    }
+
+    #[test]
+    fn responder_property_transition_rearm_replaces_pending_value() {
+        let mut engine = transition_engine();
+        let first = engine
+            .prepare_responder_mutation(&transition(2, 2), &BTreeMap::new())
+            .unwrap();
+        engine.apply_responder_mutation(&first).unwrap();
+        assert_eq!(poll(&mut engine, 0xd001, 1), 1);
+
+        let replacement = engine
+            .prepare_responder_mutation(&transition(3, 2), &BTreeMap::new())
+            .unwrap();
+        engine.apply_responder_mutation(&replacement).unwrap();
+        assert_eq!(poll(&mut engine, 0xd001, 2), 1);
+        assert_eq!(poll(&mut engine, 0xd001, 3), 3);
+    }
+
+    #[test]
+    fn responder_property_transition_preserves_signed_target_width() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd001": { name: result, type: i32, access: readOnly }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        let prepared = engine
+            .prepare_responder_mutation(
+                &ResponderMutation::PropertyTransition {
+                    target: "0xd001".into(),
+                    initial: None,
+                    terminal: PropertyTransitionTerminal::Fixed { value: -1 },
+                    settle_after_polls: 0,
+                },
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        engine.apply_responder_mutation(&prepared).unwrap();
+        assert_eq!(poll_u32(&mut engine, 0xd001, 2), i64::from(u32::MAX));
     }
 
     /// §5.5 AF stub: 0x9026 arms a deferred 0xd209 → 1 transition visible on the

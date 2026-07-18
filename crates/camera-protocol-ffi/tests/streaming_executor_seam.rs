@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use camera_protocol_ffi::{
     parse_action_verb, run_streaming_action as execute_streaming_action, ActionArgument,
-    ActionInvocationRequest, ActionRole, ActionVerb, ConfigStore, PtpRuntimeValue,
+    ActionInvocationRequest, ActionRole, ActionValue, ActionVerb, ConfigStore, PtpRuntimeValue,
     PtpStreamingError, PtpStreamingOutcome, PtpStreamingSink, PtpStreamingSinkError,
     PtpStreamingTransport, PtpTransportError,
 };
@@ -23,6 +23,33 @@ fn xa7_store() -> Arc<ConfigStore> {
         Some(common::data("fuji/fuji.yaml")),
     )
     .expect("X-A7 manifest loads")
+}
+
+fn string_parameter_store() -> Arc<ConfigStore> {
+    let original = common::data("fuji/gfx100ii/gfx100ii.yaml");
+    let body = original.replacen(
+        r#"      getObject:
+        mode: ""
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x1009", params: [{ runtime: handle }] }"#,
+        r#"      getObject:
+        mode: ""
+        initiator:
+          params:
+            - { name: handle, kind: string }
+          steps:
+            - { sendOp: "0x1009", params: [{ runtime: handle }] }"#,
+        1,
+    );
+    assert_ne!(body, original, "streaming action fixture must be replaced");
+    ConfigStore::from_manufacturer_index_with_defaults(
+        common::data("fuji/index.yaml"),
+        common::data("fuji/fuji.yaml"),
+        common::real_fuji_bodies_with("gfx100ii", body),
+    )
+    .expect("string-parameter streaming manifest loads")
 }
 
 fn action_request(
@@ -56,7 +83,7 @@ fn action_request(
             .into_iter()
             .map(|value| ActionArgument {
                 name: value.key,
-                value: value.value,
+                value: ActionValue::U64 { value: value.value },
             })
             .collect(),
     }
@@ -323,7 +350,7 @@ fn rejected_streaming_invocations_have_zero_transport_and_sink_effects() {
                 let mut request = base.clone();
                 request.parameters.push(ActionArgument {
                     name: "handle".into(),
-                    value: 2,
+                    value: ActionValue::U64 { value: 2 },
                 });
                 request
             },
@@ -342,7 +369,7 @@ fn rejected_streaming_invocations_have_zero_transport_and_sink_effects() {
                 let mut request = base;
                 request.parameters.push(ActionArgument {
                     name: "extra".into(),
-                    value: 2,
+                    value: ActionValue::U64 { value: 2 },
                 });
                 request
             },
@@ -376,6 +403,38 @@ fn rejected_streaming_invocations_have_zero_transport_and_sink_effects() {
         assert_eq!(*sink.expected.lock().unwrap(), None);
         assert!(sink.bytes.lock().unwrap().is_empty());
     }
+}
+
+#[test]
+fn string_streaming_parameter_returns_typed_rejection_without_io() {
+    let store = string_parameter_store();
+    let mut request = action_request(&store, "wireless-tether", ActionVerb::GetObject, vec![]);
+    request.parameters = vec![ActionArgument {
+        name: "handle".into(),
+        value: ActionValue::String { value: "x".into() },
+    }];
+    let transport = Transport::new(Vec::new(), 0x2001);
+    let sink = Arc::new(Sink::default());
+
+    let error = block_on(execute_streaming_action(
+        store,
+        request,
+        transport.clone(),
+        sink.clone(),
+        None,
+    ))
+    .expect_err("string streaming parameter must return an error without panicking");
+
+    match error {
+        PtpStreamingError::ActionRejected { code, detail } => {
+            assert_eq!(code, "wrongParameterType");
+            assert_eq!(detail, "parameter \"handle\" requires U64, got String");
+        }
+        other => panic!("expected typed action rejection, got {other:?}"),
+    }
+    assert_eq!(transport.touches.load(Ordering::SeqCst), 0);
+    assert_eq!(*sink.expected.lock().unwrap(), None);
+    assert!(sink.bytes.lock().unwrap().is_empty());
 }
 
 #[test]

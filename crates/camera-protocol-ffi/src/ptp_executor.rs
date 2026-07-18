@@ -11,12 +11,12 @@ use ptp_core::codes::{op, resp};
 
 use crate::executor::ActiveActivity;
 use crate::{
-    frame_decode, frame_encode, ActionInvocationRequest, ActionRole, CaptureInfo,
+    frame_decode, frame_encode, ActionInvocationRequest, ActionRole, ActionValue, CaptureInfo,
     CaptureSourceInfo, ConfigStore, ConnectionActivityBinding, ConnectionActivityDescriptor,
     ConnectionActivityFailure, ConnectionActivityObserver, ConnectionActivityRetry, EntryParam,
-    EntryStep, ExecutorStepFailureKind, FfiAwaitSource, FfiChunkSize, FfiLoopKind, FfiPredicate,
-    FfiRetryFailureClass, KeyValue, PtpFraming, SocketRole, StepObserver, StepOutcome, StepReport,
-    ValueWidth,
+    EntryStep, ExecutorStepFailureKind, FfiAwaitSource, FfiChunkSize, FfiLoopKind,
+    FfiMissingRuntimeValue, FfiPredicate, FfiRetryFailureClass, KeyValue, PtpFraming, SocketRole,
+    StepObserver, StepOutcome, StepReport, ValueWidth,
 };
 
 const DEFAULT_OP_TIMEOUT_MS: u32 = 10_000;
@@ -73,6 +73,12 @@ pub struct PtpRuntimeValue {
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
+pub struct PtpScopeValue {
+    pub key: String,
+    pub value: ActionValue,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct PtpCollectionValue {
     pub key: String,
     pub values: Vec<u64>,
@@ -104,7 +110,7 @@ pub trait PtpDataOutputSink: Send + Sync {
 
 #[derive(Debug, uniffi::Record)]
 pub struct PtpExecutionOutcome {
-    pub scope: Vec<PtpRuntimeValue>,
+    pub scope: Vec<PtpScopeValue>,
     pub collections: Vec<PtpCollectionValue>,
     pub outputs: Vec<PtpDataOutput>,
     pub steps_run: u32,
@@ -157,7 +163,7 @@ pub async fn run_mode_entry(
         transport,
         observer,
         activity_observer,
-        runtime_params,
+        numeric_runtime_params(runtime_params),
         None,
     )
     .await
@@ -193,7 +199,7 @@ pub async fn run_mode_reestablishment_exit(
         transport,
         observer,
         activity_observer,
-        runtime_params,
+        numeric_runtime_params(runtime_params),
         None,
     )
     .await
@@ -261,7 +267,7 @@ pub async fn run_initiator_action_to_sink(
 fn resolve_initiator(
     store: &ConfigStore,
     request: ActionInvocationRequest,
-) -> Result<(String, crate::Action, Vec<PtpRuntimeValue>), PtpExecutorError> {
+) -> Result<(String, crate::Action, Vec<PtpScopeValue>), PtpExecutorError> {
     if request.role != ActionRole::Initiator {
         return Err(PtpExecutorError::ActionRejected {
             code: "wrongRole".into(),
@@ -284,7 +290,7 @@ fn resolve_initiator(
     let runtime_params = resolved
         .parameters
         .into_iter()
-        .map(|argument| PtpRuntimeValue {
+        .map(|argument| PtpScopeValue {
             key: argument.name,
             value: argument.value,
         })
@@ -318,7 +324,7 @@ pub async fn run_selected_object_preparation(
         transport,
         observer,
         activity_observer,
-        runtime_params,
+        numeric_runtime_params(runtime_params),
         None,
     )
     .await
@@ -333,7 +339,7 @@ async fn run_steps(
     transport: Arc<dyn PtpExecutorTransport>,
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
-    runtime_params: Vec<PtpRuntimeValue>,
+    runtime_params: Vec<PtpScopeValue>,
     output_sink: Option<Arc<dyn PtpDataOutputSink>>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
     let connection_config = store
@@ -354,10 +360,11 @@ async fn run_steps(
         .event_framing
         .map(Into::into)
         .unwrap_or(command_framing);
-    let runtime_params: BTreeMap<String, u64> = runtime_params
+    let runtime_params: BTreeMap<String, ActionValue> = runtime_params
         .into_iter()
         .map(|value| (value.key, value.value))
         .collect();
+    preflight_runtime_set_props(&store, &steps, &runtime_params)?;
     let mut ctx = PtpCtx {
         store,
         connection,
@@ -474,8 +481,8 @@ struct PtpCtx {
     activities: Vec<ConnectionActivityDescriptor>,
     active_activity: Option<PtpActiveActivity>,
     observed: cc::PropView,
-    bindings: BTreeMap<String, u64>,
-    runtime_params: BTreeMap<String, u64>,
+    bindings: BTreeMap<String, ActionValue>,
+    runtime_params: BTreeMap<String, ActionValue>,
     collections: BTreeMap<String, Vec<u64>>,
     outputs: Vec<PtpDataOutput>,
     output_sink: Option<Arc<dyn PtpDataOutputSink>>,
@@ -489,7 +496,7 @@ impl PtpCtx {
         PtpExecutionOutcome {
             scope: std::mem::take(&mut self.bindings)
                 .into_iter()
-                .map(|(key, value)| PtpRuntimeValue { key, value })
+                .map(|(key, value)| PtpScopeValue { key, value })
                 .collect(),
             collections: std::mem::take(&mut self.collections)
                 .into_iter()
@@ -613,7 +620,7 @@ impl PtpCtx {
     ) -> Pin<Box<dyn Future<Output = Result<Option<TxMeta>, StepError>> + Send + 'a>> {
         Box::pin(async move {
             let tolerant = step_tolerant(step);
-            let (operation, property) = step_codes(step);
+            let (operation, property) = step_codes(step, &self.runtime_params);
             let (activity_id, activity_version) = self.activity_correlation();
             self.observer.on_step(StepReport {
                 step_path: here.to_string(),
@@ -743,7 +750,7 @@ impl PtpCtx {
         activity_id: Option<String>,
         activity_version: Option<u32>,
     ) {
-        let (declared_operation, declared_property) = step_codes(step);
+        let (declared_operation, declared_property) = step_codes(step, &self.runtime_params);
         self.observer.on_step(StepReport {
             step_path: here.to_string(),
             verb: step_verb(step).to_string(),
@@ -774,6 +781,33 @@ impl PtpCtx {
                     })?;
                     let payload = crate::encode_value(*value, width)
                         .map_err(|error| self.other(here, error.to_string()))?;
+                    let reply = self
+                        .issue(
+                            here,
+                            op::SET_DEVICE_PROP_VALUE,
+                            vec![*prop as u32],
+                            Some(payload),
+                            Some(*prop),
+                        )
+                        .await?;
+                    self.require_ok(here, reply).map(Some)
+                }
+                EntryStep::SetPropRuntime {
+                    prop,
+                    slot,
+                    if_missing,
+                    ..
+                } => {
+                    let Some(value) = self.runtime_params.get(slot) else {
+                        return match if_missing {
+                            FfiMissingRuntimeValue::Skip => Ok(None),
+                            FfiMissingRuntimeValue::Error => {
+                                Err(self.other(here, format!("runtime slot {slot:?} is unbound")))
+                            }
+                        };
+                    };
+                    let payload = encode_runtime_property_value(&self.store, *prop, value)
+                        .map_err(|detail| self.other(here, detail))?;
                     let reply = self
                         .issue(
                             here,
@@ -924,13 +958,15 @@ impl PtpCtx {
                     source,
                     until,
                     on_each,
+                    captures,
                     timeout_ms,
                     interval_ms,
                     ..
                 } => {
                     let transport = self.transport.clone();
                     let budget = (*timeout_ms).max(1);
-                    let walk = self.run_await_body(source, until, on_each, *interval_ms, here);
+                    let walk =
+                        self.run_await_body(source, until, on_each, captures, *interval_ms, here);
                     let selected = select(Box::pin(walk), Box::pin(transport.sleep(budget))).await;
                     match selected {
                         Either::Left((result, pending_clock)) => {
@@ -1007,9 +1043,12 @@ impl PtpCtx {
                     then_steps,
                     ..
                 } => {
-                    let actual =
-                        self.bindings.get(slot).copied().ok_or_else(|| {
-                            self.other(here, format!("if slot {slot:?} is unbound"))
+                    let actual = self
+                        .bindings
+                        .get(slot)
+                        .and_then(action_value_u64)
+                        .ok_or_else(|| {
+                            self.other(here, format!("if slot {slot:?} is not a bound u64"))
                         })?;
                     if actual == *equals {
                         self.walk_steps(then_steps, &format!("{here}.then"), false)
@@ -1025,9 +1064,12 @@ impl PtpCtx {
                     else_steps,
                     ..
                 } => {
-                    let actual =
-                        self.bindings.get(slot).copied().ok_or_else(|| {
-                            self.other(here, format!("if slot {slot:?} is unbound"))
+                    let actual = self
+                        .bindings
+                        .get(slot)
+                        .and_then(action_value_u64)
+                        .ok_or_else(|| {
+                            self.other(here, format!("if slot {slot:?} is not a bound u64"))
                         })?;
                     if actual == *equals {
                         self.walk_steps(then_steps, &format!("{here}.then"), false)
@@ -1046,12 +1088,14 @@ impl PtpCtx {
         source: &'a FfiAwaitSource,
         until: &'a FfiPredicate,
         on_each: &'a [EntryStep],
+        captures: &'a [CaptureInfo],
         interval_ms: u32,
         here: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<TxMeta>, StepError>> + Send + 'a>> {
         Box::pin(async move {
             let predicate = cc::Predicate::from(until);
             let mut last = None;
+            let mut final_property = None;
             if let FfiAwaitSource::Event { code, .. } = source {
                 let frame = self
                     .transport_deadline(
@@ -1086,9 +1130,17 @@ impl PtpCtx {
                         .await?;
                     let reply = self.require_ok_reply(here, reply)?;
                     self.observe_property(here, prop, &reply.payload)?;
+                    final_property = Some((prop, reply.payload));
                     last = Some(reply.meta);
                 }
                 if predicate.eval(&self.observed) {
+                    if let Some((prop, payload)) = final_property.as_ref() {
+                        self.capture_property(here, *prop, captures, payload)?;
+                    } else if !captures.is_empty() {
+                        return Err(
+                            self.other(here, "await capture has no polled property value".into())
+                        );
+                    }
                     return Ok(last);
                 }
                 if poll.is_none() {
@@ -1134,7 +1186,9 @@ impl PtpCtx {
                     }
                     let mut last = None;
                     for (index, value) in values.into_iter().enumerate() {
-                        let previous = self.bindings.insert(bind.clone(), value);
+                        let previous = self
+                            .bindings
+                            .insert(bind.clone(), ActionValue::U64 { value });
                         let result = self
                             .walk_steps(body, &format!("{here}.forEach[{index}]"), false)
                             .await;
@@ -1150,17 +1204,25 @@ impl PtpCtx {
                     length_bind,
                     body,
                 } => {
-                    let total =
-                        self.bindings.get(total).copied().ok_or_else(|| {
-                            self.other(here, "chunk total slot is unbound".into())
+                    let total = self
+                        .bindings
+                        .get(total)
+                        .and_then(action_value_u64)
+                        .ok_or_else(|| {
+                            self.other(here, "chunk total slot is not a bound u64".into())
                         })?;
                     let window = match size {
                         FfiChunkSize::Literal { value } => *value as u64,
-                        FfiChunkSize::Runtime { slot } => {
-                            self.bindings.get(slot).copied().ok_or_else(|| {
-                                self.other(here, format!("chunk size slot {slot:?} is unbound"))
-                            })?
-                        }
+                        FfiChunkSize::Runtime { slot } => self
+                            .bindings
+                            .get(slot)
+                            .and_then(action_value_u64)
+                            .ok_or_else(|| {
+                                self.other(
+                                    here,
+                                    format!("chunk size slot {slot:?} is not a bound u64"),
+                                )
+                            })?,
                     };
                     if window == 0 {
                         return Err(self.other(here, "chunk size must be non-zero".into()));
@@ -1176,8 +1238,12 @@ impl PtpCtx {
                             ));
                         }
                         let length = (total - offset).min(window);
-                        let old_offset = self.bindings.insert(offset_bind.clone(), offset);
-                        let old_length = self.bindings.insert(length_bind.clone(), length);
+                        let old_offset = self
+                            .bindings
+                            .insert(offset_bind.clone(), ActionValue::U64 { value: offset });
+                        let old_length = self
+                            .bindings
+                            .insert(length_bind.clone(), ActionValue::U64 { value: length });
                         let result = self
                             .walk_steps(body, &format!("{here}.chunk[{index}]"), false)
                             .await;
@@ -1433,16 +1499,37 @@ impl PtpCtx {
             }
             return self.observe_property(here, prop, payload);
         }
-        if captures.is_empty() && self.store.property_value_width(prop).is_none() {
+        let is_string = self
+            .store
+            .inner
+            .manifest
+            .property(prop)
+            .is_some_and(|property| property.ptype.as_deref() == Some("str"));
+        if captures.is_empty() && self.store.property_value_width(prop).is_none() && !is_string {
             return Ok(());
         }
-        let value = self.decode_property(here, prop, payload)?;
-        self.observed.set(prop, value);
+        let value = if is_string {
+            let mut reader = ptp_core::Reader::new(payload);
+            ActionValue::String {
+                value: reader.ptp_string().map_err(|error| {
+                    self.decode_failure(
+                        here,
+                        format!("property {prop:#06x}: decode PTP string: {error}"),
+                    )
+                })?,
+            }
+        } else {
+            let value = self.decode_property(here, prop, payload)?;
+            self.observed.set(prop, value);
+            ActionValue::U64 {
+                value: value as u64,
+            }
+        };
         for capture in captures {
             if !matches!(capture.source, CaptureSourceInfo::PropValue) {
                 return Err(self.other(here, "getProp capture must use propValue".into()));
             }
-            self.bindings.insert(capture.bind.clone(), value as u64);
+            self.bindings.insert(capture.bind.clone(), value.clone());
         }
         Ok(())
     }
@@ -1520,7 +1607,7 @@ impl PtpCtx {
             values.push((capture.bind.clone(), value));
         }
         for (bind, value) in values {
-            self.bindings.insert(bind, value);
+            self.bindings.insert(bind, ActionValue::U64 { value });
         }
         Ok(())
     }
@@ -1535,7 +1622,7 @@ impl PtpCtx {
                         .bindings
                         .get(slot)
                         .or_else(|| self.runtime_params.get(slot))
-                        .copied()
+                        .and_then(action_value_u64)
                         .ok_or_else(|| {
                             self.other(here, format!("runtime slot {slot:?} is unbound"))
                         })?;
@@ -1603,6 +1690,165 @@ impl PtpCtx {
     }
 }
 
+fn numeric_runtime_params(values: Vec<PtpRuntimeValue>) -> Vec<PtpScopeValue> {
+    values
+        .into_iter()
+        .map(|value| PtpScopeValue {
+            key: value.key,
+            value: ActionValue::U64 { value: value.value },
+        })
+        .collect()
+}
+
+fn action_value_u64(value: &ActionValue) -> Option<u64> {
+    match value {
+        ActionValue::U64 { value } => Some(*value),
+        ActionValue::String { .. } => None,
+    }
+}
+
+fn preflight_runtime_set_props(
+    store: &ConfigStore,
+    steps: &[EntryStep],
+    runtime_params: &BTreeMap<String, ActionValue>,
+) -> Result<(), PtpExecutorError> {
+    fn walk(
+        store: &ConfigStore,
+        steps: &[EntryStep],
+        runtime_params: &BTreeMap<String, ActionValue>,
+        path: &str,
+    ) -> Result<(), PtpExecutorError> {
+        for (index, step) in steps.iter().enumerate() {
+            let here = format!("{path}[{index}].{}", step_verb(step));
+            if let EntryStep::SetPropRuntime {
+                prop,
+                slot,
+                if_missing,
+                ..
+            } = step
+            {
+                match runtime_params.get(slot) {
+                    Some(value) => encode_runtime_property_value(store, *prop, value)
+                        .map(|_| ())
+                        .map_err(|detail| preflight_error(&here, detail))?,
+                    None if matches!(if_missing, FfiMissingRuntimeValue::Skip) => {}
+                    None => {
+                        return Err(preflight_error(
+                            &here,
+                            format!("runtime slot {slot:?} is unbound"),
+                        ));
+                    }
+                }
+            }
+            match step {
+                EntryStep::AwaitUntil { on_each, .. } => {
+                    walk(store, on_each, runtime_params, &format!("{here}.onEach"))?;
+                }
+                EntryStep::Retry { steps, .. } => {
+                    walk(store, steps, runtime_params, &format!("{here}.steps"))?;
+                }
+                EntryStep::Loop { kind, .. } => {
+                    let body = match kind {
+                        FfiLoopKind::ForEach { body, .. } | FfiLoopKind::Chunk { body, .. } => body,
+                    };
+                    walk(store, body, runtime_params, &format!("{here}.body"))?;
+                }
+                EntryStep::If { then_steps, .. } => {
+                    walk(store, then_steps, runtime_params, &format!("{here}.then"))?;
+                }
+                EntryStep::IfElse {
+                    then_steps,
+                    else_steps,
+                    ..
+                } => {
+                    walk(store, then_steps, runtime_params, &format!("{here}.then"))?;
+                    walk(store, else_steps, runtime_params, &format!("{here}.else"))?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    walk(store, steps, runtime_params, "steps")
+}
+
+fn preflight_error(step: &str, detail: String) -> PtpExecutorError {
+    PtpExecutorError::StepFailed {
+        step: step.to_string(),
+        kind: ExecutorStepFailureKind::Other,
+        detail,
+        context: Vec::new(),
+    }
+}
+
+fn encode_runtime_property_value(
+    store: &ConfigStore,
+    prop: u16,
+    value: &ActionValue,
+) -> Result<Vec<u8>, String> {
+    let property = store
+        .inner
+        .manifest
+        .property(prop)
+        .ok_or_else(|| format!("property {prop:#06x} is undeclared"))?;
+    match value {
+        ActionValue::U64 { value } => {
+            if property.ptype.as_deref() == Some("str") {
+                return Err(format!("property {prop:#06x} requires a string value"));
+            }
+            let width = store
+                .property_value_width(prop)
+                .ok_or_else(|| format!("property {prop:#06x} has no scalar width"))?;
+            let value = i64::try_from(*value)
+                .map_err(|_| format!("property {prop:#06x} value {value} exceeds i64"))?;
+            crate::encode_value(value, width).map_err(|error| error.to_string())
+        }
+        ActionValue::String { value } => {
+            if property.ptype.as_deref() != Some("str") {
+                return Err(format!("property {prop:#06x} requires a numeric value"));
+            }
+            if let Some(layout) = &property.structured_text {
+                let fields = value.split(&layout.delimiter).collect::<Vec<_>>();
+                if fields.len() != layout.fields.len() {
+                    return Err(format!(
+                        "property {prop:#06x} requires {} signed integer fields",
+                        layout.fields.len()
+                    ));
+                }
+                let values = fields
+                    .into_iter()
+                    .map(parse_signed_decimal)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| {
+                        format!(
+                            "property {prop:#06x} requires {} signed integer fields",
+                            layout.fields.len()
+                        )
+                    })?;
+                store
+                    .encode_structured_integer_property(prop, values)
+                    .map_err(|error| error.to_string())
+            } else {
+                store
+                    .encode_property_text(prop, value.clone())
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+}
+
+fn parse_signed_decimal(value: &str) -> Option<i64> {
+    let digits = value
+        .strip_prefix('-')
+        .or_else(|| value.strip_prefix('+'))
+        .unwrap_or(value);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
 fn transport_step_error(here: &str, error: PtpTransportError) -> StepError {
     let class = if matches!(error, PtpTransportError::Timeout { .. }) {
         FailureClass::Deadline
@@ -1619,7 +1865,7 @@ fn transport_step_error(here: &str, error: PtpTransportError) -> StepError {
 
 fn step_verb(step: &EntryStep) -> &'static str {
     match step {
-        EntryStep::SetProp { .. } => "setProp",
+        EntryStep::SetProp { .. } | EntryStep::SetPropRuntime { .. } => "setProp",
         EntryStep::GetProp { .. } => "getProp",
         EntryStep::ReadEcho { .. } => "readEcho",
         EntryStep::SendOp { .. } => "sendOp",
@@ -1636,6 +1882,7 @@ fn step_verb(step: &EntryStep) -> &'static str {
 fn step_tolerant(step: &EntryStep) -> bool {
     match step {
         EntryStep::SetProp { tolerant, .. }
+        | EntryStep::SetPropRuntime { tolerant, .. }
         | EntryStep::GetProp { tolerant, .. }
         | EntryStep::ReadEcho { tolerant, .. }
         | EntryStep::SendOp { tolerant, .. }
@@ -1649,9 +1896,23 @@ fn step_tolerant(step: &EntryStep) -> bool {
     }
 }
 
-fn step_codes(step: &EntryStep) -> (Option<u16>, Option<u16>) {
+fn step_codes(
+    step: &EntryStep,
+    runtime_params: &BTreeMap<String, ActionValue>,
+) -> (Option<u16>, Option<u16>) {
     match step {
         EntryStep::SetProp { prop, .. } => (Some(op::SET_DEVICE_PROP_VALUE), Some(*prop)),
+        EntryStep::SetPropRuntime {
+            prop,
+            slot,
+            if_missing,
+            ..
+        } if !matches!(if_missing, FfiMissingRuntimeValue::Skip)
+            || runtime_params.contains_key(slot) =>
+        {
+            (Some(op::SET_DEVICE_PROP_VALUE), Some(*prop))
+        }
+        EntryStep::SetPropRuntime { .. } => (None, None),
         EntryStep::GetProp { prop, .. } | EntryStep::ReadEcho { prop, .. } => {
             (Some(op::GET_DEVICE_PROP_VALUE), Some(*prop))
         }
@@ -1672,7 +1933,11 @@ fn step_codes(step: &EntryStep) -> (Option<u16>, Option<u16>) {
     }
 }
 
-fn restore(bindings: &mut BTreeMap<String, u64>, slot: &str, previous: Option<u64>) {
+fn restore(
+    bindings: &mut BTreeMap<String, ActionValue>,
+    slot: &str,
+    previous: Option<ActionValue>,
+) {
     match previous {
         Some(value) => {
             bindings.insert(slot.to_string(), value);

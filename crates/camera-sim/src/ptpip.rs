@@ -18,7 +18,8 @@
 use std::collections::BTreeMap;
 
 use camera_config::model::{
-    AwaitSource, AwaitUntil, Capture, CaptureSource, ChunkSize, Loop, Step, StepParam,
+    AwaitSource, AwaitUntil, Capture, CaptureSource, ChunkSize, Loop, MissingRuntimeValue,
+    SetPropValue, Step, StepParam,
 };
 use camera_config::{parse_hex_code, PropView, RetryFailureClass};
 use camera_media_store::ByteSource;
@@ -230,7 +231,28 @@ impl Ctx<'_> {
         };
         if let Some(p) = &step.set_prop {
             let code = parse_hex_code(p).ok_or_else(|| err(format!("bad prop code {p:?}")))?;
-            let value = step.value.unwrap_or(0);
+            let value = match step.value.as_ref() {
+                None => 0,
+                Some(SetPropValue::Literal(value)) => *value,
+                Some(SetPropValue::Runtime(reference)) => {
+                    let Some(value) = self.runtime_params.get(&reference.runtime) else {
+                        return if reference.if_missing == MissingRuntimeValue::Skip {
+                            Ok(())
+                        } else {
+                            Err(err(format!("runtime slot {:?} unbound", reference.runtime)))
+                        };
+                    };
+                    if let Some(value) = self.runtime_string_value(code, value).map_err(err)? {
+                        return self.set_prop_value(code, value, step.tolerant).map_err(err);
+                    }
+                    value.parse::<i64>().map_err(|_| {
+                        err(format!(
+                            "runtime slot {:?} is not a numeric setProp value",
+                            reference.runtime
+                        ))
+                    })?
+                }
+            };
             self.set_prop(code, value, step.tolerant).map_err(err)
         } else if let Some(p) = &step.get_prop {
             let code = parse_hex_code(p).ok_or_else(|| err(format!("bad prop code {p:?}")))?;
@@ -597,12 +619,56 @@ impl Ctx<'_> {
         }
     }
 
+    fn runtime_string_value(&self, code: u16, value: &str) -> Result<Option<PropValue>, String> {
+        let Some(property) = self.engine.manifest().property(code) else {
+            return Ok(None);
+        };
+        if property.ptype.as_deref() != Some("str") {
+            return Ok(None);
+        }
+        let value = if let Some(layout) = &property.structured_text {
+            let fields = value.split(&layout.delimiter).collect::<Vec<_>>();
+            if fields.len() != layout.fields.len() {
+                return Err(format!(
+                    "property {code:#06x} requires {} signed integer fields",
+                    layout.fields.len()
+                ));
+            }
+            fields
+                .into_iter()
+                .map(parse_signed_decimal)
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    format!(
+                        "property {code:#06x} requires {} signed integer fields",
+                        layout.fields.len()
+                    )
+                })?
+                .into_iter()
+                .map(|field| field.to_string())
+                .collect::<Vec<_>>()
+                .join(&layout.delimiter)
+        } else {
+            value.to_string()
+        };
+        Ok(Some(PropValue::Str(value)))
+    }
+
     /// SetDevicePropValue: encode `value` at the property's datatype width and
     /// drive the data-out phase.
     fn set_prop(&mut self, code: u16, value: i64, tolerant: bool) -> Result<(), String> {
         let dt = self.datatype(code);
+        self.set_prop_value(code, typed(dt, value), tolerant)
+    }
+
+    fn set_prop_value(
+        &mut self,
+        code: u16,
+        value: PropValue,
+        tolerant: bool,
+    ) -> Result<(), String> {
         let mut w = Writer::new();
-        typed(dt, value)
+        value
             .encode(&mut w)
             .map_err(|e| format!("encode prop {code:#06x}: {e:?}"))?;
         let data = w.into_vec();
@@ -1040,6 +1106,17 @@ fn prop_value_to_i64(v: &PropValue) -> Option<i64> {
     })
 }
 
+fn parse_signed_decimal(value: &str) -> Option<i64> {
+    let digits = value
+        .strip_prefix('-')
+        .or_else(|| value.strip_prefix('+'))
+        .unwrap_or(value);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
 fn parse_u64(s: &str) -> Option<u64> {
     let t = s.trim();
     if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
@@ -1163,7 +1240,7 @@ media:
         let steps = vec![
             Step {
                 set_prop: Some("0xdf00".into()),
-                value: Some(6),
+                value: Some(6.into()),
                 ..Default::default()
             },
             Step {
@@ -1324,7 +1401,7 @@ properties: {}
             },
             Step {
                 set_prop: Some("0xdf01".into()),
-                value: Some(21),
+                value: Some(21.into()),
                 ..Default::default()
             },
             Step {
@@ -1368,7 +1445,7 @@ properties: {}
             },
             Step {
                 set_prop: Some("0xdf00".into()),
-                value: Some(7),
+                value: Some(7.into()),
                 ..Default::default()
             },
             Step {
@@ -1441,7 +1518,7 @@ properties: {}
                     equals: 0x0403_0201,
                     then_steps: vec![Step {
                         set_prop: Some("0xdf00".into()),
-                        value: Some(13),
+                        value: Some(13.into()),
                         ..Default::default()
                     }],
                     else_steps: Vec::new(),
@@ -1485,7 +1562,7 @@ properties: {}
                     equals: 0,
                     then_steps: vec![Step {
                         set_prop: Some("0xdf00".into()),
-                        value: Some(17),
+                        value: Some(17.into()),
                         ..Default::default()
                     }],
                     else_steps: Vec::new(),
@@ -1532,7 +1609,7 @@ properties: {}
                     equals: stream_head,
                     then_steps: vec![Step {
                         set_prop: Some("0xdf00".into()),
-                        value: Some(11),
+                        value: Some(11.into()),
                         ..Default::default()
                     }],
                     else_steps: Vec::new(),

@@ -64,16 +64,16 @@ fn xa7_viewer_and_remote_paths_keep_the_apk_backed_operations() {
     assert_eq!(steps[0].get_prop.as_deref(), Some("0xdf00"));
     let neutral_four = steps[1].if_step.as_ref().expect("DF00=4 branch");
     assert_eq!(neutral_four.equals, 4);
-    assert_eq!(neutral_four.then_steps[0].value, Some(9));
+    assert_eq!(neutral_four.then_steps[0].value, Some(9.into()));
     let neutral_six = neutral_four.else_steps[0]
         .if_step
         .as_ref()
         .expect("DF00=6 branch");
     assert_eq!(neutral_six.equals, 6);
-    assert_eq!(neutral_six.then_steps[0].value, Some(9));
-    assert_eq!(neutral_six.else_steps[0].value, Some(2));
+    assert_eq!(neutral_six.then_steps[0].value, Some(9.into()));
+    assert_eq!(neutral_six.else_steps[0].value, Some(2.into()));
     assert_eq!(steps[2].get_prop.as_deref(), Some("0xdf22"));
-    assert_eq!(steps[3].value, Some(5));
+    assert_eq!(steps[3].value, Some(5.into()));
 
     for code in ["0x1007", "0x1008", "0x1009", "0x100a", "0x1018", "0x101c"] {
         assert!(manifest.operations.contains_key(code), "missing {code}");

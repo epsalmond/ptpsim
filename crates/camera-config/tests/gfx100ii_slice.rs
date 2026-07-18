@@ -3,10 +3,11 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, ModeEntryExecution,
-    ObjectTransferCompletionTiming, ObjectTransferResumePolicy, ObjectTransferStrategy,
-    ObjectsAvailable, PcssDiscoveryTarget, Predicate, PropView, PropertyKind, StepParam,
-    ValuePolicy, VersionScheme,
+    ActionInitiatorParameterKind, ActionVerb, CameraManifest, CaptureSource, ConfigStore,
+    ManufacturerDefaults, MissingRuntimeValue, ModeEntryExecution, ObjectTransferCompletionTiming,
+    ObjectTransferResumePolicy, ObjectTransferStrategy, ObjectsAvailable, PcssDiscoveryTarget,
+    Predicate, PropView, PropertyKind, PropertyTransitionTerminal, ResponderMutation, SetPropValue,
+    StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -213,13 +214,13 @@ fn live_view_entry_is_the_ground_truth_sequence() {
         .unwrap();
     let steps = lv.ptp_steps().expect("cold live-view PTP entry");
     assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf00"));
-    assert_eq!(steps[0].value, Some(6));
+    assert_eq!(steps[0].value, Some(6.into()));
     // Device-validated (#39): the GFX100 II rejects this advisory write
     // with 0x201d, so the step MUST stay tolerant or mode entry dies on
     // real hardware. This flag regressed silently once (client application #4) —
     // hence the explicit assert.
     assert!(steps[0].tolerant, "0xdf00 write must be tolerant");
-    assert_eq!(steps[1].value, Some(0x16)); // functionMode 22
+    assert_eq!(steps[1].value, Some(0x16.into())); // functionMode 22
     assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
     assert_eq!(steps[3].repeat, 4); // 902B ×4
     assert_eq!(
@@ -478,7 +479,12 @@ fn wireless_tether_shutter_action_is_the_3_beat_pcss_sequence() {
     for (beat, phase) in phase_values.iter().enumerate() {
         let setprop = &shutter.initiator().unwrap().steps[beat * 2];
         assert_eq!(setprop.set_prop.as_deref(), Some("0xd039"));
-        assert_eq!(setprop.value, Some(*phase), "beat {} phase value", beat + 1);
+        assert_eq!(
+            setprop.value,
+            Some((*phase).into()),
+            "beat {} phase value",
+            beat + 1
+        );
         let retry_step = &shutter.initiator().unwrap().steps[beat * 2 + 1];
         assert!(!retry_step.tolerant);
         let retry = retry_step
@@ -526,7 +532,10 @@ fn wireless_tether_keepalive_action_is_session_scaffold_not_settings() {
         keepalive.initiator().unwrap().steps[0].set_prop.as_deref(),
         Some("0xd21c")
     );
-    assert_eq!(keepalive.initiator().unwrap().steps[0].value, Some(0));
+    assert_eq!(
+        keepalive.initiator().unwrap().steps[0].value,
+        Some(0.into())
+    );
     assert_eq!(m.properties["0xd21c"].kind, PropertyKind::Scaffold);
     let priority_mode = &m.properties["0xd207"];
     assert_eq!(priority_mode.name, "priorityMode");
@@ -695,7 +704,7 @@ fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped(
         start.initiator().unwrap().steps[1].set_prop.as_deref(),
         Some("0xd1bc")
     );
-    assert_eq!(start.initiator().unwrap().steps[1].value, Some(2));
+    assert_eq!(start.initiator().unwrap().steps[1].value, Some(2.into()));
     assert!(!start.initiator().unwrap().steps[1].tolerant);
     assert_eq!(
         start.initiator().unwrap().steps[2].send_op.as_deref(),
@@ -753,6 +762,212 @@ fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped(
     ] {
         assert!(m.action("app", verb).is_none());
     }
+}
+
+#[test]
+fn wireless_tether_pcss_autofocus_actions_and_curation_are_exact() {
+    use camera_config::AwaitSource;
+
+    let m = gfx();
+    let lock = m
+        .action("wireless-tether", ActionVerb::AutofocusLock)
+        .expect("wireless-tether autofocusLock action");
+    assert_eq!(lock.mode, "shooting/stills");
+    let initiator = lock.initiator().expect("lock initiator");
+    assert_eq!(initiator.params.len(), 1);
+    let focus_area = initiator.params[0].normalized();
+    assert_eq!(focus_area.name, "focusArea");
+    assert_eq!(focus_area.kind, ActionInitiatorParameterKind::String);
+    assert!(!focus_area.required);
+    assert_eq!(initiator.steps.len(), 5);
+
+    assert_eq!(initiator.steps[0].set_prop.as_deref(), Some("0xd395"));
+    assert!(matches!(
+        initiator.steps[0].value.as_ref(),
+        Some(SetPropValue::Runtime(value))
+            if value.runtime == "focusArea" && value.if_missing == MissingRuntimeValue::Skip
+    ));
+    for (index, prop, value) in [(1, "0xd230", 1), (2, "0xd208", 0xa000)] {
+        assert_eq!(initiator.steps[index].set_prop.as_deref(), Some(prop));
+        assert_eq!(initiator.steps[index].value, Some(value.into()));
+        assert!(!initiator.steps[index].tolerant);
+    }
+    assert_eq!(initiator.steps[3].send_op.as_deref(), Some("0x100e"));
+    assert_eq!(
+        initiator.steps[3].params,
+        [StepParam::Literal(0), StepParam::Literal(0)]
+    );
+
+    let await_step = &initiator.steps[4];
+    let await_until = await_step.await_until.as_ref().expect("D209 poll");
+    assert!(matches!(
+        &await_until.source,
+        AwaitSource::Poll { prop } if prop == "0xd209"
+    ));
+    assert_eq!(await_until.interval_ms, 25);
+    assert_eq!(await_until.timeout_ms, 3000);
+    match &await_until.until {
+        Predicate::Any { any } => {
+            assert_eq!(any.len(), 2, "only success or failure is terminal");
+            assert!(
+                matches!(&any[0], Predicate::Leaf(leaf) if leaf.prop == "0xd209" && leaf.eq == Some(2))
+            );
+            assert!(
+                matches!(&any[1], Predicate::Leaf(leaf) if leaf.prop == "0xd209" && leaf.eq == Some(3))
+            );
+        }
+        other => panic!("expected success/failure predicate, got {other:?}"),
+    }
+    assert_eq!(await_step.captures.len(), 1);
+    assert_eq!(await_step.captures[0].bind, "autofocusResult");
+    assert_eq!(await_step.captures[0].source, CaptureSource::PropValue);
+
+    let responder = lock.responder.as_ref().expect("lock responder");
+    assert_eq!(responder.params.len(), 1);
+    assert_eq!(responder.params[0].name, "result");
+    assert_eq!(responder.params[0].default, Some(3));
+    assert_eq!(responder.params[0].min, Some(2));
+    assert_eq!(responder.params[0].max, Some(3));
+    assert!(matches!(
+        &responder.mutation,
+        ResponderMutation::PropertyTransition {
+            target,
+            initial: Some(1),
+            terminal: PropertyTransitionTerminal::Parameter { parameter },
+            settle_after_polls: 2,
+        } if target == "0xd209" && parameter == "result"
+    ));
+
+    let release = m
+        .action("wireless-tether", ActionVerb::AutofocusRelease)
+        .expect("wireless-tether autofocusRelease action");
+    let release_steps = &release.initiator().expect("release initiator").steps;
+    assert_eq!(release_steps.len(), 4);
+    for (index, prop, value, tolerant) in [
+        (0, "0xd230", 1, true),
+        (1, "0xd21c", 0, false),
+        (2, "0xd208", 6, false),
+    ] {
+        assert_eq!(release_steps[index].set_prop.as_deref(), Some(prop));
+        assert_eq!(release_steps[index].value, Some(value.into()));
+        assert_eq!(release_steps[index].tolerant, tolerant);
+    }
+    assert_eq!(release_steps[3].send_op.as_deref(), Some("0x100e"));
+    assert_eq!(
+        release_steps[3].params,
+        [StepParam::Literal(0), StepParam::Literal(0)]
+    );
+    let release_responder = release.responder.as_ref().expect("release responder");
+    assert!(release_responder.params.is_empty());
+    assert!(matches!(
+        &release_responder.mutation,
+        ResponderMutation::PropertyTransition {
+            target,
+            initial: None,
+            terminal: PropertyTransitionTerminal::Fixed { value: 4 },
+            settle_after_polls: 0,
+        } if target == "0xd209"
+    ));
+
+    for key in ["wirePcssAutofocus20260718", "sdkPcssAutofocus20260718"] {
+        assert_eq!(m.evidence[key].path, "evidence/PCSS_PARITY_20260714.md");
+    }
+    assert_eq!(m.evidence["wirePcssAutofocus20260718"].kind, "wire-capture");
+    assert_eq!(m.evidence["sdkPcssAutofocus20260718"].kind, "vendor-sdk");
+
+    let magnification = &m.properties["0xd01b"];
+    assert_eq!(magnification.name, "liveViewMagnification");
+    assert_eq!(magnification.value_profiles.len(), 1);
+    let magnification_profile = &magnification.value_profiles[0];
+    assert_eq!(
+        magnification_profile.connection.as_deref(),
+        Some("wireless-tether")
+    );
+    assert_eq!(
+        magnification_profile.mode.as_deref(),
+        Some("shooting/stills")
+    );
+    assert_eq!(
+        magnification_profile
+            .rows
+            .iter()
+            .map(|row| (row.raw, row.label.as_str()))
+            .collect::<Vec<_>>(),
+        [(1, "x1.0"), (2, "x2.5"), (4, "x4.0")]
+    );
+
+    let d208 = &m.properties["0xd208"];
+    assert_eq!(d208.name, "pcssCaptureFunction");
+    assert_eq!(d208.kind, PropertyKind::Scaffold);
+    assert!(
+        d208.descriptor.is_none(),
+        "source manifest leaves descriptor generation owned"
+    );
+    assert_eq!(
+        d208.value_rows
+            .iter()
+            .map(|row| (row.raw, row.label.as_str()))
+            .collect::<Vec<_>>(),
+        [(0xa000, "instantAf"), (6, "aeOffS1Off")]
+    );
+    let d230 = &m.properties["0xd230"];
+    assert_eq!(d230.name, "pcssForceMode");
+    assert_eq!(d230.kind, PropertyKind::Scaffold);
+    assert!(
+        d230.descriptor.is_none(),
+        "source manifest leaves descriptor generation owned"
+    );
+    assert_eq!(d230.value_rows.len(), 1);
+    assert_eq!(
+        (d230.value_rows[0].raw, d230.value_rows[0].label.as_str()),
+        (1, "shootMode")
+    );
+    let generated = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml"))
+        .expect("consolidated manifest");
+    let generated_d230 = &generated.properties["0xd230"];
+    assert_eq!(
+        generated_d230
+            .descriptor
+            .as_ref()
+            .expect("generated D230 descriptor")
+            .values,
+        [1, 2]
+    );
+    assert_eq!(
+        generated_d230.value_rows.len(),
+        1,
+        "raw 2 remains unlabeled"
+    );
+
+    let d209 = &m.properties["0xd209"];
+    assert_eq!(d209.name, "s1LockColor");
+    assert_eq!(d209.value_profiles.len(), 1);
+    assert_eq!(
+        d209.value_profiles[0]
+            .rows
+            .iter()
+            .map(|row| (row.raw, row.label.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (1, "operating"),
+            (2, "success"),
+            (3, "failure"),
+            (4, "noOperation")
+        ]
+    );
+    assert!(m.properties["0xd395"]
+        .evidence
+        .contains(&"wirePcssAutofocus20260718".to_string()));
+    assert!(!m.properties["0xd21c"]
+        .name
+        .to_ascii_lowercase()
+        .contains("release"));
+    assert_eq!(m.properties["0xd207"].name, "priorityMode");
+    assert!(m.operations["0x100e"].effects.is_empty());
+    assert!(m.connections["wireless-tether"]
+        .bindings
+        .as_ref()
+        .is_some_and(|bindings| bindings.event.is_none()));
 }
 
 #[test]
@@ -1302,15 +1517,15 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
     assert!(cold_steps
         .iter()
         .any(|s| s.get_prop.as_deref() == Some("0xd212") && s.tolerant));
-    assert!(cold_steps
-        .iter()
-        .any(|s| { s.set_prop.as_deref() == Some("0xdf28") && s.value == Some(3) && s.tolerant }));
-    assert!(cold_steps
-        .iter()
-        .any(|s| { s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0) && s.tolerant }));
-    assert!(cold_steps
-        .iter()
-        .any(|s| { s.set_prop.as_deref() == Some("0xd227") && s.value == Some(0) && s.tolerant }));
+    assert!(cold_steps.iter().any(|s| {
+        s.set_prop.as_deref() == Some("0xdf28") && s.value == Some(3.into()) && s.tolerant
+    }));
+    assert!(cold_steps.iter().any(|s| {
+        s.set_prop.as_deref() == Some("0xd226") && s.value == Some(0.into()) && s.tolerant
+    }));
+    assert!(cold_steps.iter().any(|s| {
+        s.set_prop.as_deref() == Some("0xd227") && s.value == Some(0.into()) && s.tolerant
+    }));
     assert!(cold_steps
         .iter()
         .any(|s| s.get_prop.as_deref() == Some("0xd244") && s.tolerant));
@@ -1371,10 +1586,10 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
     );
     assert!(reverse_steps
         .iter()
-        .any(|s| { s.set_prop.as_deref() == Some("0xdf01") && s.value == Some(0x16) }));
+        .any(|s| { s.set_prop.as_deref() == Some("0xdf01") && s.value == Some(0x16.into()) }));
     assert!(reverse_steps
         .iter()
-        .any(|s| { s.set_prop.as_deref() == Some("0xdf2a") && s.value == Some(2) }));
+        .any(|s| { s.set_prop.as_deref() == Some("0xdf2a") && s.value == Some(2.into()) }));
     assert!(reverse_steps
         .iter()
         .any(|s| s.send_op.as_deref() == Some("0x902b") && s.repeat == 4));
@@ -1485,7 +1700,7 @@ fn app_stills_video_mode_edges_are_lightweight_d246_writes() {
     let to_video_steps = to_video.ptp_steps().expect("stills→video PTP entry");
     assert_eq!(to_video_steps.len(), 1);
     assert_eq!(to_video_steps[0].set_prop.as_deref(), Some("0xd246"));
-    assert_eq!(to_video_steps[0].value, Some(1));
+    assert_eq!(to_video_steps[0].value, Some(1.into()));
 
     let to_stills = entries
         .iter()
@@ -1494,7 +1709,7 @@ fn app_stills_video_mode_edges_are_lightweight_d246_writes() {
     let to_stills_steps = to_stills.ptp_steps().expect("video→stills PTP entry");
     assert_eq!(to_stills_steps.len(), 1);
     assert_eq!(to_stills_steps[0].set_prop.as_deref(), Some("0xd246"));
-    assert_eq!(to_stills_steps[0].value, Some(0));
+    assert_eq!(to_stills_steps[0].value, Some(0.into()));
 
     for entry in [to_video, to_stills] {
         assert!(

@@ -28,7 +28,7 @@ pub use ptp_executor::{
     run_initiator_action, run_initiator_action_to_sink, run_mode_entry,
     run_mode_reestablishment_exit, run_selected_object_preparation, PtpCollectionValue,
     PtpDataOutput, PtpDataOutputSink, PtpDataOutputSinkError, PtpExecutionOutcome,
-    PtpExecutorError, PtpExecutorTransport, PtpRuntimeValue, PtpSessionOpenResult,
+    PtpExecutorError, PtpExecutorTransport, PtpRuntimeValue, PtpScopeValue, PtpSessionOpenResult,
     PtpTransportError,
 };
 pub mod pcss_executor;
@@ -1401,6 +1401,12 @@ pub enum EntryStep {
         value: i64,
         tolerant: bool,
     },
+    SetPropRuntime {
+        prop: u16,
+        slot: String,
+        if_missing: FfiMissingRuntimeValue,
+        tolerant: bool,
+    },
     GetProp {
         prop: u16,
         captures: Vec<CaptureInfo>,
@@ -1446,6 +1452,7 @@ pub enum EntryStep {
         source: FfiAwaitSource,
         until: FfiPredicate,
         on_each: Vec<EntryStep>,
+        captures: Vec<CaptureInfo>,
         timeout_ms: u32,
         interval_ms: u32,
         tolerant: bool,
@@ -1481,6 +1488,12 @@ pub enum EntryStep {
         else_steps: Vec<EntryStep>,
         tolerant: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiMissingRuntimeValue {
+    Error,
+    Skip,
 }
 
 /// The two `Loop` shapes (#46). Mirrors `cc::Loop`. `ForEach` iterates a named
@@ -1618,9 +1631,28 @@ pub struct Action {
 
 #[derive(Debug, uniffi::Record)]
 pub struct ActionInitiator {
-    pub params: Vec<String>,
+    pub params: Vec<ActionInitiatorParameter>,
     pub steps: Vec<EntryStep>,
     pub activities: Vec<ConnectionActivityDescriptor>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ActionInitiatorParameter {
+    pub name: String,
+    pub kind: ActionCatalogParameterKind,
+    pub required: bool,
+}
+
+impl PartialEq<String> for ActionInitiatorParameter {
+    fn eq(&self, other: &String) -> bool {
+        self.name == *other
+    }
+}
+
+impl PartialEq<&str> for ActionInitiatorParameter {
+    fn eq(&self, other: &&str) -> bool {
+        self.name == *other
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1645,7 +1677,21 @@ pub enum ActionParameterKind {
 
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum ResponderMutation {
-    EnqueueObjects { count_param: String },
+    EnqueueObjects {
+        count_param: String,
+    },
+    PropertyTransition {
+        target: u16,
+        initial: Option<i64>,
+        terminal: PropertyTransitionTerminal,
+        settle_after_polls: u32,
+    },
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum PropertyTransitionTerminal {
+    Fixed { value: i64 },
+    Parameter { parameter: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -1658,6 +1704,7 @@ pub enum ActionRole {
 pub enum ActionCatalogParameterKind {
     U32,
     U64,
+    String,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1696,7 +1743,34 @@ pub struct ActionCatalog {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ActionArgument {
     pub name: String,
-    pub value: u64,
+    pub value: ActionValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum ActionValue {
+    U64 { value: u64 },
+    String { value: String },
+}
+
+impl ActionValue {
+    pub const fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::U64 { value } => Some(*value),
+            Self::String { .. } => None,
+        }
+    }
+}
+
+impl PartialEq<u64> for ActionValue {
+    fn eq(&self, other: &u64) -> bool {
+        self.as_u64() == Some(*other)
+    }
+}
+
+impl PartialOrd<u64> for ActionValue {
+    fn partial_cmp(&self, other: &u64) -> Option<std::cmp::Ordering> {
+        self.as_u64()?.partial_cmp(other)
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -2717,7 +2791,10 @@ impl ConfigStore {
                 .into_iter()
                 .map(|argument| cc::ActionArgument {
                     name: argument.name,
-                    value: argument.value,
+                    value: match argument.value {
+                        ActionValue::U64 { value } => cc::ActionArgumentValue::U64(value),
+                        ActionValue::String { value } => cc::ActionArgumentValue::String(value),
+                    },
                 })
                 .collect(),
         };
@@ -3723,10 +3800,27 @@ fn map_camera_initiated_transfer(
 fn map_step(s: &cc::Step) -> Option<EntryStep> {
     let tolerant = s.tolerant;
     if let Some(p) = &s.set_prop {
-        return Some(EntryStep::SetProp {
-            prop: parse_hex_code(p)?,
-            value: s.value.unwrap_or(0),
-            tolerant,
+        let prop = parse_hex_code(p)?;
+        return Some(match s.value.as_ref() {
+            None => EntryStep::SetProp {
+                prop,
+                value: 0,
+                tolerant,
+            },
+            Some(cc::SetPropValue::Literal(value)) => EntryStep::SetProp {
+                prop,
+                value: *value,
+                tolerant,
+            },
+            Some(cc::SetPropValue::Runtime(reference)) => EntryStep::SetPropRuntime {
+                prop,
+                slot: reference.runtime.clone(),
+                if_missing: match reference.if_missing {
+                    cc::MissingRuntimeValue::Error => FfiMissingRuntimeValue::Error,
+                    cc::MissingRuntimeValue::Skip => FfiMissingRuntimeValue::Skip,
+                },
+                tolerant,
+            },
         });
     }
     if let Some(p) = &s.get_prop {
@@ -3786,6 +3880,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
             source,
             until: (&aw.until).into(),
             on_each: aw.on_each.iter().map(map_step).collect::<Option<_>>()?,
+            captures: s.captures.iter().map(map_capture).collect(),
             timeout_ms: aw.timeout_ms,
             interval_ms: aw.interval_ms,
             tolerant,
@@ -3967,6 +4062,24 @@ fn map_responder_mutation(mutation: cc::ResponderMutation) -> ResponderMutation 
         cc::ResponderMutation::EnqueueObjects { count_param } => {
             ResponderMutation::EnqueueObjects { count_param }
         }
+        cc::ResponderMutation::PropertyTransition {
+            target,
+            initial,
+            terminal,
+            settle_after_polls,
+        } => ResponderMutation::PropertyTransition {
+            target: parse_hex_code(&target).expect("property transition target validated at load"),
+            initial,
+            terminal: match terminal {
+                cc::PropertyTransitionTerminal::Fixed { value } => {
+                    PropertyTransitionTerminal::Fixed { value }
+                }
+                cc::PropertyTransitionTerminal::Parameter { parameter } => {
+                    PropertyTransitionTerminal::Parameter { parameter }
+                }
+            },
+            settle_after_polls,
+        },
     }
 }
 
@@ -4002,6 +4115,9 @@ fn map_action_catalog(catalog: cc::ActionCatalog) -> ActionCatalog {
                                     cc::ActionCatalogParameterKind::U64 => {
                                         ActionCatalogParameterKind::U64
                                     }
+                                    cc::ActionCatalogParameterKind::String => {
+                                        ActionCatalogParameterKind::String
+                                    }
                                 },
                                 required: parameter.required,
                                 default: parameter.default,
@@ -4030,7 +4146,13 @@ fn map_resolved_action(resolved: cc::ResolvedActionInvocation) -> ResolvedAction
         parameters: resolved
             .parameters
             .into_iter()
-            .map(|(name, value)| ActionArgument { name, value })
+            .map(|(name, value)| ActionArgument {
+                name,
+                value: match value {
+                    cc::ActionArgumentValue::U64(value) => ActionValue::U64 { value },
+                    cc::ActionArgumentValue::String(value) => ActionValue::String { value },
+                },
+            })
             .collect(),
         responder_mutation: resolved.responder_mutation.map(map_responder_mutation),
     }
@@ -4256,7 +4378,25 @@ fn try_map_action(a: &cc::Action, context: &str) -> Result<Action, ConfigError> 
         .as_ref()
         .map(|binding| -> Result<ActionInitiator, ConfigError> {
             Ok(ActionInitiator {
-                params: binding.params.clone(),
+                params: binding
+                    .params
+                    .iter()
+                    .map(|parameter| {
+                        let parameter = parameter.normalized();
+                        ActionInitiatorParameter {
+                            name: parameter.name,
+                            kind: match parameter.kind {
+                                cc::ActionInitiatorParameterKind::U64 => {
+                                    ActionCatalogParameterKind::U64
+                                }
+                                cc::ActionInitiatorParameterKind::String => {
+                                    ActionCatalogParameterKind::String
+                                }
+                            },
+                            required: parameter.required,
+                        }
+                    })
+                    .collect(),
                 steps: try_map_steps(&binding.steps, context)?,
                 activities: binding.activities.iter().map(Into::into).collect(),
             })
@@ -4276,13 +4416,7 @@ fn try_map_action(a: &cc::Action, context: &str) -> Result<Action, ConfigError> 
                 max: parameter.max,
             })
             .collect(),
-        mutation: match &binding.mutation {
-            cc::ResponderMutation::EnqueueObjects { count_param } => {
-                ResponderMutation::EnqueueObjects {
-                    count_param: count_param.clone(),
-                }
-            }
-        },
+        mutation: map_responder_mutation(binding.mutation.clone()),
     });
     Ok(Action {
         mode: a.mode.clone(),
@@ -4727,6 +4861,7 @@ mod tests {
                 source,
                 until,
                 on_each,
+                captures: _,
                 timeout_ms,
                 interval_ms,
                 tolerant,

@@ -22,9 +22,9 @@ pub mod trace;
 pub mod version;
 
 pub use action::{
-    ActionArgument, ActionAvailability, ActionCatalog, ActionCatalogEntry, ActionCatalogParameter,
-    ActionCatalogParameterKind, ActionInvocationRequest, ActionResolutionError,
-    ActionRoleParameters, ResolvedActionInvocation,
+    ActionArgument, ActionArgumentValue, ActionAvailability, ActionCatalog, ActionCatalogEntry,
+    ActionCatalogParameter, ActionCatalogParameterKind, ActionInvocationRequest,
+    ActionResolutionError, ActionRoleParameters, ResolvedActionInvocation,
 };
 pub use activity::{
     ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityDisplayRole,
@@ -41,6 +41,7 @@ pub use generate::{
 };
 pub use model::{
     parse_hex_bytes, parse_hex_code, parse_hex_u32, Action, ActionEffect, ActionInitiator,
+    ActionInitiatorParameter, ActionInitiatorParameterDeclaration, ActionInitiatorParameterKind,
     ActionParameter, ActionParameterKind, ActionResponder, ActionVerb, AvailableWhen, AwaitSource,
     AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
     CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
@@ -48,17 +49,18 @@ pub use model::{
     CaptureSource, CloseSession, Connection, ConnectionTransition, Control, ControlOwner,
     ControlReadSource, ControlRole, ControlSurfaceEntry, Descriptor, GateFailure, GateRequirement,
     InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream,
-    Loop, ManufacturerDefaults, Media, MediaFormat, Mode, ModeEntry, ModeEntryExecution,
-    ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
-    ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
-    ObjectsAvailable, ObservedScope, OpEffect, Operation, Payload, PayloadForm,
-    PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyKind,
-    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
-    RecordLayout, RecordMemberRef, ReestablishConnection, ResponderMutation, RetryFailureClass,
-    SentinelFrame, SentinelMask, SequenceGate, ShutterRecipe, SocketBindings, SocketRole, Step,
-    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
-    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
-    WireFraming, Workflow,
+    Loop, ManufacturerDefaults, Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry,
+    ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
+    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
+    ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect, Operation, Payload,
+    PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property,
+    PropertyKind, PropertyTransitionTerminal, PropertyValueEncoding, PropertyValueProfile,
+    PropertyValueProfileRow, PropertyValueRow, RecordLayout, RecordMemberRef,
+    ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
+    SentinelFrame, SentinelMask, SequenceGate, SetPropValue, ShutterRecipe, SocketBindings,
+    SocketRole, Step, StepParam, StepRetry, StructuredTextField, StructuredTextLayout,
+    StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy,
+    ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -374,6 +376,7 @@ impl CameraManifest {
                 match &entry.execution {
                     ModeEntryExecution::Ptp { steps } => {
                         require_valid_ptp_steps(steps, &path)?;
+                        require_no_runtime_set_props(steps, &path)?;
                         require_valid_open_channels(
                             steps,
                             connection.bindings.as_ref(),
@@ -388,6 +391,10 @@ impl CameraManifest {
                     }
                     ModeEntryExecution::ReestablishConnection(reestablish) => {
                         require_valid_ptp_steps(
+                            &reestablish.exit_steps,
+                            &format!("{path}.reestablishConnection.exitSteps"),
+                        )?;
+                        require_no_runtime_set_props(
                             &reestablish.exit_steps,
                             &format!("{path}.reestablishConnection.exitSteps"),
                         )?;
@@ -445,9 +452,10 @@ impl CameraManifest {
             }
             for (verb, action) in &connection.actions {
                 let path = format!("connections.{connection_id}.actions.{verb:?}");
-                require_valid_action_roles(action, &path)?;
+                require_valid_action_roles(self, action, &path)?;
                 if let Some(initiator) = &action.initiator {
                     require_valid_ptp_steps(&initiator.steps, &path)?;
+                    require_valid_action_runtime_values(self, initiator, &path)?;
                     require_valid_open_channels(
                         &initiator.steps,
                         connection.bindings.as_ref(),
@@ -761,7 +769,11 @@ fn require_valid_init_retries(
     Ok(())
 }
 
-fn require_valid_action_roles(action: &Action, path: &str) -> Result<(), ManifestError> {
+fn require_valid_action_roles(
+    manifest: &CameraManifest,
+    action: &Action,
+    path: &str,
+) -> Result<(), ManifestError> {
     if action.initiator.is_none() && action.responder.is_none() {
         return Err(ManifestError::Contract(format!(
             "{path} must declare initiator or responder"
@@ -769,11 +781,10 @@ fn require_valid_action_roles(action: &Action, path: &str) -> Result<(), Manifes
     }
     if let Some(initiator) = &action.initiator {
         let mut names = std::collections::BTreeSet::new();
-        if initiator
-            .params
-            .iter()
-            .any(|name| name.is_empty() || !names.insert(name.as_str()))
-        {
+        if initiator.params.iter().any(|parameter| {
+            let name = parameter.name();
+            name.is_empty() || !names.insert(name)
+        }) {
             return Err(ManifestError::Contract(format!(
                 "{path}.initiator.params names must be non-empty and unique"
             )));
@@ -849,6 +860,215 @@ fn require_valid_action_roles(action: &Action, path: &str) -> Result<(), Manifes
                     "{path}.responder count parameter must use the objectsAvailable range"
                 )));
             }
+        }
+        ResponderMutation::PropertyTransition {
+            target,
+            initial,
+            terminal,
+            ..
+        } => {
+            let code = parse_hex_code(target).ok_or_else(|| {
+                ManifestError::Contract(format!(
+                    "{path}.responder propertyTransition target '{target}' is not a property code"
+                ))
+            })?;
+            let property = manifest.property(code).ok_or_else(|| {
+                ManifestError::Contract(format!(
+                    "{path}.responder propertyTransition references unknown target '{target}'"
+                ))
+            })?;
+            if property.payload.is_some()
+                || numeric_scalar_bounds(property.ptype.as_deref()).is_none()
+            {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.responder propertyTransition target '{target}' must be a numeric scalar property"
+                )));
+            }
+            if initial.is_some_and(|value| !property_scalar_fits(property, value)) {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.responder propertyTransition initial value is outside target '{target}' encoding"
+                )));
+            }
+            match terminal {
+                PropertyTransitionTerminal::Fixed { value } => {
+                    if !property_scalar_fits(property, *value) {
+                        return Err(ManifestError::Contract(format!(
+                            "{path}.responder propertyTransition terminal value is outside target '{target}' encoding"
+                        )));
+                    }
+                }
+                PropertyTransitionTerminal::Parameter { parameter } => {
+                    let declaration = responder
+                        .params
+                        .iter()
+                        .find(|candidate| candidate.name == *parameter)
+                        .ok_or_else(|| {
+                            ManifestError::Contract(format!(
+                                "{path}.responder propertyTransition references unknown terminal parameter '{parameter}'"
+                            ))
+                        })?;
+                    let (min, max) = match declaration.kind {
+                        ActionParameterKind::U32 => (
+                            i128::from(declaration.min.unwrap_or(u32::MIN)),
+                            i128::from(declaration.max.unwrap_or(u32::MAX)),
+                        ),
+                    };
+                    let (property_min, property_max) =
+                        numeric_scalar_bounds(property.ptype.as_deref()).expect("checked above");
+                    if min < property_min || max > property_max {
+                        return Err(ManifestError::Contract(format!(
+                            "{path}.responder propertyTransition terminal parameter '{parameter}' range is outside target '{target}' encoding"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn numeric_scalar_bounds(ptype: Option<&str>) -> Option<(i128, i128)> {
+    match ptype {
+        Some("u8") => Some((i128::from(u8::MIN), i128::from(u8::MAX))),
+        Some("u16") => Some((i128::from(u16::MIN), i128::from(u16::MAX))),
+        Some("u32") => Some((i128::from(u32::MIN), i128::from(u32::MAX))),
+        Some("u64") => Some((i128::from(u64::MIN), i128::from(u64::MAX))),
+        Some("i16") => Some((i128::from(i16::MIN), i128::from(i16::MAX))),
+        Some("i32") => Some((i128::from(i32::MIN), i128::from(i32::MAX))),
+        _ => None,
+    }
+}
+
+fn property_scalar_fits(property: &Property, value: i64) -> bool {
+    numeric_scalar_bounds(property.ptype.as_deref())
+        .is_some_and(|(min, max)| i128::from(value) >= min && i128::from(value) <= max)
+}
+
+fn require_valid_action_runtime_values(
+    manifest: &CameraManifest,
+    initiator: &ActionInitiator,
+    path: &str,
+) -> Result<(), ManifestError> {
+    let declarations = initiator
+        .params
+        .iter()
+        .map(|parameter| {
+            let normalized = parameter.normalized();
+            (normalized.name.clone(), normalized)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    fn walk(
+        manifest: &CameraManifest,
+        declarations: &std::collections::BTreeMap<String, ActionInitiatorParameterDeclaration>,
+        steps: &[Step],
+        path: &str,
+    ) -> Result<(), ManifestError> {
+        for (index, step) in steps.iter().enumerate() {
+            let step_path = format!("{path}.steps[{index}]");
+            if let Some(SetPropValue::Runtime(reference)) = &step.value {
+                let declaration = declarations.get(&reference.runtime).ok_or_else(|| {
+                    ManifestError::Contract(format!(
+                        "{step_path}.value references undeclared initiator parameter '{}'",
+                        reference.runtime
+                    ))
+                })?;
+                if reference.if_missing == MissingRuntimeValue::Skip && declaration.required {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path}.value ifMissing skip requires optional initiator parameter '{}'",
+                        reference.runtime
+                    )));
+                }
+                let prop = step
+                    .set_prop
+                    .as_deref()
+                    .and_then(parse_hex_code)
+                    .and_then(|code| manifest.property(code))
+                    .ok_or_else(|| {
+                        ManifestError::Contract(format!(
+                            "{step_path}.value runtime reference requires a declared setProp property"
+                        ))
+                    })?;
+                let compatible = match declaration.kind {
+                    ActionInitiatorParameterKind::String => prop.ptype.as_deref() == Some("str"),
+                    ActionInitiatorParameterKind::U64 => matches!(
+                        prop.ptype.as_deref(),
+                        Some("u8" | "u16" | "u32" | "u64" | "i16" | "i32")
+                    ),
+                };
+                if !compatible {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path}.value parameter '{}' kind is incompatible with property type {:?}",
+                        reference.runtime, prop.ptype
+                    )));
+                }
+            }
+            if let Some(await_until) = &step.await_until {
+                walk(
+                    manifest,
+                    declarations,
+                    &await_until.on_each,
+                    &format!("{step_path}.awaitUntil"),
+                )?;
+            }
+            if let Some(retry) = &step.retry {
+                walk(
+                    manifest,
+                    declarations,
+                    &retry.steps,
+                    &format!("{step_path}.retry"),
+                )?;
+            }
+            if let Some(loop_step) = &step.r#loop {
+                let body = match loop_step {
+                    Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => body,
+                };
+                walk(manifest, declarations, body, &format!("{step_path}.loop"))?;
+            }
+            if let Some(condition) = &step.if_step {
+                walk(
+                    manifest,
+                    declarations,
+                    &condition.then_steps,
+                    &format!("{step_path}.if.then"),
+                )?;
+                walk(
+                    manifest,
+                    declarations,
+                    &condition.else_steps,
+                    &format!("{step_path}.if.else"),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    walk(manifest, &declarations, &initiator.steps, path)
+}
+
+fn require_no_runtime_set_props(steps: &[Step], path: &str) -> Result<(), ManifestError> {
+    for (index, step) in steps.iter().enumerate() {
+        let step_path = format!("{path}.steps[{index}]");
+        if matches!(step.value, Some(SetPropValue::Runtime(_))) {
+            return Err(ManifestError::Contract(format!(
+                "{step_path}.value runtime references require an action initiator parameter declaration"
+            )));
+        }
+        if let Some(await_until) = &step.await_until {
+            require_no_runtime_set_props(&await_until.on_each, &format!("{step_path}.awaitUntil"))?;
+        }
+        if let Some(retry) = &step.retry {
+            require_no_runtime_set_props(&retry.steps, &format!("{step_path}.retry"))?;
+        }
+        if let Some(loop_step) = &step.r#loop {
+            let body = match loop_step {
+                Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => body,
+            };
+            require_no_runtime_set_props(body, &format!("{step_path}.loop"))?;
+        }
+        if let Some(condition) = &step.if_step {
+            require_no_runtime_set_props(&condition.then_steps, &format!("{step_path}.if.then"))?;
+            require_no_runtime_set_props(&condition.else_steps, &format!("{step_path}.if.else"))?;
         }
     }
     Ok(())
@@ -1148,6 +1368,32 @@ fn require_valid_ptp_steps_with_collections(
             return Err(ManifestError::Contract(format!(
                 "{step_path} must contain exactly one action"
             )));
+        }
+        if let Some(await_until) = &step.await_until {
+            if !step.captures.is_empty() {
+                let has_polled_value = matches!(await_until.source, AwaitSource::Poll { .. })
+                    || matches!(
+                        await_until.source,
+                        AwaitSource::Event {
+                            then_poll: Some(_),
+                            ..
+                        }
+                    );
+                if !has_polled_value {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path}.captures require awaitUntil poll or event thenPoll"
+                    )));
+                }
+                if step
+                    .captures
+                    .iter()
+                    .any(|capture| capture.source != CaptureSource::PropValue)
+                {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path}.captures on awaitUntil support only propValue"
+                    )));
+                }
+            }
         }
         let mut array_binds = std::collections::BTreeSet::new();
         for capture in &step.captures {
