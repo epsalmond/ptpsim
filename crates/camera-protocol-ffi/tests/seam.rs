@@ -1165,7 +1165,6 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
     assert!(matches!(
         &steps[steps.len() - 3..],
         [
-            EntryStep::SendOp { op: 0x101c, .. },
             EntryStep::OpenChannel {
                 role: SocketRole::Event,
                 ..
@@ -1173,7 +1172,8 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
             EntryStep::OpenChannel {
                 role: SocketRole::LiveView,
                 ..
-            }
+            },
+            EntryStep::SendOp { op: 0x101c, .. }
         ]
     ));
     assert!(
@@ -1896,8 +1896,9 @@ fn client_derived_friendly_name_defers_the_init_packet() {
             0xde, 0xd0
         ]
     );
-    assert_eq!(init.tail.len(), 28);
+    assert_eq!(init.tail, vec![0; 28]);
     assert_eq!(init.packet.len(), 82);
+    assert_eq!(&init.packet[54..82], &[0; 28]);
     assert!(s
         .connection_init_with_runtime("app".into(), vec![])
         .is_none());

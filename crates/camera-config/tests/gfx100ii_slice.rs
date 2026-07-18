@@ -221,20 +221,20 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     assert_eq!(steps[1].value, Some(0x16)); // functionMode 22
     assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
     assert_eq!(steps[3].repeat, 4); // 902B ×4
-    assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
-    assert_eq!(steps[4].captures.len(), 1);
-    assert_eq!(steps[4].captures[0].bind, "openCaptureTxId");
     assert_eq!(
-        steps[4].captures[0].source,
-        camera_config::CaptureSource::TransactionId
-    );
-    assert_eq!(
-        steps[5].open_channel,
+        steps[4].open_channel,
         Some(camera_config::SocketRole::Event)
     );
     assert_eq!(
-        steps[6].open_channel,
+        steps[5].open_channel,
         Some(camera_config::SocketRole::LiveView)
+    );
+    assert_eq!(steps[6].send_op.as_deref(), Some("0x101c"));
+    assert_eq!(steps[6].captures.len(), 1);
+    assert_eq!(steps[6].captures[0].bind, "openCaptureTxId");
+    assert_eq!(
+        steps[6].captures[0].source,
+        camera_config::CaptureSource::TransactionId
     );
     assert!(steps.iter().all(camera_config::Step::is_well_formed));
     let reverse = entries
@@ -242,11 +242,16 @@ fn live_view_entry_is_the_ground_truth_sequence() {
         .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
         .expect("image-transfer can return to live view");
     let reverse_steps = reverse.ptp_steps().expect("reverse live-view entry");
-    let reverse_open_index = reverse_steps
-        .iter()
-        .position(|step| step.send_op.as_deref() == Some("0x101c"))
-        .expect("reverse live-view open-capture step");
-    let reverse_open = &reverse_steps[reverse_open_index];
+    let reverse_tail = &reverse_steps[reverse_steps.len() - 3..];
+    assert_eq!(
+        reverse_tail[0].open_channel,
+        Some(camera_config::SocketRole::Event)
+    );
+    assert_eq!(
+        reverse_tail[1].open_channel,
+        Some(camera_config::SocketRole::LiveView)
+    );
+    let reverse_open = &reverse_tail[2];
     assert_eq!(reverse_open.send_op.as_deref(), Some("0x101c"));
     assert_eq!(reverse_open.captures.len(), 1);
     assert_eq!(reverse_open.captures[0].bind, "openCaptureTxId");
@@ -256,15 +261,10 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     );
     assert_eq!(
         reverse_steps
-            .get(reverse_open_index + 1)
-            .and_then(|step| step.open_channel),
-        Some(camera_config::SocketRole::Event)
-    );
-    assert_eq!(
-        reverse_steps
-            .get(reverse_open_index + 2)
-            .and_then(|step| step.open_channel),
-        Some(camera_config::SocketRole::LiveView)
+            .iter()
+            .filter(|step| step.send_op.as_deref() == Some("0x101c"))
+            .count(),
+        1
     );
     // A from-qualified image-transfer edge exists (teardown-first switch).
     assert!(entries
@@ -1322,18 +1322,16 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
         .iter()
         .any(|s| s.send_op.as_deref() == Some("0x902b") && s.repeat == 4));
     assert_eq!(
-        reverse_steps
-            .get(reverse_steps.len() - 3)
-            .and_then(|s| s.send_op.as_deref()),
-        Some("0x101c")
-    );
-    assert_eq!(
-        reverse_steps[reverse_steps.len() - 2].open_channel,
+        reverse_steps[reverse_steps.len() - 3].open_channel,
         Some(camera_config::SocketRole::Event)
     );
     assert_eq!(
-        reverse_steps.last().and_then(|s| s.open_channel),
+        reverse_steps[reverse_steps.len() - 2].open_channel,
         Some(camera_config::SocketRole::LiveView)
+    );
+    assert_eq!(
+        reverse_steps.last().and_then(|s| s.send_op.as_deref()),
+        Some("0x101c")
     );
     assert!(
         reverse_steps
@@ -1506,9 +1504,9 @@ fn manufacturer_tier_supplies_fixed_initiator_identity() {
 }
 
 #[test]
-fn app_init_shape_is_typed_and_carries_the_vendor_tail() {
-    // #82: the init shape is a typed field (promoted out of `extra`), with the
-    // literal 28-byte tail in data so the app replays bytes, not Swift literals.
+fn app_init_shape_is_typed_and_zero_fills_the_unused_tail() {
+    // #343: preserve the fixed 82-byte shape without replaying captured process
+    // memory from the unused 28-byte tail.
     let m = gfx();
     let init = m.connections["app"]
         .init
@@ -1519,8 +1517,9 @@ fn app_init_shape_is_typed_and_carries_the_vendor_tail() {
     assert_eq!(init.name_field_byte_count, 26);
     assert_eq!(
         init.tail.as_deref(),
-        Some("cc004f000000000000000000000057004d0042000000000000000000")
+        Some("00000000000000000000000000000000000000000000000000000000")
     );
+    assert_eq!(init.tail_evidence.as_deref(), Some("docLiveControls"));
 }
 
 #[test]

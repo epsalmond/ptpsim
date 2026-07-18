@@ -34,7 +34,7 @@ already pays.
   packaging the xcframework, AND wiring it into the client application build are theirs. ptpsim
   provides the crate + the `uniffi-bindgen` binary + `docs/INTEGRATION.md`.
 - **Init packet: manifest data.** The Fuji reference app `InitCommandRequest`'s 26-byte
-  name field + 28-byte `liveViewInitTail` live in the camera manifest
+  name field + 28-byte reserved tail live in the camera manifest
   (`transports.init`: `friendlyNameLength`, `tailHex`), NOT a hardcoded Rust
   constant. Works whether or not it varies across firmwares; differing cameras
   carry different data. → closes open decision #4.

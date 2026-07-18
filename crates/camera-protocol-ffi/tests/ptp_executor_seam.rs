@@ -87,23 +87,27 @@ fn store_with_cold_entry_activities() -> Arc<ConfigStore> {
 }
 
 fn store_with_cold_entry_activity_retry() -> Arc<ConfigStore> {
-    let body = body_with_cold_entry_activities().replacen(
-        r#"          - { sendOp: "0x902b", repeat: 4 }"#,
-        r#"          - retry:
+    let body = body_with_cold_entry_activities()
+        .replacen(
+            r#"          - { sendOp: "0x902b", repeat: 4 }"#,
+            r#"          - retry:
               whenResponseCodes: ["0x2019"]
               maxAttempts: 2
               retryDelayMs: 0
               steps:
-                - { sendOp: "0x902b", repeat: 4 }"#,
-        1,
-    );
+                - { sendOp: "0x902b", repeat: 4 }
+          - { getProp: "0xdf2a" }"#,
+            1,
+        )
+        .replacen("endStepExclusive: 7", "endStepExclusive: 8", 1);
     store_from_body(body)
 }
 
 fn store_with_tolerant_repeated_startup() -> Arc<ConfigStore> {
     let body = data("fuji/gfx100ii/gfx100ii.yaml").replacen(
         r#"- { sendOp: "0x902b", repeat: 4 }"#,
-        r#"- { sendOp: "0x902b", repeat: 4, tolerant: true }"#,
+        r#"- { sendOp: "0x902b", repeat: 4, tolerant: true }
+          - { getProp: "0xdf2a" }"#,
         1,
     );
     store_from_body(body)
@@ -881,9 +885,11 @@ fn real_gfx_cold_entry_runs_in_manifest_wire_order() {
         transport.calls().as_slice(),
         [
             ..,
-            ExecutorCall::OperationCompleted(0x101c),
+            ExecutorCall::OperationCompleted(0x902b),
             ExecutorCall::OpenChannel(SocketRole::Event),
-            ExecutorCall::OpenChannel(SocketRole::LiveView)
+            ExecutorCall::OpenChannel(SocketRole::LiveView),
+            ExecutorCall::Operation(0x101c),
+            ExecutorCall::OperationCompleted(0x101c)
         ]
     ));
     assert_eq!(outcome.steps_run, 7);

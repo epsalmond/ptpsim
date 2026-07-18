@@ -509,7 +509,7 @@ transports:
     init:
       ackDeviceGuid: "0870b061-0a8b-4593-b2e7-9357dd36e050"
       friendlyNameLength: 26
-      tailHex: "cc004f000000000000000000000057004d0042000000000000000000"
+      tailHex: "00000000000000000000000000000000000000000000000000000000"
   pcssTether:
     kind: ptpip-pcss
     status: planned

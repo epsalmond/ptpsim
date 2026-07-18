@@ -13328,8 +13328,8 @@ connections:
         friendlyName: initFriendlyName
         clientIpv4: null
       nameFieldByteCount: 26
-      tail: cc004f000000000000000000000057004d0042000000000000000000
-      tailEvidence: iosFujiPTPIP
+      tail: '00000000000000000000000000000000000000000000000000000000'
+      tailEvidence: docLiveControls
       expectedResponderGuid: null
     initShape: app82
     liveViewDelivery:
@@ -13414,20 +13414,6 @@ connections:
       - setProp: null
         getProp: null
         readEcho: null
-        sendOp: '0x101c'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        captures:
-        - bind: openCaptureTxId
-          as: transactionId
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
         sendOp: null
         openChannel: event
         reopenSession: null
@@ -13446,6 +13432,20 @@ connections:
         closeSession: null
         value: null
         params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x101c'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        captures:
+        - bind: openCaptureTxId
+          as: transactionId
         tolerant: false
         repeat: 1
         awaitUntil: null
@@ -13510,20 +13510,6 @@ connections:
       - setProp: null
         getProp: null
         readEcho: null
-        sendOp: '0x101c'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        captures:
-        - bind: openCaptureTxId
-          as: transactionId
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
         sendOp: null
         openChannel: event
         reopenSession: null
@@ -13542,6 +13528,20 @@ connections:
         closeSession: null
         value: null
         params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x101c'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        captures:
+        - bind: openCaptureTxId
+          as: transactionId
         tolerant: false
         repeat: 1
         awaitUntil: null

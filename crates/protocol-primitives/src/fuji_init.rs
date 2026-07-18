@@ -1,7 +1,7 @@
 //! Fuji reference app `InitCommandRequest` (id `fuji-app-init`) — the 82-byte PTP/IP init
 //! the GFX expects before the compressed channel opens.
 //!
-//! Layout (from `client application FujiPTPIP.swift`, pinned by the app's init golden):
+//! Fixed layout for the scoped reference app-compatible manifest shape:
 //! ```text
 //! u32 length (= total, 82)   u32 type (1 = Init_Command_Request)
 //! payload: GUID[16]  u32(0)  nameField[26]  tail[28]
@@ -26,8 +26,8 @@ pub struct AppInit {
 }
 
 /// Build the InitCommandRequest packet. `guid` must be 16 bytes; `tail` is the
-/// manifest-supplied trailer (28 bytes for the GFX, but length is not enforced —
-/// it's data).
+/// manifest-supplied trailing region (28 bytes for the GFX shape, but length is
+/// not enforced because the framing primitive remains data-driven).
 pub fn build_app_init(
     guid: &[u8],
     friendly_name: &str,
@@ -138,20 +138,18 @@ pub fn validate_init_ack(packet: &[u8]) -> Result<(), FramingError> {
 mod tests {
     use super::*;
 
-    // The known-accepted initiator identity (FujiPTPIP.swift) + liveViewInitTail.
+    // The nonzero sentinel proves the generic primitive passes manifest tail data
+    // through unchanged. Body-specific zero-fill policy belongs in the manifest.
     const GUID: [u8; 16] = [
         0xf2, 0xe4, 0x53, 0x8f, 0xad, 0xa5, 0x48, 0x5d, 0x87, 0xb2, 0x7f, 0x0b, 0xd3, 0xd5, 0xde,
         0xd0,
     ];
-    const TAIL: [u8; 28] = [
-        0xcc, 0x00, 0x4f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x57,
-        0x00, 0x4d, 0x00, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ];
+    const TAIL: [u8; 28] = [0xa5; 28];
 
     #[test]
     fn builds_the_82_byte_init_with_correct_structure() {
         let pkt = build_app_init(&GUID, "Pixel-6-4976", &TAIL).unwrap();
-        assert_eq!(pkt.len(), 82, "the canonical reference app init is 82 bytes");
+        assert_eq!(pkt.len(), 82, "the fixed reference app init shape is 82 bytes");
         // Header: length == total, type == 1.
         assert_eq!(u32::from_le_bytes(pkt[0..4].try_into().unwrap()), 82);
         assert_eq!(

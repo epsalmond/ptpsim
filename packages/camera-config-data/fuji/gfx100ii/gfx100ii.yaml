@@ -163,19 +163,16 @@ connections:
     # It does not guarantee that the AP or listener remains immediately reusable.
     transportClose: { sentinel: ptpipCloseSentinel, when: before-image-transfer-reestablishment }
     # 82-byte InitCommandRequest = GUID(16) + uint32(0) + nameField(26) + tail(28).
-    # Identity is manufacturer-tier (see fuji.yaml). Exact tail bytes come from the
-    # pinned golden (FujiPTPIP.liveViewInitTail), NOT hand-transcribed here.
+    # Identity is manufacturer-tier (see fuji.yaml). For the scoped fw02.30 flow,
+    # bytes after the name field are unused and must be deterministic zero-fill.
     init:
       identity: { guid: initiatorGuid, friendlyName: initFriendlyName }
       nameFieldByteCount: 26
-      # The 28-byte fw-2.30 vendor trailer (cc004f00 + "WMB" UTF-16LE + zeros), so
-      # the app replays bytes from data instead of Swift literals (#82). Byte-perfect
-      # per INIT_COMMAND_REQUEST_FW0230_CORRECTION; matches fuji_init's tested TAIL.
-      tail: "cc004f000000000000000000000057004d0042000000000000000000"
-      tailEvidence: iosFujiPTPIP     # liveViewInitTail, 28 bytes
-    # Mode-graph edges over this connection. Ground truth = FujiCameraAPISession
-    # startup sequence (the CameraPTPMode enum is stale/unused — its launch values
-    # disagree with what the app actually sends).
+      # Captured non-zero bytes in this reserved region are process-memory leakage,
+      # not protocol fields. Keep all 28 bytes explicit to preserve the fixed shape.
+      tail: "00000000000000000000000000000000000000000000000000000000"
+      tailEvidence: docLiveControls
+    # Mode-graph edges for GFX100 II fw02.30 with reference app Android 2.7.3.
     entries:
       - to: shooting/stills          # enter live-view from a cold App connection
         steps:
@@ -186,9 +183,9 @@ connections:
           - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)
           - { readEcho: "0xdf2a" }               # read then write back
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
-          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; executor binds its transaction ID
           - { openChannel: event }
           - { openChannel: liveView }
+          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
       - to: shooting/stills          # from image-import back to live-view
         from: image-transfer
         # Ground truth: MODE_CHANGES.md §5b. Get→Take reopens the PTP/IP
@@ -201,9 +198,9 @@ connections:
           - { setProp: "0xdf01", value: 0x16 }               # functionMode = 22 (live-view)
           - { setProp: "0xdf2a", value: 2 }                  # Fpcsh_VersionRemoteEx
           - { sendOp: "0x902b", repeat: 4 }                  # FujiVendor_902B startup ×4
-          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; executor binds its transaction ID
           - { openChannel: event }
           - { openChannel: liveView }
+          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
       - to: shooting/video          # in-live-view stills→video selector
         from: shooting/stills
         steps:

@@ -2075,7 +2075,7 @@ pub struct CloseSession {
 }
 
 /// The PTP/IP InitCommandRequest wire shape as manifest data: identity slots
-/// (resolved via `values:`) framed with a literal vendor tail into the 82-byte
+/// (resolved via `values:`) framed with manifest-supplied trailing bytes into the
 /// reference app init packet (`fuji_init::build_app_init`). #82.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2085,9 +2085,9 @@ pub struct InitShape {
     /// Fixed width of the UTF-16LE friendly-name field, in bytes (reference app = 26).
     #[serde(default)]
     pub name_field_byte_count: u32,
-    /// Literal vendor tail appended after the name field, as a hex string
-    /// (decoded by the same path as `StepValue::Literal`). The GFX app slice's
-    /// is the 28-byte `cc004f00…`; optional so a PCSS/zeros-tail shape may omit it.
+    /// Literal bytes appended after the name field, as a hex string (decoded by
+    /// the same path as `StepValue::Literal`). Fixed shapes must supply their full
+    /// trailing region explicitly, including any required zero-fill.
     #[serde(default)]
     pub tail: Option<String>,
     /// Evidence id(s) backing the tail bytes.
