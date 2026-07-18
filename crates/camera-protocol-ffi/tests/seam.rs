@@ -1289,6 +1289,14 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
     assert!(matches!(
         start.initiator.as_ref().unwrap().steps.as_slice(),
         [
+            EntryStep::Retry {
+                steps: terminate_steps,
+                when_response_codes: terminate_response_codes,
+                when_failure_classes: terminate_failure_classes,
+                max_attempts: 10,
+                retry_delay_ms: 300,
+                tolerant: true,
+            },
             EntryStep::SetProp {
                 prop: 0xd1bc,
                 value: 2,
@@ -1301,7 +1309,22 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
                 repeat: 1,
                 tolerant: false,
             }
-        ] if matches!(
+        ] if terminate_response_codes.as_slice() == [0x2019]
+            && terminate_failure_classes.is_empty()
+            && matches!(
+                terminate_steps.as_slice(),
+                [EntryStep::SendOp {
+                    op: 0x1018,
+                    params: terminate_params,
+                    captures: terminate_captures,
+                    repeat: 1,
+                    tolerant: false,
+                }] if matches!(
+                    terminate_params.as_slice(),
+                    [EntryParam::Literal { value: 1 }]
+                ) && terminate_captures.is_empty()
+            )
+            && matches!(
             params.as_slice(),
             [
                 EntryParam::Literal { value: 0 },

@@ -572,14 +572,23 @@ connections:
           steps:
             - { sendOp: "0x1001", params: [] }
         evidence: [wireTetherCaps20260527]
-      # PCSS selects live-view delivery with D1BC=2, then starts its poll-based
-      # live view with InitiateOpenCapture(0, 0).
-      # Unlike reference app, the later stop request does not consume this request's
-      # transaction id; the PCSS capture uses a connection-specific literal.
+      # The full-session PCSS capture contains 13 TerminateOpenCapture requests
+      # versus 11 InitiateOpenCapture requests. Every terminate carries literal
+      # 1, while every initiate carries (0, 0).
       startLiveView:
         mode: shooting/stills
         initiator:
           steps:
+            # Field-observed fw 2.30 (2026-07-18): delivery cleanup keeps the
+            # defensive terminate busy past 1s (session 3161725A exhausted
+            # 5x200ms); exhaustion remains tolerated.
+            - tolerant: true
+              retry:
+                whenResponseCodes: ["0x2019"]
+                maxAttempts: 10
+                retryDelayMs: 300
+                steps:
+                  - { sendOp: "0x1018", params: [1] }
             - { setProp: "0xd1bc", value: 2 }
             - { sendOp: "0x101c", params: [0, 0] }
         evidence: [wirePCSSShootDownload20260523]
@@ -623,16 +632,33 @@ connections:
       # word (acknowledge: commit). Total wall ~108ms (beat 1 includes the
       # exposure). `objectsAvailable` declares the bounded transfer queue growth
       # the client should poll after invoking the action.
+      # Field-observed GFX100 II fw 2.30 (2026-07-18): subsequent beats answer
+      # 0x2019 while the capture is in flight, so replay only each 0x100E.
       shutter:
         mode: shooting/stills
         initiator:
           steps:
             - { setProp: "0xd039", value: 0x00010000 }
-            - { sendOp:  "0x100e", params: [0, 0] }
+            - retry:
+                whenResponseCodes: ["0x2019"]
+                maxAttempts: 10
+                retryDelayMs: 100
+                steps:
+                  - { sendOp: "0x100e", params: [0, 0] }
             - { setProp: "0xd039", value: 0x00020000 }
-            - { sendOp:  "0x100e", params: [0, 0] }
+            - retry:
+                whenResponseCodes: ["0x2019"]
+                maxAttempts: 10
+                retryDelayMs: 100
+                steps:
+                  - { sendOp: "0x100e", params: [0, 0] }
             - { setProp: "0xd039", value: 0x00000001 }
-            - { sendOp:  "0x100e", params: [0, 0] }
+            - retry:
+                whenResponseCodes: ["0x2019"]
+                maxAttempts: 10
+                retryDelayMs: 100
+                steps:
+                  - { sendOp: "0x100e", params: [0, 0] }
           # User's format selection (JPEG / HEIF / RAW) determines how many
           # objects become available per press — 1 to 3. The app already knows
           # its own selection state and can predict the exact count; the manifest
@@ -660,14 +686,14 @@ connections:
                 - { bind: objectHandles, as: ptpU32Array }
         evidence: [wirePCSSShootDownload20260523]
       getObjectInfo:
-        mode: image-transfer
+        mode: ""
         initiator:
           params: [handle]
           steps:
             - { sendOp: "0x1008", params: [{ runtime: handle }] }
         evidence: [wirePCSSShootDownload20260523]
       getThumb:
-        mode: image-transfer
+        mode: ""
         initiator:
           params: [handle]
           steps:
@@ -675,14 +701,14 @@ connections:
         evidence: [wirePCSSShootDownload20260523]
       # Whole-object download — 0x101B chunking is NOT supported on PCSS.
       getObject:
-        mode: image-transfer
+        mode: ""
         initiator:
           params: [handle]
           steps:
             - { sendOp: "0x1009", params: [{ runtime: handle }] }
         evidence: [wirePCSSShootDownload20260523]
       deleteObject:
-        mode: image-transfer
+        mode: ""
         initiator:
           params: [handle]
           steps:

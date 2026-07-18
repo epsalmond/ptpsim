@@ -964,7 +964,7 @@ fn rejected_action_invocations_never_touch_the_transport_or_observers() {
         (
             {
                 let mut request = base.clone();
-                request.mode = "shooting/stills".into();
+                request.connection = "app".into();
                 request
             },
             "wrongMode",

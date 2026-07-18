@@ -305,7 +305,7 @@ fn rejected_streaming_invocations_have_zero_transport_and_sink_effects() {
         (
             {
                 let mut request = base.clone();
-                request.mode = "shooting/stills".into();
+                request.connection = "app".into();
                 request
             },
             "wrongMode",

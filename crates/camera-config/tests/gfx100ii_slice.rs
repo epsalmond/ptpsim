@@ -4,6 +4,7 @@
 
 use camera_config::{
     ActionVerb, CameraManifest, ConfigStore, ManufacturerDefaults, ModeEntryExecution,
+    ObjectTransferCompletionTiming, ObjectTransferResumePolicy, ObjectTransferStrategy,
     ObjectsAvailable, PcssDiscoveryTarget, Predicate, PropView, PropertyKind, StepParam,
     ValuePolicy, VersionScheme,
 };
@@ -478,7 +479,18 @@ fn wireless_tether_shutter_action_is_the_3_beat_pcss_sequence() {
         let setprop = &shutter.initiator().unwrap().steps[beat * 2];
         assert_eq!(setprop.set_prop.as_deref(), Some("0xd039"));
         assert_eq!(setprop.value, Some(*phase), "beat {} phase value", beat + 1);
-        let sendop = &shutter.initiator().unwrap().steps[beat * 2 + 1];
+        let retry_step = &shutter.initiator().unwrap().steps[beat * 2 + 1];
+        assert!(!retry_step.tolerant);
+        let retry = retry_step
+            .retry
+            .as_ref()
+            .expect("each capture beat has a bounded Device Busy retry");
+        assert_eq!(retry.when_response_codes, ["0x2019"]);
+        assert!(retry.when_failure_classes.is_empty());
+        assert_eq!(retry.max_attempts, 10);
+        assert_eq!(retry.retry_delay_ms, 100);
+        assert_eq!(retry.steps.len(), 1);
+        let sendop = &retry.steps[0];
         assert_eq!(sendop.send_op.as_deref(), Some("0x100e"));
         assert_eq!(
             sendop.params,
@@ -566,9 +578,22 @@ fn standard_exposure_properties_have_display_labels() {
 
 #[test]
 fn wireless_tether_transfer_actions_bind_runtime_handle() {
+    let m = gfx();
+    for verb in [
+        ActionVerb::EnumerateObjects,
+        ActionVerb::GetObjectInfo,
+        ActionVerb::GetThumb,
+        ActionVerb::GetObject,
+        ActionVerb::DeleteObject,
+    ] {
+        let action = m
+            .action("wireless-tether", verb)
+            .unwrap_or_else(|| panic!("missing action {verb:?}"));
+        assert_eq!(action.mode, "", "{verb:?} must remain mode-neutral");
+    }
+
     // Per-handle ops are parameterized: caller binds `handle` to a slot the
     // engine plugs into the StepParam::Runtime reference at emit time.
-    let m = gfx();
     for verb in [
         ActionVerb::GetObjectInfo,
         ActionVerb::GetThumb,
@@ -578,7 +603,6 @@ fn wireless_tether_transfer_actions_bind_runtime_handle() {
         let a = m
             .action("wireless-tether", verb)
             .unwrap_or_else(|| panic!("missing action {verb:?}"));
-        assert_eq!(a.mode, "image-transfer");
         assert_eq!(a.initiator().unwrap().params, vec!["handle".to_string()]);
         assert_eq!(a.initiator().unwrap().steps.len(), 1);
         assert_eq!(
@@ -599,7 +623,6 @@ fn wireless_tether_transfer_actions_bind_runtime_handle() {
     let enumerate = m
         .action("wireless-tether", ActionVerb::EnumerateObjects)
         .unwrap();
-    assert_eq!(enumerate.mode, "");
     assert!(enumerate.initiator().unwrap().params.is_empty());
     assert_eq!(
         enumerate.initiator().unwrap().steps[0].send_op.as_deref(),
@@ -608,6 +631,23 @@ fn wireless_tether_transfer_actions_bind_runtime_handle() {
     assert_eq!(
         enumerate.initiator().unwrap().steps[0].params,
         vec![StepParam::Literal(0xffffffff), StepParam::Literal(0)]
+    );
+
+    let transfer = m.connections["wireless-tether"]
+        .object_transfer
+        .as_ref()
+        .expect("wireless-tether objectTransfer contract");
+    assert_eq!(transfer.strategy, ObjectTransferStrategy::WholeObject);
+    assert_eq!(
+        transfer.resume_policy,
+        ObjectTransferResumePolicy::RestartFromZero
+    );
+    assert_eq!(transfer.read_action, ActionVerb::GetObject);
+    let completion = transfer.completion.as_ref().expect("completion policy");
+    assert_eq!(completion.action, ActionVerb::DeleteObject);
+    assert_eq!(
+        completion.after,
+        ObjectTransferCompletionTiming::LocalCommit
     );
 }
 
@@ -635,21 +675,38 @@ fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped(
         .expect("wireless-tether startLiveView action");
     assert_eq!(start.mode, "shooting/stills");
     assert!(start.initiator().unwrap().params.is_empty());
-    assert_eq!(start.initiator().unwrap().steps.len(), 2);
+    assert_eq!(start.initiator().unwrap().steps.len(), 3);
+    let terminate_step = &start.initiator().unwrap().steps[0];
+    assert!(terminate_step.tolerant);
+    let terminate_retry = terminate_step
+        .retry
+        .as_ref()
+        .expect("defensive terminate retries Device Busy before tolerance");
+    assert_eq!(terminate_retry.when_response_codes, ["0x2019"]);
+    assert!(terminate_retry.when_failure_classes.is_empty());
+    assert_eq!(terminate_retry.max_attempts, 10);
+    assert_eq!(terminate_retry.retry_delay_ms, 300);
+    assert_eq!(terminate_retry.steps.len(), 1);
+    assert_eq!(terminate_retry.steps[0].send_op.as_deref(), Some("0x1018"));
+    assert_eq!(terminate_retry.steps[0].params, [StepParam::Literal(1)]);
+    assert!(!terminate_retry.steps[0].tolerant);
+    assert!(terminate_retry.steps[0].captures.is_empty());
     assert_eq!(
-        start.initiator().unwrap().steps[0].set_prop.as_deref(),
+        start.initiator().unwrap().steps[1].set_prop.as_deref(),
         Some("0xd1bc")
     );
-    assert_eq!(start.initiator().unwrap().steps[0].value, Some(2));
+    assert_eq!(start.initiator().unwrap().steps[1].value, Some(2));
+    assert!(!start.initiator().unwrap().steps[1].tolerant);
     assert_eq!(
-        start.initiator().unwrap().steps[1].send_op.as_deref(),
+        start.initiator().unwrap().steps[2].send_op.as_deref(),
         Some("0x101c")
     );
     assert_eq!(
-        start.initiator().unwrap().steps[1].params,
+        start.initiator().unwrap().steps[2].params,
         [StepParam::Literal(0), StepParam::Literal(0)]
     );
-    assert!(start.initiator().unwrap().steps[1].captures.is_empty());
+    assert!(start.initiator().unwrap().steps[2].captures.is_empty());
+    assert!(!start.initiator().unwrap().steps[2].tolerant);
     let selector = &m.properties["0xd1bc"];
     assert_eq!(selector.ptype.as_deref(), Some("u16"));
     assert_eq!(selector.access.as_deref(), Some("readWrite"));

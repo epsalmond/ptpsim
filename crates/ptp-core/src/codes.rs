@@ -69,6 +69,7 @@ pub mod op {
     pub const SET_DEVICE_PROP_VALUE: u16 = 0x1016;
     pub const GET_PARTIAL_OBJECT: u16 = 0x101b;
     pub const INITIATE_OPEN_CAPTURE: u16 = 0x101c;
+    pub const TERMINATE_OPEN_CAPTURE: u16 = 0x1018;
 }
 
 /// Standard PTP response codes.

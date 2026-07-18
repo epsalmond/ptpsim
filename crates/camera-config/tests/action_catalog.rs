@@ -65,6 +65,7 @@ fn every_preflight_failure_has_a_stable_code() {
             {
                 let mut request = request(&manifest);
                 request.action_id = "getObject".into();
+                request.connection = "app".into();
                 request
             },
             "wrongMode",
@@ -91,7 +92,7 @@ fn every_preflight_failure_has_a_stable_code() {
             {
                 let mut request = request(&manifest);
                 request.action_id = "getObject".into();
-                request.mode = "image-transfer".into();
+                request.mode.clear();
                 request.role = ActionRole::Initiator;
                 request
             },

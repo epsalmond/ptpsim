@@ -208,6 +208,25 @@ fn read_u32(e: &mut Engine, tid: u32, code: u16) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
+fn standard_object_handles(e: &mut Engine, tid: u32) -> Vec<u32> {
+    let bytes = data_of(e.on_operation(&req(0x1007, tid, vec![0xffff_ffff, 0]), None));
+    Reader::new(&bytes)
+        .ptp_array(|reader| reader.u32())
+        .unwrap()
+}
+
+fn drain_standard_object_queue(e: &mut Engine, first_tid: u32) -> Vec<u32> {
+    let handles = standard_object_handles(e, first_tid);
+    for (index, handle) in handles.iter().copied().enumerate() {
+        let tid = first_tid + 1 + (index as u32 * 3);
+        assert_ok(&e.on_operation(&req(0x1008, tid, vec![handle]), None));
+        assert!(!data_of(e.on_operation(&req(0x1009, tid + 1, vec![handle]), None)).is_empty());
+        assert_ok(&e.on_operation(&req(0x100b, tid + 2, vec![handle]), None));
+    }
+    assert!(standard_object_handles(e, first_tid + 100).is_empty());
+    handles
+}
+
 fn stream_of(reply: Reply) -> (ByteSource, Vec<u32>) {
     match reply {
         Reply::DataStream {
@@ -520,6 +539,219 @@ fn default_ptpip_walk_rebinds_app_connection_for_value_profiles() {
 
     let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("walk ok");
     assert_eq!(out.observed.get(0xd02a), Some(80));
+}
+
+#[test]
+fn wireless_tether_drains_captured_objects_while_live_view_stays_open() {
+    let manifest = consolidated();
+    let start_live_view = manifest
+        .action("wireless-tether", ActionVerb::StartLiveView)
+        .expect("wireless-tether startLiveView")
+        .initiator()
+        .expect("startLiveView initiator")
+        .steps
+        .clone();
+    let shutter = manifest
+        .action("wireless-tether", ActionVerb::Shutter)
+        .expect("wireless-tether shutter")
+        .initiator()
+        .expect("shutter initiator")
+        .steps
+        .clone();
+    let mut e = engine_with_manifest(manifest);
+    e.bind_connection("wireless-tether");
+    e.configure_standard_object_queue("wireless-tether", 1)
+        .expect("shutter-driven queue");
+    e.preseed_shutter_busy_responses("wireless-tether", 3)
+        .expect("field-observed mid-capture busy responses");
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    e.apply_state_overlay(
+        &serde_json::from_value(serde_json::json!({ "phase": "liveView" })).unwrap(),
+    )
+    .unwrap();
+
+    walk_ptpip_in(
+        &mut e,
+        &start_live_view,
+        &BTreeMap::new(),
+        Some("wireless-tether"),
+    )
+    .expect("live view starts with an empty transfer queue");
+    assert_eq!(e.phase(), Phase::Streaming);
+    let shutter_outcome =
+        walk_ptpip_in(&mut e, &shutter, &BTreeMap::new(), Some("wireless-tether"))
+            .expect("shutter retries beat 2 while busy and queues one object");
+    assert_eq!(shutter_outcome.retry_delays_ms, [100, 100, 100]);
+    assert_eq!(e.transfer_queue_stats().standard.unwrap().queued, 1);
+
+    let handles = drain_standard_object_queue(&mut e, 20);
+    assert_eq!(handles.len(), 1);
+    assert_eq!(e.phase(), Phase::Streaming, "drain does not enter a mode");
+    walk_ptpip_in(
+        &mut e,
+        &start_live_view,
+        &BTreeMap::new(),
+        Some("wireless-tether"),
+    )
+    .expect("terminate-first re-arm succeeds after the queue drains");
+}
+
+#[test]
+fn wireless_tether_pending_queue_blocks_arming_until_preseed_is_drained() {
+    let manifest = consolidated();
+    let start_live_view = manifest
+        .action("wireless-tether", ActionVerb::StartLiveView)
+        .expect("wireless-tether startLiveView")
+        .initiator()
+        .expect("startLiveView initiator")
+        .steps
+        .clone();
+    let mut e = engine_with_manifest(manifest);
+    e.bind_connection("wireless-tether");
+    e.configure_standard_object_queue("wireless-tether", 1)
+        .expect("shutter-driven queue");
+    assert_eq!(
+        e.preseed_standard_object_queue("wireless-tether", 1)
+            .expect("pre-seed stale queue"),
+        1
+    );
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    e.apply_state_overlay(
+        &serde_json::from_value(serde_json::json!({ "phase": "liveView" })).unwrap(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        e.on_operation(
+            &req(0x1016, 2, vec![0xd1bc]),
+            Some(&2u16.to_le_bytes()),
+        ),
+        Reply::Response(ref response) if response.code == 0xa002
+    ));
+    assert_eq!(drain_standard_object_queue(&mut e, 10).len(), 1);
+    walk_ptpip_in(
+        &mut e,
+        &start_live_view,
+        &BTreeMap::new(),
+        Some("wireless-tether"),
+    )
+    .expect("terminate-first arm succeeds after the pre-seeded queue drains");
+}
+
+#[test]
+fn wireless_tether_start_live_view_recovers_a_preseeded_stale_stream() {
+    let manifest = consolidated();
+    let start_live_view = manifest
+        .action("wireless-tether", ActionVerb::StartLiveView)
+        .expect("wireless-tether startLiveView")
+        .initiator()
+        .expect("startLiveView initiator")
+        .steps
+        .clone();
+    let mut e = engine_with_manifest(manifest);
+    e.bind_connection("wireless-tether");
+    assert!(e.preseed_stale_live_view_stream("app").is_err());
+    e.preseed_stale_live_view_stream("wireless-tether")
+        .expect("pre-seed unterminated PCSS stream");
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    e.apply_state_overlay(
+        &serde_json::from_value(serde_json::json!({ "phase": "liveView" })).unwrap(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        e.on_operation(
+            &req(0x1016, 2, vec![0xd1bc]),
+            Some(&2u16.to_le_bytes()),
+        ),
+        Reply::Response(ref response) if response.code == 0xa002
+    ));
+    walk_ptpip_in(
+        &mut e,
+        &start_live_view,
+        &BTreeMap::new(),
+        Some("wireless-tether"),
+    )
+    .expect("defensive terminate clears the stale stream before arming");
+    assert_eq!(e.phase(), Phase::Streaming);
+}
+
+#[test]
+fn wireless_tether_unterminated_stream_survives_session_close() {
+    let manifest = consolidated();
+    let start_live_view = manifest
+        .action("wireless-tether", ActionVerb::StartLiveView)
+        .expect("wireless-tether startLiveView")
+        .initiator()
+        .expect("startLiveView initiator")
+        .steps
+        .clone();
+    let mut e = engine_with_manifest(manifest);
+    e.bind_connection("wireless-tether");
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    e.apply_state_overlay(
+        &serde_json::from_value(serde_json::json!({ "phase": "liveView" })).unwrap(),
+    )
+    .unwrap();
+    walk_ptpip_in(
+        &mut e,
+        &start_live_view,
+        &BTreeMap::new(),
+        Some("wireless-tether"),
+    )
+    .expect("initial live-view stream starts");
+    assert_ok(&e.on_operation(&req(0x1003, 20, vec![]), None));
+    assert_ok(&e.on_operation(&req(0x1002, 21, vec![2]), None));
+    e.apply_state_overlay(
+        &serde_json::from_value(serde_json::json!({ "phase": "liveView" })).unwrap(),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        e.on_operation(
+            &req(0x1016, 22, vec![0xd1bc]),
+            Some(&2u16.to_le_bytes()),
+        ),
+        Reply::Response(ref response) if response.code == 0xa002
+    ));
+    assert_ok(&e.on_operation(&req(0x1018, 23, vec![1]), None));
+    write_u16(&mut e, 24, 0xd1bc, 2);
+}
+
+#[test]
+fn wireless_tether_start_live_view_retries_then_tolerates_busy_terminate() {
+    let manifest = consolidated();
+    let start_live_view = manifest
+        .action("wireless-tether", ActionVerb::StartLiveView)
+        .expect("wireless-tether startLiveView")
+        .initiator()
+        .expect("startLiveView initiator")
+        .steps
+        .clone();
+    let mut e = engine_with_manifest(manifest);
+    e.bind_connection("wireless-tether");
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_ok(&e.on_operation(&req(0x1018, 2, vec![1]), None));
+    e.apply_state_overlay(
+        &serde_json::from_value(serde_json::json!({ "phase": "liveView" })).unwrap(),
+    )
+    .unwrap();
+    e.install_fault(Fault::FailOperationTimes {
+        code: 0x1018,
+        response: 0x2019,
+        remaining: 10,
+    });
+
+    let outcome = walk_ptpip_in(
+        &mut e,
+        &start_live_view,
+        &BTreeMap::new(),
+        Some("wireless-tether"),
+    )
+    .expect("exhausted busy retries remain tolerated by startLiveView");
+    assert_eq!(outcome.steps_run, 3);
+    assert_eq!(outcome.retry_delays_ms, [300; 9]);
+    assert_eq!(e.phase(), Phase::Streaming);
 }
 
 #[test]

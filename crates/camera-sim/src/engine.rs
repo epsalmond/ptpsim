@@ -20,6 +20,9 @@ use crate::state::{
 use crate::state_overlay::{AppliedStateOverlay, StateOverlay};
 
 const STORAGE_ID: u32 = 0x0001_0001;
+// GFX100 II firmware 2.30 returns this vendor response when PCSS live-view
+// arming is blocked by a pending object queue or an unterminated prior stream.
+const LIVE_VIEW_ARMING_BLOCKED: u16 = 0xa002;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GateSequence {
@@ -29,12 +32,14 @@ struct GateSequence {
 
 #[derive(Debug, Clone)]
 struct TransferQueue {
+    connection: String,
     handles: Vec<u32>,
     available: BTreeSet<u32>,
     next_index: usize,
     enqueue_per_shutter: u32,
     shutter_sequence: Option<Vec<GateMatcher>>,
     shutter_progress: usize,
+    shutter_busy_responses_remaining: u32,
     completed: usize,
 }
 
@@ -125,31 +130,36 @@ enum CameraQueueTarget {
 }
 
 impl TransferQueue {
-    fn startup_seeded(handles: Vec<u32>) -> Self {
+    fn startup_seeded(connection: String, handles: Vec<u32>) -> Self {
         let available = handles.iter().copied().collect();
         TransferQueue {
+            connection,
             next_index: handles.len(),
             handles,
             available,
             enqueue_per_shutter: 0,
             shutter_sequence: None,
             shutter_progress: 0,
+            shutter_busy_responses_remaining: 0,
             completed: 0,
         }
     }
 
     fn shutter_seeded(
+        connection: String,
         handles: Vec<u32>,
         enqueue_per_shutter: u32,
         shutter_sequence: Vec<GateMatcher>,
     ) -> Self {
         TransferQueue {
+            connection,
             handles,
             available: BTreeSet::new(),
             next_index: 0,
             enqueue_per_shutter,
             shutter_sequence: Some(shutter_sequence),
             shutter_progress: 0,
+            shutter_busy_responses_remaining: 0,
             completed: 0,
         }
     }
@@ -228,6 +238,7 @@ pub struct Engine {
     state: CameraState,
     connection: String,
     transfer_queue: Option<TransferQueue>,
+    live_view_stream_connection: Option<String>,
     camera_initiated_queue: Option<CameraInitiatedQueue>,
     camera_initiated_transfer_active: bool,
     camera_initiated_pre_mode_probe_armed: bool,
@@ -251,6 +262,7 @@ impl Engine {
             state,
             connection: Self::DEFAULT_CONNECTION.to_string(),
             transfer_queue: None,
+            live_view_stream_connection: None,
             camera_initiated_queue: None,
             camera_initiated_transfer_active: false,
             camera_initiated_pre_mode_probe_armed: false,
@@ -387,6 +399,69 @@ impl Engine {
             .min(queue.handles.len().saturating_sub(queue.next_index)))
     }
 
+    /// Seed an already configured shutter-driven queue before a session opens,
+    /// preserving its normal per-shutter enqueue behavior.
+    pub fn preseed_standard_object_queue(
+        &mut self,
+        connection_id: &str,
+        count: u32,
+    ) -> Result<usize, String> {
+        let queue = self
+            .transfer_queue
+            .as_mut()
+            .ok_or_else(|| "standard object queue is not configured".to_string())?;
+        if queue.connection != connection_id {
+            return Err(format!(
+                "standard object queue is configured for '{}', not '{connection_id}'",
+                queue.connection
+            ));
+        }
+        Ok(queue.enqueue_count(count))
+    }
+
+    /// Seed field-observed Device Busy replies for repeated InitiateCapture
+    /// requests after the first shutter beat has started a capture. The queue
+    /// must already be configured for the selected connection.
+    pub fn preseed_shutter_busy_responses(
+        &mut self,
+        connection_id: &str,
+        attempts: u32,
+    ) -> Result<(), String> {
+        let queue = self
+            .transfer_queue
+            .as_mut()
+            .ok_or_else(|| "standard object queue is not configured".to_string())?;
+        if queue.connection != connection_id {
+            return Err(format!(
+                "standard object queue is configured for '{}', not '{connection_id}'",
+                queue.connection
+            ));
+        }
+        if queue.shutter_sequence.is_none() {
+            return Err(format!(
+                "standard object queue for '{connection_id}' is not shutter-driven"
+            ));
+        }
+        queue.shutter_busy_responses_remaining = attempts;
+        Ok(())
+    }
+
+    /// Simulator policy for the field-observed arming wedge: an uncleanly
+    /// exited PCSS session left 0xD1BC rejecting 0xA002 until a session whose
+    /// arming began with TerminateOpenCapture succeeded (fw 2.30, 2026-07-18).
+    /// The wire-capture audit bounds terminate-before-arm as defensive
+    /// ordering, not capture-proven causality; a directed probe for the causal
+    /// question is tracked upstream of this repo.
+    pub fn preseed_stale_live_view_stream(&mut self, connection_id: &str) -> Result<(), String> {
+        if !self.connection_models_live_view_stream(connection_id) {
+            return Err(format!(
+                "selected connection '{connection_id}' does not model a live-view open-capture stream"
+            ));
+        }
+        self.live_view_stream_connection = Some(connection_id.to_string());
+        Ok(())
+    }
+
     /// Enable standard PTP object-queue behavior for a connection whose manifest
     /// enumerates with `0x1007`. `shutter_enqueue_count == 0` seeds transferable
     /// non-movie media at startup; nonzero starts empty and enqueues after the
@@ -416,7 +491,7 @@ impl Engine {
 
         let handles = self.standard_object_queue_handles();
         self.transfer_queue = Some(if shutter_enqueue_count == 0 {
-            TransferQueue::startup_seeded(handles)
+            TransferQueue::startup_seeded(connection_id.to_string(), handles)
         } else {
             let (max, steps) = {
                 let connection = self
@@ -458,7 +533,12 @@ impl Engine {
                     "selected connection '{connection_id}' shutter action cannot be matched as literal setProp/sendOp steps"
                 )
             })?;
-            TransferQueue::shutter_seeded(handles, shutter_enqueue_count, shutter_sequence)
+            TransferQueue::shutter_seeded(
+                connection_id.to_string(),
+                handles,
+                shutter_enqueue_count,
+                shutter_sequence,
+            )
         });
         Ok(())
     }
@@ -546,6 +626,10 @@ impl Engine {
         }
 
         if let Some(reply) = self.operation_gate_reply(req.code) {
+            return reply;
+        }
+
+        if let Some(reply) = self.shutter_busy_reply(req) {
             return reply;
         }
 
@@ -759,9 +843,20 @@ impl Engine {
                 }
             }
             op::SET_DEVICE_PROP_VALUE => self.set_prop(tid, p(0) as u16, data_in),
+            op::TERMINATE_OPEN_CAPTURE
+                if self.connection_models_live_view_stream(&self.connection) =>
+            {
+                if self.live_view_stream_connection.as_deref() == Some(self.connection.as_str()) {
+                    self.live_view_stream_connection = None;
+                }
+                Self::ok(tid)
+            }
             op::INITIATE_OPEN_CAPTURE => {
                 if matches!(self.state.phase, Phase::LiveView | Phase::Streaming) {
                     self.state.phase = Phase::Streaming;
+                    if self.connection_models_live_view_stream(&self.connection) {
+                        self.live_view_stream_connection = Some(self.connection.clone());
+                    }
                     Self::ok(tid)
                 } else {
                     Self::err(tid, resp::GENERAL_ERROR)
@@ -879,6 +974,26 @@ impl Engine {
             queue.shutter_progress = 0;
             queue.enqueue_next();
         }
+    }
+
+    fn shutter_busy_reply(&mut self, req: &OperationRequest) -> Option<Reply> {
+        if req.code != op::INITIATE_CAPTURE {
+            return None;
+        }
+        let queue = self.transfer_queue.as_mut()?;
+        if queue.connection != self.connection || queue.shutter_busy_responses_remaining == 0 {
+            return None;
+        }
+        let sequence = queue.shutter_sequence.as_ref()?;
+        let capture_in_flight = sequence
+            .iter()
+            .take(queue.shutter_progress)
+            .any(|matcher| matches!(matcher, GateMatcher::SendOp { op: code, .. } if *code == op::INITIATE_CAPTURE));
+        if !capture_in_flight {
+            return None;
+        }
+        queue.shutter_busy_responses_remaining -= 1;
+        Some(Self::err(req.transaction_id, resp::DEVICE_BUSY))
     }
 
     fn camera_initiated_operation_reply(&mut self, req: &OperationRequest) -> Option<Reply> {
@@ -1169,6 +1284,39 @@ impl Engine {
             .unwrap_or_else(|| self.store_file_handles())
     }
 
+    fn connection_models_live_view_stream(&self, connection_id: &str) -> bool {
+        self.manifest
+            .connections
+            .get(connection_id)
+            .and_then(|connection| connection.actions.get(&ActionVerb::StartLiveView))
+            .is_some_and(|action| action_sends_op(action, op::INITIATE_OPEN_CAPTURE))
+    }
+
+    fn matches_live_view_arming_write(&self, code: u16, value: i64) -> bool {
+        self.manifest
+            .connections
+            .get(&self.connection)
+            .and_then(|connection| connection.actions.get(&ActionVerb::StartLiveView))
+            .and_then(Action::initiator)
+            .is_some_and(|initiator| {
+                initiator.steps.iter().any(|step| {
+                    step.set_prop.as_deref().and_then(parse_hex_code) == Some(code)
+                        && step.value == Some(value)
+                })
+            })
+    }
+
+    fn pending_queue_blocks_live_view_arming(&self) -> bool {
+        let Some(queue) = &self.transfer_queue else {
+            return false;
+        };
+        queue.connection == self.connection && !queue.available.is_empty()
+    }
+
+    fn stale_stream_blocks_live_view_arming(&self) -> bool {
+        self.live_view_stream_connection.as_deref() == Some(self.connection.as_str())
+    }
+
     fn apply_op_effects(&mut self, code: u16, params: &[u32]) {
         let Some(opdef) = self.manifest.operation(code) else {
             return;
@@ -1328,6 +1476,13 @@ impl Engine {
         let Ok(value) = PropValue::decode(&mut r, datatype) else {
             return Self::err(tid, resp::INVALID_PARAMETER);
         };
+        if value_to_i64(&value).is_some_and(|value| {
+            self.matches_live_view_arming_write(code, value)
+                && (self.pending_queue_blocks_live_view_arming()
+                    || self.stale_stream_blocks_live_view_arming())
+        }) {
+            return Self::err(tid, LIVE_VIEW_ARMING_BLOCKED);
+        }
         // Function-mode selector drives the workflow phase.
         if code == PROP_DF01 {
             if let Some(n) = value_to_i64(&value) {
@@ -1620,8 +1775,20 @@ fn matcher_for_step(step: &Step) -> Option<GateMatcher> {
 }
 
 fn matcher_sequence_for_steps(steps: &[Step]) -> Option<Vec<GateMatcher>> {
-    let sequence: Option<Vec<_>> = steps.iter().map(matcher_for_step).collect();
-    sequence.filter(|sequence| !sequence.is_empty())
+    let mut sequence = Vec::new();
+    for step in steps {
+        if step.retry.is_some() && (step.set_prop.is_some() || step.send_op.is_some()) {
+            // A step carrying both its own op and a retry block has no defined
+            // matcher ordering; refuse rather than silently dropping the op.
+            return None;
+        }
+        if let Some(retry) = &step.retry {
+            sequence.extend(matcher_sequence_for_steps(&retry.steps)?);
+        } else {
+            sequence.push(matcher_for_step(step)?);
+        }
+    }
+    (!sequence.is_empty()).then_some(sequence)
 }
 
 fn action_sends_op(action: &Action, code: u16) -> bool {

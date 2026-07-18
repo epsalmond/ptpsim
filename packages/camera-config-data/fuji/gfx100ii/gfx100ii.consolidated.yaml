@@ -14677,16 +14677,33 @@ connections:
           - setProp: null
             getProp: null
             readEcho: null
-            sendOp: '0x100e'
+            sendOp: null
             reopenSession: null
             closeSession: null
             value: null
-            params:
-            - 0
-            - 0
+            params: []
             tolerant: false
             repeat: 1
             awaitUntil: null
+            retry:
+              steps:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x100e'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - 0
+                - 0
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              whenResponseCodes:
+              - '0x2019'
+              maxAttempts: 10
+              retryDelayMs: 100
           - setProp: '0xd039'
             getProp: null
             readEcho: null
@@ -14701,16 +14718,33 @@ connections:
           - setProp: null
             getProp: null
             readEcho: null
-            sendOp: '0x100e'
+            sendOp: null
             reopenSession: null
             closeSession: null
             value: null
-            params:
-            - 0
-            - 0
+            params: []
             tolerant: false
             repeat: 1
             awaitUntil: null
+            retry:
+              steps:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x100e'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - 0
+                - 0
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              whenResponseCodes:
+              - '0x2019'
+              maxAttempts: 10
+              retryDelayMs: 100
           - setProp: '0xd039'
             getProp: null
             readEcho: null
@@ -14725,16 +14759,33 @@ connections:
           - setProp: null
             getProp: null
             readEcho: null
-            sendOp: '0x100e'
+            sendOp: null
             reopenSession: null
             closeSession: null
             value: null
-            params:
-            - 0
-            - 0
+            params: []
             tolerant: false
             repeat: 1
             awaitUntil: null
+            retry:
+              steps:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x100e'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - 0
+                - 0
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              whenResponseCodes:
+              - '0x2019'
+              maxAttempts: 10
+              retryDelayMs: 100
           activities: []
         responder:
           params:
@@ -14778,7 +14829,7 @@ connections:
         evidence:
         - wirePCSSShootDownload20260523
       getObjectInfo:
-        mode: image-transfer
+        mode: ''
         initiator:
           params:
           - handle
@@ -14800,7 +14851,7 @@ connections:
         evidence:
         - wirePCSSShootDownload20260523
       getThumb:
-        mode: image-transfer
+        mode: ''
         initiator:
           params:
           - handle
@@ -14822,7 +14873,7 @@ connections:
         evidence:
         - wirePCSSShootDownload20260523
       getObject:
-        mode: image-transfer
+        mode: ''
         initiator:
           params:
           - handle
@@ -14844,7 +14895,7 @@ connections:
         evidence:
         - wirePCSSShootDownload20260523
       deleteObject:
-        mode: image-transfer
+        mode: ''
         initiator:
           params:
           - handle
@@ -14890,6 +14941,35 @@ connections:
         initiator:
           params: []
           steps:
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+            retry:
+              steps:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x1018'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - 1
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              whenResponseCodes:
+              - '0x2019'
+              maxAttempts: 10
+              retryDelayMs: 300
           - setProp: '0xd1bc'
             getProp: null
             readEcho: null
