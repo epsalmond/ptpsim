@@ -53,15 +53,16 @@ the default GFX100 II fixture service before launching the operator console.
 
 Continuous integration runs via the workflows under [`.woodpecker/`](.woodpecker/).
 The Linux and OCI workflows request a Docker `linux/amd64` agent for the
-current repository rather than a named host. They use a stable workspace path
-and a configurable clone image, with Woodpecker's standard Git plugin as the
-public fallback. Deployments may supply a compatible clone plugin that safely
-reuses an externally managed durable checkout.
+current repository and pipeline event rather than a named host. Deployments
+must supply the trusted clone image. An optional workstation accepts push
+events only and reuses an isolated durable checkout; public pull requests remain
+on the platform's ephemeral NAS workspace.
 
-Linux cache roots remain host-managed. A deployment can lower the default
-40 GiB per-cache cleanup threshold through `PTPSIM_CI_CACHE_LIMIT_KIB`; the
-public default is unchanged. Apple XCFramework promotion remains a separate
-Darwin workflow.
+Linux steps keep build caches inside their disposable containers rather than
+requesting host volumes. This lets the public workflow use an unprivileged
+runner while Docker image layers and the durable Git object database provide
+cross-run reuse. The privileged multi-architecture OCI workflow remains on NAS;
+Apple XCFramework promotion remains a separate Darwin workflow.
 
 ## License
 

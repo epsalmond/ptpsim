@@ -14,7 +14,7 @@ workspace:
 
 clone:
   - name: git
-    image: ${DURABLE_GIT_CLONE_IMAGE:-docker.io/woodpeckerci/plugin-git:2.9.2}
+    image: ${DURABLE_GIT_CLONE_IMAGE}
     settings:
       expected_repository: ${CI_REPO}
       expected_workspace: /woodpecker/src/ptpsim
@@ -22,8 +22,10 @@ clone:
 
 labels:
   backend: docker
+  host: nas
   platform: linux/amd64
   repo: ${CI_REPO}
+  event: ${CI_PIPELINE_EVENT}
   trust: host-root
 
 when:
