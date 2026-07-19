@@ -894,6 +894,7 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
     assert_eq!(rendezvous.callback_port, 51560);
     assert_eq!(rendezvous.knock_port, 51562);
     assert_eq!(rendezvous.protocol, "PCSS/1.0");
+    assert_eq!(rendezvous.camera_name.as_deref(), Some("GFX100 II"));
     assert_eq!(
         rendezvous.default_discovery_target,
         PcssDiscoveryTarget::SubnetBroadcast
@@ -998,6 +999,19 @@ fn pcss_rendezvous_is_typed_and_codecs_are_manifest_driven() {
         .build_pcss_discovery("wireless-tether".into(), "not-ipv4".into())
         .is_err());
     assert!(s.pcss_rendezvous("app".into()).is_none());
+
+    let manifest_without_camera_name =
+        data("fuji/gfx100ii/gfx100ii.yaml").replace("      cameraName: \"GFX100 II\"\n", "");
+    let without_camera_name =
+        ConfigStore::from_bundle(manifest_without_camera_name, Some(data("fuji/fuji.yaml")))
+            .expect("fixture without PCSS cameraName loads");
+    assert_eq!(
+        without_camera_name
+            .pcss_rendezvous("wireless-tether".into())
+            .expect("fixture has PCSS rendezvous")
+            .camera_name,
+        None
+    );
 }
 
 #[test]

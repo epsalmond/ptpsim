@@ -1113,6 +1113,38 @@ async fn receive_discovery_and_notify(
 }
 
 #[cfg(target_os = "linux")]
+async fn connect_named_pcss_notify(
+    callback_port: u16,
+    camera_name: &str,
+    advertised_port: u16,
+) -> tokio::net::TcpStream {
+    let mut callback = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, callback_port))
+        .await
+        .expect("connect PCSS callback");
+    let notify = format!(
+        "NOTIFY * HTTP/1.1\r\nDSC: 127.0.0.1\r\nCAMERANAME: {camera_name}\r\nDSCPORT: {advertised_port}\r\nMX: 7\r\nSERVICE: PCSS/1.0\r\n"
+    );
+    callback
+        .write_all(notify.as_bytes())
+        .await
+        .expect("write PCSS NOTIFY");
+    callback
+}
+
+#[cfg(target_os = "linux")]
+async fn pcss_callback_was_acknowledged(mut callback: tokio::net::TcpStream) -> bool {
+    let mut acknowledgement = [0u8; 128];
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            callback.read(&mut acknowledgement)
+        )
+        .await,
+        Ok(Ok(length)) if length > 0
+    )
+}
+
+#[cfg(target_os = "linux")]
 async fn read_declared_frame(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     let mut header = [0u8; 4];
     tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut header))
@@ -1898,6 +1930,282 @@ async fn native_transport_uses_first_broadcast_callback_without_rediscovery() {
     responder_task
         .await
         .expect("join direct-broadcast PCSS knock responder");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn native_transport_ignores_wrong_camera_name_then_accepts_selected_body() {
+    let body = data("fuji/gfx100ii/gfx100ii.yaml");
+    let media = TempMediaRoot::new();
+    let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let any_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+    let (loopback_name, _) = linux_loopback_interface();
+
+    let callback_reservation =
+        std::net::TcpListener::bind(loopback).expect("reserve ephemeral PCSS callback port");
+    let callback_port = callback_reservation
+        .local_addr()
+        .expect("reserved callback address")
+        .port();
+    let server_body = replace_once(
+        body,
+        "callbackPort: 51560",
+        format!("callbackPort: {callback_port}"),
+    );
+    let knock = tokio::net::UdpSocket::bind(any_ipv4)
+        .await
+        .expect("bind multi-responder PCSS knock listener");
+    let knock_port = knock.local_addr().expect("PCSS knock address").port();
+    let server = Server::bind(Config {
+        instance_id: "camera-initiator-pcss-camera-name-loopback".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "wireless-tether".into(),
+        manifest_yaml: server_body.clone(),
+        media_root: media.path().to_path_buf(),
+        command_bind: Some(loopback),
+        liveview_bind: None,
+        event_bind: None,
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: loopback,
+        liveview_dir: None,
+        state_callback: None,
+    })
+    .await
+    .expect("bind selected-body PCSS simulator service");
+    let command = server.command_addr();
+    let store_body = replace_once(
+        replace_once(
+            server_body,
+            "knockPort: 51562",
+            format!("knockPort: {knock_port}"),
+        ),
+        "bindings: { command: 15740 }",
+        format!("bindings: {{ command: {} }}", command.port()),
+    );
+    let store = ConfigStore::from_tiers(
+        store_body,
+        Some(data("fuji/fuji.yaml")),
+        Vec::<String>::new(),
+    )
+    .expect("load camera-name PCSS loopback manifest tiers");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+    let responder_task = tokio::spawn(async move {
+        let mut discovery = [0u8; 512];
+        let (length, _) =
+            tokio::time::timeout(Duration::from_secs(2), knock.recv_from(&mut discovery))
+                .await
+                .expect("wait for PCSS discovery")
+                .expect("receive PCSS discovery");
+        assert!(discovery[..length].starts_with(b"DISCOVERY * HTTP/1.1\r\n"));
+
+        let wrong = connect_named_pcss_notify(callback_port, "X-A7", command.port()).await;
+        let wrong_ack = tokio::spawn(pcss_callback_was_acknowledged(wrong));
+        let correct = connect_named_pcss_notify(callback_port, "GFX100 II", command.port()).await;
+        assert!(
+            pcss_callback_was_acknowledged(correct).await,
+            "selected-body callback was not acknowledged"
+        );
+        assert!(
+            !wrong_ack.await.expect("join wrong-camera callback"),
+            "wrong-camera callback was acknowledged"
+        );
+    });
+    let trace_buffer = TraceBuffer::default();
+    let trace = Arc::new(TraceWriter::new(
+        TraceFormat::Jsonl,
+        Box::new(trace_buffer.clone()),
+    ));
+    let transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: None,
+            interface: Some(loopback_name),
+            connection: "wireless-tether".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        trace,
+    )
+    .expect("construct camera-name PCSS transport");
+
+    drop(callback_reservation);
+    let opened = transport
+        .open_command_session()
+        .await
+        .expect("ignore the wrong body and establish the selected body");
+    assert_eq!(opened.response_code, 0x2001);
+    transport
+        .close_session_if_open()
+        .await
+        .expect("close selected-body PCSS session cleanly");
+
+    let records = trace_buffer.records();
+    assert!(records.iter().any(|record| {
+        record.get("state").and_then(serde_json::Value::as_str) == Some("pcssCallbackIgnored")
+            && record
+                .pointer("/detail/reason")
+                .and_then(serde_json::Value::as_str)
+                == Some("callbackCameraNameMismatch")
+            && record
+                .pointer("/detail/cameraName")
+                .and_then(serde_json::Value::as_str)
+                == Some("X-A7")
+            && record
+                .pointer("/detail/expected")
+                .and_then(serde_json::Value::as_str)
+                == Some("GFX100 II")
+    }));
+    let discoveries: Vec<&serde_json::Value> = records
+        .iter()
+        .filter(|record| {
+            record.get("state").and_then(serde_json::Value::as_str) == Some("pcssDiscoverySent")
+        })
+        .collect();
+    assert_eq!(discoveries.len(), 1, "callbacks stayed within one attempt");
+    assert_eq!(
+        discoveries[0]
+            .pointer("/detail/attempt")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+
+    let _ = shutdown_tx.send(());
+    server_task
+        .await
+        .expect("join selected-body PCSS simulator service");
+    responder_task
+        .await
+        .expect("join multi-responder PCSS knock responder");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn native_transport_explicit_unicast_rejects_wrong_camera_name_until_timeout() {
+    let body = data("fuji/gfx100ii/gfx100ii.yaml");
+    let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let callback_reservation =
+        std::net::TcpListener::bind(loopback).expect("reserve ephemeral PCSS callback port");
+    let callback_port = callback_reservation
+        .local_addr()
+        .expect("reserved callback address")
+        .port();
+    let knock = tokio::net::UdpSocket::bind(loopback)
+        .await
+        .expect("bind explicit-unicast PCSS knock listener");
+    let knock_port = knock.local_addr().expect("PCSS knock address").port();
+    let command = tokio::net::TcpListener::bind(loopback)
+        .await
+        .expect("bind command connection observer");
+    let command_port = command
+        .local_addr()
+        .expect("command observer address")
+        .port();
+    let store_body = replace_once(
+        replace_once(
+            replace_once(
+                replace_once(
+                    body,
+                    "callbackPort: 51560",
+                    format!("callbackPort: {callback_port}"),
+                ),
+                "knockPort: 51562",
+                format!("knockPort: {knock_port}"),
+            ),
+            "bindings: { command: 15740 }",
+            format!("bindings: {{ command: {command_port} }}"),
+        ),
+        "retryIntervalMs: 1000",
+        "retryIntervalMs: 50".into(),
+    );
+    let store_body = replace_once(store_body, "maxAttempts: 15", "maxAttempts: 2".into());
+    let store = ConfigStore::from_tiers(
+        store_body,
+        Some(data("fuji/fuji.yaml")),
+        Vec::<String>::new(),
+    )
+    .expect("load explicit-unicast camera-name manifest tiers");
+
+    let responder_task = tokio::spawn(async move {
+        for attempt in 1..=2 {
+            let mut discovery = [0u8; 512];
+            let (length, peer) =
+                tokio::time::timeout(Duration::from_secs(2), knock.recv_from(&mut discovery))
+                    .await
+                    .expect("wait for explicit-unicast discovery")
+                    .expect("receive explicit-unicast discovery");
+            assert!(discovery[..length].starts_with(b"DISCOVERY * HTTP/1.1\r\n"));
+            assert_eq!(peer.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+            let wrong = connect_named_pcss_notify(callback_port, "X-A7", command_port).await;
+            assert!(
+                !pcss_callback_was_acknowledged(wrong).await,
+                "wrong-camera callback on attempt {attempt} was acknowledged"
+            );
+        }
+    });
+    let trace_buffer = TraceBuffer::default();
+    let trace = Arc::new(TraceWriter::new(
+        TraceFormat::Jsonl,
+        Box::new(trace_buffer.clone()),
+    ));
+    let transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "wireless-tether".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_millis(250),
+            max_frame_bytes: 1024 * 1024,
+        },
+        trace,
+    )
+    .expect("construct explicit-unicast camera-name PCSS transport");
+
+    drop(callback_reservation);
+    let error = transport
+        .open_command_session()
+        .await
+        .expect_err("wrong camera name must exhaust the bounded callback search");
+    assert!(
+        error
+            .to_string()
+            .contains("transport operation timed out: PCSS callback"),
+        "unexpected callback failure: {error}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), command.accept())
+            .await
+            .is_err(),
+        "wrong-camera callback opened the command endpoint"
+    );
+    responder_task
+        .await
+        .expect("join explicit-unicast wrong-camera responder");
+
+    let records = trace_buffer.records();
+    let discoveries = records
+        .iter()
+        .filter(|record| {
+            record.get("state").and_then(serde_json::Value::as_str) == Some("pcssDiscoverySent")
+        })
+        .count();
+    assert_eq!(discoveries, 2, "manifest maxAttempts bounds discovery");
+    let mismatches = records
+        .iter()
+        .filter(|record| {
+            record.get("state").and_then(serde_json::Value::as_str) == Some("pcssCallbackIgnored")
+                && record
+                    .pointer("/detail/reason")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("callbackCameraNameMismatch")
+        })
+        .count();
+    assert_eq!(mismatches, 2);
 }
 
 #[cfg(target_os = "linux")]

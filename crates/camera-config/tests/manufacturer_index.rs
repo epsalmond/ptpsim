@@ -602,6 +602,40 @@ fn malformed_model_body_is_a_load_error() {
 }
 
 #[test]
+fn body_pcss_camera_name_must_match_resolved_index_signature() {
+    let index =
+        data("fuji/index.yaml").replacen("cameraName: \"GFX100 II\"", "cameraName: \"A\"", 1);
+    let original_body = data("fuji/gfx100ii/gfx100ii.yaml");
+    let equal_body = original_body.replacen("cameraName: \"GFX100 II\"", "cameraName: \"A\"", 1);
+    assert_ne!(equal_body, original_body, "fixture replacement must apply");
+    let mut equal_bodies = real_fuji_bodies();
+    equal_bodies.insert("gfx100ii".to_string(), equal_body);
+    ConfigStore::from_manufacturer_index(&index, equal_bodies)
+        .expect("equal body and resolved signature camera names load");
+
+    let mismatched_body =
+        original_body.replacen("cameraName: \"GFX100 II\"", "cameraName: \"B\"", 1);
+    assert_ne!(
+        mismatched_body, original_body,
+        "fixture replacement must apply"
+    );
+    let mut mismatched_bodies = real_fuji_bodies();
+    mismatched_bodies.insert("gfx100ii".to_string(), mismatched_body);
+    let error = ConfigStore::from_manufacturer_index(&index, mismatched_bodies)
+        .expect_err("different body and resolved signature camera names must fail");
+    assert!(
+        matches!(
+            error,
+            ConfigError::Validation { ref path, ref message }
+                if path.ends_with("wireless-tether.knock.cameraName")
+                    && message.contains("cameraName 'B'")
+                    && message.contains("cameraName 'A'")
+        ),
+        "got: {error}"
+    );
+}
+
+#[test]
 fn unknown_step_verb_is_a_load_error() {
     let yaml = r#"
 manufacturer: TESTCO

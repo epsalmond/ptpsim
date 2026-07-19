@@ -101,6 +101,8 @@ the initiator binds the callback port, sends discovery, accepts and acknowledges
 the callback, connects to the callback's `DSC` address and `DSCPORT`, applies
 only the manifest-selected InitFail retries, and opens the compressed PTP
 session. The machine must already be on the same routed network as the camera.
+Before acknowledging a callback, the initiator also matches its typed
+`CAMERANAME` to the selected body's manifest identity when one is declared.
 Supply the host's manifest runtime identity with `--param terminalName=...`; use
 the same normalized name as the paired host when the camera enforces identity
 continuity.

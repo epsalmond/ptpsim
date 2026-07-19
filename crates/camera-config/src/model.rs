@@ -1217,6 +1217,8 @@ pub struct PcssKnock {
     pub callback_port: u16,
     pub knock_port: u16,
     pub protocol: String,
+    #[serde(default)]
+    pub camera_name: Option<String>,
     /// Where the discovery datagram may be sent and which target is selected
     /// when a caller does not override it.
     pub discovery_targets: PcssDiscoveryTargets,

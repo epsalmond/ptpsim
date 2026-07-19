@@ -1212,6 +1212,24 @@ impl NativePtpTransport {
                                 .map_err(trace_error)?;
                             continue;
                         }
+                        if let Some(expected) = rendezvous.camera_name.as_deref() {
+                            if parsed.camera_name != expected {
+                                self.trace
+                                    .session(
+                                        "pcssCallbackIgnored",
+                                        json!({
+                                            "attempt": attempt,
+                                            "peer": peer.to_string(),
+                                            "dsc": camera_ip.to_string(),
+                                            "cameraName": parsed.camera_name.as_str(),
+                                            "expected": expected,
+                                            "reason": "callbackCameraNameMismatch",
+                                        }),
+                                    )
+                                    .map_err(trace_error)?;
+                                continue;
+                            }
+                        }
                         let ack = self
                             .store
                             .build_pcss_callback_ack(self.config.connection.clone())

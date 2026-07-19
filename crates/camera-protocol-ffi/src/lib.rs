@@ -2037,6 +2037,7 @@ pub struct PcssRendezvousInfo {
     pub callback_port: u16,
     pub knock_port: u16,
     pub protocol: String,
+    pub camera_name: Option<String>,
     pub default_discovery_target: PcssDiscoveryTarget,
     pub supported_discovery_targets: Vec<PcssDiscoveryTarget>,
     /// Whether an unavailable broadcast-discovered command endpoint or first
@@ -2629,6 +2630,7 @@ impl ConfigStore {
             callback_port: knock.callback_port,
             knock_port: knock.knock_port,
             protocol: knock.protocol.clone(),
+            camera_name: knock.camera_name.clone(),
             default_discovery_target: knock.discovery_targets.default.into(),
             supported_discovery_targets: knock
                 .discovery_targets

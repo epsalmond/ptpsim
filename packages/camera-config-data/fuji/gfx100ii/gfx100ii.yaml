@@ -517,6 +517,7 @@ connections:
       callbackPort: 51560
       knockPort: 51562
       protocol: "PCSS/1.0"
+      cameraName: "GFX100 II"
       discoveryTargets:
         default: subnetBroadcast
         supported: [subnetBroadcast, explicitUnicast]

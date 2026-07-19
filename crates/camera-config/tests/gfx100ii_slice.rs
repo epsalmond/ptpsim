@@ -1591,9 +1591,40 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
             "descriptor source {code}"
         );
     }
-    assert!(
-        data("fuji/gfx100ii/gfx100ii.consolidated.yaml").ends_with(&m.to_yaml().unwrap()),
-        "reviewed manifest regeneration drifted"
+    assert_eq!(
+        m.connections["wireless-tether"]
+            .knock
+            .as_ref()
+            .and_then(|knock| knock.camera_name.as_deref()),
+        Some("GFX100 II"),
+        "reviewed generation preserves the curated callback identity"
+    );
+    let mut generated_projection = m.clone();
+    // cameraName is curated callback identity, so exclude only that field from
+    // the generator-owned regeneration comparison on both sides.
+    generated_projection
+        .connections
+        .get_mut("wireless-tether")
+        .expect("wireless tether connection")
+        .knock
+        .as_mut()
+        .expect("wireless tether has a knock contract")
+        .camera_name = None;
+    let mut digest_bound =
+        CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml"))
+            .expect("consolidated manifest loads");
+    digest_bound
+        .connections
+        .get_mut("wireless-tether")
+        .expect("wireless tether connection")
+        .knock
+        .as_mut()
+        .expect("wireless tether has a knock contract")
+        .camera_name = None;
+    assert_eq!(
+        digest_bound.to_yaml().unwrap(),
+        generated_projection.to_yaml().unwrap(),
+        "reviewed manifest regeneration drifted outside the curated callback identity"
     );
 }
 

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::error::ConfigError;
-use crate::index::ResolvedManufacturerIndex;
+use crate::index::{ResolvedManufacturerIndex, Signature};
 use crate::model::{
     parse_hex_bytes, parse_hex_code, CameraInitiatedMetadataPhase, CameraManifest,
     ManufacturerDefaults, ModeEntryExecution, SocketRole, TransferCompletion, TriggerMatch,
@@ -121,6 +121,7 @@ impl ConfigStore {
                     message: err.to_string(),
                 })?;
             validate_reestablishment_params(id, &body, model_view)?;
+            validate_pcss_camera_names(id, &body, model_view)?;
             bodies.insert(id.clone(), body);
         }
         validate_activity_metadata_consistency(&index, &bodies)?;
@@ -235,6 +236,39 @@ impl ConfigStore {
             .map(|(id, _)| id.as_str())
             .collect()
     }
+}
+
+fn validate_pcss_camera_names(
+    model_id: &str,
+    body: &CameraManifest,
+    model_view: &crate::index::ModelView,
+) -> Result<(), ConfigError> {
+    for (signature_name, signature) in &model_view.signatures {
+        let Signature::PcssNotify(signature) = signature else {
+            continue;
+        };
+        let connection_id = &signature.suggests.connection;
+        let Some(camera_name) = body
+            .connections
+            .get(connection_id)
+            .and_then(|connection| connection.knock.as_ref())
+            .and_then(|knock| knock.camera_name.as_deref())
+        else {
+            continue;
+        };
+        if camera_name != signature.require.camera_name {
+            return Err(ConfigError::Validation {
+                path: format!(
+                    "models.{model_id}.connections.{connection_id}.knock.cameraName"
+                ),
+                message: format!(
+                    "cameraName '{camera_name}' does not match resolved PCSS NOTIFY signature '{signature_name}' cameraName '{}'",
+                    signature.require.camera_name
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_activity_metadata_consistency(
