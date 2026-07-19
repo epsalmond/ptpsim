@@ -2169,12 +2169,12 @@ fn client_derived_friendly_name_defers_the_init_packet() {
             "app".into(),
             vec![KeyValue {
                 key: "terminalName".into(),
-                value: "iphone".into(),
+                value: "abcdefghijklmnopqr".into(),
             }],
         )
         .expect("runtime terminalName assembles app init packet");
-    assert_eq!(init.friendly_name, "iphone");
-    assert_eq!(init.name_field_byte_count, 26);
+    assert_eq!(init.friendly_name, "abcdefghijklmnopqr");
+    assert_eq!(init.name_field_byte_count, 54);
     assert_eq!(
         init.guid,
         vec![
@@ -2182,9 +2182,13 @@ fn client_derived_friendly_name_defers_the_init_packet() {
             0xde, 0xd0
         ]
     );
-    assert_eq!(init.tail, vec![0; 28]);
     assert_eq!(init.packet.len(), 82);
-    assert_eq!(&init.packet[54..82], &[0; 28]);
+    let encoded_name = "abcdefghijklmnopqr"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(&init.packet[28..64], encoded_name);
+    assert_eq!(&init.packet[64..82], &[0; 18]);
     assert!(s
         .connection_init_with_runtime("app".into(), vec![])
         .is_none());
@@ -2216,9 +2220,9 @@ fn normalize_client_name_produces_the_terminal_name_for_the_init() {
     // `terminalName` value driving BOTH the BLE deviceNameString and the PTP/IP
     // friendly name, so the two channels agree (#109) with no name logic in Swift.
     let name = normalize_client_name(" Eric's iPad Pro ".into());
-    assert_eq!(name, "eric-s-ipad");
-    // Fits the 26-byte UTF-16LE name field (chars * 2 + 2-byte NUL).
-    assert!(name.chars().count() * 2 + 2 <= 26);
+    assert_eq!(name, "eric-s-ipad-pro");
+    // Fits the 54-byte UTF-16LE name field (chars * 2 + 2-byte NUL).
+    assert!(name.chars().count() * 2 + 2 <= 54);
 
     let s = store();
     let init = s

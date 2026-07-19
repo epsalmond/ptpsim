@@ -2281,24 +2281,19 @@ pub struct CloseSession {
 }
 
 /// The PTP/IP InitCommandRequest wire shape as manifest data: identity slots
-/// (resolved via `values:`) framed with manifest-supplied trailing bytes into the
-/// reference app init packet (`fuji_init::build_app_init`). #82.
+/// (resolved via `values:`), fixed field widths, and evidence for the declared
+/// shape. #82.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InitShape {
     /// Named-value refs for the identity slots, resolved via `values:`.
     pub identity: InitIdentity,
-    /// Fixed width of the UTF-16LE friendly-name field, in bytes (reference app = 26).
+    /// Fixed width of the UTF-16LE friendly-name field, in bytes.
     #[serde(default)]
     pub name_field_byte_count: u32,
-    /// Literal bytes appended after the name field, as a hex string (decoded by
-    /// the same path as `StepValue::Literal`). Fixed shapes must supply their full
-    /// trailing region explicitly, including any required zero-fill.
-    #[serde(default)]
-    pub tail: Option<String>,
-    /// Evidence id(s) backing the tail bytes.
-    #[serde(default)]
-    pub tail_evidence: Option<String>,
+    /// Evidence ids backing the declared init shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
     /// Optional `values:` key naming the responder GUID an init ack must carry.
     /// legacy manufacturer app validates this fixed identity before opening a session.
     #[serde(default)]

@@ -166,16 +166,13 @@ connections:
     # close frame, flushes it, and then closes the command socket with a clean FIN.
     # It does not guarantee that the AP or listener remains immediately reusable.
     transportClose: { sentinel: ptpipCloseSentinel, when: before-image-transfer-reestablishment }
-    # 82-byte InitCommandRequest = GUID(16) + uint32(0) + nameField(26) + tail(28).
-    # Identity is manufacturer-tier (see fuji.yaml). For the scoped fw02.30 flow,
-    # bytes after the name field are unused and must be deterministic zero-fill.
+    # 82-byte InitCommandRequest = GUID(16) + uint32(0) + nameField(54).
+    # Identity is manufacturer-tier (see fuji.yaml); the fixed field owns its NUL
+    # terminator and deterministic zero-fill.
     init:
       identity: { guid: initiatorGuid, friendlyName: initFriendlyName }
-      nameFieldByteCount: 26
-      # Captured non-zero bytes in this reserved region are process-memory leakage,
-      # not protocol fields. Keep all 28 bytes explicit to preserve the fixed shape.
-      tail: "00000000000000000000000000000000000000000000000000000000"
-      tailEvidence: docLiveControls
+      nameFieldByteCount: 54
+      evidence: [docLiveControls]
     # Mode-graph edges for GFX100 II fw02.30 with reference app Android 2.7.3.
     entries:
       - to: shooting/stills          # enter live-view from a cold App connection

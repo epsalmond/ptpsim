@@ -104,7 +104,7 @@ connections:
         clientIpv4: legacyAppClientIpv4
       nameFieldByteCount: 54
       expectedResponderGuid: legacyAppResponderGuid
-      tailEvidence: legacyApp4102Static
+      evidence: [legacyApp4102Static]
     modes:
       - photo-receiver
       - gps-assist

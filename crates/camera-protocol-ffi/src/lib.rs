@@ -115,15 +115,10 @@ impl From<ValueWidth> for protocol_primitives::ValueWidth {
     }
 }
 
-/// G1 — build the 82-byte Fuji reference app `InitCommandRequest`. Identity/tail come from
-/// the manifest; this frames them.
+/// G1 — build the 82-byte Fuji reference app `InitCommandRequest` from resolved identity.
 #[uniffi::export]
-pub fn build_app_init(
-    guid: Vec<u8>,
-    friendly_name: String,
-    tail: Vec<u8>,
-) -> Result<Vec<u8>, CodecError> {
-    protocol_primitives::build_app_init(&guid, &friendly_name, &tail)
+pub fn build_app_init(guid: Vec<u8>, friendly_name: String) -> Result<Vec<u8>, CodecError> {
+    protocol_primitives::build_app_init(&guid, &friendly_name)
         .map_err(|e| CodecError::Encode(e.to_string()))
 }
 
@@ -863,16 +858,14 @@ impl From<cc::ShutterRecipe> for ShutterRecipe {
     }
 }
 
-/// The InitCommandRequest for a connection, assembled from manifest data (#82):
-/// the resolved identity + literal vendor tail, plus the pre-built 82-byte
-/// packet — so the app replays bytes with no client-side literals.
+/// The InitCommandRequest for a connection, assembled from manifest identity
+/// and the declared fixed field width. #82.
 #[derive(uniffi::Record)]
 pub struct InitShapeInfo {
     pub guid: Vec<u8>,
     pub friendly_name: String,
     pub client_ipv4: Option<String>,
     pub name_field_byte_count: u32,
-    pub tail: Vec<u8>,
     pub expected_responder_guid: Vec<u8>,
     pub packet: Vec<u8>,
 }
@@ -3092,10 +3085,10 @@ impl ConfigStore {
     }
 
     /// The InitCommandRequest for `connection`, assembled entirely from manifest
-    /// data: resolved GUID + friendly name (via `values:`) + the literal vendor
-    /// tail, plus the pre-built 82-byte packet — so the app replays bytes with no
-    /// client-side literals. `None` if the connection declares no `init` shape
-    /// (e.g. usb) or the identity/tail can't resolve. (#82)
+    /// data: resolved GUID + friendly name (via `values:`), plus the pre-built
+    /// packet — so the app replays bytes with no client-side literals. `None` if
+    /// the connection declares no `init` shape (e.g. usb) or the identity can't
+    /// resolve. (#82)
     ///
     /// Returns `None` when the friendly name is `client-derived` (#109): the name
     /// is not a manifest literal but the host's own device name (which must equal
@@ -3111,10 +3104,6 @@ impl ConfigStore {
         let init = c.init.as_ref()?;
         let friendly_name = self.fixed_value(&init.identity.friendly_name)?;
         let guid = hex_value(&self.fixed_value(&init.identity.guid)?)?;
-        let tail = match &init.tail {
-            Some(t) => hex_value(t)?,
-            None => Vec::new(),
-        };
         let client_ipv4 = match &init.identity.client_ipv4 {
             Some(key) => Some(self.fixed_value(key)?),
             None => None,
@@ -3124,7 +3113,7 @@ impl ConfigStore {
             None => None,
         };
         let packet = match shape {
-            "app82" => protocol_primitives::build_app_init(&guid, &friendly_name, &tail).ok()?,
+            "app82" => protocol_primitives::build_app_init(&guid, &friendly_name).ok()?,
             "legacyApp82" => protocol_primitives::build_legacy_app_init(
                 &guid,
                 client_ipv4.as_ref()?.parse().ok()?,
@@ -3139,7 +3128,6 @@ impl ConfigStore {
             friendly_name,
             client_ipv4,
             name_field_byte_count: init.name_field_byte_count,
-            tail,
             expected_responder_guid: expected_responder_guid.unwrap_or_default(),
             packet,
         })
@@ -3148,8 +3136,7 @@ impl ConfigStore {
     /// Runtime-aware InitCommandRequest assembly (#109/#29). Same shape as
     /// [`connection_init`], but `client-derived` identity slots resolve from the
     /// caller's runtime scope (for Fuji, `terminalName`). This lets consumers keep
-    /// the BLE deviceNameString and PTP/IP friendlyName single-sourced while still
-    /// replaying the manifest-owned vendor tail with no app-side byte literal.
+    /// the BLE deviceNameString and PTP/IP friendlyName single-sourced.
     pub fn connection_init_with_runtime(
         &self,
         connection: String,
@@ -3171,10 +3158,6 @@ impl ConfigStore {
             &init.identity.guid,
             &scope,
         )?)?;
-        let tail = match &init.tail {
-            Some(t) => hex_value(t)?,
-            None => Vec::new(),
-        };
         let client_ipv4 = match &init.identity.client_ipv4 {
             Some(key) => Some(value_with_runtime(&self.inner, key, &scope)?),
             None => None,
@@ -3184,7 +3167,7 @@ impl ConfigStore {
             None => None,
         };
         let packet = match shape {
-            "app82" => protocol_primitives::build_app_init(&guid, &friendly_name, &tail).ok()?,
+            "app82" => protocol_primitives::build_app_init(&guid, &friendly_name).ok()?,
             "legacyApp82" => protocol_primitives::build_legacy_app_init(
                 &guid,
                 client_ipv4.as_ref()?.parse().ok()?,
@@ -3199,7 +3182,6 @@ impl ConfigStore {
             friendly_name,
             client_ipv4,
             name_field_byte_count: init.name_field_byte_count,
-            tail,
             expected_responder_guid: expected_responder_guid.unwrap_or_default(),
             packet,
         })
@@ -3779,16 +3761,30 @@ fn build_manufacturer_index_store(
 
 fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigError> {
     for (connection_id, connection) in &store.manifest.connections {
-        let Some(shape @ ("legacyApp82" | "standardPtpIp")) = connection.init_shape.as_deref()
+        let Some(shape @ ("app82" | "legacyApp82" | "standardPtpIp")) =
+            connection.init_shape.as_deref()
         else {
             continue;
         };
-        let init = connection.init.as_ref().ok_or_else(|| {
-            ConfigError::Contract(format!(
-                "connections.{connection_id}.init is required for {shape}"
-            ))
-        })?;
+        let init = match connection.init.as_ref() {
+            Some(init) => init,
+            None if shape == "app82" => continue,
+            None => {
+                return Err(ConfigError::Contract(format!(
+                    "connections.{connection_id}.init is required for {shape}"
+                )))
+            }
+        };
         let path = format!("connections.{connection_id}.init");
+        if shape == "app82"
+            && store.value(&init.identity.guid).is_none()
+            && store.value(&init.identity.friendly_name).is_none()
+        {
+            // Body-only stores may intentionally omit the manufacturer tier
+            // that owns both reference app identity policies. Validate once that tier is
+            // present; a partially resolved identity still fails below.
+            continue;
+        }
         let resolve = |key: &str, field: &str| {
             store.value(key).ok_or_else(|| {
                 ConfigError::Contract(format!("{path}.{field} references unknown value '{key}'"))
@@ -3818,7 +3814,7 @@ fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigEr
                         "{path}.identity.friendlyName fixed value must be scalar"
                     ))
                 })?;
-                let max_name_units = if shape == "legacyApp82" { 26 } else { 254 };
+                let max_name_units = if shape == "standardPtpIp" { 254 } else { 26 };
                 if name.contains('\0') || name.encode_utf16().count() > max_name_units {
                     return Err(ConfigError::Contract(format!(
                         "{path}.identity.friendlyName must fit {max_name_units} UTF-16 units and contain no NUL"
@@ -3833,7 +3829,7 @@ fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigEr
             }
         }
 
-        if shape == "standardPtpIp" {
+        if matches!(shape, "standardPtpIp" | "app82") {
             continue;
         }
 
@@ -4691,7 +4687,7 @@ fn platform_ok(c: &cc::Connection, p: &Platform) -> bool {
 
 /// Decode an even-length hex string (optionally `0x`-prefixed) to bytes —
 /// matches `index::eval::yaml_literal_to_bytes`'s hex path, for the init GUID
-/// and vendor tail.
+/// and responder identity.
 fn hex_value(s: &str) -> Option<Vec<u8>> {
     let p = s.strip_prefix("0x").unwrap_or(s);
     if p.is_empty() || !p.len().is_multiple_of(2) || !p.bytes().all(|b| b.is_ascii_hexdigit()) {

@@ -535,12 +535,9 @@ fn require_valid_init_shape(
                 "{path}.identity requires non-empty guid and friendlyName value references"
             )));
         }
-        if init.identity.client_ipv4.is_some()
-            || init.tail.is_some()
-            || init.expected_responder_guid.is_some()
-        {
+        if init.identity.client_ipv4.is_some() || init.expected_responder_guid.is_some() {
             return Err(ManifestError::Contract(format!(
-                "{path} standardPtpIp does not use clientIpv4, tail, or expectedResponderGuid"
+                "{path} standardPtpIp does not use clientIpv4 or expectedResponderGuid"
             )));
         }
         if init.name_field_byte_count != 0 {
@@ -570,6 +567,30 @@ fn require_valid_init_shape(
         }
         return Ok(());
     }
+    if connection.init_shape.as_deref() == Some("app82") {
+        let Some(init) = connection.init.as_ref() else {
+            // Responder-only synthetic manifests can identify the parser shape
+            // without declaring initiator-side identity policy.
+            return Ok(());
+        };
+        let path = format!("connections.{connection_id}.init");
+        if init.identity.guid.trim().is_empty() || init.identity.friendly_name.trim().is_empty() {
+            return Err(ManifestError::Contract(format!(
+                "{path}.identity requires non-empty guid and friendlyName value references"
+            )));
+        }
+        if init.identity.client_ipv4.is_some() || init.expected_responder_guid.is_some() {
+            return Err(ManifestError::Contract(format!(
+                "{path} app82 does not use clientIpv4 or expectedResponderGuid"
+            )));
+        }
+        if init.name_field_byte_count != 54 {
+            return Err(ManifestError::Contract(format!(
+                "{path}.nameFieldByteCount must be 54 for initShape app82"
+            )));
+        }
+        return Ok(());
+    }
     if connection.init_shape.as_deref() != Some("legacyApp82") {
         return Ok(());
     }
@@ -595,11 +616,6 @@ fn require_valid_init_shape(
     if init.name_field_byte_count != 54 {
         return Err(ManifestError::Contract(format!(
             "{path}.nameFieldByteCount must be 54 for initShape legacyApp82"
-        )));
-    }
-    if init.tail.is_some() {
-        return Err(ManifestError::Contract(format!(
-            "{path}.tail is not part of initShape legacyApp82"
         )));
     }
     init.expected_responder_guid
