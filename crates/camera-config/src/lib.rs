@@ -301,6 +301,9 @@ impl CameraManifest {
             check(&wf.evidence, &format!("workflow {id}"), &mut lints);
         }
         for (id, conn) in &self.connections {
+            if let Some(init) = &conn.init {
+                check(&init.evidence, &format!("connection {id} init"), &mut lints);
+            }
             if let Some(tc) = &conn.transport_close {
                 if !self.sentinels.contains_key(&tc.sentinel) {
                     lints.push(Lint::warn(format!(
@@ -1836,6 +1839,38 @@ evidence:
         let lints = m.validate();
         assert!(!lints.is_empty(), "should warn about unresolved evidence");
         assert!(lints.iter().all(|l| l.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn init_shape_validation_lints_undefined_evidence() {
+        let manifest = |evidence: &str| {
+            CameraManifest::from_yaml(&format!(
+                r#"{SAMPLE}
+connections:
+  app:
+    init:
+      identity:
+        guid: initiatorGuid
+        friendlyName: initFriendlyName
+      nameFieldByteCount: 54
+      evidence: [{evidence}]
+"#
+            ))
+            .expect("init-shape manifest loads")
+        };
+
+        assert!(
+            manifest("appLiveViewCapture").validate().is_empty(),
+            "defined init-shape evidence should not produce a lint"
+        );
+
+        let lints = manifest("missingInitEvidence").validate();
+        assert!(lints.iter().any(|lint| {
+            lint.message.contains(
+                "connection app init references evidence id 'missingInitEvidence' which is not defined",
+            )
+        }), "missing init-shape evidence lint; got {lints:?}");
+        assert!(lints.iter().all(|lint| lint.severity == Severity::Warning));
     }
 
     #[test]
