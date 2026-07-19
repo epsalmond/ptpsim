@@ -8,7 +8,7 @@ use std::sync::Arc;
 use camera_config::{
     ActionInvocationRequest, ActionOutcome, ActionRole, ExecutionContext, ObservationRecorder,
 };
-use camera_sim::{Engine, PreparedResponderMutation, StateOverlay};
+use camera_sim::{Engine, FaultSpec, PreparedResponderMutation, StateOverlay};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, Notify};
@@ -99,6 +99,41 @@ pub async fn handle(mut stream: TcpStream, context: Context) {
             match trace_after(path) {
                 Ok(after) => Response::ok(context.trace.json(&context.health.instance_id, after)),
                 Err(error) => Response::bad_request(error),
+            }
+        }
+        ("GET", "/faults") => {
+            let engine = context.engine.lock().await;
+            match serde_json::to_string(&serde_json::json!({
+                "ok": true,
+                "faults": engine.faults(),
+                "lastApplied": engine.last_applied_fault(),
+            })) {
+                Ok(body) => Response::ok(body),
+                Err(error) => Response::server_error(error.to_string()),
+            }
+        }
+        ("POST", "/faults") => match serde_json::from_slice::<FaultSpec>(&req.body) {
+            Ok(spec) => {
+                let mut engine = context.engine.lock().await;
+                match engine.install_fault(spec) {
+                    Ok(id) => Response::ok(serde_json::json!({ "ok": true, "id": id }).to_string()),
+                    Err(error) => Response::bad_request(error),
+                }
+            }
+            Err(error) => Response::bad_request(format!("invalid JSON fault request: {error}")),
+        },
+        ("DELETE", "/faults") => {
+            context.engine.lock().await.clear_faults();
+            Response::ok(r#"{"ok":true}"#.to_string())
+        }
+        ("DELETE", path) if path.starts_with("/faults/") => {
+            let id = path.trim_start_matches("/faults/");
+            match id.parse::<u64>() {
+                Ok(id) if context.engine.lock().await.remove_fault(id) => {
+                    Response::ok(r#"{"ok":true}"#.to_string())
+                }
+                Ok(_) => Response::not_found(),
+                Err(_) => Response::bad_request("fault id must be an unsigned integer".into()),
             }
         }
         ("GET", path) if path == "/observations" || path.starts_with("/observations?") => {

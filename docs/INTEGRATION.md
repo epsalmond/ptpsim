@@ -367,6 +367,9 @@ tracked by issue #164.
 `services/camera-sim-service` runs the same manifest as a responder (IPv6 + control
 HTTP). Point your app at it to exercise connect / live-view / browse / download without
 a physical camera, and to A/B the FFI path against your legacy codec before cutover.
+The occurrence-scoped `GET`/`POST`/`DELETE /faults` contract and trace evidence
+are defined in `DESIGN.md`; consumers should use that registry rather than add
+camera-specific simulator branches.
 
 ## 9. Pull-model surface — manufacturer index (BLE-MVP)
 

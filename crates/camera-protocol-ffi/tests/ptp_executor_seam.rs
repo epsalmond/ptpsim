@@ -21,11 +21,28 @@ use camera_protocol_ffi::{
     PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpRuntimeValue, PtpSessionOpenResult,
     PtpTransportError, SocketRole, StepObserver, StepOutcome, StepReport,
 };
-use camera_sim::{Engine, Fault, Reply};
+use camera_sim::{Engine, FaultMutation, FaultSelector, FaultSpec, FaultStage, Reply};
 use futures::executor::block_on;
 use ptp_core::{OperationRequest, PtpCodec, PtpIpPacket};
 
 mod common;
+
+fn fault(
+    operation: u16,
+    params: Option<Vec<u32>>,
+    count: Option<u32>,
+    mutation: FaultMutation,
+) -> FaultSpec {
+    FaultSpec {
+        selector: FaultSelector {
+            operation,
+            params,
+            skip: 0,
+            count,
+        },
+        mutation,
+    }
+}
 
 fn data(rel: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -604,12 +621,12 @@ fn bundled_pcss_autofocus_release_tolerates_d230_cleanup_response() {
         PtpFraming::Compressed,
         PtpFraming::Usb,
     ));
-    transport.install_fault(Fault::FailOperationParamsTimes {
-        code: 0x1016,
-        params: vec![0xd230],
-        response: 0xa002,
-        remaining: 1,
-    });
+    transport.install_fault(fault(
+        0x1016,
+        Some(vec![0xd230]),
+        Some(1),
+        FaultMutation::FailResponse { response: 0xa002 },
+    ));
     let reports = Arc::new(Reports::default());
     block_on(execute_initiator_action(
         store.clone(),
@@ -822,12 +839,13 @@ impl EngineTransport {
         self.first_handle
     }
 
-    fn install_fault(&self, fault: Fault) {
+    fn install_fault(&self, fault: FaultSpec) {
         self.state
             .lock()
             .expect("state")
             .engine
-            .install_fault(fault);
+            .install_fault(fault)
+            .unwrap();
     }
 
     fn invoke_pcss_autofocus_responder(&self, result: Option<u64>) {
@@ -1659,11 +1677,12 @@ fn tolerated_close_response_does_not_skip_reopen_lifecycle() {
         Vec::new(),
     ))
     .expect("image-transfer entry succeeds");
-    transport.install_fault(Fault::FailOperationTimes {
-        code: ptp_core::codes::op::CLOSE_SESSION,
-        response: 0x2019,
-        remaining: 1,
-    });
+    transport.install_fault(fault(
+        ptp_core::codes::op::CLOSE_SESSION,
+        None,
+        Some(1),
+        FaultMutation::FailResponse { response: 0x2019 },
+    ));
     let reports = Arc::new(Reports::default());
 
     block_on(run_mode_entry(
@@ -2237,12 +2256,12 @@ fn import_with_enumeration_fault(response: u16) -> (Result<(), PtpExecutorError>
         Vec::new(),
     ))
     .expect("image-transfer entry succeeds");
-    transport.install_fault(Fault::FailOperationParamsTimes {
-        code: 0x1015,
-        params: vec![0xd621],
-        response,
-        remaining: 1,
-    });
+    transport.install_fault(fault(
+        0x1015,
+        Some(vec![0xd621]),
+        Some(1),
+        FaultMutation::FailResponse { response },
+    ));
     let result = block_on(run_initiator_action(
         store,
         "app".into(),
@@ -2283,11 +2302,12 @@ fn exhausted_retry_can_be_tolerated_only_by_its_outer_step() {
         Vec::new(),
     ))
     .expect("cold entry succeeds");
-    transport.install_fault(Fault::FailOperationTimes {
-        code: 0x9022,
-        response: 0x2019,
-        remaining: 3,
-    });
+    transport.install_fault(fault(
+        0x9022,
+        None,
+        Some(3),
+        FaultMutation::FailResponse { response: 0x2019 },
+    ));
     let reports = Arc::new(Reports::default());
 
     block_on(run_initiator_action(
@@ -2334,12 +2354,12 @@ fn enumerate_with_truncated_d212(
     ))
     .expect("image-transfer entry succeeds");
     let entry_reads = transport.request_count(0x1015, &[0xd212]);
-    transport.install_fault(Fault::TruncateDataParamsTimes {
-        code: 0x1015,
-        params: vec![0xd212],
-        keep: 4,
-        remaining: truncated_reads,
-    });
+    transport.install_fault(fault(
+        0x1015,
+        Some(vec![0xd212]),
+        Some(truncated_reads),
+        FaultMutation::TruncateData { keep: 4 },
+    ));
     let reports = Arc::new(Reports::default());
     let result = block_on(run_initiator_action(
         store,
@@ -2410,7 +2430,14 @@ fn transport_failure_is_not_selected_by_a_decode_retry() {
         Vec::new(),
     ))
     .expect("image-transfer entry succeeds");
-    transport.install_fault(Fault::CloseOnOperation { code: 0x9050 });
+    transport.install_fault(fault(
+        0x9050,
+        None,
+        None,
+        FaultMutation::Close {
+            stage: FaultStage::Command,
+        },
+    ));
     let error = block_on(run_initiator_action(
         store(),
         "app".into(),
@@ -2482,11 +2509,12 @@ fn tolerant_repeated_send_still_issues_every_repeat() {
         PtpFraming::Compressed,
         PtpFraming::Usb,
     ));
-    transport.install_fault(Fault::FailOperationTimes {
-        code: 0x902b,
-        response: 0x2019,
-        remaining: 1,
-    });
+    transport.install_fault(fault(
+        0x902b,
+        None,
+        Some(1),
+        FaultMutation::FailResponse { response: 0x2019 },
+    ));
     let reports = Arc::new(Reports::default());
     block_on(run_mode_entry(
         store_with_tolerant_repeated_startup(),
@@ -2559,11 +2587,12 @@ fn ptp_retry_reports_typed_empty_context_and_terminal_count() {
         PtpFraming::Compressed,
         PtpFraming::Usb,
     ));
-    transport.install_fault(Fault::FailOperationTimes {
-        code: 0x902b,
-        response: 0x2019,
-        remaining: 1,
-    });
+    transport.install_fault(fault(
+        0x902b,
+        None,
+        Some(1),
+        FaultMutation::FailResponse { response: 0x2019 },
+    ));
     let activities = Arc::new(Activities::default());
 
     block_on(run_mode_entry(

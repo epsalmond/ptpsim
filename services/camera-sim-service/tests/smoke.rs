@@ -63,6 +63,118 @@ properties:
   "0xd001": { name: result, type: u16, access: readOnly }
 "#;
 
+const FAULT_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Fault Camera, firmware: "1" }
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings: { command: 15740, event: 15741, liveView: 15742 }
+operations:
+  "0x1001": { name: GetDeviceInfo, connections: [app] }
+  "0x1002": { name: OpenSession, connections: [app] }
+  "0x1003": { name: CloseSession, connections: [app] }
+  "0x1015": { name: GetDevicePropValue, connections: [app] }
+  "0x1016": { name: SetDevicePropValue, connections: [app] }
+properties:
+  "0x5007": { name: aperture, type: u16, access: readWrite }
+"#;
+
+const STANDARD_FAULT_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Standard Fault Camera, firmware: "1" }
+values:
+  initiatorGuid: { type: fixed, value: "00112233445566778899aabbccddeeff" }
+  initiatorName: { type: fixed, value: ptpsim }
+connections:
+  app:
+    kind: ptpip
+    initShape: standardPtpIp
+    init: { identity: { guid: initiatorGuid, friendlyName: initiatorName } }
+    commandFraming: standard
+    eventFraming: standard
+    bindings: { command: 15740, event: 15740 }
+operations:
+  "0x1001": { name: GetDeviceInfo, connections: [app] }
+properties: {}
+"#;
+
+fn start_fault_server(
+    runtime: &tokio::runtime::Runtime,
+    root: &std::path::Path,
+) -> (
+    std::net::SocketAddr,
+    std::net::SocketAddr,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    runtime.block_on(async {
+        let server = Server::bind(Config {
+            instance_id: "fault-test".into(),
+            profile: "test/fault".into(),
+            connection: "app".into(),
+            manifest_yaml: FAULT_MANIFEST.into(),
+            media_root: root.to_path_buf(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .unwrap();
+        let command = server.command_addr();
+        let control = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(server.run(rx));
+        (command, control, tx, handle)
+    })
+}
+
+fn start_standard_fault_server(
+    runtime: &tokio::runtime::Runtime,
+    root: &std::path::Path,
+) -> (
+    std::net::SocketAddr,
+    std::net::SocketAddr,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    runtime.block_on(async {
+        let server = Server::bind(Config {
+            instance_id: "standard-fault-test".into(),
+            profile: "test/standard-fault".into(),
+            connection: "app".into(),
+            manifest_yaml: STANDARD_FAULT_MANIFEST.into(),
+            media_root: root.to_path_buf(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .unwrap();
+        let command = server.command_addr();
+        let control = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(server.run(rx));
+        (command, control, tx, handle)
+    })
+}
+
 fn tmp_card() -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1277,6 +1389,18 @@ fn http_post_json(addr: std::net::SocketAddr, path: &str, body: &str) -> String 
     out
 }
 
+fn http_delete(addr: std::net::SocketAddr, path: &str) -> String {
+    let mut s = TcpStream::connect(addr).unwrap();
+    write!(
+        s,
+        "DELETE {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    out
+}
+
 fn http_patch(addr: std::net::SocketAddr, path: &str, body: &str) -> String {
     let mut s = TcpStream::connect(addr).unwrap();
     write!(
@@ -1288,6 +1412,525 @@ fn http_patch(addr: std::net::SocketAddr, path: &str, body: &str) -> String {
     let mut out = String::new();
     let _ = s.read_to_string(&mut out);
     out
+}
+
+fn http_body(response: &str) -> &str {
+    response
+        .split_once("\r\n\r\n")
+        .expect("HTTP response body")
+        .1
+}
+
+#[test]
+fn fault_registry_crud_round_trips_every_mutation_and_rejects_invalid_specs() {
+    let root = tmp_card();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (_, control, shutdown, handle) = start_fault_server(&runtime, &root);
+    let mutations = [
+        serde_json::json!({"type":"failResponse","response":"0x2019"}),
+        serde_json::json!({"type":"close","stage":"command"}),
+        serde_json::json!({"type":"delay","stage":"data","ms":25}),
+        serde_json::json!({"type":"suppress","stage":"response"}),
+        serde_json::json!({"type":"truncateData","keep":3}),
+        serde_json::json!({"type":"replaceData","bytesHex":"deadbeef"}),
+        serde_json::json!({"type":"replaceTransactionId","transactionId":42}),
+        serde_json::json!({"type":"dataFraming","framing":"compressed"}),
+        serde_json::json!({"type":"propertyReadback","value":-7}),
+    ];
+    let mut ids = Vec::new();
+    for mutation in &mutations {
+        let body = serde_json::json!({
+            "operation": "0x1015",
+            "params": [53],
+            "skip": 2,
+            "count": 1,
+            "mutation": mutation,
+        });
+        let response = http_post_json(control, "/faults", &body.to_string());
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let response: serde_json::Value = serde_json::from_str(http_body(&response)).unwrap();
+        ids.push(response["id"].as_u64().unwrap());
+    }
+
+    let response = http_get(control, "/faults");
+    let snapshot: serde_json::Value = serde_json::from_str(http_body(&response)).unwrap();
+    let faults = snapshot["faults"].as_array().unwrap();
+    assert_eq!(faults.len(), mutations.len());
+    for (fault, mutation) in faults.iter().zip(mutations.iter()) {
+        assert_eq!(&fault["mutation"], mutation);
+        assert_eq!(fault["seen"], 0);
+        assert_eq!(fault["applied"], 0);
+        assert_eq!(fault["exhausted"], false);
+    }
+    assert_eq!(snapshot["lastApplied"], serde_json::Value::Null);
+
+    let response = http_delete(control, &format!("/faults/{}", ids[3]));
+    assert!(response.starts_with("HTTP/1.1 200"));
+    let response = http_get(control, "/faults");
+    let snapshot: serde_json::Value = serde_json::from_str(http_body(&response)).unwrap();
+    assert_eq!(
+        snapshot["faults"].as_array().unwrap().len(),
+        mutations.len() - 1
+    );
+    assert!(http_delete(control, "/faults/99999").starts_with("HTTP/1.1 404"));
+
+    let invalid = [
+        r#"{"operation":"1015","mutation":{"type":"suppress","stage":"data"}}"#.to_string(),
+        r#"{"operation":"0x1015","mutation":{"type":"replaceData","bytesHex":"abc"}}"#.to_string(),
+        serde_json::json!({
+            "operation":"0x1015",
+            "mutation":{"type":"replaceData","bytesHex":"00".repeat(4097)}
+        })
+        .to_string(),
+        r#"{"operation":"0x1015","mutation":{"type":"delay","stage":"data","ms":60001}}"#
+            .to_string(),
+        r#"{"operation":"0x1015","mutation":{"type":"close","stage":"init"}}"#.to_string(),
+        r#"{"operation":"0x1015","mutation":{"type":"corrupt"}}"#.to_string(),
+        r#"{"operation":"0x1015","mutation":{"type":"suppress","stage":"data"},"extra":true}"#
+            .to_string(),
+    ];
+    for body in invalid {
+        let response = http_post_json(control, "/faults", &body);
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+    }
+
+    assert!(http_delete(control, "/faults").starts_with("HTTP/1.1 200"));
+    let response = http_get(control, "/faults");
+    let snapshot: serde_json::Value = serde_json::from_str(http_body(&response)).unwrap();
+    assert!(snapshot["faults"].as_array().unwrap().is_empty());
+
+    shutdown.send(()).ok();
+    runtime.block_on(handle).unwrap();
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn occurrence_windows_cross_reconnects_and_fault_trace_is_structured() {
+    let root = tmp_card();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (command, control, shutdown, handle) = start_fault_server(&runtime, &root);
+    let spec = r#"{"operation":"0x1002","skip":2,"count":1,"mutation":{"type":"failResponse","response":"0x2019"}}"#;
+    let response = http_post_json(control, "/faults", spec);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+
+    let mut delivered = Vec::new();
+    for occurrence in 0..4 {
+        let mut stream = connect_ptpip(command, &format!("fault-{occurrence}"));
+        let request = op(0x1002, 1, vec![1]);
+        write_frame(&mut stream, &request);
+        let response = read_frame(&mut stream);
+        delivered.push(response.clone());
+        let code = match fuji_framing::decode(&response).unwrap() {
+            PtpIpPacket::OperationResponse(response) => response.code,
+            other => panic!("expected response, got {other:?}"),
+        };
+        assert_eq!(code, if occurrence == 2 { 0x2019 } else { 0x2001 });
+    }
+    assert_eq!(delivered[0], delivered[1]);
+    assert_eq!(delivered[1], delivered[3]);
+
+    let mut reopened = connect_ptpip(command, "close-open");
+    write_frame(&mut reopened, &op(0x1003, 2, vec![]));
+    read_ok(&mut reopened);
+    write_frame(&mut reopened, &op(0x1002, 3, vec![2]));
+    read_ok(&mut reopened);
+
+    let snapshot: serde_json::Value =
+        serde_json::from_str(http_body(&http_get(control, "/faults"))).unwrap();
+    assert_eq!(snapshot["faults"][0]["seen"], 5);
+    assert_eq!(snapshot["faults"][0]["applied"], 1);
+    assert_eq!(snapshot["faults"][0]["exhausted"], true);
+
+    let trace = trace_json(control);
+    let fault_events = trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["kind"] == "ptpip.fault.applied")
+        .collect::<Vec<_>>();
+    assert_eq!(fault_events.len(), 1);
+    let event = fault_events[0];
+    assert_eq!(event["operation"], "0x1002");
+    assert_eq!(event["transaction_id"], 1);
+    assert_eq!(event["response_code"], "0x2019");
+    assert_eq!(event["fault_id"], 1);
+    assert_eq!(event["fault_kind"], "failResponse");
+    assert_eq!(event["applied"], "failedResponse");
+    assert!(event
+        .get("payload_hex")
+        .is_some_and(serde_json::Value::is_null));
+
+    shutdown.send(()).ok();
+    runtime.block_on(handle).unwrap();
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn deleting_an_unapplied_fault_restores_reference_bytes_and_emits_no_fault_trace() {
+    let root = tmp_card();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (command, control, shutdown, handle) = start_fault_server(&runtime, &root);
+
+    let mut reference = connect_ptpip(command, "reference");
+    write_frame(&mut reference, &op(0x1002, 1, vec![1]));
+    let reference_bytes = read_frame(&mut reference);
+
+    let response = http_post_json(
+        control,
+        "/faults",
+        r#"{"operation":"0x1002","mutation":{"type":"failResponse","response":"0x2019"}}"#,
+    );
+    let id = serde_json::from_str::<serde_json::Value>(http_body(&response)).unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    assert!(http_delete(control, &format!("/faults/{id}")).starts_with("HTTP/1.1 200"));
+
+    let mut after_delete = connect_ptpip(command, "after-delete");
+    write_frame(&mut after_delete, &op(0x1002, 1, vec![1]));
+    assert_eq!(read_frame(&mut after_delete), reference_bytes);
+    let trace = trace_json(control);
+    for event in trace["events"].as_array().unwrap() {
+        assert_ne!(event["kind"], "ptpip.fault.applied");
+        assert!(event.get("fault_id").is_none());
+        assert!(event.get("fault_kind").is_none());
+    }
+
+    shutdown.send(()).ok();
+    runtime.block_on(handle).unwrap();
+    std::fs::remove_dir_all(root).ok();
+}
+
+fn with_fault_service(test: impl FnOnce(std::net::SocketAddr, std::net::SocketAddr)) {
+    let root = tmp_card();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (command, control, shutdown, handle) = start_fault_server(&runtime, &root);
+    test(command, control);
+    shutdown.send(()).ok();
+    runtime.block_on(handle).unwrap();
+    std::fs::remove_dir_all(root).ok();
+}
+
+fn with_standard_fault_service(test: impl FnOnce(std::net::SocketAddr, std::net::SocketAddr)) {
+    let root = tmp_card();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (command, control, shutdown, handle) = start_standard_fault_server(&runtime, &root);
+    test(command, control);
+    shutdown.send(()).ok();
+    runtime.block_on(handle).unwrap();
+    std::fs::remove_dir_all(root).ok();
+}
+
+fn connect_standard_ptpip(command: std::net::SocketAddr) -> TcpStream {
+    let mut stream = TcpStream::connect(command).unwrap();
+    let request = PtpIpPacket::InitCommandRequest(ptp_core::InitCommandRequest {
+        initiator_guid: [0x11; 16],
+        friendly_name: "fault-test".into(),
+        protocol_version: 0x0001_0000,
+    });
+    write_frame(&mut stream, &ptp_core::encode(&request).unwrap());
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut stream)).unwrap(),
+        PtpIpPacket::InitCommandAck(_)
+    ));
+    stream
+}
+
+fn install_fault(control: std::net::SocketAddr, body: serde_json::Value) -> u64 {
+    let response = http_post_json(control, "/faults", &body.to_string());
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    serde_json::from_str::<serde_json::Value>(http_body(&response)).unwrap()["id"]
+        .as_u64()
+        .unwrap()
+}
+
+fn clear_faults(control: std::net::SocketAddr) {
+    assert!(http_delete(control, "/faults").starts_with("HTTP/1.1 200"));
+}
+
+fn assert_socket_closed(stream: &mut TcpStream) {
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .unwrap();
+    let mut byte = [0u8; 1];
+    assert_eq!(stream.read(&mut byte).unwrap(), 0);
+}
+
+#[test]
+fn fail_response_fault_is_observed_as_a_non_ok_response() {
+    with_fault_service(|command, control| {
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1002",
+                "count":1,
+                "mutation":{"type":"failResponse","response":"0x2019"}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "fail-response");
+        write_frame(&mut stream, &op(0x1002, 1, vec![1]));
+        assert_eq!(read_response_code(&mut stream), 0x2019);
+    });
+}
+
+#[test]
+fn close_fault_drops_the_socket_at_command_data_and_response_stages() {
+    with_fault_service(|command, control| {
+        for stage in ["command", "data"] {
+            install_fault(
+                control,
+                serde_json::json!({
+                    "operation":"0x1001",
+                    "count":1,
+                    "mutation":{"type":"close","stage":stage}
+                }),
+            );
+            let mut stream = connect_ptpip(command, stage);
+            write_frame(&mut stream, &op(0x1001, 1, vec![]));
+            assert_socket_closed(&mut stream);
+            clear_faults(control);
+        }
+
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"close","stage":"response"}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "close-response");
+        write_frame(&mut stream, &op(0x1001, 1, vec![]));
+        assert!(matches!(
+            fuji_framing::decode(&read_frame(&mut stream)).unwrap(),
+            PtpIpPacket::Data(_)
+        ));
+        assert_socket_closed(&mut stream);
+    });
+}
+
+#[test]
+fn data_stage_fault_on_response_only_reply_reports_no_data_phase() {
+    with_fault_service(|command, control| {
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1002",
+                "count":1,
+                "mutation":{"type":"close","stage":"data"}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "close-data-without-data");
+        write_frame(&mut stream, &op(0x1002, 1, vec![1]));
+        read_ok(&mut stream);
+
+        write_frame(&mut stream, &op(0x1003, 2, vec![]));
+        read_ok(&mut stream);
+
+        let trace = trace_json(control);
+        let event = trace["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["kind"] == "ptpip.fault.applied")
+            .unwrap();
+        assert_eq!(event["operation"], "0x1002");
+        assert_eq!(event["response_code"], "0x2001");
+        assert_eq!(event["applied"], "noDataPhase");
+    });
+}
+
+#[test]
+fn delay_fault_waits_before_the_selected_data_or_response_phase() {
+    with_fault_service(|command, control| {
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"delay","stage":"data","ms":20}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "delay-data");
+        let started = std::time::Instant::now();
+        write_frame(&mut stream, &op(0x1001, 1, vec![]));
+        let _ = read_frame(&mut stream);
+        assert!(started.elapsed() >= std::time::Duration::from_millis(20));
+        let _ = read_frame(&mut stream);
+        clear_faults(control);
+
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"delay","stage":"response","ms":20}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "delay-response");
+        let started = std::time::Instant::now();
+        write_frame(&mut stream, &op(0x1001, 1, vec![]));
+        let _ = read_frame(&mut stream);
+        let _ = read_frame(&mut stream);
+        assert!(started.elapsed() >= std::time::Duration::from_millis(20));
+    });
+}
+
+#[test]
+fn suppress_fault_omits_only_the_selected_data_or_response_phase() {
+    with_fault_service(|command, control| {
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"suppress","stage":"data"}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "suppress-data");
+        write_frame(&mut stream, &op(0x1001, 1, vec![]));
+        assert!(matches!(
+            fuji_framing::decode(&read_frame(&mut stream)).unwrap(),
+            PtpIpPacket::OperationResponse(response) if response.code == 0x2001
+        ));
+        clear_faults(control);
+
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"suppress","stage":"response"}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "suppress-response");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .unwrap();
+        write_frame(&mut stream, &op(0x1001, 1, vec![]));
+        assert!(matches!(
+            fuji_framing::decode(&read_frame(&mut stream)).unwrap(),
+            PtpIpPacket::Data(_)
+        ));
+        assert_read_timeout(&mut stream);
+    });
+}
+
+#[test]
+fn truncate_data_fault_delivers_a_short_but_framed_payload() {
+    with_fault_service(|command, control| {
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"truncateData","keep":3}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "truncate-data");
+        write_frame(&mut stream, &op(0x1001, 1, vec![]));
+        assert_eq!(read_data_reply(&mut stream).len(), 3);
+    });
+}
+
+#[test]
+fn replace_data_fault_delivers_exact_configured_bytes() {
+    with_fault_service(|command, control| {
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"replaceData","bytesHex":"deadbeef"}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "replace-data");
+        write_frame(&mut stream, &op(0x1001, 1, vec![]));
+        assert_eq!(read_data_reply(&mut stream), [0xde, 0xad, 0xbe, 0xef]);
+        let trace = trace_json(control);
+        let event = trace["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["kind"] == "ptpip.fault.applied")
+            .unwrap();
+        let expected = camera_config::payload_metadata(&[0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(event["payload_summary"]["length"], expected.length);
+        assert_eq!(event["payload_summary"]["sha256"], expected.sha256);
+        assert_eq!(event["payload_hex"], serde_json::Value::Null);
+    });
+}
+
+#[test]
+fn replace_transaction_id_fault_changes_data_and_response_ids() {
+    with_fault_service(|command, control| {
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"replaceTransactionId","transactionId":99}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "replace-tid");
+        write_frame(&mut stream, &op(0x1001, 7, vec![]));
+        assert!(matches!(
+            fuji_framing::decode(&read_frame(&mut stream)).unwrap(),
+            PtpIpPacket::Data(data) if data.transaction_id == 99
+        ));
+        assert!(matches!(
+            fuji_framing::decode(&read_frame(&mut stream)).unwrap(),
+            PtpIpPacket::OperationResponse(response) if response.transaction_id == 99
+        ));
+    });
+}
+
+#[test]
+fn data_framing_fault_changes_only_the_data_phase_codec() {
+    with_standard_fault_service(|command, control| {
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1001",
+                "count":1,
+                "mutation":{"type":"dataFraming","framing":"compressed"}
+            }),
+        );
+        let mut stream = connect_standard_ptpip(command);
+        let request = PtpIpPacket::OperationRequest(ptp_core::OperationRequest {
+            data_phase_info: 1,
+            code: 0x1001,
+            transaction_id: 7,
+            params: vec![],
+        });
+        write_frame(&mut stream, &ptp_core::encode(&request).unwrap());
+        assert!(matches!(
+            fuji_framing::decode(&read_frame(&mut stream)).unwrap(),
+            PtpIpPacket::Data(data) if data.transaction_id == 7
+        ));
+        assert!(matches!(
+            PtpIpPacket::decode(&read_frame(&mut stream)).unwrap(),
+            PtpIpPacket::OperationResponse(response) if response.transaction_id == 7
+        ));
+    });
+}
+
+#[test]
+fn property_readback_fault_reencodes_through_the_manifest_datatype() {
+    with_fault_service(|command, control| {
+        let mut stream = connect_ptpip(command, "property-readback");
+        open_session(&mut stream);
+        set_prop(&mut stream, 2, 0x5007, &280u16.to_le_bytes());
+        install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1015",
+                "params":[0x5007],
+                "count":1,
+                "mutation":{"type":"propertyReadback","value":400}
+            }),
+        );
+        assert_eq!(read_u16_prop(&mut stream, 3, 0x5007), 400);
+    });
 }
 
 #[test]

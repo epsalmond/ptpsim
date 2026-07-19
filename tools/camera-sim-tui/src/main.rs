@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use camera_sim_tui::{
     callback_url_for, Action, ActionKind, ActionRegistry, CameraSnapshot, ControlClient,
-    HealthSnapshot, QueueSnapshot, TraceSnapshot,
+    FaultsSnapshot, HealthSnapshot, QueueSnapshot, TraceSnapshot,
 };
 use clap::{Parser, ValueEnum};
 use crossterm::cursor::{Hide, Show};
@@ -263,6 +263,7 @@ struct App {
     callback_url: String,
     health: Option<HealthSnapshot>,
     snapshot: CameraSnapshot,
+    faults: FaultsSnapshot,
     events: VecDeque<EventLine>,
     quit: bool,
     rates: Rates,
@@ -298,6 +299,7 @@ impl App {
             callback_url,
             health: None,
             snapshot: CameraSnapshot::default(),
+            faults: FaultsSnapshot::default(),
             events: VecDeque::new(),
             quit: false,
             rates: Rates::default(),
@@ -474,6 +476,10 @@ fn main() -> Result<()> {
         }
         Err(e) => app.log(LogKind::Error, format!("initial state fetch failed: {e}")),
     }
+    match client.faults() {
+        Ok(faults) => app.faults = faults,
+        Err(e) => app.log(LogKind::Error, format!("initial faults fetch failed: {e}")),
+    }
     refresh_trace(&mut app);
     if !args.no_subscribe {
         match client.subscribe_callback(&callback_url) {
@@ -596,6 +602,10 @@ fn refresh_health(app: &mut App) {
     match app.client.health() {
         Ok(health) => app.set_health(health),
         Err(e) => app.log(LogKind::Error, format!("health refresh failed: {e}")),
+    }
+    match app.client.faults() {
+        Ok(faults) => app.faults = faults,
+        Err(e) => app.log(LogKind::Error, format!("faults refresh failed: {e}")),
     }
     refresh_trace(app);
 }
@@ -752,14 +762,16 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(34),
-            Constraint::Percentage(36),
             Constraint::Percentage(30),
+            Constraint::Percentage(32),
+            Constraint::Percentage(20),
+            Constraint::Percentage(18),
         ])
         .split(area);
     render_camera_panel(frame, cols[0], app);
     render_state_panel(frame, cols[1], app);
-    render_events_panel(frame, cols[2], app);
+    render_faults_panel(frame, cols[2], app);
+    render_events_panel(frame, cols[3], app);
 }
 
 fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -1123,6 +1135,64 @@ fn render_events_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .style(Style::default().bg(theme.panel)),
         area,
     );
+}
+
+fn render_faults_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = app.style.theme;
+    let glyphs = app.style.glyphs;
+    let lines = fault_panel_text(&app.faults)
+        .into_iter()
+        .take(area.height.saturating_sub(2) as usize)
+        .map(|text| Line::from(Span::styled(text, Style::default().fg(theme.yellow))))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel_block(
+                " faults ",
+                theme,
+                theme.red,
+                glyphs,
+                Borders::TOP,
+            ))
+            .style(Style::default().bg(theme.panel))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn fault_panel_text(snapshot: &FaultsSnapshot) -> Vec<String> {
+    let mut lines = if snapshot.faults.is_empty() {
+        vec!["No active faults".to_string()]
+    } else {
+        snapshot
+            .faults
+            .iter()
+            .map(|fault| {
+                let exhausted = if fault.exhausted { " exhausted" } else { "" };
+                format!(
+                    "#{} {} [{}] {} {}/{}{}",
+                    fault.id,
+                    fault.operation,
+                    fault.window(),
+                    fault.mutation_kind(),
+                    fault.seen,
+                    fault.applied,
+                    exhausted
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    if let Some(last) = &snapshot.last_applied {
+        lines.push(String::new());
+        lines.push(format!(
+            "last #{} {} {}",
+            last.id, last.operation, last.kind
+        ));
+    } else {
+        lines.push(String::new());
+        lines.push("last none".to_string());
+    }
+    lines
 }
 
 fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -1569,6 +1639,37 @@ mod tests {
         };
         assert_eq!(queue_text(Some(&queue)), "2q 1done 3total");
         assert_eq!(queue_text(None), "not configured");
+    }
+
+    #[test]
+    fn populated_fault_panel_includes_window_counters_and_latest_application() {
+        let snapshot: FaultsSnapshot = serde_json::from_value(serde_json::json!({
+            "faults": [{
+                "id": 9,
+                "operation": "0x1015",
+                "skip": 2,
+                "count": 1,
+                "mutation": { "type": "failResponse", "response": "0x2019" },
+                "seen": 3,
+                "applied": 1,
+                "exhausted": true
+            }],
+            "lastApplied": {
+                "id": 9,
+                "operation": "0x1015",
+                "kind": "failResponse"
+            }
+        }))
+        .unwrap();
+        let lines = fault_panel_text(&snapshot);
+        assert_eq!(lines[0], "#9 0x1015 [3..3] failResponse 3/1 exhausted");
+        assert_eq!(lines[2], "last #9 0x1015 failResponse");
+    }
+
+    #[test]
+    fn empty_fault_panel_is_explicit() {
+        let lines = fault_panel_text(&FaultsSnapshot::default());
+        assert_eq!(lines, ["No active faults", "", "last none"]);
     }
 
     #[test]

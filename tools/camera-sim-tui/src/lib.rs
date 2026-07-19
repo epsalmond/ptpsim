@@ -55,6 +55,69 @@ pub struct TraceSnapshot {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaultsSnapshot {
+    #[serde(default)]
+    pub faults: Vec<FaultEntry>,
+    #[serde(default)]
+    pub last_applied: Option<FaultApplication>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaultEntry {
+    pub id: u64,
+    #[serde(default)]
+    pub operation: String,
+    #[serde(default)]
+    pub params: Option<Vec<u32>>,
+    #[serde(default)]
+    pub skip: u32,
+    #[serde(default)]
+    pub count: Option<u32>,
+    #[serde(default)]
+    pub mutation: serde_json::Value,
+    #[serde(default)]
+    pub seen: u32,
+    #[serde(default)]
+    pub applied: u32,
+    #[serde(default)]
+    pub exhausted: bool,
+}
+
+impl FaultEntry {
+    pub fn mutation_kind(&self) -> &str {
+        self.mutation
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+    }
+
+    pub fn window(&self) -> String {
+        match self.count {
+            Some(count) => format!(
+                "{}..{}",
+                self.skip.saturating_add(1),
+                self.skip.saturating_add(count)
+            ),
+            None => format!("{}..", self.skip.saturating_add(1)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaultApplication {
+    pub id: u64,
+    #[serde(default)]
+    pub operation: String,
+    #[serde(default)]
+    pub params: Vec<u32>,
+    #[serde(default)]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct LifecycleTraceEvent {
     pub sequence: u64,
     pub elapsed_ms: u64,
@@ -487,6 +550,11 @@ impl ControlClient {
         serde_json::from_str(&body).context("parse /trace JSON")
     }
 
+    pub fn faults(&self) -> Result<FaultsSnapshot> {
+        let body = self.request_json("GET", "/faults", None)?;
+        serde_json::from_str(&body).context("parse /faults JSON")
+    }
+
     pub fn action_catalog(&self) -> Result<ManifestActionCatalog> {
         let body = self.request_json("GET", "/actions", None)?;
         serde_json::from_str(&body).context("parse /actions JSON")
@@ -571,8 +639,8 @@ pub fn callback_url_for(bound: SocketAddr) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionRegistry, CameraSnapshot, HealthSnapshot, LifecycleTraceEvent, ManifestAction,
-        ManifestActionCatalog, TraceSnapshot,
+        ActionRegistry, CameraSnapshot, FaultsSnapshot, HealthSnapshot, LifecycleTraceEvent,
+        ManifestAction, ManifestActionCatalog, TraceSnapshot,
     };
     use std::collections::BTreeSet;
 
@@ -743,5 +811,45 @@ mod tests {
             failed.display_line(),
             "PCSS callback to 192.0.2.20:51560 failed"
         );
+    }
+
+    #[test]
+    fn populated_fault_snapshot_preserves_registry_fields() {
+        let snapshot: FaultsSnapshot = serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "faults": [{
+                "id": 3,
+                "operation": "0x1015",
+                "params": [53],
+                "skip": 2,
+                "count": 1,
+                "mutation": { "type": "replaceData", "bytesHex": "deadbeef" },
+                "seen": 3,
+                "applied": 1,
+                "exhausted": true
+            }],
+            "lastApplied": {
+                "id": 3,
+                "operation": "0x1015",
+                "params": [53],
+                "kind": "replaceData"
+            }
+        }))
+        .unwrap();
+        assert_eq!(snapshot.faults[0].mutation_kind(), "replaceData");
+        assert_eq!(snapshot.faults[0].window(), "3..3");
+        assert_eq!(snapshot.last_applied.unwrap().id, 3);
+    }
+
+    #[test]
+    fn empty_fault_snapshot_has_no_last_application() {
+        let snapshot: FaultsSnapshot = serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "faults": [],
+            "lastApplied": null
+        }))
+        .unwrap();
+        assert!(snapshot.faults.is_empty());
+        assert!(snapshot.last_applied.is_none());
     }
 }

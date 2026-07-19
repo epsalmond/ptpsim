@@ -808,6 +808,9 @@ Implemented:
 - `POST /actions/{id}`
 - `GET /observations?after=<cursor>`
 - `GET /trace?after=<sequence>`
+- `GET /faults`
+- `POST /faults`
+- `DELETE /faults` and `DELETE /faults/{id}`
 - `POST /shutdown`
 
 Planned (DO NOT depend on yet; request upstream when needed):
@@ -815,7 +818,6 @@ Planned (DO NOT depend on yet; request upstream when needed):
 - `POST /reset`
 - `POST /scenario/load`
 - `POST /script`
-- `POST /faults`
 - `GET /metrics`
 
 Configuration:
@@ -945,6 +947,11 @@ camera-sim-service \
 # Simulator lifecycle control:
 camera-simctl health  --control 127.0.0.1:8080
 camera-simctl trace   --control 127.0.0.1:8080 --after 0
+camera-simctl fault list --control 127.0.0.1:8080
+camera-simctl fault add --control 127.0.0.1:8080 \
+  --spec '{"operation":"0x1015","params":[53],"skip":2,"count":1,"mutation":{"type":"failResponse","response":"0x2019"}}'
+camera-simctl fault delete 3 --control 127.0.0.1:8080
+camera-simctl fault clear --control 127.0.0.1:8080
 camera-simctl shutdown --control 127.0.0.1:8080
 
 # Drive the same manifest-backed protocol path used against real cameras:
@@ -959,9 +966,8 @@ camera-initiator \
   --param terminalName=probe-host \
   entry --to image-transfer
 
-# PLANNED (not implemented yet — paper shape for the script/fault surface):
+# PLANNED (not implemented yet — paper shape for the script surface):
 camera-simctl script run scenarios/fuji/image-import-happy.yaml
-camera-simctl fault set --op 0x101b --after-bytes 10485760 --action disconnect
 ```
 
 The archived standalone mapper appears only in older evidence provenance; new
@@ -1026,34 +1032,55 @@ reports `queued`, `completed`, and `total`; completion means the queue's own
 acknowledgement boundary (`DeleteObject` for the standard queue, delivered EOF
 plus final OK for the camera-initiated queue).
 
-Fault script examples:
+Faults are an occurrence-scoped command-channel registry. `POST /faults`
+installs one JSON rule and returns a monotonic server-assigned id:
 
-```yaml
-faults:
-  - name: disconnect-during-mov-download
-    when:
-      op: "0x101b"
-      handleName: "*.MOV"
-      afterBytes: 10485760
-    action: closeCommandSocket
-
-  - name: slow-liveview
-    when:
-      stream: liveview
-    action:
-      delayFramesMs: 120
-
-  - name: busy-first-init
-    when:
-      packet: InitCommandRequest
-      count: 1
-    action:
-      initFail: "0x2019"
+```json
+{
+  "operation": "0x1015",
+  "params": [53],
+  "skip": 2,
+  "count": 1,
+  "mutation": { "type": "replaceData", "bytesHex": "deadbeef" }
+}
 ```
 
-Faults are part of the public simulator contract. They are how the app tests
-pause/resume, reconnect, route-loss, timeout, and protocol-error paths without
-hand-editing simulator code.
+`params` absent means any complete parameter list, `skip` is the number of
+matching occurrences passed through untouched, and absent `count` means the
+rule remains armed indefinitely. Every matching transaction increments every
+matching rule's independent `seen` counter, including rules that do not fire.
+At most one mutation applies: the lowest-id armed rule wins. Counters do not
+reset on `OpenSession` or `CloseSession`. Deleting a rule deletes its history;
+clearing the registry therefore guarantees that a prior run cannot affect a
+later run. `GET /faults` reports the selector, mutation, `seen`, `applied`, and
+`exhausted` state plus the latest application. `DELETE /faults/{id}` removes one
+rule and `DELETE /faults` removes all rules.
+
+The mutation grammar is vendor-neutral:
+
+- `failResponse` with hex-string `response`;
+- `close` at `command`, `data`, or `response`;
+- `delay` at `data` or `response`, capped at 60000 ms;
+- `suppress` at `data` or `response`;
+- `truncateData` with `keep`;
+- `replaceData` with at most 4096 bytes in `bytesHex`;
+- `replaceTransactionId` with `transactionId`;
+- `dataFraming` with `standard`, `compressed`, or `usb` framing; and
+- `propertyReadback` with a signed scalar `value`, encoded through the selected
+  manifest property's datatype when the operation is a recognized property
+  read.
+
+Each applied rule adds exactly one `ptpip.fault.applied` event to `/trace` with
+the operation, transaction id, response code actually written when present,
+fault id and kind, the applied phase action, and length/SHA-256 metadata for a
+delivered bounded payload. Fault trace events never contain raw payload hex.
+The applied marker reports the actual wire outcome, including `noDataPhase`
+when a consumed data-phase mutation targets a reply with no data phase.
+The canonical observation schema is unchanged.
+
+Byte-offset disconnects, live-view-frame faults, and init-packet faults remain
+future extensions. They are not accepted by the current selector or mutation
+grammar.
 
 ## App Integration
 

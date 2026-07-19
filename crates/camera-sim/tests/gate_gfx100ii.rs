@@ -12,12 +12,29 @@ use camera_config::{
 };
 use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
 use camera_sim::{
-    walk_establishment, walk_ptpip, walk_ptpip_in, BleResponder, Engine, Fault, Phase, Reply,
-    StateOverlay, StreamCompletion,
+    walk_establishment, walk_ptpip, walk_ptpip_in, BleResponder, Engine, FaultMutation,
+    FaultSelector, FaultSpec, FaultStage, Phase, Reply, StateOverlay, StreamCompletion,
 };
 use ptp_core::{DeviceInfo, ObjectInfo, OperationRequest, PropValue, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+fn fault(
+    operation: u16,
+    params: Option<Vec<u32>>,
+    count: Option<u32>,
+    mutation: FaultMutation,
+) -> FaultSpec {
+    FaultSpec {
+        selector: FaultSelector {
+            operation,
+            params,
+            skip: 0,
+            count,
+        },
+        mutation,
+    }
+}
 
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -462,10 +479,13 @@ fn failed_count_read_does_not_arm_reserved_metadata() {
     let mut e = engine_with_non_aliasing_reserved_head();
     activate_camera_initiated_transfer(&mut e);
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
-    e.install_fault(Fault::FailOperation {
-        code: 0x1015,
-        response: 0x2002,
-    });
+    e.install_fault(fault(
+        0x1015,
+        None,
+        None,
+        FaultMutation::FailResponse { response: 0x2002 },
+    ))
+    .unwrap();
     assert!(matches!(
         e.on_operation(&req(0x1015, 2, vec![0xd212]), None),
         Reply::Response(ref response) if response.code == 0x2002
@@ -842,11 +862,13 @@ fn wireless_tether_start_live_view_retries_then_tolerates_busy_terminate() {
         &serde_json::from_value(serde_json::json!({ "phase": "liveView" })).unwrap(),
     )
     .unwrap();
-    e.install_fault(Fault::FailOperationTimes {
-        code: 0x1018,
-        response: 0x2019,
-        remaining: 10,
-    });
+    e.install_fault(fault(
+        0x1018,
+        None,
+        Some(10),
+        FaultMutation::FailResponse { response: 0x2019 },
+    ))
+    .unwrap();
 
     let outcome = walk_ptpip_in(
         &mut e,
@@ -1053,10 +1075,13 @@ fn image_import_gate_advances_only_on_successful_replies() {
         .find(|e| e.to == "image-transfer" && e.from.is_none())
         .expect("cold image-transfer entry");
     let mut e = engine();
-    e.install_fault(Fault::FailOperation {
-        code: 0x9054,
-        response: 0x2005,
-    });
+    e.install_fault(fault(
+        0x9054,
+        None,
+        None,
+        FaultMutation::FailResponse { response: 0x2005 },
+    ))
+    .unwrap();
     walk_ptpip_in(&mut e, entry_steps(cold), &BTreeMap::new(), Some("app"))
         .expect("tolerant 0x9054 failure does not abort the entry");
     assert_no_response(e.on_operation(&req(0x1015, 50, vec![0xd620]), None));
@@ -1107,11 +1132,14 @@ fn image_import_full_bootstrap_unlocks_count_and_handle_properties() {
 #[test]
 fn image_import_retries_transient_prime_and_count_responses() {
     let (mut engine, enumerate) = image_import_ready();
-    engine.install_fault(Fault::FailOperationTimes {
-        code: 0x9050,
-        response: 0x2019,
-        remaining: 1,
-    });
+    engine
+        .install_fault(fault(
+            0x9050,
+            None,
+            Some(1),
+            FaultMutation::FailResponse { response: 0x2019 },
+        ))
+        .unwrap();
     let prime = walk_ptpip_in(
         &mut engine,
         &enumerate.initiator().unwrap().steps[..1],
@@ -1122,11 +1150,14 @@ fn image_import_retries_transient_prime_and_count_responses() {
     assert_eq!(prime.retry_delays_ms, [100]);
 
     engine.clear_faults();
-    engine.install_fault(Fault::FailOperationTimes {
-        code: 0x1015,
-        response: 0x2002,
-        remaining: 1,
-    });
+    engine
+        .install_fault(fault(
+            0x1015,
+            None,
+            Some(1),
+            FaultMutation::FailResponse { response: 0x2002 },
+        ))
+        .unwrap();
     let count = walk_ptpip_in(
         &mut engine,
         &enumerate.initiator().unwrap().steps[1..2],
@@ -1141,12 +1172,14 @@ fn image_import_retries_transient_prime_and_count_responses() {
 #[test]
 fn image_import_prime_retries_selected_decode_failure() {
     let (mut engine, enumerate) = image_import_ready();
-    engine.install_fault(Fault::TruncateDataParamsTimes {
-        code: 0x1015,
-        params: vec![0xd212],
-        keep: 4,
-        remaining: 1,
-    });
+    engine
+        .install_fault(fault(
+            0x1015,
+            Some(vec![0xd212]),
+            Some(1),
+            FaultMutation::TruncateData { keep: 4 },
+        ))
+        .unwrap();
     let outcome = walk_ptpip_in(
         &mut engine,
         &enumerate.initiator().unwrap().steps[..1],
@@ -1160,12 +1193,14 @@ fn image_import_prime_retries_selected_decode_failure() {
 #[test]
 fn image_import_prime_does_not_retry_unselected_decode_failure() {
     let (mut engine, enumerate) = image_import_ready_with_manifest(without_decode_retry());
-    engine.install_fault(Fault::TruncateDataParamsTimes {
-        code: 0x1015,
-        params: vec![0xd212],
-        keep: 4,
-        remaining: 1,
-    });
+    engine
+        .install_fault(fault(
+            0x1015,
+            Some(vec![0xd212]),
+            Some(1),
+            FaultMutation::TruncateData { keep: 4 },
+        ))
+        .unwrap();
     let error = walk_ptpip_in(
         &mut engine,
         &enumerate.initiator().unwrap().steps[..1],
@@ -1197,36 +1232,37 @@ fn import_objects_recovers_each_shared_enumeration_boundary() {
         .expect("importObjects action");
     let cases = [
         (
-            Fault::FailOperationTimes {
-                code: 0x9050,
-                response: 0x2019,
-                remaining: 1,
-            },
+            fault(
+                0x9050,
+                None,
+                Some(1),
+                FaultMutation::FailResponse { response: 0x2019 },
+            ),
             100,
         ),
         (
-            Fault::FailOperationParamsTimes {
-                code: 0x1015,
-                params: vec![0xd620],
-                response: 0x2002,
-                remaining: 1,
-            },
+            fault(
+                0x1015,
+                Some(vec![0xd620]),
+                Some(1),
+                FaultMutation::FailResponse { response: 0x2002 },
+            ),
             1000,
         ),
         (
-            Fault::FailOperationParamsTimes {
-                code: 0x1015,
-                params: vec![0xd621],
-                response: 0x2002,
-                remaining: 1,
-            },
+            fault(
+                0x1015,
+                Some(vec![0xd621]),
+                Some(1),
+                FaultMutation::FailResponse { response: 0x2002 },
+            ),
             1000,
         ),
     ];
 
     for (fault, expected_delay) in cases {
         let mut engine = engine_with_jpegs(1);
-        engine.install_fault(fault);
+        engine.install_fault(fault).unwrap();
         let outcome = walk_ptpip_in(
             &mut engine,
             &action.initiator().unwrap().steps,
@@ -1242,12 +1278,14 @@ fn import_objects_recovers_each_shared_enumeration_boundary() {
 #[test]
 fn image_import_handle_retry_exhausts_with_typed_response() {
     let (mut engine, enumerate) = image_import_ready();
-    engine.install_fault(Fault::FailOperationParamsTimes {
-        code: 0x1015,
-        params: vec![0xd621],
-        response: 0x2002,
-        remaining: 3,
-    });
+    engine
+        .install_fault(fault(
+            0x1015,
+            Some(vec![0xd621]),
+            Some(3),
+            FaultMutation::FailResponse { response: 0x2002 },
+        ))
+        .unwrap();
     let error = walk_ptpip_in(
         &mut engine,
         &enumerate.initiator().unwrap().steps,
@@ -1268,11 +1306,14 @@ fn image_import_count_retry_exhausts_with_typed_response() {
         Some("app"),
     )
     .expect("enumeration prime succeeds");
-    engine.install_fault(Fault::FailOperationTimes {
-        code: 0x1015,
-        response: 0x2002,
-        remaining: 3,
-    });
+    engine
+        .install_fault(fault(
+            0x1015,
+            None,
+            Some(3),
+            FaultMutation::FailResponse { response: 0x2002 },
+        ))
+        .unwrap();
     let error = walk_ptpip_in(
         &mut engine,
         &enumerate.initiator().unwrap().steps[1..2],
@@ -1286,12 +1327,20 @@ fn image_import_count_retry_exhausts_with_typed_response() {
 #[test]
 fn image_import_count_does_not_retry_unselected_or_transport_failures() {
     for fault in [
-        Fault::FailOperationTimes {
-            code: 0x1015,
-            response: 0x2005,
-            remaining: 1,
-        },
-        Fault::CloseOnOperation { code: 0x1015 },
+        fault(
+            0x1015,
+            None,
+            Some(1),
+            FaultMutation::FailResponse { response: 0x2005 },
+        ),
+        fault(
+            0x1015,
+            None,
+            None,
+            FaultMutation::Close {
+                stage: FaultStage::Command,
+            },
+        ),
     ] {
         let (mut engine, enumerate) = image_import_ready();
         walk_ptpip_in(
@@ -1301,7 +1350,7 @@ fn image_import_count_does_not_retry_unselected_or_transport_failures() {
             Some("app"),
         )
         .expect("enumeration prime succeeds");
-        engine.install_fault(fault.clone());
+        engine.install_fault(fault.clone()).unwrap();
         let error = walk_ptpip_in(
             &mut engine,
             &enumerate.initiator().unwrap().steps[1..2],
@@ -1309,12 +1358,12 @@ fn image_import_count_does_not_retry_unselected_or_transport_failures() {
             Some("app"),
         )
         .expect_err("unselected failure escapes immediately");
-        match fault {
-            Fault::FailOperationTimes { .. } => assert_eq!(error.response_code, Some(0x2005)),
-            Fault::CloseOnOperation { .. } => assert_eq!(error.response_code, None),
-            Fault::FailOperation { .. }
-            | Fault::FailOperationParamsTimes { .. }
-            | Fault::TruncateDataParamsTimes { .. } => unreachable!(),
+        match fault.mutation {
+            FaultMutation::FailResponse { .. } => {
+                assert_eq!(error.response_code, Some(0x2005))
+            }
+            FaultMutation::Close { .. } => assert_eq!(error.response_code, None),
+            _ => unreachable!(),
         }
     }
 }
@@ -1787,12 +1836,14 @@ fn import_objects_never_retries_a_per_handle_body_failure() {
         .expect("app.actions.importObjects in the consolidated");
     let (mut engine, handles) = engine_with_jpegs_and_handles(3);
     let second_handle = handles[1];
-    engine.install_fault(Fault::FailOperationParamsTimes {
-        code: 0x101b,
-        params: vec![second_handle, 0, 13, 0],
-        response: 0x2019,
-        remaining: 1,
-    });
+    engine
+        .install_fault(fault(
+            0x101b,
+            Some(vec![second_handle, 0, 13, 0]),
+            Some(1),
+            FaultMutation::FailResponse { response: 0x2019 },
+        ))
+        .unwrap();
     let error = walk_ptpip_in(
         &mut engine,
         &action.initiator().unwrap().steps,
@@ -1832,10 +1883,13 @@ fn import_objects_does_not_query_extension_size_below_sentinel() {
     let m = consolidated();
     let action = m.action("app", ActionVerb::ImportObjects).unwrap();
     let (mut e, _) = engine_with_sparse_mov(BOUNDARY_SIZE);
-    e.install_fault(Fault::FailOperation {
-        code: 0x9803,
-        response: 0x2002,
-    });
+    e.install_fault(fault(
+        0x9803,
+        None,
+        None,
+        FaultMutation::FailResponse { response: 0x2002 },
+    ))
+    .unwrap();
     let outcome = walk_ptpip_in(
         &mut e,
         &action.initiator().unwrap().steps,

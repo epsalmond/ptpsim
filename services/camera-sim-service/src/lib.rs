@@ -24,7 +24,8 @@ use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::StateOverlay;
 use camera_sim::{
-    AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply, StreamCompletion,
+    AppliedFault, AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply,
+    StreamCompletion, WirePlan,
 };
 use protocol_primitives::{
     fuji_framing, parse_legacy_app_init, parse_pcss_discovery, parse_pcss_init, parse_app_init,
@@ -47,7 +48,7 @@ mod state_json;
 mod trace;
 
 pub(crate) use metrics::Metrics;
-use trace::{TraceEndpoints, TraceLog};
+use trace::{FaultTraceEvidence, TraceEndpoints, TraceLog};
 
 #[derive(Clone)]
 pub struct Config {
@@ -1384,6 +1385,7 @@ async fn handle_command_conn(
                     params: vec![],
                 }),
                 context.command_framing,
+                &WirePlan::None,
                 &metrics,
             )
             .await?;
@@ -1400,10 +1402,11 @@ async fn handle_command_conn(
         } else {
             None
         };
-        let (reply, events, is_poll_live_view, observation_context) = {
+        let (reply, applied_fault, events, is_poll_live_view, observation_context) = {
             let mut e = engine.lock().await;
             let is_poll_live_view = context.poll_live_view_op == Some(req.code);
             let reply = e.on_operation(&req, data_in.as_deref());
+            let applied_fault = e.take_applied_fault();
             let observation_context = ExecutionContext {
                 connection: context.connection.clone(),
                 mode: e.state().manifest_mode_path().to_string(),
@@ -1413,6 +1416,7 @@ async fn handle_command_conn(
             // the op that produced it; forward (broadcast, non-blocking) outside.
             (
                 reply,
+                applied_fault,
                 e.drain_events(),
                 is_poll_live_view,
                 observation_context,
@@ -1432,11 +1436,58 @@ async fn handle_command_conn(
                 payload: camera_config::payload_metadata(bytes),
             }),
         };
-        let (response, outcome, completion, write_error) =
-            match write_reply(&mut stream, &req, reply, context.command_framing, &metrics).await {
-                Ok(written) => (written.response, written.outcome, written.completion, None),
-                Err(error) => (None, TransactionOutcome::TransportAbort, None, Some(error)),
-            };
+        let wire = applied_fault
+            .as_ref()
+            .map(|fault| &fault.wire)
+            .unwrap_or(&WirePlan::None);
+        let write_result = write_reply(
+            &mut stream,
+            &req,
+            reply,
+            context.command_framing,
+            wire,
+            &metrics,
+        )
+        .await;
+        if let Some(fault) = &applied_fault {
+            trace.record_fault(FaultTraceEvidence {
+                endpoints: endpoints.clone(),
+                operation: req.code,
+                transaction_id: req.transaction_id,
+                response_code: write_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|written| written.response.as_ref())
+                    .map(|response| response.code.as_str()),
+                fault,
+                payload: write_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|written| written.payload.as_ref()),
+                applied: write_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|written| written.wire_outcome)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| applied_fault_marker(fault)),
+            });
+        }
+        let (response, outcome, completion, closed, write_error) = match write_result {
+            Ok(written) => (
+                written.response,
+                written.outcome,
+                written.completion,
+                written.closed,
+                None,
+            ),
+            Err(error) => (
+                None,
+                TransactionOutcome::TransportAbort,
+                None,
+                false,
+                Some(error),
+            ),
+        };
         let transaction_record = observations
             .append(observation_context.clone(), |common| {
                 ObservationLine::PtpTransaction(Box::new(PtpTransactionRecord {
@@ -1491,6 +1542,9 @@ async fn handle_command_conn(
             if engine.lock().await.complete_stream(completion) {
                 state_dirty.notify_one();
             }
+        }
+        if closed {
+            break;
         }
     }
     drop(standard_guard);
@@ -1939,6 +1993,9 @@ struct WrittenReply {
     response: Option<PtpResponse>,
     outcome: TransactionOutcome,
     completion: Option<StreamCompletion>,
+    payload: Option<PayloadMetadata>,
+    closed: bool,
+    wire_outcome: Option<&'static str>,
 }
 
 async fn write_reply<W: AsyncWrite + Unpin>(
@@ -1946,10 +2003,38 @@ async fn write_reply<W: AsyncWrite + Unpin>(
     req: &OperationRequest,
     reply: Reply,
     framing: WireFraming,
+    wire: &WirePlan,
     metrics: &Metrics,
 ) -> std::io::Result<WrittenReply> {
+    let wire_outcome = match &reply {
+        Reply::Response(_) => applied_wire_outcome(wire, false, true),
+        Reply::Data { .. } | Reply::DataStream { .. } => applied_wire_outcome(wire, true, true),
+        Reply::NoResponse | Reply::Close => applied_wire_outcome(wire, false, false),
+    };
     match reply {
-        Reply::Response(resp) => {
+        Reply::Response(mut resp) => {
+            if matches!(wire, WirePlan::CloseBeforeResponse) {
+                return Ok(WrittenReply {
+                    response: None,
+                    outcome: TransactionOutcome::TransportAbort,
+                    completion: None,
+                    payload: None,
+                    closed: true,
+                    wire_outcome,
+                });
+            }
+            delay_response(wire).await;
+            if matches!(wire, WirePlan::SuppressResponse) {
+                return Ok(WrittenReply {
+                    response: None,
+                    outcome: TransactionOutcome::Timeout,
+                    completion: None,
+                    payload: None,
+                    closed: false,
+                    wire_outcome,
+                });
+            }
+            replace_response_transaction_id(wire, &mut resp);
             let observed = PtpResponse {
                 code: format!("0x{:04x}", resp.code),
                 parameters: resp.params.clone(),
@@ -1963,15 +2048,61 @@ async fn write_reply<W: AsyncWrite + Unpin>(
                 response: Some(observed),
                 outcome,
                 completion: None,
+                payload: None,
+                closed: false,
+                wire_outcome,
             })
         }
-        Reply::Data { data, response } => {
+        Reply::Data { data, mut response } => {
+            if matches!(wire, WirePlan::CloseBeforeData) {
+                return Ok(WrittenReply {
+                    response: None,
+                    outcome: TransactionOutcome::TransportAbort,
+                    completion: None,
+                    payload: None,
+                    closed: true,
+                    wire_outcome,
+                });
+            }
             let code = response.code;
             let parameters = response.params.clone();
-            // The whole data phase is one type-2 frame whose code echoes the op.
-            let data_bytes = encode_data_frame(framing, req.code, req.transaction_id, &data)?;
-            stream.write_all(&data_bytes).await?;
-            metrics.record_write(data_bytes.len());
+            let transaction_id = wire_transaction_id(wire, req.transaction_id);
+            let mut payload = None;
+            if !matches!(wire, WirePlan::SuppressData) {
+                delay_data(wire).await;
+                // The whole data phase is one type-2 frame whose code echoes the op.
+                let data_bytes = encode_data_frame(
+                    wire_data_framing(wire, framing),
+                    req.code,
+                    transaction_id,
+                    &data,
+                )?;
+                stream.write_all(&data_bytes).await?;
+                metrics.record_write(data_bytes.len());
+                payload = Some(camera_config::payload_metadata(&data));
+            }
+            if matches!(wire, WirePlan::CloseBeforeResponse) {
+                return Ok(WrittenReply {
+                    response: None,
+                    outcome: TransactionOutcome::TransportAbort,
+                    completion: None,
+                    payload,
+                    closed: true,
+                    wire_outcome,
+                });
+            }
+            delay_response(wire).await;
+            if matches!(wire, WirePlan::SuppressResponse) {
+                return Ok(WrittenReply {
+                    response: None,
+                    outcome: TransactionOutcome::Timeout,
+                    completion: None,
+                    payload,
+                    closed: false,
+                    wire_outcome,
+                });
+            }
+            replace_response_transaction_id(wire, &mut response);
             let response_bytes =
                 encode_control_frame(framing, &PtpIpPacket::OperationResponse(response))?;
             stream.write_all(&response_bytes).await?;
@@ -1980,59 +2111,215 @@ async fn write_reply<W: AsyncWrite + Unpin>(
                 response: Some(PtpResponse {
                     code: format!("0x{code:04x}"),
                     parameters,
-                    data: Some(PtpDataPhase {
-                        direction: DataDirection::CameraToHost,
-                        payload: camera_config::payload_metadata(&data),
-                    }),
-                }),
-                outcome: response_outcome(code),
-                completion: None,
-            })
-        }
-        Reply::DataStream {
-            source,
-            response,
-            completion,
-        } => {
-            let code = response.code;
-            let parameters = response.params.clone();
-            let payload = stream_data_phase(
-                stream,
-                framing,
-                req.code,
-                req.transaction_id,
-                &source,
-                metrics,
-            )
-            .await?;
-            let response_bytes =
-                encode_control_frame(framing, &PtpIpPacket::OperationResponse(response))?;
-            stream.write_all(&response_bytes).await?;
-            metrics.record_write(response_bytes.len());
-            Ok(WrittenReply {
-                response: Some(PtpResponse {
-                    code: format!("0x{code:04x}"),
-                    parameters,
-                    data: Some(PtpDataPhase {
+                    data: payload.clone().map(|payload| PtpDataPhase {
                         direction: DataDirection::CameraToHost,
                         payload,
                     }),
                 }),
                 outcome: response_outcome(code),
-                completion,
+                completion: None,
+                payload,
+                closed: false,
+                wire_outcome,
+            })
+        }
+        Reply::DataStream {
+            source,
+            mut response,
+            completion,
+        } => {
+            if matches!(wire, WirePlan::CloseBeforeData) {
+                return Ok(WrittenReply {
+                    response: None,
+                    outcome: TransactionOutcome::TransportAbort,
+                    completion: None,
+                    payload: None,
+                    closed: true,
+                    wire_outcome,
+                });
+            }
+            let code = response.code;
+            let parameters = response.params.clone();
+            let transaction_id = wire_transaction_id(wire, req.transaction_id);
+            let payload = if matches!(wire, WirePlan::SuppressData) {
+                None
+            } else {
+                delay_data(wire).await;
+                Some(
+                    stream_data_phase(
+                        stream,
+                        wire_data_framing(wire, framing),
+                        req.code,
+                        transaction_id,
+                        &source,
+                        metrics,
+                    )
+                    .await?,
+                )
+            };
+            if matches!(wire, WirePlan::CloseBeforeResponse) {
+                return Ok(WrittenReply {
+                    response: None,
+                    outcome: TransactionOutcome::TransportAbort,
+                    completion: None,
+                    payload,
+                    closed: true,
+                    wire_outcome,
+                });
+            }
+            delay_response(wire).await;
+            if matches!(wire, WirePlan::SuppressResponse) {
+                return Ok(WrittenReply {
+                    response: None,
+                    outcome: TransactionOutcome::Timeout,
+                    completion: None,
+                    payload,
+                    closed: false,
+                    wire_outcome,
+                });
+            }
+            replace_response_transaction_id(wire, &mut response);
+            let response_bytes =
+                encode_control_frame(framing, &PtpIpPacket::OperationResponse(response))?;
+            stream.write_all(&response_bytes).await?;
+            metrics.record_write(response_bytes.len());
+            Ok(WrittenReply {
+                response: Some(PtpResponse {
+                    code: format!("0x{code:04x}"),
+                    parameters,
+                    data: payload.clone().map(|payload| PtpDataPhase {
+                        direction: DataDirection::CameraToHost,
+                        payload,
+                    }),
+                }),
+                outcome: response_outcome(code),
+                completion: completion.filter(|_| !matches!(wire, WirePlan::SuppressData)),
+                payload,
+                closed: false,
+                wire_outcome,
             })
         }
         Reply::NoResponse => Ok(WrittenReply {
             response: None,
             outcome: TransactionOutcome::Timeout,
             completion: None,
+            payload: None,
+            closed: false,
+            wire_outcome,
         }),
         Reply::Close => Ok(WrittenReply {
             response: None,
             outcome: TransactionOutcome::TransportAbort,
             completion: None,
+            payload: None,
+            closed: true,
+            wire_outcome,
         }),
     }
+}
+
+fn applied_wire_outcome(
+    wire: &WirePlan,
+    has_data_phase: bool,
+    has_response_phase: bool,
+) -> Option<&'static str> {
+    match wire {
+        WirePlan::CloseBeforeData => Some(if has_data_phase {
+            "closedBeforeData"
+        } else {
+            "noDataPhase"
+        }),
+        WirePlan::CloseBeforeResponse => Some(if has_response_phase {
+            "closedBeforeResponse"
+        } else {
+            "noResponsePhase"
+        }),
+        WirePlan::DelayData { .. } => Some(if has_data_phase {
+            "delayedData"
+        } else {
+            "noDataPhase"
+        }),
+        WirePlan::DelayResponse { .. } => Some(if has_response_phase {
+            "delayedResponse"
+        } else {
+            "noResponsePhase"
+        }),
+        WirePlan::SuppressData => Some(if has_data_phase {
+            "suppressedData"
+        } else {
+            "noDataPhase"
+        }),
+        WirePlan::SuppressResponse => Some(if has_response_phase {
+            "suppressedResponse"
+        } else {
+            "noResponsePhase"
+        }),
+        WirePlan::ReplaceTransactionId(_) => Some(if has_data_phase || has_response_phase {
+            "replacedTransactionId"
+        } else {
+            "noWirePhase"
+        }),
+        WirePlan::DataFraming(_) => Some(if has_data_phase {
+            "changedDataFraming"
+        } else {
+            "noDataPhase"
+        }),
+        WirePlan::None => None,
+    }
+}
+
+fn wire_transaction_id(wire: &WirePlan, session_id: u32) -> u32 {
+    match wire {
+        WirePlan::ReplaceTransactionId(transaction_id) => *transaction_id,
+        _ => session_id,
+    }
+}
+
+fn replace_response_transaction_id(wire: &WirePlan, response: &mut ptp_core::OperationResponse) {
+    if let WirePlan::ReplaceTransactionId(transaction_id) = wire {
+        response.transaction_id = *transaction_id;
+    }
+}
+
+fn wire_data_framing(wire: &WirePlan, session_framing: WireFraming) -> WireFraming {
+    match wire {
+        WirePlan::DataFraming(framing) => *framing,
+        _ => session_framing,
+    }
+}
+
+async fn delay_data(wire: &WirePlan) {
+    if let WirePlan::DelayData { ms } = wire {
+        tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
+    }
+}
+
+async fn delay_response(wire: &WirePlan) {
+    if let WirePlan::DelayResponse { ms } = wire {
+        tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
+    }
+}
+
+fn applied_fault_marker(fault: &AppliedFault) -> String {
+    match fault.wire {
+        WirePlan::CloseBeforeData => "closedBeforeData",
+        WirePlan::CloseBeforeResponse => "closedBeforeResponse",
+        WirePlan::DelayData { .. } => "delayedData",
+        WirePlan::DelayResponse { .. } => "delayedResponse",
+        WirePlan::SuppressData => "suppressedData",
+        WirePlan::SuppressResponse => "suppressedResponse",
+        WirePlan::ReplaceTransactionId(_) => "replacedTransactionId",
+        WirePlan::DataFraming(_) => "changedDataFraming",
+        WirePlan::None => match fault.kind.as_str() {
+            "failResponse" => "failedResponse",
+            "close" => "closedBeforeCommand",
+            "truncateData" => "truncatedData",
+            "replaceData" => "replacedData",
+            "propertyReadback" => "replacedPropertyReadback",
+            _ => "applied",
+        },
+    }
+    .to_string()
 }
 
 /// Emit the data phase as a single type-2 `Data` frame — the whole payload
@@ -2256,6 +2543,7 @@ mod tests {
             &req,
             reply,
             WireFraming::Compressed,
+            &WirePlan::None,
             &Metrics::default(),
         )
         .await;
@@ -2291,6 +2579,7 @@ mod tests {
             &req,
             reply,
             WireFraming::Compressed,
+            &WirePlan::None,
             &Metrics::default(),
         )
         .await
@@ -2306,6 +2595,199 @@ mod tests {
             camera_config::payload_metadata(&delivered[12..body_end])
         );
         assert_eq!(delivered[12..body_end], source.read().unwrap());
+    }
+
+    fn data_reply(transaction_id: u32) -> (OperationRequest, Reply) {
+        (
+            OperationRequest {
+                data_phase_info: 1,
+                code: op::GET_DEVICE_PROP_VALUE,
+                transaction_id,
+                params: vec![0x5007],
+            },
+            Reply::Data {
+                data: vec![0xaa, 0xbb],
+                response: ptp_core::OperationResponse {
+                    code: resp::OK,
+                    transaction_id,
+                    params: Vec::new(),
+                },
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn wire_plans_change_only_the_selected_data_or_response_phase() {
+        let metrics = Metrics::default();
+
+        let (req, reply) = data_reply(7);
+        let mut delivered = Vec::new();
+        let written = write_reply(
+            &mut delivered,
+            &req,
+            reply,
+            WireFraming::Compressed,
+            &WirePlan::SuppressData,
+            &metrics,
+        )
+        .await
+        .unwrap();
+        assert!(written.response.unwrap().data.is_none());
+        assert!(matches!(
+            fuji_framing::decode(&delivered).unwrap(),
+            PtpIpPacket::OperationResponse(response) if response.transaction_id == 7
+        ));
+
+        let (req, reply) = data_reply(7);
+        let mut delivered = Vec::new();
+        let written = write_reply(
+            &mut delivered,
+            &req,
+            reply,
+            WireFraming::Compressed,
+            &WirePlan::SuppressResponse,
+            &metrics,
+        )
+        .await
+        .unwrap();
+        assert_eq!(written.outcome, TransactionOutcome::Timeout);
+        assert!(written.response.is_none());
+        assert!(matches!(
+            fuji_framing::decode(&delivered).unwrap(),
+            PtpIpPacket::Data(data) if data.payload == [0xaa, 0xbb]
+        ));
+
+        for (wire, expected_len) in [
+            (WirePlan::CloseBeforeData, 0),
+            (WirePlan::CloseBeforeResponse, 14),
+        ] {
+            let (req, reply) = data_reply(7);
+            let mut delivered = Vec::new();
+            let written = write_reply(
+                &mut delivered,
+                &req,
+                reply,
+                WireFraming::Compressed,
+                &wire,
+                &metrics,
+            )
+            .await
+            .unwrap();
+            assert!(written.closed);
+            assert_eq!(written.outcome, TransactionOutcome::TransportAbort);
+            assert_eq!(delivered.len(), expected_len);
+        }
+
+        let (req, reply) = data_reply(7);
+        let mut delivered = Vec::new();
+        write_reply(
+            &mut delivered,
+            &req,
+            reply,
+            WireFraming::Compressed,
+            &WirePlan::ReplaceTransactionId(99),
+            &metrics,
+        )
+        .await
+        .unwrap();
+        let data_len = u32::from_le_bytes(delivered[0..4].try_into().unwrap()) as usize;
+        assert!(matches!(
+            fuji_framing::decode(&delivered[..data_len]).unwrap(),
+            PtpIpPacket::Data(data) if data.transaction_id == 99
+        ));
+        assert!(matches!(
+            fuji_framing::decode(&delivered[data_len..]).unwrap(),
+            PtpIpPacket::OperationResponse(response) if response.transaction_id == 99
+        ));
+
+        let (req, reply) = data_reply(7);
+        let mut delivered = Vec::new();
+        write_reply(
+            &mut delivered,
+            &req,
+            reply,
+            WireFraming::Compressed,
+            &WirePlan::DataFraming(WireFraming::Standard),
+            &metrics,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            PtpIpPacket::decode(&delivered[..20]).unwrap(),
+            PtpIpPacket::StartData(start) if start.transaction_id == 7
+        ));
+        assert!(matches!(
+            fuji_framing::decode(&delivered[34..]).unwrap(),
+            PtpIpPacket::OperationResponse(response) if response.transaction_id == 7
+        ));
+
+        let (req, reply) = data_reply(7);
+        let started = std::time::Instant::now();
+        write_reply(
+            &mut Vec::new(),
+            &req,
+            reply,
+            WireFraming::Compressed,
+            &WirePlan::DelayResponse { ms: 5 },
+            &metrics,
+        )
+        .await
+        .unwrap();
+        assert!(started.elapsed() >= std::time::Duration::from_millis(5));
+    }
+
+    #[tokio::test]
+    async fn no_fault_keeps_engine_response_transaction_ids_for_data_replies() {
+        let req = OperationRequest {
+            data_phase_info: 1,
+            code: op::GET_DEVICE_PROP_VALUE,
+            transaction_id: 7,
+            params: vec![0x5007],
+        };
+        let replies = [
+            Reply::Data {
+                data: vec![0xaa, 0xbb],
+                response: ptp_core::OperationResponse {
+                    code: resp::OK,
+                    transaction_id: 41,
+                    params: Vec::new(),
+                },
+            },
+            Reply::DataStream {
+                source: ByteSource::Memory(vec![0xaa, 0xbb]),
+                response: ptp_core::OperationResponse {
+                    code: resp::OK,
+                    transaction_id: 42,
+                    params: Vec::new(),
+                },
+                completion: None,
+            },
+        ];
+
+        for (reply, expected_response_id) in replies.into_iter().zip([41, 42]) {
+            let mut delivered = Vec::new();
+            write_reply(
+                &mut delivered,
+                &req,
+                reply,
+                WireFraming::Compressed,
+                &WirePlan::None,
+                &Metrics::default(),
+            )
+            .await
+            .unwrap();
+
+            let data_len = u32::from_le_bytes(delivered[0..4].try_into().unwrap()) as usize;
+            assert!(matches!(
+                fuji_framing::decode(&delivered[..data_len]).unwrap(),
+                PtpIpPacket::Data(data) if data.transaction_id == req.transaction_id
+            ));
+            assert!(matches!(
+                fuji_framing::decode(&delivered[data_len..]).unwrap(),
+                PtpIpPacket::OperationResponse(response)
+                    if response.transaction_id == expected_response_id
+            ));
+        }
     }
 
     #[tokio::test]
@@ -2344,6 +2826,7 @@ mod tests {
             &req,
             reply,
             WireFraming::Compressed,
+            &WirePlan::None,
             &Metrics::default(),
         )
         .await;

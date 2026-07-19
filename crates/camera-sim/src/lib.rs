@@ -20,7 +20,10 @@ pub use engine::{
     Engine, PreparedPropertyTransition, PreparedResponderMutation, QueueStats, Reply,
     StreamCompletion, TransferQueueStats,
 };
-pub use fault::{Fault, FaultSet};
+pub use fault::{
+    AppliedFault, DataOrResponse, FaultApplication, FaultMutation, FaultSelector, FaultSet,
+    FaultSpec, FaultStage, FaultView, WirePlan,
+};
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
 pub use link::{CameraLink, SharedLink};
 pub use ptpip::{walk_ptpip, walk_ptpip_in, PtpIpError, PtpIpOutcome};
@@ -420,17 +423,34 @@ properties:
         expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None));
 
         // Fail GetObjectHandles with DeviceBusy.
-        e.install_fault(Fault::FailOperation {
-            code: 0x1007,
-            response: 0x2019,
-        });
+        e.install_fault(FaultSpec {
+            selector: FaultSelector {
+                operation: 0x1007,
+                params: None,
+                skip: 0,
+                count: None,
+            },
+            mutation: FaultMutation::FailResponse { response: 0x2019 },
+        })
+        .unwrap();
         match e.on_operation(&op(0x1007, 2, vec![]), None) {
             Reply::Response(r) => assert_eq!(r.code, 0x2019),
             other => panic!("expected injected DeviceBusy, got {other:?}"),
         }
 
         // Close the connection on GetPartialObject.
-        e.install_fault(Fault::CloseOnOperation { code: 0x101b });
+        e.install_fault(FaultSpec {
+            selector: FaultSelector {
+                operation: 0x101b,
+                params: None,
+                skip: 0,
+                count: None,
+            },
+            mutation: FaultMutation::Close {
+                stage: FaultStage::Command,
+            },
+        })
+        .unwrap();
         assert_eq!(
             e.on_operation(&op(0x101b, 3, vec![1, 0, 4]), None),
             Reply::Close
@@ -442,6 +462,75 @@ properties:
             e.on_operation(&op(0x1007, 4, vec![]), None),
             Reply::Data { .. } | Reply::DataStream { .. }
         ));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn data_faults_mutate_manifest_typed_readback_and_record_wire_plan() {
+        let root = tmp_card();
+        let mut engine = engine(&root);
+        expect_ok(engine.on_operation(&op(0x1002, 1, vec![1]), None));
+
+        engine
+            .install_fault(FaultSpec {
+                selector: FaultSelector {
+                    operation: 0x1015,
+                    params: Some(vec![0x5007]),
+                    skip: 0,
+                    count: Some(1),
+                },
+                mutation: FaultMutation::ReplaceData {
+                    bytes: vec![0xde, 0xad],
+                },
+            })
+            .unwrap();
+        match engine.on_operation(&op(0x1015, 2, vec![0x5007]), None) {
+            Reply::Data { data, .. } => assert_eq!(data, [0xde, 0xad]),
+            other => panic!("expected replaced property data, got {other:?}"),
+        }
+        assert_eq!(engine.take_applied_fault().unwrap().kind, "replaceData");
+
+        engine.clear_faults();
+        engine
+            .install_fault(FaultSpec {
+                selector: FaultSelector {
+                    operation: 0x1015,
+                    params: Some(vec![0x5007]),
+                    skip: 0,
+                    count: Some(1),
+                },
+                mutation: FaultMutation::PropertyReadback { value: 400 },
+            })
+            .unwrap();
+        match engine.on_operation(&op(0x1015, 3, vec![0x5007]), None) {
+            Reply::Data { data, .. } => {
+                assert_eq!(Reader::new(&data).u16().unwrap(), 400);
+            }
+            other => panic!("expected typed property data, got {other:?}"),
+        }
+
+        engine.clear_faults();
+        engine
+            .install_fault(FaultSpec {
+                selector: FaultSelector {
+                    operation: 0x1015,
+                    params: Some(vec![0x5007]),
+                    skip: 0,
+                    count: Some(1),
+                },
+                mutation: FaultMutation::DataFraming {
+                    framing: camera_config::WireFraming::Standard,
+                },
+            })
+            .unwrap();
+        assert!(matches!(
+            engine.on_operation(&op(0x1015, 4, vec![0x5007]), None),
+            Reply::Data { .. }
+        ));
+        assert_eq!(
+            engine.take_applied_fault().unwrap().wire,
+            WirePlan::DataFraming(camera_config::WireFraming::Standard)
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 

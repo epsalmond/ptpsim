@@ -16,7 +16,9 @@ use ptp_core::dataset::PropValue;
 use ptp_core::{DeviceInfo, OperationRequest, OperationResponse, Reader, Writer};
 use serde::Serialize;
 
-use crate::fault::{Fault, FaultSet};
+use crate::fault::{
+    AppliedFault, FaultApplication, FaultMutation, FaultSet, FaultSpec, FaultStage, FaultView,
+};
 use crate::state::{
     build_prop_desc, datatype_of, CameraState, Phase, DF01_IMAGE_IMPORT, DF01_LIVE_VIEW, PROP_DF01,
 };
@@ -260,6 +262,7 @@ pub struct Engine {
     camera_initiated_transfer_active: bool,
     camera_initiated_pre_mode_probe_armed: bool,
     faults: FaultSet,
+    applied_fault: Option<AppliedFault>,
     /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
     /// arms the session that function-launch brings up. Default armed (standalone).
     link: crate::link::SharedLink,
@@ -284,6 +287,7 @@ impl Engine {
             camera_initiated_transfer_active: false,
             camera_initiated_pre_mode_probe_armed: false,
             faults: FaultSet::default(),
+            applied_fault: None,
             link: crate::link::SharedLink::default(),
         };
         let handles = engine.camera_initiated_media_handles();
@@ -337,13 +341,30 @@ impl Engine {
         self.state.phase
     }
 
-    /// Install a fault (control API `/faults`). Checked before normal dispatch.
-    pub fn install_fault(&mut self, fault: Fault) {
-        self.faults.install(fault);
+    /// Install an occurrence-scoped fault and return its server-assigned id.
+    pub fn install_fault(&mut self, fault: FaultSpec) -> Result<u64, String> {
+        self.faults.try_insert(fault)
+    }
+
+    pub fn remove_fault(&mut self, id: u64) -> bool {
+        self.faults.remove(id)
     }
 
     pub fn clear_faults(&mut self) {
         self.faults.clear();
+        self.applied_fault = None;
+    }
+
+    pub fn faults(&self) -> Vec<FaultView> {
+        self.faults.list()
+    }
+
+    pub fn last_applied_fault(&self) -> Option<FaultApplication> {
+        self.faults.last_applied()
+    }
+
+    pub fn take_applied_fault(&mut self) -> Option<AppliedFault> {
+        self.applied_fault.take()
     }
 
     pub fn manifest(&self) -> &CameraManifest {
@@ -709,13 +730,64 @@ impl Engine {
     /// Handle one operation. `data_in` carries an initiator data phase (e.g. the
     /// value for `SetDevicePropValue`).
     pub fn on_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) -> Reply {
-        let mut reply = self.dispatch_operation(req, data_in);
-        if let Reply::Data { data, .. } = &mut reply {
-            if let Some(keep) = self.faults.take_truncation(req.code, &req.params) {
-                data.truncate(keep);
+        let applied = self.faults.apply(req.code, &req.params);
+        let applied_mutation = self.faults.take_applied_mutation();
+        let mut reply = match applied_mutation.as_ref() {
+            Some(FaultMutation::FailResponse { response }) => {
+                Self::err(req.transaction_id, *response)
+            }
+            Some(FaultMutation::Close {
+                stage: FaultStage::Command,
+            }) => Reply::Close,
+            _ => self.dispatch_operation(req, data_in),
+        };
+
+        if let Some(mutation) = &applied_mutation {
+            match mutation {
+                FaultMutation::Suppress {
+                    stage: crate::fault::DataOrResponse::Response,
+                } if matches!(reply, Reply::Response(_)) => reply = Reply::NoResponse,
+                FaultMutation::TruncateData { keep } => truncate_reply_data(&mut reply, *keep),
+                FaultMutation::ReplaceData { bytes } => replace_reply_data(&mut reply, bytes),
+                FaultMutation::PropertyReadback { value } => {
+                    self.replace_property_readback(req, &mut reply, *value)
+                }
+                FaultMutation::FailResponse { .. }
+                | FaultMutation::Close { .. }
+                | FaultMutation::Delay { .. }
+                | FaultMutation::Suppress { .. }
+                | FaultMutation::ReplaceTransactionId { .. }
+                | FaultMutation::DataFraming { .. } => {}
             }
         }
+        self.applied_fault = applied;
         reply
+    }
+
+    fn replace_property_readback(&self, req: &OperationRequest, reply: &mut Reply, value: i64) {
+        if req.code != op::GET_DEVICE_PROP_VALUE {
+            return;
+        }
+        let Some(code) = req
+            .params
+            .first()
+            .and_then(|code| u16::try_from(*code).ok())
+        else {
+            return;
+        };
+        let Some(property) = self.manifest.property(code) else {
+            return;
+        };
+        let Some(value) = property_transition_value(property.ptype.as_deref(), value) else {
+            return;
+        };
+        let Reply::Data { data, .. } = reply else {
+            return;
+        };
+        let mut writer = Writer::new();
+        if value.encode(&mut writer).is_ok() {
+            *data = writer.into_vec();
+        }
     }
 
     fn dispatch_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) -> Reply {
@@ -723,19 +795,6 @@ impl Engine {
         let p = |i: usize| req.params.get(i).copied().unwrap_or(0);
 
         self.prepare_camera_initiated_pre_mode_probe(req);
-
-        // Injected faults take precedence over normal handling.
-        if let Some(fault) = self.faults.take_op(req.code, &req.params) {
-            return match fault {
-                Fault::FailOperation { response, .. }
-                | Fault::FailOperationTimes { response, .. }
-                | Fault::FailOperationParamsTimes { response, .. } => Self::err(tid, response),
-                Fault::CloseOnOperation { .. } => Reply::Close,
-                Fault::TruncateDataParamsTimes { .. } => {
-                    unreachable!("truncation faults never replace dispatch")
-                }
-            };
-        }
 
         // OpenSession is the only thing allowed before a session exists.
         if !self.state.session_open
@@ -2007,6 +2066,42 @@ fn literal_params(params: &[StepParam]) -> Option<Vec<u32>> {
             StepParam::Runtime { .. } => None,
         })
         .collect()
+}
+
+fn truncate_reply_data(reply: &mut Reply, keep: u64) {
+    match reply {
+        Reply::Data { data, .. } => data.truncate(keep.min(data.len() as u64) as usize),
+        Reply::DataStream {
+            source, completion, ..
+        } => {
+            let len = keep.min(source.len());
+            *source = match source.clone() {
+                ByteSource::Memory(mut bytes) => {
+                    bytes.truncate(len as usize);
+                    ByteSource::Memory(bytes)
+                }
+                ByteSource::FileRange { path, offset, .. } => {
+                    ByteSource::FileRange { path, offset, len }
+                }
+                ByteSource::Generated { seed, .. } => ByteSource::Generated { len, seed },
+            };
+            *completion = None;
+        }
+        Reply::Response(_) | Reply::NoResponse | Reply::Close => {}
+    }
+}
+
+fn replace_reply_data(reply: &mut Reply, bytes: &[u8]) {
+    match reply {
+        Reply::Data { data, .. } => *data = bytes.to_vec(),
+        Reply::DataStream { response, .. } => {
+            *reply = Reply::Data {
+                data: bytes.to_vec(),
+                response: response.clone(),
+            };
+        }
+        Reply::Response(_) | Reply::NoResponse | Reply::Close => {}
+    }
 }
 
 fn scalar_fits_property(ptype: Option<&str>, value: i64) -> bool {
