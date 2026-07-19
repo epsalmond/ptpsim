@@ -4,6 +4,8 @@ This file is the project-specific override layer for *all* CLI agents. Read any
 user- or tool-level instructions supplied by your environment too; this file
 takes precedence on anything ptpsim-specific.
 
+If `.local/AGENTS.md` exists and is readable, read it after this file.
+
 ## What ptpsim is
 
 A scriptable, OSS camera-protocol simulator (PTP/IP responder). One generic

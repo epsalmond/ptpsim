@@ -1,4 +1,5 @@
 /target
+/.local/
 **/*.rs.bk
 Cargo.lock.orig
 
