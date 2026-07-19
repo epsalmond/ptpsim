@@ -46,8 +46,8 @@ pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
     BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, ConnectionActivityBinding,
     ConnectionActivityDescriptor, ConnectionActivityDisplayRole, ConnectionActivitySequence,
-    EstablishmentPlan, EstablishmentRefinement, ModelMatch, NotifyCapture, Observation, Predicate,
-    PredicateOp, Recognition, ReconnectDecision, ReconnectPolicy, Step, StepConfirmation,
+    EstablishmentPlan, EstablishmentRefinement, ModelMatch, NotifyCapture, Predicate, PredicateOp,
+    Recognition, ReconnectDecision, ReconnectPolicy, ScanObservation, Step, StepConfirmation,
     StepOptions, StepValue, Transform,
 };
 mod observation_ffi;
@@ -2366,16 +2366,16 @@ impl ConfigStore {
     // Manufacturer-index pull model (§3.2 + §3.3 + §11)
     // -----------------------------------------------------------------------
 
-    /// Observation → decision. Returns [`Recognition::NoMatch`] when no
+    /// ScanObservation → decision. Returns [`Recognition::NoMatch`] when no
     /// signature fires; [`Recognition::Candidate`] for a single match (the
     /// MVP case); [`Recognition::Disambiguate`] when multiple models match
     /// the same signature.
-    pub fn recognize(&self, observation: Observation) -> Recognition {
+    pub fn recognize(&self, observation: ScanObservation) -> Recognition {
         let Some(index) = &self.inner.index else {
             return Recognition::NoMatch;
         };
         match observation {
-            Observation::BleAdvert {
+            ScanObservation::BleAdvert {
                 service_uuids,
                 manufacturer_data,
                 service_data,
@@ -2399,7 +2399,7 @@ impl ConfigStore {
                 };
                 mfg_index::recognize_ble(index, &facts)
             }
-            Observation::PcssNotify {
+            ScanObservation::PcssNotify {
                 camera_ipv4,
                 camera_name,
                 command_port,
@@ -2421,13 +2421,13 @@ impl ConfigStore {
     pub fn reconnect_decision(
         &self,
         model: String,
-        observation: Observation,
+        observation: ScanObservation,
         persisted_scope: Vec<KeyValue>,
     ) -> ReconnectDecision {
         let Some(index) = &self.inner.index else {
             return ReconnectDecision::NoMatch;
         };
-        let Observation::BleAdvert {
+        let ScanObservation::BleAdvert {
             service_uuids,
             manufacturer_data,
             service_data,

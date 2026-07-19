@@ -18,7 +18,7 @@ use camera_protocol_ffi::{
     StepReport,
 };
 #[cfg(target_os = "linux")]
-use camera_protocol_ffi::{KeyValue, Observation, Recognition};
+use camera_protocol_ffi::{KeyValue, Recognition, ScanObservation};
 #[cfg(target_os = "linux")]
 use camera_sim::{walk_establishment, BleResponder};
 use camera_sim_service::{Config, Server};
@@ -341,7 +341,7 @@ async fn nikon_snapbridge_milestone_reaches_d850_device_info_and_probe() {
     )
     .expect("load provisional Nikon index");
     assert!(matches!(
-        ffi_store.recognize(Observation::BleAdvert {
+        ffi_store.recognize(ScanObservation::BleAdvert {
             service_uuids: vec![LSS_SERVICE.into()],
             manufacturer_data: None,
             service_data: vec![],

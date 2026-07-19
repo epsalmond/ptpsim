@@ -15,7 +15,7 @@ Two seams ship from this crate:
 * **Single-body queries** (`(connection, mode)`-keyed, §2–§7 below). The original
   surface; app already knows which body it's talking to. Used by the existing
   adoption path.
-* **Manufacturer-index pull model** (§9). Observation in → decision out; the app
+* **Manufacturer-index pull model** (§9). ScanObservation in → decision out; the app
   carries zero camera knowledge and the manifest tells it what each scanned advert /
   enumerated device means. Used by the iOS rewrite for BLE pairing and forward.
 
@@ -404,7 +404,7 @@ available for manufacturers whose indexed bodies are entirely self-contained.
 | `reconnectPolicy(model)` | The manifest-authored saved-camera scan window. `None` means the model has no automatic BLE reconnect contract. |
 | `reconnectDecision(model, observation, persistedScope)` | Classifies a fresh advert for one saved camera as `Wake{plan, runtimeScope}`, `Ready{plan, runtimeScope}`, or `NoMatch`. The manifest owns advert-state recognition, identity keys, and plan selection; callers must not infer readiness from a cached peripheral. |
 
-`Observation::BleAdvert` carries `{ serviceUuids, manufacturerData?:
+`ScanObservation::BleAdvert` carries `{ serviceUuids, manufacturerData?:
 { companyId, payload }, serviceData: [{uuid, payload}], localName?,
 txPower?, adRecords: [{adType, payload}] }`. Populate every field your
 platform exposes and leave the rest nil/empty — signature predicates over an
