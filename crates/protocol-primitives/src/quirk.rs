@@ -3,11 +3,13 @@
 //! Kept here as named, shared functions rather than baked into a per-brand
 //! emulator.
 
-use ptp_core::{DecodeError, Reader};
+use std::collections::BTreeMap;
+
+use ptp_core::{DecodeError, EncodeError, PropValue, Reader, Writer};
 
 /// A record-stream layout the carrier types can't represent, or data that
 /// doesn't fit the declared field widths.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum RecordStreamError {
     #[error(
         "unsupported record-stream widths count={count} code={code} value={value} \
@@ -20,6 +22,84 @@ pub enum RecordStreamError {
         value: u64,
         width: u8,
     },
+    #[error("record-stream member {code:#06x} is not declared")]
+    UndeclaredMember { code: u16 },
+    #[error("record-stream member {code:#06x} is declared more than once")]
+    DuplicateMember { code: u16 },
+    #[error("record-stream member {code:#06x} value does not match {encoding:?}")]
+    ValueTypeMismatch {
+        code: u16,
+        encoding: RecordValueEncoding,
+    },
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
+    #[error(transparent)]
+    Encode(#[from] EncodeError),
+}
+
+/// Payload-local wire encoding for a record member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordValueEncoding {
+    Fixed { width: u8 },
+    PtpString,
+}
+
+/// A heterogeneous record-stream descriptor resolved from manifest data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordStreamDescriptor {
+    count_width: u8,
+    code_width: u8,
+    members: BTreeMap<u16, RecordValueEncoding>,
+}
+
+impl RecordStreamDescriptor {
+    pub fn new(
+        count_width: u8,
+        code_width: u8,
+        members: impl IntoIterator<Item = (u16, RecordValueEncoding)>,
+    ) -> Result<Self, RecordStreamError> {
+        if !matches!(count_width, 1 | 2 | 4) || !matches!(code_width, 1 | 2) {
+            return Err(RecordStreamError::UnsupportedWidths {
+                count: count_width,
+                code: code_width,
+                value: 0,
+            });
+        }
+        let mut resolved = BTreeMap::new();
+        for (code, encoding) in members {
+            if code_width == 1 && code > u8::MAX as u16 {
+                return Err(RecordStreamError::Overflow {
+                    field: "prop code",
+                    value: code.into(),
+                    width: code_width,
+                });
+            }
+            if let RecordValueEncoding::Fixed { width } = encoding {
+                if !matches!(width, 1 | 2 | 4) {
+                    return Err(RecordStreamError::UnsupportedWidths {
+                        count: count_width,
+                        code: code_width,
+                        value: width,
+                    });
+                }
+            }
+            if resolved.insert(code, encoding).is_some() {
+                return Err(RecordStreamError::DuplicateMember { code });
+            }
+        }
+        Ok(Self {
+            count_width,
+            code_width,
+            members: resolved,
+        })
+    }
+
+    fn encoding(&self, code: u16) -> Result<RecordValueEncoding, RecordStreamError> {
+        self.members
+            .get(&code)
+            .copied()
+            .ok_or(RecordStreamError::UndeclaredMember { code })
+    }
 }
 
 /// Field widths of a record-stream payload, from the manifest's payload
@@ -83,11 +163,106 @@ fn read_le(r: &mut Reader, width: u8) -> Result<u64, DecodeError> {
     })
 }
 
+fn numeric_value(value: &PropValue) -> Option<u64> {
+    Some(match value {
+        PropValue::I8(value) => *value as u32 as u64,
+        PropValue::U8(value) => (*value).into(),
+        PropValue::I16(value) => *value as u32 as u64,
+        PropValue::U16(value) => (*value).into(),
+        PropValue::I32(value) => *value as u32 as u64,
+        PropValue::U32(value) => (*value).into(),
+        PropValue::I64(value) => *value as u64,
+        PropValue::U64(value) => *value,
+        PropValue::Str(_) => return None,
+    })
+}
+
+fn write_ptp_string(out: &mut Vec<u8>, value: &str) -> Result<(), EncodeError> {
+    if value.is_empty() {
+        out.extend_from_slice(&[1, 0, 0]);
+        return Ok(());
+    }
+    let mut writer = Writer::new();
+    writer.ptp_string(value)?;
+    out.extend_from_slice(writer.as_slice());
+    Ok(())
+}
+
+/// Assemble a manifest-resolved heterogeneous record stream. Records must be
+/// declared and their values must match the member-local encoding.
+pub fn typed_record_stream(
+    records: &[(u16, PropValue)],
+    descriptor: &RecordStreamDescriptor,
+) -> Result<Vec<u8>, RecordStreamError> {
+    let count = records.len() as u64;
+    if count > max_for(descriptor.count_width) {
+        return Err(RecordStreamError::Overflow {
+            field: "record count",
+            value: count,
+            width: descriptor.count_width,
+        });
+    }
+    let mut out = Vec::new();
+    write_le(&mut out, count, descriptor.count_width);
+    for (code, value) in records {
+        let encoding = descriptor.encoding(*code)?;
+        write_le(&mut out, (*code).into(), descriptor.code_width);
+        match encoding {
+            RecordValueEncoding::Fixed { width } => {
+                let value = numeric_value(value).ok_or(RecordStreamError::ValueTypeMismatch {
+                    code: *code,
+                    encoding,
+                })?;
+                if value > max_for(width) {
+                    return Err(RecordStreamError::Overflow {
+                        field: "value",
+                        value,
+                        width,
+                    });
+                }
+                write_le(&mut out, value, width);
+            }
+            RecordValueEncoding::PtpString => {
+                let PropValue::Str(value) = value else {
+                    return Err(RecordStreamError::ValueTypeMismatch {
+                        code: *code,
+                        encoding,
+                    });
+                };
+                write_ptp_string(&mut out, value)?;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Decode a manifest-resolved heterogeneous record stream. The count remains
+/// authoritative; bytes after the declared records are ignored.
+pub fn parse_typed_record_stream(
+    bytes: &[u8],
+    descriptor: &RecordStreamDescriptor,
+) -> Result<Vec<(u16, PropValue)>, RecordStreamError> {
+    let mut reader = Reader::new(bytes);
+    let count = read_le(&mut reader, descriptor.count_width)? as usize;
+    let mut out = Vec::with_capacity(count.min(bytes.len()));
+    for _ in 0..count {
+        let code = read_le(&mut reader, descriptor.code_width)? as u16;
+        let value = match descriptor.encoding(code)? {
+            RecordValueEncoding::Fixed { width } => {
+                PropValue::U32(read_le(&mut reader, width)? as u32)
+            }
+            RecordValueEncoding::PtpString => PropValue::Str(reader.ptp_string()?),
+        };
+        out.push((code, value));
+    }
+    Ok(out)
+}
+
 /// Assemble a live-status record stream (e.g. Fuji `0xD212`): an LE element
 /// count, then one record per `(prop code, value)`, each field at the
 /// manifest-declared width. The member set and current values come from the
 /// payload descriptor and engine state; this primitive only frames them, so
-/// no per-brand layout is baked in. Wire format: operators `D212_TIGHT_FORMAT`.
+/// no per-brand layout is baked in.
 /// Errors when the count, a code, or a value doesn't fit its declared field.
 pub fn record_stream(
     records: &[(u16, u32)],
@@ -235,6 +410,95 @@ mod tests {
         assert!(matches!(
             parse_record_stream(&bytes, &RecordStreamLayout::D212),
             Err(DecodeError::UnexpectedEof { .. })
+        ));
+    }
+
+    fn heterogeneous_descriptor() -> RecordStreamDescriptor {
+        RecordStreamDescriptor::new(
+            2,
+            2,
+            [
+                (0xdf00, RecordValueEncoding::Fixed { width: 4 }),
+                (0xd220, RecordValueEncoding::Fixed { width: 4 }),
+                (0xdf41, RecordValueEncoding::Fixed { width: 4 }),
+                (0xd22f, RecordValueEncoding::PtpString),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn decodes_complete_empty_ptp_string_record() {
+        let bytes = [0x01, 0x00, 0x2f, 0xd2, 0x01, 0x00, 0x00];
+        assert_eq!(
+            parse_typed_record_stream(&bytes, &heterogeneous_descriptor()).unwrap(),
+            vec![(0xd22f, PropValue::Str(String::new()))]
+        );
+    }
+
+    #[test]
+    fn decodes_complete_mixed_record_stream() {
+        let bytes = [
+            0x04, 0x00, 0x00, 0xdf, 0x12, 0x00, 0x00, 0x00, 0x20, 0xd2, 0x01, 0x00, 0x00, 0x00,
+            0x41, 0xdf, 0x01, 0x00, 0x00, 0x00, 0x2f, 0xd2, 0x01, 0x00, 0x00,
+        ];
+        assert_eq!(
+            parse_typed_record_stream(&bytes, &heterogeneous_descriptor()).unwrap(),
+            vec![
+                (0xdf00, PropValue::U32(0x12)),
+                (0xd220, PropValue::U32(1)),
+                (0xdf41, PropValue::U32(1)),
+                (0xd22f, PropValue::Str(String::new())),
+            ]
+        );
+    }
+
+    #[test]
+    fn string_member_does_not_hide_a_later_numeric_member() {
+        let records = vec![
+            (0xd22f, PropValue::Str(String::new())),
+            (0xdf41, PropValue::U32(7)),
+        ];
+        let descriptor = heterogeneous_descriptor();
+        let bytes = typed_record_stream(&records, &descriptor).unwrap();
+        assert_eq!(&bytes[4..7], &[1, 0, 0]);
+        assert_eq!(
+            parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+            records
+        );
+    }
+
+    #[test]
+    fn typed_stream_rejects_full_width_signed_and_unsigned_overflow() {
+        let descriptor =
+            RecordStreamDescriptor::new(2, 2, [(0xd100, RecordValueEncoding::Fixed { width: 4 })])
+                .unwrap();
+        let too_large = 0x1_0000_0005;
+
+        for value in [PropValue::I64(too_large as i64), PropValue::U64(too_large)] {
+            assert!(matches!(
+                typed_record_stream(&[(0xd100, value)], &descriptor),
+                Err(RecordStreamError::Overflow {
+                    field: "value",
+                    value: 0x1_0000_0005,
+                    width: 4,
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn typed_stream_rejects_undeclared_and_truncated_members() {
+        let descriptor = heterogeneous_descriptor();
+        let unknown = [1, 0, 0x34, 0x12, 0, 0, 0, 0];
+        assert!(matches!(
+            parse_typed_record_stream(&unknown, &descriptor),
+            Err(RecordStreamError::UndeclaredMember { code: 0x1234 })
+        ));
+        let truncated = [1, 0, 0x41, 0xdf, 1, 0, 0];
+        assert!(matches!(
+            parse_typed_record_stream(&truncated, &descriptor),
+            Err(RecordStreamError::Decode(DecodeError::UnexpectedEof { .. }))
         ));
     }
 }

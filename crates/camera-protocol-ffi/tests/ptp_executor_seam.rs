@@ -1490,17 +1490,24 @@ fn composite_poll_populates_manifest_declared_member_scope() {
         Vec::new(),
     ))
     .expect("cold entry succeeds");
+    let reads_before = transport.request_count(0x1015, &[0xd212]);
 
-    block_on(run_initiator_action(
+    let outcome = block_on(run_initiator_action(
         store,
         "app".into(),
         ActionVerb::Shutter,
-        transport,
+        transport.clone(),
         Arc::new(Reports::default()),
         Arc::new(Activities::default()),
         Vec::new(),
     ))
     .expect("record-stream polling stays inside the Rust executor");
+    assert!(outcome.steps_run > 0);
+    assert_eq!(
+        transport.request_count(0x1015, &[0xd212]) - reads_before,
+        1,
+        "the declared D209 member satisfies the composite predicate on its first poll"
+    );
 }
 
 #[test]

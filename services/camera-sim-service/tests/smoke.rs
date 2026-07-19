@@ -614,19 +614,32 @@ fn read_d621_handles(s: &mut TcpStream, tid: u32) -> Vec<u32> {
 fn read_reserved_count(s: &mut TcpStream, tid: u32) -> u32 {
     write_frame(s, &op(0x1015, tid, vec![0xd212]));
     let bytes = read_data_reply(s);
-    let count = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
-    (0..count)
-        .find_map(|i| {
-            let offset = 2 + i * 6;
-            let code = u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
-            (code == 0xdf41).then(|| {
-                u32::from_le_bytes([
-                    bytes[offset + 2],
-                    bytes[offset + 3],
-                    bytes[offset + 4],
-                    bytes[offset + 5],
-                ])
-            })
+    let manifest = camera_config::CameraManifest::from_yaml(&real_gfx_manifest()).unwrap();
+    let payload = manifest.properties["0xd212"].payload.as_ref().unwrap();
+    let (count_width, code_width, default_value_width) = payload.record_widths();
+    let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
+        count_width,
+        code_width,
+        payload.members.iter().map(|member| {
+            let code = camera_config::parse_hex_code(member.code()).unwrap();
+            let encoding = match member.encoding(default_value_width) {
+                camera_config::RecordValueEncoding::Fixed { width } => {
+                    protocol_primitives::quirk::RecordValueEncoding::Fixed { width }
+                }
+                camera_config::RecordValueEncoding::PtpString => {
+                    protocol_primitives::quirk::RecordValueEncoding::PtpString
+                }
+            };
+            (code, encoding)
+        }),
+    )
+    .unwrap();
+    protocol_primitives::quirk::parse_typed_record_stream(&bytes, &descriptor)
+        .unwrap()
+        .into_iter()
+        .find_map(|(code, value)| match (code, value) {
+            (0xdf41, ptp_core::PropValue::U32(value)) => Some(value),
+            _ => None,
         })
         .expect("DF41 reserved count in D212")
 }

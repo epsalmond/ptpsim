@@ -1536,15 +1536,12 @@ impl PtpCtx {
 
     fn observe_property(&mut self, here: &str, prop: u16, payload: &[u8]) -> Result<(), StepError> {
         if let Some(info) = self.store.property_payload(prop) {
-            let members = info.members.clone();
             let status = crate::parse_record_stream(payload.to_vec(), info)
                 .map_err(|error| self.decode_failure(here, error.to_string()))?;
-            for observation in status
-                .records
-                .into_iter()
-                .filter(|observation| members.contains(&observation.code))
-            {
-                self.observed.set(observation.code, observation.value);
+            for observation in status.records {
+                if let crate::PtpValue::U32 { value } = observation.value {
+                    self.observed.set(observation.code, value as i64);
+                }
             }
             Ok(())
         } else {

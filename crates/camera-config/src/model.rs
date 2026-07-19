@@ -576,7 +576,7 @@ impl Descriptor {
 /// is a self-describing **record stream** (not a fixed-offset struct), so
 /// members are addressed by PTP prop code, not byte position. A consumer walks
 /// records, accepting only `members`; each member's value is interpreted at
-/// that property's own `type:` width. Evidence: operators `D212_TIGHT_FORMAT`.
+/// its payload-local declared encoding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Payload {
@@ -588,9 +588,10 @@ pub struct Payload {
     #[serde(default)]
     pub record: Option<RecordLayout>,
     /// The prop codes the camera may emit inside this bundle (the poll
-    /// allowlist). Each member's value width comes from its own property `type:`.
+    /// allowlist). A scalar code uses `record.valueWidth`; a detailed member
+    /// may override that encoding for this payload only.
     #[serde(default)]
-    pub members: Vec<HexCode>,
+    pub members: Vec<RecordMember>,
 }
 
 impl Payload {
@@ -623,6 +624,69 @@ pub enum PayloadForm {
 pub struct RecordLayout {
     pub code_width: u8,
     pub value_width: u8,
+}
+
+/// One allowed record-stream member. The scalar form preserves the original
+/// fixed-width grammar; the detailed form carries a payload-local encoding and
+/// optional simulator fallback without changing the global property datatype.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RecordMember {
+    Code(HexCode),
+    Detailed(RecordMemberDetail),
+}
+
+impl RecordMember {
+    pub fn code(&self) -> &HexCode {
+        match self {
+            Self::Code(code) => code,
+            Self::Detailed(member) => &member.code,
+        }
+    }
+
+    pub fn encoding(&self, default_width: u8) -> RecordValueEncoding {
+        match self {
+            Self::Code(_) => RecordValueEncoding::Fixed {
+                width: default_width,
+            },
+            Self::Detailed(member) => member.encoding,
+        }
+    }
+
+    pub fn simulator_value(&self) -> Option<&RecordValueLiteral> {
+        match self {
+            Self::Code(_) => None,
+            Self::Detailed(member) => member.simulator_value.as_ref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordMemberDetail {
+    pub code: HexCode,
+    pub encoding: RecordValueEncoding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulator_value: Option<RecordValueLiteral>,
+}
+
+/// Wire encoding of one record-stream value. `Fixed` is an unsigned
+/// little-endian field; `PtpString` is the standard length-prefixed UTF-16LE
+/// PTP string grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RecordValueEncoding {
+    Fixed { width: u8 },
+    PtpString,
+}
+
+/// Literal used only when the simulator has no mutable property state for a
+/// detailed record member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RecordValueLiteral {
+    Unsigned(u32),
+    String(String),
 }
 
 /// Where a descriptor's allowed value set is sourced.

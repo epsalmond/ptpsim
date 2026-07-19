@@ -1301,9 +1301,16 @@ fn property_payload_surfaces_d212_record_stream() {
     assert_eq!(p.count_width, Some(2));
     let rec = p.record.expect("record layout present");
     assert_eq!((rec.code_width, rec.value_width), (2, 4));
-    assert!(p.members.contains(&0xd17c)); // s1Lock
-    assert!(p.members.contains(&0xd209)); // s1LockColor
-    assert!(p.members.contains(&0x5007)); // aperture
+    assert!(p.members.iter().any(|member| member.code == 0xd17c)); // s1Lock
+    assert!(p.members.iter().any(|member| member.code == 0xd209)); // s1LockColor
+    assert!(p.members.iter().any(|member| member.code == 0x5007)); // aperture
+    assert_eq!(
+        p.members
+            .iter()
+            .find(|member| member.code == 0xd22f)
+            .map(|member| member.encoding),
+        Some(RecordValueEncodingInfo::PtpString)
+    );
     assert!(s.property_payload(0x5007).is_none()); // a scalar property → no payload
 }
 
@@ -2729,27 +2736,68 @@ fn parse_device_prop_desc_decodes_value_and_enum_form() {
 }
 
 #[test]
-fn parse_live_status_is_the_inverse_of_the_record_stream_encoder() {
-    let bytes = protocol_primitives::quirk::record_stream(
-        &[(0x5007, 280), (0xd212, 1)],
-        &protocol_primitives::quirk::RecordStreamLayout::D212,
+fn parse_record_stream_preserves_member_types_and_absence() {
+    let info = store()
+        .property_payload(0xd212)
+        .expect("D212 payload descriptor");
+
+    let one_numeric =
+        parse_record_stream(vec![0x01, 0x00, 0x41, 0xdf, 0x01, 0x00, 0x00, 0x00], info).unwrap();
+    assert_eq!(
+        one_numeric.records,
+        vec![RecordStreamRecord {
+            code: 0xdf41,
+            value: PtpValue::U32 { value: 1 },
+        }]
+    );
+    assert_eq!(record_stream_value(one_numeric, 0xd22f), None);
+
+    let present_zero = parse_record_stream(
+        vec![0x01, 0x00, 0x41, 0xdf, 0x00, 0x00, 0x00, 0x00],
+        store()
+            .property_payload(0xd212)
+            .expect("D212 payload descriptor"),
     )
     .unwrap();
-    let ls = parse_live_status(bytes).unwrap();
-    assert_eq!(ls.records.len(), 2);
-    assert_eq!((ls.records[0].code, ls.records[0].value), (0x5007, 280));
-    assert_eq!((ls.records[1].code, ls.records[1].value), (0xd212, 1));
+    assert_eq!(
+        record_stream_value(present_zero, 0xdf41),
+        Some(PtpValue::U32 { value: 0 })
+    );
+
+    let mixed = parse_record_stream(
+        vec![
+            0x04, 0x00, 0x00, 0xdf, 0x12, 0x00, 0x00, 0x00, 0x20, 0xd2, 0x01, 0x00, 0x00, 0x00,
+            0x41, 0xdf, 0x01, 0x00, 0x00, 0x00, 0x2f, 0xd2, 0x01, 0x00, 0x00,
+        ],
+        store()
+            .property_payload(0xd212)
+            .expect("D212 payload descriptor"),
+    )
+    .unwrap();
+    assert_eq!(
+        record_stream_value(mixed.clone(), 0xdf41),
+        Some(PtpValue::U32 { value: 1 })
+    );
+    assert_eq!(
+        record_stream_value(mixed, 0xd22f),
+        Some(PtpValue::Str {
+            value: String::new()
+        })
+    );
 }
 
 #[test]
 fn parse_record_stream_honors_declared_widths_with_d212_defaults() {
-    // Omitted widths must mean exactly what parse_live_status assumes — the FFI
-    // defaults mirror camera_config::Payload::record_widths (#161).
+    // Omitted widths use the schema defaults from
+    // camera_config::Payload::record_widths (#161).
     let defaults = PayloadInfo {
         form: PayloadForm::RecordStream,
         count_width: None,
         record: None,
-        members: vec![],
+        members: vec![RecordMemberInfo {
+            code: 0x5007,
+            encoding: RecordValueEncodingInfo::Fixed { width: 4 },
+        }],
     };
     let cc_defaults = camera_config::Payload {
         form: camera_config::PayloadForm::RecordStream,
@@ -2764,15 +2812,14 @@ fn parse_record_stream_honors_declared_widths_with_d212_defaults() {
         &protocol_primitives::quirk::RecordStreamLayout::D212,
     )
     .unwrap();
-    let via_defaults = parse_record_stream(d212.clone(), defaults).unwrap();
-    let via_live_status = parse_live_status(d212).unwrap();
+    let via_defaults = parse_record_stream(d212, defaults).unwrap();
     assert_eq!(via_defaults.records.len(), 1);
     assert_eq!(
-        (via_defaults.records[0].code, via_defaults.records[0].value),
         (
-            via_live_status.records[0].code,
-            via_live_status.records[0].value
-        )
+            via_defaults.records[0].code,
+            via_defaults.records[0].value.clone()
+        ),
+        (0x5007, PtpValue::U32 { value: 280 })
     );
 
     // Declared non-default widths reframe the parse: u8 count, u8 code, u16 value.
@@ -2783,14 +2830,26 @@ fn parse_record_stream_honors_declared_widths_with_d212_defaults() {
             code_width: 1,
             value_width: 2,
         }),
-        members: vec![],
+        members: vec![
+            RecordMemberInfo {
+                code: 0x07,
+                encoding: RecordValueEncodingInfo::Fixed { width: 2 },
+            },
+            RecordMemberInfo {
+                code: 0x09,
+                encoding: RecordValueEncodingInfo::Fixed { width: 2 },
+            },
+        ],
     };
     let layout = protocol_primitives::quirk::RecordStreamLayout::new(1, 1, 2).unwrap();
     let bytes =
         protocol_primitives::quirk::record_stream(&[(0x07, 280), (0x09, 1)], &layout).unwrap();
     let ls = parse_record_stream(bytes, tight).unwrap();
     assert_eq!(ls.records.len(), 2);
-    assert_eq!((ls.records[0].code, ls.records[0].value), (0x07, 280));
+    assert_eq!(
+        (ls.records[0].code, ls.records[0].value.clone()),
+        (0x07, PtpValue::U32 { value: 280 })
+    );
 
     // Widths the codec can't honor are a loud decode error, not a misread.
     let bad = PayloadInfo {

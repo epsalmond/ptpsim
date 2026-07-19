@@ -23,7 +23,9 @@ use camera_config::model::{
 };
 use camera_config::{parse_hex_code, PropView, RetryFailureClass};
 use camera_media_store::ByteSource;
-use protocol_primitives::quirk::{parse_record_stream, RecordStreamLayout};
+use protocol_primitives::quirk::{
+    parse_typed_record_stream, RecordStreamDescriptor, RecordValueEncoding,
+};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
 use ptp_core::{ObjectInfo, OperationRequest, Reader, Writer};
@@ -698,20 +700,35 @@ impl Ctx<'_> {
         self.last_response_code = response_code(&reply);
         match reply {
             Reply::Data { data, response } if response.code == resp::OK => {
-                if let Some((count_width, code_width, value_width)) = self
+                if let Some(payload) = self
                     .engine
                     .manifest()
                     .property(code)
                     .and_then(|property| property.payload.as_ref())
-                    .map(|payload| payload.record_widths())
                 {
-                    let decoded = RecordStreamLayout::new(count_width, code_width, value_width)
-                        .map_err(|error| error.to_string())
-                        .and_then(|layout| {
-                            parse_record_stream(&data, &layout)
-                                .map(|_| ())
-                                .map_err(|error| format!("decode prop {code:#06x}: {error:?}"))
-                        });
+                    let (count_width, code_width, value_width) = payload.record_widths();
+                    let decoded = RecordStreamDescriptor::new(
+                        count_width,
+                        code_width,
+                        payload.members.iter().filter_map(|member| {
+                            let code = parse_hex_code(member.code())?;
+                            let encoding = match member.encoding(value_width) {
+                                camera_config::RecordValueEncoding::Fixed { width } => {
+                                    RecordValueEncoding::Fixed { width }
+                                }
+                                camera_config::RecordValueEncoding::PtpString => {
+                                    RecordValueEncoding::PtpString
+                                }
+                            };
+                            Some((code, encoding))
+                        }),
+                    )
+                    .map_err(|error| error.to_string())
+                    .and_then(|descriptor| {
+                        parse_typed_record_stream(&data, &descriptor)
+                            .map(|_| ())
+                            .map_err(|error| format!("decode prop {code:#06x}: {error:?}"))
+                    });
                     if let Err(message) = decoded {
                         self.last_failure_class = Some(RetryFailureClass::Decode);
                         return Err(message);

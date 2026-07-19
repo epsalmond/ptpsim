@@ -6,15 +6,16 @@
 use camera_config::index::ResolvedManufacturerIndex;
 use camera_config::model::ReopenSession;
 use camera_config::{
-    ActionArgument, ActionInvocationRequest, ActionRole, ActionVerb, AwaitSource, AwaitUntil,
-    CameraManifest, Leaf, ModeEntry, ModeEntryExecution, Predicate, Step, StepParam,
+    parse_hex_code, ActionArgument, ActionInvocationRequest, ActionRole, ActionVerb, AwaitSource,
+    AwaitUntil, CameraManifest, Leaf, ModeEntry, ModeEntryExecution, Predicate,
+    RecordValueEncoding, Step, StepParam,
 };
 use camera_media_store::{fmt, ByteSource, MediaStore, ObjectQuery};
 use camera_sim::{
     walk_establishment, walk_ptpip, walk_ptpip_in, BleResponder, Engine, Fault, Phase, Reply,
     StateOverlay, StreamCompletion,
 };
-use ptp_core::{DeviceInfo, ObjectInfo, OperationRequest, Reader};
+use ptp_core::{DeviceInfo, ObjectInfo, OperationRequest, PropValue, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -288,18 +289,41 @@ fn stream_with_completion(reply: Reply) -> (Vec<u8>, Option<StreamCompletion>) {
     }
 }
 
-/// Decode a `0xD212` tight-format record stream: u16 count, then 6-byte
-/// `<code u16 LE><value u32 LE>` records.
+fn decode_typed_record_stream(b: &[u8]) -> Vec<(u16, PropValue)> {
+    let manifest = consolidated();
+    let payload = manifest.properties["0xd212"]
+        .payload
+        .as_ref()
+        .expect("D212 payload descriptor");
+    let (count_width, code_width, default_value_width) = payload.record_widths();
+    let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
+        count_width,
+        code_width,
+        payload.members.iter().map(|member| {
+            let code = parse_hex_code(member.code()).expect("valid D212 member code");
+            let encoding = match member.encoding(default_value_width) {
+                RecordValueEncoding::Fixed { width } => {
+                    protocol_primitives::quirk::RecordValueEncoding::Fixed { width }
+                }
+                RecordValueEncoding::PtpString => {
+                    protocol_primitives::quirk::RecordValueEncoding::PtpString
+                }
+            };
+            (code, encoding)
+        }),
+    )
+    .expect("valid D212 record descriptor");
+    protocol_primitives::quirk::parse_typed_record_stream(b, &descriptor)
+        .expect("valid D212 record stream")
+}
+
 fn decode_record_stream(b: &[u8]) -> Vec<(u16, u32)> {
-    let count = u16::from_le_bytes([b[0], b[1]]) as usize;
-    assert_eq!(b.len(), 2 + count * 6, "u16 count + 6-byte records");
-    (0..count)
-        .map(|i| {
-            let o = 2 + i * 6;
-            (
-                u16::from_le_bytes([b[o], b[o + 1]]),
-                u32::from_le_bytes([b[o + 2], b[o + 3], b[o + 4], b[o + 5]]),
-            )
+    decode_typed_record_stream(b)
+        .into_iter()
+        .filter_map(|(code, value)| match value {
+            PropValue::U32(value) => Some((code, value)),
+            PropValue::Str(_) => None,
+            other => panic!("unexpected D212 value type for {code:#06x}: {other:?}"),
         })
         .collect()
 }
@@ -526,8 +550,14 @@ fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
     // The 0xD212 readback is the manifest-descriptor-driven record stream, not a
     // hand-coded blob — its members come from the payload descriptor (#51).
     let bytes = data_of(e.on_operation(&req(0x1015, 2, vec![0xd212]), None));
+    let typed_records = decode_typed_record_stream(&bytes);
+    assert_eq!(typed_records.len(), 28, "all 28 descriptor members emitted");
+    assert_eq!(
+        typed_records.iter().find(|(code, _)| *code == 0xd22f),
+        Some(&(0xd22f, PropValue::Str(String::new()))),
+        "D22F is the observed empty PTP string"
+    );
     let records = decode_record_stream(&bytes);
-    assert_eq!(records.len(), 27, "all 27 descriptor members emitted");
     // The named sub-fields the bundle carries survive into the stream.
     for code in [0x5007u16, 0xd17c, 0xd209, 0xd02a, 0xdf41] {
         assert!(

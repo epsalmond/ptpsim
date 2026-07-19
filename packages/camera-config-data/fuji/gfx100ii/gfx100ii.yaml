@@ -65,6 +65,8 @@ evidence:
   wirePcssAutofocus20260718: { kind: wire-capture, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-18" }
   # Public-safe vendor SDK labels for PCSS autofocus and live-view magnification values.
   sdkPcssAutofocus20260718: { kind: vendor-sdk, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-18" }
+  # Public-safe reduction of complete numeric + PTP-string D212 records.
+  wireD212Heterogeneous20260719: { kind: wire-capture, path: "evidence/D212_HETEROGENEOUS_RECORDS_20260719.md", date: "2026-07-19" }
 
 sentinels:
   # PTP/IP length-8 frame with body 0xffffffff. Sent and flushed before the
@@ -952,11 +954,10 @@ properties:
   "0xdf01": { name: functionMode,      type: u16, access: readWrite, evidence: [iosStartupSeq] }
   "0xdf2a": { name: liveDf2a,          type: u32, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry; Get→Take writes value 2
   "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }
-  # Live-status snapshot (app connection). A self-describing record stream:
-  # u16 count, then 6-byte records <propCode u16 LE><value u32 LE>. Members are
-  # the prop codes observed across the v6/v8/v9 catalogs; each value is read at
-  # its own property width from the low bytes. (wireless-tether uses D21C/D207
-  # keepalives, not this format — see docD212TightFormat.)
+  # Live-status snapshot (app connection). A self-describing record stream with
+  # a u16 count and u16 member codes. Numeric members default to u32; D22F is a
+  # payload-local PTP string and does not define that code's global datatype.
+  # (wireless-tether uses D21C/D207 keepalives, not this format.)
   "0xd212":
     name: liveStatus
     type: u8a
@@ -969,8 +970,10 @@ properties:
                 "0xd001", "0xd018", "0xd028", "0xd02a", "0xd02b", "0xd17c",
                 "0xd209", "0xd21b", "0xd220", "0xd222", "0xd229", "0xd22a",
                 "0xd240", "0xd241", "0xd242", "0xd246", "0xd400", "0xd401",
-                "0xd52f", "0xdf00", "0xdf41"]
-    evidence: [docImageTransfer, docD212TightFormat]
+                "0xd52f", "0xdf00",
+                { code: "0xd22f", encoding: { kind: ptpString }, simulatorValue: "" },
+                "0xdf41"]
+    evidence: [docImageTransfer, docD212TightFormat, wireD212Heterogeneous20260719]
   # AF area state, carried as a sub-property in the 0xd212 poll bundle. Per
   # PTP_PROPERTIES_REFERENCE.md §5.1/§3.4 the u32 also encodes aspect ratio: high
   # bytes (3,2) = (aspect_w, aspect_h), low bytes (1,0) = (col, row) of the last AF
