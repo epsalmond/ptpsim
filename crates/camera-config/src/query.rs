@@ -2,8 +2,8 @@
 //! parsed `u16` code so callers don't deal in hex strings.
 
 use crate::model::{
-    parse_hex_code, Action, ActionVerb, CameraManifest, Control, Operation, Property,
-    PropertyValueProfile, PropertyValueProfileRow, SentinelMask, Workflow,
+    parse_hex_code, Action, ActionVerb, CameraManifest, Control, Operation, OperationKind,
+    Property, PropertyValueProfile, PropertyValueProfileRow, SentinelMask, Workflow,
 };
 use crate::predicate::PropView;
 use crate::version::VersionScheme;
@@ -61,6 +61,7 @@ impl CameraManifest {
     pub fn supports_operation(&self, workflow: &str, code: u16) -> Support {
         match self.operation(code) {
             None => Support::Unsupported,
+            Some(op) if op.kind == OperationKind::AdvertisedOnly => Support::Unsupported,
             Some(op) => {
                 if op.workflows.is_empty() || op.workflows.iter().any(|w| w == workflow) {
                     Support::InWorkflow
@@ -260,6 +261,9 @@ impl CameraManifest {
         let Some(op) = self.operation(code) else {
             return Availability::Unavailable;
         };
+        if op.kind == OperationKind::AdvertisedOnly {
+            return Availability::Unavailable;
+        }
         if !op.connections.is_empty() && !op.connections.iter().any(|c| c == connection) {
             return Availability::WrongConnection;
         }
@@ -325,6 +329,22 @@ impl CameraManifest {
                 format!("operation 0x{code:04x} is not defined"),
             ),
             Some(op) => {
+                if op.kind == OperationKind::AdvertisedOnly {
+                    return (
+                        Availability::Unavailable,
+                        ResolutionTrace {
+                            query: "operation_available".to_string(),
+                            connection: connection.to_string(),
+                            mode: mode_path.to_string(),
+                            op: code,
+                            outcome: format!("{:?}", Availability::Unavailable),
+                            connection_ok: false,
+                            mode_ok: false,
+                            requires: None,
+                            reason: "operation is advertisedOnly, not executable".to_string(),
+                        },
+                    );
+                }
                 connection_ok =
                     op.connections.is_empty() || op.connections.iter().any(|c| c == connection);
                 mode_ok = mode_matches(&op.modes, mode_path);
@@ -392,6 +412,7 @@ schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
 operations:
   "0x902d": { name: StepFNumber, modes: [Shooting/Stills], connections: [xlv-http] }
+  "0x9000": { name: raw_0x9000, kind: advertisedOnly, modes: [Shooting/Stills], connections: [xlv-http] }
   "0x1007": { name: GetObjectHandles, modes: [ImageTransfer] }
   "0x101c":
     name: InitiateOpenCapture
@@ -434,6 +455,15 @@ connections:
             m.operation_available("xlv-http", "Shooting/Stills", 0x9999, &any),
             Availability::Unavailable
         );
+        assert_eq!(
+            m.operation_available("xlv-http", "Shooting/Stills", 0x9000, &any),
+            Availability::Unavailable
+        );
+        assert_eq!(m.supports_operation("", 0x9000), Support::Unsupported);
+        let (availability, trace) =
+            m.operation_available_explained("xlv-http", "Shooting/Stills", 0x9000, &any);
+        assert_eq!(availability, Availability::Unavailable);
+        assert!(trace.reason.contains("advertisedOnly"));
     }
 
     #[test]

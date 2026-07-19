@@ -83,6 +83,10 @@ pub struct ProposalCandidate {
     pub id: String,
     pub assertion: CandidateAssertion,
     pub source_records: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<AssertionProvenance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observed_scopes: Vec<ExecutionContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,17 +105,42 @@ pub enum CandidateAssertion {
     Operation {
         code: String,
         supported: bool,
+        #[serde(default, skip_serializing_if = "InventoryCompleteness::is_partial")]
+        inventory_completeness: InventoryCompleteness,
         scopes: Vec<ExecutionContext>,
+    },
+    OperationName {
+        code: String,
+        name: String,
     },
     Property {
         code: String,
         supported: bool,
+        #[serde(default, skip_serializing_if = "InventoryCompleteness::is_partial")]
+        inventory_completeness: InventoryCompleteness,
         property_type: Option<String>,
         access: Option<String>,
         descriptor: Option<CapabilityDescriptor>,
         labels: BTreeMap<String, String>,
         value_profiles: Vec<CapabilityValueProfile>,
         scopes: Vec<ExecutionContext>,
+    },
+    PropertyName {
+        code: String,
+        name: String,
+    },
+    PropertySourceNativeName {
+        code: String,
+        name: String,
+    },
+    PropertyValueRow {
+        code: String,
+        value: TypedPropertyValue,
+        label: String,
+    },
+    PropertyValueProfile {
+        code: String,
+        profile: CapabilityValueProfile,
     },
 }
 
@@ -690,6 +719,61 @@ fn validate_record(
             {
                 validate_ptp_code(code, "capability code", line);
             }
+            let supported = match &record.subject {
+                CapabilitySubject::Operation { supported, .. }
+                | CapabilitySubject::Property { supported, .. } => Some(*supported),
+                CapabilitySubject::Identity { .. } => None,
+            };
+            if supported == Some(false)
+                && record.inventory_completeness != InventoryCompleteness::Complete
+            {
+                line.reject(
+                    "O117",
+                    "unsupported capability requires an explicitly complete inventory in the exact scope",
+                );
+            }
+            match &record.subject {
+                CapabilitySubject::Operation { canonical_name, .. } => {
+                    if let Some(assertion) = canonical_name {
+                        validate_semantic_name(assertion, "canonicalName", line);
+                    }
+                }
+                CapabilitySubject::Property {
+                    property_type,
+                    canonical_name,
+                    source_native_name,
+                    value_rows,
+                    ..
+                } => {
+                    if let Some(assertion) = canonical_name {
+                        validate_semantic_name(assertion, "canonicalName", line);
+                    }
+                    if let Some(assertion) = source_native_name {
+                        validate_semantic_name(assertion, "sourceNativeName", line);
+                    }
+                    for row in value_rows {
+                        validate_sanitized(&row.label, "valueRows.label", line);
+                        validate_assertion_provenance(&row.provenance, line);
+                        if !row.value.has_valid_representation() {
+                            line.reject(
+                                "O118",
+                                "typed property value is not a canonical in-range representation",
+                            );
+                        }
+                        if property_type.as_deref() != Some(row.value.property_type()) {
+                            line.reject(
+                                "O119",
+                                format!(
+                                    "typed property value {} does not match propertyType {:?}",
+                                    row.value.property_type(),
+                                    property_type
+                                ),
+                            );
+                        }
+                    }
+                }
+                CapabilitySubject::Identity { .. } => {}
+            }
             validate_orthogonal_claims(
                 None,
                 record.evidence_basis,
@@ -725,6 +809,25 @@ fn validate_record(
                 "readback clock differs from record clock without a declared mapping",
             );
         }
+    }
+}
+
+fn validate_semantic_name(assertion: &SemanticNameAssertion, field: &str, line: &mut ParsedLine) {
+    validate_identifier(&assertion.name, field, line);
+    validate_assertion_provenance(&assertion.provenance, line);
+}
+
+fn validate_assertion_provenance(provenance: &AssertionProvenance, line: &mut ParsedLine) {
+    validate_identifier(
+        &provenance.evidence_reference,
+        "assertion evidenceReference",
+        line,
+    );
+    for alternative in &provenance.epistemic.alternatives {
+        validate_sanitized(alternative, "assertion epistemic alternative", line);
+    }
+    if let Some(falsifier) = &provenance.epistemic.falsifier {
+        validate_sanitized(falsifier, "assertion epistemic falsifier", line);
     }
 }
 
@@ -867,7 +970,8 @@ fn validate_conflicts(bundles: &mut [Vec<ParsedLine>]) {
                 entries[index + 1..]
                     .iter()
                     .any(|(right, right_context, _)| {
-                        left_context != right_context && capability_subjects_conflict(left, right)
+                        left_context != right_context
+                            && capability_subjects_conflict_across_scopes(left, right)
                     })
             });
         if conflicts {
@@ -921,6 +1025,50 @@ fn capability_subjects_conflict(left: &CapabilitySubject, right: &CapabilitySubj
         ) => {
             left_supported != right_supported
                 || option_conflicts(left_type.as_ref(), right_type.as_ref())
+                || option_conflicts(left_access.as_ref(), right_access.as_ref())
+                || option_conflicts(left_descriptor.as_ref(), right_descriptor.as_ref())
+                || left_labels.iter().any(|(key, value)| {
+                    right_labels
+                        .get(key)
+                        .is_some_and(|candidate| candidate != value)
+                })
+                || left_profiles.iter().any(|left| {
+                    right_profiles.iter().any(|right| {
+                        left.connection == right.connection
+                            && left.mode == right.mode
+                            && left.rows != right.rows
+                    })
+                })
+        }
+        _ => true,
+    }
+}
+
+fn capability_subjects_conflict_across_scopes(
+    left: &CapabilitySubject,
+    right: &CapabilitySubject,
+) -> bool {
+    match (left, right) {
+        (CapabilitySubject::Operation { .. }, CapabilitySubject::Operation { .. }) => false,
+        (
+            CapabilitySubject::Property {
+                property_type: left_type,
+                access: left_access,
+                descriptor: left_descriptor,
+                labels: left_labels,
+                value_profiles: left_profiles,
+                ..
+            },
+            CapabilitySubject::Property {
+                property_type: right_type,
+                access: right_access,
+                descriptor: right_descriptor,
+                labels: right_labels,
+                value_profiles: right_profiles,
+                ..
+            },
+        ) => {
+            option_conflicts(left_type.as_ref(), right_type.as_ref())
                 || option_conflicts(left_access.as_ref(), right_access.as_ref())
                 || option_conflicts(left_descriptor.as_ref(), right_descriptor.as_ref())
                 || left_labels.iter().any(|(key, value)| {
@@ -1124,6 +1272,7 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
                 firmware,
             },
             identity_sources.clone(),
+            Vec::new(),
         ));
     }
 
@@ -1138,16 +1287,15 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
         access: Option<String>,
         descriptor: Option<CapabilityDescriptor>,
         labels: BTreeMap<String, String>,
-        value_profiles: Vec<CapabilityValueProfile>,
         capability_scopes: BTreeSet<ExecutionContext>,
         capability_sources: BTreeSet<String>,
         label_scopes: BTreeSet<ExecutionContext>,
         label_sources: BTreeSet<String>,
-        profile_scopes: BTreeSet<ExecutionContext>,
-        profile_sources: BTreeSet<String>,
     }
-    let mut operations: BTreeMap<(String, bool), OperationAggregate> = BTreeMap::new();
-    let mut properties: BTreeMap<(String, bool), PropertyAggregate> = BTreeMap::new();
+    let mut operations: BTreeMap<(String, bool, InventoryCompleteness), OperationAggregate> =
+        BTreeMap::new();
+    let mut properties: BTreeMap<(String, bool, InventoryCompleteness), PropertyAggregate> =
+        BTreeMap::new();
     for line in &validated.records {
         let ObservationLine::Capability(record) = line else {
             continue;
@@ -1155,8 +1303,24 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
         let source = format!("{}:{}", record.common.run_id, record.common.record_id);
         match &record.subject {
             CapabilitySubject::Identity { .. } => {}
-            CapabilitySubject::Operation { code, supported } => {
-                let aggregate = operations.entry((code.clone(), *supported)).or_default();
+            CapabilitySubject::Operation {
+                code,
+                supported,
+                canonical_name,
+            } => {
+                if let Some(name) = canonical_name {
+                    candidates.push(candidate(
+                        CandidateAssertion::OperationName {
+                            code: code.clone(),
+                            name: name.name.clone(),
+                        },
+                        vec![source.clone()],
+                        vec![name.provenance.clone()],
+                    ));
+                }
+                let aggregate = operations
+                    .entry((code.clone(), *supported, record.inventory_completeness))
+                    .or_default();
                 aggregate.scopes.insert(record.common.context.clone());
                 aggregate.sources.insert(source);
             }
@@ -1167,9 +1331,69 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
                 access,
                 descriptor,
                 labels,
+                canonical_name,
+                source_native_name,
+                value_rows,
                 value_profiles,
             } => {
-                let aggregate = properties.entry((code.clone(), *supported)).or_default();
+                if let Some(name) = canonical_name {
+                    candidates.push(candidate(
+                        CandidateAssertion::PropertyName {
+                            code: code.clone(),
+                            name: name.name.clone(),
+                        },
+                        vec![source.clone()],
+                        vec![name.provenance.clone()],
+                    ));
+                }
+                if let Some(name) = source_native_name {
+                    candidates.push(candidate(
+                        CandidateAssertion::PropertySourceNativeName {
+                            code: code.clone(),
+                            name: name.name.clone(),
+                        },
+                        vec![source.clone()],
+                        vec![name.provenance.clone()],
+                    ));
+                }
+                for row in value_rows {
+                    candidates.push(candidate(
+                        CandidateAssertion::PropertyValueRow {
+                            code: code.clone(),
+                            value: row.value.clone(),
+                            label: row.label.clone(),
+                        },
+                        vec![source.clone()],
+                        vec![row.provenance.clone()],
+                    ));
+                }
+                for profile in value_profiles {
+                    let provenance = profile
+                        .evidence
+                        .iter()
+                        .map(|evidence_reference| AssertionProvenance {
+                            evidence_reference: evidence_reference.clone(),
+                            epistemic: record.common.epistemic.clone(),
+                        })
+                        .collect();
+                    let mut assertion_profile = profile.clone();
+                    assertion_profile.evidence.clear();
+                    let mut profile_candidate = candidate(
+                        CandidateAssertion::PropertyValueProfile {
+                            code: code.clone(),
+                            profile: assertion_profile,
+                        },
+                        vec![source.clone()],
+                        provenance,
+                    );
+                    profile_candidate
+                        .observed_scopes
+                        .push(record.common.context.clone());
+                    candidates.push(profile_candidate);
+                }
+                let aggregate = properties
+                    .entry((code.clone(), *supported, record.inventory_completeness))
+                    .or_default();
                 aggregate.property_type = aggregate.property_type.clone().or(property_type.clone());
                 aggregate.access = aggregate.access.clone().or(access.clone());
                 aggregate.descriptor = aggregate.descriptor.clone().or(descriptor.clone());
@@ -1184,40 +1408,27 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
                     aggregate.label_scopes.insert(record.common.context.clone());
                     aggregate.label_sources.insert(source.clone());
                 }
-                for profile in value_profiles {
-                    if !aggregate.value_profiles.contains(profile) {
-                        aggregate.value_profiles.push(profile.clone());
-                    }
-                }
-                if !value_profiles.is_empty() {
-                    aggregate
-                        .profile_scopes
-                        .insert(record.common.context.clone());
-                    aggregate.profile_sources.insert(source);
-                }
             }
         }
     }
-    for ((code, supported), aggregate) in operations {
+    for ((code, supported, inventory_completeness), aggregate) in operations {
         candidates.push(candidate(
             CandidateAssertion::Operation {
                 code,
                 supported,
+                inventory_completeness,
                 scopes: aggregate.scopes.into_iter().collect(),
             },
             aggregate.sources.into_iter().collect(),
+            Vec::new(),
         ));
     }
-    for ((code, supported), mut aggregate) in properties {
-        aggregate.value_profiles.sort_by(|left, right| {
-            serde_json::to_string(left)
-                .expect("profile serializes")
-                .cmp(&serde_json::to_string(right).expect("profile serializes"))
-        });
+    for ((code, supported, inventory_completeness), aggregate) in properties {
         candidates.push(candidate(
             CandidateAssertion::Property {
                 code: code.clone(),
                 supported,
+                inventory_completeness,
                 property_type: aggregate.property_type,
                 access: aggregate.access,
                 descriptor: None,
@@ -1226,12 +1437,14 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
                 scopes: aggregate.capability_scopes.iter().cloned().collect(),
             },
             aggregate.capability_sources.iter().cloned().collect(),
+            Vec::new(),
         ));
         if let Some(descriptor) = aggregate.descriptor {
             candidates.push(candidate(
                 CandidateAssertion::Property {
                     code: code.clone(),
                     supported,
+                    inventory_completeness,
                     property_type: None,
                     access: None,
                     descriptor: Some(descriptor),
@@ -1240,6 +1453,7 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
                     scopes: aggregate.capability_scopes.iter().cloned().collect(),
                 },
                 aggregate.capability_sources.iter().cloned().collect(),
+                Vec::new(),
             ));
         }
         if !aggregate.labels.is_empty() {
@@ -1247,6 +1461,7 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
                 CandidateAssertion::Property {
                     code: code.clone(),
                     supported,
+                    inventory_completeness,
                     property_type: None,
                     access: None,
                     descriptor: None,
@@ -1255,25 +1470,11 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
                     scopes: aggregate.label_scopes.into_iter().collect(),
                 },
                 aggregate.label_sources.into_iter().collect(),
-            ));
-        }
-        if !aggregate.value_profiles.is_empty() {
-            candidates.push(candidate(
-                CandidateAssertion::Property {
-                    code,
-                    supported,
-                    property_type: None,
-                    access: None,
-                    descriptor: None,
-                    labels: BTreeMap::new(),
-                    value_profiles: aggregate.value_profiles,
-                    scopes: aggregate.profile_scopes.into_iter().collect(),
-                },
-                aggregate.profile_sources.into_iter().collect(),
+                Vec::new(),
             ));
         }
     }
-    candidates.sort_by(|left, right| left.id.cmp(&right.id));
+    let candidates = consolidate_candidates(candidates);
     let record_dispositions = validated
         .report
         .dispositions
@@ -1305,15 +1506,53 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
     })
 }
 
-fn candidate(assertion: CandidateAssertion, mut source_records: Vec<String>) -> ProposalCandidate {
+fn candidate(
+    assertion: CandidateAssertion,
+    mut source_records: Vec<String>,
+    mut provenance: Vec<AssertionProvenance>,
+) -> ProposalCandidate {
     source_records.sort();
     source_records.dedup();
+    sort_dedup_provenance(&mut provenance);
     let id = sha256(&serde_json::to_vec(&assertion).expect("assertion serializes"));
     ProposalCandidate {
         id,
         assertion,
         source_records,
+        provenance,
+        observed_scopes: Vec::new(),
     }
+}
+
+fn consolidate_candidates(candidates: Vec<ProposalCandidate>) -> Vec<ProposalCandidate> {
+    let mut consolidated: BTreeMap<String, ProposalCandidate> = BTreeMap::new();
+    for candidate in candidates {
+        match consolidated.entry(candidate.id.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(candidate);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let current = entry.get_mut();
+                debug_assert_eq!(current.assertion, candidate.assertion);
+                current.source_records.extend(candidate.source_records);
+                current.source_records.sort();
+                current.source_records.dedup();
+                current.provenance.extend(candidate.provenance);
+                sort_dedup_provenance(&mut current.provenance);
+                current.observed_scopes.extend(candidate.observed_scopes);
+                current.observed_scopes.sort();
+                current.observed_scopes.dedup();
+            }
+        }
+    }
+    consolidated.into_values().collect()
+}
+
+fn sort_dedup_provenance(provenance: &mut Vec<AssertionProvenance>) {
+    provenance.sort_by_cached_key(|item| {
+        serde_json::to_string(item).expect("assertion provenance serializes")
+    });
+    provenance.dedup();
 }
 
 fn proposal_digest(
@@ -1374,11 +1613,15 @@ pub fn apply_review(
     }
 
     let mut manifest = base.clone();
-    for candidate in &proposal.candidates {
-        if review.decisions[&candidate.id] != ReviewDisposition::Accept {
-            continue;
+    for semantic_pass in [false, true] {
+        for candidate in &proposal.candidates {
+            if review.decisions[&candidate.id] != ReviewDisposition::Accept
+                || is_semantic_candidate(&candidate.assertion) != semantic_pass
+            {
+                continue;
+            }
+            apply_candidate(&mut manifest, candidate)?;
         }
-        apply_candidate(&mut manifest, candidate)?;
     }
     manifest
         .require_supported_schema()
@@ -1387,6 +1630,17 @@ pub fn apply_review(
         .require_valid_mode_entries()
         .map_err(|error| GenerationError::ApplyConflict(error.to_string()))?;
     Ok(manifest)
+}
+
+fn is_semantic_candidate(assertion: &CandidateAssertion) -> bool {
+    matches!(
+        assertion,
+        CandidateAssertion::OperationName { .. }
+            | CandidateAssertion::PropertyName { .. }
+            | CandidateAssertion::PropertySourceNativeName { .. }
+            | CandidateAssertion::PropertyValueRow { .. }
+            | CandidateAssertion::PropertyValueProfile { .. }
+    )
 }
 
 fn require_proposal_integrity(proposal: &Proposal) -> Result<(), GenerationError> {
@@ -1429,12 +1683,19 @@ fn require_proposal_integrity(proposal: &Proposal) -> Result<(), GenerationError
         let expected_id = sha256(
             &serde_json::to_vec(&candidate.assertion).expect("candidate assertion serializes"),
         );
+        let mut expected_provenance = candidate.provenance.clone();
+        sort_dedup_provenance(&mut expected_provenance);
+        let mut expected_scopes = candidate.observed_scopes.clone();
+        expected_scopes.sort();
+        expected_scopes.dedup();
         if candidate.id != expected_id
             || !candidate
                 .source_records
                 .windows(2)
                 .all(|pair| pair[0] < pair[1])
             || candidate.source_records.is_empty()
+            || candidate.provenance != expected_provenance
+            || candidate.observed_scopes != expected_scopes
         {
             return Err(GenerationError::ProposalIntegrity(format!(
                 "candidate {:?} has an invalid id or source list",
@@ -1527,6 +1788,7 @@ fn apply_candidate(
         CandidateAssertion::Operation {
             code,
             supported,
+            inventory_completeness: _,
             scopes,
         } => {
             if !supported {
@@ -1554,6 +1816,7 @@ fn apply_candidate(
                         .and_then(crate::std_names::standard_operation_name)
                         .map(String::from)
                         .unwrap_or_else(|| format!("raw_{code}")),
+                    kind: OperationKind::AdvertisedOnly,
                     owner: String::new(),
                     data_phase: None,
                     params: Vec::new(),
@@ -1572,9 +1835,39 @@ fn apply_candidate(
                 });
             merge_scopes(&mut operation.observed_scopes, observed_scopes);
         }
+        CandidateAssertion::OperationName { code, name } => {
+            let operation = manifest.operations.get_mut(code).ok_or_else(|| {
+                GenerationError::ApplyConflict(format!(
+                    "operation semantic name references missing code {code:?}"
+                ))
+            })?;
+            let generated_standard_name =
+                parse_hex_code(code).and_then(crate::std_names::standard_operation_name);
+            apply_canonical_name(
+                code,
+                &mut operation.name,
+                name,
+                "operation",
+                generated_standard_name,
+            )?;
+            merge_entity_evidence(&mut operation.evidence, &candidate.provenance);
+            merge_provenanced_name(
+                &mut manifest
+                    .semantic_assertions
+                    .operations
+                    .entry(code.clone())
+                    .or_default()
+                    .canonical_name,
+                name,
+                &candidate.provenance,
+                format!("operation {code}"),
+            )?;
+            register_assertion_evidence(manifest, &candidate.provenance);
+        }
         CandidateAssertion::Property {
             code,
             supported,
+            inventory_completeness: _,
             property_type,
             access,
             descriptor,
@@ -1627,7 +1920,7 @@ fn apply_candidate(
                     ptype: property_type.clone(),
                     access: access.clone(),
                     initial_value: None,
-                    kind: PropertyKind::Setting,
+                    kind: PropertyKind::CatalogOnly,
                     descriptor: proposal_descriptor.clone(),
                     payload: None,
                     controls: BTreeMap::new(),
@@ -1665,6 +1958,188 @@ fn apply_candidate(
             });
             merge_scopes(&mut property.observed_scopes, observed_scopes);
         }
+        CandidateAssertion::PropertyName { code, name } => {
+            let property = manifest.properties.get_mut(code).ok_or_else(|| {
+                GenerationError::ApplyConflict(format!(
+                    "property semantic name references missing code {code:?}"
+                ))
+            })?;
+            let generated_standard_name =
+                parse_hex_code(code).and_then(crate::std_names::standard_property_name);
+            apply_canonical_name(
+                code,
+                &mut property.name,
+                name,
+                "property",
+                generated_standard_name,
+            )?;
+            merge_entity_evidence(&mut property.evidence, &candidate.provenance);
+            merge_provenanced_name(
+                &mut manifest
+                    .semantic_assertions
+                    .properties
+                    .entry(code.clone())
+                    .or_default()
+                    .canonical_name,
+                name,
+                &candidate.provenance,
+                format!("property {code}"),
+            )?;
+            register_assertion_evidence(manifest, &candidate.provenance);
+        }
+        CandidateAssertion::PropertySourceNativeName { code, name } => {
+            let property = manifest.properties.get_mut(code).ok_or_else(|| {
+                GenerationError::ApplyConflict(format!(
+                    "source-native property name references missing code {code:?}"
+                ))
+            })?;
+            if property
+                .ptp_name
+                .as_ref()
+                .is_some_and(|current| current != name)
+            {
+                return Err(GenerationError::ApplyConflict(format!(
+                    "property {code} source-native name {:?} conflicts with {name:?}",
+                    property.ptp_name
+                )));
+            }
+            property.ptp_name = Some(name.clone());
+            merge_entity_evidence(&mut property.evidence, &candidate.provenance);
+            merge_provenanced_name(
+                &mut manifest
+                    .semantic_assertions
+                    .properties
+                    .entry(code.clone())
+                    .or_default()
+                    .source_native_name,
+                name,
+                &candidate.provenance,
+                format!("property {code} source-native"),
+            )?;
+            register_assertion_evidence(manifest, &candidate.provenance);
+        }
+        CandidateAssertion::PropertyValueRow { code, value, label } => {
+            let property = manifest.properties.get_mut(code).ok_or_else(|| {
+                GenerationError::ApplyConflict(format!(
+                    "property value row references missing code {code:?}"
+                ))
+            })?;
+            if property.ptype.as_deref() != Some(value.property_type()) {
+                return Err(GenerationError::ApplyConflict(format!(
+                    "property {code} type {:?} conflicts with typed value {}",
+                    property.ptype,
+                    value.property_type()
+                )));
+            }
+            if let Some(raw) = value.as_i64() {
+                if property
+                    .value_rows
+                    .iter()
+                    .any(|row| row.raw == raw && row.label != *label)
+                {
+                    return Err(GenerationError::ApplyConflict(format!(
+                        "property {code} value {raw} has a conflicting curated label"
+                    )));
+                }
+                if let Some(row) = property
+                    .value_rows
+                    .iter_mut()
+                    .find(|row| row.raw == raw && row.label == *label)
+                {
+                    merge_entity_evidence(&mut row.evidence, &candidate.provenance);
+                } else {
+                    property.value_rows.push(PropertyValueRow {
+                        label: label.clone(),
+                        raw,
+                        evidence: evidence_references(&candidate.provenance),
+                    });
+                    property.value_rows.sort_by(|left, right| {
+                        left.raw.cmp(&right.raw).then(left.label.cmp(&right.label))
+                    });
+                }
+            }
+            merge_entity_evidence(&mut property.evidence, &candidate.provenance);
+            let ledger = manifest
+                .semantic_assertions
+                .properties
+                .entry(code.clone())
+                .or_default();
+            if ledger
+                .value_rows
+                .iter()
+                .any(|row| row.value == *value && row.label != *label)
+            {
+                return Err(GenerationError::ApplyConflict(format!(
+                    "property {code} typed value has conflicting semantic labels"
+                )));
+            }
+            if let Some(row) = ledger
+                .value_rows
+                .iter_mut()
+                .find(|row| row.value == *value && row.label == *label)
+            {
+                row.provenance.extend(candidate.provenance.clone());
+                sort_dedup_provenance(&mut row.provenance);
+            } else {
+                ledger.value_rows.push(ProvenancedPropertyValueRow {
+                    value: value.clone(),
+                    label: label.clone(),
+                    provenance: candidate.provenance.clone(),
+                });
+                ledger.value_rows.sort_by_cached_key(|row| {
+                    serde_json::to_string(row).expect("semantic row serializes")
+                });
+            }
+            register_assertion_evidence(manifest, &candidate.provenance);
+        }
+        CandidateAssertion::PropertyValueProfile { code, profile } => {
+            if candidate.observed_scopes.is_empty() {
+                if let Some(mode) = &profile.mode {
+                    register_observed_mode(manifest, mode);
+                }
+            } else {
+                register_observed_modes(manifest, &candidate.observed_scopes);
+            }
+            let property = manifest.properties.get_mut(code).ok_or_else(|| {
+                GenerationError::ApplyConflict(format!(
+                    "property value profile references missing code {code:?}"
+                ))
+            })?;
+            let mut profile = model_value_profile(profile);
+            profile.evidence = evidence_references(&candidate.provenance);
+            property.value_profiles.retain(|current| {
+                current.connection != profile.connection || current.mode != profile.mode
+            });
+            property.value_profiles.push(profile.clone());
+            property.value_profiles.sort_by(|left, right| {
+                left.connection
+                    .cmp(&right.connection)
+                    .then_with(|| left.mode.cmp(&right.mode))
+            });
+            merge_entity_evidence(&mut property.evidence, &candidate.provenance);
+            let ledger = manifest
+                .semantic_assertions
+                .properties
+                .entry(code.clone())
+                .or_default();
+            if let Some(current) = ledger
+                .value_profiles
+                .iter_mut()
+                .find(|current| current.profile == profile)
+            {
+                current.provenance.extend(candidate.provenance.clone());
+                sort_dedup_provenance(&mut current.provenance);
+            } else {
+                ledger.value_profiles.push(ProvenancedPropertyValueProfile {
+                    profile,
+                    provenance: candidate.provenance.clone(),
+                });
+                ledger.value_profiles.sort_by_cached_key(|profile| {
+                    serde_json::to_string(profile).expect("semantic profile serializes")
+                });
+            }
+            register_assertion_evidence(manifest, &candidate.provenance);
+        }
     }
     if !manifest.evidence.contains_key("canonicalObservation") {
         manifest.evidence.insert(
@@ -1679,6 +2154,99 @@ fn apply_candidate(
     Ok(())
 }
 
+fn apply_canonical_name(
+    code: &str,
+    current: &mut String,
+    proposed: &str,
+    subject: &str,
+    generated_standard_name: Option<&str>,
+) -> Result<(), GenerationError> {
+    let placeholder = format!("raw_{code}");
+    if current != proposed
+        && current != &placeholder
+        && generated_standard_name != Some(current.as_str())
+    {
+        return Err(GenerationError::ApplyConflict(format!(
+            "{subject} {code} curated name {current:?} conflicts with {proposed:?}"
+        )));
+    }
+    *current = proposed.to_string();
+    Ok(())
+}
+
+fn merge_provenanced_name(
+    target: &mut Option<ProvenancedName>,
+    name: &str,
+    provenance: &[AssertionProvenance],
+    subject: String,
+) -> Result<(), GenerationError> {
+    match target {
+        Some(current) if current.name != name => Err(GenerationError::ApplyConflict(format!(
+            "{subject} assertion {:?} conflicts with {name:?}",
+            current.name
+        ))),
+        Some(current) => {
+            current.provenance.extend_from_slice(provenance);
+            sort_dedup_provenance(&mut current.provenance);
+            Ok(())
+        }
+        None => {
+            *target = Some(ProvenancedName {
+                name: name.to_string(),
+                provenance: provenance.to_vec(),
+            });
+            Ok(())
+        }
+    }
+}
+
+fn model_value_profile(profile: &CapabilityValueProfile) -> PropertyValueProfile {
+    PropertyValueProfile {
+        connection: profile.connection.clone(),
+        mode: profile.mode.clone(),
+        rows: profile
+            .rows
+            .iter()
+            .map(|row| PropertyValueProfileRow {
+                label: row.label.clone(),
+                raw: row.raw,
+                legal: row.legal,
+                aliases: row.aliases.clone(),
+                write_store_raw: row.write_store_raw,
+            })
+            .collect(),
+        evidence: profile.evidence.clone(),
+    }
+}
+
+fn evidence_references(provenance: &[AssertionProvenance]) -> Vec<String> {
+    provenance
+        .iter()
+        .map(|item| item.evidence_reference.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn merge_entity_evidence(target: &mut Vec<String>, provenance: &[AssertionProvenance]) {
+    target.extend(evidence_references(provenance));
+    target.sort();
+    target.dedup();
+}
+
+fn register_assertion_evidence(manifest: &mut CameraManifest, provenance: &[AssertionProvenance]) {
+    for reference in evidence_references(provenance) {
+        manifest
+            .evidence
+            .entry(reference)
+            .or_insert_with(|| Evidence {
+                kind: "semantic-assertion".to_string(),
+                path: String::new(),
+                date: String::new(),
+            });
+    }
+}
+
 fn model_scope(scope: &ExecutionContext) -> ObservedScope {
     ObservedScope {
         connection: scope.connection.clone(),
@@ -1689,8 +2257,12 @@ fn model_scope(scope: &ExecutionContext) -> ObservedScope {
 
 fn register_observed_modes(manifest: &mut CameraManifest, scopes: &[ExecutionContext]) {
     for scope in scopes {
-        manifest.modes.entry(scope.mode.clone()).or_default();
+        register_observed_mode(manifest, &scope.mode);
     }
+}
+
+fn register_observed_mode(manifest: &mut CameraManifest, mode: &str) {
+    manifest.modes.entry(mode.to_string()).or_default();
 }
 
 fn merge_scopes(target: &mut Vec<ObservedScope>, incoming: Vec<ObservedScope>) {
@@ -1833,6 +2405,54 @@ mod tests {
         value
     }
 
+    fn assertion_provenance(
+        evidence_reference: &str,
+        class: &str,
+        confidence: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "evidenceReference": evidence_reference,
+            "epistemic": {
+                "class": class,
+                "confidence": confidence,
+                "alternatives": ["unresolvedAlternative"],
+                "falsifier": "a public capture contradicts the assertion"
+            }
+        })
+    }
+
+    fn semantic_capability(
+        record_id: &str,
+        ordinal: u64,
+        subject: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut value = common(record_id, ordinal);
+        let object = value.as_object_mut().unwrap();
+        object.insert("kind".into(), serde_json::json!("capability"));
+        object.insert("subject".into(), subject);
+        object.insert("evidenceBasis".into(), serde_json::json!("descriptorOnly"));
+        object.insert("observedEffect".into(), serde_json::json!("unknown"));
+        object.insert(
+            "readback".into(),
+            serde_json::json!({
+                "status": "notObserved", "reason": "synthetic semantic fixture"
+            }),
+        );
+        serde_json::Value::Object(object.clone())
+    }
+
+    fn accept_all(proposal: &Proposal) -> ProposalReview {
+        ProposalReview {
+            schema: REVIEW_SCHEMA.to_string(),
+            proposal_digest: proposal.digest.clone(),
+            decisions: proposal
+                .candidates
+                .iter()
+                .map(|candidate| (candidate.id.clone(), ReviewDisposition::Accept))
+                .collect(),
+        }
+    }
+
     fn descriptor_property(
         record_id: &str,
         ordinal: u64,
@@ -1888,6 +2508,39 @@ mod tests {
                 "observed": 1,
                 "observedAt": { "clock": observed_clock, "value": 2 },
                 "source": "directProperty"
+            }),
+        );
+        serde_json::Value::Object(record.clone())
+    }
+
+    fn inventory_operation(
+        record_id: &str,
+        supported: bool,
+        completeness: Option<&str>,
+        state: &str,
+    ) -> serde_json::Value {
+        let mut record = common(record_id, 1);
+        record["context"]["state"] = serde_json::json!(state);
+        let record = record.as_object_mut().unwrap();
+        record.insert("kind".into(), serde_json::json!("capability"));
+        record.insert(
+            "subject".into(),
+            serde_json::json!({
+                "type": "operation", "code": "0x9999", "supported": supported
+            }),
+        );
+        if let Some(completeness) = completeness {
+            record.insert(
+                "inventoryCompleteness".into(),
+                serde_json::json!(completeness),
+            );
+        }
+        record.insert("evidenceBasis".into(), serde_json::json!("descriptorOnly"));
+        record.insert("observedEffect".into(), serde_json::json!("unknown"));
+        record.insert(
+            "readback".into(),
+            serde_json::json!({
+                "status": "notObserved", "reason": "inventory enumeration"
             }),
         );
         serde_json::Value::Object(record.clone())
@@ -1986,6 +2639,96 @@ mod tests {
             let report = validate_bundles(&[&input]).unwrap_err();
             assert!(report.dispositions.iter().any(|entry| entry.code == "O003"));
         }
+    }
+
+    #[test]
+    fn inventory_completeness_defaults_partial_and_gates_negative_assertions() {
+        let partial_positive =
+            canonical_bundle(&[inventory_operation("partial-positive", true, None, "ready")]);
+        let validated = validate_bundles(&[&partial_positive]).expect("positive partial inventory");
+        let ObservationLine::Capability(record) = &validated.records[0] else {
+            panic!("capability record");
+        };
+        assert_eq!(
+            record.inventory_completeness,
+            InventoryCompleteness::Partial
+        );
+        let proposal = propose(&[&partial_positive]).unwrap();
+        assert!(proposal.candidates.iter().all(|candidate| !matches!(
+            candidate.assertion,
+            CandidateAssertion::Operation {
+                supported: false,
+                ..
+            }
+        )));
+
+        let partial_negative = canonical_bundle(&[inventory_operation(
+            "partial-negative",
+            false,
+            None,
+            "ready",
+        )]);
+        let report = validate_bundles(&[&partial_negative]).unwrap_err();
+        assert!(report.dispositions.iter().any(|entry| entry.code == "O117"));
+
+        let complete_negative = canonical_bundle(&[inventory_operation(
+            "complete-negative",
+            false,
+            Some("complete"),
+            "ready",
+        )]);
+        let proposal = propose(&[&complete_negative]).expect("reviewable complete negative");
+        assert!(proposal.candidates.iter().any(|candidate| matches!(
+            candidate.assertion,
+            CandidateAssertion::Operation {
+                supported: false,
+                inventory_completeness: InventoryCompleteness::Complete,
+                ..
+            }
+        )));
+
+        let mut partial_property = inventory_operation("partial-property", false, None, "ready");
+        partial_property["subject"]["type"] = serde_json::json!("property");
+        let partial_property = canonical_bundle(&[partial_property]);
+        let report = validate_bundles(&[&partial_property]).unwrap_err();
+        assert!(report.dispositions.iter().any(|entry| entry.code == "O117"));
+
+        let mut complete_property =
+            inventory_operation("complete-property", false, Some("complete"), "ready");
+        complete_property["subject"]["type"] = serde_json::json!("property");
+        let complete_property = canonical_bundle(&[complete_property]);
+        let proposal = propose(&[&complete_property]).expect("reviewable property negative");
+        assert!(proposal.candidates.iter().any(|candidate| matches!(
+            candidate.assertion,
+            CandidateAssertion::Property {
+                supported: false,
+                inventory_completeness: InventoryCompleteness::Complete,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn complete_negative_is_scoped_and_does_not_conflict_with_other_contexts() {
+        let mut positive = inventory_operation("positive", true, None, "ready");
+        positive["runId"] = serde_json::json!("run-positive");
+        let mut negative = inventory_operation("negative", false, Some("complete"), "recording");
+        negative["runId"] = serde_json::json!("run-negative");
+        let positive = canonical_bundle_for("run-positive", "header-positive", &[positive]);
+        let negative = canonical_bundle_for("run-negative", "header-negative", &[negative]);
+
+        let proposal = propose(&[&positive, &negative]).expect("distinct exact scopes coexist");
+        assert_eq!(
+            proposal
+                .candidates
+                .iter()
+                .filter(|candidate| matches!(
+                    candidate.assertion,
+                    CandidateAssertion::Operation { ref code, .. } if code == "0x9999"
+                ))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -2115,6 +2858,637 @@ mod tests {
     }
 
     #[test]
+    fn semantic_assertions_are_independent_and_identical_provenance_merges() {
+        let operation_a = semantic_capability(
+            "operation-a",
+            1,
+            serde_json::json!({
+                "type": "operation", "code": "0x9999", "supported": true,
+                "canonicalName": {
+                    "name": "semanticOperation",
+                    "provenance": assertion_provenance(
+                        "publicOperationTable", "inference", "medium"
+                    )
+                }
+            }),
+        );
+        let operation_b = semantic_capability(
+            "operation-b",
+            2,
+            serde_json::json!({
+                "type": "operation", "code": "0x9999", "supported": true,
+                "canonicalName": {
+                    "name": "semanticOperation",
+                    "provenance": assertion_provenance(
+                        "capturedOperationLabel", "directObservation", "exact"
+                    )
+                }
+            }),
+        );
+        let property = semantic_capability(
+            "property",
+            3,
+            serde_json::json!({
+                "type": "property", "code": "0xd001", "supported": true,
+                "canonicalName": {
+                    "name": "semanticProperty",
+                    "provenance": assertion_provenance(
+                        "publicPropertyTable", "deterministicReduction", "high"
+                    )
+                },
+                "sourceNativeName": {
+                    "name": "NativeProperty",
+                    "provenance": assertion_provenance(
+                        "capturedNativeName", "directObservation", "exact"
+                    )
+                },
+                "propertyType": "u16",
+                "access": "readOnly",
+                "valueRows": [
+                    {
+                        "value": {"type":"u16", "value":1},
+                        "label": "first",
+                        "provenance": assertion_provenance(
+                            "publicValueOne", "inference", "medium"
+                        )
+                    },
+                    {
+                        "value": {"type":"u16", "value":2},
+                        "label": "second",
+                        "provenance": assertion_provenance(
+                            "capturedValueTwo", "directObservation", "exact"
+                        )
+                    }
+                ],
+                "valueProfiles": [
+                    {
+                        "connection": "usb", "mode": "shooting/stills",
+                        "rows": [{"label":"first", "raw":1}],
+                        "evidence": ["capturedProfile"]
+                    },
+                    {
+                        "connection": "wireless", "mode": "shooting/video",
+                        "rows": [{"label":"second", "raw":2}],
+                        "evidence": ["publicProfile"]
+                    }
+                ]
+            }),
+        );
+        let forward =
+            canonical_bundle(&[operation_a.clone(), operation_b.clone(), property.clone()]);
+        let reversed = canonical_bundle(&[property, operation_b, operation_a]);
+        let proposal = propose(&[&forward]).unwrap();
+        assert_eq!(
+            proposal_json(&proposal).unwrap(),
+            proposal_json(&propose(&[&reversed]).unwrap()).unwrap()
+        );
+
+        let operation_name = proposal
+            .candidates
+            .iter()
+            .find(|candidate| {
+                matches!(
+                    candidate.assertion,
+                    CandidateAssertion::OperationName { .. }
+                )
+            })
+            .expect("operation name candidate");
+        assert_eq!(operation_name.source_records.len(), 2);
+        assert_eq!(operation_name.provenance.len(), 2);
+        assert_eq!(
+            operation_name
+                .provenance
+                .iter()
+                .map(|item| item.epistemic.confidence)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([Confidence::Exact, Confidence::Medium])
+        );
+        assert_eq!(
+            proposal
+                .candidates
+                .iter()
+                .filter(|candidate| matches!(
+                    candidate.assertion,
+                    CandidateAssertion::PropertyName { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            proposal
+                .candidates
+                .iter()
+                .filter(|candidate| matches!(
+                    candidate.assertion,
+                    CandidateAssertion::PropertySourceNativeName { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            proposal
+                .candidates
+                .iter()
+                .filter(|candidate| matches!(
+                    candidate.assertion,
+                    CandidateAssertion::PropertyValueRow { .. }
+                ))
+                .count(),
+            2
+        );
+        assert_eq!(
+            proposal
+                .candidates
+                .iter()
+                .filter(|candidate| matches!(
+                    candidate.assertion,
+                    CandidateAssertion::PropertyValueProfile { .. }
+                ))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn apply_preserves_runtime_behavior_and_durable_assertion_provenance() {
+        let operation = semantic_capability(
+            "operation",
+            1,
+            serde_json::json!({
+                "type": "operation", "code": "0x9999", "supported": true,
+                "canonicalName": {
+                    "name": "semanticOperation",
+                    "provenance": assertion_provenance(
+                        "publicOperationName", "inference", "medium"
+                    )
+                }
+            }),
+        );
+        let property = semantic_capability(
+            "property",
+            2,
+            serde_json::json!({
+                "type": "property", "code": "0xd001", "supported": true,
+                "canonicalName": {
+                    "name": "semanticProperty",
+                    "provenance": assertion_provenance(
+                        "publicPropertyName", "deterministicReduction", "high"
+                    )
+                },
+                "sourceNativeName": {
+                    "name": "NativeProperty",
+                    "provenance": assertion_provenance(
+                        "capturedNativeName", "directObservation", "exact"
+                    )
+                },
+                "propertyType": "u16", "access": "readOnly",
+                "valueRows": [{
+                    "value": {"type":"u16", "value":7}, "label":"seven",
+                    "provenance": assertion_provenance(
+                        "publicValueSeven", "inference", "low"
+                    )
+                }]
+            }),
+        );
+        let proposal = propose(&[&canonical_bundle(&[operation, property])]).unwrap();
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+operations:
+  "0x9999":
+    name: raw_0x9999
+    kind: advertisedOnly
+    owner: immutableOwner
+    handler: immutableHandler
+    modes: [shooting/stills]
+    connections: [usb]
+properties:
+  "0xd001":
+    name: raw_0xd001
+    type: u16
+    access: readOnly
+    initialValue: 7
+    kind: catalogOnly
+    descriptor: { form: enum, values: [7], source: camera }
+"#,
+        )
+        .unwrap();
+        let applied = apply_review(&base, &proposal, &accept_all(&proposal)).unwrap();
+
+        let operation = applied.operations.get("0x9999").unwrap();
+        assert_eq!(operation.name, "semanticOperation");
+        assert_eq!(operation.kind, OperationKind::AdvertisedOnly);
+        assert_eq!(operation.owner, "immutableOwner");
+        assert_eq!(operation.handler.as_deref(), Some("immutableHandler"));
+        assert_eq!(operation.modes, ["shooting/stills"]);
+        assert_eq!(operation.connections, ["usb"]);
+
+        let property = applied.properties.get("0xd001").unwrap();
+        assert_eq!(property.name, "semanticProperty");
+        assert_eq!(property.ptp_name.as_deref(), Some("NativeProperty"));
+        assert_eq!(property.initial_value, Some(7));
+        assert_eq!(property.access.as_deref(), Some("readOnly"));
+        assert_eq!(property.kind, PropertyKind::CatalogOnly);
+        let descriptor = property.descriptor.as_ref().unwrap();
+        assert_eq!(descriptor.form, "enum");
+        assert_eq!(descriptor.values, [7]);
+        assert_eq!(descriptor.source, Some(ValueSource::Camera));
+        assert!(property
+            .value_rows
+            .iter()
+            .any(|row| row.raw == 7 && row.label == "seven"));
+
+        let semantic = applied
+            .semantic_assertions
+            .properties
+            .get("0xd001")
+            .unwrap();
+        let name = semantic.canonical_name.as_ref().unwrap();
+        assert_eq!(name.provenance[0].epistemic.confidence, Confidence::High);
+        assert_eq!(
+            name.provenance[0].epistemic.alternatives,
+            ["unresolvedAlternative"]
+        );
+        assert!(name.provenance[0].epistemic.falsifier.is_some());
+        assert_eq!(
+            semantic.value_rows[0].value,
+            TypedPropertyValue::U16 { value: 7 }
+        );
+        assert_eq!(
+            semantic.value_rows[0].provenance[0].epistemic.confidence,
+            Confidence::Low
+        );
+    }
+
+    #[test]
+    fn generated_standard_ptp_names_are_replaceable() {
+        let operation = semantic_capability(
+            "operation",
+            1,
+            serde_json::json!({
+                "type": "operation", "code": "0x1016", "supported": true,
+                "canonicalName": {
+                    "name": "setDevicePropValue",
+                    "provenance": assertion_provenance(
+                        "publicOperationName", "inference", "medium"
+                    )
+                }
+            }),
+        );
+        let property = semantic_capability(
+            "property",
+            2,
+            serde_json::json!({
+                "type": "property", "code": "0x500e", "supported": true,
+                "propertyType": "u16", "access": "readOnly",
+                "canonicalName": {
+                    "name": "exposureProgramMode",
+                    "provenance": assertion_provenance(
+                        "publicPropertyName", "inference", "medium"
+                    )
+                }
+            }),
+        );
+        let proposal = propose(&[&canonical_bundle(&[operation, property])]).unwrap();
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+operations:
+  "0x1016": { name: SetDevicePropValue }
+properties:
+  "0x500e": { name: ExposureProgramMode, type: u16, access: readOnly }
+"#,
+        )
+        .unwrap();
+
+        let applied = apply_review(&base, &proposal, &accept_all(&proposal)).unwrap();
+
+        assert_eq!(
+            applied.operations.get("0x1016").unwrap().name,
+            "setDevicePropValue"
+        );
+        assert_eq!(
+            applied.properties.get("0x500e").unwrap().name,
+            "exposureProgramMode"
+        );
+    }
+
+    #[test]
+    fn independent_value_profile_registers_its_observed_mode() {
+        let mut property = semantic_capability(
+            "profile",
+            1,
+            serde_json::json!({
+                "type": "property", "code": "0xd001", "supported": true,
+                "propertyType": "u16", "access": "readOnly",
+                "valueProfiles": [{
+                    "connection": "wireless", "mode": "shooting/video",
+                    "rows": [{"label": "video", "raw": 1}],
+                    "evidence": ["capturedProfile"]
+                }]
+            }),
+        );
+        property["context"]["mode"] = serde_json::json!("shooting/stills");
+        let proposal = propose(&[&canonical_bundle(&[property])]).unwrap();
+        let profile_candidate = proposal
+            .candidates
+            .iter()
+            .find(|candidate| {
+                matches!(
+                    candidate.assertion,
+                    CandidateAssertion::PropertyValueProfile { .. }
+                )
+            })
+            .unwrap();
+        assert_eq!(profile_candidate.observed_scopes.len(), 1);
+        assert_eq!(profile_candidate.observed_scopes[0].mode, "shooting/stills");
+        let review = ProposalReview {
+            schema: REVIEW_SCHEMA.to_string(),
+            proposal_digest: proposal.digest.clone(),
+            decisions: proposal
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    let disposition = if matches!(
+                        candidate.assertion,
+                        CandidateAssertion::PropertyValueProfile { .. }
+                    ) {
+                        ReviewDisposition::Accept
+                    } else {
+                        ReviewDisposition::Reject
+                    };
+                    (candidate.id.clone(), disposition)
+                })
+                .collect(),
+        };
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+properties:
+  "0xd001": { name: curatedProperty, type: u16, access: readOnly }
+"#,
+        )
+        .unwrap();
+
+        let applied = apply_review(&base, &proposal, &review).unwrap();
+
+        assert!(applied.modes.contains_key("shooting/stills"));
+        assert!(!applied.modes.contains_key("shooting/video"));
+        assert_eq!(
+            applied.properties.get("0xd001").unwrap().value_profiles[0].mode,
+            Some("shooting/video".to_string())
+        );
+
+        let mut legacy_proposal = proposal.clone();
+        for candidate in &mut legacy_proposal.candidates {
+            candidate.observed_scopes.clear();
+        }
+        legacy_proposal.digest = proposal_digest(
+            &legacy_proposal.candidates,
+            &legacy_proposal.record_dispositions,
+        );
+        let legacy_json = proposal_json(&legacy_proposal).unwrap();
+        assert!(!legacy_json.contains("observedScopes"));
+        let legacy_proposal: Proposal = serde_json::from_str(&legacy_json).unwrap();
+        let legacy_review = ProposalReview {
+            schema: REVIEW_SCHEMA.to_string(),
+            proposal_digest: legacy_proposal.digest.clone(),
+            decisions: legacy_proposal
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    let disposition = if matches!(
+                        candidate.assertion,
+                        CandidateAssertion::PropertyValueProfile { .. }
+                    ) {
+                        ReviewDisposition::Accept
+                    } else {
+                        ReviewDisposition::Reject
+                    };
+                    (candidate.id.clone(), disposition)
+                })
+                .collect(),
+        };
+        let legacy_applied = apply_review(&base, &legacy_proposal, &legacy_review).unwrap();
+        assert!(legacy_applied.modes.contains_key("shooting/video"));
+    }
+
+    #[test]
+    fn curated_canonical_name_conflicts_fail_closed() {
+        let operation = semantic_capability(
+            "operation",
+            1,
+            serde_json::json!({
+                "type": "operation", "code": "0x9999", "supported": true,
+                "canonicalName": {
+                    "name": "proposedName",
+                    "provenance": assertion_provenance(
+                        "publicOperationName", "inference", "medium"
+                    )
+                }
+            }),
+        );
+        let proposal = propose(&[&canonical_bundle(&[operation])]).unwrap();
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+operations:
+  "0x9999": { name: curatedName }
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            apply_review(&base, &proposal, &accept_all(&proposal)),
+            Err(GenerationError::ApplyConflict(message))
+                if message.contains("curated name")
+        ));
+    }
+
+    #[test]
+    fn conflicting_and_unsupported_semantic_assertions_remain_reviewable() {
+        let records = [
+            semantic_capability(
+                "first",
+                1,
+                serde_json::json!({
+                    "type":"operation", "code":"0x9999", "supported":true,
+                    "canonicalName": {
+                        "name":"firstName",
+                        "provenance": assertion_provenance(
+                            "firstPublicName", "inference", "low"
+                        )
+                    }
+                }),
+            ),
+            semantic_capability(
+                "second",
+                2,
+                serde_json::json!({
+                    "type":"operation", "code":"0x9999", "supported":true,
+                    "canonicalName": {
+                        "name":"secondName",
+                        "provenance": assertion_provenance(
+                            "secondPublicName", "inference", "low"
+                        )
+                    }
+                }),
+            ),
+            {
+                let mut unsupported = semantic_capability(
+                    "unsupported",
+                    3,
+                    serde_json::json!({
+                        "type":"operation", "code":"0x9998", "supported":false,
+                        "canonicalName": {
+                            "name":"unsupportedName",
+                            "provenance": assertion_provenance(
+                                "unsupportedPublicName", "inference", "low"
+                            )
+                        }
+                    }),
+                );
+                unsupported["inventoryCompleteness"] = serde_json::json!("complete");
+                unsupported
+            },
+        ];
+        let proposal = propose(&[&canonical_bundle(&records)]).unwrap();
+        let names = proposal
+            .candidates
+            .iter()
+            .filter_map(|candidate| match &candidate.assertion {
+                CandidateAssertion::OperationName { code, name } => {
+                    Some((code.as_str(), name.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                ("0x9998", "unsupportedName"),
+                ("0x9999", "firstName"),
+                ("0x9999", "secondName"),
+            ])
+        );
+
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+operations:
+  "0x9999": { name: raw_0x9999, kind: advertisedOnly }
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            apply_review(&base, &proposal, &accept_all(&proposal)),
+            Err(GenerationError::ApplyConflict(_))
+        ));
+    }
+
+    #[test]
+    fn every_typed_value_representation_survives_apply() {
+        let cases = [
+            ("0xd001", "i8", serde_json::json!({"type":"i8", "value":-1})),
+            (
+                "0xd002",
+                "i16",
+                serde_json::json!({"type":"i16", "value":-2}),
+            ),
+            (
+                "0xd003",
+                "i32",
+                serde_json::json!({"type":"i32", "value":-3}),
+            ),
+            (
+                "0xd004",
+                "i64",
+                serde_json::json!({"type":"i64", "value":"-4"}),
+            ),
+            (
+                "0xd005",
+                "i128",
+                serde_json::json!({"type":"i128", "value":"-5"}),
+            ),
+            ("0xd006", "u8", serde_json::json!({"type":"u8", "value":6})),
+            (
+                "0xd007",
+                "u16",
+                serde_json::json!({"type":"u16", "value":7}),
+            ),
+            (
+                "0xd008",
+                "u32",
+                serde_json::json!({"type":"u32", "value":8}),
+            ),
+            (
+                "0xd009",
+                "u64",
+                serde_json::json!({"type":"u64", "value":"18446744073709551615"}),
+            ),
+            (
+                "0xd00a",
+                "u128",
+                serde_json::json!({"type":"u128", "value":"340282366920938463463374607431768211455"}),
+            ),
+            (
+                "0xd00b",
+                "str",
+                serde_json::json!({"type":"string", "value":"eleven"}),
+            ),
+        ];
+        let records = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (code, property_type, value))| {
+                semantic_capability(
+                    &format!("property-{index}"),
+                    index as u64 + 1,
+                    serde_json::json!({
+                        "type":"property", "code":code, "supported":true,
+                        "propertyType":property_type, "access":"readOnly",
+                        "valueRows":[{
+                            "value":value, "label":format!("value-{index}"),
+                            "provenance": assertion_provenance(
+                                &format!("publicValue{index}"),
+                                "syntheticFixture",
+                                "exact"
+                            )
+                        }]
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        let proposal = propose(&[&canonical_bundle(&records)]).unwrap();
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+"#,
+        )
+        .unwrap();
+        let applied = apply_review(&base, &proposal, &accept_all(&proposal)).unwrap();
+        for (code, property_type, _) in cases {
+            let rows = &applied
+                .semantic_assertions
+                .properties
+                .get(code)
+                .unwrap()
+                .value_rows;
+            assert_eq!(rows.len(), 1, "{code}");
+            assert_eq!(rows[0].value.property_type(), property_type, "{code}");
+            assert_eq!(
+                rows[0].provenance[0].epistemic.confidence,
+                Confidence::Exact
+            );
+        }
+    }
+
+    #[test]
     fn review_digest_and_candidate_coverage_are_fail_closed() {
         let input = canonical_bundle(&[]);
         let proposal = propose(&[&input]).unwrap();
@@ -2132,6 +3506,7 @@ mod tests {
                 identities: BTreeMap::new(),
             },
             evidence: BTreeMap::new(),
+            semantic_assertions: SemanticAssertionLedger::default(),
             sentinels: BTreeMap::new(),
             sequence_gates: BTreeMap::new(),
             camera_initiated_transfer: None,

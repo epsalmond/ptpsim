@@ -429,11 +429,30 @@ pub struct ObservationHttpResponse {
 pub struct ObservationCapability {
     pub common: ObservationCommon,
     pub subject: ObservationCapabilitySubject,
+    pub inventory_completeness: ObservationInventoryCompleteness,
     pub evidence_basis: ControlEvidenceBasis,
     pub observed_effect: ControlObservedEffect,
     pub readback: ObservationReadback,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ObservationInventoryCompleteness {
+    Partial,
+    Complete,
+}
+
+impl From<cc::InventoryCompleteness> for ObservationInventoryCompleteness {
+    fn from(value: cc::InventoryCompleteness) -> Self {
+        match value {
+            cc::InventoryCompleteness::Partial => Self::Partial,
+            cc::InventoryCompleteness::Complete => Self::Complete,
+        }
+    }
+}
+
+// UniFFI exported enums cannot use Rust Box fields to shrink only the larger
+// tagged variant without changing the generated foreign-language shape.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum ObservationCapabilitySubject {
     Identity {
@@ -442,16 +461,54 @@ pub enum ObservationCapabilitySubject {
     Operation {
         code: String,
         supported: bool,
+        canonical_name: Option<ObservationSemanticNameAssertion>,
     },
     Property {
         code: String,
         supported: bool,
+        canonical_name: Option<ObservationSemanticNameAssertion>,
+        source_native_name: Option<ObservationSemanticNameAssertion>,
         property_type: Option<String>,
         access: Option<String>,
         descriptor: Option<ObservationCapabilityDescriptor>,
         labels: Vec<ObservationStringField>,
+        value_rows: Vec<ObservationCapabilityValueRow>,
         value_profiles: Vec<ObservationCapabilityValueProfile>,
     },
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ObservationSemanticNameAssertion {
+    pub name: String,
+    pub provenance: ObservationAssertionProvenance,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ObservationAssertionProvenance {
+    pub evidence_reference: String,
+    pub epistemic: ObservationEpistemicMetadata,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ObservationCapabilityValueRow {
+    pub value: ObservationTypedPropertyValue,
+    pub label: String,
+    pub provenance: ObservationAssertionProvenance,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum ObservationTypedPropertyValue {
+    I8 { value: i8 },
+    I16 { value: i16 },
+    I32 { value: i32 },
+    I64 { value: String },
+    I128 { value: String },
+    U8 { value: u8 },
+    U16 { value: u16 },
+    U32 { value: u32 },
+    U64 { value: String },
+    U128 { value: String },
+    String { value: String },
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -574,7 +631,7 @@ impl From<&cc::ObservationLine> for ObservationValue {
                 value: value.into(),
             },
             cc::ObservationLine::Capability(value) => Self::Capability {
-                value: value.into(),
+                value: value.as_ref().into(),
             },
             cc::ObservationLine::ActionInvocation(value) => Self::ActionInvocation {
                 value: value.into(),
@@ -1124,6 +1181,7 @@ impl From<&cc::CapabilityRecord> for ObservationCapability {
         Self {
             common: (&value.common).into(),
             subject: (&value.subject).into(),
+            inventory_completeness: value.inventory_completeness.into(),
             evidence_basis: value.evidence_basis.into(),
             observed_effect: value.observed_effect.into(),
             readback: (&value.readback).into(),
@@ -1137,26 +1195,93 @@ impl From<&cc::CapabilitySubject> for ObservationCapabilitySubject {
             cc::CapabilitySubject::Identity { device_version } => Self::Identity {
                 device_version: device_version.clone(),
             },
-            cc::CapabilitySubject::Operation { code, supported } => Self::Operation {
+            cc::CapabilitySubject::Operation {
+                code,
+                supported,
+                canonical_name,
+            } => Self::Operation {
                 code: code.clone(),
                 supported: *supported,
+                canonical_name: canonical_name.as_deref().map(Into::into),
             },
             cc::CapabilitySubject::Property {
                 code,
                 supported,
+                canonical_name,
+                source_native_name,
                 property_type,
                 access,
                 descriptor,
                 labels,
+                value_rows,
                 value_profiles,
             } => Self::Property {
                 code: code.clone(),
                 supported: *supported,
+                canonical_name: canonical_name.as_deref().map(Into::into),
+                source_native_name: source_native_name.as_deref().map(Into::into),
                 property_type: property_type.clone(),
                 access: access.clone(),
                 descriptor: descriptor.as_ref().map(Into::into),
                 labels: string_fields(labels),
+                value_rows: value_rows.iter().map(Into::into).collect(),
                 value_profiles: value_profiles.iter().map(Into::into).collect(),
+            },
+        }
+    }
+}
+
+impl From<&cc::SemanticNameAssertion> for ObservationSemanticNameAssertion {
+    fn from(value: &cc::SemanticNameAssertion) -> Self {
+        Self {
+            name: value.name.clone(),
+            provenance: (&value.provenance).into(),
+        }
+    }
+}
+
+impl From<&cc::AssertionProvenance> for ObservationAssertionProvenance {
+    fn from(value: &cc::AssertionProvenance) -> Self {
+        Self {
+            evidence_reference: value.evidence_reference.clone(),
+            epistemic: (&value.epistemic).into(),
+        }
+    }
+}
+
+impl From<&cc::CapabilityValueRow> for ObservationCapabilityValueRow {
+    fn from(value: &cc::CapabilityValueRow) -> Self {
+        Self {
+            value: (&value.value).into(),
+            label: value.label.clone(),
+            provenance: (&value.provenance).into(),
+        }
+    }
+}
+
+impl From<&cc::TypedPropertyValue> for ObservationTypedPropertyValue {
+    fn from(value: &cc::TypedPropertyValue) -> Self {
+        match value {
+            cc::TypedPropertyValue::I8 { value } => Self::I8 { value: *value },
+            cc::TypedPropertyValue::I16 { value } => Self::I16 { value: *value },
+            cc::TypedPropertyValue::I32 { value } => Self::I32 { value: *value },
+            cc::TypedPropertyValue::I64 { value } => Self::I64 {
+                value: value.clone(),
+            },
+            cc::TypedPropertyValue::I128 { value } => Self::I128 {
+                value: value.clone(),
+            },
+            cc::TypedPropertyValue::U8 { value } => Self::U8 { value: *value },
+            cc::TypedPropertyValue::U16 { value } => Self::U16 { value: *value },
+            cc::TypedPropertyValue::U32 { value } => Self::U32 { value: *value },
+            cc::TypedPropertyValue::U64 { value } => Self::U64 {
+                value: value.clone(),
+            },
+            cc::TypedPropertyValue::U128 { value } => Self::U128 {
+                value: value.clone(),
+            },
+            cc::TypedPropertyValue::String { value } => Self::String {
+                value: value.clone(),
             },
         }
     }

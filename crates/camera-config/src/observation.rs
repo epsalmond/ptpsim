@@ -21,7 +21,7 @@ pub enum ObservationLine {
     PtpTransaction(Box<PtpTransactionRecord>),
     PtpEvent(PtpEventRecord),
     HttpExchange(HttpExchangeRecord),
-    Capability(CapabilityRecord),
+    Capability(Box<CapabilityRecord>),
     ActionInvocation(ActionInvocationRecord),
 }
 
@@ -269,7 +269,9 @@ pub enum EpistemicClass {
     SyntheticFixture,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum Confidence {
     Exact,
@@ -537,9 +539,30 @@ pub struct CapabilityRecord {
     #[serde(flatten)]
     pub common: ObservationCommon,
     pub subject: CapabilitySubject,
+    /// Completeness of the operation or property inventory in this record's
+    /// exact camera + execution context. Omitted observations are partial and
+    /// therefore cannot support negative capability assertions.
+    #[serde(default, skip_serializing_if = "InventoryCompleteness::is_partial")]
+    pub inventory_completeness: InventoryCompleteness,
     pub evidence_basis: ControlEvidenceBasis,
     pub observed_effect: ControlObservedEffect,
     pub readback: Readback,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum InventoryCompleteness {
+    #[default]
+    Partial,
+    Complete,
+}
+
+impl InventoryCompleteness {
+    pub fn is_partial(&self) -> bool {
+        *self == Self::Partial
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -556,10 +579,16 @@ pub enum CapabilitySubject {
     Operation {
         code: String,
         supported: bool,
+        #[serde(default)]
+        canonical_name: Option<Box<SemanticNameAssertion>>,
     },
     Property {
         code: String,
         supported: bool,
+        #[serde(default)]
+        canonical_name: Option<Box<SemanticNameAssertion>>,
+        #[serde(default)]
+        source_native_name: Option<Box<SemanticNameAssertion>>,
         #[serde(default)]
         property_type: Option<String>,
         #[serde(default)]
@@ -569,8 +598,149 @@ pub enum CapabilitySubject {
         #[serde(default)]
         labels: BTreeMap<String, String>,
         #[serde(default)]
+        value_rows: Vec<CapabilityValueRow>,
+        #[serde(default)]
         value_profiles: Vec<CapabilityValueProfile>,
     },
+}
+
+/// A proposed consumer-neutral or source-native name together with the exact
+/// evidence and epistemic claim that supports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticNameAssertion {
+    pub name: String,
+    pub provenance: AssertionProvenance,
+}
+
+/// Assertion-level provenance. This is separate from the enclosing record's
+/// capture provenance because one capability record may carry independently
+/// sourced names and value rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssertionProvenance {
+    pub evidence_reference: String,
+    pub epistemic: EpistemicMetadata,
+}
+
+/// A global property-value semantic assertion. The tagged value preserves the
+/// declared PTP representation without routing wide integers through JSON
+/// floating-point numbers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilityValueRow {
+    pub value: TypedPropertyValue,
+    pub label: String,
+    pub provenance: AssertionProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TypedPropertyValue {
+    I8 {
+        value: i8,
+    },
+    I16 {
+        value: i16,
+    },
+    I32 {
+        value: i32,
+    },
+    /// Decimal text avoids precision loss in JSON and foreign-language seams.
+    I64 {
+        value: String,
+    },
+    /// Decimal text avoids precision loss in JSON and foreign-language seams.
+    I128 {
+        value: String,
+    },
+    U8 {
+        value: u8,
+    },
+    U16 {
+        value: u16,
+    },
+    U32 {
+        value: u32,
+    },
+    /// Decimal text avoids precision loss in JSON and foreign-language seams.
+    U64 {
+        value: String,
+    },
+    /// Decimal text avoids precision loss in JSON and foreign-language seams.
+    U128 {
+        value: String,
+    },
+    String {
+        value: String,
+    },
+}
+
+impl TypedPropertyValue {
+    pub fn property_type(&self) -> &'static str {
+        match self {
+            Self::I8 { .. } => "i8",
+            Self::I16 { .. } => "i16",
+            Self::I32 { .. } => "i32",
+            Self::I64 { .. } => "i64",
+            Self::I128 { .. } => "i128",
+            Self::U8 { .. } => "u8",
+            Self::U16 { .. } => "u16",
+            Self::U32 { .. } => "u32",
+            Self::U64 { .. } => "u64",
+            Self::U128 { .. } => "u128",
+            Self::String { .. } => "str",
+        }
+    }
+
+    pub fn has_valid_representation(&self) -> bool {
+        match self {
+            Self::I64 { value } => parse_canonical_signed(value)
+                .and_then(|value| i64::try_from(value).ok())
+                .is_some(),
+            Self::I128 { value } => parse_canonical_signed(value).is_some(),
+            Self::U64 { value } => parse_canonical_unsigned(value)
+                .and_then(|value| u64::try_from(value).ok())
+                .is_some(),
+            Self::U128 { value } => parse_canonical_unsigned(value).is_some(),
+            _ => true,
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::I8 { value } => Some(i64::from(*value)),
+            Self::I16 { value } => Some(i64::from(*value)),
+            Self::I32 { value } => Some(i64::from(*value)),
+            Self::I64 { value } | Self::I128 { value } => value
+                .parse::<i128>()
+                .ok()
+                .and_then(|value| value.try_into().ok()),
+            Self::U8 { value } => Some(i64::from(*value)),
+            Self::U16 { value } => Some(i64::from(*value)),
+            Self::U32 { value } => Some(i64::from(*value)),
+            Self::U64 { value } | Self::U128 { value } => value
+                .parse::<u128>()
+                .ok()
+                .and_then(|value| value.try_into().ok()),
+            Self::String { .. } => None,
+        }
+    }
+}
+
+fn parse_canonical_signed(value: &str) -> Option<i128> {
+    let parsed = value.parse::<i128>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
+}
+
+fn parse_canonical_unsigned(value: &str) -> Option<u128> {
+    let parsed = value.parse::<u128>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

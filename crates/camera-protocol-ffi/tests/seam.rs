@@ -289,6 +289,174 @@ fn every_observation_variant_has_a_complete_hand_written_ffi_mirror() {
 }
 
 #[test]
+fn semantic_observation_assertions_cross_the_hand_written_ffi_seam() {
+    let record = serde_json::json!({
+        "kind": "capability",
+        "schema": "camera-observation/v1",
+        "runId": "ffi-semantic",
+        "recordId": "property",
+        "ordinal": 1,
+        "context": {"connection":"synthetic","mode":"test","state":"inventory"},
+        "time": {"clock":"ordinal","value":1},
+        "epistemic": {"class":"syntheticFixture","confidence":"exact"},
+        "subject": {
+            "type": "property",
+            "code": "0xd001",
+            "supported": true,
+            "canonicalName": {
+                "name": "exposureMode",
+                "provenance": {
+                    "evidenceReference": "publicName",
+                    "epistemic": {"class":"inference","confidence":"medium"}
+                }
+            },
+            "sourceNativeName": {
+                "name": "ExposureProgramMode",
+                "provenance": {
+                    "evidenceReference": "publicNativeName",
+                    "epistemic": {"class":"directObservation","confidence":"high"}
+                }
+            },
+            "propertyType": "u128",
+            "valueRows": [{
+                "value": {"type":"u128","value":"340282366920938463463374607431768211455"},
+                "label": "maximum",
+                "provenance": {
+                    "evidenceReference": "publicValue",
+                    "epistemic": {
+                        "class":"deterministicReduction",
+                        "confidence":"exact",
+                        "alternatives":["reserved"],
+                        "falsifier":"a capture assigns a different label"
+                    }
+                }
+            }]
+        },
+        "evidenceBasis": "descriptorOnly",
+        "observedEffect": "unknown",
+        "readback": {"status":"notObserved","reason":"semantic fixture"}
+    });
+    let mapped = parse_observation_record(record.to_string()).unwrap();
+    let ObservationValue::Capability { value } = mapped.value else {
+        panic!("expected capability")
+    };
+    let ObservationCapabilitySubject::Property {
+        canonical_name,
+        source_native_name,
+        value_rows,
+        ..
+    } = value.subject
+    else {
+        panic!("expected property")
+    };
+    assert_eq!(canonical_name.unwrap().name, "exposureMode");
+    assert_eq!(
+        source_native_name.unwrap().provenance.evidence_reference,
+        "publicNativeName"
+    );
+    assert_eq!(value_rows.len(), 1);
+    assert!(matches!(
+        &value_rows[0].value,
+        ObservationTypedPropertyValue::U128 { value }
+            if value == "340282366920938463463374607431768211455"
+    ));
+    assert_eq!(
+        value_rows[0].provenance.epistemic.alternatives,
+        ["reserved"]
+    );
+}
+
+#[test]
+fn durable_semantic_provenance_crosses_the_catalog_ffi_seam() {
+    let store = ConfigStore::from_bundle(
+        r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+evidence:
+  publicName: { kind: semantic-assertion }
+  publicValue: { kind: semantic-assertion }
+semanticAssertions:
+  operations:
+    "0x9999":
+      canonicalName:
+        name: semanticOperation
+        provenance:
+          - evidenceReference: publicName
+            epistemic:
+              class: inference
+              confidence: medium
+              alternatives: [candidateOperation]
+              falsifier: a capture contradicts the name
+  properties:
+    "0xd001":
+      canonicalName:
+        name: semanticProperty
+        provenance:
+          - evidenceReference: publicName
+            epistemic: { class: deterministicReduction, confidence: high }
+      sourceNativeName:
+        name: NativeProperty
+        provenance:
+          - evidenceReference: publicName
+            epistemic: { class: directObservation, confidence: exact }
+      valueRows:
+        - value: { type: u128, value: "340282366920938463463374607431768211455" }
+          label: maximum
+          provenance:
+            - evidenceReference: publicValue
+              epistemic:
+                class: inference
+                confidence: low
+                alternatives: [reserved]
+                falsifier: a public value table assigns another label
+operations:
+  "0x9999": { name: semanticOperation, kind: advertisedOnly }
+properties:
+  "0xd001":
+    name: semanticProperty
+    ptpName: NativeProperty
+    type: u128
+    access: readOnly
+    kind: catalogOnly
+"#
+        .into(),
+        None,
+    )
+    .expect("semantic ledger manifest loads");
+
+    let operation = store
+        .operations()
+        .into_iter()
+        .find(|operation| operation.code == 0x9999)
+        .unwrap();
+    assert_eq!(operation.canonical_name_provenance.len(), 1);
+    assert_eq!(
+        operation.canonical_name_provenance[0].evidence_reference,
+        "publicName"
+    );
+
+    let property = store
+        .properties()
+        .into_iter()
+        .find(|property| property.code == 0xd001)
+        .unwrap();
+    assert_eq!(property.canonical_name_provenance.len(), 1);
+    assert_eq!(property.source_native_name_provenance.len(), 1);
+    assert_eq!(property.semantic_value_rows.len(), 1);
+    assert!(matches!(
+        &property.semantic_value_rows[0].value,
+        ObservationTypedPropertyValue::U128 { value }
+            if value == "340282366920938463463374607431768211455"
+    ));
+    assert_eq!(
+        property.semantic_value_rows[0].provenance[0]
+            .epistemic
+            .alternatives,
+        ["reserved"]
+    );
+}
+
+#[test]
 fn init_command_response_decoder_distinguishes_ack_and_fail() {
     let ack = ptp_core::encode(&ptp_core::PtpIpPacket::InitCommandAck(
         ptp_core::InitCommandAck {
@@ -2244,9 +2412,14 @@ fn property_catalog_enumerates_through_ffi() {
         .find(|p| p.code == 0x5007)
         .expect("aperture in the catalog");
     assert_eq!(aperture.name, "aperture");
+    assert_eq!(aperture.ptp_name.as_deref(), Some("FNumber"));
     assert_eq!(aperture.ptype.as_deref(), Some("u16"));
     assert_eq!(aperture.access.as_deref(), Some("readWrite"));
     assert_eq!(aperture.kind, PropertyKind::Setting);
+    assert!(aperture
+        .evidence
+        .iter()
+        .any(|evidence| evidence == "iosLiveControls"));
     for code in [0xd039, 0xd1bc, 0xd208, 0xd21c, 0xd230, 0xd207] {
         let property = cat
             .iter()
@@ -2271,6 +2444,56 @@ fn property_catalog_enumerates_through_ffi() {
         .expect("reference app import chunk-size property in the catalog");
     assert_eq!(chunk_size.ptype.as_deref(), Some("u32"));
     assert_eq!(chunk_size.initial_value, Some(0x00bf_ffe0));
+}
+
+#[test]
+fn operation_and_property_catalog_safety_crosses_the_ffi_seam() {
+    let store = consolidated_store();
+    let operations = store.operations();
+    assert!(operations.len() >= 20);
+
+    let generated = operations
+        .iter()
+        .find(|operation| operation.code == 0x1001)
+        .expect("generated GetDeviceInfo inventory row");
+    assert_eq!(generated.name, "GetDeviceInfo");
+    assert_eq!(generated.kind, OperationKind::AdvertisedOnly);
+    assert!(generated
+        .observed_scopes
+        .iter()
+        .any(|scope| scope.connection == "usb"
+            && scope.mode == "shooting/stills"
+            && scope.state == "descriptor-enumeration"));
+    assert_eq!(generated.evidence, ["canonicalObservation"]);
+    assert!(matches!(
+        store.operation_available("usb".into(), "shooting/stills".into(), 0x1001, vec![]),
+        Availability::Unavailable
+    ));
+
+    let authored = operations
+        .iter()
+        .find(|operation| operation.code == 0x1002)
+        .expect("authored OpenSession row");
+    assert_eq!(authored.kind, OperationKind::Executable);
+
+    let properties = store.properties();
+    let catalog_only = properties
+        .iter()
+        .find(|property| property.code == 0x5001)
+        .expect("generated BatteryLevel property");
+    assert_eq!(catalog_only.kind, PropertyKind::CatalogOnly);
+    assert_eq!(catalog_only.name, "BatteryLevel");
+    assert_eq!(catalog_only.ptp_name, None);
+    assert_eq!(catalog_only.descriptor_form.as_deref(), Some("range"));
+    assert_eq!(
+        catalog_only.descriptor_source,
+        Some(DescriptorSource::Camera)
+    );
+    assert!(catalog_only
+        .observed_scopes
+        .iter()
+        .any(|scope| scope.connection == "usb"));
+    assert_eq!(catalog_only.evidence, ["canonicalObservation"]);
 }
 
 #[test]

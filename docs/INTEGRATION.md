@@ -77,13 +77,16 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `selected_object_transfer(connection)` | typed lazy-gallery projection of the canonical `importObjects` per-handle preparation plus the existing chunk-read action; exposes the preparation-step index whose response is ObjectInfo and manifest-owned u64 transfer-size/u32 chunk-size slots without requiring consumers to inspect nested action ASTs; returns a contract error when a connection declares the actions with an invalid shape |
 | `object_transfer_contract(connection)` | transfer strategy (`chunked` or `wholeObject`), resume policy, read/completion actions, completion timing, and per-format confidence. A completion action is eligible only after the host has atomically committed the object locally. |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
+| `operations()` | the complete operation catalog: code, semantic or stable raw name, `executable`/`advertisedOnly` classification, atomic positive observed scopes, and evidence ids |
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
 | `control_surface(connection, mode)` | semantic control roles mapped to manifest-owned properties, write effects/evidence state, effective owner, and the existing set/readback mechanism. `descriptorOnly` and other non-confirmed effects must be presented as experimental and verified by readback. |
 | `property_value_width(prop)` | the manifest property's generic scalar encoder width (`u8`, `u16`, `u32`, `i16`, or `i32`), or `None` for non-scalar/unknown types |
+| `properties()` | the complete property catalog: semantic and optional source-native/PTP names, `setting`/`scaffold`/`catalogOnly` classification, atomic positive observed scopes, descriptor form/source, evidence ids, and value metadata |
 | `value(key)` / `value_label(prop, value)` / `decode_property(prop, raw)` / `encode_property(prop, label)` | value-policy resolution, human labels, and manifest-backed property label↔wire-byte encoding |
 | `encode_property_text(prop, value)` / `encode_structured_integer_property(prop, values)` | PTP `STR` encoding. The structured form validates manifest-declared field count and separators without inventing model-specific limits. |
 
-`PropertyValueInfo.evidence` preserves provenance per enum row. Consumers can
+`OperationInfo.evidence`, `PropertyInfo.evidence`, and
+`PropertyValueInfo.evidence` preserve entity or row provenance. Consumers can
 therefore distinguish directly exercised values from accepted reference-defined
 rows even when both belong to one semantic property.
 
@@ -299,6 +302,13 @@ tracked by issue #164.
   canonical write value, treat `aliases` as readback/input matches, and avoid sending rows
   marked `legal: false`. `value_encoding.masks` carries additional flag/sentinel forms
   alongside the legacy single `sentinel`.
+- **Semantic assertions retain their evidence.** Catalog rows expose canonical-name,
+  source-native-name, typed value-row, and scoped-profile provenance from the durable
+  `semanticAssertions` ledger. Each provenance record includes the evidence reference,
+  epistemic class, confidence, alternatives, and falsifier. Wide integers remain
+  canonical decimal strings in the typed value enum. This surface is descriptive only;
+  it does not change operation availability, property access, state, gates, responses,
+  current/default values, descriptors, or write behavior.
 - **Sync only.** A stateful session driver (feed/poll) is a later phase; today's
   surface is synchronous pure queries.
 
@@ -325,13 +335,23 @@ tracked by issue #164.
   `FfiLoopKind::ForEach.collection` iterate that collection. Do not re-read the property
   inside the loop or widen the collection retry around its body; a failed body
   must not replay completed object work.
+- **Catalog classification is a safety boundary.** `OperationInfo.kind` is
+  `executable` for authored behavior and `advertisedOnly` for inventory rows.
+  The latter means only that the code was advertised in each listed atomic
+  `(connection, mode, state)` scope. It is enumerable, but
+  `operation_available` returns `Unavailable` and it must not be invoked solely
+  from that row. Observation inventories default to `partial`; absence has no
+  negative meaning. Only an explicitly `complete` inventory for the exact
+  camera, firmware, connection, mode, state, and observation context can support
+  a reviewed negative assertion.
 - **Settings UI filters on `PropertyInfo.kind`.** The typed `PropertyKind`
   resolves omitted manifest classifications to `setting`. Props classified as
   `scaffold` (the wireless-tether `0xD039 / 0xD1BC / 0xD21C / 0xD207`
   virtual-shutter, live-view selector, and keepalives) look writable on the
   wire but are protocol mechanics, NOT
   user-facing values. Don't surface them in settings UI; a generic
-  set-prop-by-name path must skip them.
+  set-prop-by-name path must skip them. `catalogOnly` properties are likewise
+  enumerable but are neither settings nor implicit write claims.
 - **Keepalives are actions.** For a connection that declares
   `ActionVerb::Keepalive`, execute that action as the caller-scheduled session
   maintenance iteration. The manifest names the wire writes; it does not encode

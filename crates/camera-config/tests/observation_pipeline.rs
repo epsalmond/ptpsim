@@ -51,6 +51,62 @@ fn header_and_capability(input: &str, code: &str) -> String {
         .join("\n")
 }
 
+fn semantic_property_bundle(property_type: &str, values: Vec<serde_json::Value>) -> String {
+    let fixture =
+        data("packages/camera-config-data/observations/fixtures/positive/usb-descriptor.jsonl");
+    let header = fixture.lines().next().unwrap();
+    let mut record: serde_json::Value =
+        serde_json::from_str(fixture.lines().nth(1).unwrap()).unwrap();
+    record["recordId"] = serde_json::json!("semantic-property");
+    record["subject"] = serde_json::json!({
+        "type": "property",
+        "code": "0xd001",
+        "supported": true,
+        "canonicalName": {
+            "name": "exposureMode",
+            "provenance": {
+                "evidenceReference": "publicVendorTable",
+                "epistemic": {
+                    "class": "deterministicReduction",
+                    "confidence": "high",
+                    "alternatives": ["captureLabel"],
+                    "falsifier": "a human-authored table assigns another meaning"
+                }
+            }
+        },
+        "sourceNativeName": {
+            "name": "ExposureProgramMode",
+            "provenance": {
+                "evidenceReference": "publicPtpName",
+                "epistemic": {
+                    "class": "directObservation",
+                    "confidence": "exact"
+                }
+            }
+        },
+        "propertyType": property_type,
+        "access": "readOnly",
+        "valueRows": values
+    });
+    format!("{header}\n{}", serde_json::to_string(&record).unwrap())
+}
+
+fn semantic_row(value: serde_json::Value, label: &str) -> serde_json::Value {
+    serde_json::json!({
+        "value": value,
+        "label": label,
+        "provenance": {
+            "evidenceReference": "publicValueTable",
+            "epistemic": {
+                "class": "inference",
+                "confidence": "medium",
+                "alternatives": ["unknown"],
+                "falsifier": "a capture reports a different value"
+            }
+        }
+    })
+}
+
 #[test]
 fn positive_fixtures_are_completely_accounted() {
     for path in fixture_files("positive") {
@@ -98,6 +154,83 @@ fn every_negative_fixture_blocks_proposal_generation() {
 fn checked_in_schema_is_generated_from_the_rust_model() {
     let committed = data("packages/camera-config-data/camera-observation-v1.schema.json");
     assert_eq!(committed, generated_json_schema().unwrap());
+}
+
+#[test]
+fn semantic_names_and_every_typed_value_representation_validate() {
+    let cases = [
+        ("i8", serde_json::json!({"type":"i8", "value":-128})),
+        ("i16", serde_json::json!({"type":"i16", "value":-32768})),
+        (
+            "i32",
+            serde_json::json!({"type":"i32", "value":-2147483648_i64}),
+        ),
+        (
+            "i64",
+            serde_json::json!({"type":"i64", "value":"-9223372036854775808"}),
+        ),
+        (
+            "i128",
+            serde_json::json!({"type":"i128", "value":"-170141183460469231731687303715884105728"}),
+        ),
+        ("u8", serde_json::json!({"type":"u8", "value":255})),
+        ("u16", serde_json::json!({"type":"u16", "value":65535})),
+        (
+            "u32",
+            serde_json::json!({"type":"u32", "value":4294967295_u64}),
+        ),
+        (
+            "u64",
+            serde_json::json!({"type":"u64", "value":"18446744073709551615"}),
+        ),
+        (
+            "u128",
+            serde_json::json!({"type":"u128", "value":"340282366920938463463374607431768211455"}),
+        ),
+        (
+            "str",
+            serde_json::json!({"type":"string", "value":"manual"}),
+        ),
+    ];
+    for (property_type, value) in cases {
+        let input =
+            semantic_property_bundle(property_type, vec![semantic_row(value, property_type)]);
+        validate_bundles(&[&input])
+            .unwrap_or_else(|report| panic!("{property_type} rejected: {report:?}"));
+    }
+}
+
+#[test]
+fn invalid_wide_values_and_property_type_mismatches_fail_closed() {
+    let out_of_range = semantic_property_bundle(
+        "u64",
+        vec![semantic_row(
+            serde_json::json!({"type":"u64", "value":"18446744073709551616"}),
+            "too-wide",
+        )],
+    );
+    let report = validate_bundles(&[&out_of_range]).unwrap_err();
+    assert!(report.dispositions.iter().any(|entry| entry.code == "O118"));
+
+    let noncanonical = semantic_property_bundle(
+        "i64",
+        vec![semantic_row(
+            serde_json::json!({"type":"i64", "value":"+1"}),
+            "noncanonical",
+        )],
+    );
+    let report = validate_bundles(&[&noncanonical]).unwrap_err();
+    assert!(report.dispositions.iter().any(|entry| entry.code == "O118"));
+
+    let mismatch = semantic_property_bundle(
+        "u16",
+        vec![semantic_row(
+            serde_json::json!({"type":"i16", "value":1}),
+            "wrong-type",
+        )],
+    );
+    let report = validate_bundles(&[&mismatch]).unwrap_err();
+    assert!(report.dispositions.iter().any(|entry| entry.code == "O119"));
 }
 
 #[test]

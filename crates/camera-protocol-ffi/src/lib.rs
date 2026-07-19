@@ -1031,6 +1031,55 @@ pub struct PayloadInfo {
     pub members: Vec<u16>,
 }
 
+/// One exact positive observation tuple. The surrounding store fixes camera
+/// model and firmware; these fields retain connection, mode, and state as one
+/// atomic scope rather than independent sets.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ObservedScopeInfo {
+    pub connection: String,
+    pub mode: String,
+    pub state: String,
+}
+
+impl From<&cc::ObservedScope> for ObservedScopeInfo {
+    fn from(scope: &cc::ObservedScope) -> Self {
+        Self {
+            connection: scope.connection.clone(),
+            mode: scope.mode.clone(),
+            state: scope.state.clone(),
+        }
+    }
+}
+
+/// Whether an operation row is safe to execute or is only a positive catalog
+/// advertisement observed from the camera.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum OperationKind {
+    Executable,
+    AdvertisedOnly,
+}
+
+impl From<cc::OperationKind> for OperationKind {
+    fn from(kind: cc::OperationKind) -> Self {
+        match kind {
+            cc::OperationKind::Executable => Self::Executable,
+            cc::OperationKind::AdvertisedOnly => Self::AdvertisedOnly,
+        }
+    }
+}
+
+/// One row of the operation catalog. `name` is either a reviewed semantic name
+/// or the stable `raw_0x...` fallback retained by the generator.
+#[derive(Debug, uniffi::Record)]
+pub struct OperationInfo {
+    pub code: u16,
+    pub name: String,
+    pub kind: OperationKind,
+    pub observed_scopes: Vec<ObservedScopeInfo>,
+    pub evidence: Vec<String>,
+    pub canonical_name_provenance: Vec<ObservationAssertionProvenance>,
+}
+
 /// One row of the property catalog (#50): code, name, wire type, access, the
 /// allowed value set, and value→label pairs. Lets the app present settings
 /// without hardcoding a per-vendor catalog.
@@ -1038,16 +1087,40 @@ pub struct PayloadInfo {
 pub struct PropertyInfo {
     pub code: u16,
     pub name: String,
+    pub ptp_name: Option<String>,
     pub ptype: Option<String>,
     pub access: Option<String>,
     pub initial_value: Option<i64>,
     pub kind: PropertyKind,
+    pub observed_scopes: Vec<ObservedScopeInfo>,
+    pub descriptor_form: Option<String>,
+    pub descriptor_source: Option<DescriptorSource>,
+    pub evidence: Vec<String>,
     pub values: Vec<i64>,
     pub labels: Vec<KeyValue>,
     pub value_rows: Vec<PropertyValueInfo>,
     pub value_profiles: Vec<PropertyValueProfileInfo>,
     pub value_encoding: Option<PropertyValueEncodingInfo>,
     pub structured_text: Option<StructuredTextLayoutInfo>,
+    pub canonical_name_provenance: Vec<ObservationAssertionProvenance>,
+    pub source_native_name_provenance: Vec<ObservationAssertionProvenance>,
+    pub semantic_value_rows: Vec<SemanticPropertyValueInfo>,
+    pub semantic_value_profiles: Vec<SemanticPropertyValueProfileInfo>,
+}
+
+/// A reviewed typed value-label assertion from the durable semantic ledger.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SemanticPropertyValueInfo {
+    pub value: ObservationTypedPropertyValue,
+    pub label: String,
+    pub provenance: Vec<ObservationAssertionProvenance>,
+}
+
+/// A reviewed scoped profile and its assertion-level provenance.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SemanticPropertyValueProfileInfo {
+    pub profile: PropertyValueProfileInfo,
+    pub provenance: Vec<ObservationAssertionProvenance>,
 }
 
 /// Whether a manifest property is a user-facing setting or protocol machinery.
@@ -1055,6 +1128,7 @@ pub struct PropertyInfo {
 pub enum PropertyKind {
     Setting,
     Scaffold,
+    CatalogOnly,
 }
 
 impl From<cc::PropertyKind> for PropertyKind {
@@ -1062,6 +1136,22 @@ impl From<cc::PropertyKind> for PropertyKind {
         match kind {
             cc::PropertyKind::Setting => Self::Setting,
             cc::PropertyKind::Scaffold => Self::Scaffold,
+            cc::PropertyKind::CatalogOnly => Self::CatalogOnly,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum DescriptorSource {
+    Camera,
+    Manifest,
+}
+
+impl From<cc::ValueSource> for DescriptorSource {
+    fn from(source: cc::ValueSource) -> Self {
+        match source {
+            cc::ValueSource::Camera => Self::Camera,
+            cc::ValueSource::Manifest => Self::Manifest,
         }
     }
 }
@@ -1206,6 +1296,25 @@ impl From<&cc::PropertyValueProfile> for PropertyValueProfileInfo {
                 .map(PropertyValueProfileRowInfo::from)
                 .collect(),
             evidence: profile.evidence.clone(),
+        }
+    }
+}
+
+impl From<&cc::ProvenancedPropertyValueRow> for SemanticPropertyValueInfo {
+    fn from(row: &cc::ProvenancedPropertyValueRow) -> Self {
+        Self {
+            value: (&row.value).into(),
+            label: row.label.clone(),
+            provenance: row.provenance.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<&cc::ProvenancedPropertyValueProfile> for SemanticPropertyValueProfileInfo {
+    fn from(profile: &cc::ProvenancedPropertyValueProfile) -> Self {
+        Self {
+            profile: (&profile.profile).into(),
+            provenance: profile.provenance.iter().map(Into::into).collect(),
         }
     }
 }
@@ -3355,13 +3464,19 @@ impl ConfigStore {
             .properties
             .iter()
             .filter_map(|(code, p)| {
+                let semantic = self.inner.manifest.semantic_assertions.properties.get(code);
                 Some(PropertyInfo {
                     code: parse_hex_code(code)?,
                     name: p.name.clone(),
+                    ptp_name: p.ptp_name.clone(),
                     ptype: p.ptype.clone(),
                     access: p.access.clone(),
                     initial_value: p.initial_value,
                     kind: p.kind.into(),
+                    observed_scopes: p.observed_scopes.iter().map(Into::into).collect(),
+                    descriptor_form: p.descriptor.as_ref().map(|d| d.form.clone()),
+                    descriptor_source: p.descriptor.as_ref().and_then(|d| d.source).map(Into::into),
+                    evidence: p.evidence.clone(),
                     values: p
                         .descriptor
                         .as_ref()
@@ -3389,6 +3504,57 @@ impl ConfigStore {
                         .structured_text
                         .as_ref()
                         .map(StructuredTextLayoutInfo::from),
+                    canonical_name_provenance: semantic
+                        .and_then(|assertions| assertions.canonical_name.as_ref())
+                        .map(|name| name.provenance.iter().map(Into::into).collect())
+                        .unwrap_or_default(),
+                    source_native_name_provenance: semantic
+                        .and_then(|assertions| assertions.source_native_name.as_ref())
+                        .map(|name| name.provenance.iter().map(Into::into).collect())
+                        .unwrap_or_default(),
+                    semantic_value_rows: semantic
+                        .map(|assertions| {
+                            assertions
+                                .value_rows
+                                .iter()
+                                .map(SemanticPropertyValueInfo::from)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    semantic_value_profiles: semantic
+                        .map(|assertions| {
+                            assertions
+                                .value_profiles
+                                .iter()
+                                .map(SemanticPropertyValueProfileInfo::from)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    /// Enumerate the full operation catalog. Inventory-only rows remain
+    /// queryable but carry `advertisedOnly`, and availability resolution will
+    /// never promote them to executable.
+    pub fn operations(&self) -> Vec<OperationInfo> {
+        self.inner
+            .manifest
+            .operations
+            .iter()
+            .filter_map(|(code, operation)| {
+                let semantic = self.inner.manifest.semantic_assertions.operations.get(code);
+                Some(OperationInfo {
+                    code: parse_hex_code(code)?,
+                    name: operation.name.clone(),
+                    kind: operation.kind.into(),
+                    observed_scopes: operation.observed_scopes.iter().map(Into::into).collect(),
+                    evidence: operation.evidence.clone(),
+                    canonical_name_provenance: semantic
+                        .and_then(|assertions| assertions.canonical_name.as_ref())
+                        .map(|name| name.provenance.iter().map(Into::into).collect())
+                        .unwrap_or_default(),
                 })
             })
             .collect()

@@ -960,6 +960,7 @@ fn libgphoto2_parity_inventory_is_machine_reviewable() {
                 CapabilitySubject::Operation {
                     code,
                     supported: true,
+                    ..
                 } => Some(code.to_ascii_lowercase()),
                 _ => None,
             },

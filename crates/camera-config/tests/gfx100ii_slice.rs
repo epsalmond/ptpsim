@@ -3,9 +3,10 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    ActionInitiatorParameterKind, ActionVerb, CameraManifest, CaptureSource, ConfigStore,
-    ManufacturerDefaults, MissingRuntimeValue, ModeEntryExecution, ObjectTransferCompletionTiming,
-    ObjectTransferResumePolicy, ObjectTransferStrategy, ObjectsAvailable, PcssDiscoveryTarget,
+    parse_hex_code, ActionInitiatorParameterKind, ActionVerb, Availability, CameraManifest,
+    CaptureSource, ConfigStore, InventoryCompleteness, ManufacturerDefaults, MissingRuntimeValue,
+    ModeEntryExecution, ObjectTransferCompletionTiming, ObjectTransferResumePolicy,
+    ObjectTransferStrategy, ObjectsAvailable, ObservationLine, OperationKind, PcssDiscoveryTarget,
     Predicate, PropView, PropertyKind, PropertyTransitionTerminal, ResponderMutation, SetPropValue,
     StepParam, ValuePolicy, VersionScheme,
 };
@@ -1406,6 +1407,18 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
     assert_eq!(files, 10, "expected the migrated corpus");
     let refs = bundles.iter().map(String::as_str).collect::<Vec<_>>();
 
+    let validated = camera_config::validate_bundles(&refs).expect("canonical corpus validates");
+    assert!(
+        validated.records.iter().all(|record| {
+            !matches!(
+                record,
+                ObservationLine::Capability(capability)
+                    if capability.inventory_completeness != InventoryCompleteness::Partial
+            )
+        }),
+        "the current corpus has no evidence attesting a complete inventory"
+    );
+
     let proposal = camera_config::propose(&refs).expect("canonical corpus validates");
     let committed_proposal: camera_config::Proposal = serde_json::from_str(
         &std::fs::read_to_string(root.join("camera-observation-v1.proposal.json")).unwrap(),
@@ -1457,6 +1470,35 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
     // Substantial op/prop coverage from the enumeration.
     assert!(m.operations.len() >= 20, "ops: {}", m.operations.len());
     assert!(m.properties.len() >= 50, "props: {}", m.properties.len());
+    assert!(base
+        .operations
+        .values()
+        .all(|operation| operation.kind == OperationKind::Executable));
+    let (generated_code, generated_operation) = m
+        .operations
+        .iter()
+        .find(|(code, _)| !base.operations.contains_key(code.as_str()))
+        .expect("generator adds inventory-only operations");
+    assert_eq!(generated_operation.kind, OperationKind::AdvertisedOnly);
+    assert_eq!(
+        m.operation_available(
+            "usb",
+            "shooting/stills",
+            parse_hex_code(generated_code).unwrap(),
+            &PropView::new(),
+        ),
+        Availability::Unavailable
+    );
+    assert!(m
+        .operations
+        .iter()
+        .filter(|(code, _)| !base.operations.contains_key(code.as_str()))
+        .all(|(_, operation)| operation.kind == OperationKind::AdvertisedOnly));
+    assert!(m
+        .properties
+        .iter()
+        .filter(|(code, _)| !base.properties.contains_key(code.as_str()))
+        .all(|(_, property)| property.kind == PropertyKind::CatalogOnly));
     for code in scoped_descriptor_codes {
         let property = &m.properties[code];
         assert!(

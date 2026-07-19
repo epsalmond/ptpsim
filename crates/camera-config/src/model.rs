@@ -4,7 +4,9 @@
 //! and append-only growth are valid.
 
 use crate::activity::ConnectionActivityDescriptor;
-use crate::observation::{ControlEvidenceBasis, ControlObservedEffect};
+use crate::observation::{
+    AssertionProvenance, ControlEvidenceBasis, ControlObservedEffect, TypedPropertyValue,
+};
 use crate::predicate::Predicate;
 use crate::version::{compare, VersionScheme};
 use serde::{Deserialize, Serialize};
@@ -56,6 +58,11 @@ pub struct CameraManifest {
     pub camera: CameraIdentity,
     #[serde(default)]
     pub evidence: BTreeMap<String, Evidence>,
+    /// Reviewed semantic assertions and their assertion-level provenance.
+    /// This ledger is query metadata only; the simulator never consults it for
+    /// availability, state, gates, responses, or descriptor behavior.
+    #[serde(default, skip_serializing_if = "SemanticAssertionLedger::is_empty")]
+    pub semantic_assertions: SemanticAssertionLedger,
     #[serde(default)]
     pub sentinels: BTreeMap<String, SentinelFrame>,
     /// Named ordered wire-precondition gates the simulator can enforce. A gate
@@ -137,6 +144,64 @@ pub struct Evidence {
     pub date: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticAssertionLedger {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operations: BTreeMap<HexCode, OperationSemanticAssertions>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub properties: BTreeMap<HexCode, PropertySemanticAssertions>,
+}
+
+impl SemanticAssertionLedger {
+    pub fn is_empty(&self) -> bool {
+        self.operations.is_empty() && self.properties.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationSemanticAssertions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<ProvenancedName>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropertySemanticAssertions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_name: Option<ProvenancedName>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_native_name: Option<ProvenancedName>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_rows: Vec<ProvenancedPropertyValueRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_profiles: Vec<ProvenancedPropertyValueProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenancedName {
+    pub name: String,
+    pub provenance: Vec<AssertionProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenancedPropertyValueRow {
+    pub value: TypedPropertyValue,
+    pub label: String,
+    pub provenance: Vec<AssertionProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenancedPropertyValueProfile {
+    pub profile: PropertyValueProfile,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<AssertionProvenance>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SequenceGate {
@@ -163,6 +228,11 @@ pub enum GateFailure {
 #[serde(rename_all = "camelCase")]
 pub struct Operation {
     pub name: String,
+    /// Whether this catalog row is safe to execute. Authored operations omit
+    /// the field and remain executable; inventory-only generator rows are
+    /// explicitly [`OperationKind::AdvertisedOnly`].
+    #[serde(default, skip_serializing_if = "OperationKind::is_executable")]
+    pub kind: OperationKind,
     #[serde(default)]
     pub owner: String,
     #[serde(default)]
@@ -223,6 +293,20 @@ pub struct Operation {
     /// independent connection/mode sets cannot invent a Cartesian product.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub observed_scopes: Vec<ObservedScope>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationKind {
+    #[default]
+    Executable,
+    AdvertisedOnly,
+}
+
+impl OperationKind {
+    fn is_executable(&self) -> bool {
+        *self == Self::Executable
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -367,6 +451,7 @@ pub enum PropertyKind {
     #[default]
     Setting,
     Scaffold,
+    CatalogOnly,
 }
 
 impl PropertyKind {
@@ -2425,10 +2510,33 @@ mod tests {
             .unwrap()
             .contains("kind: scaffold"));
 
+        let catalog: Property =
+            serde_yaml::from_str("name: raw_0xd001\nkind: catalogOnly\n").unwrap();
+        assert_eq!(catalog.kind, PropertyKind::CatalogOnly);
+
         let err = serde_yaml::from_str::<Property>("name: mystery\nkind: internal\n")
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown variant `internal`"), "got: {err}");
+    }
+
+    #[test]
+    fn operation_kind_is_closed_and_defaults_to_executable() {
+        let operation: Operation = serde_yaml::from_str("name: OpenSession\n").unwrap();
+        assert_eq!(operation.kind, OperationKind::Executable);
+        assert!(!serde_yaml::to_string(&operation).unwrap().contains("kind:"));
+
+        let catalog: Operation =
+            serde_yaml::from_str("name: raw_0x9000\nkind: advertisedOnly\n").unwrap();
+        assert_eq!(catalog.kind, OperationKind::AdvertisedOnly);
+        assert!(serde_yaml::to_string(&catalog)
+            .unwrap()
+            .contains("kind: advertisedOnly"));
+
+        let error = serde_yaml::from_str::<Operation>("name: bad\nkind: inferred\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown variant `inferred`"), "got: {error}");
     }
 
     // A body manifest exercising the 2b vocabulary against the one body we own.
