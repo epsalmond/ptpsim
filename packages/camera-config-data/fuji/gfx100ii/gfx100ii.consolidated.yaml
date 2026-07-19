@@ -15378,9 +15378,9 @@ connections:
         guid: initiatorGuid
         friendlyName: initFriendlyName
         clientIpv4: null
-      nameFieldByteCount: 26
-      tail: '00000000000000000000000000000000000000000000000000000000'
-      tailEvidence: docLiveControls
+      nameFieldByteCount: 54
+      evidence:
+      - docLiveControls
       expectedResponderGuid: null
     initShape: app82
     liveViewDelivery:
@@ -16624,8 +16624,6 @@ connections:
         friendlyName: initFriendlyName
         clientIpv4: null
       nameFieldByteCount: 0
-      tail: null
-      tailEvidence: null
       expectedResponderGuid: null
     initShape: pcssKnock
     liveViewDelivery:

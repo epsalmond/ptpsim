@@ -4,35 +4,30 @@
 //! Fixed layout for the scoped reference app-compatible manifest shape:
 //! ```text
 //! u32 length (= total, 82)   u32 type (1 = Init_Command_Request)
-//! payload: GUID[16]  u32(0)  nameField[26]  tail[28]
+//! payload: GUID[16]  u32(0)  friendlyNameField[54]
 //! ```
-//! `nameField` = the friendly name as UTF-16LE + a NUL u16, then truncated or
-//! zero-padded to exactly 26 bytes. Identity (GUID/name) + `tail` come from the
-//! manifest (value-policy + `connections.*.init`) — this code only frames them.
+//! The friendly-name field contains UTF-16LE text followed by one NUL unit and
+//! deterministic zero-fill. Identity comes from manifest value policy; this
+//! code owns only the fixed wire framing.
 
 use crate::error::FramingError;
 use ptp_core::Writer;
 
 const INIT_COMMAND_REQUEST: u32 = 1;
 const INIT_COMMAND_ACK: u32 = 2;
-const NAME_FIELD_BYTES: usize = 26;
+const NAME_FIELD_BYTES: usize = 54;
+const MAX_NAME_UNITS: usize = NAME_FIELD_BYTES / 2 - 1;
 const APP_INIT_BYTES: usize = 82;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppInit {
     pub initiator_guid: [u8; 16],
     pub friendly_name: String,
-    pub tail: Vec<u8>,
 }
 
-/// Build the InitCommandRequest packet. `guid` must be 16 bytes; `tail` is the
-/// manifest-supplied trailing region (28 bytes for the GFX shape, but length is
-/// not enforced because the framing primitive remains data-driven).
-pub fn build_app_init(
-    guid: &[u8],
-    friendly_name: &str,
-    tail: &[u8],
-) -> Result<Vec<u8>, FramingError> {
+/// Build the fixed InitCommandRequest packet. `guid` must be 16 bytes and the
+/// friendly name must leave room for its terminating NUL unit.
+pub fn build_app_init(guid: &[u8], friendly_name: &str) -> Result<Vec<u8>, FramingError> {
     if guid.len() != 16 {
         return Err(FramingError::GuidLength(guid.len()));
     }
@@ -40,8 +35,7 @@ pub fn build_app_init(
     let mut payload = Writer::new();
     payload.bytes(guid);
     payload.u32(0);
-    payload.bytes(&fixed_name_field(friendly_name));
-    payload.bytes(tail);
+    payload.bytes(&fixed_name_field(friendly_name)?);
     let payload = payload.into_vec();
 
     let mut pkt = Writer::new();
@@ -80,33 +74,36 @@ pub fn parse_app_init(packet: &[u8]) -> Result<AppInit, FramingError> {
     }
     let mut initiator_guid = [0u8; 16];
     initiator_guid.copy_from_slice(&packet[8..24]);
-    let mut units = Vec::new();
-    for pair in packet[28..54].chunks_exact(2) {
-        let unit = u16::from_le_bytes([pair[0], pair[1]]);
-        if unit == 0 {
-            break;
-        }
-        units.push(unit);
-    }
-    let friendly_name = String::from_utf16(&units)
+    let units = packet[28..]
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    let text_end = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
+    let friendly_name = String::from_utf16(&units[..text_end])
         .map_err(|_| FramingError::InitRequest("friendly name is not UTF-16LE".into()))?;
     Ok(AppInit {
         initiator_guid,
         friendly_name,
-        tail: packet[54..].to_vec(),
     })
 }
 
-/// The 26-byte name field: UTF-16LE + NUL, truncated or zero-padded to fit.
-fn fixed_name_field(name: &str) -> Vec<u8> {
-    let mut w = Writer::new();
-    for unit in name.encode_utf16() {
-        w.u16(unit);
+/// The 54-byte name field: UTF-16LE + NUL, then zero-fill.
+fn fixed_name_field(name: &str) -> Result<[u8; NAME_FIELD_BYTES], FramingError> {
+    let units = name.encode_utf16().collect::<Vec<_>>();
+    if name.contains('\0') || units.len() > MAX_NAME_UNITS {
+        return Err(FramingError::InitRequest(format!(
+            "reference app friendly name exceeds {MAX_NAME_UNITS} UTF-16 units or contains NUL"
+        )));
     }
-    w.u16(0); // NUL terminator
-    let mut v = w.into_vec();
-    v.resize(NAME_FIELD_BYTES, 0); // truncate if longer, zero-pad if shorter
-    v
+    let mut field = [0u8; NAME_FIELD_BYTES];
+    for (index, unit) in units.into_iter().enumerate() {
+        let offset = index * 2;
+        field[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    Ok(field)
 }
 
 /// Validate an InitCommandAck: declared length must match, and the packet type
@@ -138,17 +135,13 @@ pub fn validate_init_ack(packet: &[u8]) -> Result<(), FramingError> {
 mod tests {
     use super::*;
 
-    // The nonzero sentinel proves the generic primitive passes manifest tail data
-    // through unchanged. Body-specific zero-fill policy belongs in the manifest.
     const GUID: [u8; 16] = [
         0xf2, 0xe4, 0x53, 0x8f, 0xad, 0xa5, 0x48, 0x5d, 0x87, 0xb2, 0x7f, 0x0b, 0xd3, 0xd5, 0xde,
         0xd0,
     ];
-    const TAIL: [u8; 28] = [0xa5; 28];
-
     #[test]
     fn builds_the_82_byte_init_with_correct_structure() {
-        let pkt = build_app_init(&GUID, "Pixel-6-4976", &TAIL).unwrap();
+        let pkt = build_app_init(&GUID, "Pixel-6-4976").unwrap();
         assert_eq!(pkt.len(), 82, "the fixed reference app init shape is 82 bytes");
         // Header: length == total, type == 1.
         assert_eq!(u32::from_le_bytes(pkt[0..4].try_into().unwrap()), 82);
@@ -159,7 +152,8 @@ mod tests {
         // GUID, then u32(0).
         assert_eq!(&pkt[8..24], &GUID);
         assert_eq!(u32::from_le_bytes(pkt[24..28].try_into().unwrap()), 0);
-        // Name field (26): "Pixel-6-4976" is 12 chars → 24 bytes + NUL = 26 exactly.
+        // The canonical short-name request remains byte-identical: name, NUL,
+        // then zeros through the end of the fixed packet.
         assert_eq!(
             &pkt[28..52],
             &"Pixel-6-4976"
@@ -168,21 +162,19 @@ mod tests {
                 .collect::<Vec<_>>()[..]
         );
         assert_eq!(&pkt[52..54], &[0, 0]); // NUL terminator
-                                           // Tail (28).
-        assert_eq!(&pkt[54..82], &TAIL);
+        assert!(pkt[54..82].iter().all(|byte| *byte == 0));
         assert_eq!(
             parse_app_init(&pkt).unwrap(),
             AppInit {
                 initiator_guid: GUID,
                 friendly_name: "Pixel-6-4976".into(),
-                tail: TAIL.to_vec(),
             }
         );
     }
 
     #[test]
     fn parser_requires_the_fixed_82_byte_shape() {
-        let mut packet = build_app_init(&GUID, "probe", &TAIL).unwrap();
+        let mut packet = build_app_init(&GUID, "probe").unwrap();
         packet.pop();
         assert!(matches!(
             parse_app_init(&packet),
@@ -191,10 +183,9 @@ mod tests {
     }
 
     #[test]
-    fn name_field_pads_short_and_truncates_long() {
-        // Short name → zero-padded to 26 within the field.
-        let short = build_app_init(&GUID, "Hi", &TAIL).unwrap();
-        let field = &short[28..54];
+    fn name_field_pads_short_and_reaches_the_full_field() {
+        let short = build_app_init(&GUID, "Hi").unwrap();
+        let field = &short[28..82];
         assert_eq!(
             &field[0..4],
             &"Hi"
@@ -203,15 +194,57 @@ mod tests {
                 .collect::<Vec<_>>()[..]
         );
         assert!(field[6..].iter().all(|&b| b == 0));
-        // Over-long name → field stays exactly 26 bytes, total stays 82.
-        let long = build_app_init(&GUID, "ThisNameIsWayTooLongForTheField", &TAIL).unwrap();
+
+        let name = "abcdefghijklmnopqr";
+        let long = build_app_init(&GUID, name).unwrap();
         assert_eq!(long.len(), 82);
+        assert_eq!(
+            &long[28..64],
+            &name
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(parse_app_init(&long).unwrap().friendly_name, name);
+    }
+
+    #[test]
+    fn builder_requires_room_for_a_terminator() {
+        let max = "a".repeat(MAX_NAME_UNITS);
+        let packet = build_app_init(&GUID, &max).unwrap();
+        assert_eq!(&packet[80..82], &[0, 0]);
+
+        let too_long = "a".repeat(MAX_NAME_UNITS + 1);
+        assert!(matches!(
+            build_app_init(&GUID, &too_long),
+            Err(FramingError::InitRequest(message)) if message.contains("exceeds 26 UTF-16 units")
+        ));
+        assert!(matches!(
+            build_app_init(&GUID, "before\0after"),
+            Err(FramingError::InitRequest(message)) if message.contains("contains NUL")
+        ));
+    }
+
+    #[test]
+    fn parser_treats_post_nul_and_unterminated_units_as_name_field_data() {
+        let mut post_nul = build_app_init(&GUID, "short").unwrap();
+        post_nul[60..64].copy_from_slice(&[0xa5, 0xa5, 0x5a, 0x5a]);
+        assert_eq!(parse_app_init(&post_nul).unwrap().friendly_name, "short");
+
+        let mut unterminated = build_app_init(&GUID, "a").unwrap();
+        for pair in unterminated[28..82].chunks_exact_mut(2) {
+            pair.copy_from_slice(&u16::from(b'z').to_le_bytes());
+        }
+        assert_eq!(
+            parse_app_init(&unterminated).unwrap().friendly_name,
+            "z".repeat(27)
+        );
     }
 
     #[test]
     fn rejects_wrong_guid_length() {
         assert!(matches!(
-            build_app_init(&[0; 8], "x", &TAIL),
+            build_app_init(&[0; 8], "x"),
             Err(FramingError::GuidLength(8))
         ));
     }

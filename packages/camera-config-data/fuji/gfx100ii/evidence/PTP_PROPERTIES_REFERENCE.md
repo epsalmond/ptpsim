@@ -164,16 +164,15 @@ offset 0x00  uint32 LE  length = 82 (0x52)
 offset 0x04  uint32 LE  type = 1 (InitCommandRequest)
 offset 0x08  16 bytes   initiator GUID (reference app Android hardcodes f2 e4 53 8f ad a5 48 5d 87 b2 7f 0b d3 d5 de d0)
 offset 0x18  4 bytes    reserved (always 0)
-offset 0x1c  variable   friendly name (UTF-16LE NUL-terminated, e.g. "Pixel-6-4976")
-offset 0x36..0x51  ~28 bytes — **don't matter to the camera.** Zeros work.
-                  (reference app leaks process memory here due to an OOB read bug — see
-                   INIT_COMMAND_REQUEST_FW0230_STACK_LEAK_2026-05-18.md)
+offset 0x1c..0x51  54 bytes — one 27-unit UTF-16LE friendly-name field
+                  Canonical requests write the name, one NUL unit, then zero-fill.
+                  Positions at 0x36+ remain part of this field for longer names.
 ```
 
 **For client application iOS:** use any 16-byte initiator GUID (or a fresh per-install one for
 fingerprinting friendliness; the camera doesn't validate it). Friendly name = the iPhone's
-user-visible device name, UTF-16LE NUL-terminated. Pad the tail with zeros — do NOT replicate
-reference app's stack leak.
+user-visible device name, UTF-16LE NUL-terminated. Zero-fill unused units after the first NUL;
+do not model post-NUL bytes as an independent protocol field.
 
 Camera responds with `InitCommandAck` (64 bytes; payload includes the camera's GUID).
 

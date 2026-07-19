@@ -2272,7 +2272,6 @@ fn nikon_d850_requires_explicit_model_selection() {
         .expect("D850 standard PTP/IP init resolves through Nikon defaults");
     assert_eq!(init.guid, (0_u8..=0xff).step_by(0x11).collect::<Vec<_>>());
     assert_eq!(init.friendly_name, "Android Device");
-    assert!(init.tail.is_empty());
     assert!(store.model_store("missing".to_string()).is_none());
 }
 

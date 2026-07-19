@@ -338,7 +338,7 @@ New modules in `camera-config`:
   rare (instax/PIN deltas); exact-match is the common path and needs no parsing.
 - **SOC tier** — inject `soc/<tier>` between manufacturer and model per `soc:`.
 - **value-policy** — `fixed` / `generated(scheme,persist)` / `from-pairing(source)`
-  (ios-adoption init identity/tail).
+  (ios-adoption init identity).
 - **predicate evaluator** — evaluates §3's grammar over supplied prop values.
 
 ### Firmware narrowing within the funnel

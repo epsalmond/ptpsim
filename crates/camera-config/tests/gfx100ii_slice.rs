@@ -1818,9 +1818,8 @@ fn manufacturer_tier_supplies_fixed_initiator_identity() {
 }
 
 #[test]
-fn app_init_shape_is_typed_and_zero_fills_the_unused_tail() {
-    // #343: preserve the fixed 82-byte shape without replaying captured process
-    // memory from the unused 28-byte tail.
+fn app_init_shape_declares_one_fixed_name_field() {
+    // #365: the bytes after the first 26 are part of the same UTF-16LE field.
     let m = gfx();
     let init = m.connections["app"]
         .init
@@ -1828,12 +1827,8 @@ fn app_init_shape_is_typed_and_zero_fills_the_unused_tail() {
         .expect("app declares an init shape");
     assert_eq!(init.identity.guid, "initiatorGuid");
     assert_eq!(init.identity.friendly_name, "initFriendlyName");
-    assert_eq!(init.name_field_byte_count, 26);
-    assert_eq!(
-        init.tail.as_deref(),
-        Some("00000000000000000000000000000000000000000000000000000000")
-    );
-    assert_eq!(init.tail_evidence.as_deref(), Some("docLiveControls"));
+    assert_eq!(init.name_field_byte_count, 54);
+    assert_eq!(init.evidence, ["docLiveControls"]);
 }
 
 #[test]

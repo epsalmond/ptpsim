@@ -9,11 +9,10 @@
 //! canonical value. Replaces client application's `cameraSafeDeviceName` +
 //! `sharedRegistrationAndPTPIPName`.
 
-/// Character cap. The 26-byte UTF-16LE PTP/IP name field (`fuji_init`) holds 13
-/// units, one reserved for the NUL terminator → 12 characters. A longer name
-/// would be truncated on the PTP/IP side but not on the UTF-8 BLE side, desyncing
-/// the two channels, so the cap is applied here where both channels read it.
-const MAX_NAME_CHARS: usize = 12;
+/// Character cap shared by BLE registration and PTP/IP init. BLE's established
+/// 18-character budget is narrower than reference app's 26 UTF-16-unit text budget, so
+/// both channels use the BLE limit and remain byte-identical.
+const MAX_NAME_CHARS: usize = 18;
 
 /// Fallback when the input has no usable characters.
 const FALLBACK: &str = "client application";
@@ -52,17 +51,24 @@ mod tests {
 
     #[test]
     fn folds_case_and_joins_alphanumeric_runs() {
-        // The app's own example: " Eric's iPad Pro " -> lowercase dash-joined,
-        // then capped to the 12-char field ("eric-s-ipad-" trimmed).
-        assert_eq!(normalize_client_name(" Eric's iPad Pro "), "eric-s-ipad");
+        assert_eq!(
+            normalize_client_name(" Eric's iPad Pro "),
+            "eric-s-ipad-pro"
+        );
         assert_eq!(normalize_client_name("Pixel 6"), "pixel-6");
         assert_eq!(normalize_client_name("iPhone15,2"), "iphone15-2");
     }
 
     #[test]
     fn caps_at_the_field_size_and_trims_dashes() {
-        assert_eq!(normalize_client_name("abcdefghijk-lmnop"), "abcdefghijk");
-        assert_eq!(normalize_client_name("verylongdevicename"), "verylongdevi");
+        assert_eq!(
+            normalize_client_name("abcdefghijk-lmnop"),
+            "abcdefghijk-lmnop"
+        );
+        assert_eq!(
+            normalize_client_name("verylongdevicename-extra"),
+            "verylongdevicename"
+        );
         // The cap must never leave a trailing dash (would desync BLE vs PTP/IP).
         assert!(!normalize_client_name("abcdefghijklmno pqr").ends_with('-'));
     }

@@ -124,7 +124,7 @@ fn legacy_app_init_shape_fails_closed_on_missing_or_wrong_fields() {
     assert!(CameraManifest::from_yaml(&unexpected_tail)
         .unwrap_err()
         .to_string()
-        .contains(".tail"));
+        .contains("unknown field `tail`"));
 }
 
 #[test]

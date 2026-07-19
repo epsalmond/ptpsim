@@ -44,7 +44,6 @@ fn standard_init_shape_builds_canonical_init_command_request() {
         ]
     );
     assert_eq!(init.friendly_name, "SnapBridge");
-    assert!(init.tail.is_empty());
     assert!(matches!(
         PtpIpPacket::decode(&init.packet),
         Ok(PtpIpPacket::InitCommandRequest(request))

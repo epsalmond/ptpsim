@@ -134,9 +134,7 @@ fn connect_ptpip(command_addr: std::net::SocketAddr, friendly_name: &str) -> Tcp
 }
 
 fn app_init_frame(guid_byte: u8, friendly_name: &str) -> Vec<u8> {
-    // A non-zero vendor tail distinguishes the reference app layout from PCSS, whose
-    // overlapping fixed fields require a zero tail.
-    build_app_init(&[guid_byte; 16], friendly_name, &[1; 28]).unwrap()
+    build_app_init(&[guid_byte; 16], friendly_name).unwrap()
 }
 
 fn pcss_init_frame(hostname: &str) -> Vec<u8> {
@@ -1805,7 +1803,9 @@ properties: {}
     let mut s = TcpStream::connect(command_addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_millis(500)))
         .unwrap();
-    write_frame(&mut s, &app_init_frame(1, "app"));
+    // Use a name beyond PCSS's shorter field so the two fixed layouts are
+    // distinguishable on the wire.
+    write_frame(&mut s, &app_init_frame(1, "app-name-is-long"));
     let mut buf = [0u8; 4];
     if s.read_exact(&mut buf).is_ok() {
         panic!("PCSS path accepted an reference app init packet");

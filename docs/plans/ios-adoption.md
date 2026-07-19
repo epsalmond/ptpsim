@@ -33,11 +33,10 @@ already pays.
 - **The app agent owns the client application-side FFI tooling.** Generating bindings, building/
   packaging the xcframework, AND wiring it into the client application build are theirs. ptpsim
   provides the crate + the `uniffi-bindgen` binary + `docs/INTEGRATION.md`.
-- **Init packet: manifest data.** The Fuji reference app `InitCommandRequest`'s 26-byte
-  name field + 28-byte reserved tail live in the camera manifest
-  (`transports.init`: `friendlyNameLength`, `tailHex`), NOT a hardcoded Rust
-  constant. Works whether or not it varies across firmwares; differing cameras
-  carry different data. → closes open decision #4.
+- **Init packet: manifest data.** The Fuji reference app `InitCommandRequest` carries one
+  fixed 54-byte UTF-16LE friendly-name field (`connections.*.init`:
+  `nameFieldByteCount: 54`). The identity policy remains manifest data; the
+  framing primitive terminates and zero-fills the field deterministically.
 
 ## Context
 
@@ -62,9 +61,10 @@ no WiFi. The app owns every byte on the wire and every OS API. ptpsim only
 2. **Compressed command framing already matches Rust byte-for-byte** — golden
    `open-session-request` (`10000000010002100100000001000000`) proves it. Flip
    this first.
-3. **The 82-byte reference app `InitCommandRequest` does NOT match `ptp-core`** — Swift
-   emits fixed 26-byte name + 28-byte tail; ptp-core has variable init. This is
-   gap G1, the parity blocker, flipped last behind its own sub-flag.
+3. **The 82-byte reference app `InitCommandRequest` does NOT match `ptp-core`** — reference app
+   uses one fixed 54-byte UTF-16LE friendly-name field; ptp-core has variable
+   init. This is gap G1, the parity blocker, flipped last behind its own
+   sub-flag.
 
 ## What ptpsim has vs must be built
 Has (verified): `ptp-core` (standard PTP/IP framing, all containers, datasets,
@@ -76,7 +76,7 @@ harness + extractor + corpus.
 Must build:
 - **G1 — Fuji reference app init variant** in `protocol-primitives` (`fuji_app_init`):
   fixed-82-byte init driven by manifest `transports.init` data
-  (`friendlyNameLength=26`, `tailHex`); `validateInitCommandAck`.
+  (`nameFieldByteCount=54`); `validateInitCommandAck`.
 - **G2 — Fuji value codecs:** `encode_aperture`(×100), `encode_iso`,
   `encode_shutter_speed`(`0x80000000|denom*1000`), `encode_exposure_bias`, ISO
   `0x7fffffff` manual-flag normalization, labels. None exist in Rust today.
@@ -187,9 +187,9 @@ The manifest is declarative data; a finite-vocabulary engine resolves it (see
 features this refactor needs:
 - **Value-resolution-policy** — a property value can be `{type: fixed, value}`,
   `{type: generated, scheme, persist}`, or `{type: from-pairing, source}`. This
-  is how the init identity, init tail, and per-pairing values are all expressed
-  uniformly. → supersedes "init identity stays an app constant": the initiator
-  GUID/name is a **manufacturer-tier `fixed` value-policy**, not Swift code.
+  is how the init identity and per-pairing values are expressed uniformly. →
+  supersedes "init identity stays an app constant": the initiator GUID/name is
+  a **manufacturer-tier `fixed` value-policy**, not Swift code.
 - **Establishment section** — values + a direction-neutral `workflow` for
   connection establishment (BLE GATT UUIDs/handshake, PTP-over-HTTP, port-knock).
   The values/workflow are manifest data (shared cross-platform); only the radio/
