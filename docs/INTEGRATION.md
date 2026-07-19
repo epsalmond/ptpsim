@@ -290,7 +290,8 @@ tracked by issue #164.
   `parse_data_phase` (standard framing streams `StartData`/`Data`/`EndData`; the Fuji
   compressed and USB channels deliver the whole data phase in one type-2 `Data` frame —
   reconciled byte-exact against the wire, #143) / `parse_event`, plus dataset codecs
-  `parse_object_info` / `parse_device_prop_desc` / `parse_live_status` (0xd212) /
+  `parse_object_info` / `parse_device_prop_desc` /
+  `parse_record_stream` (manifest-declared composite properties) /
   `parse_object_handle_list` (0xd621). Framing is selected per call by
   `PtpFraming { Standard | Compressed | Usb }`, which you **read from the manifest**
   (`ConnectionInfo.command_framing` / `event_framing`) — never a `kind→framing` map in app
@@ -595,7 +596,11 @@ selects only the response codes declared in the manifest.
 
 Scalar property reads always update predicate scope, whether or not they bind a
 named capture. A property with a manifest-declared record-stream payload is
-decoded into its allowed member observations, so composite polling remains
+decoded into typed allowed-member records. Fixed numeric members update
+predicate scope; PTP-string members remain available in `RecordStreamResult`
+but are not coerced into numeric observations. `record_stream_value` returns an
+optional typed value: absence is `None`, a present zero is `U32(0)`, and
+malformed payloads remain codec errors. Composite polling therefore remains
 manifest-driven and does not move camera-specific parsing into the host.
 
 Mode entries and actions may declare complete, ordered `executorSpan`
