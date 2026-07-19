@@ -226,7 +226,7 @@ Memory note expanding on this: `feedback-eager-schema-cleanup-preproduction`.
 - **FFI types are hand-written**, not derived. Every `camera-config`
   schema add needs a matching FFI variant (in
   `crates/camera-protocol-ffi/src/mfg_index.rs`'s `Step` /
-  `Observation` / etc. enums) + a `From` arm + a seam test, or the
+  `ScanObservation` / etc. enums) + a `From` arm + a seam test, or the
   schema silently doesn't reach consumers. Memory:
   `feedback-ffi-mirrors-camera-config-manually`.
 - **One generic engine, never per-brand crates.** No `crates/fuji-*`,

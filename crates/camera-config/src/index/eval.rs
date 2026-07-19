@@ -12,7 +12,7 @@ use super::types::{
 
 /// Transport-neutral facts about one observed BLE advertisement — what the
 /// predicate model (§11.14) evaluates against. The FFI converts its
-/// `Observation::BleAdvert` into this; a platform that can't supply a field
+/// `ScanObservation::BleAdvert` into this; a platform that can't supply a field
 /// leaves it `None`/empty and predicates over it evaluate false
 /// (absent-field rule).
 #[derive(Debug, Clone, Default)]

@@ -45,8 +45,8 @@ fn ble_advert(
     company_id: u16,
     payload: &[u8],
     local_name: Option<&str>,
-) -> Observation {
-    Observation::BleAdvert {
+) -> ScanObservation {
+    ScanObservation::BleAdvert {
         service_uuids: service_uuids.iter().map(|s| s.to_string()).collect(),
         manufacturer_data: Some(BleManufacturerData {
             company_id,
@@ -61,7 +61,7 @@ fn ble_advert(
 
 #[test]
 fn pcss_notify_recognition_carries_dynamic_endpoint_scope() {
-    let result = store().recognize(Observation::PcssNotify {
+    let result = store().recognize(ScanObservation::PcssNotify {
         camera_ipv4: "192.0.2.44".into(),
         camera_name: "GFX100 II".into(),
         command_port: 17555,
@@ -253,7 +253,7 @@ fn single_body_store_has_no_resolved_camera_initiated_transfer() {
 // ---------------------------------------------------------------------------
 
 /// Pairing-mode LEGACY advert. Mfg-data is `0x02 + 4-byte LE key`.
-fn synthetic_legacy_pairing_advert() -> Observation {
+fn synthetic_legacy_pairing_advert() -> ScanObservation {
     ble_advert(
         &[
             "AF854C2E-B214-458E-97E2-912C4ECF2CB8", // SERVICE_FF_FILE_TRANSFER
@@ -268,8 +268,8 @@ fn synthetic_legacy_pairing_advert() -> Observation {
 
 /// Idle bonded GFX100 II / fw 2.30 advert observed for issue #264: the
 /// file-transfer UUID and serial-bearing local name, with no mfg-data.
-fn synthetic_legacy_awake_advert() -> Observation {
-    Observation::BleAdvert {
+fn synthetic_legacy_awake_advert() -> ScanObservation {
+    ScanObservation::BleAdvert {
         service_uuids: vec!["AF854C2E-B214-458E-97E2-912C4ECF2CB8".into()],
         manufacturer_data: None,
         service_data: vec![],
@@ -281,7 +281,7 @@ fn synthetic_legacy_awake_advert() -> Observation {
 
 /// A synthetic RED advert: type=0x01 + 5 ASCII bytes (placeholder "ABCDE",
 /// the shape of a 5-byte short-serial used as the RED pairing key).
-fn synthetic_red_advert() -> Observation {
+fn synthetic_red_advert() -> ScanObservation {
     ble_advert(
         // RED bodies advertise CONNECTED_DEVICE_INFORMATION_RED, NOT
         // SERVICE_FF_FILE_TRANSFER (legacy detector). Per READ_THIS_FIRST §2.
@@ -292,7 +292,7 @@ fn synthetic_red_advert() -> Observation {
     )
 }
 
-fn synthetic_red_pairing_advert() -> Observation {
+fn synthetic_red_pairing_advert() -> ScanObservation {
     ble_advert(
         &[],
         0x04D8,
@@ -301,7 +301,7 @@ fn synthetic_red_pairing_advert() -> Observation {
     )
 }
 
-fn synthetic_legacy_startup_advert() -> Observation {
+fn synthetic_legacy_startup_advert() -> ScanObservation {
     ble_advert(
         &["731893F9-744E-4899-B7E3-174106FF2B82"],
         0x04D8,
@@ -310,7 +310,7 @@ fn synthetic_legacy_startup_advert() -> Observation {
     )
 }
 
-fn synthetic_red_startup_advert() -> Observation {
+fn synthetic_red_startup_advert() -> ScanObservation {
     ble_advert(
         &["804DAA8E-FFEB-4AB3-8E75-6EDD7303208D"],
         0x04D8,
@@ -462,7 +462,7 @@ fn saved_reconnect_rejects_wrong_identity_and_startup_is_not_discoverable() {
         ));
     }
 
-    let malformed_name = Observation::BleAdvert {
+    let malformed_name = ScanObservation::BleAdvert {
         service_uuids: vec!["AF854C2E-B214-458E-97E2-912C4ECF2CB8".into()],
         manufacturer_data: None,
         service_data: vec![],
@@ -546,7 +546,7 @@ fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
 /// (ptpsim#306): legacy mfg-data shape but the advertised service is
 /// SERVICE_FF_CAMERA_INFORMATION, not SERVICE_FF_FILE_TRANSFER. Issue #315
 /// promotes the named X-A7 shape to its legacy manufacturer app-specific manifest.
-fn field_xa7_pairing_advert(local_name: Option<&str>) -> Observation {
+fn field_xa7_pairing_advert(local_name: Option<&str>) -> ScanObservation {
     ble_advert(
         &["117C4142-EDD4-4C77-8696-DD18EEBB770A"],
         0x04D8,
@@ -664,7 +664,7 @@ fn xa7_registration_uses_legacy_app_queue_and_timing() {
 
 #[test]
 fn xa7_keyless_advert_selects_legacy_app_reconnect_for_saved_identity() {
-    let observation = Observation::BleAdvert {
+    let observation = ScanObservation::BleAdvert {
         service_uuids: vec!["117C4142-EDD4-4C77-8696-DD18EEBB770A".into()],
         manufacturer_data: None,
         service_data: vec![],
@@ -711,7 +711,7 @@ fn xa7_keyless_advert_selects_legacy_app_reconnect_for_saved_identity() {
 
 #[test]
 fn xa7_keyless_fuji_company_advert_selects_saved_reconnect() {
-    let observation = Observation::BleAdvert {
+    let observation = ScanObservation::BleAdvert {
         service_uuids: vec!["117C4142-EDD4-4C77-8696-DD18EEBB770A".into()],
         manufacturer_data: Some(BleManufacturerData {
             company_id: 0x04d8,
@@ -1908,7 +1908,7 @@ models:
         }],
     )
     .expect("synthetic index loads");
-    let obs = Observation::BleAdvert {
+    let obs = ScanObservation::BleAdvert {
         service_uuids: vec!["0000de00-3dd4-4255-8d62-6dc7b9bd5561".to_string()],
         manufacturer_data: None,
         service_data: vec![],
@@ -1933,7 +1933,7 @@ models:
         other => panic!("expected Candidate, got {other:?}"),
     }
     // Same advert without the local name → NoMatch (absent-field rule).
-    let obs = Observation::BleAdvert {
+    let obs = ScanObservation::BleAdvert {
         service_uuids: vec!["0000de00-3dd4-4255-8d62-6dc7b9bd5561".to_string()],
         manufacturer_data: None,
         service_data: vec![],
@@ -2020,8 +2020,8 @@ models:
     .expect("synthetic baseline index loads")
 }
 
-fn de00_advert(local_name: Option<&str>) -> Observation {
-    Observation::BleAdvert {
+fn de00_advert(local_name: Option<&str>) -> ScanObservation {
+    ScanObservation::BleAdvert {
         service_uuids: vec!["0000de00-3dd4-4255-8d62-6dc7b9bd5561".to_string()],
         manufacturer_data: None,
         service_data: vec![],
@@ -2215,7 +2215,7 @@ fn nikon_advert_recognised_by_lss_service_uuid_alone() {
     // Full shape: LSS UUID + local name + optional mfg payload
     // (client id + lssAdInfo flags). The signature never checks the
     // company id — SnapBridge recognizes by service UUID.
-    let obs = Observation::BleAdvert {
+    let obs = ScanObservation::BleAdvert {
         service_uuids: vec![lss.to_string()],
         manufacturer_data: Some(BleManufacturerData {
             company_id: 0x0399,
@@ -2243,7 +2243,7 @@ fn nikon_advert_recognised_by_lss_service_uuid_alone() {
     }
     // Bare LSS advert (no name, no mfg data) still recognizes; all
     // captures skip fail-soft.
-    let obs = Observation::BleAdvert {
+    let obs = ScanObservation::BleAdvert {
         service_uuids: vec![lss.to_string()],
         manufacturer_data: None,
         service_data: vec![],

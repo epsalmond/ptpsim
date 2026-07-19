@@ -5,7 +5,7 @@ Same types and methods as the Swift / Kotlin sides; consume from any
 Python ≥ 3.9.
 
 Primary consumer: client application's test-injection TUI, which uses these
-bindings to construct `Observation` values and feed them through
+bindings to construct `ScanObservation` values and feed them through
 `recognize` / `establishment` for in-process test fixtures (no real
 BLE radio).
 
@@ -44,7 +44,7 @@ The Python surface mirrors the Swift one in plan §3.3 +
 
 ```python
 from camera_protocol_ffi import (
-    ConfigStore, Observation, Recognition, KeyValue,
+    ConfigStore, ScanObservation, Recognition, KeyValue,
 )
 
 # Load. modelBodies takes (model_id, yaml_text) pairs.
@@ -55,7 +55,7 @@ store = ConfigStore.from_manufacturer_index(
 )
 
 # Inject a synthetic LEGACY advert.
-obs = Observation.BLE_ADVERT(
+obs = ScanObservation.BLE_ADVERT(
     service_uuids=["AF854C2E-B214-458E-97E2-912C4ECF2CB8"],
     manufacturer_data=bytes.fromhex("02 44 73 2a 80".replace(" ", "")),
     local_name="GFX100 II",
@@ -74,13 +74,13 @@ if isinstance(result, Recognition.CANDIDATE):
 
 ## What's available
 
-Every type from plan §3.3 + §11: `Observation`, `Recognition`,
+Every type from plan §3.3 + §11: `ScanObservation`, `Recognition`,
 `Candidate` / `Disambiguate` / `NoMatch`, `EstablishmentPlan`, the
 7-verb `Step` grammar, `StepOptions`, `StepValue` (with optional
 `transform`), `AcquireSource`, `BleNotifyUntil`, `Predicate`,
 `PredicateOp`, `ValueTransform`, plus the existing single-body surface
 (`connections`, `mode_entry`, `operation_available`, …).
 
-Naming is Python-conventional: snake_case methods, `Observation.BLE_ADVERT`
+Naming is Python-conventional: snake_case methods, `ScanObservation.BLE_ADVERT`
 for enum variants, `bytes` for byte vectors. The uniffi Python codegen
 handles the conversions.

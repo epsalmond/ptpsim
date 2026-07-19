@@ -15,8 +15,8 @@ use camera_protocol_ffi::{
     run_establishment, run_post_exit_readiness, BleManufacturerData, ConfigStore,
     ConnectionActivityEvent, ConnectionActivityFailure, ConnectionActivityObserver,
     ConnectionActivityRetry, ConnectionActivityTerminalSummary, EstablishmentConfirmOutcome,
-    EstablishmentRefinement, ExecutorError, ExecutorStepFailureKind, KeyValue, Observation,
-    Recognition, ReconnectDecision, StepObserver, StepOutcome, StepReport, TransportError,
+    EstablishmentRefinement, ExecutorError, ExecutorStepFailureKind, KeyValue, Recognition,
+    ReconnectDecision, ScanObservation, StepObserver, StepOutcome, StepReport, TransportError,
 };
 use camera_sim::{BleEvent, BleResponder};
 use futures::executor::block_on;
@@ -430,7 +430,7 @@ fn launch_refusal_retry() -> ConnectionActivityRetry {
 /// threads verbatim into `run_establishment` (#43).
 fn recognize(
     store: &Arc<ConfigStore>,
-    advert: Observation,
+    advert: ScanObservation,
 ) -> (String, Vec<KeyValue>, Vec<KeyValue>) {
     match store.recognize(advert) {
         Recognition::Candidate {
@@ -448,8 +448,8 @@ fn recognize(
     }
 }
 
-fn legacy_advert(ble: &FamilyBleBlock) -> Observation {
-    Observation::BleAdvert {
+fn legacy_advert(ble: &FamilyBleBlock) -> ScanObservation {
+    ScanObservation::BleAdvert {
         service_uuids: vec![ble.advert.service_uuids["fileTransfer"].clone()],
         manufacturer_data: Some(BleManufacturerData {
             company_id: ble.advert.manufacturer_company_id.expect("company id"),
@@ -462,12 +462,12 @@ fn legacy_advert(ble: &FamilyBleBlock) -> Observation {
     }
 }
 
-fn red_advert(ble: &FamilyBleBlock) -> Observation {
+fn red_advert(ble: &FamilyBleBlock) -> ScanObservation {
     // No service UUIDs: a fresh RED pairing advert matches `bleRedAdvert` on
     // manufacturer data alone. The RED service UUIDs now select the
     // reconnect-only startup/awake signatures (discoverable: false), which
     // never surface through `recognize`.
-    Observation::BleAdvert {
+    ScanObservation::BleAdvert {
         service_uuids: vec![],
         manufacturer_data: Some(BleManufacturerData {
             company_id: ble.advert.manufacturer_company_id.expect("company id"),
@@ -480,8 +480,8 @@ fn red_advert(ble: &FamilyBleBlock) -> Observation {
     }
 }
 
-fn legacy_startup_advert(ble: &FamilyBleBlock) -> Observation {
-    Observation::BleAdvert {
+fn legacy_startup_advert(ble: &FamilyBleBlock) -> ScanObservation {
+    ScanObservation::BleAdvert {
         service_uuids: vec![ble.advert.service_uuids["cameraStartupInformation"].clone()],
         manufacturer_data: Some(BleManufacturerData {
             company_id: ble.advert.manufacturer_company_id.expect("company id"),
@@ -494,8 +494,8 @@ fn legacy_startup_advert(ble: &FamilyBleBlock) -> Observation {
     }
 }
 
-fn legacy_awake_advert(ble: &FamilyBleBlock) -> Observation {
-    Observation::BleAdvert {
+fn legacy_awake_advert(ble: &FamilyBleBlock) -> ScanObservation {
+    ScanObservation::BleAdvert {
         service_uuids: vec![ble.advert.service_uuids["fileTransfer"].clone()],
         manufacturer_data: None,
         service_data: vec![],

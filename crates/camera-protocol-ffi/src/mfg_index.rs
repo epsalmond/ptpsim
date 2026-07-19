@@ -4,7 +4,7 @@
 //!
 //! 1. App boots and calls [`crate::ConfigStore::from_manufacturer_index`].
 //! 2. BLE scan delivers an advert → app calls [`crate::ConfigStore::recognize`]
-//!    with an [`Observation::BleAdvert`] → receives a [`Recognition`]
+//!    with a [`ScanObservation::BleAdvert`] → receives a [`Recognition`]
 //!    carrying the matched signature's facts in `runtime_scope`.
 //! 3. On `Candidate`, app calls [`crate::ConfigStore::establishment`]
 //!    (model, connection, initial_scope) → receives an [`EstablishmentPlan`]
@@ -24,7 +24,7 @@ use crate::executor::ExecutorStepFailureKind;
 use crate::KeyValue;
 
 // ---------------------------------------------------------------------------
-// Observation → Recognition (§3.2)
+// ScanObservation → Recognition (§3.2)
 // ---------------------------------------------------------------------------
 
 /// The pull-model input: what the app observed, the FFI decides what it means.
@@ -36,7 +36,7 @@ use crate::KeyValue;
 /// error (§11.14). CoreBluetooth cannot supply `ad_records` (no raw AD
 /// access) and exposes TX power only when the advert carries it.
 #[derive(Debug, uniffi::Enum)]
-pub enum Observation {
+pub enum ScanObservation {
     /// A BLE advertisement seen during scan. Apple delivers service UUIDs as a
     /// list; some bodies advertise multiple — the matcher iterates the whole
     /// list.
@@ -1018,7 +1018,7 @@ impl From<&ix::Step> for Step {
 // recognize() — observation → decision
 // ---------------------------------------------------------------------------
 
-/// Match a [`Observation::BleAdvert`] (converted to
+/// Match a [`ScanObservation::BleAdvert`] (converted to
 /// [`ix::eval::BleAdvertFacts`]) against every (model, signature) pair in
 /// the resolved index, in file-declaration order (§11.7).
 ///
