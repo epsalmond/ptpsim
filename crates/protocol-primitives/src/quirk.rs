@@ -37,7 +37,8 @@ pub enum RecordStreamError {
     Encode(#[from] EncodeError),
 }
 
-/// Payload-local wire encoding for a record member.
+/// Payload-local wire encoding for a record member. `Fixed` is raw unsigned
+/// little-endian; negative signed values do not match it at any width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordValueEncoding {
     Fixed { width: u8 },
@@ -189,7 +190,9 @@ fn write_ptp_string(out: &mut Vec<u8>, value: &str) -> Result<(), EncodeError> {
 }
 
 /// Assemble a manifest-resolved heterogeneous record stream. Records must be
-/// declared and their values must match the member-local encoding.
+/// declared and their values must match the member-local encoding. Fixed
+/// values are raw unsigned magnitudes; negative signed values are never
+/// reinterpreted as two's-complement bit patterns.
 pub fn typed_record_stream(
     records: &[(u16, PropValue)],
     descriptor: &RecordStreamDescriptor,
