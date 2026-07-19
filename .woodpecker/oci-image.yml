@@ -8,9 +8,22 @@
 # secrets, no push); pushes to the default branch publish, then verify and
 # smoke the published manifest.
 
+workspace:
+  base: /woodpecker
+  path: src/ptpsim
+
+clone:
+  - name: git
+    image: ${DURABLE_GIT_CLONE_IMAGE:-docker.io/woodpeckerci/plugin-git:2.9.2}
+    settings:
+      expected_repository: ${CI_REPO}
+      expected_workspace: /woodpecker/src/ptpsim
+      lock_file: /ci-locks/workspace.lock
+
 labels:
   backend: docker
   platform: linux/amd64
+  repo: ${CI_REPO}
   trust: host-root
 
 when:

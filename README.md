@@ -51,7 +51,17 @@ the default GFX100 II fixture service before launching the operator console.
 
 ## CI
 
-Continuous integration runs via Woodpecker CI; see [`.woodpecker.yml`](.woodpecker.yml).
+Continuous integration runs via the workflows under [`.woodpecker/`](.woodpecker/).
+The Linux and OCI workflows request a Docker `linux/amd64` agent for the
+current repository rather than a named host. They use a stable workspace path
+and a configurable clone image, with Woodpecker's standard Git plugin as the
+public fallback. Deployments may supply a compatible clone plugin that safely
+reuses an externally managed durable checkout.
+
+Linux cache roots remain host-managed. A deployment can lower the default
+40 GiB per-cache cleanup threshold through `PTPSIM_CI_CACHE_LIMIT_KIB`; the
+public default is unchanged. Apple XCFramework promotion remains a separate
+Darwin workflow.
 
 ## License
 

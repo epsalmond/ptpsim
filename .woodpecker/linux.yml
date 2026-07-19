@@ -6,9 +6,22 @@
 # land on the macOS local-backend agent, which would fail at `git lfs`
 # during clone and at trying to exec `image: rust:1-slim` as a shell.
 
+workspace:
+  base: /woodpecker
+  path: src/ptpsim
+
+clone:
+  - name: git
+    image: ${DURABLE_GIT_CLONE_IMAGE:-docker.io/woodpeckerci/plugin-git:2.9.2}
+    settings:
+      expected_repository: ${CI_REPO}
+      expected_workspace: /woodpecker/src/ptpsim
+      lock_file: /ci-locks/workspace.lock
+
 labels:
   backend: docker
   platform: linux/amd64
+  repo: ${CI_REPO}
   trust: host-root
 
 when:
@@ -66,7 +79,7 @@ steps:
       CARGO_INCREMENTAL: "0"
     commands:
       # Size guard: wipe past 40 GiB rather than grow unbounded.
-      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
+      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt ${PTPSIM_CI_CACHE_LIMIT_KIB:-41943040} ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets
       - cargo test --workspace
@@ -121,7 +134,7 @@ steps:
       CARGO_TARGET_DIR: /ci-cache/target
       CARGO_INCREMENTAL: "0"
     commands:
-      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
+      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt ${PTPSIM_CI_CACHE_LIMIT_KIB:-41943040} ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - |
         if ! command -v kotlinc >/dev/null 2>&1; then
           apt-get update -qq
@@ -167,7 +180,7 @@ steps:
     volumes:
       - /data/ci-cache/ptpsim/android:/ci-cache
     commands:
-      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
+      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt ${PTPSIM_CI_CACHE_LIMIT_KIB:-41943040} ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - ./ci/build-android.sh
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
       - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
@@ -209,7 +222,7 @@ steps:
     volumes:
       - /data/ci-cache/ptpsim/wheel:/ci-cache
     commands:
-      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
+      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt ${PTPSIM_CI_CACHE_LIMIT_KIB:-41943040} ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - 'PATH="/opt/wheelvenv/bin:$PATH" ./ci/build-python-wheel.sh'
       # Attach to the same sha-<8> release as the xcframework
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
