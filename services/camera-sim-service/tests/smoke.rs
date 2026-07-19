@@ -969,30 +969,11 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// #54: a completion event emitted by an operation is pushed to a connected
-/// event-socket client as a PTP/IP Event packet. The AF op (0x9026) `emits`
-/// 0xC005 AFCAPTUER; a client on the event socket (55741) must receive it.
+/// Completion events from the production GFX100 II manifest reach the real
+/// app-persona event socket instead of leaving shutter/AF await steps at their
+/// timeout ceilings.
 #[test]
-fn service_pushes_completion_event_on_event_socket() {
-    const AF_EVENT_MANIFEST: &str = r#"
-schema: camera-config/v1
-camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
-connections:
-  app:
-    kind: ptpip-app
-    initShape: app82
-    liveViewDelivery: { kind: stream }
-    commandFraming: compressed
-    eventFraming: usb
-    bindings: { command: 55740, event: 55741, liveView: 55742 }
-operations:
-  "0x1002": { name: OpenSession, connections: [app] }
-  "0x9026":
-    name: LockS1Lock
-    connections: [app]
-    emits: ["0xc005"]
-properties: {}
-"#;
+fn service_pushes_gfx_shutter_and_autofocus_events_on_event_socket() {
     let root = tmp_card();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, event_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
@@ -1000,7 +981,7 @@ properties: {}
             instance_id: "test".into(),
             profile: "fuji/gfx100ii/fw0230".into(),
             connection: "app".into(),
-            manifest_yaml: AF_EVENT_MANIFEST.into(),
+            manifest_yaml: real_gfx_manifest(),
             media_root: root.clone(),
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
@@ -1023,23 +1004,46 @@ properties: {}
         (cmd, evt, control, tx, h)
     });
 
-    // Connect the event socket FIRST — the real app opens it during session
-    // setup, before triggering a capture. A read timeout turns a missing push
-    // into a clear failure instead of a hang.
-    let mut evt = TcpStream::connect(event_addr).unwrap();
-    evt.set_read_timeout(Some(std::time::Duration::from_secs(2)))
-        .unwrap();
-
-    // Command-socket session bring-up. These round-trips also give the event
-    // accept time to land (and subscribe) before the AF op broadcasts.
+    // Command-socket session and live-view entry. The real manifest does not
+    // accept the event role until its openChannel boundary is reached.
     let mut s = TcpStream::connect(command_addr).unwrap();
     write_frame(&mut s, &app_init_frame(1, "smoke"));
     let _ = read_frame(&mut s); // InitCommandAck
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
+    set_prop(&mut s, 2, 0xdf00, &6u16.to_le_bytes());
+    set_prop(&mut s, 3, 0xdf01, &0x16u16.to_le_bytes());
+    write_frame(&mut s, &op(0x1015, 4, vec![0xdf2a]));
+    let df2a = read_data_reply(&mut s);
+    set_prop(&mut s, 5, 0xdf2a, &df2a);
+    for tid in 6..10 {
+        write_frame(&mut s, &op(0x902b, tid, vec![]));
+        read_ok(&mut s);
+    }
+    write_frame(&mut s, &op(0x101c, 10, vec![]));
+    read_ok(&mut s);
 
-    // Tap-to-AF: the op emits 0xC005 on its OK response.
-    write_frame(&mut s, &op(0x9026, 2, vec![0x0906_0403]));
+    let mut evt = TcpStream::connect(event_addr).unwrap();
+    evt.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    write_frame(&mut s, &op(0x1015, 11, vec![0xd212]));
+    let _ = read_data_reply(&mut s);
+    // Accepting the auxiliary socket installs its broadcast subscription on a
+    // sibling task; let that bounded setup finish before emitting the event.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // Shutter: 0x100E emits the 0xC001 postview-complete event awaited by the
+    // manifest action before its cleanup operation.
+    write_frame(&mut s, &op(0x100e, 12, vec![0, 0]));
+    read_ok(&mut s);
+    match protocol_primitives::usb_ptp::decode(&read_frame(&mut evt)).unwrap() {
+        PtpIpPacket::Event(e) => assert_eq!(e.code, 0xc001),
+        other => panic!("expected shutter Event packet, got {other:?}"),
+    }
+
+    // Tap-to-AF: the op emits 0xC005 and its D209 result settles through the
+    // same command socket the app uses for the post-event await.
+    write_frame(&mut s, &op(0x9026, 13, vec![0x0906_0403]));
     read_ok(&mut s);
 
     // The push follows the manifest's USB/PIMA event framing.
@@ -1050,6 +1054,13 @@ properties: {}
         }
         other => panic!("expected Event packet, got {other:?}"),
     }
+
+    write_frame(&mut s, &op(0x1015, 14, vec![0xd209]));
+    let first = read_data_reply(&mut s);
+    assert_eq!(u16::from_le_bytes([first[0], first[1]]), 0);
+    write_frame(&mut s, &op(0x1015, 15, vec![0xd209]));
+    let settled = read_data_reply(&mut s);
+    assert_eq!(u16::from_le_bytes([settled[0], settled[1]]), 1);
 
     let observations = http_get(control_addr, "/observations?after=0");
     let export: serde_json::Value = serde_json::from_str(
@@ -1062,7 +1073,7 @@ properties: {}
     let records = export["records"].as_array().unwrap();
     let transaction = records
         .iter()
-        .find(|record| record["kind"] == "ptpTransaction" && record["transactionId"] == 2)
+        .find(|record| record["kind"] == "ptpTransaction" && record["transactionId"] == 13)
         .expect("AF transaction observation");
     let event = records
         .iter()
@@ -2792,7 +2803,7 @@ fn failed_control_patch_state_is_atomic() {
         state.contains("\"session_open\":false"),
         "state body: {state}"
     );
-    assert!(state.contains("\"0xd02a\":32769"), "state body: {state}");
+    assert!(state.contains("\"0xd02a\":200"), "state body: {state}");
 
     let _ = http_post(control_addr, "/shutdown");
     rt.block_on(async {
