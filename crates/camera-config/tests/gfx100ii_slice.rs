@@ -7,8 +7,8 @@ use camera_config::{
     CaptureSource, ConfigStore, InventoryCompleteness, ManufacturerDefaults, MissingRuntimeValue,
     ModeEntryExecution, ObjectTransferCompletionTiming, ObjectTransferResumePolicy,
     ObjectTransferStrategy, ObjectsAvailable, ObservationLine, OperationKind, PcssDiscoveryTarget,
-    Predicate, PropView, PropertyKind, PropertyTransitionTerminal, ResponderMutation, SetPropValue,
-    StepParam, ValuePolicy, VersionScheme,
+    Predicate, PropView, PropertyKind, PropertyTransitionTerminal, RecordValueEncoding,
+    RecordValueLiteral, ResponderMutation, SetPropValue, StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -62,6 +62,59 @@ fn app_slice_loads_and_schema_is_supported() {
         .validate()
         .iter()
         .all(|l| l.severity == camera_config::Severity::Warning));
+}
+
+#[test]
+fn d212_declares_heterogeneous_member_encoding() {
+    let manifest = gfx();
+    let payload = manifest.properties["0xd212"]
+        .payload
+        .as_ref()
+        .expect("D212 payload descriptor");
+    let member = payload
+        .members
+        .iter()
+        .find(|member| member.code() == "0xd22f")
+        .expect("D22F payload member");
+    assert_eq!(member.encoding(4), RecordValueEncoding::PtpString);
+    assert_eq!(
+        member.simulator_value(),
+        Some(&RecordValueLiteral::String(String::new()))
+    );
+}
+
+#[test]
+fn record_stream_member_contract_rejects_shape_drift() {
+    let manifest = data("fuji/gfx100ii/gfx100ii.yaml");
+    let malformed = [
+        (
+            "encoding: { kind: ptpString }, simulatorValue: \"\"",
+            "encoding: { kind: fixed, width: 3 }, simulatorValue: 0",
+            "unsupported fixed width 3",
+        ),
+        (
+            "encoding: { kind: ptpString }, simulatorValue: \"\"",
+            "encoding: { kind: ptpString }, simulatorValue: 0",
+            "simulatorValue must be a string",
+        ),
+        (
+            "encoding: { kind: ptpString }, simulatorValue: \"\"",
+            "encoding: { kind: ptpString }",
+            "ptpString requires simulatorValue",
+        ),
+        (
+            "                \"0xdf41\"]",
+            "                \"0xdf41\", \"0xdf41\"]",
+            "repeats member code 0xdf41",
+        ),
+    ];
+
+    for (old, new, expected) in malformed {
+        let changed = manifest.replacen(old, new, 1);
+        assert_ne!(changed, manifest, "fixture anchor must exist: {old}");
+        let error = CameraManifest::from_yaml(&changed).expect_err("shape drift rejected");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
 }
 
 #[test]

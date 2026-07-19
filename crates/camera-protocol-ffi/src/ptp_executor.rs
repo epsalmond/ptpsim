@@ -1542,9 +1542,11 @@ impl PtpCtx {
             for observation in status
                 .records
                 .into_iter()
-                .filter(|observation| members.contains(&observation.code))
+                .filter(|observation| members.iter().any(|member| member.code == observation.code))
             {
-                self.observed.set(observation.code, observation.value);
+                if let crate::PtpValue::U32 { value } = observation.value {
+                    self.observed.set(observation.code, value as i64);
+                }
             }
             Ok(())
         } else {

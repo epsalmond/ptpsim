@@ -905,7 +905,7 @@ impl Engine {
                         payload
                             .members
                             .iter()
-                            .filter_map(|m| parse_hex_code(m))
+                            .filter_map(|member| parse_hex_code(member.code()))
                             .collect()
                     })
                     .unwrap_or_default();
@@ -1692,31 +1692,56 @@ impl Engine {
         &self,
         property: u16,
     ) -> Result<Vec<u8>, protocol_primitives::quirk::RecordStreamError> {
-        use protocol_primitives::quirk::{record_stream, RecordStreamLayout};
+        use protocol_primitives::quirk::{
+            typed_record_stream, RecordStreamDescriptor, RecordValueEncoding,
+        };
         let Some(payload) = self
             .manifest
             .property(property)
             .and_then(|p| p.payload.as_ref())
         else {
-            return record_stream(&[], &RecordStreamLayout::D212);
+            let descriptor = RecordStreamDescriptor::new(2, 2, [])?;
+            return typed_record_stream(&[], &descriptor);
         };
         let (count_w, code_w, value_w) = payload.record_widths();
-        let layout = RecordStreamLayout::new(count_w, code_w, value_w)?;
-        let records: Vec<(u16, u32)> = payload
+        let descriptor = RecordStreamDescriptor::new(
+            count_w,
+            code_w,
+            payload.members.iter().filter_map(|member| {
+                let code = parse_hex_code(member.code())?;
+                let encoding = match member.encoding(value_w) {
+                    camera_config::RecordValueEncoding::Fixed { width } => {
+                        RecordValueEncoding::Fixed { width }
+                    }
+                    camera_config::RecordValueEncoding::PtpString => RecordValueEncoding::PtpString,
+                };
+                Some((code, encoding))
+            }),
+        )?;
+        let records: Vec<(u16, PropValue)> = payload
             .members
             .iter()
-            .filter_map(|m| parse_hex_code(m))
-            .map(|code| {
+            .filter_map(|member| {
+                let code = parse_hex_code(member.code())?;
                 let value = self
                     .state
                     .props
                     .get(&code)
-                    .and_then(value_to_i64)
-                    .unwrap_or(0) as u32;
-                (code, value)
+                    .cloned()
+                    .or_else(|| match member.simulator_value() {
+                        Some(camera_config::RecordValueLiteral::Unsigned(value)) => {
+                            Some(PropValue::U32(*value))
+                        }
+                        Some(camera_config::RecordValueLiteral::String(value)) => {
+                            Some(PropValue::Str(value.clone()))
+                        }
+                        None => None,
+                    })
+                    .unwrap_or(PropValue::U32(0));
+                Some((code, value))
             })
             .collect();
-        record_stream(&records, &layout)
+        typed_record_stream(&records, &descriptor)
     }
 
     fn device_info_bytes(&self) -> Vec<u8> {

@@ -467,7 +467,7 @@ pub fn parse_event(
 }
 
 /// A typed PTP property value (mirrors `ptp_core::PropValue`, lossless).
-#[derive(Debug, uniffi::Enum)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum PtpValue {
     I8 { value: i8 },
     U8 { value: u8 },
@@ -648,22 +648,18 @@ pub fn parse_object_info(payload: Vec<u8>) -> Result<PtpObjectInfo, CodecError> 
     })
 }
 
-/// A decoded Fuji `0xD212`-style live-status record stream (each entry a
-/// `(prop code, value)` pair; the member set is manifest-driven, #107).
-#[derive(uniffi::Record)]
-pub struct LiveStatus {
-    pub records: Vec<PropObservation>,
+/// One typed record from a manifest-declared record stream.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RecordStreamRecord {
+    pub code: u16,
+    pub value: PtpValue,
 }
 
-/// Parse a live-status record-stream payload into its property observations
-/// at the `0xD212` widths (u16 count / u16 code / u32 value). For a payload
-/// whose manifest declares other widths, use [`parse_record_stream`].
-#[uniffi::export]
-pub fn parse_live_status(payload: Vec<u8>) -> Result<LiveStatus, CodecError> {
-    parse_records_at(
-        &payload,
-        protocol_primitives::quirk::RecordStreamLayout::D212,
-    )
+/// A successfully decoded record stream. Member absence is represented by no
+/// matching record, independently of malformed input and numeric zero.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RecordStreamResult {
+    pub records: Vec<RecordStreamRecord>,
 }
 
 /// Parse a record-stream payload at the manifest-declared widths — pass the
@@ -672,29 +668,55 @@ pub fn parse_live_status(payload: Vec<u8>) -> Result<LiveStatus, CodecError> {
 /// test guards the mirror). Widths the codec can't honor are a
 /// [`CodecError::Decode`], never a silent misread (#161).
 #[uniffi::export]
-pub fn parse_record_stream(payload: Vec<u8>, info: PayloadInfo) -> Result<LiveStatus, CodecError> {
-    let layout = protocol_primitives::quirk::RecordStreamLayout::new(
-        info.count_width.unwrap_or(2),
-        info.record.as_ref().map(|r| r.code_width).unwrap_or(2),
-        info.record.as_ref().map(|r| r.value_width).unwrap_or(4),
-    )
-    .map_err(codec_decode)?;
-    parse_records_at(&payload, layout)
-}
-
-fn parse_records_at(
-    payload: &[u8],
-    layout: protocol_primitives::quirk::RecordStreamLayout,
-) -> Result<LiveStatus, CodecError> {
-    let records = protocol_primitives::quirk::parse_record_stream(payload, &layout)
+pub fn parse_record_stream(
+    payload: Vec<u8>,
+    info: PayloadInfo,
+) -> Result<RecordStreamResult, CodecError> {
+    let descriptor = record_stream_descriptor(&info).map_err(codec_decode)?;
+    let records = protocol_primitives::quirk::parse_typed_record_stream(&payload, &descriptor)
         .map_err(codec_decode)?
         .into_iter()
-        .map(|(code, value)| PropObservation {
+        .map(|(code, value)| RecordStreamRecord {
             code,
-            value: value as i64,
+            value: (&value).into(),
         })
         .collect();
-    Ok(LiveStatus { records })
+    Ok(RecordStreamResult { records })
+}
+
+fn record_stream_descriptor(
+    info: &PayloadInfo,
+) -> Result<
+    protocol_primitives::quirk::RecordStreamDescriptor,
+    protocol_primitives::quirk::RecordStreamError,
+> {
+    use protocol_primitives::quirk::{RecordStreamDescriptor, RecordValueEncoding};
+
+    RecordStreamDescriptor::new(
+        info.count_width.unwrap_or(2),
+        info.record
+            .as_ref()
+            .map(|record| record.code_width)
+            .unwrap_or(2),
+        info.members.iter().map(|member| {
+            let encoding = match member.encoding {
+                RecordValueEncodingInfo::Fixed { width } => RecordValueEncoding::Fixed { width },
+                RecordValueEncodingInfo::PtpString => RecordValueEncoding::PtpString,
+            };
+            (member.code, encoding)
+        }),
+    )
+}
+
+/// Look up one typed member after a successful parse. `None` is a valid absent
+/// member; malformed input is returned by [`parse_record_stream`] instead.
+#[uniffi::export]
+pub fn record_stream_value(stream: RecordStreamResult, member: u16) -> Option<PtpValue> {
+    stream
+        .records
+        .into_iter()
+        .find(|record| record.code == member)
+        .map(|record| record.value)
 }
 
 /// Parse a `u32`-counted PTP object-handle array (e.g. the `0xD621` object-list
@@ -1021,7 +1043,19 @@ pub struct PayloadInfo {
     pub form: PayloadForm,
     pub count_width: Option<u8>,
     pub record: Option<RecordLayoutInfo>,
-    pub members: Vec<u16>,
+    pub members: Vec<RecordMemberInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RecordMemberInfo {
+    pub code: u16,
+    pub encoding: RecordValueEncodingInfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RecordValueEncodingInfo {
+    Fixed { width: u8 },
+    PtpString,
 }
 
 /// One exact positive observation tuple. The surrounding store fixes camera
@@ -1254,6 +1288,7 @@ pub struct RecordLayoutInfo {
 
 impl From<&cc::Payload> for PayloadInfo {
     fn from(p: &cc::Payload) -> Self {
+        let (_, _, default_value_width) = p.record_widths();
         PayloadInfo {
             form: match p.form {
                 cc::PayloadForm::RecordStream => PayloadForm::RecordStream,
@@ -1263,7 +1298,23 @@ impl From<&cc::Payload> for PayloadInfo {
                 code_width: r.code_width,
                 value_width: r.value_width,
             }),
-            members: p.members.iter().filter_map(|m| parse_hex_code(m)).collect(),
+            members: p
+                .members
+                .iter()
+                .filter_map(|member| {
+                    Some(RecordMemberInfo {
+                        code: parse_hex_code(member.code())?,
+                        encoding: match member.encoding(default_value_width) {
+                            cc::RecordValueEncoding::Fixed { width } => {
+                                RecordValueEncodingInfo::Fixed { width }
+                            }
+                            cc::RecordValueEncoding::PtpString => {
+                                RecordValueEncodingInfo::PtpString
+                            }
+                        },
+                    })
+                })
+                .collect(),
         }
     }
 }

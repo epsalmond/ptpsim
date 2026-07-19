@@ -100,6 +100,10 @@ evidence:
     kind: wire-capture
 
     date: 2026-07-06
+  wireD212Heterogeneous20260719:
+    kind: wire-capture
+    path: evidence/D212_HETEROGENEOUS_RECORDS_20260719.md
+    date: 2026-07-19
   wirePCSSShootDownload20260523:
     kind: wire-capture
 
@@ -9074,12 +9078,17 @@ properties:
       - '0xd401'
       - '0xd52f'
       - '0xdf00'
+      - code: '0xd22f'
+        encoding:
+          kind: ptpString
+        simulatorValue: ''
       - '0xdf41'
     controls: {}
     labels: {}
     evidence:
     - docImageTransfer
     - docD212TightFormat
+    - wireD212Heterogeneous20260719
     observedScopes:
     - connection: usb
       mode: raw-conv-backup-restore

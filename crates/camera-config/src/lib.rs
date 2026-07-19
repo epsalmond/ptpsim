@@ -57,11 +57,12 @@ pub use model::{
     Property, PropertyKind, PropertySemanticAssertions, PropertyTransitionTerminal,
     PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
     ProvenancedName, ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout,
-    RecordMemberRef, ReestablishConnection, ResponderMutation, RetryFailureClass,
-    RuntimeSetPropValue, SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate,
-    SetPropValue, ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, StepRetry,
-    StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
-    TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
+    ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
+    SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SetPropValue,
+    ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, StepRetry, StructuredTextField,
+    StructuredTextLayout, StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch,
+    ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -213,7 +214,7 @@ impl CameraManifest {
                             payload
                                 .members
                                 .iter()
-                                .any(|candidate| parse_hex_code(candidate) == Some(member))
+                                .any(|candidate| parse_hex_code(candidate.code()) == Some(member))
                         })
                     });
                     if !contains_member {
@@ -288,10 +289,11 @@ impl CameraManifest {
             );
             if let Some(payload) = &prop.payload {
                 for m in &payload.members {
-                    if !self.properties.contains_key(m) {
+                    let member = m.code();
+                    if matches!(m, RecordMember::Code(_)) && !self.properties.contains_key(member) {
                         lints.push(Lint::warn(format!(
-                            "property {code} payload member '{m}' is not a defined property; \
-                             its value width cannot be resolved for decode"
+                            "property {code} payload member '{member}' is not a defined property; \
+                             use a detailed member encoding when the global type is unavailable"
                         )));
                     }
                 }
@@ -351,6 +353,7 @@ impl CameraManifest {
         let mut activity_metadata = std::collections::BTreeMap::new();
         for (code, property) in &self.properties {
             require_valid_structured_text(property, code)?;
+            require_valid_payload(self, property, code)?;
         }
         for (connection_id, connection) in &self.connections {
             require_valid_host_activities(connection, connection_id)?;
@@ -520,6 +523,94 @@ fn require_valid_structured_text(property: &Property, code: &str) -> Result<(), 
         return Err(ManifestError::Contract(format!(
             "{path}.fields must have unique, non-empty names"
         )));
+    }
+    Ok(())
+}
+
+fn require_valid_payload(
+    manifest: &CameraManifest,
+    property: &Property,
+    code: &str,
+) -> Result<(), ManifestError> {
+    let Some(payload) = &property.payload else {
+        return Ok(());
+    };
+    let path = format!("properties.{code}.payload");
+    let (count_width, code_width, default_value_width) = payload.record_widths();
+    if !matches!(count_width, 1 | 2 | 4)
+        || !matches!(code_width, 1 | 2)
+        || !matches!(default_value_width, 1 | 2 | 4)
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path} uses unsupported widths count={count_width} code={code_width} value={default_value_width}"
+        )));
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    for (index, member) in payload.members.iter().enumerate() {
+        let member_path = format!("{path}.members[{index}]");
+        let member_code = parse_hex_code(member.code()).ok_or_else(|| {
+            ManifestError::Contract(format!(
+                "{member_path} has invalid property code '{}'",
+                member.code()
+            ))
+        })?;
+        if code_width == 1 && member_code > u8::MAX as u16 {
+            return Err(ManifestError::Contract(format!(
+                "{member_path} code {member_code:#06x} does not fit codeWidth 1"
+            )));
+        }
+        if !seen.insert(member_code) {
+            return Err(ManifestError::Contract(format!(
+                "{path} repeats member code {member_code:#06x}"
+            )));
+        }
+
+        let encoding = member.encoding(default_value_width);
+        let simulator_value = member.simulator_value();
+        match encoding {
+            RecordValueEncoding::Fixed { width } => {
+                if !matches!(width, 1 | 2 | 4) {
+                    return Err(ManifestError::Contract(format!(
+                        "{member_path} uses unsupported fixed width {width}"
+                    )));
+                }
+                if let Some(value) = simulator_value {
+                    let RecordValueLiteral::Unsigned(value) = value else {
+                        return Err(ManifestError::Contract(format!(
+                            "{member_path}.simulatorValue must be unsigned for a fixed encoding"
+                        )));
+                    };
+                    let max = match width {
+                        1 => u8::MAX as u32,
+                        2 => u16::MAX as u32,
+                        _ => u32::MAX,
+                    };
+                    if *value > max {
+                        return Err(ManifestError::Contract(format!(
+                            "{member_path}.simulatorValue {value} does not fit width {width}"
+                        )));
+                    }
+                }
+            }
+            RecordValueEncoding::PtpString => {
+                if simulator_value
+                    .is_some_and(|value| !matches!(value, RecordValueLiteral::String(_)))
+                {
+                    return Err(ManifestError::Contract(format!(
+                        "{member_path}.simulatorValue must be a string for ptpString"
+                    )));
+                }
+                let mutable_string_state = manifest
+                    .property(member_code)
+                    .is_some_and(|candidate| candidate.ptype.as_deref() == Some("str"));
+                if simulator_value.is_none() && !mutable_string_state {
+                    return Err(ManifestError::Contract(format!(
+                        "{member_path} ptpString requires simulatorValue when the global property is not type str"
+                    )));
+                }
+            }
+        }
     }
     Ok(())
 }
