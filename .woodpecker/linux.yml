@@ -2,14 +2,26 @@
 # Pure-Rust workspace (no openssl/ring/native deps), so rust:1-slim suffices.
 # Release artifact publication is gated on main+push.
 #
-# Without the platform label this workflow has no agent constraint and can
-# land on the macOS local-backend agent, which would fail at `git lfs`
-# during clone and at trying to exec `image: rust:1-slim` as a shell.
+# Portable labels keep this workflow on an unprivileged Docker Linux lane; a
+# deployment can satisfy them with ephemeral or explicitly enabled agents.
+
+workspace:
+  base: /woodpecker
+  path: src/ptpsim
+
+clone:
+  - name: git
+    image: ${DURABLE_GIT_CLONE_IMAGE}
+    settings:
+      expected_repository: ${CI_REPO}
+      expected_workspace: /woodpecker/src/ptpsim
+      lock_file: /ci-locks/workspace.lock
 
 labels:
   backend: docker
   platform: linux/amd64
-  trust: host-root
+  repo: ${CI_REPO}
+  trust: unprivileged
 
 when:
   - event: [push, pull_request]
@@ -20,10 +32,9 @@ steps:
     commands:
       - echo "woodpecker reached ptpsim @ ${CI_COMMIT_SHA:0:8} on ${CI_COMMIT_BRANCH}"
 
-  # Cargo caches: per-step host volumes (repo is trusted-volumes). Distinct
-  # subdirs per step so parallel steps never contend; cross-pipeline sharing
-  # serializes on cargo's build-dir flock, which is harmless. Docker creates
-  # the host dirs root-owned on first mount; these steps run as root.
+  # Per-step cache paths stay inside the disposable step container. Docker
+  # image layers and the durable Git object database provide cross-run reuse
+  # without granting this public workflow arbitrary host-volume access.
   - name: workspace
     # The deployment owner's instance environment supplies a prebaked
     # toolchain image (rustfmt/clippy + gh, per ci/images/ci-rust/Dockerfile)
@@ -58,15 +69,11 @@ steps:
           - 'ci/kotlin/**'
           - 'ci/build-python-wheel.sh'
           - '.woodpecker/linux.yml'
-    volumes:
-      - /data/ci-cache/ptpsim/workspace:/ci-cache
     environment:
       CARGO_HOME: /ci-cache/cargo-home
       CARGO_TARGET_DIR: /ci-cache/target
       CARGO_INCREMENTAL: "0"
     commands:
-      # Size guard: wipe past 40 GiB rather than grow unbounded.
-      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets
       - cargo test --workspace
@@ -114,14 +121,11 @@ steps:
     image: ${ANDROID_TOOLCHAIN_IMAGE:-rust:1.97.0-slim}
     pull: true
     depends_on: [workspace]
-    volumes:
-      - /data/ci-cache/ptpsim/kotlin:/ci-cache
     environment:
       CARGO_HOME: /ci-cache/cargo-home
       CARGO_TARGET_DIR: /ci-cache/target
       CARGO_INCREMENTAL: "0"
     commands:
-      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - |
         if ! command -v kotlinc >/dev/null 2>&1; then
           apt-get update -qq
@@ -164,10 +168,7 @@ steps:
     # added) must not be shadowed by a stale locally-cached tag.
     pull: true
     depends_on: [workspace]
-    volumes:
-      - /data/ci-cache/ptpsim/android:/ci-cache
     commands:
-      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - ./ci/build-android.sh
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
       - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
@@ -206,10 +207,7 @@ steps:
     # Always re-pull: don't run on a stale locally-cached toolchain tag.
     pull: true
     depends_on: [workspace]
-    volumes:
-      - /data/ci-cache/ptpsim/wheel:/ci-cache
     commands:
-      - '[ "$(du -sk /ci-cache 2>/dev/null | cut -f1)" -gt 41943040 ] && rm -rf /ci-cache/target /ci-cache/cargo-home || true'
       - 'PATH="/opt/wheelvenv/bin:$PATH" ./ci/build-python-wheel.sh'
       # Attach to the same sha-<8> release as the xcframework
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
