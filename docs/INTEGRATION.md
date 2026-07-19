@@ -416,7 +416,7 @@ is the bytes AFTER the 2-byte company id: split iOS
 `CBAdvertisementDataManufacturerDataKey` into `(companyId LE, payload)`;
 Android `getManufacturerSpecificData(id)` is already the payload.
 CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
-| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, postExitReadiness: [Step], steps: [Step], activities: [ConnectionActivityDescriptor] }`. Activities contain the plan's executor spans followed by the selected connection's host checkpoints (§11.23). `initialScope` is typically the `runtimeScope` from a `Candidate`. After an orderly feature exit, walk the optional `postExitReadiness` sequence before replaying `steps`; do not infer readiness by negating a launch predicate. |
+| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, postExitReadiness: [Step], steps: [Step], activities: [ConnectionActivityDescriptor] }`. Activities contain the plan's executor spans followed by the selected connection's host checkpoints (§11.23). Each descriptor's `optional` presentation marker distinguishes a conditionally inapplicable activity from one that is still upcoming; it never controls whether the executor runs that activity. `initialScope` is typically the `runtimeScope` from a `Candidate`. After an orderly feature exit, walk the optional `postExitReadiness` sequence before replaying `steps`; do not infer readiness by negating a launch predicate. |
 | `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | validates the plan handle and returns `NoChange` or `ReplaceTail{steps, activities}` per §11.5/§11.23; replacement activity spans are relative to the returned tail. Invalid handles/indices are errors. Current manifests return `NoChange` because no establishment overlays exist yet. |
 | `connectionEstablishment(connection)` | Single-body connection bring-up, including the connection's host-checkpoint activity descriptors (§11.23). |
 
@@ -459,7 +459,9 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
   manifest-selected, decoded scope values. Terminal events carry an
   activity-wide retry summary so consumers can aggregate retries without
   reconstructing them from local ordinals. Host-checkpoint activities are
-  driven by the host and are never emitted by this executor.
+  driven by the host and are never emitted by this executor. Use the
+  descriptor's `optional` marker only when presenting declared activities; it
+  is not an executor branch or run condition.
 
 | call | walks |
 |---|---|

@@ -8,7 +8,7 @@
 //! queries live on [`CameraManifest`] (they need only the body); `ConfigStore`
 //! adds the manufacturer-tier resolution on top.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::error::ConfigError;
@@ -125,6 +125,7 @@ impl ConfigStore {
             bodies.insert(id.clone(), body);
         }
         validate_activity_metadata_consistency(&index, &bodies)?;
+        validate_merged_activity_ids(&index, &bodies)?;
         // Plan §3.1: "the primary manifest" semantics — the first declared
         // model's body. Single-model indices (the MVP case) trivially get
         // the only body. Callers wanting a different model look up by id
@@ -277,19 +278,27 @@ fn validate_activity_metadata_consistency(
 ) -> Result<(), ConfigError> {
     use crate::ConnectionActivityDescriptor;
 
-    let mut seen: BTreeMap<
-        (String, u32),
-        (crate::ConnectionActivityDisplayRole, u32, bool, String),
-    > = BTreeMap::new();
+    type ActivityMetadata = (
+        crate::ConnectionActivityDisplayRole,
+        u32,
+        bool,
+        bool,
+        String,
+    );
+
+    let mut seen: BTreeMap<(String, u32), ActivityMetadata> = BTreeMap::new();
     let mut check = |descriptor: &ConnectionActivityDescriptor, path: String| {
         let key = (descriptor.id.clone(), descriptor.version);
         let metadata = (
             descriptor.display_role.clone(),
             descriptor.default_expected_duration_ms,
             descriptor.interaction_required,
+            descriptor.optional,
         );
-        if let Some((role, duration, interaction, first_path)) = seen.get(&key) {
-            if (&metadata.0, metadata.1, metadata.2) != (role, *duration, *interaction) {
+        if let Some((role, duration, interaction, optional, first_path)) = seen.get(&key) {
+            if (&metadata.0, metadata.1, metadata.2, metadata.3)
+                != (role, *duration, *interaction, *optional)
+            {
                 return Err(ConfigError::Validation {
                     path,
                     message: format!(
@@ -299,7 +308,7 @@ fn validate_activity_metadata_consistency(
                 });
             }
         } else {
-            seen.insert(key, (metadata.0, metadata.1, metadata.2, path));
+            seen.insert(key, (metadata.0, metadata.1, metadata.2, metadata.3, path));
         }
         Ok(())
     };
@@ -353,6 +362,48 @@ fn validate_activity_metadata_consistency(
                             )?;
                         }
                     }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_merged_activity_ids(
+    index: &ResolvedManufacturerIndex,
+    bodies: &BTreeMap<String, CameraManifest>,
+) -> Result<(), ConfigError> {
+    for model in &index.models {
+        let Some(ble) = &model.ble else {
+            continue;
+        };
+        let Some(body) = bodies.get(&model.id) else {
+            continue;
+        };
+        for (connection_id, connection) in &body.connections {
+            let Some(mechanism) = &connection.establishment else {
+                continue;
+            };
+            let Some(establishment) = ble.establishment(mechanism) else {
+                continue;
+            };
+            let establishment_ids: BTreeSet<_> = establishment
+                .activities
+                .iter()
+                .map(|activity| activity.id.as_str())
+                .collect();
+            for (activity_index, activity) in connection.activities.iter().enumerate() {
+                if establishment_ids.contains(activity.id.as_str()) {
+                    return Err(ConfigError::Validation {
+                        path: format!(
+                            "models.{}.connections.{connection_id}.activities[{activity_index}].id",
+                            model.id
+                        ),
+                        message: format!(
+                            "activity id '{}' duplicates an activity in referenced establishment '{mechanism}'",
+                            activity.id
+                        ),
+                    });
                 }
             }
         }

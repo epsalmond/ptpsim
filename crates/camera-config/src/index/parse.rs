@@ -62,6 +62,7 @@ impl ResolvedManufacturerIndex {
                             activity.display_role.clone(),
                             activity.default_expected_duration_ms,
                             activity.interaction_required,
+                            activity.optional,
                         );
                         if let Some(previous) = metadata.insert(key, value.clone()) {
                             if previous != value {
@@ -600,6 +601,7 @@ fn validate_establishment_activities(
 
     let base = format!("models.{model_id}.establishments.{mechanism}.activities");
     let mut ids = BTreeSet::new();
+    let mut saw_steps_span = false;
     for (i, activity) in est.activities.iter().enumerate() {
         let path = format!("{base}[{i}]");
         if !valid_activity_id(&activity.id) {
@@ -635,6 +637,20 @@ fn validate_establishment_activities(
                 path,
                 message: "establishment activities must use executorSpan".to_string(),
             });
+        }
+        if let ConnectionActivityBinding::ExecutorSpan(binding) = &activity.binding {
+            match binding.executor_span.sequence {
+                ConnectionActivitySequence::Steps => saw_steps_span = true,
+                ConnectionActivitySequence::PostExitReadiness if saw_steps_span => {
+                    return Err(ConfigError::Validation {
+                        path,
+                        message:
+                            "postExitReadiness activity spans must precede steps activity spans"
+                                .to_string(),
+                    });
+                }
+                ConnectionActivitySequence::PostExitReadiness => {}
+            }
         }
     }
 

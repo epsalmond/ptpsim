@@ -336,6 +336,7 @@ families:
               displayRole: waitingForCamera
               defaultExpectedDurationMs: 8000
               interactionRequired: false
+              optional: true
               executorSpan: { sequence: postExitReadiness, startStep: 0, endStepExclusive: 3 }
             - id: camera.ap.prepare
               version: 2

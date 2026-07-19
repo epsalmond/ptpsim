@@ -2392,9 +2392,62 @@ fn connection_activity_span_covers_nested_steps_and_unknown_roles() {
             .display_role,
         camera_config::ConnectionActivityDisplayRole::Unknown(ref raw) if raw == "futureRole"
     ));
+    assert!(
+        !index.models[0].ble.as_ref().unwrap().establishments["test"].activities[0].optional,
+        "optional defaults to false when the key is absent"
+    );
 
     ResolvedManufacturerIndex::from_yaml(&activity_index("            []", "            []"))
         .expect("an empty preliminary plan needs no activities");
+}
+
+fn activity_order_index(activities: &str) -> String {
+    format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {{}}
+      advert: {{}}
+      establishments:
+        test:
+          mechanism: test
+          activities:
+{activities}
+          postExitReadiness:
+            - bleConnect: {{}}
+            - bleConnect: {{}}
+          steps:
+            - bleConnect: {{}}
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+    )
+}
+
+#[test]
+fn establishment_activities_follow_cross_sequence_chronology() {
+    let steps_first = "            - { id: camera.test.connect, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }\n            - { id: camera.test.readiness, version: 1, displayRole: waitingForCamera, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: postExitReadiness, startStep: 0, endStepExclusive: 2 } }";
+    let error = ResolvedManufacturerIndex::from_yaml(&activity_order_index(steps_first))
+        .expect_err("steps spans cannot precede post-exit readiness spans");
+    assert!(error
+        .to_string()
+        .contains("postExitReadiness activity spans must precede steps activity spans"));
+
+    let interleaved = "            - { id: camera.test.readiness-first, version: 1, displayRole: waitingForCamera, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: postExitReadiness, startStep: 0, endStepExclusive: 1 } }\n            - { id: camera.test.connect, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }\n            - { id: camera.test.readiness-second, version: 1, displayRole: waitingForCamera, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: postExitReadiness, startStep: 1, endStepExclusive: 2 } }";
+    let error = ResolvedManufacturerIndex::from_yaml(&activity_order_index(interleaved))
+        .expect_err("activity sequences cannot interleave");
+    assert!(error
+        .to_string()
+        .contains("postExitReadiness activity spans must precede steps activity spans"));
+
+    let post_exit_first = "            - { id: camera.test.readiness-first, version: 1, displayRole: waitingForCamera, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: postExitReadiness, startStep: 0, endStepExclusive: 1 } }\n            - { id: camera.test.readiness-second, version: 1, displayRole: waitingForCamera, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: postExitReadiness, startStep: 1, endStepExclusive: 2 } }\n            - { id: camera.test.connect, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }";
+    ResolvedManufacturerIndex::from_yaml(&activity_order_index(post_exit_first))
+        .expect("post-exit readiness spans followed by steps spans are chronological");
 }
 
 #[test]
@@ -2420,4 +2473,72 @@ connections:
     let error = ConfigStore::from_manufacturer_index(&index, real_fuji_bodies())
         .expect_err("repeated id/version metadata must agree");
     assert!(error.to_string().contains("metadata differs"));
+}
+
+#[test]
+fn activity_optional_participates_in_metadata_identity() {
+    let mut index = data("fuji/index.yaml");
+    let repeated_connect = "              interactionRequired: false\n              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }";
+    let second = index
+        .rfind(repeated_connect)
+        .expect("the repeated camera.link.connect descriptor exists");
+    let insert_at = second + "              interactionRequired: false\n".len();
+    index.insert_str(insert_at, "              optional: true\n");
+    let error = ResolvedManufacturerIndex::from_yaml(&index)
+        .expect_err("index descriptors with different optional metadata must fail");
+    assert!(error.to_string().contains("metadata differs"));
+
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  first:
+    activities:
+      - { id: camera.test.same, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: first } }
+  second:
+    activities:
+      - { id: camera.test.same, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, optional: true, hostCheckpoint: { name: second } }
+"#;
+    let error = camera_config::CameraManifest::from_yaml(body)
+        .expect_err("body descriptors with different optional metadata must fail");
+    assert!(error.to_string().contains("metadata differs"));
+
+    let activities = "            - { id: camera.test.shared, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, optional: true, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }";
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  ble:
+    establishment: test
+    activities:
+      - { id: camera.test.shared, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: connected } }
+"#;
+    let error = ConfigStore::from_manufacturer_index(
+        &activity_index(activities, "            - bleConnect: {}"),
+        BTreeMap::from([("tm1".to_string(), body.to_string())]),
+    )
+    .expect_err("cross-layer descriptors with different optional metadata must fail");
+    assert!(error.to_string().contains("metadata differs"));
+}
+
+#[test]
+fn merged_establishment_and_connection_activity_ids_must_be_unique() {
+    let activities = "            - { id: camera.test.shared, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }";
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  ble:
+    establishment: test
+    activities:
+      - { id: camera.test.shared, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: connected } }
+"#;
+    let error = ConfigStore::from_manufacturer_index(
+        &activity_index(activities, "            - bleConnect: {}"),
+        BTreeMap::from([("tm1".to_string(), body.to_string())]),
+    )
+    .expect_err("the merged activity list cannot contain duplicate ids");
+    assert!(error
+        .to_string()
+        .contains("duplicates an activity in referenced establishment 'test'"));
 }

@@ -112,13 +112,21 @@ families:
         test:
           mechanism: test
           activities:
-            - id: camera.test.executor
+            - id: camera.test.executor.optional
               version: 1
               displayRole: connecting
               defaultExpectedDurationMs: 1
               interactionRequired: false
+              optional: true
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+            - id: camera.test.executor.default
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 1, endStepExclusive: 2 }
           steps:
+            - bleConnect: {}
             - bleConnect: {}
 models:
   - id: primary
@@ -130,7 +138,7 @@ models:
     inherits: [test]
     manifest: secondary.yaml
 "#;
-    let body = |model: &str, activity: &str| {
+    let body = |model: &str, activity_namespace: &str| {
         format!(
             r#"
 schema: camera-config/v1
@@ -140,7 +148,13 @@ connections:
     kind: ble
     establishment: test
     activities:
-      - id: {activity}
+      - id: camera.{activity_namespace}.host.first
+        version: 1
+        displayRole: openingSession
+        defaultExpectedDurationMs: 1
+        interactionRequired: false
+        hostCheckpoint: {{ name: networkReady }}
+      - id: camera.{activity_namespace}.host.second
         version: 1
         displayRole: openingSession
         defaultExpectedDurationMs: 1
@@ -154,11 +168,11 @@ connections:
         vec![
             KeyValue {
                 key: "primary".into(),
-                value: body("Primary", "camera.primary.host"),
+                value: body("Primary", "primary"),
             },
             KeyValue {
                 key: "secondary".into(),
-                value: body("Secondary", "camera.secondary.host"),
+                value: body("Secondary", "secondary"),
             },
         ],
     )
@@ -173,9 +187,22 @@ connections:
     let plan = store
         .establishment("secondary".into(), "ble".into(), vec![])
         .expect("secondary establishment resolves");
-    assert_eq!(plan.activities.len(), 2);
-    assert_eq!(plan.activities[0].id, "camera.test.executor");
-    assert_eq!(plan.activities[1].id, "camera.secondary.host");
+    assert_eq!(
+        plan.activities
+            .iter()
+            .map(|activity| activity.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "camera.test.executor.optional",
+            "camera.test.executor.default",
+            "camera.secondary.host.first",
+            "camera.secondary.host.second",
+        ],
+        "establishment spans precede connection checkpoints and both preserve declared order"
+    );
+    assert!(plan.activities[0].optional);
+    assert!(!plan.activities[1].optional);
+    assert!(!plan.activities[2].optional);
 }
 
 #[test]
@@ -1426,6 +1453,11 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
         7,
         "four executor spans plus three host checkpoints"
     );
+    assert!(matches!(
+        plan.activities.first(),
+        Some(ConnectionActivityDescriptor { id, optional: true, .. })
+            if id == "camera.ap.reset"
+    ));
     assert!(matches!(
         plan.activities.last(),
         Some(ConnectionActivityDescriptor {

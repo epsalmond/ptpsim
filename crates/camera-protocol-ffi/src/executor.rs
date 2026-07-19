@@ -2561,6 +2561,7 @@ mod tests {
             display_role: camera_config::ConnectionActivityDisplayRole::Connecting,
             default_expected_duration_ms: 1000,
             interaction_required: false,
+            optional: false,
             binding: ConfigActivityBinding::ExecutorSpan(camera_config::ExecutorSpanBinding {
                 executor_span: camera_config::ConnectionActivityExecutorSpan {
                     sequence: ConfigActivitySequence::Steps,

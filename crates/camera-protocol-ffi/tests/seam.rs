@@ -869,6 +869,7 @@ fn connection_establishment_is_returned_as_data() {
         [ConnectionActivityDescriptor {
             id,
             display_role: ConnectionActivityDisplayRole::OpeningSession,
+            optional: false,
             binding: ConnectionActivityBinding::HostCheckpoint { name },
             ..
         }] if id == "camera.session.open.direct" && name == "sessionOpen"

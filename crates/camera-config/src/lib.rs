@@ -368,6 +368,7 @@ impl CameraManifest {
                     descriptor.display_role.clone(),
                     descriptor.default_expected_duration_ms,
                     descriptor.interaction_required,
+                    descriptor.optional,
                 );
                 if let Some(previous) = activity_metadata.insert(key, value.clone()) {
                     if previous != value {
@@ -1343,7 +1344,7 @@ fn require_valid_control_surfaces(
 fn require_consistent_activity_metadata(
     seen: &mut std::collections::BTreeMap<
         (String, u32),
-        (ConnectionActivityDisplayRole, u32, bool),
+        (ConnectionActivityDisplayRole, u32, bool, bool),
     >,
     descriptor: &ConnectionActivityDescriptor,
     path: &str,
@@ -1353,6 +1354,7 @@ fn require_consistent_activity_metadata(
         descriptor.display_role.clone(),
         descriptor.default_expected_duration_ms,
         descriptor.interaction_required,
+        descriptor.optional,
     );
     if let Some(previous) = seen.insert(key, value.clone()) {
         if previous != value {

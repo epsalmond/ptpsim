@@ -215,6 +215,7 @@ pub struct ConnectionActivityDescriptor {
     pub display_role: ConnectionActivityDisplayRole,
     pub default_expected_duration_ms: u32,
     pub interaction_required: bool,
+    pub optional: bool,
     pub binding: ConnectionActivityBinding,
 }
 
@@ -256,6 +257,7 @@ impl From<&camera_config::ConnectionActivityDescriptor> for ConnectionActivityDe
             display_role: (&value.display_role).into(),
             default_expected_duration_ms: value.default_expected_duration_ms,
             interaction_required: value.interaction_required,
+            optional: value.optional,
             binding: (&value.binding).into(),
         }
     }

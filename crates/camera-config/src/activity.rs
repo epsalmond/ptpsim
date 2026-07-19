@@ -10,6 +10,8 @@ pub struct ConnectionActivityDescriptor {
     pub display_role: ConnectionActivityDisplayRole,
     pub default_expected_duration_ms: u32,
     pub interaction_required: bool,
+    #[serde(default)]
+    pub optional: bool,
     #[serde(flatten)]
     pub binding: ConnectionActivityBinding,
 }
