@@ -52,17 +52,18 @@ the default GFX100 II fixture service before launching the operator console.
 ## CI
 
 Continuous integration runs via the workflows under [`.woodpecker/`](.woodpecker/).
-The Linux and OCI workflows request a Docker `linux/amd64` agent for the
-current repository and pipeline event rather than a named host. Deployments
-must supply the trusted clone image. An optional workstation accepts push
-events only and reuses an isolated durable checkout; public pull requests remain
-on the platform's ephemeral NAS workspace.
+The Linux and OCI workflows request Docker `linux/amd64` lanes by repository
+and trust capabilities rather than a named host. Deployments must supply the
+trusted clone image. An optional workstation can reuse an isolated durable
+checkout for default-branch pushes on the unprivileged Linux lane; other
+compatible agents may use ephemeral workspaces.
 
 Linux steps keep build caches inside their disposable containers rather than
 requesting host volumes. This lets the public workflow use an unprivileged
 runner while Docker image layers and the durable Git object database provide
-cross-run reuse. The privileged multi-architecture OCI workflow remains on NAS;
-Apple XCFramework promotion remains a separate Darwin workflow.
+cross-run reuse. The privileged multi-architecture OCI workflow requires the
+deployment's `host-root` lane; Apple XCFramework promotion remains a separate
+Darwin workflow.
 
 ## License
 

@@ -1,6 +1,6 @@
 # OCI image workflow — builds and publishes the deployable camera-sim-service
-# container image. Runs on the Docker-backend Linux agents (same trust class as
-# linux.yml, whose image lanes already push to the deployment registry).
+# container image. Runs on the privileged Docker-backend Linux lane, unlike the
+# unprivileged portable lane in linux.yml.
 #
 # The registry hostname and repo path never appear in this file: they arrive
 # through the oci_registry / oci_repo repo secrets so this public repo stays
@@ -22,10 +22,8 @@ clone:
 
 labels:
   backend: docker
-  host: nas
   platform: linux/amd64
   repo: ${CI_REPO}
-  event: ${CI_PIPELINE_EVENT}
   trust: host-root
 
 when:
