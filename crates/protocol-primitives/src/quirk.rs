@@ -22,6 +22,11 @@ pub enum RecordStreamError {
         value: u64,
         width: u8,
     },
+    #[error(
+        "record-stream member {code:#06x} negative value {value} cannot use unsigned \
+         {width}-byte fixed encoding"
+    )]
+    NegativeFixedValue { code: u16, value: i64, width: u8 },
     #[error("record-stream member {code:#06x} is not declared")]
     UndeclaredMember { code: u16 },
     #[error("record-stream member {code:#06x} is declared more than once")]
@@ -37,11 +42,24 @@ pub enum RecordStreamError {
     Encode(#[from] EncodeError),
 }
 
-/// Payload-local wire encoding for a record member.
+/// Payload-local wire encoding for a record member. `Fixed` is raw unsigned
+/// little-endian; negative signed values do not match it at any width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordValueEncoding {
     Fixed { width: u8 },
     PtpString,
+}
+
+impl RecordValueEncoding {
+    /// Whether a value has the right kind and sign for this encoding. This does
+    /// not check whether a nonnegative magnitude fits a fixed field's width;
+    /// positive overflow remains a codec error rather than a type mismatch.
+    pub fn accepts_value(self, value: &PropValue) -> bool {
+        match self {
+            Self::Fixed { .. } => matches!(numeric_value(value), NumericValue::Unsigned(_)),
+            Self::PtpString => matches!(value, PropValue::Str(_)),
+        }
+    }
 }
 
 /// A heterogeneous record-stream descriptor resolved from manifest data.
@@ -163,18 +181,32 @@ fn read_le(r: &mut Reader, width: u8) -> Result<u64, DecodeError> {
     })
 }
 
-fn numeric_value(value: &PropValue) -> Option<u64> {
-    Some(match value {
-        PropValue::I8(value) => *value as u32 as u64,
-        PropValue::U8(value) => (*value).into(),
-        PropValue::I16(value) => *value as u32 as u64,
-        PropValue::U16(value) => (*value).into(),
-        PropValue::I32(value) => *value as u32 as u64,
-        PropValue::U32(value) => (*value).into(),
-        PropValue::I64(value) => *value as u64,
-        PropValue::U64(value) => *value,
-        PropValue::Str(_) => return None,
-    })
+enum NumericValue {
+    Unsigned(u64),
+    Negative(i64),
+    NotNumeric,
+}
+
+fn signed_numeric_value(value: i64) -> NumericValue {
+    if value < 0 {
+        NumericValue::Negative(value)
+    } else {
+        NumericValue::Unsigned(value as u64)
+    }
+}
+
+fn numeric_value(value: &PropValue) -> NumericValue {
+    match value {
+        PropValue::I8(value) => signed_numeric_value(i64::from(*value)),
+        PropValue::U8(value) => NumericValue::Unsigned((*value).into()),
+        PropValue::I16(value) => signed_numeric_value(i64::from(*value)),
+        PropValue::U16(value) => NumericValue::Unsigned((*value).into()),
+        PropValue::I32(value) => signed_numeric_value(i64::from(*value)),
+        PropValue::U32(value) => NumericValue::Unsigned((*value).into()),
+        PropValue::I64(value) => signed_numeric_value(*value),
+        PropValue::U64(value) => NumericValue::Unsigned(*value),
+        PropValue::Str(_) => NumericValue::NotNumeric,
+    }
 }
 
 fn write_ptp_string(out: &mut Vec<u8>, value: &str) -> Result<(), EncodeError> {
@@ -189,7 +221,9 @@ fn write_ptp_string(out: &mut Vec<u8>, value: &str) -> Result<(), EncodeError> {
 }
 
 /// Assemble a manifest-resolved heterogeneous record stream. Records must be
-/// declared and their values must match the member-local encoding.
+/// declared and their values must match the member-local encoding. Fixed
+/// values are raw unsigned magnitudes; negative signed values are never
+/// reinterpreted as two's-complement bit patterns.
 pub fn typed_record_stream(
     records: &[(u16, PropValue)],
     descriptor: &RecordStreamDescriptor,
@@ -209,10 +243,22 @@ pub fn typed_record_stream(
         write_le(&mut out, (*code).into(), descriptor.code_width);
         match encoding {
             RecordValueEncoding::Fixed { width } => {
-                let value = numeric_value(value).ok_or(RecordStreamError::ValueTypeMismatch {
-                    code: *code,
-                    encoding,
-                })?;
+                let value = match numeric_value(value) {
+                    NumericValue::Unsigned(value) => value,
+                    NumericValue::Negative(value) => {
+                        return Err(RecordStreamError::NegativeFixedValue {
+                            code: *code,
+                            value,
+                            width,
+                        });
+                    }
+                    NumericValue::NotNumeric => {
+                        return Err(RecordStreamError::ValueTypeMismatch {
+                            code: *code,
+                            encoding,
+                        });
+                    }
+                };
                 if value > max_for(width) {
                     return Err(RecordStreamError::Overflow {
                         field: "value",
@@ -427,6 +473,10 @@ mod tests {
         .unwrap()
     }
 
+    fn fixed_descriptor(width: u8) -> RecordStreamDescriptor {
+        RecordStreamDescriptor::new(2, 2, [(0xd100, RecordValueEncoding::Fixed { width })]).unwrap()
+    }
+
     #[test]
     fn decodes_complete_empty_ptp_string_record() {
         let bytes = [0x01, 0x00, 0x2f, 0xd2, 0x01, 0x00, 0x00];
@@ -469,10 +519,93 @@ mod tests {
     }
 
     #[test]
+    fn typed_stream_rejects_every_negative_signed_source_width() {
+        let values = [
+            (PropValue::I8(-1), -1),
+            (PropValue::I8(i8::MIN), i64::from(i8::MIN)),
+            (PropValue::I16(-1), -1),
+            (PropValue::I16(i16::MIN), i64::from(i16::MIN)),
+            (PropValue::I32(-1), -1),
+            (PropValue::I32(i32::MIN), i64::from(i32::MIN)),
+            (PropValue::I64(-1), -1),
+            (PropValue::I64(i64::MIN), i64::MIN),
+        ];
+
+        for width in [1, 2, 4] {
+            let descriptor = fixed_descriptor(width);
+            let encoding = RecordValueEncoding::Fixed { width };
+            for (value, expected) in &values {
+                assert!(!encoding.accepts_value(value));
+                match typed_record_stream(&[(0xd100, value.clone())], &descriptor) {
+                    Err(RecordStreamError::NegativeFixedValue {
+                        code,
+                        value,
+                        width: actual_width,
+                    }) => assert_eq!((code, value, actual_width), (0xd100, *expected, width)),
+                    other => panic!("expected negative fixed-value error, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_stream_accepts_nonnegative_signed_values_independent_of_source_width() {
+        let zero_values = [
+            PropValue::I8(0),
+            PropValue::I16(0),
+            PropValue::I32(0),
+            PropValue::I64(0),
+        ];
+        for width in [1, 2, 4] {
+            let descriptor = fixed_descriptor(width);
+            let encoding = RecordValueEncoding::Fixed { width };
+            for value in &zero_values {
+                assert!(encoding.accepts_value(value));
+                let bytes = typed_record_stream(&[(0xd100, value.clone())], &descriptor).unwrap();
+                assert_eq!(
+                    parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+                    vec![(0xd100, PropValue::U32(0))]
+                );
+            }
+        }
+
+        for (width, value, expected) in [
+            (1, PropValue::I16(i16::from(u8::MAX)), u32::from(u8::MAX)),
+            (2, PropValue::I32(i32::from(u16::MAX)), u32::from(u16::MAX)),
+            (4, PropValue::I64(i64::from(u32::MAX)), u32::MAX),
+        ] {
+            let descriptor = fixed_descriptor(width);
+            let bytes = typed_record_stream(&[(0xd100, value)], &descriptor).unwrap();
+            assert_eq!(
+                parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+                vec![(0xd100, PropValue::U32(expected))]
+            );
+        }
+    }
+
+    #[test]
+    fn typed_stream_rejects_positive_values_above_each_declared_width() {
+        for (width, value, expected) in [
+            (1, PropValue::I16(0x100), 0x100),
+            (2, PropValue::I32(0x1_0000), 0x1_0000),
+            (4, PropValue::I64(0x1_0000_0000), 0x1_0000_0000),
+        ] {
+            let descriptor = fixed_descriptor(width);
+            assert!(RecordValueEncoding::Fixed { width }.accepts_value(&value));
+            assert!(matches!(
+                typed_record_stream(&[(0xd100, value)], &descriptor),
+                Err(RecordStreamError::Overflow {
+                    field: "value",
+                    value,
+                    width: actual_width,
+                }) if value == expected && actual_width == width
+            ));
+        }
+    }
+
+    #[test]
     fn typed_stream_rejects_full_width_signed_and_unsigned_overflow() {
-        let descriptor =
-            RecordStreamDescriptor::new(2, 2, [(0xd100, RecordValueEncoding::Fixed { width: 4 })])
-                .unwrap();
+        let descriptor = fixed_descriptor(4);
         let too_large = 0x1_0000_0005;
 
         for value in [PropValue::I64(too_large as i64), PropValue::U64(too_large)] {
