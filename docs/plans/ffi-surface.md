@@ -210,8 +210,8 @@ event socket is the PIMA type-4 container (`Usb`). All three share the `ptp-core
 payloads; only the header differs.
 
 ```rust
-// G1 — Fuji reference app 82-byte init (identity from value-policy, tail from manifest)
-#[uniffi::export] fn build_app_init(guid: Vec<u8>, friendly_name: String, tail: Vec<u8>) -> Result<Vec<u8>, CodecError>;
+// G1 — Fuji reference app 82-byte init (identity from value-policy, fixed name field)
+#[uniffi::export] fn build_app_init(guid: Vec<u8>, friendly_name: String) -> Result<Vec<u8>, CodecError>;
 #[uniffi::export] fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError>;
 #[uniffi::export] fn normalize_client_name(raw: String) -> String;  // #139: canonical terminalName for BLE+PTP/IP (one value, #109)
 #[uniffi::export] fn pack_af_area(x: f64, y: f64, columns: u32, rows: u32, prior_lock_state: Option<u32>) -> u32;  // #135: tap → 0x9026 AF-area (grid from focus_grid())

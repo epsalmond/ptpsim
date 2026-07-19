@@ -38,10 +38,9 @@ primitive instead (same rule as `protocol-primitives`). The vocabulary:
   is **data** (`gfx100ii: {soc: xprocessor5}`); using the SOC tier in fallback
   order is engine code.
 - **Value-policy** — `fixed(value)` / `generated(scheme, persist)` /
-  `from-pairing(source)`. Unifies init tail (fixed, model tier), initiator
-  GUID/name (fixed, manufacturer tier — NOT app code), per-pairing IDs
-  (from-pairing). `generated:uuidv4` = data telling the engine to run its
-  generator.
+  `from-pairing(source)`. Unifies initiator GUID/name (fixed, manufacturer tier
+  — NOT app code) and per-pairing IDs (from-pairing).
+  `generated:uuidv4` = data telling the engine to run its generator.
 
 Client API shape: `resolve(fuji/gfx100ii/2.30, af.tracking_points)` → answer.
 Apps never branch on model/fw; they ask. Fix a camera bug once in data → every

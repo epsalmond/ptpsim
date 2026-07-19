@@ -508,8 +508,8 @@ transports:
       liveview: 55742   # through-picture stream, command+2 (per the shipping app)
     init:
       ackDeviceGuid: "0870b061-0a8b-4593-b2e7-9357dd36e050"
-      friendlyNameLength: 26
-      tailHex: "00000000000000000000000000000000000000000000000000000000"
+      nameFieldByteCount: 54
+      evidence: [docLiveControls]
   pcssTether:
     kind: ptpip-pcss
     status: planned
