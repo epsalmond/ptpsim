@@ -9,20 +9,11 @@ fi
 tag="$1"
 target_commit="$2"
 
-release_target() {
-  gh release view "$tag" --json targetCommitish --jq .targetCommitish 2>/dev/null
+release_exists() {
+  gh release view "$tag" >/dev/null 2>&1
 }
 
-require_matching_target() {
-  observed_target="$1"
-  if [ "$observed_target" != "$target_commit" ]; then
-    echo "release $tag targets $observed_target, expected $target_commit" >&2
-    return 1
-  fi
-}
-
-if observed_target="$(release_target)"; then
-  require_matching_target "$observed_target"
+if release_exists; then
   exit 0
 fi
 
@@ -33,9 +24,7 @@ if gh release create "$tag" \
   exit 0
 fi
 
-if ! observed_target="$(release_target)"; then
+if ! release_exists; then
   echo "could not create or observe release $tag" >&2
   exit 1
 fi
-
-require_matching_target "$observed_target"

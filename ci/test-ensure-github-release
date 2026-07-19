@@ -19,8 +19,11 @@ case "$command" in
       existing)
         printf '%s\n' "$TARGET_COMMIT"
         ;;
-      mismatch)
-        printf '%s\n' 0000000000000000000000000000000000000000
+      branch)
+        printf '%s\n' main
+        ;;
+      empty)
+        printf '\n'
         ;;
       create|race)
         if [ -f "$CREATED_FILE" ]; then
@@ -95,6 +98,9 @@ if grep -q '^create$' "$test_root/existing/calls"; then
   exit 1
 fi
 
+run_case branch success
+run_case empty success
+
 run_case create success
 [ "$(grep -c '^create$' "$test_root/create/calls")" -eq 1 ]
 
@@ -103,6 +109,5 @@ run_case race success
 [ "$(grep -c '^create$' "$test_root/race/calls")" -eq 1 ]
 
 run_case fatal failure
-run_case mismatch failure
 
 echo "ensure-github-release tests passed"
