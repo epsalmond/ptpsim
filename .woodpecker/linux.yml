@@ -31,6 +31,7 @@ steps:
     image: alpine
     commands:
       - echo "woodpecker reached ptpsim @ ${CI_COMMIT_SHA:0:8} on ${CI_COMMIT_BRANCH}"
+      - ci/test-ensure-github-release
 
   # Per-step cache paths stay inside the disposable step container. Docker
   # image layers and the durable Git object database provide cross-run reuse
@@ -100,7 +101,7 @@ steps:
       # evidence/*.md} and golden/ (response goldens for backtest oracles).
       - 'tar -czf "$TARBALL" -C packages camera-config-data'
       - 'sha256sum "$TARBALL" | awk ''{print $1}'' > "$CHECKSUM"'
-      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
+      - 'ci/ensure-github-release "$TAG" "$CI_COMMIT_SHA"'
       - 'gh release upload "$TAG" "$TARBALL" --clobber'
       - 'gh release upload "$TAG" "$CHECKSUM" --clobber'
     environment:
@@ -171,7 +172,7 @@ steps:
     commands:
       - ./ci/build-android.sh
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
-      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
+      - 'ci/ensure-github-release "$TAG" "$CI_COMMIT_SHA"'
       - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.aar" --clobber'
       - 'gh release upload "$TAG" "out/dist/CameraProtocolFFI-${CI_COMMIT_SHA:0:8}.checksum" --clobber'
     environment:
@@ -211,7 +212,7 @@ steps:
       - 'PATH="/opt/wheelvenv/bin:$PATH" ./ci/build-python-wheel.sh'
       # Attach to the same sha-<8> release as the xcframework
       - 'export TAG="sha-${CI_COMMIT_SHA:0:8}"'
-      - 'gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$CI_COMMIT_SHA" --title "ptpsim FFI $TAG" --notes "Auto-built artifacts."'
+      - 'ci/ensure-github-release "$TAG" "$CI_COMMIT_SHA"'
       - 'gh release upload "$TAG" packages/camera-protocol-python/dist/*.whl --clobber'
     environment:
       CARGO_HOME: /ci-cache/cargo-home

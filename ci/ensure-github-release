@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: ci/ensure-github-release TAG TARGET_COMMIT" >&2
+  exit 2
+fi
+
+tag="$1"
+target_commit="$2"
+
+release_target() {
+  gh release view "$tag" --json targetCommitish --jq .targetCommitish 2>/dev/null
+}
+
+require_matching_target() {
+  observed_target="$1"
+  if [ "$observed_target" != "$target_commit" ]; then
+    echo "release $tag targets $observed_target, expected $target_commit" >&2
+    return 1
+  fi
+}
+
+if observed_target="$(release_target)"; then
+  require_matching_target "$observed_target"
+  exit 0
+fi
+
+if gh release create "$tag" \
+  --target "$target_commit" \
+  --title "ptpsim FFI $tag" \
+  --notes "Auto-built artifacts."; then
+  exit 0
+fi
+
+if ! observed_target="$(release_target)"; then
+  echo "could not create or observe release $tag" >&2
+  exit 1
+fi
+
+require_matching_target "$observed_target"
