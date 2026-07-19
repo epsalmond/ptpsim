@@ -1,0 +1,113 @@
+#!/bin/sh
+set -eu
+
+script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+test_root="$(mktemp -d)"
+trap 'rm -rf "$test_root"' EXIT HUP INT TERM
+
+mkdir -p "$test_root/bin"
+
+cat >"$test_root/bin/gh" <<'EOF'
+#!/bin/sh
+set -eu
+
+command="$1 $2"
+case "$command" in
+  "release view")
+    echo view >>"$CALLS_FILE"
+    case "$SCENARIO" in
+      existing)
+        printf '%s\n' "$TARGET_COMMIT"
+        ;;
+      branch)
+        printf '%s\n' main
+        ;;
+      empty)
+        printf '\n'
+        ;;
+      create|race)
+        if [ -f "$CREATED_FILE" ]; then
+          printf '%s\n' "$TARGET_COMMIT"
+        else
+          exit 1
+        fi
+        ;;
+      fatal)
+        exit 1
+        ;;
+    esac
+    ;;
+  "release create")
+    echo create >>"$CALLS_FILE"
+    case "$SCENARIO" in
+      create)
+        : >"$CREATED_FILE"
+        ;;
+      race)
+        : >"$CREATED_FILE"
+        exit 1
+        ;;
+      fatal)
+        exit 1
+        ;;
+      *)
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$test_root/bin/gh"
+
+target_commit=0123456789abcdef0123456789abcdef01234567
+
+run_case() {
+  scenario="$1"
+  expected_result="$2"
+  case_root="$test_root/$scenario"
+  mkdir -p "$case_root"
+  calls_file="$case_root/calls"
+  created_file="$case_root/created"
+  : >"$calls_file"
+
+  if PATH="$test_root/bin:$PATH" \
+    SCENARIO="$scenario" \
+    TARGET_COMMIT="$target_commit" \
+    CALLS_FILE="$calls_file" \
+    CREATED_FILE="$created_file" \
+    "$script_dir/ensure-github-release" sha-01234567 "$target_commit" \
+    >"$case_root/stdout" 2>"$case_root/stderr"; then
+    result=success
+  else
+    result=failure
+  fi
+
+  if [ "$result" != "$expected_result" ]; then
+    echo "$scenario: expected $expected_result, got $result" >&2
+    cat "$case_root/stderr" >&2
+    exit 1
+  fi
+}
+
+run_case existing success
+if grep -q '^create$' "$test_root/existing/calls"; then
+  echo "existing: unexpectedly attempted release creation" >&2
+  exit 1
+fi
+
+run_case branch success
+run_case empty success
+
+run_case create success
+[ "$(grep -c '^create$' "$test_root/create/calls")" -eq 1 ]
+
+run_case race success
+[ "$(grep -c '^view$' "$test_root/race/calls")" -eq 2 ]
+[ "$(grep -c '^create$' "$test_root/race/calls")" -eq 1 ]
+
+run_case fatal failure
+
+echo "ensure-github-release tests passed"
