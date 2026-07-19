@@ -478,6 +478,47 @@ fn camera_initiated_queue_uses_manifest_declared_operations() {
 }
 
 #[test]
+fn app_live_controls_start_from_neutral_labeled_values() {
+    let manifest = consolidated();
+    let expected = [
+        ("0xd02a", 200),
+        ("0xd240", 0x8001_e848),
+        ("0x5007", 400),
+        ("0x5010", 0),
+    ];
+    for (code, value) in expected {
+        assert_eq!(
+            manifest.properties[code].initial_value,
+            Some(value),
+            "{code} has an explicit simulator startup value"
+        );
+    }
+    assert!(manifest.properties["0xd02a"]
+        .value_profiles
+        .iter()
+        .filter(|profile| profile.connection.as_deref() == Some("app"))
+        .flat_map(|profile| &profile.rows)
+        .any(|row| row.raw == 200 && row.legal && row.label == "200"));
+
+    let mut e = engine_with_manifest(manifest);
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    assert_eq!(read_u32(&mut e, 2, 0xd02a), 200);
+    assert_eq!(read_u32(&mut e, 3, 0xd240), 0x8001_e848);
+    assert_eq!(read_u16(&mut e, 4, 0x5007), 400);
+    assert_eq!(read_u16(&mut e, 5, 0x5010), 0);
+
+    let d212 = data_of(e.on_operation(&req(0x1015, 6, vec![0xd212]), None));
+    let records = decode_record_stream(&d212);
+    for (code, value) in [(0xd02a, 200), (0xd240, 0x8001_e848), (0x5007, 400)] {
+        assert_eq!(
+            records.iter().find(|(member, _)| *member == code),
+            Some(&(code, value)),
+            "D212 member {code:#06x} uses the neutral startup value"
+        );
+    }
+}
+
+#[test]
 fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
     let mut e = engine();
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None)); // OpenSession

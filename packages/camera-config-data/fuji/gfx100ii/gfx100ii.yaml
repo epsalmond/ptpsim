@@ -1016,6 +1016,9 @@ properties:
     ptpName: FNumber
     type: u16
     access: readWrite
+    # Neutral simulator startup state. The observed descriptor is lens-state
+    # specific and must not choose the review camera's initial live value.
+    initialValue: 400
     controls: { app: { setMethod: vendorStep, operation: "0x902d", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }
     evidence: [iosLiveControls, docLiveControls, wireTether]
   "0x500a": { name: focusMode, ptpName: FocusMode, type: u16, access: readWrite, evidence: [iosLiveControls] }
@@ -1028,6 +1031,7 @@ properties:
     ptpName: ExposureBiasCompensation
     type: i16
     access: readWrite
+    initialValue: 0
     controls: { app: { setMethod: vendorStep, operation: "0x902e", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }
     evidence: [iosLiveControls, docLiveControls, wireTether]
   "0x5012": { name: selfTimer, ptpName: SelfTimer, type: u16, access: readWrite,
@@ -1043,7 +1047,7 @@ properties:
   # This path is separate from PCSS still ISO 0x500F and movie-mode ISO 0xD242.
   # Writes apply only after InitiateOpenCapture(0x101C); D212 readback is source of truth.
   # Width override is documented in the #53 property-width-audit OVERRIDES table.
-  "0xd02a": { name: stillIso, ptpName: ISO, type: u32, access: readWrite,
+  "0xd02a": { name: stillIso, ptpName: ISO, type: u32, access: readWrite, initialValue: 200,
               controls: { app: { setMethod: absolute, operation: "0x1016", readback: "0xd212" } },
               # Representative authored rows for the generic value codec. Bulk
               # ISO labels still come from evidence/labels via the generator.
@@ -1059,7 +1063,7 @@ properties:
   # seconds*1000 for slow speeds — confirmed by client application's UINT32 DevicePropDesc
   # parser + the [live] 0xD212 readback. Set via the 0x902c step (not a value
   # write). Width override documented in the #53 property-width-audit OVERRIDES.
-  "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u32, access: readWrite,
+  "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u32, access: readWrite, initialValue: 0x8001e848,
               controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
   # PCSS ISO is the standard PTP ExposureIndex, NOT the reference-app 0xD02A path. Encoding is
   # SIGNED: positive = literal ISO; `-1`/`-2`/`-3` map to the camera AUTO1/AUTO2/AUTO3 slots and
