@@ -30,8 +30,10 @@ machines. Never add:
 - Private hostnames, IPs, or registry/CI endpoints (internal registries,
   tailnet names, and dev-machine hostnames).
 - Absolute or user-specific paths into private checkouts or trees.
-- Cross-links into private issue trackers (`<consumer-repo>#123`) — restate the
-  durable fact in place instead of linking to where it came from.
+- Load-bearing cross-links into private issue trackers (`<consumer-repo>#123`).
+  Restate the durable fact in place. A public issue may include one neutral
+  supporting-analysis link only when the issue remains complete without it;
+  tracked repo artifacts never depend on that link.
 - A private consumer's internals (app source paths, backend/service topology).
   Naming a consumer as a motivating example is fine where load-bearing; its
   implementation details are not.
@@ -57,7 +59,12 @@ backlog.
 
 **Priority labels:** `priority:P1` — on the active release or program critical
 path, pick these up first; `priority:P2` — consumers hit it soon, schedule next;
-`ready` — implementable without new protocol evidence; unlabeled — backlog.
+`ready` — implementable without new protocol evidence;
+`needs:protocol-evidence` — implementation is blocked on protocol or camera
+behavior evidence; unlabeled — backlog. `ready` and
+`needs:protocol-evidence` are mutually exclusive on one implementation issue.
+Split nonblocking unknowns into their own evidence issue instead of carrying
+both labels.
 
 ### SDLC — worktree → branch → PR, review, merge
 
@@ -153,6 +160,32 @@ When required evidence is unavailable, file an evidence-gated public issue that
 states the literal question, camera/body and firmware scope, existing public
 anchors, safety constraints, and completion condition. Do not guess protocol
 behavior or present private access as a prerequisite for outside contributors.
+
+The public GitOps lifecycle is:
+
+1. A consumer or contributor files the need in ptpsim. A maintainer makes the
+   literal evidence question and scope explicit using the public template in
+   `docs/consults/README.md`, then applies `needs:protocol-evidence`.
+2. An external evidence system may discover the labeled issue and investigate
+   under its own rules. It does not edit any tracked ptpsim artifact, including
+   code, manifests, fixtures, tests, or documentation. Its only handoff into
+   ptpsim is the self-contained issue response for normal contributor review
+   and integration.
+3. The ptpsim issue receives a self-contained answer: applicable scope,
+   established behavior, uncertainty or falsifier, and the implementation or
+   public-fixture consequence. A neutral supporting-analysis link is optional
+   and never load-bearing.
+4. A ptpsim maintainer reconciles the result: an answer that makes
+   implementation possible removes `needs:protocol-evidence` and adds `ready`;
+   a sufficient negative answer resolves or re-scopes the issue without
+   `ready`; an inconclusive answer retains `needs:protocol-evidence` and states
+   the smallest missing observation.
+
+Never expose an evidence provider's internal role names, commands, host paths,
+raw-capture locations, fact identifiers, or analysis narrative in this repo.
+Promote only the scoped conclusion and public-safe reduced evidence. GitHub
+issues are the resumable queue; agent memory or a private orchestration session
+is not lifecycle authority.
 
 The existing `docs/consults/` flow remains the public consumer-contract path.
 Private evidence systems may inform that work, but do not replace its durable,

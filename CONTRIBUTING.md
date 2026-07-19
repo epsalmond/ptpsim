@@ -22,6 +22,35 @@ Bug reports and feature ideas are welcome. Please include enough to reproduce
 (versions, OS, the input that triggered it, the observed vs. expected behavior).
 For wire-protocol bugs, a minimal capture or transcript is the gold standard.
 
+If implementation is blocked on camera or protocol behavior that is not yet
+established, maintainers use the `needs:protocol-evidence` label. An
+evidence-gated issue must state:
+
+- the literal protocol question and the user-visible capability it serves;
+- camera model, firmware, connection persona, mode, and relevant state;
+- existing public anchors and the exact missing observation;
+- safety constraints, including whether hardware work is authorized; and
+- the completion condition that resolves the evidence gate.
+
+Maintainers post the canonical request comment from
+[`docs/consults/README.md`](docs/consults/README.md) before applying the label.
+The delimited literal question is the durable request identity; changing it
+supersedes the earlier request rather than silently retargeting existing work.
+
+`ready` and `needs:protocol-evidence` are mutually exclusive on one
+implementation issue. An external evidence provider may investigate a labeled
+issue, but it does not edit any tracked ptpsim artifact directly. The public
+issue remains its only handoff into the normal contributor workflow: it
+receives the scoped answer, uncertainty boundary, and any public reduced
+fixture needed for review. A result that enables implementation transitions to
+`ready`; a sufficient negative result resolves or re-scopes the issue without
+`ready`; an inconclusive result keeps the evidence label and records the
+smallest missing observation.
+Private commands, host paths, raw captures, internal role names, and private
+fact identifiers do not belong here. A neutral supporting-analysis issue link
+is acceptable only when no reader needs access to it to understand or implement
+the result.
+
 ## Pull requests
 
 - Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before
