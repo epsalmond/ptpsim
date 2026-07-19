@@ -670,9 +670,10 @@ pub struct RecordMemberDetail {
     pub simulator_value: Option<RecordValueLiteral>,
 }
 
-/// Wire encoding of one record-stream value. `Fixed` is an unsigned
-/// little-endian field; `PtpString` is the standard length-prefixed UTF-16LE
-/// PTP string grammar.
+/// Wire encoding of one record-stream value. `Fixed` is a raw unsigned
+/// little-endian field: producers must supply a nonnegative value and may not
+/// infer signed extension from a source property type. `PtpString` is the
+/// standard length-prefixed UTF-16LE PTP string grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RecordValueEncoding {
