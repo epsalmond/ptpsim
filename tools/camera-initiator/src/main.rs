@@ -12,9 +12,12 @@ use async_trait::async_trait;
 use camera_config::{
     direct_epistemic, no_loss, ActionOutcome, BundleHeader, CameraContext, CaptureClock,
     CaptureContext, CaptureInterface, CaptureInterfaceType, ClientContext, ClockType, ClockUnit,
-    ObservationRecorder, PayloadMetadata, PayloadMetadataBuilder, Redaction, RedactionMethod,
+    ObservationRecorder, Redaction, RedactionMethod,
 };
-use camera_initiator::{NativePtpTransport, TraceFormat, TraceWriter, TransportConfig};
+use camera_initiator::{
+    run_probe_plan, NativePtpTransport, ProbePlan, StreamingFileSink, TraceFormat, TraceWriter,
+    TransportConfig,
+};
 use camera_protocol_ffi::{
     parse_action_verb, run_initiator_action, run_initiator_action_to_sink, run_mode_entry,
     run_mode_reestablishment_exit, run_streaming_action, ActionArgument,
@@ -22,11 +25,10 @@ use camera_protocol_ffi::{
     ActionValue, ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityObserver,
     ModeEntryExecution, ObjectTransferStrategy, PtpDataOutput, PtpDataOutputSink,
     PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorTransport, PtpRuntimeValue,
-    PtpStreamingSink, PtpStreamingSinkError, PtpStreamingTransport, StepObserver, StepReport,
+    PtpStreamingTransport, StepObserver, StepReport,
 };
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
 
 #[derive(Parser)]
 #[command(
@@ -107,6 +109,15 @@ enum Command {
         #[arg(long)]
         expected_bytes: Option<u64>,
     },
+    /// Execute a strict runtime PCSS capability and bulk probe plan.
+    Probe {
+        /// Runtime probe-plan YAML. It is not manifest input.
+        #[arg(long)]
+        plan: PathBuf,
+        /// New directory for retained payloads and the machine-readable report.
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -119,6 +130,7 @@ async fn main() -> Result<()> {
             .and_then(|verb| store.action(cli.connection.clone(), verb))
             .map(|action| action.mode)
             .unwrap_or_else(|| "unknown".into()),
+        Command::Probe { .. } => "probe".into(),
     };
     let trace = Arc::new(TraceWriter::with_observations(
         cli.trace_format,
@@ -149,7 +161,7 @@ async fn main() -> Result<()> {
 
     let observed_action = match &cli.command {
         Command::Action { action, .. } => Some(action.clone()),
-        Command::Entry { .. } | Command::Switch { .. } => None,
+        Command::Entry { .. } | Command::Switch { .. } | Command::Probe { .. } => None,
     };
     let result = match cli.command {
         Command::Entry { to, from } => {
@@ -203,6 +215,15 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Command::Probe { plan, output_dir } => {
+            run_probe(
+                Arc::clone(&transport),
+                &plan,
+                output_dir,
+                Arc::clone(&trace),
+            )
+            .await
+        }
     };
 
     if let Some(action_id) = observed_action {
@@ -249,6 +270,27 @@ async fn main() -> Result<()> {
             Err(error)
         }
     }
+}
+
+async fn run_probe(
+    transport: Arc<NativePtpTransport>,
+    plan_path: &PathBuf,
+    output_dir: PathBuf,
+    trace: Arc<TraceWriter>,
+) -> Result<Value> {
+    let yaml = std::fs::read_to_string(plan_path)
+        .with_context(|| format!("read probe plan {}", plan_path.display()))?;
+    let plan = ProbePlan::from_yaml(&yaml)?;
+    transport.open_command_session().await?;
+    let report = run_probe_plan(
+        &plan,
+        transport.command_framing(),
+        transport,
+        trace,
+        output_dir,
+    )
+    .await?;
+    serde_json::to_value(report).context("serialize probe report")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -478,7 +520,7 @@ async fn run_named_action(
         if payload_dir.is_some() {
             bail!("whole-object action does not accept --payload-dir")
         }
-        let sink = Arc::new(StreamingFileSink::new(destination));
+        let sink = Arc::new(StreamingFileSink::new(destination)?);
         let raw: Arc<dyn PtpStreamingTransport> = transport;
         let outcome =
             run_streaming_action(store, request, raw, sink.clone(), expected_bytes).await?;
@@ -972,79 +1014,6 @@ impl PtpDataOutputSink for OrdinaryFileSink {
     }
 }
 
-struct StreamingFileSink {
-    final_path: PathBuf,
-    partial_path: PathBuf,
-    file: Mutex<Option<tokio::fs::File>>,
-    payload: Mutex<PayloadMetadataBuilder>,
-}
-
-impl StreamingFileSink {
-    fn new(final_path: PathBuf) -> Self {
-        let mut partial_name = final_path.as_os_str().to_os_string();
-        partial_name.push(".partial");
-        let partial_path = PathBuf::from(partial_name);
-        Self {
-            final_path,
-            partial_path,
-            file: Mutex::new(None),
-            payload: Mutex::new(PayloadMetadataBuilder::new()),
-        }
-    }
-
-    async fn commit(&self) -> Result<()> {
-        let mut guard = self.file.lock().await;
-        let file = guard
-            .take()
-            .context("stream sink did not open its partial file")?;
-        file.sync_all().await?;
-        drop(file);
-        tokio::fs::rename(&self.partial_path, &self.final_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "rename {} to {}",
-                    self.partial_path.display(),
-                    self.final_path.display()
-                )
-            })
-    }
-
-    async fn payload_metadata(&self) -> PayloadMetadata {
-        self.payload.lock().await.metadata()
-    }
-}
-
-#[async_trait]
-impl PtpStreamingSink for StreamingFileSink {
-    async fn begin(&self, _total_bytes: u64) -> Result<(), PtpStreamingSinkError> {
-        let file = tokio::fs::File::create(&self.partial_path)
-            .await
-            .map_err(|error| PtpStreamingSinkError::Failed {
-                detail: format!("create {}: {error}", self.partial_path.display()),
-            })?;
-        *self.file.lock().await = Some(file);
-        Ok(())
-    }
-
-    async fn write(&self, chunk: Vec<u8>) -> Result<(), PtpStreamingSinkError> {
-        use tokio::io::AsyncWriteExt;
-        let mut guard = self.file.lock().await;
-        let file = guard
-            .as_mut()
-            .ok_or_else(|| PtpStreamingSinkError::Failed {
-                detail: "stream sink write arrived before begin".into(),
-            })?;
-        file.write_all(&chunk)
-            .await
-            .map_err(|error| PtpStreamingSinkError::Failed {
-                detail: format!("write {}: {error}", self.partial_path.display()),
-            })?;
-        self.payload.lock().await.update(&chunk);
-        Ok(())
-    }
-}
-
 fn sanitize(value: &str) -> String {
     value
         .chars()
@@ -1157,6 +1126,31 @@ mod tests {
                 assert_eq!(action, "startLiveView");
                 assert_eq!(then, ["pollLiveView", "enumerateObjects", "stopLiveView"]);
                 assert_eq!(payload_dir, Some(PathBuf::from("payloads")));
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn parses_runtime_pcss_probe_paths() {
+        let cli = Cli::try_parse_from([
+            "camera-initiator",
+            "--manifest",
+            "camera.yaml",
+            "--connection",
+            "wireless-tether",
+            "probe",
+            "--plan",
+            "/tmp/synthetic-plan.yaml",
+            "--output-dir",
+            "/tmp/synthetic-output",
+        ])
+        .expect("runtime PCSS probe CLI parses");
+
+        match cli.command {
+            Command::Probe { plan, output_dir } => {
+                assert_eq!(plan, PathBuf::from("/tmp/synthetic-plan.yaml"));
+                assert_eq!(output_dir, PathBuf::from("/tmp/synthetic-output"));
             }
             _ => panic!("unexpected command variant"),
         }

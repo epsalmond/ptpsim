@@ -165,6 +165,83 @@ Discovery observations record the selected target mode, UDP destination, callbac
 peer, parsed `DSC`, and dynamic `DSCPORT`, so broadcast and explicit-unicast
 runs remain distinguishable without a packet capture.
 
+### Runtime capability and bulk probe plans
+
+The `probe` command accepts a runtime YAML plan for a bounded PCSS capability
+census and repeatable whole-object read. The plan is operator input, not camera
+manifest data: running it never promotes operation or property claims into the
+public catalog. Put its output directory outside a tracked source tree. The
+command creates that directory and every payload without overwriting an
+existing path, retains all three object reads, and never sends a delete or
+transfer-completion action automatically.
+
+Every operation in the plan supplies its numeric code, parameter template, data
+direction, accepted and retryable responses, bounded timeout and attempt count,
+and output policy. The inventory binds `propertyCode` only from the exact
+property list decoded from DeviceInfo. The object walk binds `objectHandle` only
+from the complete standard handle catalog and selects exactly one ObjectInfo by
+the operator's filename and exact byte size. Reversible writes spell out their
+baseline, set, verify, restore, and restored-value verification; once a set is
+attempted, restore and restored-value verification run even if the main step
+fails.
+
+This synthetic-camera plan illustrates the shape without publishing a camera
+or manufacturer catalog:
+
+```yaml
+schema: camera-initiator-pcss-probe/v1
+operations:
+  deviceInfo: { code: 0x1001, dataPhase: in, acceptedResponses: [0x2001], output: memory }
+  propertyDescriptor: { code: 0x1014, params: [propertyCode], dataPhase: in, acceptedResponses: [0x2001], output: memory }
+  propertyValue: { code: 0x1015, params: [propertyCode], dataPhase: in, acceptedResponses: [0x2001], output: memory }
+  objectCatalog: { code: 0x1007, params: [0xffffffff, 0, 0], dataPhase: in, acceptedResponses: [0x2001], output: memory }
+  objectInfo: { code: 0x1008, params: [objectHandle], dataPhase: in, acceptedResponses: [0x2001], output: memory }
+  readObject: { code: 0x1009, params: [objectHandle], dataPhase: in, acceptedResponses: [0x2001], output: stream, timeoutMs: 60000 }
+  readSyntheticToggle: { code: 0x9001, params: [7], dataPhase: in, acceptedResponses: [0x2001], output: memory }
+  writeSyntheticToggle: { code: 0x9002, params: [7], dataPhase: out, acceptedResponses: [0x2001], output: discard }
+inventory:
+  deviceInfo: deviceInfo
+  propertyDescriptor: propertyDescriptor
+  propertyValue: propertyValue
+objectProbe:
+  catalog: objectCatalog
+  objectInfo: objectInfo
+  readObject: readObject
+  filename: SYNTHETIC.BIN
+  exactSize: 4
+  repetitions: 3
+reversibleWrites:
+  - name: synthetic-toggle
+    baseline: { name: baseline, operation: readSyntheticToggle }
+    set: { name: set, operation: writeSyntheticToggle, payloadHex: "0100" }
+    verify: { name: verify, operation: readSyntheticToggle }
+    restore: { name: restore, operation: writeSyntheticToggle }
+    verifyRestored: { name: verify-restored, operation: readSyntheticToggle }
+```
+
+Run it through the manifest-selected shipping rendezvous and command transport:
+
+```sh
+cargo run -p camera-initiator -- \
+  --manifest path/to/body.yaml \
+  --manufacturer path/to/manufacturer.yaml \
+  --connection wireless-tether \
+  --param terminalName='probe-host' \
+  --trace /tmp/synthetic-probe-trace.jsonl \
+  --observation /tmp/synthetic-probe-observation.jsonl \
+  probe --plan /tmp/synthetic-probe.yaml --output-dir /tmp/synthetic-probe-output
+```
+
+The output report records the exact advertised property census, descriptor and
+current-value response codes and payload hashes, per-property decode errors,
+the selected object metadata, and per-repetition byte counts, hashes, command
+durations, and end-to-end durations. A rejected property read or an otherwise
+well-framed descriptor/value that the generic PTP codec cannot decode is
+recorded without truncating the census. Transport failures, mismatched property
+codes, non-empty data paired with an error response, duplicate or truncated
+object catalogs, ambiguous filename-and-size matches, payload mismatches, and
+cleanup failures still make the run fail closed.
+
 ## Standard PTP/IP
 
 A connection with `initShape: standardPtpIp` uses the canonical PTP/IP command,

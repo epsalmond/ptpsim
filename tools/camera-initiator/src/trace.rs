@@ -248,6 +248,19 @@ impl TraceWriter {
         response_params: Vec<u32>,
         payload: camera_config::PayloadMetadata,
     ) -> io::Result<()> {
+        self.complete_streaming_response(transaction_id, 0x2001, response_params, Some(payload))
+    }
+
+    /// Complete a raw streaming transaction that returned a response before
+    /// or after its optional data body. This keeps retryable and terminal
+    /// non-OK responses in the canonical observation bundle too.
+    pub fn complete_streaming_response(
+        &self,
+        transaction_id: u32,
+        response_code: u16,
+        response_params: Vec<u32>,
+        payload: Option<camera_config::PayloadMetadata>,
+    ) -> io::Result<()> {
         let mut state = self
             .ptp
             .lock()
@@ -255,9 +268,9 @@ impl TraceWriter {
         self.finish_ptp_transaction(
             &mut state,
             transaction_id,
-            0x2001,
+            response_code,
             response_params,
-            Some(payload),
+            payload,
         )
     }
 

@@ -183,6 +183,10 @@ impl NativePtpTransport {
             .map(|camera| SocketAddr::new(camera, self.command_port))
     }
 
+    pub fn command_framing(&self) -> PtpFraming {
+        self.framing
+    }
+
     pub async fn open_command_session(&self) -> Result<PtpSessionOpenResult, PtpTransportError> {
         self.prepare_command_session().await?;
         let (channel, opened) = if self.init_shape == "pcssKnock" {

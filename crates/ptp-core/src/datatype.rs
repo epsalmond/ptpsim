@@ -43,9 +43,17 @@ impl<'a> Reader<'a> {
         Ok(self.take(1)?[0])
     }
 
+    pub fn i8(&mut self) -> Result<i8, DecodeError> {
+        Ok(self.u8()? as i8)
+    }
+
     pub fn u16(&mut self) -> Result<u16, DecodeError> {
         let b = self.take(2)?;
         Ok(u16::from_le_bytes([b[0], b[1]]))
+    }
+
+    pub fn i16(&mut self) -> Result<i16, DecodeError> {
+        Ok(self.u16()? as i16)
     }
 
     pub fn u32(&mut self) -> Result<u32, DecodeError> {
@@ -53,11 +61,19 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
+    pub fn i32(&mut self) -> Result<i32, DecodeError> {
+        Ok(self.u32()? as i32)
+    }
+
     pub fn u64(&mut self) -> Result<u64, DecodeError> {
         let b = self.take(8)?;
         let mut a = [0u8; 8];
         a.copy_from_slice(b);
         Ok(u64::from_le_bytes(a))
+    }
+
+    pub fn i64(&mut self) -> Result<i64, DecodeError> {
+        Ok(self.u64()? as i64)
     }
 
     pub fn bytes(&mut self, n: usize) -> Result<Vec<u8>, DecodeError> {
@@ -138,16 +154,32 @@ impl Writer {
         self.buf.push(v);
     }
 
+    pub fn i8(&mut self, v: i8) {
+        self.u8(v as u8);
+    }
+
     pub fn u16(&mut self, v: u16) {
         self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn i16(&mut self, v: i16) {
+        self.u16(v as u16);
     }
 
     pub fn u32(&mut self, v: u32) {
         self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
+    pub fn i32(&mut self, v: i32) {
+        self.u32(v as u32);
+    }
+
     pub fn u64(&mut self, v: u64) {
         self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    pub fn i64(&mut self, v: i64) {
+        self.u64(v as u64);
     }
 
     pub fn bytes(&mut self, b: &[u8]) {

@@ -1982,8 +1982,10 @@ fn scalar_fits_property(ptype: Option<&str>, value: i64) -> bool {
         Some("u16") => u16::try_from(value).is_ok(),
         Some("u32") => u32::try_from(value).is_ok(),
         Some("u64") => value >= 0,
+        Some("i8") => i8::try_from(value).is_ok(),
         Some("i16") => i16::try_from(value).is_ok(),
         Some("i32") => i32::try_from(value).is_ok(),
+        Some("i64") => true,
         _ => false,
     }
 }
@@ -1994,17 +1996,23 @@ fn property_transition_value(ptype: Option<&str>, value: i64) -> Option<PropValu
         Some("u16") => PropValue::U16(u16::try_from(value).ok()?),
         Some("u32") => PropValue::U32(u32::try_from(value).ok()?),
         Some("u64") => PropValue::U64(u64::try_from(value).ok()?),
-        Some("i16") => PropValue::U16(i16::try_from(value).ok()? as u16),
-        Some("i32") => PropValue::U32(i32::try_from(value).ok()? as u32),
+        Some("i8") => PropValue::I8(i8::try_from(value).ok()?),
+        Some("i16") => PropValue::I16(i16::try_from(value).ok()?),
+        Some("i32") => PropValue::I32(i32::try_from(value).ok()?),
+        Some("i64") => PropValue::I64(value),
         _ => return None,
     })
 }
 
 fn value_to_i64(v: &PropValue) -> Option<i64> {
     Some(match v {
+        PropValue::I8(x) => *x as i64,
         PropValue::U8(x) => *x as i64,
+        PropValue::I16(x) => *x as i64,
         PropValue::U16(x) => *x as i64,
+        PropValue::I32(x) => *x as i64,
         PropValue::U32(x) => *x as i64,
+        PropValue::I64(x) => *x,
         PropValue::U64(x) => *x as i64,
         PropValue::Str(_) => return None,
     })
@@ -2147,6 +2155,21 @@ properties:
             .unwrap();
         engine.apply_responder_mutation(&prepared).unwrap();
         assert_eq!(poll_u32(&mut engine, 0xd001, 2), i64::from(u32::MAX));
+    }
+
+    #[test]
+    fn property_transition_supports_i8_and_i64() {
+        assert!(scalar_fits_property(Some("i8"), i64::from(i8::MIN)));
+        assert!(!scalar_fits_property(Some("i8"), i64::from(i8::MAX) + 1));
+        assert_eq!(
+            property_transition_value(Some("i8"), -1),
+            Some(PropValue::I8(-1))
+        );
+        assert!(scalar_fits_property(Some("i64"), i64::MIN));
+        assert_eq!(
+            property_transition_value(Some("i64"), i64::MIN),
+            Some(PropValue::I64(i64::MIN))
+        );
     }
 
     /// §5.5 AF stub: 0x9026 arms a deferred 0xd209 → 1 transition visible on the

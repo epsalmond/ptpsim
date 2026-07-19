@@ -235,9 +235,13 @@ impl CameraState {
 
 pub fn datatype_of(ty: Option<&str>) -> u16 {
     match ty {
+        Some("i8") => dt::INT8,
         Some("u8") => dt::UINT8,
+        Some("i16") => dt::INT16,
         Some("u16") => dt::UINT16,
+        Some("i32") => dt::INT32,
         Some("u32") => dt::UINT32,
+        Some("i64") => dt::INT64,
         Some("u64") => dt::UINT64,
         Some("str") => dt::STR,
         _ => dt::UINT16,
@@ -246,9 +250,13 @@ pub fn datatype_of(ty: Option<&str>) -> u16 {
 
 pub fn typed(datatype: u16, v: i64) -> PropValue {
     match datatype {
+        dt::INT8 => PropValue::I8(v as i8),
         dt::UINT8 => PropValue::U8(v as u8),
+        dt::INT16 => PropValue::I16(v as i16),
         dt::UINT16 => PropValue::U16(v as u16),
+        dt::INT32 => PropValue::I32(v as i32),
         dt::UINT32 => PropValue::U32(v as u32),
+        dt::INT64 => PropValue::I64(v),
         dt::UINT64 => PropValue::U64(v as u64),
         _ => PropValue::U16(v as u16),
     }

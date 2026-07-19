@@ -12,9 +12,13 @@ pub(crate) fn snapshot_json(engine: &Engine) -> String {
         .iter()
         .map(|(&code, val)| {
             let v = match val {
+                PropValue::I8(x) => serde_json::json!(x),
                 PropValue::U8(x) => serde_json::json!(x),
+                PropValue::I16(x) => serde_json::json!(x),
                 PropValue::U16(x) => serde_json::json!(x),
+                PropValue::I32(x) => serde_json::json!(x),
                 PropValue::U32(x) => serde_json::json!(x),
+                PropValue::I64(x) => serde_json::json!(x),
                 PropValue::U64(x) => serde_json::json!(x),
                 PropValue::Str(s) => serde_json::json!(s),
             };

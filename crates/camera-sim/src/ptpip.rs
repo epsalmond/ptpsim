@@ -1098,9 +1098,13 @@ fn consume_stream(source: &ByteSource) -> Result<(), String> {
 
 fn prop_value_to_i64(v: &PropValue) -> Option<i64> {
     Some(match v {
+        PropValue::I8(x) => *x as i64,
         PropValue::U8(x) => *x as i64,
+        PropValue::I16(x) => *x as i64,
         PropValue::U16(x) => *x as i64,
+        PropValue::I32(x) => *x as i64,
         PropValue::U32(x) => *x as i64,
+        PropValue::I64(x) => *x,
         PropValue::U64(x) => *x as i64,
         PropValue::Str(_) => return None,
     })

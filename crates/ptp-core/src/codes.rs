@@ -98,9 +98,13 @@ pub mod format {
 
 /// Standard PTP datatype codes used in `DevicePropDesc`.
 pub mod datatype_code {
+    pub const INT8: u16 = 0x0001;
     pub const UINT8: u16 = 0x0002;
+    pub const INT16: u16 = 0x0003;
     pub const UINT16: u16 = 0x0004;
+    pub const INT32: u16 = 0x0005;
     pub const UINT32: u16 = 0x0006;
+    pub const INT64: u16 = 0x0007;
     pub const UINT64: u16 = 0x0008;
     pub const STR: u16 = 0xffff;
 }

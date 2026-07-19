@@ -200,6 +200,35 @@ pub async fn run_streaming_action(
     })?;
     let (operation, params) = streaming_request(action, runtime_params)?;
 
+    run_streaming_operation(
+        framing,
+        operation,
+        params,
+        transport,
+        sink,
+        expected_payload_bytes,
+    )
+    .await
+}
+
+/// Run one bounded whole-object transaction from explicit runtime operation
+/// data. This is the same streaming primitive used by manifest actions after
+/// their action request resolves; callers remain responsible for selecting a
+/// shipping connection and enforcing their own accepted-response policy.
+pub async fn run_streaming_operation(
+    framing: PtpFraming,
+    operation: u16,
+    params: Vec<u32>,
+    transport: Arc<dyn PtpStreamingTransport>,
+    sink: Arc<dyn PtpStreamingSink>,
+    expected_payload_bytes: Option<u64>,
+) -> Result<PtpStreamingOutcome, PtpStreamingError> {
+    if !matches!(framing, PtpFraming::Compressed | PtpFraming::Usb) {
+        return Err(PtpStreamingError::UnsupportedPlan {
+            detail: "whole-object streaming requires compressed or USB framing".into(),
+        });
+    }
+
     let transaction_id = with_deadline(
         Arc::clone(&transport),
         transport.reserve_transaction_id(),

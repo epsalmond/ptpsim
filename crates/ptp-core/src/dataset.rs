@@ -177,13 +177,17 @@ impl StorageInfo {
     }
 }
 
-/// A typed PTP property value. Covers the integer widths and string used by the
-/// properties ptpsim drives; extend as manifests need more.
+/// A typed scalar PTP property value. DevicePropDesc values use the standard
+/// signed and unsigned integer widths or a PTP string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropValue {
+    I8(i8),
     U8(u8),
+    I16(i16),
     U16(u16),
+    I32(i32),
     U32(u32),
+    I64(i64),
     U64(u64),
     Str(String),
 }
@@ -192,9 +196,13 @@ impl PropValue {
     pub fn datatype_code(&self) -> u16 {
         use crate::codes::datatype_code as dt;
         match self {
+            PropValue::I8(_) => dt::INT8,
             PropValue::U8(_) => dt::UINT8,
+            PropValue::I16(_) => dt::INT16,
             PropValue::U16(_) => dt::UINT16,
+            PropValue::I32(_) => dt::INT32,
             PropValue::U32(_) => dt::UINT32,
+            PropValue::I64(_) => dt::INT64,
             PropValue::U64(_) => dt::UINT64,
             PropValue::Str(_) => dt::STR,
         }
@@ -203,9 +211,13 @@ impl PropValue {
     pub fn decode(r: &mut Reader, datatype: u16) -> Result<Self, DecodeError> {
         use crate::codes::datatype_code as dt;
         Ok(match datatype {
+            dt::INT8 => PropValue::I8(r.i8()?),
             dt::UINT8 => PropValue::U8(r.u8()?),
+            dt::INT16 => PropValue::I16(r.i16()?),
             dt::UINT16 => PropValue::U16(r.u16()?),
+            dt::INT32 => PropValue::I32(r.i32()?),
             dt::UINT32 => PropValue::U32(r.u32()?),
+            dt::INT64 => PropValue::I64(r.i64()?),
             dt::UINT64 => PropValue::U64(r.u64()?),
             dt::STR => PropValue::Str(r.ptp_string()?),
             _ => return Err(DecodeError::InvalidString("unsupported prop datatype")),
@@ -214,9 +226,13 @@ impl PropValue {
 
     pub fn encode(&self, w: &mut Writer) -> Result<(), EncodeError> {
         match self {
+            PropValue::I8(v) => w.i8(*v),
             PropValue::U8(v) => w.u8(*v),
+            PropValue::I16(v) => w.i16(*v),
             PropValue::U16(v) => w.u16(*v),
+            PropValue::I32(v) => w.i32(*v),
             PropValue::U32(v) => w.u32(*v),
+            PropValue::I64(v) => w.i64(*v),
             PropValue::U64(v) => w.u64(*v),
             PropValue::Str(s) => w.ptp_string(s)?,
         }
@@ -412,6 +428,25 @@ mod tests {
                 min: PropValue::U32(100),
                 max: PropValue::U32(12800),
                 step: PropValue::U32(1),
+            },
+        };
+        let mut w = Writer::new();
+        desc.encode(&mut w).unwrap();
+        assert_eq!(DevicePropDesc::decode(w.as_slice()).unwrap(), desc);
+    }
+
+    #[test]
+    fn signed_prop_desc_round_trips() {
+        let desc = DevicePropDesc {
+            code: 0x5001,
+            datatype: datatype_code::INT16,
+            get_set: 1,
+            factory_default: PropValue::I16(-1),
+            current: PropValue::I16(-3),
+            form: PropForm::Range {
+                min: PropValue::I16(-10),
+                max: PropValue::I16(10),
+                step: PropValue::I16(1),
             },
         };
         let mut w = Writer::new();

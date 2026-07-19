@@ -38,8 +38,8 @@ pub use pcss_executor::{
 };
 pub mod streaming_executor;
 pub use streaming_executor::{
-    run_streaming_action, PtpStreamingError, PtpStreamingOutcome, PtpStreamingSink,
-    PtpStreamingSinkError, PtpStreamingTransport,
+    run_streaming_action, run_streaming_operation, PtpStreamingError, PtpStreamingOutcome,
+    PtpStreamingSink, PtpStreamingSinkError, PtpStreamingTransport,
 };
 pub mod mfg_index;
 pub use mfg_index::{
@@ -474,9 +474,13 @@ pub fn parse_event(
 /// A typed PTP property value (mirrors `ptp_core::PropValue`, lossless).
 #[derive(Debug, uniffi::Enum)]
 pub enum PtpValue {
+    I8 { value: i8 },
     U8 { value: u8 },
+    I16 { value: i16 },
     U16 { value: u16 },
+    I32 { value: i32 },
     U32 { value: u32 },
+    I64 { value: i64 },
     U64 { value: u64 },
     Str { value: String },
 }
@@ -484,9 +488,13 @@ pub enum PtpValue {
 impl From<&ptp_core::PropValue> for PtpValue {
     fn from(v: &ptp_core::PropValue) -> Self {
         match v {
+            ptp_core::PropValue::I8(x) => PtpValue::I8 { value: *x },
             ptp_core::PropValue::U8(x) => PtpValue::U8 { value: *x },
+            ptp_core::PropValue::I16(x) => PtpValue::I16 { value: *x },
             ptp_core::PropValue::U16(x) => PtpValue::U16 { value: *x },
+            ptp_core::PropValue::I32(x) => PtpValue::I32 { value: *x },
             ptp_core::PropValue::U32(x) => PtpValue::U32 { value: *x },
+            ptp_core::PropValue::I64(x) => PtpValue::I64 { value: *x },
             ptp_core::PropValue::U64(x) => PtpValue::U64 { value: *x },
             ptp_core::PropValue::Str(s) => PtpValue::Str { value: s.clone() },
         }
