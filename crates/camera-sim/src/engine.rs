@@ -1723,10 +1723,17 @@ impl Engine {
             .iter()
             .filter_map(|member| {
                 let code = parse_hex_code(member.code())?;
+                let encoding = match member.encoding(value_w) {
+                    camera_config::RecordValueEncoding::Fixed { width } => {
+                        RecordValueEncoding::Fixed { width }
+                    }
+                    camera_config::RecordValueEncoding::PtpString => RecordValueEncoding::PtpString,
+                };
                 let value = self
                     .state
                     .props
                     .get(&code)
+                    .filter(|value| record_value_matches_encoding(value, encoding))
                     .cloned()
                     .or_else(|| match member.simulator_value() {
                         Some(camera_config::RecordValueLiteral::Unsigned(value)) => {
@@ -1737,7 +1744,8 @@ impl Engine {
                         }
                         None => None,
                     })
-                    .unwrap_or(PropValue::U32(0));
+                    .filter(|value| record_value_matches_encoding(value, encoding))
+                    .unwrap_or_else(|| record_value_zero(encoding));
                 Some((code, value))
             })
             .collect();
@@ -2043,6 +2051,27 @@ fn value_to_i64(v: &PropValue) -> Option<i64> {
     })
 }
 
+fn record_value_matches_encoding(
+    value: &PropValue,
+    encoding: protocol_primitives::quirk::RecordValueEncoding,
+) -> bool {
+    match encoding {
+        protocol_primitives::quirk::RecordValueEncoding::Fixed { .. } => {
+            !matches!(value, PropValue::Str(_))
+        }
+        protocol_primitives::quirk::RecordValueEncoding::PtpString => {
+            matches!(value, PropValue::Str(_))
+        }
+    }
+}
+
+fn record_value_zero(encoding: protocol_primitives::quirk::RecordValueEncoding) -> PropValue {
+    match encoding {
+        protocol_primitives::quirk::RecordValueEncoding::Fixed { .. } => PropValue::U32(0),
+        protocol_primitives::quirk::RecordValueEncoding::PtpString => PropValue::Str(String::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2113,6 +2142,115 @@ properties:
             terminal: PropertyTransitionTerminal::Fixed { value: terminal },
             settle_after_polls,
         }
+    }
+
+    #[test]
+    fn record_stream_defaults_unset_string_state_to_an_empty_ptp_string() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd212":
+    name: status
+    type: u8a
+    access: readOnly
+    payload:
+      form: recordStream
+      members:
+        - { code: "0xd22f", encoding: { kind: ptpString } }
+  "0xd22f": { name: text, type: str, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let engine = Engine::new(manifest, empty_store());
+
+        let bytes = engine.record_stream_property(0xd212).unwrap();
+        let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
+            2,
+            2,
+            [(
+                0xd22f,
+                protocol_primitives::quirk::RecordValueEncoding::PtpString,
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            protocol_primitives::quirk::parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+            vec![(0xd22f, PropValue::Str(String::new()))]
+        );
+    }
+
+    #[test]
+    fn record_stream_replaces_incompatible_state_with_fallback_or_zero() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd212":
+    name: status
+    type: u8a
+    access: readOnly
+    payload:
+      form: recordStream
+      members:
+        - { code: "0xd100", encoding: { kind: fixed, width: 4 }, simulatorValue: 7 }
+        - { code: "0xd101", encoding: { kind: fixed, width: 4 } }
+        - { code: "0xd102", encoding: { kind: ptpString }, simulatorValue: fallback }
+        - { code: "0xd103", encoding: { kind: ptpString } }
+  "0xd100": { name: fixedFallback, type: str, access: readWrite }
+  "0xd101": { name: fixedZero, type: str, access: readWrite }
+  "0xd102": { name: stringFallback, type: u32, access: readWrite }
+  "0xd103": { name: stringZero, type: str, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine
+            .state
+            .props
+            .insert(0xd100, PropValue::Str("wrong".into()));
+        engine
+            .state
+            .props
+            .insert(0xd101, PropValue::Str("wrong".into()));
+        engine.state.props.insert(0xd102, PropValue::U32(99));
+        engine.state.props.insert(0xd103, PropValue::U32(99));
+
+        let bytes = engine.record_stream_property(0xd212).unwrap();
+        let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
+            2,
+            2,
+            [
+                (
+                    0xd100,
+                    protocol_primitives::quirk::RecordValueEncoding::Fixed { width: 4 },
+                ),
+                (
+                    0xd101,
+                    protocol_primitives::quirk::RecordValueEncoding::Fixed { width: 4 },
+                ),
+                (
+                    0xd102,
+                    protocol_primitives::quirk::RecordValueEncoding::PtpString,
+                ),
+                (
+                    0xd103,
+                    protocol_primitives::quirk::RecordValueEncoding::PtpString,
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            protocol_primitives::quirk::parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+            vec![
+                (0xd100, PropValue::U32(7)),
+                (0xd101, PropValue::U32(0)),
+                (0xd102, PropValue::Str("fallback".into())),
+                (0xd103, PropValue::Str(String::new())),
+            ]
+        );
     }
 
     #[test]

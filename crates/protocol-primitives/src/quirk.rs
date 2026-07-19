@@ -171,8 +171,8 @@ fn numeric_value(value: &PropValue) -> Option<u64> {
         PropValue::U16(value) => (*value).into(),
         PropValue::I32(value) => *value as u32 as u64,
         PropValue::U32(value) => (*value).into(),
-        PropValue::I64(value) => *value as u32 as u64,
-        PropValue::U64(value) => *value & u32::MAX as u64,
+        PropValue::I64(value) => *value as u64,
+        PropValue::U64(value) => *value,
         PropValue::Str(_) => return None,
     })
 }
@@ -466,6 +466,25 @@ mod tests {
             parse_typed_record_stream(&bytes, &descriptor).unwrap(),
             records
         );
+    }
+
+    #[test]
+    fn typed_stream_rejects_full_width_signed_and_unsigned_overflow() {
+        let descriptor =
+            RecordStreamDescriptor::new(2, 2, [(0xd100, RecordValueEncoding::Fixed { width: 4 })])
+                .unwrap();
+        let too_large = 0x1_0000_0005;
+
+        for value in [PropValue::I64(too_large as i64), PropValue::U64(too_large)] {
+            assert!(matches!(
+                typed_record_stream(&[(0xd100, value)], &descriptor),
+                Err(RecordStreamError::Overflow {
+                    field: "value",
+                    value: 0x1_0000_0005,
+                    width: 4,
+                })
+            ));
+        }
     }
 
     #[test]
