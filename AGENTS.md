@@ -81,16 +81,18 @@ both labels.
 2. **Close issues with Pull Requests.** An issue SHOULD precede the PR (see
    *Work tracking*); footer the PR `Closes #N`. A self-evident doc fix may
    skip the issue.
-3. **Open a draft PR from the first commit.** The draft is the work's visible
-   home while in flight; don't wait for polish to push. Before marking it
-   ready: run the workspace checks (*Build + test*), then get a reviewer-agent
+3. **Use Codex (GPT-5.6 Sol) for implementation.** Open a draft PR from the
+   first commit; the draft is the work's visible home while in flight, so don't
+   wait for polish to push. Before marking it ready: run the workspace checks
+   (*Build + test*), then run exactly one independent `/code-review` pass with
 
-   medium — and complete the durable review-thread workflow below.
+   review-thread workflow below.
 4. **Single-line commit messages.** Imperative (`Add logging for X`), no
    body. The *why* goes in the PR description — or a durable `docs/*.md` if
    it's load-bearing past the merge. Commits should not have "and."
-5. **Push the branch, mark the PR ready, a human merges it.** Don't merge your
-   own PR unless the user asks — `main` only advances through merged PRs.
+5. **Push the branch, mark the PR ready, then enable GitHub auto-merge.** Do
+   this only after the review-complete gates below and required checks pass on
+   the current head; do not merge directly or bypass those gates.
 6. **Write the PR for a human:** what was done and why it matters, in prose
    a reviewer follows. No opcode/method dumps or
    change-by-change logs — reviewers can read the code for that. Shorter is easier to
@@ -108,10 +110,11 @@ Review state lives on the pull request, not in agent chat or an in-process task
 list. Context compaction, session restarts, and model changes must not trigger a
 new full review merely because the prior conversation is unavailable.
 
-1. **Pin the review to a commit.** Run one full reviewer-agent pass against an
-   exact candidate SHA. The reviewer does not edit code. It posts one PR review
-   thread per actionable finding, inline on the affected line where GitHub
-   permits. Otherwise it posts a PR comment naming the exact `path:line`,
+1. **Pin the review to a commit.** The one full review required by the SDLC is
+
+   against an exact candidate SHA. The reviewer does not edit code. It posts one
+   PR review thread per actionable finding, inline on the affected line where
+   GitHub permits. Otherwise it posts a PR comment naming the exact `path:line`,
    symbol, and reviewed SHA. Every finding states severity, evidence, the
    expected correction, and a verification test. A finding that exists only in
    chat does not count as review state.
