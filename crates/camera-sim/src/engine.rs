@@ -1733,7 +1733,7 @@ impl Engine {
                     .state
                     .props
                     .get(&code)
-                    .filter(|value| record_value_matches_encoding(value, encoding))
+                    .filter(|value| encoding.accepts_value(value))
                     .cloned()
                     .or_else(|| match member.simulator_value() {
                         Some(camera_config::RecordValueLiteral::Unsigned(value)) => {
@@ -1744,7 +1744,7 @@ impl Engine {
                         }
                         None => None,
                     })
-                    .filter(|value| record_value_matches_encoding(value, encoding))
+                    .filter(|value| encoding.accepts_value(value))
                     .unwrap_or_else(|| record_value_zero(encoding));
                 Some((code, value))
             })
@@ -2051,20 +2051,6 @@ fn value_to_i64(v: &PropValue) -> Option<i64> {
     })
 }
 
-fn record_value_matches_encoding(
-    value: &PropValue,
-    encoding: protocol_primitives::quirk::RecordValueEncoding,
-) -> bool {
-    match encoding {
-        protocol_primitives::quirk::RecordValueEncoding::Fixed { .. } => {
-            !matches!(value, PropValue::Str(_))
-        }
-        protocol_primitives::quirk::RecordValueEncoding::PtpString => {
-            matches!(value, PropValue::Str(_))
-        }
-    }
-}
-
 fn record_value_zero(encoding: protocol_primitives::quirk::RecordValueEncoding) -> PropValue {
     match encoding {
         protocol_primitives::quirk::RecordValueEncoding::Fixed { .. } => PropValue::U32(0),
@@ -2199,10 +2185,14 @@ properties:
         - { code: "0xd101", encoding: { kind: fixed, width: 4 } }
         - { code: "0xd102", encoding: { kind: ptpString }, simulatorValue: fallback }
         - { code: "0xd103", encoding: { kind: ptpString } }
+        - { code: "0xd104", encoding: { kind: fixed, width: 4 }, simulatorValue: 7 }
+        - { code: "0xd105", encoding: { kind: fixed, width: 4 } }
   "0xd100": { name: fixedFallback, type: str, access: readWrite }
   "0xd101": { name: fixedZero, type: str, access: readWrite }
   "0xd102": { name: stringFallback, type: u32, access: readWrite }
   "0xd103": { name: stringZero, type: str, access: readWrite }
+  "0xd104": { name: negativeFallback, type: i32, access: readWrite }
+  "0xd105": { name: negativeZero, type: i64, access: readWrite }
 "#,
         )
         .unwrap();
@@ -2217,6 +2207,8 @@ properties:
             .insert(0xd101, PropValue::Str("wrong".into()));
         engine.state.props.insert(0xd102, PropValue::U32(99));
         engine.state.props.insert(0xd103, PropValue::U32(99));
+        engine.state.props.insert(0xd104, PropValue::I32(-1));
+        engine.state.props.insert(0xd105, PropValue::I64(i64::MIN));
 
         let bytes = engine.record_stream_property(0xd212).unwrap();
         let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
@@ -2239,6 +2231,14 @@ properties:
                     0xd103,
                     protocol_primitives::quirk::RecordValueEncoding::PtpString,
                 ),
+                (
+                    0xd104,
+                    protocol_primitives::quirk::RecordValueEncoding::Fixed { width: 4 },
+                ),
+                (
+                    0xd105,
+                    protocol_primitives::quirk::RecordValueEncoding::Fixed { width: 4 },
+                ),
             ],
         )
         .unwrap();
@@ -2249,8 +2249,42 @@ properties:
                 (0xd101, PropValue::U32(0)),
                 (0xd102, PropValue::Str("fallback".into())),
                 (0xd103, PropValue::Str(String::new())),
+                (0xd104, PropValue::U32(7)),
+                (0xd105, PropValue::U32(0)),
             ]
         );
+    }
+
+    #[test]
+    fn record_stream_keeps_positive_width_overflow_fail_closed() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd212":
+    name: status
+    type: u8a
+    access: readOnly
+    payload:
+      form: recordStream
+      members:
+        - { code: "0xd100", encoding: { kind: fixed, width: 1 }, simulatorValue: 7 }
+  "0xd100": { name: oversized, type: i16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.state.props.insert(0xd100, PropValue::I16(0x100));
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+
+        assert!(matches!(
+            engine.on_operation(
+                &req(op::GET_DEVICE_PROP_VALUE, 2, vec![u32::from(0xd212u16)]),
+                None,
+            ),
+            Reply::Response(response) if response.code == resp::GENERAL_ERROR
+        ));
     }
 
     #[test]
