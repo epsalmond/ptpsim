@@ -1083,9 +1083,21 @@ pub struct SocketBindings {
 pub struct CameraInitiatedTransfer {
     pub trigger: CameraInitiatedTrigger,
     pub handoff: CameraInitiatedHandoff,
+    /// The manifest-owned route used after a transfer monitor loses its link.
+    #[serde(default)]
+    pub monitor_recovery: Option<CameraInitiatedMonitorRecovery>,
     pub receive: CameraInitiatedReceive,
     #[serde(default)]
     pub evidence: Vec<String>,
+}
+
+/// Recovery route for a camera-initiated-transfer monitor. This deliberately
+/// names a pre-existing generic reconnect contract rather than embedding retry
+/// constants or transport probes in a consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CameraInitiatedMonitorRecovery {
+    SavedCameraReconnect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

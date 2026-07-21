@@ -28,8 +28,10 @@ pub use action::{
 };
 pub use activity::{
     ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityDisplayRole,
-    ConnectionActivityExecutorSpan, ConnectionActivityHostCheckpoint, ConnectionActivitySequence,
-    ExecutorSpanBinding, HostCheckpointBinding,
+    ConnectionActivityExecutorSpan, ConnectionActivityHostCheckpoint,
+    ConnectionActivityHostEstablishment, ConnectionActivitySequence, ExecutorSpanBinding,
+    HostCheckpointBinding, HostEstablishmentBinding, NetworkIdentityExactBinding,
+    RetainedSessionOpenBinding,
 };
 pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{
@@ -45,19 +47,20 @@ pub use model::{
     ActionParameter, ActionParameterKind, ActionResponder, ActionVerb, AvailableWhen, AwaitSource,
     AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
     CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
-    CameraInitiatedReceive, CameraInitiatedTransfer, CameraInitiatedTrigger, CameraManifest,
-    CaptureSource, CloseSession, Connection, ConnectionTransition, Control, ControlOwner,
-    ControlReadSource, ControlRole, ControlSurfaceEntry, Descriptor, GateFailure, GateRequirement,
-    InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream,
-    Loop, ManufacturerDefaults, Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry,
-    ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
-    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
-    ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationKind,
-    Payload, PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent,
-    Property, PropertyKind, PropertySemanticAssertions, PropertyTransitionTerminal,
-    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
-    ProvenancedName, ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout,
-    RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
+    CameraInitiatedMonitorRecovery, CameraInitiatedReceive, CameraInitiatedTransfer,
+    CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, Connection,
+    ConnectionTransition, Control, ControlOwner, ControlReadSource, ControlRole,
+    ControlSurfaceEntry, Descriptor, GateFailure, GateRequirement, InitIdentity, InitRetries,
+    InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults,
+    Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution,
+    ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
+    ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
+    ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationKind, Payload, PayloadForm,
+    PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyKind,
+    PropertySemanticAssertions, PropertyTransitionTerminal, PropertyValueEncoding,
+    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, ProvenancedName,
+    ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout, RecordMember,
+    RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
     ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
     SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SetPropValue,
     ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, StepRetry, StructuredTextField,
@@ -369,11 +372,12 @@ impl CameraManifest {
                     descriptor.default_expected_duration_ms,
                     descriptor.interaction_required,
                     descriptor.optional,
+                    descriptor.identity(),
                 );
                 if let Some(previous) = activity_metadata.insert(key, value.clone()) {
                     if previous != value {
                         return Err(ManifestError::Contract(format!(
-                            "connections.{connection_id}.activities activity '{}@{}' metadata differs from another descriptor",
+                            "connections.{connection_id}.activities activity '{}@{}' metadata differs or binding identity differs from another descriptor",
                             descriptor.id, descriptor.version
                         )));
                     }
@@ -1341,11 +1345,16 @@ fn require_valid_control_surfaces(
     Ok(())
 }
 
+type ActivityContract = (
+    ConnectionActivityDisplayRole,
+    u32,
+    bool,
+    bool,
+    activity::ConnectionActivityIdentity,
+);
+
 fn require_consistent_activity_metadata(
-    seen: &mut std::collections::BTreeMap<
-        (String, u32),
-        (ConnectionActivityDisplayRole, u32, bool, bool),
-    >,
+    seen: &mut std::collections::BTreeMap<(String, u32), ActivityContract>,
     descriptor: &ConnectionActivityDescriptor,
     path: &str,
 ) -> Result<(), ManifestError> {
@@ -1355,11 +1364,12 @@ fn require_consistent_activity_metadata(
         descriptor.default_expected_duration_ms,
         descriptor.interaction_required,
         descriptor.optional,
+        descriptor.identity(),
     );
     if let Some(previous) = seen.insert(key, value.clone()) {
         if previous != value {
             return Err(ManifestError::Contract(format!(
-                "{path} activity '{}@{}' metadata differs from another descriptor",
+                "{path} activity '{}@{}' metadata differs or binding identity differs from another descriptor",
                 descriptor.id, descriptor.version
             )));
         }
@@ -1418,10 +1428,14 @@ fn require_valid_host_activities(
     connection: &Connection,
     connection_id: &str,
 ) -> Result<(), ManifestError> {
-    use activity::{valid_activity_id, ConnectionActivityBinding};
+    use activity::{
+        valid_activity_id, ConnectionActivityBinding, ConnectionActivityHostEstablishment,
+    };
 
     let mut ids = std::collections::BTreeSet::new();
     let mut checkpoints = std::collections::BTreeSet::new();
+    let mut exact_network_scopes = std::collections::BTreeSet::new();
+    let mut retained_session_role = None;
     for (index, descriptor) in connection.activities.iter().enumerate() {
         let path = format!("connections.{connection_id}.activities[{index}]");
         if !valid_activity_id(&descriptor.id) {
@@ -1445,21 +1459,64 @@ fn require_valid_host_activities(
                 "{path}.defaultExpectedDurationMs must be > 0"
             )));
         }
-        let ConnectionActivityBinding::HostCheckpoint(binding) = &descriptor.binding else {
-            return Err(ManifestError::Contract(format!(
-                "{path} must use hostCheckpoint"
-            )));
-        };
-        if binding.host_checkpoint.name.is_empty() {
-            return Err(ManifestError::Contract(format!(
-                "{path}.hostCheckpoint.name must not be empty"
-            )));
-        }
-        if !checkpoints.insert(&binding.host_checkpoint.name) {
-            return Err(ManifestError::Contract(format!(
-                "{path}.hostCheckpoint.name duplicates checkpoint '{}'",
-                binding.host_checkpoint.name
-            )));
+        match &descriptor.binding {
+            ConnectionActivityBinding::HostCheckpoint(binding) => {
+                if binding.host_checkpoint.name.is_empty() {
+                    return Err(ManifestError::Contract(format!(
+                        "{path}.hostCheckpoint.name must not be empty"
+                    )));
+                }
+                if !checkpoints.insert(&binding.host_checkpoint.name) {
+                    return Err(ManifestError::Contract(format!(
+                        "{path}.hostCheckpoint.name duplicates checkpoint '{}'",
+                        binding.host_checkpoint.name
+                    )));
+                }
+            }
+            ConnectionActivityBinding::HostEstablishment(binding) => {
+                match &binding.host_establishment {
+                    ConnectionActivityHostEstablishment::NetworkIdentityExact {
+                        network_identity_exact,
+                    } => {
+                        if network_identity_exact.expected_scope.is_empty() {
+                            return Err(ManifestError::Contract(format!(
+                            "{path}.hostEstablishment.networkIdentityExact.expectedScope must not be empty"
+                        )));
+                        }
+                        if !exact_network_scopes
+                            .insert(network_identity_exact.expected_scope.as_str())
+                        {
+                            return Err(ManifestError::Contract(format!(
+                                "{path}.hostEstablishment.networkIdentityExact.expectedScope duplicates exact network gate '{}'",
+                                network_identity_exact.expected_scope
+                            )));
+                        }
+                    }
+                    ConnectionActivityHostEstablishment::RetainedSessionOpen {
+                        retained_session_open,
+                    } => {
+                        if retained_session_open.socket_role != SocketRole::Command {
+                            return Err(ManifestError::Contract(format!(
+                            "{path}.hostEstablishment.retainedSessionOpen.socketRole must be command"
+                            )));
+                        }
+                        if retained_session_role
+                            .replace(retained_session_open.socket_role)
+                            .is_some()
+                        {
+                            return Err(ManifestError::Contract(format!(
+                                "{path}.hostEstablishment.retainedSessionOpen.socketRole duplicates retained session gate '{:?}'",
+                                retained_session_open.socket_role
+                            )));
+                        }
+                    }
+                }
+            }
+            ConnectionActivityBinding::ExecutorSpan(_) => {
+                return Err(ManifestError::Contract(format!(
+                    "{path} must use hostCheckpoint or hostEstablishment"
+                )));
+            }
         }
     }
     Ok(())

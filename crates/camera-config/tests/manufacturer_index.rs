@@ -2476,6 +2476,252 @@ connections:
 }
 
 #[test]
+fn typed_host_establishment_actions_validate_and_reach_the_loader() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  app:
+    activities:
+      - { id: camera.network.associate, version: 1, displayRole: joiningNetwork, defaultExpectedDurationMs: 1, interactionRequired: false, hostEstablishment: { networkIdentityExact: { expectedScope: ssid } } }
+      - { id: camera.session.open, version: 1, displayRole: openingSession, defaultExpectedDurationMs: 1, interactionRequired: false, hostEstablishment: { retainedSessionOpen: { socketRole: command } } }
+"#;
+    let manifest = camera_config::CameraManifest::from_yaml(body)
+        .expect("typed host actions are valid body-manifest activities");
+    assert!(matches!(
+        manifest.connections["app"].activities[0].binding,
+        camera_config::ConnectionActivityBinding::HostEstablishment(
+            camera_config::HostEstablishmentBinding {
+                host_establishment:
+                    camera_config::ConnectionActivityHostEstablishment::NetworkIdentityExact {
+                        ref network_identity_exact,
+                    },
+            },
+        ) if network_identity_exact.expected_scope == "ssid"
+    ));
+    assert!(matches!(
+        manifest.connections["app"].activities[1].binding,
+        camera_config::ConnectionActivityBinding::HostEstablishment(
+            camera_config::HostEstablishmentBinding {
+                host_establishment:
+                    camera_config::ConnectionActivityHostEstablishment::RetainedSessionOpen {
+                        ref retained_session_open,
+                    },
+            },
+        ) if retained_session_open.socket_role == camera_config::SocketRole::Command
+    ));
+
+    let invalid = body.replace("expectedScope: ssid", "expectedScope: ''");
+    let error = camera_config::CameraManifest::from_yaml(&invalid)
+        .expect_err("an exact network gate needs a runtime scope key");
+    assert!(error
+        .to_string()
+        .contains("expectedScope must not be empty"));
+
+    for socket_role in ["event", "liveView"] {
+        let invalid = body.replace("socketRole: command", &format!("socketRole: {socket_role}"));
+        let error = camera_config::CameraManifest::from_yaml(&invalid)
+            .expect_err("only the command socket can open and retain a PTP/IP session");
+        assert!(
+            error
+                .to_string()
+                .contains("retainedSessionOpen.socketRole must be command"),
+            "socketRole {socket_role}: {error}"
+        );
+    }
+
+    let both_actions = body.replace(
+        "{ networkIdentityExact: { expectedScope: ssid } }",
+        "{ networkIdentityExact: { expectedScope: ssid }, retainedSessionOpen: { socketRole: command } }",
+    );
+    camera_config::CameraManifest::from_yaml(&both_actions)
+        .expect_err("a host establishment mapping must select exactly one action");
+
+    let duplicate_network = body.replace(
+        "{ retainedSessionOpen: { socketRole: command } }",
+        "{ networkIdentityExact: { expectedScope: ssid } }",
+    );
+    let error = camera_config::CameraManifest::from_yaml(&duplicate_network)
+        .expect_err("an exact network gate cannot repeat the same expected scope");
+    assert!(error.to_string().contains("duplicates exact network gate"));
+
+    let duplicate_session = body.replace(
+        "{ networkIdentityExact: { expectedScope: ssid } }",
+        "{ retainedSessionOpen: { socketRole: command } }",
+    );
+    let error = camera_config::CameraManifest::from_yaml(&duplicate_session)
+        .expect_err("a retained-session gate cannot repeat the same socket role");
+    assert!(error
+        .to_string()
+        .contains("duplicates retained session gate"));
+}
+
+#[test]
+fn host_establishment_scope_must_be_produced_by_the_selected_plan() {
+    let index = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { wifi: "00000000-0000-0000-0000-000000000001" }
+      advert: {}
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - { id: camera.test.produce-network, version: 1, displayRole: startingNetwork, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }
+          steps:
+            - if:
+                condition: { style: { eq: red } }
+                then:
+                  - bleRead: { gatt: wifi, encoding: utf8, captureAs: nestedSsid }
+                  - bleAwaitUntil:
+                      source: { read: wifi }
+                      captureAs: awaitState
+                      until: { awaitState: { eq: ready } }
+                      failWhen: { awaitState: { eq: failed } }
+                      failureEvidence:
+                        steps:
+                          - bleRead: { gatt: wifi, encoding: utf8, captureAs: failureEvidenceOnly }
+                        when: { failureEvidenceOnly: { eq: confirmed } }
+                      timeoutMs: 100
+                  - retry:
+                      steps:
+                        - bleConnect: {}
+                      whenFailure: other
+                      onFailure:
+                        - bleRead: { gatt: wifi, encoding: utf8, captureAs: retryFailureOnly }
+                      retryWhen: { style: { eq: red } }
+                      maxAttempts: 1
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  app:
+    establishment: test
+    activities:
+      - { id: camera.network.associate, version: 1, displayRole: joiningNetwork, defaultExpectedDurationMs: 1, interactionRequired: false, hostEstablishment: { networkIdentityExact: { expectedScope: nestedSsid } } }
+"#;
+    ConfigStore::from_manufacturer_index(
+        index,
+        BTreeMap::from([("tm1".to_string(), body.to_string())]),
+    )
+    .expect("a nested establishment step can produce the exact-network scope");
+
+    let invalid = body.replace("expectedScope: nestedSsid", "expectedScope: nestedSsidTypo");
+    let error =
+        ConfigStore::from_manufacturer_index(index, BTreeMap::from([("tm1".to_string(), invalid)]))
+            .expect_err("an unproduced exact-network scope must fail closed");
+    assert!(error
+        .to_string()
+        .contains("is not persisted or produced by establishment 'test'"));
+
+    for failure_only_scope in ["failureEvidenceOnly", "retryFailureOnly"] {
+        let invalid = body.replace(
+            "expectedScope: nestedSsid",
+            &format!("expectedScope: {failure_only_scope}"),
+        );
+        let error = ConfigStore::from_manufacturer_index(
+            index,
+            BTreeMap::from([("tm1".to_string(), invalid)]),
+        )
+        .expect_err("failure-path-only captures cannot satisfy a success-path gate");
+        assert!(
+            error
+                .to_string()
+                .contains("is not persisted or produced by establishment 'test'"),
+            "{failure_only_scope}: {error}"
+        );
+    }
+}
+
+#[test]
+fn repeated_activity_version_includes_binding_identity() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  first:
+    activities:
+      - { id: camera.test.same, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: first } }
+  second:
+    activities:
+      - { id: camera.test.same, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: second } }
+"#;
+    let error = camera_config::CameraManifest::from_yaml(body)
+        .expect_err("body descriptors cannot change checkpoint identity without a version bump");
+    assert!(error.to_string().contains("binding identity differs"));
+
+    let activities = "            - { id: camera.test.shared, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }";
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  ble:
+    activities:
+      - { id: camera.test.shared, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: connected } }
+"#;
+    let error = ConfigStore::from_manufacturer_index(
+        &activity_index(activities, "            - bleConnect: {}"),
+        BTreeMap::from([("tm1".to_string(), body.to_string())]),
+    )
+    .expect_err("store descriptors cannot change binding identity without a version bump");
+    assert!(error.to_string().contains("binding identity differs"));
+}
+
+#[test]
+fn saved_camera_reconnect_requires_an_indexed_reconnect_route() {
+    let index = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { state: "00000000-0000-0000-0000-000000000001" }
+      advert: {}
+      reconnect: { scanTimeoutMs: 1000 }
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  app:
+    bindings: { command: 15740 }
+cameraInitiatedTransfer:
+  trigger:
+    match: all
+    states: [{ gatt: state, triggerValues: ["01"] }]
+  handoff: { connection: app, socketRole: command }
+  monitorRecovery: savedCameraReconnect
+  receive:
+    mode: receive
+    count: { property: "0xd212", member: "0xdf41" }
+    headIndex: 1
+    metadata: { operation: "0x1008", phases: [afterCountBeforeModeEntry] }
+    data: { operation: "0x101b", chunkLimitProperty: "0xd235" }
+    completion: readToEof
+"#;
+    let error = ConfigStore::from_manufacturer_index(
+        index,
+        BTreeMap::from([("tm1".to_string(), body.to_string())]),
+    )
+    .expect_err("monitor recovery cannot name a reconnect policy without a decision route");
+    assert!(error
+        .to_string()
+        .contains("requires at least one BLE reconnect route"));
+}
+
+#[test]
 fn activity_optional_participates_in_metadata_identity() {
     let mut index = data("fuji/index.yaml");
     let repeated_connect = "              interactionRequired: false\n              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }";
@@ -2531,7 +2777,7 @@ connections:
   ble:
     establishment: test
     activities:
-      - { id: camera.test.shared, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: connected } }
+      - { id: camera.test.shared, version: 2, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: connected } }
 "#;
     let error = ConfigStore::from_manufacturer_index(
         &activity_index(activities, "            - bleConnect: {}"),

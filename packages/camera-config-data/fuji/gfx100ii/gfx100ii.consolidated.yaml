@@ -1835,6 +1835,7 @@ cameraInitiatedTransfer:
       gatt: functionLaunchRequest
       value: '0300'
       required: false
+  monitorRecovery: savedCameraReconnect
   receive:
     mode: reserved-photo-receive
     count:
@@ -15366,22 +15367,27 @@ connections:
       displayRole: joiningNetwork
       defaultExpectedDurationMs: 15000
       interactionRequired: true
+      optional: false
       hostCheckpoint:
         name: networkJoinConfirmation
     - id: camera.network.associate
-      version: 1
+      version: 2
       displayRole: joiningNetwork
       defaultExpectedDurationMs: 12000
       interactionRequired: false
-      hostCheckpoint:
-        name: networkAssociation
+      optional: false
+      hostEstablishment:
+        networkIdentityExact:
+          expectedScope: ssid
     - id: camera.session.open.ap
-      version: 1
+      version: 2
       displayRole: openingSession
       defaultExpectedDurationMs: 10000
       interactionRequired: false
-      hostCheckpoint:
-        name: sessionOpen
+      optional: false
+      hostEstablishment:
+        retainedSessionOpen:
+          socketRole: command
     init:
       identity:
         guid: initiatorGuid
@@ -16621,12 +16627,14 @@ connections:
     establishment: pcss-knock
     activities:
     - id: camera.session.open.direct
-      version: 1
+      version: 2
       displayRole: openingSession
       defaultExpectedDurationMs: 5000
       interactionRequired: false
-      hostCheckpoint:
-        name: sessionOpen
+      optional: false
+      hostEstablishment:
+        retainedSessionOpen:
+          socketRole: command
     init:
       identity:
         guid: initiatorGuid
@@ -16652,6 +16660,7 @@ connections:
       callbackPort: 51560
       knockPort: 51562
       protocol: PCSS/1.0
+      cameraName: GFX100 II
       discoveryTargets:
         default: subnetBroadcast
         supported:

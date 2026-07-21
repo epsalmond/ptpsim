@@ -46,9 +46,9 @@ pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
     BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, ConnectionActivityBinding,
     ConnectionActivityDescriptor, ConnectionActivityDisplayRole, ConnectionActivitySequence,
-    EstablishmentPlan, EstablishmentRefinement, ModelMatch, NotifyCapture, Predicate, PredicateOp,
-    Recognition, ReconnectDecision, ReconnectPolicy, ScanObservation, Step, StepConfirmation,
-    StepOptions, StepValue, Transform,
+    EstablishmentPlan, EstablishmentRefinement, HostEstablishment, ModelMatch, NotifyCapture,
+    Predicate, PredicateOp, Recognition, ReconnectDecision, ReconnectPolicy, ScanObservation, Step,
+    StepConfirmation, StepOptions, StepValue, Transform,
 };
 mod observation_ffi;
 pub use observation_ffi::*;
@@ -2279,8 +2279,15 @@ pub enum CameraInitiatedMetadataPhase {
 pub struct CameraInitiatedTransferInfo {
     pub trigger: CameraInitiatedTriggerInfo,
     pub handoff: CameraInitiatedHandoffInfo,
+    pub monitor_recovery: Option<CameraInitiatedMonitorRecovery>,
     pub receive: CameraInitiatedReceiveInfo,
     pub evidence: Vec<String>,
+}
+
+/// Manifest-owned recovery route for a camera-initiated transfer monitor.
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum CameraInitiatedMonitorRecovery {
+    SavedCameraReconnect,
 }
 
 /// The transport-close frame a connection sends before an image-transfer reopen,
@@ -3994,6 +4001,11 @@ fn map_camera_initiated_transfer(
                     required: launch.required,
                 }),
         },
+        monitor_recovery: transfer.monitor_recovery.map(|recovery| match recovery {
+            cc::CameraInitiatedMonitorRecovery::SavedCameraReconnect => {
+                CameraInitiatedMonitorRecovery::SavedCameraReconnect
+            }
+        }),
         receive: CameraInitiatedReceiveInfo {
             mode: transfer.mode.clone(),
             count_property: transfer.count_property,

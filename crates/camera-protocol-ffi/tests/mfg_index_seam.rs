@@ -244,6 +244,10 @@ fn real_manifest_exposes_resolved_camera_initiated_transfer() {
     );
     assert_eq!(transfer.handoff.endpoint_port, 55740);
     assert!(transfer.handoff.cached_credentials_allowed);
+    assert!(matches!(
+        transfer.monitor_recovery,
+        Some(CameraInitiatedMonitorRecovery::SavedCameraReconnect)
+    ));
     let launch = transfer.handoff.function_launch.as_ref().unwrap();
     assert_eq!(launch.gatt_uuid, "600655E6-3637-42F1-8FB2-44EFC5C63B13");
     assert_eq!(launch.value, vec![0x03, 0x00]);
@@ -1451,7 +1455,7 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
     assert_eq!(
         plan.activities.len(),
         7,
-        "four executor spans plus three host checkpoints"
+        "four executor spans plus one checkpoint and two typed host actions"
     );
     assert!(matches!(
         plan.activities.first(),
@@ -1459,12 +1463,26 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
             if id == "camera.ap.reset"
     ));
     assert!(matches!(
+        plan.activities.get(5),
+        Some(ConnectionActivityDescriptor {
+            id,
+            version: 2,
+            binding: ConnectionActivityBinding::HostEstablishment {
+                action: HostEstablishment::NetworkIdentityExact { expected_scope },
+            },
+            ..
+        }) if id == "camera.network.associate" && expected_scope == "ssid"
+    ));
+    assert!(matches!(
         plan.activities.last(),
         Some(ConnectionActivityDescriptor {
             id,
-            binding: ConnectionActivityBinding::HostCheckpoint { name },
+            version: 2,
+            binding: ConnectionActivityBinding::HostEstablishment {
+                action: HostEstablishment::RetainedSessionOpen { socket_role: SocketRole::Command },
+            },
             ..
-        }) if id == "camera.session.open.ap" && name == "sessionOpen"
+        }) if id == "camera.session.open.ap"
     ));
     assert!(matches!(
         plan.post_exit_readiness[0],

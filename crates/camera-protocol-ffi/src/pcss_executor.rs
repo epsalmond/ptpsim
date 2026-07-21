@@ -175,9 +175,9 @@ pub async fn run_pcss_auto_establishment(
             } => {
                 acknowledge_callback(&transport).await?;
                 let plan = connection_plan(&store, &model, &connection)?;
-                // Connection-level activities are hostCheckpoint descriptors
-                // by schema. The socket-owning host emits them; this executor
-                // must never synthesize their lifecycle events.
+                // Connection-level host activities are emitted by the
+                // socket-owning host; this executor must never synthesize
+                // their lifecycle events.
                 let _ = activity_observer;
                 let mut activity = None;
 

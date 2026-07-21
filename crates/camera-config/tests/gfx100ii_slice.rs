@@ -214,6 +214,10 @@ fn camera_initiated_transfer_references_are_complete() {
         .as_ref()
         .expect("camera declares its reserved transfer queue");
     assert_eq!(transfer.handoff.connection, "app");
+    assert_eq!(
+        transfer.monitor_recovery,
+        Some(camera_config::CameraInitiatedMonitorRecovery::SavedCameraReconnect)
+    );
     assert_eq!(transfer.receive.mode, "reserved-photo-receive");
     assert_eq!(transfer.receive.head_index, 1);
     assert_eq!(transfer.receive.count.property, "0xd212");

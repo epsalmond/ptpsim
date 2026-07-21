@@ -21,7 +21,7 @@ use camera_config as cc;
 use camera_config::index as ix;
 
 use crate::executor::ExecutorStepFailureKind;
-use crate::KeyValue;
+use crate::{KeyValue, SocketRole};
 
 // ---------------------------------------------------------------------------
 // ScanObservation → Recognition (§3.2)
@@ -187,7 +187,7 @@ pub struct EstablishmentPlan {
     /// Slot names the host should persist after this plan to replay on a later
     /// `ble-reconnect` (#91). Empty for plans with nothing to cache.
     pub persist: Vec<String>,
-    /// Executor spans followed by the selected connection's host checkpoints.
+    /// Executor spans followed by the selected connection's host-owned activities.
     pub activities: Vec<ConnectionActivityDescriptor>,
     /// Manifest-authored gate to walk after an orderly feature exit and before
     /// replaying `steps`. Empty means no post-exit readiness gate is declared.
@@ -229,6 +229,21 @@ pub enum ConnectionActivityBinding {
     HostCheckpoint {
         name: String,
     },
+    HostEstablishment {
+        action: HostEstablishment,
+    },
+}
+
+/// A host-owned, executable connection-establishment action. Consumers must
+/// preserve the declared ordering and must not substitute route inference or a
+/// disposable network probe for these actions.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum HostEstablishment {
+    /// Require the observed network identity to exactly equal this runtime
+    /// scope key. Missing or undisclosed identity never passes.
+    NetworkIdentityExact { expected_scope: String },
+    /// Open and retain the real protocol session on this socket role.
+    RetainedSessionOpen { socket_role: SocketRole },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -297,6 +312,22 @@ impl From<&camera_config::ConnectionActivityBinding> for ConnectionActivityBindi
             camera_config::ConnectionActivityBinding::HostCheckpoint(binding) => {
                 Self::HostCheckpoint {
                     name: binding.host_checkpoint.name.clone(),
+                }
+            }
+            camera_config::ConnectionActivityBinding::HostEstablishment(binding) => {
+                Self::HostEstablishment {
+                    action: match &binding.host_establishment {
+                        camera_config::ConnectionActivityHostEstablishment::NetworkIdentityExact {
+                            network_identity_exact,
+                        } => HostEstablishment::NetworkIdentityExact {
+                            expected_scope: network_identity_exact.expected_scope.clone(),
+                        },
+                        camera_config::ConnectionActivityHostEstablishment::RetainedSessionOpen {
+                            retained_session_open,
+                        } => HostEstablishment::RetainedSessionOpen {
+                            socket_role: retained_session_open.socket_role.into(),
+                        },
+                    },
                 }
             }
         }

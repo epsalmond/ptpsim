@@ -91,6 +91,9 @@ cameraInitiatedTransfer:
     socketRole: command
     cachedCredentialsAllowed: true
     functionLaunch: { gatt: functionLaunchRequest, value: "0300", required: false }
+  # A monitor never redials a cached peripheral after its PTP/IP link drops.
+  # It returns to the indexed saved-camera advert route and its scan policy.
+  monitorRecovery: savedCameraReconnect
   receive:
     mode: reserved-photo-receive
     # Pre-mode 0xd212 tight records reported 0xdf41=8 in the queued comparison
@@ -123,17 +126,19 @@ connections:
         interactionRequired: true
         hostCheckpoint: { name: networkJoinConfirmation }
       - id: camera.network.associate
-        version: 1
+        version: 2
         displayRole: joiningNetwork
         defaultExpectedDurationMs: 12000
         interactionRequired: false
-        hostCheckpoint: { name: networkAssociation }
+        hostEstablishment:
+          networkIdentityExact: { expectedScope: ssid }
       - id: camera.session.open.ap
-        version: 1
+        version: 2
         displayRole: openingSession
         defaultExpectedDurationMs: 10000
         interactionRequired: false
-        hostCheckpoint: { name: sessionOpen }
+        hostEstablishment:
+          retainedSessionOpen: { socketRole: command }
     # Per-connection traits (#81): the app selects behavior from these, not by
     # branching on the connection id.
     initShape: app82                    # the 82-byte reference app InitCommandRequest (#82)
@@ -489,11 +494,12 @@ connections:
     establishment: pcss-knock     # camera joins LAN (Wi-Fi/Ethernet), then PCSS port-knock
     activities:
       - id: camera.session.open.direct
-        version: 1
+        version: 2
         displayRole: openingSession
         defaultExpectedDurationMs: 5000
         interactionRequired: false
-        hostCheckpoint: { name: sessionOpen }
+        hostEstablishment:
+          retainedSessionOpen: { socketRole: command }
     # Per-connection traits (#81): a different init family, poll-based live view,
     # and the 3-beat virtual shutter — all data-driven, not app id-branches.
     initShape: pcssKnock                                  # PCSS init (not the 82-byte reference app)

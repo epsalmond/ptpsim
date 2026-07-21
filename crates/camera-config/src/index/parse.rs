@@ -63,6 +63,7 @@ impl ResolvedManufacturerIndex {
                             activity.default_expected_duration_ms,
                             activity.interaction_required,
                             activity.optional,
+                            activity.identity(),
                         );
                         if let Some(previous) = metadata.insert(key, value.clone()) {
                             if previous != value {
@@ -72,7 +73,7 @@ impl ResolvedManufacturerIndex {
                                         model.id
                                     ),
                                     message: format!(
-                                        "activity '{}@{}' metadata differs from another descriptor",
+                                        "activity '{}@{}' metadata differs or binding identity differs from another descriptor",
                                         activity.id, activity.version
                                     ),
                                 });
@@ -629,10 +630,7 @@ fn validate_establishment_activities(
                 message: "activity defaultExpectedDurationMs must be > 0".to_string(),
             });
         }
-        if matches!(
-            activity.binding,
-            ConnectionActivityBinding::HostCheckpoint(_)
-        ) {
+        if !matches!(activity.binding, ConnectionActivityBinding::ExecutorSpan(_)) {
             return Err(ConfigError::Validation {
                 path,
                 message: "establishment activities must use executorSpan".to_string(),

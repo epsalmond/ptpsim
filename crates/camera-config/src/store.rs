@@ -12,11 +12,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::error::ConfigError;
-use crate::index::{ResolvedManufacturerIndex, Signature};
+use crate::index::{EstablishmentBlock, ResolvedManufacturerIndex, Signature, Step};
 use crate::model::{
-    parse_hex_bytes, parse_hex_code, CameraInitiatedMetadataPhase, CameraManifest,
-    ManufacturerDefaults, ModeEntryExecution, SocketRole, TransferCompletion, TriggerMatch,
-    ValuePolicy,
+    parse_hex_bytes, parse_hex_code, CameraInitiatedMetadataPhase, CameraInitiatedMonitorRecovery,
+    CameraManifest, ManufacturerDefaults, ModeEntryExecution, SocketRole, TransferCompletion,
+    TriggerMatch, ValuePolicy,
 };
 use crate::version::VersionScheme;
 
@@ -47,6 +47,7 @@ pub struct ResolvedCameraInitiatedTransfer {
     pub endpoint_host: Option<String>,
     pub endpoint_port: u16,
     pub cached_credentials_allowed: bool,
+    pub monitor_recovery: Option<CameraInitiatedMonitorRecovery>,
     pub function_launch: Option<ResolvedBleLiteralWrite>,
     pub mode: String,
     pub count_property: u16,
@@ -122,6 +123,7 @@ impl ConfigStore {
                 })?;
             validate_reestablishment_params(id, &body, model_view)?;
             validate_pcss_camera_names(id, &body, model_view)?;
+            validate_host_establishment_scopes(id, &body, model_view)?;
             bodies.insert(id.clone(), body);
         }
         validate_activity_metadata_consistency(&index, &bodies)?;
@@ -155,6 +157,7 @@ impl ConfigStore {
                 .cloned()
                 .unwrap_or_default();
             if let Some(transfer) = &body.camera_initiated_transfer {
+                validate_camera_initiated_monitor_recovery(&model_view.id, transfer, model_view)?;
                 let resolved =
                     resolve_camera_initiated_transfer(&model_view.id, transfer, &gatt, body)?;
                 resolved_camera_initiated_transfer_by_model.insert(model_view.id.clone(), resolved);
@@ -283,6 +286,7 @@ fn validate_activity_metadata_consistency(
         u32,
         bool,
         bool,
+        crate::activity::ConnectionActivityIdentity,
         String,
     );
 
@@ -294,21 +298,28 @@ fn validate_activity_metadata_consistency(
             descriptor.default_expected_duration_ms,
             descriptor.interaction_required,
             descriptor.optional,
+            descriptor.identity(),
         );
-        if let Some((role, duration, interaction, optional, first_path)) = seen.get(&key) {
-            if (&metadata.0, metadata.1, metadata.2, metadata.3)
-                != (role, *duration, *interaction, *optional)
+        if let Some((role, duration, interaction, optional, identity, first_path)) = seen.get(&key)
+        {
+            if (&metadata.0, metadata.1, metadata.2, metadata.3, &metadata.4)
+                != (role, *duration, *interaction, *optional, identity)
             {
                 return Err(ConfigError::Validation {
                     path,
                     message: format!(
-                        "activity '{}@{}' metadata differs from {first_path}",
+                        "activity '{}@{}' metadata differs or binding identity differs from {first_path}",
                         descriptor.id, descriptor.version
                     ),
                 });
             }
         } else {
-            seen.insert(key, (metadata.0, metadata.1, metadata.2, metadata.3, path));
+            seen.insert(
+                key,
+                (
+                    metadata.0, metadata.1, metadata.2, metadata.3, metadata.4, path,
+                ),
+            );
         }
         Ok(())
     };
@@ -486,6 +497,157 @@ fn validate_reestablishment_params(
     Ok(())
 }
 
+fn validate_host_establishment_scopes(
+    model_id: &str,
+    body: &CameraManifest,
+    model_view: &crate::index::ModelView,
+) -> Result<(), ConfigError> {
+    use crate::{ConnectionActivityBinding, ConnectionActivityHostEstablishment};
+
+    for (connection_id, connection) in &body.connections {
+        for (activity_index, descriptor) in connection.activities.iter().enumerate() {
+            let ConnectionActivityBinding::HostEstablishment(binding) = &descriptor.binding else {
+                continue;
+            };
+            let ConnectionActivityHostEstablishment::NetworkIdentityExact {
+                network_identity_exact,
+            } = &binding.host_establishment
+            else {
+                continue;
+            };
+            let path = format!(
+                "models.{model_id}.connections.{connection_id}.activities[{activity_index}].hostEstablishment.networkIdentityExact.expectedScope"
+            );
+            let mechanism =
+                connection
+                    .establishment
+                    .as_deref()
+                    .ok_or_else(|| ConfigError::Validation {
+                        path: path.clone(),
+                        message: "networkIdentityExact requires a selected establishment"
+                            .to_string(),
+                    })?;
+            let establishment = model_view
+                .ble
+                .as_ref()
+                .and_then(|ble| ble.establishment(mechanism))
+                .ok_or_else(|| ConfigError::Validation {
+                    path: path.clone(),
+                    message: format!("unknown establishment mechanism '{mechanism}'"),
+                })?;
+            let available = establishment_scope_outputs(establishment);
+            if !available.contains(&network_identity_exact.expected_scope) {
+                return Err(ConfigError::Validation {
+                    path,
+                    message: format!(
+                        "expected scope '{}' is not persisted or produced by establishment '{mechanism}'",
+                        network_identity_exact.expected_scope
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn establishment_scope_outputs(establishment: &EstablishmentBlock) -> BTreeSet<String> {
+    let mut outputs = establishment.persist.iter().cloned().collect();
+    collect_step_scope_outputs(&establishment.post_exit_readiness, &mut outputs);
+    collect_step_scope_outputs(&establishment.steps, &mut outputs);
+    outputs
+}
+
+fn collect_step_scope_outputs(steps: &[Step], outputs: &mut BTreeSet<String>) {
+    for step in steps {
+        match step {
+            Step::BleRead(step) => {
+                outputs.insert(step.capture_as.clone());
+            }
+            Step::BleNotify(step) => {
+                if let Some(name) = &step.capture_as {
+                    outputs.insert(name.clone());
+                }
+                outputs.extend(step.capture.iter().map(|capture| capture.name.clone()));
+            }
+            Step::BleAwaitUntil(step) => {
+                if let Some(name) = &step.capture_as {
+                    outputs.insert(name.clone());
+                }
+                outputs.extend(step.capture.iter().map(|capture| capture.name.clone()));
+                collect_step_scope_outputs(&step.on_each, outputs);
+            }
+            Step::Acquire(step) => {
+                outputs.insert(step.name.clone());
+                collect_step_scope_outputs(std::slice::from_ref(step.from.as_ref()), outputs);
+            }
+            Step::AcquireFirmware(_) => {
+                outputs.insert("firmware".to_string());
+            }
+            Step::If(step) => {
+                collect_step_scope_outputs(&step.then, outputs);
+                collect_step_scope_outputs(&step.else_branch, outputs);
+            }
+            Step::Retry(step) => {
+                collect_step_scope_outputs(&step.steps, outputs);
+            }
+            Step::NikonLssReadConnectionConfiguration(step) => {
+                outputs.extend([
+                    step.flags_capture_as.clone(),
+                    step.ssid_capture_as.clone(),
+                    step.password_capture_as.clone(),
+                    step.security_mode_capture_as.clone(),
+                ]);
+                if let Some(name) = &step.spp_max_length_capture_as {
+                    outputs.insert(name.clone());
+                }
+            }
+            Step::BleConnect(_)
+            | Step::BleDelay(_)
+            | Step::BleAwaitDisconnect(_)
+            | Step::BleRequestMtu(_)
+            | Step::BleDiscoverServices(_)
+            | Step::BleWrite(_)
+            | Step::BleSubscribe(_)
+            | Step::BleWriteChunk(_)
+            | Step::NikonLssAuthenticate(_) => {}
+        }
+    }
+}
+
+fn validate_camera_initiated_monitor_recovery(
+    model_id: &str,
+    transfer: &crate::model::CameraInitiatedTransfer,
+    model_view: &crate::index::ModelView,
+) -> Result<(), ConfigError> {
+    let Some(CameraInitiatedMonitorRecovery::SavedCameraReconnect) = transfer.monitor_recovery
+    else {
+        return Ok(());
+    };
+    let path = format!("models.{model_id}.cameraInitiatedTransfer.monitorRecovery");
+    let Some(ble) = model_view.ble.as_ref() else {
+        return Err(ConfigError::Validation {
+            path,
+            message: "savedCameraReconnect requires a BLE reconnect policy".to_string(),
+        });
+    };
+    if ble.reconnect.is_none() {
+        return Err(ConfigError::Validation {
+            path,
+            message: "savedCameraReconnect requires ble.reconnect".to_string(),
+        });
+    }
+    let has_reconnect_route = model_view.signatures.iter().any(|(_, signature)| {
+        matches!(signature, Signature::BleAdvert(advert) if advert.reconnect.is_some())
+    });
+    if !has_reconnect_route {
+        return Err(ConfigError::Validation {
+            path,
+            message: "savedCameraReconnect requires at least one BLE reconnect route".to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn resolve_camera_initiated_transfer(
     model_id: &str,
     transfer: &crate::model::CameraInitiatedTransfer,
@@ -582,6 +744,7 @@ fn resolve_camera_initiated_transfer(
         endpoint_host: bindings.host.clone(),
         endpoint_port,
         cached_credentials_allowed: transfer.handoff.cached_credentials_allowed,
+        monitor_recovery: transfer.monitor_recovery,
         function_launch,
         mode: transfer.receive.mode.clone(),
         count_property: parse_code(&transfer.receive.count.property, "receive.count.property")?,

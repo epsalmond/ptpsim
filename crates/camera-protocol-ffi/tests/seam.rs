@@ -868,11 +868,16 @@ fn connection_establishment_is_returned_as_data() {
         wt.activities.as_slice(),
         [ConnectionActivityDescriptor {
             id,
+            version: 2,
             display_role: ConnectionActivityDisplayRole::OpeningSession,
             optional: false,
-            binding: ConnectionActivityBinding::HostCheckpoint { name },
+            binding: ConnectionActivityBinding::HostEstablishment {
+                action: HostEstablishment::RetainedSessionOpen {
+                    socket_role: SocketRole::Command,
+                },
+            },
             ..
-        }] if id == "camera.session.open.direct" && name == "sessionOpen"
+        }] if id == "camera.session.open.direct"
     ));
     // app is brought up via the BLE→WiFi handover.
     let app = s.connection_establishment("app".into()).unwrap();

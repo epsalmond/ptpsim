@@ -1,5 +1,6 @@
 //! Consumer-neutral connection activity descriptors (schema §11.23).
 
+use crate::model::SocketRole;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +22,7 @@ pub struct ConnectionActivityDescriptor {
 pub enum ConnectionActivityBinding {
     ExecutorSpan(ExecutorSpanBinding),
     HostCheckpoint(HostCheckpointBinding),
+    HostEstablishment(HostEstablishmentBinding),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +35,99 @@ pub struct ExecutorSpanBinding {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HostCheckpointBinding {
     pub host_checkpoint: ConnectionActivityHostCheckpoint,
+}
+
+/// A typed host-owned establishment action. Unlike a `hostCheckpoint`, this is
+/// executable consumer contract rather than presentation-only progress metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostEstablishmentBinding {
+    pub host_establishment: ConnectionActivityHostEstablishment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum ConnectionActivityHostEstablishment {
+    /// Read the named runtime-scope value and require an exact observed network
+    /// identity match. An absent or undisclosed observation does not pass.
+    NetworkIdentityExact {
+        #[serde(rename = "networkIdentityExact")]
+        network_identity_exact: NetworkIdentityExactBinding,
+    },
+    /// Open and retain the real protocol session on this socket role. This is
+    /// the endpoint-reachability proof; it is not a disposable probe.
+    RetainedSessionOpen {
+        #[serde(rename = "retainedSessionOpen")]
+        retained_session_open: RetainedSessionOpenBinding,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NetworkIdentityExactHostEstablishment {
+    network_identity_exact: NetworkIdentityExactBinding,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RetainedSessionOpenHostEstablishment {
+    retained_session_open: RetainedSessionOpenBinding,
+}
+
+impl<'de> Deserialize<'de> for ConnectionActivityHostEstablishment {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum HostEstablishment {
+            NetworkIdentityExact(NetworkIdentityExactHostEstablishment),
+            RetainedSessionOpen(RetainedSessionOpenHostEstablishment),
+        }
+
+        Ok(match HostEstablishment::deserialize(deserializer)? {
+            HostEstablishment::NetworkIdentityExact(binding) => Self::NetworkIdentityExact {
+                network_identity_exact: binding.network_identity_exact,
+            },
+            HostEstablishment::RetainedSessionOpen(binding) => Self::RetainedSessionOpen {
+                retained_session_open: binding.retained_session_open,
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ConnectionActivityIdentity {
+    ExecutorSpan,
+    HostCheckpoint(String),
+    HostEstablishment(ConnectionActivityHostEstablishment),
+}
+
+impl ConnectionActivityDescriptor {
+    pub(crate) fn identity(&self) -> ConnectionActivityIdentity {
+        match &self.binding {
+            ConnectionActivityBinding::ExecutorSpan(_) => ConnectionActivityIdentity::ExecutorSpan,
+            ConnectionActivityBinding::HostCheckpoint(binding) => {
+                ConnectionActivityIdentity::HostCheckpoint(binding.host_checkpoint.name.clone())
+            }
+            ConnectionActivityBinding::HostEstablishment(binding) => {
+                ConnectionActivityIdentity::HostEstablishment(binding.host_establishment.clone())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NetworkIdentityExactBinding {
+    pub expected_scope: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetainedSessionOpenBinding {
+    pub socket_role: SocketRole,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
