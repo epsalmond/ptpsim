@@ -23,6 +23,10 @@ const DEFAULT_OP_TIMEOUT_MS: u32 = 10_000;
 const DEFAULT_STEP_TIMEOUT_MS: u32 = 60_000;
 const DEFAULT_POLL_INTERVAL_MS: u32 = 200;
 const MAX_COMMAND_FRAMES: usize = 65_536;
+/// Absolute ceiling on one transaction's accumulated data phase. Generous:
+/// the largest real pull (a GFX100II RAF) is ~220 MiB; this is a backstop
+/// against a camera declaring or streaming absurd lengths, not a tuning knob.
+const MAX_DATA_PHASE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FOREACH_ITERS: usize = 100_000;
 const MAX_CHUNK_ITERS: usize = 4096;
 
@@ -1347,6 +1351,15 @@ impl PtpCtx {
                     {
                         return Err(self.other(here, "unexpected duplicate data start".into()));
                     }
+                    if start.total_length > MAX_DATA_PHASE_BYTES {
+                        return Err(self.other(
+                            here,
+                            format!(
+                                "declared data length {} exceeds cap {MAX_DATA_PHASE_BYTES}",
+                                start.total_length
+                            ),
+                        ));
+                    }
                     had_data = true;
                     standard_total = Some(start.total_length);
                     if let Ok(capacity) = usize::try_from(start.total_length) {
@@ -1354,22 +1367,28 @@ impl PtpCtx {
                     }
                 }
                 ptp_core::PtpIpPacket::Data(data) if data.transaction_id == transaction_id => {
-                    if matches!(self.command_framing, PtpFraming::Standard)
-                        && (standard_total.is_none() || standard_ended)
-                    {
-                        return Err(
-                            self.other(here, "data block outside standard data phase".into())
-                        );
-                    }
+                    self.check_data_frame(
+                        here,
+                        "data block",
+                        payload.len(),
+                        data.payload.len(),
+                        standard_total,
+                        standard_ended,
+                        had_data,
+                    )?;
                     had_data = true;
                     payload.extend_from_slice(&data.payload);
                 }
                 ptp_core::PtpIpPacket::EndData(data) if data.transaction_id == transaction_id => {
-                    if matches!(self.command_framing, PtpFraming::Standard)
-                        && (standard_total.is_none() || standard_ended)
-                    {
-                        return Err(self.other(here, "data end outside standard data phase".into()));
-                    }
+                    self.check_data_frame(
+                        here,
+                        "data end",
+                        payload.len(),
+                        data.payload.len(),
+                        standard_total,
+                        standard_ended,
+                        had_data,
+                    )?;
                     had_data = true;
                     standard_ended = true;
                     payload.extend_from_slice(&data.payload);
@@ -1662,6 +1681,54 @@ impl PtpCtx {
                 }
             }
         }
+    }
+
+    /// Validate an incoming data frame before it is appended to the
+    /// transaction payload. Standard framing must stay inside an open data
+    /// phase and within the declared total; Compressed/USB framings carry the
+    /// whole data phase in one frame, so a second frame or an oversized frame
+    /// is rejected.
+    #[allow(clippy::too_many_arguments)]
+    fn check_data_frame(
+        &self,
+        here: &str,
+        frame_kind: &str,
+        accumulated: usize,
+        incoming: usize,
+        standard_total: Option<u64>,
+        standard_ended: bool,
+        had_data: bool,
+    ) -> Result<(), StepError> {
+        match self.command_framing {
+            PtpFraming::Standard => {
+                let total = match standard_total {
+                    Some(total) if !standard_ended => total,
+                    _ => {
+                        return Err(
+                            self.other(here, format!("{frame_kind} outside standard data phase"))
+                        );
+                    }
+                };
+                let next = (accumulated as u64).saturating_add(incoming as u64);
+                if next > total {
+                    return Err(self.other(here, "payload exceeds declared length".into()));
+                }
+            }
+            PtpFraming::Compressed | PtpFraming::Usb => {
+                if had_data {
+                    return Err(
+                        self.other(here, "duplicate data frame for single-frame framing".into())
+                    );
+                }
+                if incoming as u64 > MAX_DATA_PHASE_BYTES {
+                    return Err(self.other(
+                        here,
+                        format!("data payload {incoming} exceeds cap {MAX_DATA_PHASE_BYTES}"),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn transport_error(&self, here: &str, error: PtpTransportError) -> StepError {

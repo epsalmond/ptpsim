@@ -765,6 +765,8 @@ struct EngineTransport {
     suppress_events: AtomicBool,
     fire_deadlines: AtomicBool,
     truncate_standard_data: AtomicBool,
+    standard_data_total_override: Mutex<Option<u64>>,
+    duplicate_single_frame_data: AtomicBool,
     data_override: Mutex<Option<DataOverride>>,
     close_calls: AtomicUsize,
     reopen_calls: AtomicUsize,
@@ -792,6 +794,8 @@ impl EngineTransport {
             suppress_events: AtomicBool::new(false),
             fire_deadlines: AtomicBool::new(false),
             truncate_standard_data: AtomicBool::new(false),
+            standard_data_total_override: Mutex::new(None),
+            duplicate_single_frame_data: AtomicBool::new(false),
             data_override: Mutex::new(None),
             close_calls: AtomicUsize::new(0),
             reopen_calls: AtomicUsize::new(0),
@@ -899,6 +903,22 @@ impl EngineTransport {
         self.truncate_standard_data.store(true, Ordering::SeqCst);
     }
 
+    fn override_next_standard_data_total(&self, total_length: u64) {
+        *self
+            .standard_data_total_override
+            .lock()
+            .expect("standard data total override") = Some(total_length);
+    }
+
+    fn duplicate_next_single_frame_data(&self) {
+        self.duplicate_single_frame_data
+            .store(true, Ordering::SeqCst);
+    }
+
+    fn queued_reply_count(&self) -> usize {
+        self.state.lock().expect("state").replies.len()
+    }
+
     fn take_queued_event(&self, code: u16) -> bool {
         self.state.lock().expect("state").engine.take_event(code)
     }
@@ -950,19 +970,30 @@ impl EngineTransport {
             drop(data_override);
             match self.framing {
                 PtpFraming::Compressed => {
-                    state
-                        .replies
-                        .push_back(protocol_primitives::fuji_framing::encode_data(
-                            request.code,
-                            request.transaction_id,
-                            &payload,
-                        ))
+                    let frame = protocol_primitives::fuji_framing::encode_data(
+                        request.code,
+                        request.transaction_id,
+                        &payload,
+                    );
+                    state.replies.push_back(frame.clone());
+                    if self
+                        .duplicate_single_frame_data
+                        .swap(false, Ordering::SeqCst)
+                    {
+                        state.replies.push_back(frame);
+                    }
                 }
                 PtpFraming::Standard => {
+                    let total_length = self
+                        .standard_data_total_override
+                        .lock()
+                        .expect("standard data total override")
+                        .take()
+                        .unwrap_or(payload.len() as u64);
                     state.replies.push_back(self.encode(&PtpIpPacket::StartData(
                         ptp_core::StartData {
                             transaction_id: request.transaction_id,
-                            total_length: payload.len() as u64,
+                            total_length,
                         },
                     ))?);
                     if !self.truncate_standard_data.swap(false, Ordering::SeqCst) {
@@ -975,13 +1006,18 @@ impl EngineTransport {
                     }
                 }
                 PtpFraming::Usb => {
-                    state
-                        .replies
-                        .push_back(protocol_primitives::usb_ptp::encode_data(
-                            request.code,
-                            request.transaction_id,
-                            &payload,
-                        ))
+                    let frame = protocol_primitives::usb_ptp::encode_data(
+                        request.code,
+                        request.transaction_id,
+                        &payload,
+                    );
+                    state.replies.push_back(frame.clone());
+                    if self
+                        .duplicate_single_frame_data
+                        .swap(false, Ordering::SeqCst)
+                    {
+                        state.replies.push_back(frame);
+                    }
                 }
             }
             Ok(())
@@ -2500,6 +2536,151 @@ fn standard_framing_rejects_a_truncated_data_phase() {
         PtpExecutorError::StepFailed { ref detail, .. }
             if detail.contains("incomplete standard data phase")
     ));
+}
+
+#[test]
+fn standard_framing_rejects_a_maximum_declared_data_phase_before_allocation() {
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Standard,
+        PtpFraming::Usb,
+    ));
+    transport.override_next_standard_data_total(u64::MAX);
+    let error = block_on(run_mode_entry(
+        store_with_standard_app_framing(),
+        "app".into(),
+        None,
+        "shooting/stills".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("an impossible declared data phase fails before allocation");
+
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("declared data length 18446744073709551615 exceeds cap")
+    ));
+    assert_eq!(transport.queued_reply_count(), 2);
+}
+
+#[test]
+fn standard_framing_rejects_a_declared_data_phase_above_the_cap() {
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Standard,
+        PtpFraming::Usb,
+    ));
+    transport.override_next_standard_data_total(512 * 1024 * 1024 + 1);
+    let error = block_on(run_mode_entry(
+        store_with_standard_app_framing(),
+        "app".into(),
+        None,
+        "shooting/stills".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("a declared data phase above the cap fails before allocation");
+
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("declared data length 536870913 exceeds cap")
+    ));
+    assert_eq!(transport.queued_reply_count(), 2);
+}
+
+#[test]
+fn standard_framing_rejects_data_past_the_declared_length() {
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Standard,
+        PtpFraming::Usb,
+    ));
+    transport.override_next_standard_data_total(0);
+    let error = block_on(run_mode_entry(
+        store_with_standard_app_framing(),
+        "app".into(),
+        None,
+        "shooting/stills".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("data beyond the declared length fails before the response");
+
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("payload exceeds declared length")
+    ));
+    assert_eq!(transport.queued_reply_count(), 1);
+}
+
+#[test]
+fn compressed_framing_rejects_a_second_data_frame() {
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    transport.duplicate_next_single_frame_data();
+    let error = block_on(run_mode_entry(
+        store(),
+        "app".into(),
+        None,
+        "shooting/stills".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("a second compressed data frame fails before the response");
+
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("duplicate data frame for single-frame framing")
+    ));
+    assert_eq!(transport.queued_reply_count(), 1);
+}
+
+#[test]
+fn usb_framing_rejects_a_second_data_frame() {
+    let store = store_from_body(data("fuji/gfx100ii/gfx100ii.yaml").replacen(
+        "commandFraming: compressed",
+        "commandFraming: usb",
+        1,
+    ));
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Usb,
+        PtpFraming::Usb,
+    ));
+    transport.duplicate_next_single_frame_data();
+    let error = block_on(run_mode_entry(
+        store,
+        "app".into(),
+        None,
+        "shooting/stills".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("a second USB data frame fails before the response");
+
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("duplicate data frame for single-frame framing")
+    ));
+    assert_eq!(transport.queued_reply_count(), 1);
 }
 
 #[test]
