@@ -543,7 +543,13 @@ families:
           steps: &legacyAppRegistrationSteps
             - bleConnect: {}
             - bleDelay: { durationMs: 600 }
-            - bleRequestMtu: { mtu: 515 }
+            # legacy manufacturer app 4.10.2 treats requestMtu(515) as fire-and-forget:
+            # onMtuChanged ignores the callback status and the negotiated value, so
+            # there is no evidenced MTU floor. CoreBluetooth has no request API and
+            # auto-negotiates below 515 (185 observed on X-A7 hardware) — tolerate a
+            # below-target checkpoint while keeping 515 as the request target for
+            # platforms with a request API. (#399)
+            - bleRequestMtu: { mtu: 515, tolerant: true }
             - bleDiscoverServices: {}
             - bleWrite: { gatt: pairingKey, value: { captured: pairingKeyBytes } }
             - bleWrite:

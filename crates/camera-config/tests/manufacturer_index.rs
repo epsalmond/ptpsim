@@ -131,6 +131,40 @@ fn family_ble_block_merges_into_gfx100ii_view() {
     );
 }
 
+// The X-A7 negotiates ATT MTU below the legacy manufacturer app request target (185
+// observed on hardware vs requested 515), and the reference app enforces no
+// floor — onMtuChanged ignores status and the negotiated value. The checkpoint
+// must therefore be tolerant or CoreBluetooth consumers can never pair (#399).
+#[test]
+fn xa7_legacy_app_mtu_checkpoint_is_tolerant() {
+    let idx = real_index();
+    let xa7 = idx
+        .models
+        .iter()
+        .find(|m| m.id == "xa7")
+        .expect("xa7 is in the index");
+    let ble = xa7.ble.as_ref().expect("xa7 carries the family ble block");
+    for name in ["legacy-app-pair", "legacy-app-reconnect"] {
+        let steps = &ble.establishment(name).unwrap().steps;
+        let mtus: Vec<_> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::BleRequestMtu(inner) => Some(inner),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(mtus.len(), 1, "{name} declares exactly one MTU checkpoint");
+        assert_eq!(
+            mtus[0].mtu, 515,
+            "{name} keeps the reference request target"
+        );
+        assert!(
+            mtus[0].opts.tolerant,
+            "{name} MTU checkpoint must be tolerant (#399)"
+        );
+    }
+}
+
 #[test]
 fn reconnect_routes_fail_closed_at_index_load() {
     let original = data("fuji/index.yaml");
