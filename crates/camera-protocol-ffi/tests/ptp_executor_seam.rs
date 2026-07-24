@@ -2651,6 +2651,39 @@ fn compressed_framing_rejects_a_second_data_frame() {
 }
 
 #[test]
+fn usb_framing_rejects_a_second_data_frame() {
+    let store = store_from_body(data("fuji/gfx100ii/gfx100ii.yaml").replacen(
+        "commandFraming: compressed",
+        "commandFraming: usb",
+        1,
+    ));
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Usb,
+        PtpFraming::Usb,
+    ));
+    transport.duplicate_next_single_frame_data();
+    let error = block_on(run_mode_entry(
+        store,
+        "app".into(),
+        None,
+        "shooting/stills".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect_err("a second USB data frame fails before the response");
+
+    assert!(matches!(
+        error,
+        PtpExecutorError::StepFailed { ref detail, .. }
+            if detail.contains("duplicate data frame for single-frame framing")
+    ));
+    assert_eq!(transport.queued_reply_count(), 1);
+}
+
+#[test]
 fn tolerant_repeated_send_still_issues_every_repeat() {
     let transport = Arc::new(EngineTransport::new(
         "app",
