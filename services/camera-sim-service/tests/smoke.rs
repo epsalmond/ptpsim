@@ -2605,6 +2605,107 @@ properties: {{}}
     std::fs::remove_dir_all(&root).ok();
 }
 
+fn assert_pcss_discovery_host_rejected(host: &str) {
+    let root = tmp_card();
+    let callback = TcpListener::bind("127.0.0.1:0").unwrap();
+    let callback_port = callback.local_addr().unwrap().port();
+    let manifest = format!(
+        r#"
+schema: camera-config/v1
+camera: {{ manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }}
+connections:
+  wireless-tether:
+    kind: ptpip-direct
+    initShape: pcssKnock
+    commandFraming: compressed
+    bindings: {{ command: 15740 }}
+    knock:
+      callbackPort: {callback_port}
+      knockPort: 51562
+      protocol: "PCSS/1.0"
+      discoveryTargets:
+        default: subnetBroadcast
+        supported: [subnetBroadcast, explicitUnicast]
+        retryDiscoveredUnicast: true
+operations:
+  "0x1002": {{ name: OpenSession, connections: [wireless-tether] }}
+properties: {{}}
+"#
+    );
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (knock_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii".into(),
+            connection: "wireless-tether".into(),
+            manifest_yaml: manifest,
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: Some("127.0.0.1:0".parse().unwrap()),
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let knock = server.knock_addr_opt().expect("knock listener bound");
+        let control = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let h = tokio::spawn(async move { server.run(rx).await });
+        (knock, control, tx, h)
+    });
+
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.send_to(
+        format!("DISCOVERY * HTTP/1.1\r\nHOST: {host}\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0")
+            .as_bytes(),
+        knock_addr,
+    )
+    .unwrap();
+    callback.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match callback.accept() {
+            Ok(_) => panic!("rejected PCSS discovery opened a callback connection"),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("callback accept failed: {e}"),
+        }
+    }
+
+    let trace = trace_json(control_addr);
+    let events = trace["events"].as_array().unwrap();
+    assert!(events.iter().any(|event| {
+        event["kind"] == "pcss.discovery.rejected"
+            && event["outcome"] == "rejected"
+            && event["error"] == "HOST does not match the datagram source address"
+    }));
+
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn pcss_knock_rejects_mismatched_discovery_host() {
+    assert_pcss_discovery_host_rejected("203.0.113.7");
+}
+
+#[test]
+fn pcss_knock_rejects_non_ip_discovery_host() {
+    assert_pcss_discovery_host_rejected("attacker.example");
+}
+
 #[test]
 fn app_persona_does_not_serve_wireless_tether_poll_liveview() {
     let root = tmp_card();

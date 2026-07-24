@@ -1581,13 +1581,32 @@ async fn run_knock_loop(
                     );
                     continue;
                 };
-                let callback = format!("{}:{}", discovery.host, knock_config.callback_port);
+                let host_matches_peer = discovery
+                    .host
+                    .parse::<IpAddr>()
+                    .is_ok_and(|host| host == peer.ip().to_canonical());
+                if !host_matches_peer {
+                    trace.record(
+                        "pcss.discovery.rejected",
+                        TraceEndpoints {
+                            local: knock_local.clone(),
+                            peer: Some(peer.to_string()),
+                            target: None,
+                        },
+                        Some(&buf[..n]),
+                        Some("rejected".into()),
+                        Some("HOST does not match the datagram source address".into()),
+                    );
+                    continue;
+                }
+                let callback = SocketAddr::new(peer.ip(), knock_config.callback_port);
+                let callback_target = callback.to_string();
                 trace.record(
                     "pcss.discovery.received",
                     TraceEndpoints {
                         local: knock_local.clone(),
                         peer: Some(peer.to_string()),
-                        target: Some(callback.clone()),
+                        target: Some(callback_target.clone()),
                     },
                     Some(&buf[..n]),
                     Some("accepted".into()),
@@ -1601,21 +1620,21 @@ async fn run_knock_loop(
                         "pcss.callback.connect_started",
                         TraceEndpoints {
                             peer: Some(peer.to_string()),
-                            target: Some(callback.clone()),
+                            target: Some(callback_target.clone()),
                             ..TraceEndpoints::default()
                         },
                         None,
                         Some("started".into()),
                         None,
                     );
-                    let mut callback_stream = match TcpStream::connect(&callback).await {
+                    let mut callback_stream = match TcpStream::connect(callback).await {
                         Ok(stream) => stream,
                         Err(error) => {
                             trace.record(
                                 "pcss.callback.connect_failed",
                                 TraceEndpoints {
                                     peer: Some(peer.to_string()),
-                                    target: Some(callback),
+                                    target: Some(callback_target),
                                     ..TraceEndpoints::default()
                                 },
                                 None,
@@ -1634,7 +1653,7 @@ async fn run_knock_loop(
                             .peer_addr()
                             .ok()
                             .map(|address| address.to_string()),
-                        target: Some(callback),
+                        target: Some(callback_target),
                     };
                     trace.record(
                         "pcss.callback.connected",
