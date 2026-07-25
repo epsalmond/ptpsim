@@ -849,6 +849,33 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
 }
 
 #[test]
+fn malformed_predicate_prop_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    kind: ptpip-app
+    entries:
+      - to: shooting
+        steps:
+          - awaitUntil:
+              source: { poll: "0xd209" }
+              until: { prop: "0xzz", eq: 1 }
+              timeoutMs: 1000
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("malformed awaitUntil predicate must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("predicate leaf prop `0xzz` is not a hex property code")
+    ));
+}
+
+#[test]
 fn connection_establishment_is_returned_as_data() {
     let s = store();
     // wireless-tether: PCSS knock params surfaced for the app to drive.

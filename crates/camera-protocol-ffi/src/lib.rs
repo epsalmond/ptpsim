@@ -1486,27 +1486,40 @@ pub enum FfiPredicate {
     },
 }
 
-impl From<&cc::Predicate> for FfiPredicate {
-    fn from(p: &cc::Predicate) -> Self {
-        match p {
+impl TryFrom<&cc::Predicate> for FfiPredicate {
+    type Error = ConfigError;
+
+    fn try_from(p: &cc::Predicate) -> Result<Self, Self::Error> {
+        Ok(match p {
             cc::Predicate::All { all } => FfiPredicate::All {
-                all: all.iter().map(FfiPredicate::from).collect(),
+                all: all
+                    .iter()
+                    .map(FfiPredicate::try_from)
+                    .collect::<Result<_, _>>()?,
             },
             cc::Predicate::Any { any } => FfiPredicate::Any {
-                any: any.iter().map(FfiPredicate::from).collect(),
+                any: any
+                    .iter()
+                    .map(FfiPredicate::try_from)
+                    .collect::<Result<_, _>>()?,
             },
             cc::Predicate::Not { not } => FfiPredicate::Not {
-                not: vec![FfiPredicate::from(not.as_ref())],
+                not: vec![FfiPredicate::try_from(not.as_ref())?],
             },
             cc::Predicate::Leaf(l) => FfiPredicate::Leaf {
-                prop: parse_hex_code(&l.prop).unwrap_or(0),
+                prop: parse_hex_code(&l.prop).ok_or_else(|| {
+                    ConfigError::Contract(format!(
+                        "predicate leaf prop `{}` is not a hex property code",
+                        l.prop
+                    ))
+                })?,
                 mask: l.mask,
                 eq: l.eq,
                 ne: l.ne,
                 lt: l.lt,
                 gt: l.gt,
             },
-        }
+        })
     }
 }
 
@@ -4113,7 +4126,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
         };
         return Some(EntryStep::AwaitUntil {
             source,
-            until: (&aw.until).into(),
+            until: FfiPredicate::try_from(&aw.until).ok()?,
             on_each: aw.on_each.iter().map(map_step).collect::<Option<_>>()?,
             captures: s.captures.iter().map(map_capture).collect(),
             timeout_ms: aw.timeout_ms,
@@ -4677,6 +4690,9 @@ fn try_map_steps(steps: &[cc::Step], context: &str) -> Result<Vec<EntryStep>, Co
 }
 
 fn validate_step_mapping(step: &cc::Step, context: &str) -> Result<(), ConfigError> {
+    if let Some(await_until) = &step.await_until {
+        FfiPredicate::try_from(&await_until.until)?;
+    }
     if !step.is_well_formed() || map_step(step).is_none() {
         return Err(ConfigError::Contract(format!(
             "{context} contains an unmappable step"
@@ -5153,13 +5169,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn map_step_rejects_a_malformed_predicate() {
+        let step = cc::Step {
+            await_until: Some(cc::AwaitUntil {
+                source: cc::AwaitSource::Poll {
+                    prop: "0xd209".into(),
+                },
+                until: leaf("0xzz", 1),
+                on_each: vec![],
+                timeout_ms: 5000,
+                interval_ms: 0,
+            }),
+            ..Default::default()
+        };
+        assert!(map_step(&step).is_none());
+    }
+
     /// `await_until_satisfied` evaluates the mirrored predicate via the canonical
     /// engine logic (no Swift-side re-implementation).
     #[test]
     fn await_until_satisfied_evaluates_via_engine() {
-        let until = FfiPredicate::from(&cc::Predicate::All {
+        let until = FfiPredicate::try_from(&cc::Predicate::All {
             all: vec![leaf("0xd209", 1)],
-        });
+        })
+        .unwrap();
         assert!(await_until_satisfied(
             until.clone(),
             vec![PropObservation {
