@@ -116,6 +116,11 @@ impl ConfigStore {
                     id: id.clone(),
                     err,
                 })?;
+            body.require_supported_schema()
+                .map_err(|err| ConfigError::Validation {
+                    path: format!("models.{id}.schema"),
+                    message: err.to_string(),
+                })?;
             body.require_valid_mode_entries()
                 .map_err(|err| ConfigError::Validation {
                     path: format!("models.{id}.connections"),

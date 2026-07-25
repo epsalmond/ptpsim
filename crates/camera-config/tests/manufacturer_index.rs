@@ -636,6 +636,25 @@ fn malformed_model_body_is_a_load_error() {
 }
 
 #[test]
+fn body_with_wrong_schema_is_a_load_error() {
+    let original = data("fuji/gfx100ii/gfx100ii.yaml");
+    let body = original.replacen("camera-config/v1", "camera-config/v999", 1);
+    assert_ne!(body, original, "fixture replacement must update the schema");
+    let mut bodies = real_fuji_bodies();
+    bodies.insert("gfx100ii".to_string(), body);
+
+    let error = ConfigStore::from_manufacturer_index(&data("fuji/index.yaml"), bodies)
+        .expect_err("unsupported body schema must fail store loading");
+    assert!(
+        matches!(
+            error,
+            ConfigError::Validation { ref path, .. } if path == "models.gfx100ii.schema"
+        ),
+        "got: {error}"
+    );
+}
+
+#[test]
 fn body_pcss_camera_name_must_match_resolved_index_signature() {
     let index =
         data("fuji/index.yaml").replacen("cameraName: \"GFX100 II\"", "cameraName: \"A\"", 1);
