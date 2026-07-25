@@ -2201,6 +2201,110 @@ models:
 }
 
 #[test]
+fn malformed_post_exit_readiness_literal_is_a_load_error() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.readiness
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: postExitReadiness, startStep: 0, endStepExclusive: 1 }
+            - id: camera.test.write
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+          steps:
+            - bleConnect: {}
+          postExitReadiness:
+            - bleWrite: { gatt: c, value: { literal: "0xzz" } }
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let error = match ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: tm1_body(),
+        }],
+    ) {
+        Ok(_) => panic!("malformed postExitReadiness literal must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+        &error,
+        ConfigError::Contract(message)
+            if message.contains("postExitReadiness") && message.contains("0xzz")
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn malformed_ble_action_literal_is_a_load_error() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.write
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+          steps:
+            - bleConnect: {}
+      actions:
+        bad-action:
+          steps:
+            - bleWrite: { gatt: c, value: { literal: "0xzz" } }
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let error = match ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: tm1_body(),
+        }],
+    ) {
+        Ok(_) => panic!("malformed BLE action literal must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+        &error,
+        ConfigError::Contract(message)
+            if message.contains("action `bad-action`") && message.contains("0xzz")
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn overflowing_ble_notify_equals_is_a_load_error() {
     let index_yaml = r#"
 manufacturer: TESTCO
