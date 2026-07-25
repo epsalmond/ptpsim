@@ -1716,6 +1716,7 @@ pub enum FfiAwaitSource {
 pub struct ModeEntryPlan {
     pub to: String,
     pub from: Option<String>,
+    pub requires: Option<FfiPredicate>,
     pub execution: ModeEntryExecution,
     pub activities: Vec<ConnectionActivityDescriptor>,
 }
@@ -2037,6 +2038,7 @@ pub struct ConnectionEstablishmentInfo {
     pub target_connection: String,
     pub mechanism: Option<String>,
     pub user_instruction: Option<String>,
+    pub requires: Option<FfiPredicate>,
     pub params: Vec<KeyValue>,
     pub activities: Vec<ConnectionActivityDescriptor>,
 }
@@ -2603,6 +2605,7 @@ impl ConfigStore {
             target_connection: connection,
             mechanism: c.establishment.clone(),
             user_instruction: None,
+            requires: None,
             params,
             activities: c.activities.iter().map(Into::into).collect(),
         })
@@ -2628,6 +2631,10 @@ impl ConfigStore {
             target_connection,
             mechanism: transition.mechanism.clone(),
             user_instruction: transition.user_instruction.clone(),
+            requires: transition.requires.as_ref().map(|predicate| {
+                FfiPredicate::try_from(predicate)
+                    .expect("connection transition requires validated at store load")
+            }),
             params: transition
                 .params
                 .iter()
@@ -2932,6 +2939,10 @@ impl ConfigStore {
         Some(ModeEntryPlan {
             to: e.to.clone(),
             from: e.from.clone(),
+            requires: e.requires.as_ref().map(|predicate| {
+                FfiPredicate::try_from(predicate)
+                    .expect("mode entry requires validated at store load")
+            }),
             execution,
             activities: e.activities.iter().map(Into::into).collect(),
         })
@@ -3959,6 +3970,9 @@ fn validate_mode_entry_mappings(manifest: &cc::CameraManifest) -> Result<(), Con
     for (connection, definition) in &manifest.connections {
         for (index, entry) in definition.entries.iter().enumerate() {
             let context = format!("mode entry {connection}[{index}]");
+            if let Some(requires) = &entry.requires {
+                FfiPredicate::try_from(requires)?;
+            }
             match &entry.execution {
                 cc::ModeEntryExecution::Ptp { steps } => {
                     try_map_steps(steps, &context)?;
@@ -3967,6 +3981,11 @@ fn validate_mode_entry_mappings(manifest: &cc::CameraManifest) -> Result<(), Con
                     try_map_steps(&reestablish.exit_steps, &format!("{context} exitSteps"))?;
                 }
                 cc::ModeEntryExecution::UserInstruction { .. } => {}
+            }
+        }
+        for transition in &definition.enables {
+            if let Some(requires) = &transition.requires {
+                FfiPredicate::try_from(requires)?;
             }
         }
     }
