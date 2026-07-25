@@ -361,11 +361,11 @@ pub fn yaml_literal_to_bytes(v: &serde_yaml::Value, encoding: Option<Encoding>) 
         serde_yaml::Value::Number(n) => {
             let n_u = n.as_u64()?;
             match encoding {
-                Some(U8) => Some(vec![n_u as u8]),
-                Some(U16Le) => Some((n_u as u16).to_le_bytes().to_vec()),
-                Some(U16Be) => Some((n_u as u16).to_be_bytes().to_vec()),
-                Some(U32) | Some(U32Le) => Some((n_u as u32).to_le_bytes().to_vec()),
-                Some(U32Be) => Some((n_u as u32).to_be_bytes().to_vec()),
+                Some(U8) => Some(vec![u8::try_from(n_u).ok()?]),
+                Some(U16Le) => Some(u16::try_from(n_u).ok()?.to_le_bytes().to_vec()),
+                Some(U16Be) => Some(u16::try_from(n_u).ok()?.to_be_bytes().to_vec()),
+                Some(U32) | Some(U32Le) => Some(u32::try_from(n_u).ok()?.to_le_bytes().to_vec()),
+                Some(U32Be) => Some(u32::try_from(n_u).ok()?.to_be_bytes().to_vec()),
                 _ => None,
             }
         }
@@ -437,11 +437,11 @@ pub fn scope_string_to_bytes(value: &str, encoding: Option<Encoding>) -> Option<
 pub fn encode_uint(value: u64, encoding: Encoding) -> Option<Vec<u8>> {
     use Encoding::*;
     match encoding {
-        U8 => Some(vec![value as u8]),
-        U16Le => Some((value as u16).to_le_bytes().to_vec()),
-        U16Be => Some((value as u16).to_be_bytes().to_vec()),
-        U32 | U32Le => Some((value as u32).to_le_bytes().to_vec()),
-        U32Be => Some((value as u32).to_be_bytes().to_vec()),
+        U8 => Some(vec![u8::try_from(value).ok()?]),
+        U16Le => Some(u16::try_from(value).ok()?.to_le_bytes().to_vec()),
+        U16Be => Some(u16::try_from(value).ok()?.to_be_bytes().to_vec()),
+        U32 | U32Le => Some(u32::try_from(value).ok()?.to_le_bytes().to_vec()),
+        U32Be => Some(u32::try_from(value).ok()?.to_be_bytes().to_vec()),
         Utf8 | Utf8Cstring | Ascii | Bytes | BytesRaw | BytesLe | BytesBe => None,
     }
 }
@@ -816,6 +816,36 @@ mod tests {
         // A non-integer encoding has no fixed width → None.
         assert_eq!(encode_uint(1, Encoding::Utf8), None);
         assert_eq!(encode_uint(1, Encoding::BytesRaw), None);
+    }
+
+    #[test]
+    fn numeric_literal_overflowing_encoding_is_none() {
+        let u16_overflow = serde_yaml::from_str("65536").unwrap();
+        let u8_overflow = serde_yaml::from_str("256").unwrap();
+        let u16_boundary = serde_yaml::from_str("65535").unwrap();
+
+        assert_eq!(
+            yaml_literal_to_bytes(&u16_overflow, Some(Encoding::U16Le)),
+            None
+        );
+        assert_eq!(
+            yaml_literal_to_bytes(&u8_overflow, Some(Encoding::U8)),
+            None
+        );
+        assert_eq!(
+            yaml_literal_to_bytes(&u16_boundary, Some(Encoding::U16Le)),
+            Some(vec![0xff, 0xff])
+        );
+    }
+
+    #[test]
+    fn encode_uint_overflow_is_none() {
+        assert_eq!(encode_uint(256, Encoding::U8), None);
+        assert_eq!(encode_uint(0x1_0000, Encoding::U16Le), None);
+        assert_eq!(encode_uint(0x1_0000, Encoding::U16Be), None);
+        assert_eq!(encode_uint(u64::from(u32::MAX) + 1, Encoding::U32), None);
+        assert_eq!(encode_uint(u64::from(u32::MAX) + 1, Encoding::U32Le), None);
+        assert_eq!(encode_uint(u64::from(u32::MAX) + 1, Encoding::U32Be), None);
     }
 
     #[test]
