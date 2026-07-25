@@ -3153,7 +3153,7 @@ impl ConfigStore {
     pub fn value(&self, key: String) -> Option<ResolvedValue> {
         match self.inner.value(&key)? {
             cc::ValuePolicy::Fixed { value } => Some(ResolvedValue::Fixed {
-                value: yaml_scalar(value).unwrap_or_default(),
+                value: yaml_scalar(value).expect("fixed values validated at store load"),
             }),
             cc::ValuePolicy::Generated { scheme, persist } => Some(ResolvedValue::Generated {
                 scheme: scheme.clone(),
@@ -3809,6 +3809,7 @@ fn build_store(
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
         store = store.with_manufacturer(d);
     }
+    validate_fixed_values(&store)?;
     validate_resolved_init_shapes(&store)?;
     Ok(Arc::new(ConfigStore { inner: store }))
 }
@@ -3844,12 +3845,31 @@ fn build_manufacturer_index_store(
         if let Some(defaults) = &manufacturer {
             resolved = resolved.with_manufacturer(defaults.clone());
         }
+        validate_fixed_values(&resolved)?;
         validate_resolved_init_shapes(&resolved)?;
     }
     if let Some(defaults) = manufacturer {
         inner = inner.with_manufacturer(defaults);
     }
     Ok(Arc::new(ConfigStore { inner }))
+}
+
+fn validate_fixed_values(store: &cc::ConfigStore) -> Result<(), ConfigError> {
+    let manufacturer_values = store
+        .manufacturer
+        .as_ref()
+        .into_iter()
+        .flat_map(|defaults| defaults.values.iter());
+    for (key, policy) in store.manifest.values.iter().chain(manufacturer_values) {
+        if let cc::ValuePolicy::Fixed { value } = policy {
+            if yaml_scalar(value).is_none() {
+                return Err(ConfigError::Contract(format!(
+                    "values.{key}: fixed value is not a scalar"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigError> {

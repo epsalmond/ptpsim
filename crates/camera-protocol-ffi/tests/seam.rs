@@ -957,6 +957,27 @@ connections:
 }
 
 #[test]
+fn non_scalar_fixed_value_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+values:
+  invalid:
+    type: fixed
+    value: [1, 2]
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("non-scalar fixed value must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("values.invalid: fixed value is not a scalar")
+    ));
+}
+
+#[test]
 fn connection_establishment_is_returned_as_data() {
     let s = store();
     // wireless-tether: PCSS knock params surfaced for the app to drive.
