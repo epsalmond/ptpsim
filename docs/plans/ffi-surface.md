@@ -147,7 +147,9 @@ pub struct ControlInfo {
 pub struct ModeEntryPlan {
     pub to: String,
     pub from: Option<String>,
+    pub requires: Option<FfiPredicate>,
     pub execution: ModeEntryExecution,
+    pub activities: Vec<ConnectionActivityDescriptor>,
 }
 
 #[derive(uniffi::Enum)]
