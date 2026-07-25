@@ -1486,27 +1486,40 @@ pub enum FfiPredicate {
     },
 }
 
-impl From<&cc::Predicate> for FfiPredicate {
-    fn from(p: &cc::Predicate) -> Self {
-        match p {
+impl TryFrom<&cc::Predicate> for FfiPredicate {
+    type Error = ConfigError;
+
+    fn try_from(p: &cc::Predicate) -> Result<Self, Self::Error> {
+        Ok(match p {
             cc::Predicate::All { all } => FfiPredicate::All {
-                all: all.iter().map(FfiPredicate::from).collect(),
+                all: all
+                    .iter()
+                    .map(FfiPredicate::try_from)
+                    .collect::<Result<_, _>>()?,
             },
             cc::Predicate::Any { any } => FfiPredicate::Any {
-                any: any.iter().map(FfiPredicate::from).collect(),
+                any: any
+                    .iter()
+                    .map(FfiPredicate::try_from)
+                    .collect::<Result<_, _>>()?,
             },
             cc::Predicate::Not { not } => FfiPredicate::Not {
-                not: vec![FfiPredicate::from(not.as_ref())],
+                not: vec![FfiPredicate::try_from(not.as_ref())?],
             },
             cc::Predicate::Leaf(l) => FfiPredicate::Leaf {
-                prop: parse_hex_code(&l.prop).unwrap_or(0),
+                prop: parse_hex_code(&l.prop).ok_or_else(|| {
+                    ConfigError::Contract(format!(
+                        "predicate leaf prop `{}` is not a hex property code",
+                        l.prop
+                    ))
+                })?,
                 mask: l.mask,
                 eq: l.eq,
                 ne: l.ne,
                 lt: l.lt,
                 gt: l.gt,
             },
-        }
+        })
     }
 }
 
@@ -1703,6 +1716,7 @@ pub enum FfiAwaitSource {
 pub struct ModeEntryPlan {
     pub to: String,
     pub from: Option<String>,
+    pub requires: Option<FfiPredicate>,
     pub execution: ModeEntryExecution,
     pub activities: Vec<ConnectionActivityDescriptor>,
 }
@@ -2024,6 +2038,7 @@ pub struct ConnectionEstablishmentInfo {
     pub target_connection: String,
     pub mechanism: Option<String>,
     pub user_instruction: Option<String>,
+    pub requires: Option<FfiPredicate>,
     pub params: Vec<KeyValue>,
     pub activities: Vec<ConnectionActivityDescriptor>,
 }
@@ -2590,6 +2605,7 @@ impl ConfigStore {
             target_connection: connection,
             mechanism: c.establishment.clone(),
             user_instruction: None,
+            requires: None,
             params,
             activities: c.activities.iter().map(Into::into).collect(),
         })
@@ -2615,6 +2631,10 @@ impl ConfigStore {
             target_connection,
             mechanism: transition.mechanism.clone(),
             user_instruction: transition.user_instruction.clone(),
+            requires: transition.requires.as_ref().map(|predicate| {
+                FfiPredicate::try_from(predicate)
+                    .expect("connection transition requires validated at store load")
+            }),
             params: transition
                 .params
                 .iter()
@@ -2919,6 +2939,10 @@ impl ConfigStore {
         Some(ModeEntryPlan {
             to: e.to.clone(),
             from: e.from.clone(),
+            requires: e.requires.as_ref().map(|predicate| {
+                FfiPredicate::try_from(predicate)
+                    .expect("mode entry requires validated at store load")
+            }),
             execution,
             activities: e.activities.iter().map(Into::into).collect(),
         })
@@ -3129,7 +3153,7 @@ impl ConfigStore {
     pub fn value(&self, key: String) -> Option<ResolvedValue> {
         match self.inner.value(&key)? {
             cc::ValuePolicy::Fixed { value } => Some(ResolvedValue::Fixed {
-                value: yaml_scalar(value).unwrap_or_default(),
+                value: yaml_scalar(value).expect("fixed values validated at store load"),
             }),
             cc::ValuePolicy::Generated { scheme, persist } => Some(ResolvedValue::Generated {
                 scheme: scheme.clone(),
@@ -3719,7 +3743,11 @@ fn refinement_to_ffi(native: NativeEstablishmentRefinement) -> EstablishmentRefi
         NativeEstablishmentRefinement::NoChange => EstablishmentRefinement::NoChange,
         NativeEstablishmentRefinement::ReplaceTail { steps, activities } => {
             EstablishmentRefinement::ReplaceTail {
-                steps: steps.iter().map(Into::into).collect(),
+                steps: steps
+                    .iter()
+                    .map(Step::try_from)
+                    .collect::<Result<_, _>>()
+                    .expect("BLE plans validated at store load"),
                 activities: activities.iter().map(Into::into).collect(),
             }
         }
@@ -3781,6 +3809,7 @@ fn build_store(
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
         store = store.with_manufacturer(d);
     }
+    validate_fixed_values(&store)?;
     validate_resolved_init_shapes(&store)?;
     Ok(Arc::new(ConfigStore { inner: store }))
 }
@@ -3798,6 +3827,11 @@ fn build_manufacturer_index_store(
     // Unwrap the Arc<cc::ConfigStore> into a fresh FFI ConfigStore. The
     // inner Arc is private to camera-config; here we own the FFI-level store.
     let mut inner = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+    let index = inner
+        .index
+        .as_ref()
+        .expect("manufacturer index store has a resolved index");
+    mfg_index::validate_ble_plan_mappings(index)?;
     let manufacturer = manufacturer_yaml
         .map(|yaml| {
             cc::ManufacturerDefaults::from_yaml(&yaml)
@@ -3811,12 +3845,31 @@ fn build_manufacturer_index_store(
         if let Some(defaults) = &manufacturer {
             resolved = resolved.with_manufacturer(defaults.clone());
         }
+        validate_fixed_values(&resolved)?;
         validate_resolved_init_shapes(&resolved)?;
     }
     if let Some(defaults) = manufacturer {
         inner = inner.with_manufacturer(defaults);
     }
     Ok(Arc::new(ConfigStore { inner }))
+}
+
+fn validate_fixed_values(store: &cc::ConfigStore) -> Result<(), ConfigError> {
+    let manufacturer_values = store
+        .manufacturer
+        .as_ref()
+        .into_iter()
+        .flat_map(|defaults| defaults.values.iter());
+    for (key, policy) in store.manifest.values.iter().chain(manufacturer_values) {
+        if let cc::ValuePolicy::Fixed { value } = policy {
+            if yaml_scalar(value).is_none() {
+                return Err(ConfigError::Contract(format!(
+                    "values.{key}: fixed value is not a scalar"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigError> {
@@ -3946,6 +3999,9 @@ fn validate_mode_entry_mappings(manifest: &cc::CameraManifest) -> Result<(), Con
     for (connection, definition) in &manifest.connections {
         for (index, entry) in definition.entries.iter().enumerate() {
             let context = format!("mode entry {connection}[{index}]");
+            if let Some(requires) = &entry.requires {
+                FfiPredicate::try_from(requires)?;
+            }
             match &entry.execution {
                 cc::ModeEntryExecution::Ptp { steps } => {
                     try_map_steps(steps, &context)?;
@@ -3954,6 +4010,11 @@ fn validate_mode_entry_mappings(manifest: &cc::CameraManifest) -> Result<(), Con
                     try_map_steps(&reestablish.exit_steps, &format!("{context} exitSteps"))?;
                 }
                 cc::ModeEntryExecution::UserInstruction { .. } => {}
+            }
+        }
+        for transition in &definition.enables {
+            if let Some(requires) = &transition.requires {
+                FfiPredicate::try_from(requires)?;
             }
         }
     }
@@ -4113,7 +4174,7 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
         };
         return Some(EntryStep::AwaitUntil {
             source,
-            until: (&aw.until).into(),
+            until: FfiPredicate::try_from(&aw.until).ok()?,
             on_each: aw.on_each.iter().map(map_step).collect::<Option<_>>()?,
             captures: s.captures.iter().map(map_capture).collect(),
             timeout_ms: aw.timeout_ms,
@@ -4677,6 +4738,9 @@ fn try_map_steps(steps: &[cc::Step], context: &str) -> Result<Vec<EntryStep>, Co
 }
 
 fn validate_step_mapping(step: &cc::Step, context: &str) -> Result<(), ConfigError> {
+    if let Some(await_until) = &step.await_until {
+        FfiPredicate::try_from(&await_until.until)?;
+    }
     if !step.is_well_formed() || map_step(step).is_none() {
         return Err(ConfigError::Contract(format!(
             "{context} contains an unmappable step"
@@ -5153,13 +5217,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn map_step_rejects_a_malformed_predicate() {
+        let step = cc::Step {
+            await_until: Some(cc::AwaitUntil {
+                source: cc::AwaitSource::Poll {
+                    prop: "0xd209".into(),
+                },
+                until: leaf("0xzz", 1),
+                on_each: vec![],
+                timeout_ms: 5000,
+                interval_ms: 0,
+            }),
+            ..Default::default()
+        };
+        assert!(map_step(&step).is_none());
+    }
+
     /// `await_until_satisfied` evaluates the mirrored predicate via the canonical
     /// engine logic (no Swift-side re-implementation).
     #[test]
     fn await_until_satisfied_evaluates_via_engine() {
-        let until = FfiPredicate::from(&cc::Predicate::All {
+        let until = FfiPredicate::try_from(&cc::Predicate::All {
             all: vec![leaf("0xd209", 1)],
-        });
+        })
+        .unwrap();
         assert!(await_until_satisfied(
             until.clone(),
             vec![PropObservation {

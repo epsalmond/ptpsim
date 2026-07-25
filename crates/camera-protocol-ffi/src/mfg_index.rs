@@ -666,12 +666,18 @@ pub struct BleAwaitFailureEvidence {
     pub when: Predicate,
 }
 
-impl From<&ix::BleAwaitFailureEvidence> for BleAwaitFailureEvidence {
-    fn from(value: &ix::BleAwaitFailureEvidence) -> Self {
-        Self {
-            steps: value.steps.iter().map(Step::from).collect(),
+impl TryFrom<&ix::BleAwaitFailureEvidence> for BleAwaitFailureEvidence {
+    type Error = crate::ConfigError;
+
+    fn try_from(value: &ix::BleAwaitFailureEvidence) -> Result<Self, Self::Error> {
+        Ok(Self {
+            steps: value
+                .steps
+                .iter()
+                .map(Step::try_from)
+                .collect::<Result<_, _>>()?,
             when: (&value.when).into(),
-        }
+        })
     }
 }
 
@@ -827,11 +833,17 @@ impl From<&ix::NotifyCapture> for NotifyCapture {
     }
 }
 
-impl From<&ix::StepValue> for StepValue {
-    fn from(v: &ix::StepValue) -> Self {
-        match v {
+impl TryFrom<&ix::StepValue> for StepValue {
+    type Error = crate::ConfigError;
+
+    fn try_from(v: &ix::StepValue) -> Result<Self, Self::Error> {
+        Ok(match v {
             ix::StepValue::Literal { literal } => StepValue::Literal {
-                bytes: ix::eval::yaml_literal_to_bytes(literal, None).unwrap_or_default(),
+                bytes: ix::eval::yaml_literal_to_bytes(literal, None).ok_or_else(|| {
+                    crate::ConfigError::Contract(format!(
+                        "step literal {literal:?} does not encode to wire bytes"
+                    ))
+                })?,
             },
             ix::StepValue::Template {
                 template,
@@ -856,7 +868,7 @@ impl From<&ix::StepValue> for StepValue {
                 name: captured.clone(),
                 transform: transforms(transform),
             },
-        }
+        })
     }
 }
 
@@ -883,17 +895,23 @@ impl From<&ix::AcquireSource> for AcquireSource {
     }
 }
 
-impl From<&ix::BleNotifyUntil> for BleNotifyUntil {
-    fn from(u: &ix::BleNotifyUntil) -> Self {
-        match u {
+impl TryFrom<&ix::BleNotifyUntil> for BleNotifyUntil {
+    type Error = crate::ConfigError;
+
+    fn try_from(u: &ix::BleNotifyUntil) -> Result<Self, Self::Error> {
+        Ok(match u {
             ix::BleNotifyUntil::Any => BleNotifyUntil::Any,
             ix::BleNotifyUntil::Equals { value, encoding } => BleNotifyUntil::Equals {
-                value: ix::eval::yaml_literal_to_bytes(value, *encoding).unwrap_or_default(),
+                value: ix::eval::yaml_literal_to_bytes(value, *encoding).ok_or_else(|| {
+                    crate::ConfigError::Contract(format!(
+                        "BLE notify equals value {value:?} with encoding {encoding:?} does not encode to wire bytes"
+                    ))
+                })?,
             },
             ix::BleNotifyUntil::Matches { pattern } => BleNotifyUntil::Matches {
                 pattern: pattern.clone(),
             },
-        }
+        })
     }
 }
 
@@ -924,9 +942,11 @@ impl From<ix::RetryFailureKind> for ExecutorStepFailureKind {
     }
 }
 
-impl From<&ix::Step> for Step {
-    fn from(s: &ix::Step) -> Self {
-        match s {
+impl TryFrom<&ix::Step> for Step {
+    type Error = crate::ConfigError;
+
+    fn try_from(s: &ix::Step) -> Result<Self, Self::Error> {
+        Ok(match s {
             ix::Step::BleConnect(inner) => Step::BleConnect {
                 opts: (&inner.opts).into(),
             },
@@ -954,7 +974,7 @@ impl From<&ix::Step> for Step {
             },
             ix::Step::BleWrite(inner) => Step::BleWrite {
                 gatt: inner.gatt.clone(),
-                value: (&inner.value).into(),
+                value: StepValue::try_from(&inner.value)?,
                 notification_fence: inner.notification_fence.clone(),
                 opts: (&inner.opts).into(),
             },
@@ -966,7 +986,7 @@ impl From<&ix::Step> for Step {
             },
             ix::Step::BleNotify(inner) => Step::BleNotify {
                 gatt: inner.gatt.clone(),
-                until: (&inner.until).into(),
+                until: BleNotifyUntil::try_from(&inner.until)?,
                 capture_as: inner.capture_as.clone(),
                 capture: inner.capture.iter().map(Into::into).collect(),
                 mode: inner.mode.into(),
@@ -979,8 +999,16 @@ impl From<&ix::Step> for Step {
                 capture_as: inner.capture_as.clone(),
                 until: (&inner.until).into(),
                 fail_when: inner.fail_when.as_ref().map(Into::into),
-                failure_evidence: inner.failure_evidence.as_ref().map(Into::into),
-                on_each: inner.on_each.iter().map(Step::from).collect(),
+                failure_evidence: inner
+                    .failure_evidence
+                    .as_ref()
+                    .map(BleAwaitFailureEvidence::try_from)
+                    .transpose()?,
+                on_each: inner
+                    .on_each
+                    .iter()
+                    .map(Step::try_from)
+                    .collect::<Result<_, _>>()?,
                 timeout_ms: inner.timeout_ms,
                 interval_ms: inner.interval_ms,
                 opts: (&inner.opts).into(),
@@ -1003,7 +1031,7 @@ impl From<&ix::Step> for Step {
             },
             ix::Step::Acquire(inner) => Step::Acquire {
                 name: inner.name.clone(),
-                from: vec![Step::from(&*inner.from)],
+                from: vec![Step::try_from(&*inner.from)?],
                 opts: (&inner.opts).into(),
             },
             ix::Step::AcquireFirmware(inner) => Step::AcquireFirmware {
@@ -1012,14 +1040,30 @@ impl From<&ix::Step> for Step {
             },
             ix::Step::If(inner) => Step::If {
                 condition: (&inner.condition).into(),
-                then_branch: inner.then.iter().map(Step::from).collect(),
-                else_branch: inner.else_branch.iter().map(Step::from).collect(),
+                then_branch: inner
+                    .then
+                    .iter()
+                    .map(Step::try_from)
+                    .collect::<Result<_, _>>()?,
+                else_branch: inner
+                    .else_branch
+                    .iter()
+                    .map(Step::try_from)
+                    .collect::<Result<_, _>>()?,
                 tolerant: inner.tolerant,
             },
             ix::Step::Retry(inner) => Step::Retry {
-                steps: inner.steps.iter().map(Step::from).collect(),
+                steps: inner
+                    .steps
+                    .iter()
+                    .map(Step::try_from)
+                    .collect::<Result<_, _>>()?,
                 when_failure: inner.when_failure.into(),
-                on_failure: inner.on_failure.iter().map(Step::from).collect(),
+                on_failure: inner
+                    .on_failure
+                    .iter()
+                    .map(Step::try_from)
+                    .collect::<Result<_, _>>()?,
                 retry_when: (&inner.retry_when).into(),
                 max_attempts: inner.max_attempts,
                 retry_delay_ms: inner.retry_delay_ms,
@@ -1027,8 +1071,8 @@ impl From<&ix::Step> for Step {
             },
             ix::Step::NikonLssAuthenticate(inner) => Step::NikonLssAuthenticate {
                 gatt: inner.gatt.clone(),
-                client_device_id: (&inner.client_device_id).into(),
-                nonce: (&inner.nonce).into(),
+                client_device_id: StepValue::try_from(&inner.client_device_id)?,
+                nonce: StepValue::try_from(&inner.nonce)?,
                 timeout_ms: inner.timeout_ms,
                 opts: (&inner.opts).into(),
             },
@@ -1043,7 +1087,7 @@ impl From<&ix::Step> for Step {
                     opts: (&inner.opts).into(),
                 }
             }
-        }
+        })
     }
 }
 
@@ -1337,6 +1381,49 @@ fn confidence_from(c: ix::Confidence) -> Confidence {
 // establishment() — model + connection + initial_scope → plan
 // ---------------------------------------------------------------------------
 
+pub(crate) fn validate_ble_plan_mappings(
+    index: &ix::ResolvedManufacturerIndex,
+) -> Result<(), crate::ConfigError> {
+    for model in &index.models {
+        let Some(ble) = &model.ble else {
+            continue;
+        };
+        for (mechanism, establishment) in &ble.establishments {
+            for (sequence, steps) in [
+                ("steps", establishment.steps.as_slice()),
+                (
+                    "postExitReadiness",
+                    establishment.post_exit_readiness.as_slice(),
+                ),
+            ] {
+                for (step_index, step) in steps.iter().enumerate() {
+                    Step::try_from(step).map_err(|error| match error {
+                        crate::ConfigError::Contract(message) => crate::ConfigError::Contract(
+                            format!(
+                                "model `{}` mechanism `{mechanism}` {sequence}[{step_index}]: {message}",
+                                model.id
+                            ),
+                        ),
+                        other => other,
+                    })?;
+                }
+            }
+        }
+        for (action, definition) in &ble.actions {
+            for (step_index, step) in definition.steps.iter().enumerate() {
+                Step::try_from(step).map_err(|error| match error {
+                    crate::ConfigError::Contract(message) => crate::ConfigError::Contract(format!(
+                        "model `{}` action `{action}` steps[{step_index}]: {message}",
+                        model.id
+                    )),
+                    other => other,
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build the establishment plan registered under `mechanism` for `model`.
 /// The caller resolves `mechanism` from the body manifest's
 /// `connections[connection].establishment`; this looks it up in the index
@@ -1367,7 +1454,12 @@ fn build_establishment_mechanism(
     let model_view = index.models.iter().find(|m| m.id == model)?;
     let ble = model_view.ble.as_ref()?;
     let block = ble.establishment(mechanism)?;
-    let steps = block.steps.iter().map(Step::from).collect();
+    let steps = block
+        .steps
+        .iter()
+        .map(Step::try_from)
+        .collect::<Result<_, _>>()
+        .expect("BLE plans validated at store load");
     Some(EstablishmentPlan {
         plan_handle: format!("{model}:{handle_selector}"),
         mechanism: block.mechanism.clone(),
@@ -1376,7 +1468,12 @@ fn build_establishment_mechanism(
         params: block.params.clone(),
         persist: block.persist.clone(),
         activities: block.activities.iter().map(Into::into).collect(),
-        post_exit_readiness: block.post_exit_readiness.iter().map(Step::from).collect(),
+        post_exit_readiness: block
+            .post_exit_readiness
+            .iter()
+            .map(Step::try_from)
+            .collect::<Result<_, _>>()
+            .expect("BLE plans validated at store load"),
         steps,
     })
 }
@@ -1404,7 +1501,12 @@ pub fn build_ble_action(
     let model_view = index.models.iter().find(|m| m.id == model)?;
     let ble = model_view.ble.as_ref()?;
     let block = ble.action(action)?;
-    let steps = block.steps.iter().map(Step::from).collect();
+    let steps = block
+        .steps
+        .iter()
+        .map(Step::try_from)
+        .collect::<Result<_, _>>()
+        .expect("BLE plans validated at store load");
     Some(BleActionPlan {
         action: action.to_string(),
         params: block.params.clone(),

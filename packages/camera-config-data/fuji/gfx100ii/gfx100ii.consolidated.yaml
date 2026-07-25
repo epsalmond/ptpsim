@@ -3400,10 +3400,7 @@ properties:
     type: str
     access: readWrite
     kind: catalogOnly
-    descriptor:
-      form: enum
-      values: []
-      source: camera
+    descriptor: null
     controls: {}
     labels: {}
     evidence:
@@ -9329,10 +9326,7 @@ properties:
     type: str
     access: readWrite
     kind: catalogOnly
-    descriptor:
-      form: enum
-      values: []
-      source: camera
+    descriptor: null
     controls: {}
     labels: {}
     evidence:
@@ -10284,10 +10278,7 @@ properties:
     type: str
     access: readWrite
     kind: catalogOnly
-    descriptor:
-      form: enum
-      values: []
-      source: camera
+    descriptor: null
     controls: {}
     labels: {}
     evidence:

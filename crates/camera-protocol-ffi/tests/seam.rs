@@ -849,6 +849,135 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
 }
 
 #[test]
+fn malformed_predicate_prop_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    kind: ptpip-app
+    entries:
+      - to: shooting
+        steps:
+          - awaitUntil:
+              source: { poll: "0xd209" }
+              until: { prop: "0xzz", eq: 1 }
+              timeoutMs: 1000
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("malformed awaitUntil predicate must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("predicate leaf prop `0xzz` is not a hex property code")
+    ));
+}
+
+#[test]
+fn mode_entry_requires_crosses_the_mirror() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    kind: ptpip-app
+    entries:
+      - to: shooting
+        steps: []
+        requires: { prop: "0xd209", mask: 255, eq: 1 }
+"#;
+    let store = ConfigStore::from_bundle(body.into(), None).expect("manifest loads");
+    let plan = store
+        .mode_entry("app".into(), None, "shooting".into())
+        .expect("mode entry");
+    assert!(matches!(
+        plan.requires,
+        Some(FfiPredicate::Leaf {
+            prop: 0xd209,
+            mask: Some(255),
+            eq: Some(1),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn connection_transition_requires_crosses_the_mirror() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  ble:
+    kind: ble
+    enables:
+      - to: app
+        mechanism: test
+        requires: { prop: "0xd212", ne: 0 }
+  app: { kind: ptpip-app, establishment: test }
+"#;
+    let store = ConfigStore::from_bundle(body.into(), None).expect("manifest loads");
+    let transition = store
+        .connection_transition("ble".into(), "app".into(), None)
+        .expect("connection transition");
+    assert!(matches!(
+        transition.requires,
+        Some(FfiPredicate::Leaf {
+            prop: 0xd212,
+            ne: Some(0),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn malformed_requires_predicate_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  ble:
+    kind: ble
+    enables:
+      - to: app
+        mechanism: test
+        requires: { prop: "0xzz", eq: 1 }
+  app: { kind: ptpip-app, establishment: test }
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("malformed requires predicate must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("predicate leaf prop `0xzz` is not a hex property code")
+    ));
+}
+
+#[test]
+fn non_scalar_fixed_value_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+values:
+  invalid:
+    type: fixed
+    value: [1, 2]
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("non-scalar fixed value must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("values.invalid: fixed value is not a scalar")
+    ));
+}
+
+#[test]
 fn connection_establishment_is_returned_as_data() {
     let s = store();
     // wireless-tether: PCSS knock params surfaced for the app to drive.

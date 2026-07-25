@@ -1879,15 +1879,27 @@ fn apply_candidate(
                 return Ok(());
             }
             register_observed_modes(manifest, scopes);
-            let proposal_descriptor = descriptor.as_ref().map(|descriptor| Descriptor {
-                form: descriptor.form.clone(),
-                values: descriptor
-                    .values
-                    .iter()
-                    .filter_map(serde_json::Value::as_i64)
-                    .collect(),
-                source: Some(ValueSource::Camera),
-            });
+            let proposal_descriptor = descriptor
+                .as_ref()
+                .map(|descriptor| -> Result<Descriptor, GenerationError> {
+                    let values = descriptor
+                        .values
+                        .iter()
+                        .map(|value| {
+                            value.as_i64().ok_or_else(|| {
+                                GenerationError::ApplyConflict(format!(
+                                    "property {code}: descriptor value {value} is not representable as i64"
+                                ))
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Descriptor {
+                        form: descriptor.form.clone(),
+                        values,
+                        source: Some(ValueSource::Camera),
+                    })
+                })
+                .transpose()?;
             let proposal_profiles = value_profiles
                 .iter()
                 .map(|profile| PropertyValueProfile {
@@ -3119,6 +3131,26 @@ properties:
             semantic.value_rows[0].provenance[0].epistemic.confidence,
             Confidence::Low
         );
+    }
+
+    #[test]
+    fn non_integer_descriptor_value_is_an_apply_error() {
+        let mut property = descriptor_property("property", 1, "ready", &[1]);
+        property["subject"]["descriptor"]["values"] = serde_json::json!([1.5]);
+        let proposal = propose(&[&canonical_bundle(&[property])]).unwrap();
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            apply_review(&base, &proposal, &accept_all(&proposal)),
+            Err(GenerationError::ApplyConflict(message))
+                if message == "property 0xd001: descriptor value 1.5 is not representable as i64"
+        ));
     }
 
     #[test]
