@@ -37,6 +37,47 @@ connections:
     .to_string()
 }
 
+fn tm1_store_with_step(step: &str) -> std::sync::Arc<ConfigStore> {
+    let index_yaml = format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        c: "00002A25-0000-1000-8000-00805F9B34FB"
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.step
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan:
+                sequence: steps
+                startStep: 0
+                endStepExclusive: 1
+          steps:
+{step}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+    );
+    ConfigStore::from_manufacturer_index(
+        index_yaml,
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: tm1_body(),
+        }],
+    )
+    .expect("synthetic single-step index loads")
+}
+
 /// Convenience constructor for the common "manufacturer data + service
 /// UUIDs" advert shape. Fields the synthetic adverts never carry
 /// (service data, TX power, raw AD records) stay empty.
@@ -1750,6 +1791,284 @@ fn red_echo_write_value_carries_bit_or_transform_through_ffi() {
             );
         }
         other => panic!("expected Captured with transform, got {other:?}"),
+    }
+}
+
+#[test]
+fn acquire_step_variants_cross_the_mirror() {
+    for (case, step_yaml) in [
+        (
+            "acquire",
+            r#"            - acquire:
+                name: serial
+                from:
+                  bleRead:
+                    gatt: c
+                    encoding: ascii
+                    captureAs: serialBytes"#,
+        ),
+        (
+            "bleAdvert",
+            r#"            - acquireFirmware:
+                from:
+                  bleAdvert:
+                    offset: 3
+                    length: 2
+                    encoding: u16-le"#,
+        ),
+        (
+            "bleRead",
+            r#"            - acquireFirmware:
+                from:
+                  bleRead:
+                    gatt: c
+                    encoding: utf8-cstring"#,
+        ),
+        (
+            "userPrompt",
+            r#"            - acquireFirmware:
+                from:
+                  userPrompt:
+                    text: "Enter camera firmware""#,
+        ),
+    ] {
+        let store = tm1_store_with_step(step_yaml);
+        let plan = store
+            .establishment("tm1".into(), "ble".into(), vec![])
+            .unwrap_or_else(|| panic!("{case} plan resolves"));
+
+        match (case, &plan.steps[0]) {
+            ("acquire", Step::Acquire { name, from, .. }) => {
+                assert_eq!(name, "serial");
+                assert_eq!(from.len(), 1);
+                match &from[0] {
+                    Step::BleRead {
+                        gatt,
+                        encoding,
+                        capture_as,
+                        ..
+                    } => {
+                        assert_eq!(gatt, "00002A25-0000-1000-8000-00805F9B34FB");
+                        assert_eq!(encoding, "ascii");
+                        assert_eq!(capture_as, "serialBytes");
+                    }
+                    other => panic!("expected nested BleRead, got {other:?}"),
+                }
+            }
+            (
+                "bleAdvert",
+                Step::AcquireFirmware {
+                    from:
+                        AcquireSource::BleAdvert {
+                            offset,
+                            length,
+                            encoding,
+                        },
+                    ..
+                },
+            ) => {
+                assert_eq!(*offset, 3);
+                assert_eq!(*length, 2);
+                assert_eq!(encoding, "u16-le");
+            }
+            (
+                "bleRead",
+                Step::AcquireFirmware {
+                    from: AcquireSource::BleRead { gatt, encoding },
+                    ..
+                },
+            ) => {
+                assert_eq!(gatt, "00002A25-0000-1000-8000-00805F9B34FB");
+                assert_eq!(encoding, "utf8-cstring");
+            }
+            (
+                "userPrompt",
+                Step::AcquireFirmware {
+                    from: AcquireSource::UserPrompt { text },
+                    ..
+                },
+            ) => assert_eq!(text, "Enter camera firmware"),
+            (_, other) => panic!("{case} crossed as the wrong FFI step: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn step_value_template_crosses_the_mirror() {
+    let store = tm1_store_with_step(
+        r#"            - bleWrite:
+                gatt: c
+                value:
+                  template: "camera-{model}-ready"
+                  transform: { reverseBytes: {} }"#,
+    );
+    let plan = store
+        .establishment("tm1".into(), "ble".into(), vec![])
+        .expect("template plan resolves");
+
+    match &plan.steps[0] {
+        Step::BleWrite {
+            gatt,
+            value: StepValue::Template { value, transform },
+            ..
+        } => {
+            assert_eq!(gatt, "00002A25-0000-1000-8000-00805F9B34FB");
+            assert_eq!(value, "camera-{model}-ready");
+            assert!(matches!(transform.as_slice(), [Transform::ReverseBytes]));
+        }
+        other => panic!("expected BleWrite with Template value, got {other:?}"),
+    }
+}
+
+#[test]
+fn ble_notify_until_variants_cross_the_mirror() {
+    for (case, until_yaml) in [
+        ("any", "any"),
+        ("equals", r#"{ equals: "0x8001", encoding: bytes-raw }"#),
+        ("matches", r#"{ matches: "^READY-[0-9]+$" }"#),
+    ] {
+        let step_yaml = format!(
+            r#"            - bleNotify:
+                gatt: c
+                until: {until_yaml}
+                timeoutMs: 5000"#
+        );
+        let store = tm1_store_with_step(&step_yaml);
+        let plan = store
+            .establishment("tm1".into(), "ble".into(), vec![])
+            .unwrap_or_else(|| panic!("{case} plan resolves"));
+
+        match (case, &plan.steps[0]) {
+            (
+                "any",
+                Step::BleNotify {
+                    until: BleNotifyUntil::Any,
+                    timeout_ms,
+                    ..
+                },
+            ) => assert_eq!(*timeout_ms, 5000),
+            (
+                "equals",
+                Step::BleNotify {
+                    until: BleNotifyUntil::Equals { value },
+                    timeout_ms,
+                    ..
+                },
+            ) => {
+                assert_eq!(value, &[0x80, 0x01]);
+                assert_eq!(*timeout_ms, 5000);
+            }
+            (
+                "matches",
+                Step::BleNotify {
+                    until: BleNotifyUntil::Matches { pattern },
+                    timeout_ms,
+                    ..
+                },
+            ) => {
+                assert_eq!(pattern, "^READY-[0-9]+$");
+                assert_eq!(*timeout_ms, 5000);
+            }
+            (_, other) => panic!("{case} crossed as the wrong FFI notify: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn transform_variants_cross_the_mirror() {
+    for (case, transform_yaml) in [
+        ("bitAnd", "{ bitAnd: 0xff00 }"),
+        ("slice", "{ slice: { at: 2, length: 3 } }"),
+        ("reverseBytes", "{ reverseBytes: {} }"),
+        ("uuidFromBytes", "{ uuidFromBytes: {} }"),
+        ("bits", "{ bits: { mask: 0xf0, shift: 4 } }"),
+    ] {
+        let step_yaml = format!(
+            r#"            - bleWrite:
+                gatt: c
+                value:
+                  captured: payload
+                  transform: {transform_yaml}"#
+        );
+        let store = tm1_store_with_step(&step_yaml);
+        let plan = store
+            .establishment("tm1".into(), "ble".into(), vec![])
+            .unwrap_or_else(|| panic!("{case} plan resolves"));
+        let transform = match &plan.steps[0] {
+            Step::BleWrite {
+                value: StepValue::Captured { name, transform },
+                ..
+            } => {
+                assert_eq!(name, "payload");
+                assert_eq!(transform.len(), 1);
+                &transform[0]
+            }
+            other => panic!("expected transformed Captured value, got {other:?}"),
+        };
+
+        match (case, transform) {
+            ("bitAnd", Transform::BitAnd { operand }) => assert_eq!(*operand, 0xff00),
+            (
+                "slice",
+                Transform::Slice {
+                    at,
+                    length: Some(length),
+                },
+            ) => {
+                assert_eq!(*at, 2);
+                assert_eq!(*length, 3);
+            }
+            ("reverseBytes", Transform::ReverseBytes)
+            | ("uuidFromBytes", Transform::UuidFromBytes) => {}
+            ("bits", Transform::Bits { mask, shift }) => {
+                assert_eq!(*mask, 0xf0);
+                assert_eq!(*shift, 4);
+            }
+            (_, other) => panic!("{case} crossed as the wrong FFI transform: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn predicate_op_variants_cross_the_mirror() {
+    for (operator, expected) in [
+        ("ne", PredicateOp::Ne),
+        ("gt", PredicateOp::Gt),
+        ("gte", PredicateOp::Gte),
+        ("lt", PredicateOp::Lt),
+        ("lte", PredicateOp::Lte),
+        ("in", PredicateOp::In),
+    ] {
+        let step_yaml = format!(
+            r#"            - if:
+                condition: {{ status: {{ {operator}: 7 }} }}
+                then:
+                  - bleConnect: {{}}"#
+        );
+        let store = tm1_store_with_step(&step_yaml);
+        let plan = store
+            .establishment("tm1".into(), "ble".into(), vec![])
+            .unwrap_or_else(|| panic!("{operator} plan resolves"));
+
+        match &plan.steps[0] {
+            Step::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                assert_eq!(condition.field, "status");
+                assert_eq!(
+                    std::mem::discriminant(&condition.op),
+                    std::mem::discriminant(&expected),
+                    "{operator} crossed as the wrong FFI predicate op"
+                );
+                assert_eq!(condition.value, "7");
+                assert!(matches!(then_branch.as_slice(), [Step::BleConnect { .. }]));
+                assert!(else_branch.is_empty());
+            }
+            other => panic!("expected If for {operator}, got {other:?}"),
+        }
     }
 }
 
