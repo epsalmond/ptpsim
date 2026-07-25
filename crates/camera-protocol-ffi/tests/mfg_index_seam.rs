@@ -1836,6 +1836,103 @@ models:
 }
 
 #[test]
+fn malformed_ble_write_literal_is_a_load_error() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.write
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+          steps:
+            - bleWrite: { gatt: c, value: { literal: "0xzz" } }
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let error = match ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: tm1_body(),
+        }],
+    ) {
+        Ok(_) => panic!("malformed BLE write literal must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+        &error,
+        ConfigError::Contract(message)
+            if message.contains("step literal") && message.contains("0xzz")
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn overflowing_ble_notify_equals_is_a_load_error() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.notify
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+          steps:
+            - bleNotify:
+                gatt: c
+                until: { equals: 65536, encoding: u16-le }
+                timeoutMs: 1000
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let error = match ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: tm1_body(),
+        }],
+    ) {
+        Ok(_) => panic!("overflowing BLE notify value must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+        &error,
+        ConfigError::Contract(message)
+            if message.contains("BLE notify equals value")
+                && message.contains("65536")
+                && message.contains("U16Le")
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn fuji_cccd_finalization_subscribes_default_to_notify_mode() {
     let s = store();
     let plan = s

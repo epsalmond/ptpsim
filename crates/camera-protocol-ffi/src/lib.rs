@@ -3743,7 +3743,11 @@ fn refinement_to_ffi(native: NativeEstablishmentRefinement) -> EstablishmentRefi
         NativeEstablishmentRefinement::NoChange => EstablishmentRefinement::NoChange,
         NativeEstablishmentRefinement::ReplaceTail { steps, activities } => {
             EstablishmentRefinement::ReplaceTail {
-                steps: steps.iter().map(Into::into).collect(),
+                steps: steps
+                    .iter()
+                    .map(Step::try_from)
+                    .collect::<Result<_, _>>()
+                    .expect("BLE plans validated at store load"),
                 activities: activities.iter().map(Into::into).collect(),
             }
         }
@@ -3822,6 +3826,11 @@ fn build_manufacturer_index_store(
     // Unwrap the Arc<cc::ConfigStore> into a fresh FFI ConfigStore. The
     // inner Arc is private to camera-config; here we own the FFI-level store.
     let mut inner = Arc::try_unwrap(inner).unwrap_or_else(|arc| (*arc).clone());
+    let index = inner
+        .index
+        .as_ref()
+        .expect("manufacturer index store has a resolved index");
+    mfg_index::validate_ble_plan_mappings(index)?;
     let manufacturer = manufacturer_yaml
         .map(|yaml| {
             cc::ManufacturerDefaults::from_yaml(&yaml)
