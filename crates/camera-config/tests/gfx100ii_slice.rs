@@ -1508,8 +1508,8 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
             .values()
             .filter(|decision| **decision == camera_config::ReviewDisposition::Reject)
             .count(),
-        10,
-        "review rejects nine stale type claims and the incompatible D246 descriptor"
+        13,
+        "review rejects nine stale type claims and four incompatible descriptors"
     );
     let base = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.yaml")).unwrap();
     let m = camera_config::apply_review(&base, &proposal, &review).expect("review applies");
