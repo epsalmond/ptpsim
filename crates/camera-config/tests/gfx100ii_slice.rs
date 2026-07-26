@@ -1518,8 +1518,8 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
             .values()
             .filter(|decision| **decision == camera_config::ReviewDisposition::Reject)
             .count(),
-        13,
-        "review rejects nine stale type claims and four incompatible descriptors"
+        10,
+        "review rejects nine stale type claims plus the incompatible 0xd246 descriptor"
     );
     let base = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.yaml")).unwrap();
     let m = camera_config::apply_review(&base, &proposal, &review).expect("review applies");
@@ -1605,6 +1605,16 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
             "descriptor source {code}"
         );
     }
+    // String enum captures survive review as typed descriptor values (#414).
+    let image_size = m.properties["0x5003"]
+        .descriptor
+        .as_ref()
+        .expect("ImageSize descriptor");
+    assert_eq!(image_size.values.len(), 21);
+    assert!(image_size
+        .values
+        .iter()
+        .all(|value| matches!(value, camera_config::DescriptorValue::Str(_))));
     assert_eq!(
         m.connections["wireless-tether"]
             .knock
