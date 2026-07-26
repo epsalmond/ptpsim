@@ -520,11 +520,26 @@ impl CameraManifest {
 }
 
 fn require_valid_descriptor(property: &Property, code: &str) -> Result<(), ManifestError> {
+    let is_string = property.ptype.as_deref() == Some("str");
+    if is_string && property.initial_value.is_some() {
+        return Err(ManifestError::Contract(format!(
+            "properties.{code}.initialValue must be omitted for a property with type str"
+        )));
+    }
     let Some(descriptor) = &property.descriptor else {
         return Ok(());
     };
     let path = format!("properties.{code}.descriptor.values");
-    let is_string = property.ptype.as_deref() == Some("str");
+    if descriptor.form == "range"
+        && descriptor
+            .values
+            .iter()
+            .any(|value| matches!(value, DescriptorValue::Str(_)))
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path} contains a string value but form range requires integer values"
+        )));
+    }
     if descriptor
         .values
         .iter()
@@ -542,7 +557,7 @@ fn require_valid_descriptor(property: &Property, code: &str) -> Result<(), Manif
         && is_string
     {
         return Err(ManifestError::Contract(format!(
-            "{path} contains an integer value but property {code} has type str"
+            "{path} contains an integer value but property {code} has type str; string enum values must be quoted in YAML"
         )));
     }
     Ok(())
@@ -2064,10 +2079,56 @@ properties:
         let integer_error = with_property("str", "[1]").unwrap_err().to_string();
         assert!(
             integer_error.contains(
-                "properties.0xd001.descriptor.values contains an integer value but property 0xd001 has type str"
+                "properties.0xd001.descriptor.values contains an integer value but property 0xd001 has type str; string enum values must be quoted in YAML"
             ),
             "got: {integer_error}"
         );
+    }
+
+    #[test]
+    fn string_properties_must_not_have_integer_initial_values() {
+        let error = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties:
+  "0xd001": { name: example, type: str, initialValue: 1 }
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains(
+                "properties.0xd001.initialValue must be omitted for a property with type str"
+            ),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn range_descriptors_reject_string_values_but_allow_empty_string_ranges() {
+        let with_values = |values: &str| {
+            CameraManifest::from_yaml(&format!(
+                r#"
+schema: camera-config/v1
+camera: {{ manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }}
+properties:
+  "0xd001":
+    name: example
+    type: str
+    descriptor: {{ form: range, values: {values} }}
+"#
+            ))
+        };
+
+        let error = with_values(r#"["a", "b"]"#).unwrap_err().to_string();
+        assert!(
+            error.contains(
+                "properties.0xd001.descriptor.values contains a string value but form range requires integer values"
+            ),
+            "got: {error}"
+        );
+        with_values("[]").expect("an empty range on a string property remains valid");
     }
 
     #[test]
