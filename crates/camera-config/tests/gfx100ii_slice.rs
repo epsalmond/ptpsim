@@ -4,11 +4,12 @@
 
 use camera_config::{
     parse_hex_code, ActionInitiatorParameterKind, ActionVerb, Availability, CameraManifest,
-    CaptureSource, ConfigStore, InventoryCompleteness, ManufacturerDefaults, MissingRuntimeValue,
-    ModeEntryExecution, ObjectTransferCompletionTiming, ObjectTransferResumePolicy,
-    ObjectTransferStrategy, ObjectsAvailable, ObservationLine, OperationKind, PcssDiscoveryTarget,
-    Predicate, PropView, PropertyKind, PropertyTransitionTerminal, RecordValueEncoding,
-    RecordValueLiteral, ResponderMutation, SetPropValue, StepParam, ValuePolicy, VersionScheme,
+    CaptureSource, ConfigStore, DescriptorValue, InventoryCompleteness, ManufacturerDefaults,
+    MissingRuntimeValue, ModeEntryExecution, ObjectTransferCompletionTiming,
+    ObjectTransferResumePolicy, ObjectTransferStrategy, ObjectsAvailable, ObservationLine,
+    OperationKind, PcssDiscoveryTarget, Predicate, PropView, PropertyKind,
+    PropertyTransitionTerminal, RecordValueEncoding, RecordValueLiteral, ResponderMutation,
+    SetPropValue, StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -625,8 +626,9 @@ fn standard_exposure_properties_have_display_labels() {
             .as_ref()
             .expect("enum descriptor exists");
         for raw in &descriptor.values {
+            let raw = raw.as_i64().expect("exposure descriptors are integers");
             assert!(
-                generated.value_label(code, *raw).is_some(),
+                generated.value_label(code, raw).is_some(),
                 "property 0x{code:04x} descriptor value {raw} needs a label"
             );
         }
@@ -635,7 +637,12 @@ fn standard_exposure_properties_have_display_labels() {
     let shutter = generated.property(0x500d).unwrap();
     let mut shutter_labels = std::collections::BTreeSet::new();
     for raw in &shutter.descriptor.as_ref().unwrap().values {
-        let label = generated.value_label(0x500d, *raw).unwrap();
+        let label = generated
+            .value_label(
+                0x500d,
+                raw.as_i64().expect("shutter descriptors are integers"),
+            )
+            .unwrap();
         assert!(
             shutter_labels.insert(label),
             "shutter descriptor label {label:?} must not be duplicated"
@@ -989,7 +996,7 @@ fn wireless_tether_pcss_autofocus_actions_and_curation_are_exact() {
             .as_ref()
             .expect("generated D230 descriptor")
             .values,
-        [1, 2]
+        [DescriptorValue::Int(1), DescriptorValue::Int(2)]
     );
     assert_eq!(
         generated_d230.value_rows.len(),
@@ -1304,7 +1311,10 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
     assert_eq!(d246.initial_value, Some(0));
     let d246_desc = d246.descriptor.as_ref().expect("D246 descriptor");
     assert_eq!(d246_desc.form, "enum");
-    assert_eq!(d246_desc.values, vec![0, 1]);
+    assert_eq!(
+        d246_desc.values,
+        vec![DescriptorValue::Int(0), DescriptorValue::Int(1)]
+    );
     assert_eq!(d246.labels["0"], "stills");
     assert_eq!(d246.labels["1"], "video");
 
@@ -1508,8 +1518,8 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
             .values()
             .filter(|decision| **decision == camera_config::ReviewDisposition::Reject)
             .count(),
-        13,
-        "review rejects nine stale type claims and four incompatible descriptors"
+        10,
+        "review rejects nine stale type claims plus the incompatible 0xd246 descriptor"
     );
     let base = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.yaml")).unwrap();
     let m = camera_config::apply_review(&base, &proposal, &review).expect("review applies");
@@ -1595,6 +1605,16 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
             "descriptor source {code}"
         );
     }
+    // String enum captures survive review as typed descriptor values (#414).
+    let image_size = m.properties["0x5003"]
+        .descriptor
+        .as_ref()
+        .expect("ImageSize descriptor");
+    assert_eq!(image_size.values.len(), 21);
+    assert!(image_size
+        .values
+        .iter()
+        .all(|value| matches!(value, camera_config::DescriptorValue::Str(_))));
     assert_eq!(
         m.connections["wireless-tether"]
             .knock

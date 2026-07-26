@@ -978,6 +978,66 @@ values:
 }
 
 #[test]
+fn string_descriptor_integer_values_are_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd001":
+    name: example
+    type: str
+    descriptor: { form: enum, values: [1, 2] }
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("integer values for a string descriptor must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Parse(message)
+            if message.contains(
+                "properties.0xd001.descriptor.values contains an integer value but property 0xd001 has type str; string enum values must be quoted in YAML"
+            )
+    ));
+}
+
+#[test]
+fn non_hex_property_key_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties: { "0xzz": { name: bogus } }
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("non-hex property key must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Parse(message)
+            if message.contains("properties map key '0xzz' is not a hex property code")
+    ));
+}
+
+#[test]
+fn non_hex_operation_key_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+operations: { "0xzz": { name: bogus } }
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("non-hex operation key must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Parse(message)
+            if message.contains("operations map key '0xzz' is not a hex operation code")
+    ));
+}
+
+#[test]
 fn connection_establishment_is_returned_as_data() {
     let s = store();
     // wireless-tether: PCSS knock params surfaced for the app to drive.
@@ -2654,6 +2714,51 @@ fn operation_and_property_catalog_safety_crosses_the_ffi_seam() {
         .iter()
         .any(|scope| scope.connection == "usb"));
     assert_eq!(catalog_only.evidence, ["canonicalObservation"]);
+
+    let white_balance = properties
+        .iter()
+        .find(|property| property.code == 0x5005)
+        .expect("generated WhiteBalance property");
+    assert!(matches!(
+        white_balance.values.first(),
+        Some(DescriptorValue::Int { value: 2 })
+    ));
+}
+
+#[test]
+fn string_descriptor_values_cross_the_ffi_seam() {
+    let store = ConfigStore::from_bundle(
+        r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x5003":
+    name: imageSize
+    type: str
+    access: readWrite
+    descriptor: { form: enum, values: ["4000x2664", "4000x2248"] }
+"#
+        .into(),
+        None,
+    )
+    .expect("string descriptor manifest loads");
+
+    let property = store
+        .properties()
+        .into_iter()
+        .find(|property| property.code == 0x5003)
+        .expect("string descriptor property");
+    assert_eq!(
+        property.values,
+        [
+            DescriptorValue::Str {
+                value: "4000x2664".into()
+            },
+            DescriptorValue::Str {
+                value: "4000x2248".into()
+            },
+        ]
+    );
 }
 
 #[test]

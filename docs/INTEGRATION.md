@@ -81,7 +81,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
 | `control_surface(connection, mode)` | semantic control roles mapped to manifest-owned properties, write effects/evidence state, effective owner, and the existing set/readback mechanism. `descriptorOnly` and other non-confirmed effects must be presented as experimental and verified by readback. |
 | `property_value_width(prop)` | the manifest property's generic scalar encoder width (`u8`, `u16`, `u32`, `i16`, or `i32`), or `None` for non-scalar/unknown types |
-| `properties()` | the complete property catalog: semantic and optional source-native/PTP names, `setting`/`scaffold`/`catalogOnly` classification, atomic positive observed scopes, descriptor form/source, evidence ids, and value metadata |
+| `properties()` | the complete property catalog: semantic and optional source-native/PTP names, `setting`/`scaffold`/`catalogOnly` classification, atomic positive observed scopes, descriptor form/source, evidence ids, a typed descriptor-value list (`int` or `string`, matching the property type), and value metadata |
 | `value(key)` / `value_label(prop, value)` / `decode_property(prop, raw)` / `encode_property(prop, label)` | value-policy resolution, human labels, and manifest-backed property label↔wire-byte encoding |
 | `encode_property_text(prop, value)` / `encode_structured_integer_property(prop, values)` | PTP `STR` encoding. The structured form validates manifest-declared field count and separators without inventing model-specific limits. |
 

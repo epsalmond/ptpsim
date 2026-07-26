@@ -1886,11 +1886,15 @@ fn apply_candidate(
                         .values
                         .iter()
                         .map(|value| {
-                            value.as_i64().ok_or_else(|| {
-                                GenerationError::ApplyConflict(format!(
-                                    "property {code}: descriptor value {value} is not representable as i64"
-                                ))
-                            })
+                            if let Some(value) = value.as_i64() {
+                                Ok(DescriptorValue::Int(value))
+                            } else if let Some(value) = value.as_str() {
+                                Ok(DescriptorValue::Str(value.to_owned()))
+                            } else {
+                                Err(GenerationError::ApplyConflict(format!(
+                                    "property {code}: descriptor value {value} is not an integer or string"
+                                )))
+                            }
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Descriptor {
@@ -2471,6 +2475,16 @@ mod tests {
         state: &str,
         values: &[u64],
     ) -> serde_json::Value {
+        descriptor_property_with_type(record_id, ordinal, state, "u16", serde_json::json!(values))
+    }
+
+    fn descriptor_property_with_type(
+        record_id: &str,
+        ordinal: u64,
+        state: &str,
+        property_type: &str,
+        values: serde_json::Value,
+    ) -> serde_json::Value {
         let mut record = common(record_id, ordinal);
         record["context"]["state"] = serde_json::json!(state);
         let record = record.as_object_mut().unwrap();
@@ -2481,7 +2495,7 @@ mod tests {
                 "type": "property",
                 "code": "0xd001",
                 "supported": true,
-                "propertyType": "u16",
+                "propertyType": property_type,
                 "access": "readWrite",
                 "descriptor": { "form": "enum", "values": values }
             }),
@@ -3104,7 +3118,7 @@ properties:
         assert_eq!(property.kind, PropertyKind::CatalogOnly);
         let descriptor = property.descriptor.as_ref().unwrap();
         assert_eq!(descriptor.form, "enum");
-        assert_eq!(descriptor.values, [7]);
+        assert_eq!(descriptor.values, [DescriptorValue::Int(7)]);
         assert_eq!(descriptor.source, Some(ValueSource::Camera));
         assert!(property
             .value_rows
@@ -3149,8 +3163,38 @@ camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
         assert!(matches!(
             apply_review(&base, &proposal, &accept_all(&proposal)),
             Err(GenerationError::ApplyConflict(message))
-                if message == "property 0xd001: descriptor value 1.5 is not representable as i64"
+                if message == "property 0xd001: descriptor value 1.5 is not an integer or string"
         ));
+    }
+
+    #[test]
+    fn string_descriptor_values_apply_for_str_property() {
+        let property = descriptor_property_with_type(
+            "property",
+            1,
+            "ready",
+            "str",
+            serde_json::json!(["4000x2664", "4000x2248"]),
+        );
+        let proposal = propose(&[&canonical_bundle(&[property])]).unwrap();
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+"#,
+        )
+        .unwrap();
+
+        let applied = apply_review(&base, &proposal, &accept_all(&proposal)).unwrap();
+        let property = &applied.properties["0xd001"];
+        assert_eq!(property.ptype.as_deref(), Some("str"));
+        assert_eq!(
+            property.descriptor.as_ref().unwrap().values,
+            [
+                DescriptorValue::Str("4000x2664".into()),
+                DescriptorValue::Str("4000x2248".into()),
+            ]
+        );
     }
 
     #[test]

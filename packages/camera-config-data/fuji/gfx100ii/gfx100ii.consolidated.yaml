@@ -3400,7 +3400,31 @@ properties:
     type: str
     access: readWrite
     kind: catalogOnly
-    descriptor: null
+    descriptor:
+      form: enum
+      values:
+      - 4000x2664
+      - 4000x2248
+      - 2992x2992
+      - 8256x5504
+      - 8256x4640
+      - 6192x6192
+      - 11648x7768
+      - 11648x6552
+      - 8736x8736
+      - 4000x3000
+      - 4000x1480
+      - 3744x3000
+      - 3504x3000
+      - 11648x8736
+      - 11648x4304
+      - 10928x8736
+      - 10192x8736
+      - 8256x6192
+      - 8256x3048
+      - 7744x6192
+      - 7232x6192
+      source: camera
     controls: {}
     labels: {}
     evidence:
@@ -9326,7 +9350,12 @@ properties:
     type: str
     access: readWrite
     kind: catalogOnly
-    descriptor: null
+    descriptor:
+      form: enum
+      values:
+      - 1,2,
+      - 2,2,
+      source: camera
     controls: {}
     labels: {}
     evidence:
@@ -10278,7 +10307,38 @@ properties:
     type: str
     access: readWrite
     kind: catalogOnly
-    descriptor: null
+    descriptor:
+      form: enum
+      values:
+      - 1,4000.0
+      - 1,3200.0
+      - 1,2500.0
+      - 1,2000.0
+      - 1,1600.0
+      - 1,1250.0
+      - 1,1000.0
+      - 1,800.0
+      - 1,640.0
+      - 1,500.0
+      - 1,400.0
+      - 1,320.0
+      - 1,250.0
+      - 1,240.0
+      - 1,200.0
+      - 1,160.0
+      - 1,125.0
+      - 1,120.0
+      - 1,100.0
+      - 1,96.0
+      - 1,80.0
+      - 1,60.0
+      - 1,50.0
+      - 1,48.0
+      - 1,40.0
+      - 1,30.0
+      - 1,25.0
+      - 1,24.0
+      source: camera
     controls: {}
     labels: {}
     evidence:

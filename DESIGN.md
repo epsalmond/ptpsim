@@ -634,6 +634,8 @@ properties:
     access: readWrite
     descriptor:
       form: enum
+      # Values are integers, or strings for `type: str` properties
+      # (e.g. ImageSize `["4000x2664", ...]`); the two kinds never mix.
       values: [280, 350, 400, 530, 560, 710, 800, 1000, 1100, 1600, 2200, 65535]
     controls:
       liveView:

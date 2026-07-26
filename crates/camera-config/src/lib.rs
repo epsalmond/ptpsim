@@ -50,17 +50,17 @@ pub use model::{
     CameraInitiatedMonitorRecovery, CameraInitiatedReceive, CameraInitiatedTransfer,
     CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, Connection,
     ConnectionTransition, Control, ControlOwner, ControlReadSource, ControlRole,
-    ControlSurfaceEntry, Descriptor, GateFailure, GateRequirement, InitIdentity, InitRetries,
-    InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults,
-    Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution,
-    ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
-    ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
-    ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationKind, Payload, PayloadForm,
-    PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyKind,
-    PropertySemanticAssertions, PropertyTransitionTerminal, PropertyValueEncoding,
-    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, ProvenancedName,
-    ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout, RecordMember,
-    RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
+    ControlSurfaceEntry, Descriptor, DescriptorValue, GateFailure, GateRequirement, InitIdentity,
+    InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop,
+    ManufacturerDefaults, Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry,
+    ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
+    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
+    ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationKind,
+    Payload, PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent,
+    Property, PropertyKind, PropertySemanticAssertions, PropertyTransitionTerminal,
+    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
+    ProvenancedName, ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout,
+    RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
     ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
     SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SetPropValue,
     ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, StepRetry, StructuredTextField,
@@ -354,7 +354,22 @@ impl CameraManifest {
     /// it executes the old session's exit steps.
     pub fn require_valid_mode_entries(&self) -> Result<(), ManifestError> {
         let mut activity_metadata = std::collections::BTreeMap::new();
+        for code in self.properties.keys() {
+            if parse_hex_code(code).is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "properties map key '{code}' is not a hex property code"
+                )));
+            }
+        }
+        for code in self.operations.keys() {
+            if parse_hex_code(code).is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "operations map key '{code}' is not a hex operation code"
+                )));
+            }
+        }
         for (code, property) in &self.properties {
+            require_valid_descriptor(property, code)?;
             require_valid_structured_text(property, code)?;
             require_valid_payload(self, property, code)?;
         }
@@ -502,6 +517,50 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+fn require_valid_descriptor(property: &Property, code: &str) -> Result<(), ManifestError> {
+    let is_string = property.ptype.as_deref() == Some("str");
+    if is_string && property.initial_value.is_some() {
+        return Err(ManifestError::Contract(format!(
+            "properties.{code}.initialValue must be omitted for a property with type str"
+        )));
+    }
+    let Some(descriptor) = &property.descriptor else {
+        return Ok(());
+    };
+    let path = format!("properties.{code}.descriptor.values");
+    if descriptor.form == "range"
+        && descriptor
+            .values
+            .iter()
+            .any(|value| matches!(value, DescriptorValue::Str(_)))
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path} contains a string value but form range requires integer values"
+        )));
+    }
+    if descriptor
+        .values
+        .iter()
+        .any(|value| matches!(value, DescriptorValue::Str(_)))
+        && !is_string
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path} contains a string value but property {code} does not have type str"
+        )));
+    }
+    if descriptor
+        .values
+        .iter()
+        .any(|value| matches!(value, DescriptorValue::Int(_)))
+        && is_string
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path} contains an integer value but property {code} has type str; string enum values must be quoted in YAML"
+        )));
+    }
+    Ok(())
 }
 
 fn require_valid_structured_text(property: &Property, code: &str) -> Result<(), ManifestError> {
@@ -1989,6 +2048,125 @@ evidence:
         let lints = m.validate();
         assert!(!lints.is_empty(), "should warn about unresolved evidence");
         assert!(lints.iter().all(|l| l.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn descriptor_values_must_match_the_property_type() {
+        let with_property = |ptype: &str, values: &str| {
+            CameraManifest::from_yaml(&format!(
+                r#"
+schema: camera-config/v1
+camera: {{ manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }}
+properties:
+  "0xd001":
+    name: example
+    type: {ptype}
+    descriptor: {{ form: enum, values: {values} }}
+"#
+            ))
+        };
+
+        let string_error = with_property("u16", r#"["4000x2664"]"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            string_error.contains(
+                "properties.0xd001.descriptor.values contains a string value but property 0xd001 does not have type str"
+            ),
+            "got: {string_error}"
+        );
+
+        let integer_error = with_property("str", "[1]").unwrap_err().to_string();
+        assert!(
+            integer_error.contains(
+                "properties.0xd001.descriptor.values contains an integer value but property 0xd001 has type str; string enum values must be quoted in YAML"
+            ),
+            "got: {integer_error}"
+        );
+    }
+
+    #[test]
+    fn string_properties_must_not_have_integer_initial_values() {
+        let error = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties:
+  "0xd001": { name: example, type: str, initialValue: 1 }
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains(
+                "properties.0xd001.initialValue must be omitted for a property with type str"
+            ),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn range_descriptors_reject_string_values_but_allow_empty_string_ranges() {
+        let with_values = |values: &str| {
+            CameraManifest::from_yaml(&format!(
+                r#"
+schema: camera-config/v1
+camera: {{ manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }}
+properties:
+  "0xd001":
+    name: example
+    type: str
+    descriptor: {{ form: range, values: {values} }}
+"#
+            ))
+        };
+
+        let error = with_values(r#"["a", "b"]"#).unwrap_err().to_string();
+        assert!(
+            error.contains(
+                "properties.0xd001.descriptor.values contains a string value but form range requires integer values"
+            ),
+            "got: {error}"
+        );
+        with_values("[]").expect("an empty range on a string property remains valid");
+    }
+
+    #[test]
+    fn property_catalog_keys_must_be_hex_codes() {
+        let manifest: CameraManifest = serde_yaml::from_str(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties: { "0xzz": { name: invalid } }
+"#,
+        )
+        .unwrap();
+        let error = manifest.require_valid_mode_entries().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("properties map key '0xzz' is not a hex property code"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn operation_catalog_keys_must_be_hex_codes() {
+        let manifest: CameraManifest = serde_yaml::from_str(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+operations: { "0xzz": { name: invalid } }
+"#,
+        )
+        .unwrap();
+        let error = manifest.require_valid_mode_entries().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("operations map key '0xzz' is not a hex operation code"),
+            "got: {error}"
+        );
     }
 
     #[test]
