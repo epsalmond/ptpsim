@@ -20,7 +20,8 @@ use crate::fault::{
     AppliedFault, FaultApplication, FaultMutation, FaultSet, FaultSpec, FaultStage, FaultView,
 };
 use crate::state::{
-    build_prop_desc, datatype_of, CameraState, Phase, DF01_IMAGE_IMPORT, DF01_LIVE_VIEW, PROP_DF01,
+    build_prop_desc, datatype_of, typed_descriptor_value, CameraState, Phase, DF01_IMAGE_IMPORT,
+    DF01_LIVE_VIEW, PROP_DF01,
 };
 use crate::state_overlay::{AppliedStateOverlay, StateOverlay};
 
@@ -1629,18 +1630,21 @@ impl Engine {
         let datatype = datatype_of(prop.ptype.as_deref());
         let current = self.state.props.get(&prop_code).cloned();
         let cur_idx = current
-            .and_then(|c| value_to_i64(&c))
-            .and_then(|cv| desc.values.iter().position(|v| *v == cv))
+            .as_ref()
+            .and_then(|current| {
+                desc.values.iter().position(|value| {
+                    typed_descriptor_value(datatype, value).as_ref() == Some(current)
+                })
+            })
             .unwrap_or(0);
         let new_idx = if direction != 0 {
             (cur_idx + 1).min(desc.values.len() - 1)
         } else {
             cur_idx.saturating_sub(1)
         };
-        self.state.props.insert(
-            prop_code,
-            crate::state::typed(datatype, desc.values[new_idx]),
-        );
+        if let Some(value) = typed_descriptor_value(datatype, &desc.values[new_idx]) {
+            self.state.props.insert(prop_code, value);
+        }
     }
 
     fn set_prop(&mut self, tid: u32, code: u16, data_in: Option<&[u8]>) -> Reply {

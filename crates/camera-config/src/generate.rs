@@ -1886,11 +1886,14 @@ fn apply_candidate(
                         .values
                         .iter()
                         .map(|value| {
-                            value.as_i64().ok_or_else(|| {
-                                GenerationError::ApplyConflict(format!(
-                                    "property {code}: descriptor value {value} is not representable as i64"
-                                ))
-                            })
+                            value
+                                .as_i64()
+                                .map(DescriptorValue::Int)
+                                .ok_or_else(|| {
+                                    GenerationError::ApplyConflict(format!(
+                                        "property {code}: descriptor value {value} is not representable as i64"
+                                    ))
+                                })
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Descriptor {
@@ -3104,7 +3107,7 @@ properties:
         assert_eq!(property.kind, PropertyKind::CatalogOnly);
         let descriptor = property.descriptor.as_ref().unwrap();
         assert_eq!(descriptor.form, "enum");
-        assert_eq!(descriptor.values, [7]);
+        assert_eq!(descriptor.values, [DescriptorValue::Int(7)]);
         assert_eq!(descriptor.source, Some(ValueSource::Camera));
         assert!(property
             .value_rows

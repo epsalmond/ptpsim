@@ -546,12 +546,55 @@ pub struct SentinelMask {
     pub label_prefix: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DescriptorValue {
+    Int(i64),
+    Str(String),
+}
+
+impl DescriptorValue {
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::Int(value) => Some(*value),
+            Self::Str(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for DescriptorValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int(value) => value.fmt(f),
+            Self::Str(value) => value.fmt(f),
+        }
+    }
+}
+
+impl From<i64> for DescriptorValue {
+    fn from(value: i64) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<&str> for DescriptorValue {
+    fn from(value: &str) -> Self {
+        Self::Str(value.to_owned())
+    }
+}
+
+impl From<String> for DescriptorValue {
+    fn from(value: String) -> Self {
+        Self::Str(value)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Descriptor {
     pub form: String,
     #[serde(default)]
-    pub values: Vec<i64>,
+    pub values: Vec<DescriptorValue>,
     /// Where the allowed value set comes from. Absent → inferred: `manifest` if
     /// `values` is non-empty, else `camera`.
     #[serde(default)]
@@ -2934,7 +2977,7 @@ connections:
         // Inferred: values present → manifest; empty → camera.
         let declared = Descriptor {
             form: "enum".into(),
-            values: vec![1, 2],
+            values: vec![1.into(), 2.into()],
             source: None,
         };
         assert_eq!(declared.effective_source(), ValueSource::Manifest);
@@ -2944,6 +2987,36 @@ connections:
             source: None,
         };
         assert_eq!(empty.effective_source(), ValueSource::Camera);
+    }
+
+    #[test]
+    fn descriptor_values_round_trip_as_plain_yaml_scalars() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+form: enum
+values: [1, 2, "4000x2664"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            descriptor.values,
+            [
+                DescriptorValue::Int(1),
+                DescriptorValue::Int(2),
+                DescriptorValue::Str("4000x2664".into()),
+            ]
+        );
+
+        let yaml = serde_yaml::to_string(&descriptor).unwrap();
+        assert!(yaml.contains("- 1"), "integer scalar missing from:\n{yaml}");
+        assert!(
+            yaml.contains("- 4000x2664"),
+            "string scalar missing from:\n{yaml}"
+        );
+        assert!(!yaml.contains("Int:"), "enum tag leaked into:\n{yaml}");
+        assert!(!yaml.contains("Str:"), "enum tag leaked into:\n{yaml}");
+        let round_trip: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(round_trip.values, descriptor.values);
     }
 
     #[test]

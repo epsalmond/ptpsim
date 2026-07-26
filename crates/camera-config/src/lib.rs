@@ -50,17 +50,17 @@ pub use model::{
     CameraInitiatedMonitorRecovery, CameraInitiatedReceive, CameraInitiatedTransfer,
     CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, Connection,
     ConnectionTransition, Control, ControlOwner, ControlReadSource, ControlRole,
-    ControlSurfaceEntry, Descriptor, GateFailure, GateRequirement, InitIdentity, InitRetries,
-    InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults,
-    Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution,
-    ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
-    ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
-    ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationKind, Payload, PayloadForm,
-    PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyKind,
-    PropertySemanticAssertions, PropertyTransitionTerminal, PropertyValueEncoding,
-    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, ProvenancedName,
-    ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout, RecordMember,
-    RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
+    ControlSurfaceEntry, Descriptor, DescriptorValue, GateFailure, GateRequirement, InitIdentity,
+    InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop,
+    ManufacturerDefaults, Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry,
+    ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
+    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
+    ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationKind,
+    Payload, PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent,
+    Property, PropertyKind, PropertySemanticAssertions, PropertyTransitionTerminal,
+    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
+    ProvenancedName, ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout,
+    RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
     ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
     SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SetPropValue,
     ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, StepRetry, StructuredTextField,
@@ -355,6 +355,7 @@ impl CameraManifest {
     pub fn require_valid_mode_entries(&self) -> Result<(), ManifestError> {
         let mut activity_metadata = std::collections::BTreeMap::new();
         for (code, property) in &self.properties {
+            require_valid_descriptor(property, code)?;
             require_valid_structured_text(property, code)?;
             require_valid_payload(self, property, code)?;
         }
@@ -502,6 +503,35 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+fn require_valid_descriptor(property: &Property, code: &str) -> Result<(), ManifestError> {
+    let Some(descriptor) = &property.descriptor else {
+        return Ok(());
+    };
+    let path = format!("properties.{code}.descriptor.values");
+    let is_string = property.ptype.as_deref() == Some("str");
+    if descriptor
+        .values
+        .iter()
+        .any(|value| matches!(value, DescriptorValue::Str(_)))
+        && !is_string
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path} contains a string value but property {code} does not have type str"
+        )));
+    }
+    if descriptor
+        .values
+        .iter()
+        .any(|value| matches!(value, DescriptorValue::Int(_)))
+        && is_string
+    {
+        return Err(ManifestError::Contract(format!(
+            "{path} contains an integer value but property {code} has type str"
+        )));
+    }
+    Ok(())
 }
 
 fn require_valid_structured_text(property: &Property, code: &str) -> Result<(), ManifestError> {
@@ -1989,6 +2019,41 @@ evidence:
         let lints = m.validate();
         assert!(!lints.is_empty(), "should warn about unresolved evidence");
         assert!(lints.iter().all(|l| l.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn descriptor_values_must_match_the_property_type() {
+        let with_property = |ptype: &str, values: &str| {
+            CameraManifest::from_yaml(&format!(
+                r#"
+schema: camera-config/v1
+camera: {{ manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }}
+properties:
+  "0xd001":
+    name: example
+    type: {ptype}
+    descriptor: {{ form: enum, values: {values} }}
+"#
+            ))
+        };
+
+        let string_error = with_property("u16", r#"["4000x2664"]"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            string_error.contains(
+                "properties.0xd001.descriptor.values contains a string value but property 0xd001 does not have type str"
+            ),
+            "got: {string_error}"
+        );
+
+        let integer_error = with_property("str", "[1]").unwrap_err().to_string();
+        assert!(
+            integer_error.contains(
+                "properties.0xd001.descriptor.values contains an integer value but property 0xd001 has type str"
+            ),
+            "got: {integer_error}"
+        );
     }
 
     #[test]

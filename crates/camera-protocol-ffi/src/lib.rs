@@ -3546,7 +3546,12 @@ impl ConfigStore {
                     values: p
                         .descriptor
                         .as_ref()
-                        .map(|d| d.values.clone())
+                        .map(|d| {
+                            d.values
+                                .iter()
+                                .filter_map(cc::DescriptorValue::as_i64)
+                                .collect()
+                        })
                         .unwrap_or_default(),
                     labels: p
                         .labels

@@ -2,7 +2,7 @@
 //! current workflow phase. Everything here is generic; what the values *mean*
 //! comes from the manifest.
 
-use camera_config::CameraManifest;
+use camera_config::{CameraManifest, DescriptorValue};
 use ptp_core::codes::datatype_code as dt;
 use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -103,7 +103,9 @@ impl CameraState {
                 props.insert(code, typed(datatype, value));
             } else if let Some(desc) = &prop.descriptor {
                 if let Some(first) = desc.values.first() {
-                    props.insert(code, typed(datatype, *first));
+                    if let Some(value) = typed_descriptor_value(datatype, first) {
+                        props.insert(code, value);
+                    }
                 }
             }
         }
@@ -262,6 +264,14 @@ pub fn typed(datatype: u16, v: i64) -> PropValue {
     }
 }
 
+pub fn typed_descriptor_value(datatype: u16, value: &DescriptorValue) -> Option<PropValue> {
+    match value {
+        DescriptorValue::Int(value) => Some(typed(datatype, *value)),
+        DescriptorValue::Str(value) if datatype == dt::STR => Some(PropValue::Str(value.clone())),
+        DescriptorValue::Str(_) => None,
+    }
+}
+
 /// Build a `DevicePropDesc` for `code` from the manifest property entry and the
 /// current value in state.
 pub fn build_prop_desc(
@@ -281,14 +291,26 @@ pub fn build_prop_desc(
         _ => 0,
     };
     let form = match &prop.descriptor {
-        Some(d) if d.form == "enum" => {
-            PropForm::Enum(d.values.iter().map(|v| typed(datatype, *v)).collect())
+        Some(d) if d.form == "enum" => PropForm::Enum(
+            d.values
+                .iter()
+                .filter_map(|value| typed_descriptor_value(datatype, value))
+                .collect(),
+        ),
+        Some(d) if d.form == "range" && d.values.len() == 3 => {
+            match (
+                d.values[0].as_i64(),
+                d.values[1].as_i64(),
+                d.values[2].as_i64(),
+            ) {
+                (Some(min), Some(max), Some(step)) => PropForm::Range {
+                    min: typed(datatype, min),
+                    max: typed(datatype, max),
+                    step: typed(datatype, step),
+                },
+                _ => PropForm::None,
+            }
         }
-        Some(d) if d.form == "range" && d.values.len() == 3 => PropForm::Range {
-            min: typed(datatype, d.values[0]),
-            max: typed(datatype, d.values[1]),
-            step: typed(datatype, d.values[2]),
-        },
         _ => PropForm::None,
     };
     Some(DevicePropDesc {
@@ -299,4 +321,37 @@ pub fn build_prop_desc(
         current,
         form,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_descriptor_seeds_and_describes_string_enum() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties:
+  "0x5003":
+    name: imageSize
+    type: str
+    access: readWrite
+    descriptor: { form: enum, values: ["4000x2664", "4000x2248"] }
+"#,
+        )
+        .unwrap();
+        let state = CameraState::from_manifest(&manifest);
+        let descriptor = build_prop_desc(&manifest, &state, 0x5003).unwrap();
+
+        assert_eq!(descriptor.current, PropValue::Str("4000x2664".into()));
+        assert_eq!(
+            descriptor.form,
+            PropForm::Enum(vec![
+                PropValue::Str("4000x2664".into()),
+                PropValue::Str("4000x2248".into()),
+            ])
+        );
+    }
 }
