@@ -141,6 +141,53 @@ fn loader_requires_every_declared_model_body() {
 }
 
 #[test]
+fn non_hex_property_key_in_secondary_body_is_a_load_error() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {}
+      establishments:
+        test: { mechanism: test, steps: [] }
+models:
+  - id: primary
+    displayName: Primary
+    inherits: [test]
+    manifest: primary.yaml
+  - id: secondary
+    displayName: Secondary
+    inherits: [test]
+    manifest: secondary.yaml
+"#;
+    let secondary_body = format!(
+        "{}properties: {{ \"0xzz\": {{ name: bogus }} }}\n",
+        tm1_body()
+    );
+    let error = match ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![
+            KeyValue {
+                key: "primary".into(),
+                value: tm1_body(),
+            },
+            KeyValue {
+                key: "secondary".into(),
+                value: secondary_body,
+            },
+        ],
+    ) {
+        Ok(_) => panic!("non-hex property key in secondary body must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("properties: map key `0xzz` is not a hex property code")
+    ));
+}
+
+#[test]
 fn establishment_uses_the_requested_models_host_activities() {
     let index_yaml = r#"
 manufacturer: TESTCO

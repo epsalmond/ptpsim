@@ -3529,10 +3529,10 @@ impl ConfigStore {
             .manifest
             .properties
             .iter()
-            .filter_map(|(code, p)| {
+            .map(|(code, p)| {
                 let semantic = self.inner.manifest.semantic_assertions.properties.get(code);
-                Some(PropertyInfo {
-                    code: parse_hex_code(code)?,
+                PropertyInfo {
+                    code: parse_hex_code(code).expect("property map key validated at store load"),
                     name: p.name.clone(),
                     ptp_name: p.ptp_name.clone(),
                     ptype: p.ptype.clone(),
@@ -3596,7 +3596,7 @@ impl ConfigStore {
                                 .collect()
                         })
                         .unwrap_or_default(),
-                })
+                }
             })
             .collect()
     }
@@ -3609,10 +3609,10 @@ impl ConfigStore {
             .manifest
             .operations
             .iter()
-            .filter_map(|(code, operation)| {
+            .map(|(code, operation)| {
                 let semantic = self.inner.manifest.semantic_assertions.operations.get(code);
-                Some(OperationInfo {
-                    code: parse_hex_code(code)?,
+                OperationInfo {
+                    code: parse_hex_code(code).expect("operation map key validated at store load"),
                     name: operation.name.clone(),
                     kind: operation.kind.into(),
                     observed_scopes: operation.observed_scopes.iter().map(Into::into).collect(),
@@ -3621,7 +3621,7 @@ impl ConfigStore {
                         .and_then(|assertions| assertions.canonical_name.as_ref())
                         .map(|name| name.provenance.iter().map(Into::into).collect())
                         .unwrap_or_default(),
-                })
+                }
             })
             .collect()
     }
@@ -3802,6 +3802,7 @@ fn build_store(
 ) -> Result<Arc<ConfigStore>, ConfigError> {
     m.require_supported_schema()
         .map_err(|e| ConfigError::Schema(e.to_string()))?;
+    validate_catalog_codes(&m)?;
     validate_mode_entry_mappings(&m)?;
     let mut store = cc::ConfigStore::new(m);
     if let Some(my) = manufacturer_yaml {
@@ -3840,6 +3841,7 @@ fn build_manufacturer_index_store(
         .transpose()?;
 
     for body in inner.bodies.values() {
+        validate_catalog_codes(body)?;
         validate_mode_entry_mappings(body)?;
         let mut resolved = cc::ConfigStore::new(body.clone());
         if let Some(defaults) = &manufacturer {
@@ -3989,6 +3991,24 @@ fn validate_resolved_init_shapes(store: &cc::ConfigStore) -> Result<(), ConfigEr
         if cc::parse_hex_bytes(responder).is_none_or(|bytes| bytes.len() != 16) {
             return Err(ConfigError::Contract(format!(
                 "{path}.expectedResponderGuid must resolve to exactly 16 bytes"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_catalog_codes(manifest: &cc::CameraManifest) -> Result<(), ConfigError> {
+    for code in manifest.properties.keys() {
+        if cc::parse_hex_code(code).is_none() {
+            return Err(ConfigError::Contract(format!(
+                "properties: map key `{code}` is not a hex property code"
+            )));
+        }
+    }
+    for code in manifest.operations.keys() {
+        if cc::parse_hex_code(code).is_none() {
+            return Err(ConfigError::Contract(format!(
+                "operations: map key `{code}` is not a hex operation code"
             )));
         }
     }

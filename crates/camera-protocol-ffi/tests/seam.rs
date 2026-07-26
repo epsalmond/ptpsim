@@ -978,6 +978,42 @@ values:
 }
 
 #[test]
+fn non_hex_property_key_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties: { "0xzz": { name: bogus } }
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("non-hex property key must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("properties: map key `0xzz` is not a hex property code")
+    ));
+}
+
+#[test]
+fn non_hex_operation_key_is_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+operations: { "0xzz": { name: bogus } }
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("non-hex operation key must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Contract(message)
+            if message.contains("operations: map key `0xzz` is not a hex operation code")
+    ));
+}
+
+#[test]
 fn connection_establishment_is_returned_as_data() {
     let s = store();
     // wireless-tether: PCSS knock params surfaced for the app to drive.
