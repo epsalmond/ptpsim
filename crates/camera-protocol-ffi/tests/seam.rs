@@ -990,8 +990,8 @@ properties: { "0xzz": { name: bogus } }
     };
     assert!(matches!(
         error,
-        ConfigError::Contract(message)
-            if message.contains("properties: map key `0xzz` is not a hex property code")
+        ConfigError::Parse(message)
+            if message.contains("properties map key '0xzz' is not a hex property code")
     ));
 }
 
@@ -1008,8 +1008,8 @@ operations: { "0xzz": { name: bogus } }
     };
     assert!(matches!(
         error,
-        ConfigError::Contract(message)
-            if message.contains("operations: map key `0xzz` is not a hex operation code")
+        ConfigError::Parse(message)
+            if message.contains("operations map key '0xzz' is not a hex operation code")
     ));
 }
 

@@ -2670,7 +2670,7 @@ operations:
     modes: [Shooting/Stills]
     connections: [xlv-http]
 properties:
-  "0xRRRR":
+  "0xd001":
     name: recordingMode
     descriptor: { form: enum, source: camera }
 modes:

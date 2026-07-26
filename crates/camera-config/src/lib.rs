@@ -354,6 +354,20 @@ impl CameraManifest {
     /// it executes the old session's exit steps.
     pub fn require_valid_mode_entries(&self) -> Result<(), ManifestError> {
         let mut activity_metadata = std::collections::BTreeMap::new();
+        for code in self.properties.keys() {
+            if parse_hex_code(code).is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "properties map key '{code}' is not a hex property code"
+                )));
+            }
+        }
+        for code in self.operations.keys() {
+            if parse_hex_code(code).is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "operations map key '{code}' is not a hex operation code"
+                )));
+            }
+        }
         for (code, property) in &self.properties {
             require_valid_descriptor(property, code)?;
             require_valid_structured_text(property, code)?;
@@ -2053,6 +2067,44 @@ properties:
                 "properties.0xd001.descriptor.values contains an integer value but property 0xd001 has type str"
             ),
             "got: {integer_error}"
+        );
+    }
+
+    #[test]
+    fn property_catalog_keys_must_be_hex_codes() {
+        let manifest: CameraManifest = serde_yaml::from_str(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties: { "0xzz": { name: invalid } }
+"#,
+        )
+        .unwrap();
+        let error = manifest.require_valid_mode_entries().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("properties map key '0xzz' is not a hex property code"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn operation_catalog_keys_must_be_hex_codes() {
+        let manifest: CameraManifest = serde_yaml::from_str(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+operations: { "0xzz": { name: invalid } }
+"#,
+        )
+        .unwrap();
+        let error = manifest.require_valid_mode_entries().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("operations map key '0xzz' is not a hex operation code"),
+            "got: {error}"
         );
     }
 

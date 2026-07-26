@@ -182,8 +182,8 @@ models:
     };
     assert!(matches!(
         error,
-        ConfigError::Contract(message)
-            if message.contains("properties: map key `0xzz` is not a hex property code")
+        ConfigError::Parse(message)
+            if message.contains("properties map key '0xzz' is not a hex property code")
     ));
 }
 
