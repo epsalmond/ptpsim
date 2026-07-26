@@ -1107,6 +1107,23 @@ pub struct OperationInfo {
     pub canonical_name_provenance: Vec<ObservationAssertionProvenance>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum DescriptorValue {
+    Int { value: i64 },
+    Str { value: String },
+}
+
+impl From<&cc::DescriptorValue> for DescriptorValue {
+    fn from(value: &cc::DescriptorValue) -> Self {
+        match value {
+            cc::DescriptorValue::Int(value) => Self::Int { value: *value },
+            cc::DescriptorValue::Str(value) => Self::Str {
+                value: value.clone(),
+            },
+        }
+    }
+}
+
 /// One row of the property catalog (#50): code, name, wire type, access, the
 /// allowed value set, and value→label pairs. Lets the app present settings
 /// without hardcoding a per-vendor catalog.
@@ -1123,7 +1140,7 @@ pub struct PropertyInfo {
     pub descriptor_form: Option<String>,
     pub descriptor_source: Option<DescriptorSource>,
     pub evidence: Vec<String>,
-    pub values: Vec<i64>,
+    pub values: Vec<DescriptorValue>,
     pub labels: Vec<KeyValue>,
     pub value_rows: Vec<PropertyValueInfo>,
     pub value_profiles: Vec<PropertyValueProfileInfo>,
@@ -3546,12 +3563,7 @@ impl ConfigStore {
                     values: p
                         .descriptor
                         .as_ref()
-                        .map(|d| {
-                            d.values
-                                .iter()
-                                .filter_map(cc::DescriptorValue::as_i64)
-                                .collect()
-                        })
+                        .map(|d| d.values.iter().map(DescriptorValue::from).collect())
                         .unwrap_or_default(),
                     labels: p
                         .labels

@@ -2690,6 +2690,51 @@ fn operation_and_property_catalog_safety_crosses_the_ffi_seam() {
         .iter()
         .any(|scope| scope.connection == "usb"));
     assert_eq!(catalog_only.evidence, ["canonicalObservation"]);
+
+    let white_balance = properties
+        .iter()
+        .find(|property| property.code == 0x5005)
+        .expect("generated WhiteBalance property");
+    assert!(matches!(
+        white_balance.values.first(),
+        Some(DescriptorValue::Int { value: 2 })
+    ));
+}
+
+#[test]
+fn string_descriptor_values_cross_the_ffi_seam() {
+    let store = ConfigStore::from_bundle(
+        r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x5003":
+    name: imageSize
+    type: str
+    access: readWrite
+    descriptor: { form: enum, values: ["4000x2664", "4000x2248"] }
+"#
+        .into(),
+        None,
+    )
+    .expect("string descriptor manifest loads");
+
+    let property = store
+        .properties()
+        .into_iter()
+        .find(|property| property.code == 0x5003)
+        .expect("string descriptor property");
+    assert_eq!(
+        property.values,
+        [
+            DescriptorValue::Str {
+                value: "4000x2664".into()
+            },
+            DescriptorValue::Str {
+                value: "4000x2248".into()
+            },
+        ]
+    );
 }
 
 #[test]
