@@ -978,6 +978,30 @@ values:
 }
 
 #[test]
+fn string_descriptor_integer_values_are_a_load_error() {
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd001":
+    name: example
+    type: str
+    descriptor: { form: enum, values: [1, 2] }
+"#;
+    let error = match ConfigStore::from_bundle(body.into(), None) {
+        Ok(_) => panic!("integer values for a string descriptor must fail store construction"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ConfigError::Parse(message)
+            if message.contains(
+                "properties.0xd001.descriptor.values contains an integer value but property 0xd001 has type str; string enum values must be quoted in YAML"
+            )
+    ));
+}
+
+#[test]
 fn non_hex_property_key_is_a_load_error() {
     let body = r#"
 schema: camera-config/v1

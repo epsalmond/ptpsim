@@ -2230,6 +2230,40 @@ properties:
     }
 
     #[test]
+    fn vendor_step_moves_through_string_descriptor_values() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd001":
+    name: example
+    type: str
+    access: readWrite
+    descriptor: { form: enum, values: ["a", "b"] }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        assert_eq!(
+            engine.state.props.get(&0xd001),
+            Some(&PropValue::Str("a".into()))
+        );
+
+        engine.vendor_step(0xd001, 1);
+        assert_eq!(
+            engine.state.props.get(&0xd001),
+            Some(&PropValue::Str("b".into()))
+        );
+
+        engine.vendor_step(0xd001, 0);
+        assert_eq!(
+            engine.state.props.get(&0xd001),
+            Some(&PropValue::Str("a".into()))
+        );
+    }
+
+    #[test]
     fn record_stream_defaults_unset_string_state_to_an_empty_ptp_string() {
         let manifest = CameraManifest::from_yaml(
             r#"
