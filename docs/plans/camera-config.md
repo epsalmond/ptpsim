@@ -1,7 +1,12 @@
+---
+description: Shipped implementation plan for camera-config, the standalone camera manifest/config system with modes as a first-class axis; decisions locked 2026-05-26.
+status: shipped
+read-when: Tracing why the manifest/config engine is shaped the way it is; the protocol-mapper section is superseded by canonical-observation-loop.md.
+---
+
 # Implementation Plan: `camera-config` — standalone camera manifest/config system with modes as a first-class axis
 
-Status: decisions **locked** (see below); remaining open items are build-time
-choices, not blockers. Revised 2026-05-26 (integrates an external hole-poking
+Revised 2026-05-26 (integrates an external hole-poking
 review — see "How the review reshaped this"). Grounded in `DESIGN.md` (Manifest
 Model + Transport/Mode matrix), `docs/TRANSPORTS.md`, `docs/plans/manifest-system.md`,
 `docs/plans/ios-adoption.md`, and the current `crates/camera-manifest/` source.

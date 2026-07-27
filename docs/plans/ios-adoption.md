@@ -1,6 +1,12 @@
+---
+description: Plan (drafted 2026-05-25) for the existing client application iOS app to adopt ptpsim as its sans-io protocol layer; superseded by the greenfield rewrite (ios-rewrite-service-architecture.md).
+status: historical
+read-when: Tracing the pre-rewrite adoption strategy and parity-unit-test methodology; not the current iOS direction.
+---
+
 # Plan: Adopt ptpsim as client application iOS's PTP Protocol Layer (sans-io FFI)
 
-Status: drafted 2026-05-25, iterating. Sibling to the ptpsim core-build plan.
+Sibling to the ptpsim core-build plan.
 
 ## Intent (what this refactor is FOR)
 This is an **app refactor** that extracts camera quirks and control codes out of

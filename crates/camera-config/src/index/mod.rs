@@ -15,7 +15,7 @@
 //! * **establishment** is a sequence of step verbs (BLE-only in the MVP)
 //!   walked by the app-side dispatcher.
 //!
-//! Plan: `docs/plans/ios-rewrite-p0-p1-ble-mvp.md`. §11 is the contract
+//! Contract: `docs/MANIFEST_SCHEMA.md` (§11 numbering). It is the contract
 //! tiebreaker; everywhere this module makes a contract decision the §11
 //! reference is named in a doc comment so the source and the plan stay in
 //! sync. Where §11 specifies more than this MVP needs (e.g. `bleNotify` with

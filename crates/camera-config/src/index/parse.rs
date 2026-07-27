@@ -13,7 +13,7 @@
 //!   REPLACE)
 //! * §11.10 fail-fast loader contract
 //!
-//! [plan §11]: ../../../../../docs/plans/ios-rewrite-p0-p1-ble-mvp.md
+//! [plan §11]: ../../../../docs/MANIFEST_SCHEMA.md
 
 use std::collections::{BTreeMap, BTreeSet};
 

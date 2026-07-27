@@ -1,3 +1,9 @@
+---
+description: Implementation contract (issue #305) for the one supported fail-closed evidence loop — observation JSONL -> validate -> deterministic proposal -> human review -> atomic manifest apply.
+status: shipped
+read-when: Working on camera-observation/v1, the validator, proposal generation, or manifest-apply tooling.
+---
+
 # Canonical fail-closed observation loop
 
 Issue: #305

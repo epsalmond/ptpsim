@@ -1,3 +1,9 @@
+---
+description: Consuming the published CameraProtocolFFI .aar from a Kotlin/Android app — release contents, bundled ABIs, and Gradle wiring.
+status: reference
+read-when: Integrating or updating the Android bindings, or debugging Android packaging/ABI issues.
+---
+
 # Android integration — consuming `CameraProtocolFFI` from a Kotlin app
 
 How an Android consumer wires up the Rust + uniffi Kotlin bindings

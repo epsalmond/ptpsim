@@ -1,3 +1,9 @@
+---
+description: How a client app consumes camera-protocol-ffi — the platform-neutral seam, binding generation, both query surfaces (single-body and manufacturer-index pull model), and the action catalog.
+status: reference
+read-when: Wiring an iOS/macOS/Android/Linux app to the FFI, or changing the FFI surface consumers depend on.
+---
+
 # Integrating `camera-protocol-ffi` (iOS / macOS / Android / Linux)
 
 How a client app adopts ptpsim as its camera-protocol brain. **Platform-neutral on
@@ -7,8 +13,8 @@ the *same* command.
 
 Full surface + design rationale: `docs/plans/ffi-surface.md`. Manifest/engine model:
 `docs/plans/camera-config.md`. Greenfield iOS rewrite consuming the new pull-model
-surface: `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` + the handoff at
-`docs/handoff-ios-ble-mvp.md`.
+surface: `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` (historical) + the handoff
+at `docs/handoff-ios-ble-mvp.md`. Manifest contract: `docs/MANIFEST_SCHEMA.md`.
 
 Two seams ship from this crate:
 
@@ -153,7 +159,7 @@ per-platform packaging:
 - **iOS:** build the **staticlib** (`.a`) for device arm64 plus arm64 and
   x86_64 simulators, `lipo`-combine the simulator archives, then
   `xcodebuild -create-xcframework`. **Verified end-to-end recipe in
-  `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` §11.11** — that's the recipe
+  `docs/APPLE_FFI_RELEASES.md` "Build recipe"** — that's the recipe
   the explicit Woodpecker promotion workflow ships; reuse it for local builds.
   Each promoted release
   publishes `CameraProtocolFFI-<sha8>.xcframework.zip` + a `.checksum`
@@ -377,8 +383,8 @@ The seam the **greenfield iOS rewrite** consumes. Same `ConfigStore`, different
 constructor + a few new methods. The app pushes observations to the FFI and gets
 decisions back — **no UUIDs, byte literals, or model names in app source.**
 
-Authoritative spec: `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` (§11 is the contract
-tiebreaker). Handoff for the iOS planning agent: `docs/handoff-ios-ble-mvp.md`.
+Authoritative spec: `docs/MANIFEST_SCHEMA.md` (the contract tiebreaker).
+Handoff for the iOS planning agent: `docs/handoff-ios-ble-mvp.md` (historical).
 
 ### 9.1 Load (manufacturer index + every model body it references)
 

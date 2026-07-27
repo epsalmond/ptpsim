@@ -1,3 +1,9 @@
+---
+description: 2026-05-26 design sketch of the camera-protocol-ffi surface; superseded by docs/INTEGRATION.md as the current FFI reference (app-side plan-walking is now the legacy path).
+status: historical
+read-when: Digging into the original seam-shape rationale; use docs/INTEGRATION.md for the current surface.
+---
+
 # G4 — `camera-protocol-ffi` surface design (the iOS/macOS seam)
 
 > **Partially superseded (2026-07-12, #246):** the app-side plan-walking this
@@ -6,7 +12,7 @@
 > `runPostExitReadiness`) walk plans engine-side over foreign async traits.
 > See `docs/INTEGRATION.md` §9.3. The seam-shape decisions below still stand.
 
-Status: design sketch for review, 2026-05-26. The artifact whose job is **"design
+The artifact whose job is **"design
 the seam so adding wireless-tether/USB later is data + app I/O, never a re-port."**
 Grounded in the `camera-config` query API (query.rs/store.rs) + the 5-connection
 GFX100 II manifest. Consumes `ios-adoption.md` (G4) and `camera-config.md`.

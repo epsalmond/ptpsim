@@ -1,6 +1,11 @@
+---
+description: Baseline architecture of ptpsim — the manifest-driven camera-protocol simulator — purpose, the central observation loop, the generic engine, and the transport/mode matrix.
+status: reference
+read-when: Making architecture-level decisions or needing the system-wide picture of how engine, manifests, and transports fit together.
+---
+
 # ptpsim — Camera Protocol Simulator
 
-Status: baseline design for ptpsim, a standalone camera-protocol simulator.
 client application is its first consumer and replaces its current C `vcam` with it; ptpsim
 itself is intended to be published as an open-source project, generic across
 manufacturers. Design conflicts are resolved in favor of whichever option gives
