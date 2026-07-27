@@ -11,7 +11,7 @@ err() {
 
 # docs/consults/ has its own formal frontmatter schema (docs/consults/README.md)
 # and is excluded; docs/README.md is the index itself.
-docs_files=$(git ls-files 'docs/*.md' 'docs/plans/*.md' | grep -v '^docs/consults/' | grep -v '^docs/README.md$')
+docs_files=$(git ls-files 'docs/*.md' 'docs/plans/*.md' | grep -v '^docs/consults/' | grep -v '^docs/README.md$' || true)
 
 for f in $docs_files; do
     if [ "$(head -1 "$f")" != "---" ]; then
@@ -34,7 +34,7 @@ done
 # Every doc appears in the docs/README.md index exactly once.
 for f in $docs_files; do
     rel=${f#docs/}
-    if ! grep -qF "$rel" docs/README.md; then
+    if ! grep -qF "($rel)" docs/README.md; then
         err "$f: not listed in docs/README.md index"
     fi
 done

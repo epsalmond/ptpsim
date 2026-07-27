@@ -28,7 +28,7 @@ index is a navigational summary of it.
 | Doc | Status | One-line |
 | --- | --- | --- |
 | [`TRANSPORTS.md`](TRANSPORTS.md) | plan | Paper design (not implemented) for PTP/USB, XLV, and wireless-tether transports as manifest-driven adapters |
-| [`plans/canonical-observation-loop.md`](plans/canonical-observation-loop.md) | plan | Implementation contract (#305) for the one supported fail-closed evidence loop, observation JSONL through atomic manifest apply |
+| [`plans/canonical-observation-loop.md`](plans/canonical-observation-loop.md) | shipped | Implementation contract (#305) for the one supported fail-closed evidence loop, observation JSONL through atomic manifest apply |
 | [`plans/manifest-system.md`](plans/manifest-system.md) | plan | Cross-cutting direction for the manifest system — data repo / standalone engine / ptpsim as co-consumer |
 | [`plans/ios-rewrite-p0-p1-ble-mvp.md`](plans/ios-rewrite-p0-p1-ble-mvp.md) | shipped | BLE-only MVP slice of the iOS rewrite; its schema contract (§11) moved to `MANIFEST_SCHEMA.md` |
 | [`plans/ios-rewrite-service-architecture.md`](plans/ios-rewrite-service-architecture.md) | shipped | Greenfield manifest-driven iOS service architecture; supersedes `ios-adoption.md` |

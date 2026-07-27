@@ -63,7 +63,7 @@ binary distribution. The artifact is promoted explicitly from a commit already
 merged to `main`; the current distribution authority is
 `docs/APPLE_FFI_RELEASES.md`.
 
-
+**Verified recipe** (spike run 2026-06-01 on a macOS build host against uniffi 0.31 — Xcode 26.3, rustc 1.95.0; lives at `ci/build-xcframework.sh`, called from `.woodpecker.yml`):
 
 ```sh
 # 1. compile each Apple target's staticlib

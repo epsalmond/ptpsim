@@ -34,10 +34,11 @@ steps:
       - ci/test-ensure-github-release
 
   # Docs discipline is enforced here because the pre-commit hook is opt-in
-  # per clone. alpine/git keeps the doc-only lane cheap.
+  # per clone. A bare alpine step (plus apk git) keeps the doc-only lane cheap.
   - name: docs-lint
-    image: alpine/git
+    image: alpine
     commands:
+      - apk add --no-cache git >/dev/null
       - scripts/lint-docs.sh
     when:
       - path:
