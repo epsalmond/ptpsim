@@ -67,6 +67,9 @@ the result.
   should be deleted or replaced with an expressive name. Reserve comments for
   facts the code cannot show: wire evidence, spec constraints, invariants owed
   to another layer.
+- Merging: once the review workflow in [`AGENTS.md`](AGENTS.md) is complete and
+  checks pass, the PR author merges. External contributions are merged by a
+  maintainer after the same review.
 
 ## Scope
 

@@ -141,7 +141,10 @@ new full review merely because the prior conversation is unavailable.
 6. **Use explicit readiness gates.** A PR is review-complete only when no
    accepted or blocking thread remains unresolved, every deferred thread links
    to an issue, required checks pass on the current head, and the final delta
-   review reports no blocking findings. A human still merges.
+   review reports no blocking findings. The agent that owns the PR then merges
+   it (auto-merge per SDLC step 5) without waiting for a human; after the merge
+   lands, send a short merge notification through your environment's operator
+   channel if one is configured.
 
 After context loss, resume from the PR head/base SHAs, unresolved review
 threads and their triage replies, linked deferred issues, local `git status` and
