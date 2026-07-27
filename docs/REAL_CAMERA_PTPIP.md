@@ -1,3 +1,9 @@
+---
+description: Operating camera-initiator, the headless real-camera PTP/IP probe lane — inputs, commands, and trace capture against real bodies.
+status: reference
+read-when: Driving a real camera over PTP/IP, capturing traces, or debugging manifest behavior against hardware.
+---
+
 # Driving a real camera over PTP/IP
 
 `camera-initiator` is ptpsim's headless real-camera probe lane. It is deliberately

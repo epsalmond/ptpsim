@@ -1,6 +1,12 @@
+---
+description: Paper design, not yet implemented — PTP/USB, XLV (HTTP/HTTPS), and wireless-tether transports as manifest-driven adapters over the one generic engine.
+status: plan
+read-when: Planning or implementing a new transport, or checking the transport-adapter invariant before touching the engine/transport boundary.
+---
+
 # ptpsim Transport Designs (paper)
 
-Status: **paper design**, not yet implemented. Covers the transports shipping
+Covers the transports shipping
 soon — PTP/USB, XLV (HTTP/HTTPS), and wireless tether — for the Fuji GFX100 II
 first. These extend the design in [`../DESIGN.md`](../DESIGN.md); read its
 "Transport And Mode Matrix" and "Architecture: generic engine" sections first.

@@ -1,3 +1,9 @@
+---
+description: Consuming a pinned, promoted CameraProtocolFFI.xcframework release via Swift Package Manager or direct vendoring.
+status: reference
+read-when: Adding or updating an iOS/macOS consumer's dependency on CameraProtocolFFI.
+---
+
 # Pinned SPM integration
 
 `CameraProtocolFFI.xcframework` is published only for explicitly promoted,

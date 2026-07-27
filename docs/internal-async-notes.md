@@ -1,3 +1,9 @@
+---
+description: Point-in-time async audit (issue #27, 2026-06-10) of every lock and spawn site in camera-sim and camera-sim-service, with the decision taken per site.
+status: historical
+read-when: Adding an .await inside a lock guard's scope or a new spawn site in the service — re-audit against these decisions.
+---
+
 # Async audit: camera-sim + camera-sim-service
 
 Audit for issue #27 (2026-06-10): every `.lock().await` and `tokio::spawn`

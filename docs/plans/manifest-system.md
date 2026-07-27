@@ -1,6 +1,12 @@
+---
+description: Cross-cutting direction (set 2026-05-26, structural details pending) for the manifest system — repo-boundary split into data repo, standalone manifest engine, and ptpsim as co-consumer.
+status: plan
+read-when: Making decisions about manifest data/engine layering, licensing, or repo boundaries.
+---
+
 # Manifest system architecture (cross-cutting)
 
-Status: direction set 2026-05-26, structural details pending. Drives both the
+Drives both the
 ptpsim core and the iOS-adoption refactor (`ios-adoption.md`).
 
 ## Thesis

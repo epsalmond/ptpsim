@@ -1,3 +1,9 @@
+---
+description: Reading ptpsim's Woodpecker CI — workflow layout, what failure/error/killed statuses mean, and triage rules of thumb.
+status: reference
+read-when: A pipeline is red or errored, or you are changing .woodpecker/ workflow definitions.
+---
+
 # CI — reading a red pipeline
 
 ptpsim CI runs on [Woodpecker](https://woodpecker-ci.org/). Workflow

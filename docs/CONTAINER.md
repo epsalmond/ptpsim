@@ -1,3 +1,9 @@
+---
+description: The camera-sim-service container image — supported platforms, runtime port contract, and publication guidance.
+status: reference
+read-when: Building, publishing, or running the simulator container, or wiring it into integration tests.
+---
+
 # Container image
 
 `camera-sim-service` is the deployable PTP/IP responder. The project image

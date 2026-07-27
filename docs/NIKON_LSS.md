@@ -1,3 +1,9 @@
+---
+description: Spec of the sans-I/O Nikon Linkage Setting Service (LSS) authentication and encrypted-field primitive implemented by protocol-primitives, with clean-room provenance.
+status: reference
+read-when: Working on Nikon BLE authentication or LSS crypto, or verifying the clean-room boundary of protocol-primitives.
+---
+
 # Nikon Linkage Setting Service authentication
 
 This document specifies the finite, sans-I/O Nikon Linkage Setting Service
