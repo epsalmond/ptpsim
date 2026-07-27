@@ -33,6 +33,17 @@ steps:
       - echo "woodpecker reached ptpsim @ ${CI_COMMIT_SHA:0:8} on ${CI_COMMIT_BRANCH}"
       - ci/test-ensure-github-release
 
+  # Docs discipline is enforced here because the pre-commit hook is opt-in
+  # per clone. alpine/git keeps the doc-only lane cheap.
+  - name: docs-lint
+    image: alpine/git
+    commands:
+      - scripts/lint-docs.sh
+    when:
+      - path:
+          - '**/*.md'
+          - 'scripts/lint-docs.sh'
+
   # Per-step cache paths stay inside the disposable step container. Docker
   # image layers and the durable Git object database provide cross-run reuse
   # without granting this public workflow arbitrary host-volume access.
