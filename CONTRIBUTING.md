@@ -53,6 +53,8 @@ the result.
 
 ## Pull requests
 
+- If CI is red, diagnose it with [`docs/CI.md`](docs/CI.md): an `error`
+  status means the pipeline never ran your code.
 - Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before
   pushing. Workspace warnings are denied through `.cargo/config.toml`.
 - Run `cargo test --workspace` and make sure it passes.
