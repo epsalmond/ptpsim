@@ -165,14 +165,18 @@ connections:
       resumePolicy: byteOffset
       readAction: getObject
       formats: { "0x3801": confirmed, "0xb103": confirmed, "0xb105": confirmed, "0x300d": confirmed }
-    # Port roles per the shipping app (FujiPTPIP.swift defaultPort + offsets); working
-    # live-view exercises both sockets, so this assignment is authoritative. Resolved
-    # ports (not offsets) so a consumer binds by role and deletes the Fuji +1/+2 math.
+    # Port roles observed during live-view sessions. Firmware 2.30 does not listen
+    # on either auxiliary port until InitiateOpenCapture succeeds
+    # (device-validated 2026-07-31).
     bindings:
       host: 192.168.0.1
-      command: 55740                 # FujiPTPIP.defaultPort
-      event: 55741                   # command + 1 (live-view event socket)
-      liveView: 55742                # command + 2 (through-picture stream)
+      command: 55740
+      event:
+        port: 55741
+        availableAfter: { operation: "0x101c" }
+      liveView:
+        port: 55742
+        availableAfter: { operation: "0x101c" }
     # During image-transfer re-establishment the app sends this 8-byte orderly
     # close frame, flushes it, and then closes the command socket with a clean FIN.
     # It does not guarantee that the AP or listener remains immediately reusable.

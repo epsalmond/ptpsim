@@ -15,7 +15,7 @@ use camera_config::index::{
     PredicateOp, ReconnectDisposition, ResolvedManufacturerIndex, Signature, Step,
     StepConfirmation, StepValue, Transform,
 };
-use camera_config::ConfigStore;
+use camera_config::{ConfigStore, SocketRole};
 
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1807,8 +1807,14 @@ fn nikon_d850_is_an_explicit_model_selection() {
     assert_eq!(selected.manifest.camera.model, "D850");
     let app = &selected.manifest.connections["app"];
     assert_eq!(app.init_shape.as_deref(), Some("standardPtpIp"));
-    assert_eq!(app.bindings.as_ref().unwrap().command, 15740);
-    assert_eq!(app.bindings.as_ref().unwrap().event, Some(15740));
+    assert_eq!(
+        app.bindings.as_ref().unwrap().port_for(SocketRole::Command),
+        Some(15740)
+    );
+    assert_eq!(
+        app.bindings.as_ref().unwrap().port_for(SocketRole::Event),
+        Some(15740)
+    );
     let defaults = selected.manufacturer.as_ref().expect("Nikon defaults kept");
     assert!(matches!(
         &defaults.values["initiatorGuid"],

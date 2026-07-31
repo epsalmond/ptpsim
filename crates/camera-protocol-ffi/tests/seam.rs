@@ -3288,7 +3288,16 @@ fn socket_bindings_and_transport_close_surface_through_ffi() {
     assert_eq!(binds.len(), 3);
     assert_eq!(binds[0].role, SocketRole::Command);
     assert_eq!(binds[0].port, 55740);
+    assert!(binds[0].available_after.is_none());
+    assert!(matches!(
+        binds[1].available_after,
+        Some(SocketAvailabilityInfo::Operation { operation: 0x101c })
+    ));
     assert_eq!(binds[2].role, SocketRole::LiveView);
+    assert!(matches!(
+        binds[2].available_after,
+        Some(SocketAvailabilityInfo::Operation { operation: 0x101c })
+    ));
 
     // wireless-tether binds only a command socket (PCSS DSPORT 15740); poll-based
     // delivery means no event/live-view socket.

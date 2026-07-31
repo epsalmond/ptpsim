@@ -1403,6 +1403,35 @@ has the same id, version, and metadata as the activity containing
 `acquireFirmware`, that activity continues across the splice with one lifecycle;
 a different identity or version ends the current activity before the tail.
 
+### 11.23a Socket binding availability
+
+Socket bindings use a port scalar when the listener is immediately available.
+An event or live-view binding MAY use a descriptor to declare that the camera
+does not listen until a successful operation completes:
+
+```yaml
+bindings:
+  command: 55740
+  event:
+    port: 55741
+    availableAfter: { operation: "0x101c" }
+  liveView:
+    port: 55742
+    availableAfter: { operation: "0x101c" }
+```
+
+`availableAfter.operation` names an operation in the manifest catalog. It is
+valid only on event and live-view bindings. The simulator refuses TCP
+connections on that port until the operation succeeds in the current session.
+The declared condition takes precedence over the causal prefix inferred from
+the connection's `openChannel` steps. A binding without `availableAfter` keeps
+the inferred behavior.
+
+`commandListenerVolatile: true` declares that closing the active command
+transport may remove its listener. A caller cannot use an immediate redial as
+generic recovery. A manifest-authored outer connection re-establishment may
+create a new listener. The field defaults to `false`.
+
 ### 11.24 Rust-owned PTP entry execution
 
 The `EntryStep` grammar is executed in Rust behind a foreign async

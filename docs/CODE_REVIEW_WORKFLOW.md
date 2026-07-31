@@ -42,7 +42,7 @@ new full review merely because the prior conversation is unavailable.
    accepted or blocking thread remains unresolved, every deferred thread links
    to an issue, required checks pass on the current head, and the final delta
    review reports no blocking findings. The agent that owns the PR then merges
-   it (auto-merge per SDLC step 5) without waiting for a human; after the merge
+   it directly once required checks pass on the head; after the merge
    lands, send a short merge notification through your environment's operator
    channel if one is configured.
 

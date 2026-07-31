@@ -104,9 +104,11 @@ both labels.
 4. **Single-line commit messages.** Imperative (`Add logging for X`), no
    body. The *why* goes in the PR description — or a durable `docs/*.md` if
    it's load-bearing past the merge. Commits should not have "and."
-5. **Push the branch, mark the PR ready, then enable GitHub auto-merge.** Do
-   this only after the review-complete gates below and required checks pass on
-   the current head; do not merge directly or bypass those gates.
+5. **Push the branch, mark the PR ready, then merge it directly.** GitHub
+   auto-merge is unavailable on this repository (free-plan private repo with no
+   branch protection). The owning agent merges only after the review-complete
+   gates below and required checks pass on the current head; do not bypass
+   those gates.
 6. **Write the PR for a human:** what was done and why it matters, in prose
    a reviewer follows. No opcode/method dumps or
    change-by-change logs — reviewers can read the code for that. Shorter is easier to

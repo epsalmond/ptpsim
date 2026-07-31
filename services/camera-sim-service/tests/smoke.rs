@@ -2834,8 +2834,140 @@ properties: {}
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// Live-view smoke: the manifest's `openChannel` step controls TCP availability,
-/// then frames flow once the initiator reaches Phase::Streaming.
+/// A mode entry that opens auxiliary channels before its declared operation
+/// observes a real TCP refusal at the same step.
+#[test]
+fn service_refuses_aux_channels_before_declared_operation() {
+    let root = tmp_card();
+    let manifest = r#"
+schema: camera-config/v1
+camera:
+  manufacturer: FUJIFILM
+  model: GFX100 II
+  firmware: "2.30"
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings:
+      command: 55740
+      event: { port: 55741, availableAfter: { operation: "0x101c" } }
+      liveView: { port: 55742, availableAfter: { operation: "0x101c" } }
+    entries:
+      - to: shooting/stills
+        steps:
+          - { setProp: "0xdf01", value: 22 }
+          - { openChannel: event }
+          - { openChannel: liveView }
+          - { sendOp: "0x101c" }
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+  "0x1003": { name: CloseSession, connections: [app] }
+  "0x101c": { name: InitiateOpenCapture, connections: [app] }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, event_addr, liveview_addr, shutdown_tx, handle) = rt.block_on(async {
+        let server = Server::bind(Config {
+            instance_id: "test".into(),
+            profile: "fuji/gfx100ii".into(),
+            connection: "app".into(),
+            manifest_yaml: manifest.into(),
+            media_root: root.clone(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .unwrap();
+        let command = server.command_addr();
+        let event = server.event_addr_opt().unwrap();
+        let liveview = server.liveview_addr_opt().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move { server.run(rx).await });
+        (command, event, liveview, tx, task)
+    });
+
+    let mut command = TcpStream::connect(command_addr).unwrap();
+    write_frame(&mut command, &app_init_frame(0, "test"));
+    assert!(matches!(
+        PtpIpPacket::decode(&read_frame(&mut command)).unwrap(),
+        PtpIpPacket::InitCommandAck(_)
+    ));
+    write_frame(&mut command, &op(0x1002, 1, vec![1]));
+    read_ok(&mut command);
+    write_frame(&mut command, &op(0x1016, 2, vec![0xdf01]));
+    write_set_prop_data(&mut command, 2, &22u16.to_le_bytes());
+    read_ok(&mut command);
+
+    assert!(
+        TcpStream::connect(event_addr).is_err(),
+        "misordered event openChannel must observe a TCP refusal"
+    );
+    assert!(
+        TcpStream::connect(liveview_addr).is_err(),
+        "misordered live-view openChannel must observe a TCP refusal"
+    );
+
+    write_frame(&mut command, &op(0x101c, 3, vec![]));
+    read_ok(&mut command);
+    assert!(TcpStream::connect(event_addr).is_ok());
+    assert!(TcpStream::connect(liveview_addr).is_ok());
+
+    write_frame(&mut command, &op(0x1003, 4, vec![]));
+    read_ok(&mut command);
+    assert!(
+        TcpStream::connect(event_addr).is_err(),
+        "session close must restore event-port refusal"
+    );
+    assert!(
+        TcpStream::connect(liveview_addr).is_err(),
+        "session close must restore live-view-port refusal"
+    );
+
+    write_frame(&mut command, &op(0x1002, 5, vec![2]));
+    read_ok(&mut command);
+    assert!(
+        TcpStream::connect(event_addr).is_err(),
+        "reopened session must keep the event port refused before the gate operation"
+    );
+    assert!(
+        TcpStream::connect(liveview_addr).is_err(),
+        "reopened session must keep the live-view port refused before the gate operation"
+    );
+
+    write_frame(&mut command, &op(0x1016, 6, vec![0xdf01]));
+    write_set_prop_data(&mut command, 6, &22u16.to_le_bytes());
+    read_ok(&mut command);
+    assert!(TcpStream::connect(event_addr).is_err());
+    assert!(TcpStream::connect(liveview_addr).is_err());
+
+    write_frame(&mut command, &op(0x101c, 7, vec![]));
+    read_ok(&mut command);
+    assert!(TcpStream::connect(event_addr).is_ok());
+    assert!(TcpStream::connect(liveview_addr).is_ok());
+
+    drop(command);
+    rt.block_on(async {
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+    });
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Live-view smoke: the declared operation controls TCP availability, then
+/// frames flow once the initiator reaches Phase::Streaming.
 #[test]
 fn service_streams_liveview_after_open_capture() {
     let root = tmp_card();
@@ -2857,7 +2989,10 @@ connections:
     liveViewDelivery: { kind: stream }
     commandFraming: compressed
     eventFraming: usb
-    bindings: { command: 55740, event: 55741, liveView: 55742 }
+    bindings:
+      command: 55740
+      event: { port: 55741, availableAfter: { operation: "0x101c" } }
+      liveView: { port: 55742, availableAfter: { operation: "0x101c" } }
     entries:
       - to: shooting/stills
         steps:
@@ -2867,6 +3002,7 @@ connections:
           - { openChannel: liveView }
 operations:
   "0x1002": { name: OpenSession, connections: [app] }
+  "0x101c": { name: InitiateOpenCapture, connections: [app] }
 properties:
   "0xdf01": { name: functionMode, type: u16, access: readWrite }
 "#;
@@ -2902,26 +3038,8 @@ properties:
         (cmd, event, lv, tx, h)
     });
 
-    // Connect before the manifest boundary. The simulator accepts and then
-    // rejects the early socket, matching an unavailable camera listener.
-    let mut lv = TcpStream::connect(liveview_addr).unwrap();
-    lv.set_read_timeout(Some(std::time::Duration::from_millis(150)))
-        .unwrap();
-    let mut probe = [0u8; 4];
-    match lv.read(&mut probe) {
-        Ok(0) => {}
-        Ok(count) => panic!("early live-view channel returned {count} bytes instead of closing"),
-        Err(error) => panic!("early live-view channel stayed open instead of closing: {error}"),
-    }
-    let mut event = TcpStream::connect(event_addr).unwrap();
-    event
-        .set_read_timeout(Some(std::time::Duration::from_millis(150)))
-        .unwrap();
-    match event.read(&mut probe) {
-        Ok(0) => {}
-        Ok(count) => panic!("early event channel returned {count} bytes instead of closing"),
-        Err(error) => panic!("early event channel stayed open instead of closing: {error}"),
-    }
+    assert!(TcpStream::connect(liveview_addr).is_err());
+    assert!(TcpStream::connect(event_addr).is_err());
 
     // Drive the command channel into Phase::Streaming.
     let mut s = TcpStream::connect(command_addr).unwrap();
@@ -2943,6 +3061,7 @@ properties:
     read_ok(&mut s);
 
     let mut lv = TcpStream::connect(liveview_addr).unwrap();
+    let event = TcpStream::connect(event_addr).unwrap();
 
     // Now frames flow: read two and confirm they're the fixture (single-frame loop).
     lv.set_read_timeout(Some(std::time::Duration::from_millis(500)))
@@ -2963,6 +3082,7 @@ properties:
     assert_eq!(frame0.jpeg, frame1.jpeg, "single-frame loop repeats");
 
     drop(lv);
+    drop(event);
     let mut reopened = TcpStream::connect(liveview_addr).unwrap();
     reopened
         .set_read_timeout(Some(std::time::Duration::from_millis(500)))

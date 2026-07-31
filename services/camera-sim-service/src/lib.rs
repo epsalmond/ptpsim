@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use camera_config::{
@@ -37,7 +37,7 @@ use ptp_core::{
     PtpIpPacket,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
 
@@ -178,8 +178,8 @@ fn observation_recorder(
 pub struct Server {
     config: Config,
     command: TcpListener,
-    liveview: Option<TcpListener>,
-    event: Option<TcpListener>,
+    liveview: Option<AuxListener>,
+    event: Option<AuxListener>,
     shared_standard_event_listener: bool,
     knock: Option<UdpSocket>,
     knock_config: Option<PcssKnock>,
@@ -197,6 +197,270 @@ pub struct Server {
     /// harmless if a smoke client connects alongside the real one).
     frames: Arc<Mutex<LoopingFrameSource>>,
     observations: ObservationRecorder,
+}
+
+enum AuxListener {
+    Listening(TcpListener),
+    Declared(Arc<DeclaredAuxListener>),
+}
+
+enum AuxAccepted {
+    Connection(TcpStream),
+    Rearmed,
+}
+
+impl AuxListener {
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        match self {
+            Self::Listening(listener) => listener.local_addr(),
+            Self::Declared(listener) => listener.local_addr(),
+        }
+    }
+
+    fn declared(&self) -> Option<Arc<DeclaredAuxListener>> {
+        match self {
+            Self::Listening(_) => None,
+            Self::Declared(listener) => Some(Arc::clone(listener)),
+        }
+    }
+
+    async fn accept(&self) -> std::io::Result<AuxAccepted> {
+        match self {
+            Self::Listening(listener) => listener
+                .accept()
+                .await
+                .map(|(stream, _)| AuxAccepted::Connection(stream)),
+            Self::Declared(listener) => listener.accept().await,
+        }
+    }
+}
+
+pub(crate) struct DeclaredAuxListener {
+    bind_addr: SocketAddr,
+    state: StdMutex<DeclaredAuxListenerState>,
+    ready: Notify,
+    transition: Mutex<()>,
+    rearm_epoch: AtomicU64,
+    reported_rearm_epoch: AtomicU64,
+}
+
+enum DeclaredAuxListenerState {
+    Bound(TcpSocket),
+    Listening {
+        listener: Arc<TcpListener>,
+        cancel: Arc<Notify>,
+        pending_accept: Option<Arc<Notify>>,
+    },
+    Rebinding,
+}
+
+struct DeclaredAcceptGuard<'a> {
+    owner: &'a DeclaredAuxListener,
+    completed: Arc<Notify>,
+}
+
+impl Drop for DeclaredAcceptGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.owner.state.lock().expect("declared listener state");
+        if let DeclaredAuxListenerState::Listening { pending_accept, .. } = &mut *state {
+            if pending_accept
+                .as_ref()
+                .is_some_and(|pending| Arc::ptr_eq(pending, &self.completed))
+            {
+                *pending_accept = None;
+            }
+        }
+        self.completed.notify_one();
+    }
+}
+
+impl DeclaredAuxListener {
+    fn new(socket: TcpSocket) -> std::io::Result<Self> {
+        Ok(Self {
+            bind_addr: socket.local_addr()?,
+            state: StdMutex::new(DeclaredAuxListenerState::Bound(socket)),
+            ready: Notify::new(),
+            transition: Mutex::new(()),
+            rearm_epoch: AtomicU64::new(0),
+            reported_rearm_epoch: AtomicU64::new(0),
+        })
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        Ok(self.bind_addr)
+    }
+
+    async fn set_ready(&self, ready: bool) -> std::io::Result<()> {
+        let _transition = self.transition.lock().await;
+        if ready {
+            self.activate()
+        } else {
+            self.deactivate().await
+        }
+    }
+
+    fn activate(&self) -> std::io::Result<()> {
+        let mut state = self.state.lock().expect("declared listener state");
+        let current = std::mem::replace(&mut *state, DeclaredAuxListenerState::Rebinding);
+        match current {
+            DeclaredAuxListenerState::Bound(socket) => {
+                self.listen(socket, &mut state)?;
+            }
+            listening @ DeclaredAuxListenerState::Listening { .. } => {
+                *state = listening;
+            }
+            DeclaredAuxListenerState::Rebinding => {
+                let socket = match bind_declared_socket(self.bind_addr) {
+                    Ok(socket) => socket,
+                    Err(error) => {
+                        *state = DeclaredAuxListenerState::Rebinding;
+                        return Err(error);
+                    }
+                };
+                self.listen(socket, &mut state)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn deactivate(&self) -> std::io::Result<()> {
+        let pending_accept = {
+            let mut state = self.state.lock().expect("declared listener state");
+            let current = std::mem::replace(&mut *state, DeclaredAuxListenerState::Rebinding);
+            match current {
+                DeclaredAuxListenerState::Bound(socket) => {
+                    *state = DeclaredAuxListenerState::Bound(socket);
+                    return Ok(());
+                }
+                DeclaredAuxListenerState::Listening {
+                    listener,
+                    cancel,
+                    pending_accept,
+                } => {
+                    self.rearm_epoch.fetch_add(1, Ordering::AcqRel);
+                    cancel.notify_one();
+                    drop(listener);
+                    pending_accept
+                }
+                DeclaredAuxListenerState::Rebinding => None,
+            }
+        };
+        if let Some(pending_accept) = pending_accept {
+            pending_accept.notified().await;
+        }
+        let rebound = bind_declared_socket(self.bind_addr);
+        let mut state = self.state.lock().expect("declared listener state");
+        match rebound {
+            Ok(socket) => {
+                *state = DeclaredAuxListenerState::Bound(socket);
+                Ok(())
+            }
+            Err(error) => {
+                *state = DeclaredAuxListenerState::Rebinding;
+                Err(error)
+            }
+        }
+    }
+
+    fn listen(
+        &self,
+        socket: TcpSocket,
+        state: &mut DeclaredAuxListenerState,
+    ) -> std::io::Result<()> {
+        match socket.listen(1024) {
+            Ok(listener) => {
+                *state = DeclaredAuxListenerState::Listening {
+                    listener: Arc::new(listener),
+                    cancel: Arc::new(Notify::new()),
+                    pending_accept: None,
+                };
+                self.ready.notify_one();
+                Ok(())
+            }
+            Err(listen_error) => {
+                match bind_declared_socket(self.bind_addr) {
+                    Ok(socket) => *state = DeclaredAuxListenerState::Bound(socket),
+                    Err(bind_error) => {
+                        *state = DeclaredAuxListenerState::Rebinding;
+                        return Err(std::io::Error::new(
+                            listen_error.kind(),
+                            format!(
+                                "failed to listen on {}: {listen_error}; failed to rebind: {bind_error}",
+                                self.bind_addr
+                            ),
+                        ));
+                    }
+                }
+                Err(listen_error)
+            }
+        }
+    }
+
+    async fn accept(&self) -> std::io::Result<AuxAccepted> {
+        loop {
+            if self.take_rearm() {
+                return Ok(AuxAccepted::Rearmed);
+            }
+            let notified = self.ready.notified();
+            let listening = {
+                let mut state = self.state.lock().expect("declared listener state");
+                match &mut *state {
+                    DeclaredAuxListenerState::Listening {
+                        listener,
+                        cancel,
+                        pending_accept,
+                    } => {
+                        let completed = Arc::new(Notify::new());
+                        assert!(pending_accept.replace(Arc::clone(&completed)).is_none());
+                        Some((Arc::clone(listener), Arc::clone(cancel), completed))
+                    }
+                    DeclaredAuxListenerState::Bound(_) | DeclaredAuxListenerState::Rebinding => {
+                        None
+                    }
+                }
+            };
+            let Some((listener, cancel, completed)) = listening else {
+                notified.await;
+                continue;
+            };
+            let _accept_guard = DeclaredAcceptGuard {
+                owner: self,
+                completed,
+            };
+            let accepted = tokio::select! {
+                biased;
+                _ = cancel.notified() => None,
+                accepted = listener.accept() => Some(accepted),
+            };
+            drop(listener);
+            match accepted {
+                Some(accepted) => {
+                    return accepted.map(|(stream, _)| AuxAccepted::Connection(stream));
+                }
+                None => {
+                    let _ = self.take_rearm();
+                    return Ok(AuxAccepted::Rearmed);
+                }
+            }
+        }
+    }
+
+    fn take_rearm(&self) -> bool {
+        let current = self.rearm_epoch.load(Ordering::Acquire);
+        let mut reported = self.reported_rearm_epoch.load(Ordering::Acquire);
+        while reported < current {
+            match self.reported_rearm_epoch.compare_exchange_weak(
+                reported,
+                current,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => reported = actual,
+            }
+        }
+        false
+    }
 }
 
 #[derive(Clone)]
@@ -222,6 +486,8 @@ struct CommandResources {
     observations: ObservationRecorder,
     metrics: Metrics,
     standard_connections: Arc<StandardConnections>,
+    declared_aux: Vec<(SocketRole, Arc<DeclaredAuxListener>)>,
+    declared_aux_sync: Arc<Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -329,6 +595,27 @@ impl Drop for StandardCommandGuard {
     }
 }
 
+async fn bind_aux_listener(addr: SocketAddr, declared: bool) -> std::io::Result<AuxListener> {
+    if !declared {
+        return TcpListener::bind(addr).await.map(AuxListener::Listening);
+    }
+    let socket = bind_declared_socket(addr)?;
+    Ok(AuxListener::Declared(Arc::new(DeclaredAuxListener::new(
+        socket,
+    )?)))
+}
+
+fn bind_declared_socket(addr: SocketAddr) -> std::io::Result<TcpSocket> {
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    Ok(socket)
+}
+
 impl Server {
     pub async fn bind(config: Config) -> std::io::Result<Self> {
         let manifest = CameraManifest::from_yaml(&config.manifest_yaml)
@@ -358,6 +645,8 @@ impl Server {
                 config.connection
             ))
         })?;
+        let event_declared = bindings.available_after(SocketRole::Event).is_some();
+        let liveview_declared = bindings.available_after(SocketRole::LiveView).is_some();
         let command_framing = connection.command_framing.ok_or_else(|| {
             invalid_config(format!(
                 "selected connection '{}' has no command framing",
@@ -507,11 +796,11 @@ impl Server {
         tracing::info!(frame_count, "live-view frame source loaded");
         let command = TcpListener::bind(command_bind).await?;
         let liveview = match liveview_bind {
-            Some(addr) => Some(TcpListener::bind(addr).await?),
+            Some(addr) => Some(bind_aux_listener(addr, liveview_declared).await?),
             None => None,
         };
         let event = match event_bind.filter(|_| !shared_standard_event_listener) {
-            Some(addr) => Some(TcpListener::bind(addr).await?),
+            Some(addr) => Some(bind_aux_listener(addr, event_declared).await?),
             None => None,
         };
         let knock = match config.knock_bind {
@@ -645,6 +934,14 @@ impl Server {
         // capture, so the subscriber is live when the completion fires.
         let (event_tx, _) = broadcast::channel::<u16>(16);
         let standard_connections = Arc::new(StandardConnections::default());
+        let declared_aux = [
+            (SocketRole::Event, event.as_ref()),
+            (SocketRole::LiveView, liveview.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(role, listener)| Some((role, listener?.declared()?)))
+        .collect::<Vec<_>>();
+        let declared_aux_sync = Arc::new(Mutex::new(()));
 
         // #126/#214 state-callback: one shared notify the command loop bumps
         // after every op. Cheap when nobody listens; the single push task
@@ -685,6 +982,8 @@ impl Server {
                 observations: observations.clone(),
                 metrics: metrics.clone(),
                 standard_connections: standard_connections.clone(),
+                declared_aux: declared_aux.clone(),
+                declared_aux_sync: declared_aux_sync.clone(),
             };
             let mut sub = shutdown_tx.subscribe();
             async move {
@@ -735,6 +1034,8 @@ impl Server {
                 observations: observations.clone(),
                 metrics: metrics.clone(),
                 shutdown: ctl_shutdown.clone(),
+                declared_aux,
+                declared_aux_sync,
             };
             let mut sub = shutdown_tx.subscribe();
             async move {
@@ -774,15 +1075,19 @@ impl Server {
                 loop {
                     tokio::select! {
                         accepted = liveview.accept() => {
-                            if let Ok((stream, _)) = accepted {
-                                if !engine.lock().await.channel_ready(camera_config::SocketRole::LiveView) {
-                                    drop(stream);
-                                    continue;
+                            match accepted {
+                                Ok(AuxAccepted::Connection(stream)) => {
+                                    if !engine.lock().await.channel_ready(camera_config::SocketRole::LiveView) {
+                                        drop(stream);
+                                        continue;
+                                    }
+                                    let engine = engine.clone();
+                                    let frames = frames.clone();
+                                    let metrics = metrics.clone();
+                                    conns.spawn(stream_liveview(stream, engine, frames, metrics));
                                 }
-                                let engine = engine.clone();
-                                let frames = frames.clone();
-                                let metrics = metrics.clone();
-                                conns.spawn(stream_liveview(stream, engine, frames, metrics));
+                                Ok(AuxAccepted::Rearmed) => conns.shutdown().await,
+                                Err(_) => {}
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -812,28 +1117,32 @@ impl Server {
                 loop {
                     tokio::select! {
                         accepted = event.accept() => {
-                            if let Ok((stream, _)) = accepted {
-                                if !engine.lock().await.channel_ready(camera_config::SocketRole::Event) {
-                                    drop(stream);
-                                    continue;
+                            match accepted {
+                                Ok(AuxAccepted::Connection(stream)) => {
+                                    if !engine.lock().await.channel_ready(camera_config::SocketRole::Event) {
+                                        drop(stream);
+                                        continue;
+                                    }
+                                    if standard_events {
+                                        conns.spawn(handle_standard_event_conn(
+                                            stream,
+                                            None,
+                                            event_tx.subscribe(),
+                                            standard_connections.clone(),
+                                            metrics.clone(),
+                                        ));
+                                    } else {
+                                        let events = event_tx.subscribe();
+                                        let framing = event_framing.expect("bound event socket has framing");
+                                        let metrics = metrics.clone();
+                                        conns.spawn(async move {
+                                            handle_event_conn(stream, events, framing, metrics).await;
+                                            Ok::<(), std::io::Error>(())
+                                        });
+                                    }
                                 }
-                                if standard_events {
-                                    conns.spawn(handle_standard_event_conn(
-                                        stream,
-                                        None,
-                                        event_tx.subscribe(),
-                                        standard_connections.clone(),
-                                        metrics.clone(),
-                                    ));
-                                } else {
-                                    let events = event_tx.subscribe();
-                                    let framing = event_framing.expect("bound event socket has framing");
-                                    let metrics = metrics.clone();
-                                    conns.spawn(async move {
-                                        handle_event_conn(stream, events, framing, metrics).await;
-                                        Ok::<(), std::io::Error>(())
-                                    });
-                                }
+                                Ok(AuxAccepted::Rearmed) => conns.shutdown().await,
+                                Err(_) => {}
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -1124,6 +1433,8 @@ async fn handle_command_conn(
         observations,
         metrics,
         standard_connections,
+        declared_aux,
+        declared_aux_sync,
     } = resources;
     let connection_instance = format!("simulator-connection-{session_sequence:016x}");
     let session = format!("ptp-session-{session_sequence:016x}");
@@ -1402,7 +1713,8 @@ async fn handle_command_conn(
         } else {
             None
         };
-        let (reply, applied_fault, events, is_poll_live_view, observation_context) = {
+        let _declared_aux_sync = declared_aux_sync.lock().await;
+        let (reply, applied_fault, events, is_poll_live_view, observation_context, aux_readiness) = {
             let mut e = engine.lock().await;
             let is_poll_live_view = context.poll_live_view_op == Some(req.code);
             let reply = e.on_operation(&req, data_in.as_deref());
@@ -1420,8 +1732,16 @@ async fn handle_command_conn(
                 e.drain_events(),
                 is_poll_live_view,
                 observation_context,
+                declared_aux
+                    .iter()
+                    .map(|(role, listener)| (Arc::clone(listener), e.channel_ready(*role)))
+                    .collect::<Vec<_>>(),
             )
         };
+        for (listener, ready) in aux_readiness {
+            listener.set_ready(ready).await?;
+        }
+        drop(_declared_aux_sync);
         let reply = if is_poll_live_view {
             poll_live_view_reply(reply, &frames).await
         } else {
@@ -2455,6 +2775,13 @@ mod tests {
     use std::task::{Context, Poll};
 
     use super::*;
+
+    #[test]
+    fn declared_aux_socket_enables_reuseaddr() {
+        let socket = bind_declared_socket("127.0.0.1:0".parse().unwrap()).unwrap();
+
+        assert!(socket.reuseaddr().unwrap());
+    }
 
     #[tokio::test]
     async fn exact_read_reports_only_the_received_prefix() {

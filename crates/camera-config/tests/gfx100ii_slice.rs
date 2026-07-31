@@ -193,13 +193,21 @@ fn port_roles_match_the_shipping_app() {
         .bindings
         .as_ref()
         .expect("app declares typed socket bindings");
-    assert_eq!(b.command, 55740);
-    assert_eq!(b.event, Some(55741), "event = command+1 per iOS source");
-    assert_eq!(b.live_view, Some(55742), "live-view stream = command+2");
     // Resolve by role — the accessor the FFI `port_for_role` calls.
     assert_eq!(b.port_for(SocketRole::Command), Some(55740));
     assert_eq!(b.port_for(SocketRole::Event), Some(55741));
     assert_eq!(b.port_for(SocketRole::LiveView), Some(55742));
+    assert!(b.available_after(SocketRole::Command).is_none());
+    assert_eq!(
+        b.available_after(SocketRole::Event)
+            .map(|availability| availability.operation.as_str()),
+        Some("0x101c")
+    );
+    assert_eq!(
+        b.available_after(SocketRole::LiveView)
+            .map(|availability| availability.operation.as_str()),
+        Some("0x101c")
+    );
     // The transport-close frame names a manifest-owned byte sentinel.
     assert_eq!(
         camera_config::parse_hex_bytes(&m.sentinels["ptpipCloseSentinel"].bytes),
@@ -2011,6 +2019,38 @@ fn open_channel_requires_a_top_level_bound_auxiliary_role() {
     assert!(tolerant_tail
         .to_string()
         .contains("requires a preceding strict wire step"));
+}
+
+#[test]
+fn socket_availability_requires_an_auxiliary_catalog_operation() {
+    let manifest = |bindings: &str, operations: &str| {
+        format!(
+            "schema: camera-config/v1\ncamera: {{ manufacturer: Test, model: Test, firmware: \"1\" }}\nconnections:\n  app:\n    bindings:\n{bindings}\n    entries:\n      - to: test\n        steps:\n          - {{ sendOp: \"0x101c\" }}\n          - {{ openChannel: event }}\noperations:\n{operations}\n"
+        )
+    };
+    let valid = manifest(
+        "      command: 55740\n      event: { port: 55741, availableAfter: { operation: \"0x101c\" } }",
+        "  \"0x101c\": { name: InitiateOpenCapture, connections: [app] }",
+    );
+    assert!(CameraManifest::from_yaml(&valid).is_ok());
+
+    let command = manifest(
+        "      command: { port: 55740, availableAfter: { operation: \"0x101c\" } }\n      event: 55741",
+        "  \"0x101c\": { name: InitiateOpenCapture, connections: [app] }",
+    );
+    assert!(CameraManifest::from_yaml(&command)
+        .expect_err("command listener availability cannot be operation-gated")
+        .to_string()
+        .contains("valid only for event or live-view bindings"));
+
+    let unknown = manifest(
+        "      command: 55740\n      event: { port: 55741, availableAfter: { operation: \"0x9999\" } }",
+        "  \"0x101c\": { name: InitiateOpenCapture, connections: [app] }",
+    );
+    assert!(CameraManifest::from_yaml(&unknown)
+        .expect_err("availability operation must exist in the catalog")
+        .to_string()
+        .contains("is not defined in this manifest"));
 }
 
 #[test]

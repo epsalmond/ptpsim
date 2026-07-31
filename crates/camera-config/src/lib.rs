@@ -63,9 +63,10 @@ pub use model::{
     RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
     ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
     SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SetPropValue,
-    ShutterRecipe, SocketBindings, SocketRole, Step, StepParam, StepRetry, StructuredTextField,
-    StructuredTextLayout, StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch,
-    ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    ShutterRecipe, SocketAvailability, SocketBinding, SocketBindingDescriptor, SocketBindings,
+    SocketRole, Step, StepParam, StepRetry, StructuredTextField, StructuredTextLayout,
+    StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy,
+    ValueSource, VersionCond, WireFraming, Workflow,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -375,6 +376,7 @@ impl CameraManifest {
         }
         for (connection_id, connection) in &self.connections {
             require_valid_host_activities(connection, connection_id)?;
+            require_valid_socket_bindings(self, connection, connection_id)?;
             require_valid_init_shape(connection, connection_id)?;
             require_valid_connection_transitions(self, connection, connection_id)?;
             require_valid_pcss_rendezvous(connection, connection_id)?;
@@ -737,7 +739,7 @@ fn require_valid_init_shape(
         if connection
             .bindings
             .as_ref()
-            .and_then(|bindings| bindings.event)
+            .and_then(|bindings| bindings.port_for(SocketRole::Event))
             .is_none()
         {
             return Err(ManifestError::Contract(format!(
@@ -814,6 +816,62 @@ fn require_valid_init_shape(
         return Err(ManifestError::Contract(format!(
             "connections.{connection_id}.commandFraming must be usb for initShape legacyApp82"
         )));
+    }
+    Ok(())
+}
+
+fn require_valid_socket_bindings(
+    manifest: &CameraManifest,
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(bindings) = connection.bindings.as_ref() else {
+        return Ok(());
+    };
+    let command_port = bindings.command.port();
+    for role in [SocketRole::Command, SocketRole::Event, SocketRole::LiveView] {
+        let Some(binding) = bindings.binding_for(role) else {
+            continue;
+        };
+        let Some(availability) = binding.available_after() else {
+            continue;
+        };
+        let operation = &availability.operation;
+        let role_name = match role {
+            SocketRole::Command => "command",
+            SocketRole::Event => "event",
+            SocketRole::LiveView => "liveView",
+        };
+        let path =
+            format!("connections.{connection_id}.bindings.{role_name}.availableAfter.operation");
+        if role == SocketRole::Command {
+            return Err(ManifestError::Contract(format!(
+                "{path} is valid only for event or live-view bindings"
+            )));
+        }
+        if binding.port() == command_port {
+            return Err(ManifestError::Contract(format!(
+                "{path} cannot gate a listener shared with the command binding"
+            )));
+        }
+        let code = parse_hex_code(operation).ok_or_else(|| {
+            ManifestError::Contract(format!("{path} has invalid operation code '{operation}'"))
+        })?;
+        let declared = manifest.operation(code).ok_or_else(|| {
+            ManifestError::Contract(format!(
+                "{path} references operation '{operation}' which is not defined in this manifest"
+            ))
+        })?;
+        if !declared.connections.is_empty()
+            && !declared
+                .connections
+                .iter()
+                .any(|candidate| candidate == connection_id)
+        {
+            return Err(ManifestError::Contract(format!(
+                "{path} references operation '{operation}' which is unavailable on connection '{connection_id}'"
+            )));
+        }
     }
     Ok(())
 }

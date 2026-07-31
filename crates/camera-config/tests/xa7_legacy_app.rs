@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use camera_config::{CameraManifest, ModeEntryExecution, WireFraming};
+use camera_config::{CameraManifest, ModeEntryExecution, SocketRole, WireFraming};
 
 fn body_text() -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -23,9 +23,9 @@ fn xa7_is_legacy_app_not_app_and_maps_every_static_feature_mode() {
     assert_eq!(connection.command_framing, Some(WireFraming::Usb));
     assert_eq!(connection.event_framing, Some(WireFraming::Usb));
     let bindings = connection.bindings.as_ref().expect("three socket roles");
-    assert_eq!(bindings.command, 55740);
-    assert_eq!(bindings.event, Some(55741));
-    assert_eq!(bindings.live_view, Some(55742));
+    assert_eq!(bindings.port_for(SocketRole::Command), Some(55740));
+    assert_eq!(bindings.port_for(SocketRole::Event), Some(55741));
+    assert_eq!(bindings.port_for(SocketRole::LiveView), Some(55742));
 
     let targets = connection
         .entries

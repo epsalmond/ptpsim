@@ -1112,13 +1112,62 @@ pub struct SocketBindings {
     #[serde(default)]
     pub host: Option<String>,
     /// The PTP/IP command-port (control channel). Fuji default 55740.
-    pub command: u16,
+    pub command: SocketBinding,
     /// The event socket, if this connection has one.
     #[serde(default)]
-    pub event: Option<u16>,
+    pub event: Option<SocketBinding>,
     /// The live-view through-picture stream socket, if this connection has one.
     #[serde(default)]
-    pub live_view: Option<u16>,
+    pub live_view: Option<SocketBinding>,
+}
+
+/// One socket binding. A bare port preserves the compact form for listeners
+/// with no declared availability constraint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SocketBinding {
+    Port(u16),
+    Descriptor(SocketBindingDescriptor),
+}
+
+impl Default for SocketBinding {
+    fn default() -> Self {
+        Self::Port(0)
+    }
+}
+
+impl SocketBinding {
+    pub fn port(&self) -> u16 {
+        match self {
+            Self::Port(port) => *port,
+            Self::Descriptor(descriptor) => descriptor.port,
+        }
+    }
+
+    pub fn available_after(&self) -> Option<&SocketAvailability> {
+        match self {
+            Self::Port(_) => None,
+            Self::Descriptor(descriptor) => descriptor.available_after.as_ref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SocketBindingDescriptor {
+    /// The concrete TCP port for this role.
+    pub port: u16,
+    /// The condition that must complete before the listener is available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_after: Option<SocketAvailability>,
+}
+
+/// A successful camera operation that makes an auxiliary listener available.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SocketAvailability {
+    /// The successful operation that makes the listener available.
+    pub operation: HexCode,
 }
 
 /// A camera-status-triggered private media pull. BLE announces availability and
@@ -1234,13 +1283,22 @@ pub enum TransferCompletion {
 }
 
 impl SocketBindings {
+    pub fn binding_for(&self, role: SocketRole) -> Option<&SocketBinding> {
+        match role {
+            SocketRole::Command => Some(&self.command),
+            SocketRole::Event => self.event.as_ref(),
+            SocketRole::LiveView => self.live_view.as_ref(),
+        }
+    }
+
     /// The bound port for `role`, or `None` if this connection has no such socket.
     pub fn port_for(&self, role: SocketRole) -> Option<u16> {
-        match role {
-            SocketRole::Command => Some(self.command),
-            SocketRole::Event => self.event,
-            SocketRole::LiveView => self.live_view,
-        }
+        self.binding_for(role).map(SocketBinding::port)
+    }
+
+    /// The declared availability condition for `role`, if any.
+    pub fn available_after(&self, role: SocketRole) -> Option<&SocketAvailability> {
+        self.binding_for(role)?.available_after()
     }
 }
 

@@ -2285,6 +2285,22 @@ pub struct SocketBindingInfo {
     pub role: SocketRole,
     pub host: Option<String>,
     pub port: u16,
+    pub available_after: Option<SocketAvailabilityInfo>,
+}
+
+/// The condition that makes an auxiliary socket listener available.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum SocketAvailabilityInfo {
+    Operation { operation: u16 },
+}
+
+impl From<&cc::SocketAvailability> for SocketAvailabilityInfo {
+    fn from(availability: &cc::SocketAvailability) -> Self {
+        Self::Operation {
+            operation: cc::parse_hex_code(&availability.operation)
+                .expect("validated socket availability operation"),
+        }
+    }
 }
 
 #[derive(Debug, uniffi::Enum)]
@@ -2859,20 +2875,17 @@ impl ConfigStore {
         else {
             return Vec::new();
         };
-        [
-            (SocketRole::Command, Some(b.command)),
-            (SocketRole::Event, b.event),
-            (SocketRole::LiveView, b.live_view),
-        ]
-        .into_iter()
-        .filter_map(|(role, port)| {
-            port.map(|port| SocketBindingInfo {
-                role,
-                host: b.host.clone(),
-                port,
+        [SocketRole::Command, SocketRole::Event, SocketRole::LiveView]
+            .into_iter()
+            .filter_map(|role| {
+                b.binding_for(role.into()).map(|binding| SocketBindingInfo {
+                    role,
+                    host: b.host.clone(),
+                    port: binding.port(),
+                    available_after: binding.available_after().map(Into::into),
+                })
             })
-        })
-        .collect()
+            .collect()
     }
 
     /// The camera-status-triggered private media pull for a recognized model. The

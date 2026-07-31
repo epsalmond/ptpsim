@@ -226,6 +226,7 @@ enum GateMatcher {
     SetProp { prop: u16, value: Option<i64> },
     GetProp { prop: u16 },
     SendOp { op: u16, params: Vec<u32> },
+    SuccessfulOperation { op: u16 },
 }
 
 /// The engine's answer to one operation: a bare response, a data phase plus
@@ -1889,24 +1890,58 @@ fn channel_gate_name(connection: &str, role: camera_config::SocketRole) -> Strin
 fn compile_channel_sequences(manifest: &CameraManifest) -> Vec<GateSequence> {
     let mut out = Vec::new();
     for (connection_name, connection) in &manifest.connections {
+        if let Some(bindings) = connection.bindings.as_ref() {
+            for role in [
+                camera_config::SocketRole::Event,
+                camera_config::SocketRole::LiveView,
+            ] {
+                let Some(availability) = bindings.available_after(role) else {
+                    continue;
+                };
+                if let Some(op) = parse_hex_code(&availability.operation) {
+                    out.push(GateSequence {
+                        name: channel_gate_name(connection_name, role),
+                        steps: vec![GateMatcher::SuccessfulOperation { op }],
+                    });
+                }
+            }
+        }
         for entry in &connection.entries {
             if let camera_config::ModeEntryExecution::Ptp { steps } = &entry.execution {
-                collect_channel_sequences(connection_name, steps, &mut out);
+                collect_channel_sequences(
+                    connection_name,
+                    connection.bindings.as_ref(),
+                    steps,
+                    &mut out,
+                );
             }
         }
         for action in connection.actions.values() {
             if let Some(initiator) = &action.initiator {
-                collect_channel_sequences(connection_name, &initiator.steps, &mut out);
+                collect_channel_sequences(
+                    connection_name,
+                    connection.bindings.as_ref(),
+                    &initiator.steps,
+                    &mut out,
+                );
             }
         }
     }
     out
 }
 
-fn collect_channel_sequences(connection: &str, steps: &[Step], out: &mut Vec<GateSequence>) {
+fn collect_channel_sequences(
+    connection: &str,
+    bindings: Option<&camera_config::SocketBindings>,
+    steps: &[Step],
+    out: &mut Vec<GateSequence>,
+) {
     let mut causal_prefix = Vec::new();
     for step in steps {
         if let Some(role) = step.open_channel {
+            if bindings.is_some_and(|bindings| bindings.available_after(role).is_some()) {
+                continue;
+            }
             if !causal_prefix.is_empty() {
                 let sequence = GateSequence {
                     name: channel_gate_name(connection, role),
@@ -2057,6 +2092,7 @@ fn gate_match_for_manifest(
                 == Some(*expected)
         }
         GateMatcher::SendOp { op, params } => req.code == *op && req.params == *params,
+        GateMatcher::SuccessfulOperation { op } => req.code == *op,
     }
 }
 
@@ -2715,7 +2751,7 @@ properties:
     }
 
     #[test]
-    fn auxiliary_channels_follow_manifest_causal_boundary() {
+    fn undeclared_auxiliary_channels_follow_manifest_causal_boundary() {
         let manifest = CameraManifest::from_yaml(
             r#"
 schema: camera-config/v1
@@ -2753,6 +2789,51 @@ properties:
         ));
         assert!(engine.channel_ready(camera_config::SocketRole::Event));
         assert!(engine.channel_ready(camera_config::SocketRole::LiveView));
+    }
+
+    #[test]
+    fn declared_auxiliary_gate_overrides_derived_prefix() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+connections:
+  app:
+    kind: ptpip
+    bindings:
+      command: 55740
+      event:
+        port: 55741
+        availableAfter: { operation: "0x101c" }
+    entries:
+      - to: shooting/stills
+        steps:
+          - { setProp: "0xdf01", value: 22 }
+          - { openChannel: event }
+          - { sendOp: "0x101c" }
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+  "0x101c": { name: InitiateOpenCapture, connections: [app] }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0xdf01]),
+            Some(&22u16.to_le_bytes()),
+        );
+        assert!(
+            !engine.channel_ready(camera_config::SocketRole::Event),
+            "the declared operation overrides the openChannel causal prefix"
+        );
+
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 3, vec![]), None)
+        ));
+        assert!(engine.channel_ready(camera_config::SocketRole::Event));
     }
 
     #[test]

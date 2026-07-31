@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use camera_config::{
     ActionInvocationRequest, ActionOutcome, ActionRole, ExecutionContext, ObservationRecorder,
+    SocketRole,
 };
 use camera_sim::{Engine, FaultSpec, PreparedResponderMutation, StateOverlay};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -16,7 +17,7 @@ use tokio::sync::{broadcast, Mutex, Notify};
 use crate::state_callback::Registry;
 use crate::state_json::snapshot_json;
 use crate::trace::TraceLog;
-use crate::Metrics;
+use crate::{DeclaredAuxListener, Metrics};
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
@@ -67,6 +68,8 @@ pub struct Context {
     pub(crate) observations: ObservationRecorder,
     pub(crate) metrics: Metrics,
     pub(crate) shutdown: broadcast::Sender<()>,
+    pub(crate) declared_aux: Vec<(SocketRole, Arc<DeclaredAuxListener>)>,
+    pub(crate) declared_aux_sync: Arc<Mutex<()>>,
 }
 
 pub async fn handle(mut stream: TcpStream, context: Context) {
@@ -164,16 +167,14 @@ pub async fn handle(mut stream: TcpStream, context: Context) {
                 }
             }
         }
-        ("PATCH", "/state") => {
-            match apply_state_patch(&context.health, &context.engine, &req.body).await {
-                Ok(body) => {
-                    context.state_notify.notify_one();
-                    context.metrics.touch();
-                    Response::ok(body)
-                }
-                Err(e) => Response::bad_request(e),
+        ("PATCH", "/state") => match apply_state_patch(&context, &req.body).await {
+            Ok(body) => {
+                context.state_notify.notify_one();
+                context.metrics.touch();
+                Response::ok(body)
             }
-        }
+            Err(e) => Response::bad_request(e),
+        },
         ("POST", "/callbacks") => match subscribe_callback(&context.callbacks, &req.body).await {
             Ok(body) => {
                 context.state_notify.notify_one();
@@ -330,15 +331,27 @@ fn execution_context(connection: &str, mode: &str, engine: &Engine) -> Execution
     }
 }
 
-async fn apply_state_patch(
-    health: &Health,
-    engine: &Arc<Mutex<Engine>>,
-    body: &[u8],
-) -> Result<String, String> {
+async fn apply_state_patch(context: &Context, body: &[u8]) -> Result<String, String> {
     let overlay: StateOverlay =
         serde_json::from_slice(body).map_err(|e| format!("invalid JSON state overlay: {e}"))?;
-    overlay.validate_context(&health.profile, &health.connection)?;
-    let applied = engine.lock().await.apply_state_overlay(&overlay)?;
+    overlay.validate_context(&context.health.profile, &context.health.connection)?;
+    let _declared_aux_sync = context.declared_aux_sync.lock().await;
+    let (applied, aux_readiness) = {
+        let mut engine = context.engine.lock().await;
+        let applied = engine.apply_state_overlay(&overlay)?;
+        let aux_readiness = context
+            .declared_aux
+            .iter()
+            .map(|(role, listener)| (Arc::clone(listener), engine.channel_ready(*role)))
+            .collect::<Vec<_>>();
+        (applied, aux_readiness)
+    };
+    for (listener, ready) in aux_readiness {
+        listener
+            .set_ready(ready)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     Ok(serde_json::json!({ "ok": true, "applied": applied }).to_string())
 }
 

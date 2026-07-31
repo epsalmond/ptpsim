@@ -163,13 +163,21 @@ fn with_loopback_ports(
     event: SocketAddr,
     live_view: SocketAddr,
 ) -> String {
-    body.replacen("command: 55740", &format!("command: {}", command.port()), 1)
-        .replacen("event: 55741", &format!("event: {}", event.port()), 1)
-        .replacen(
-            "liveView: 55742",
-            &format!("liveView: {}", live_view.port()),
-            1,
-        )
+    let body = replace_once(
+        body,
+        "command: 55740",
+        format!("command: {}", command.port()),
+    );
+    let body = replace_once(
+        body,
+        "event:\n        port: 55741",
+        format!("event:\n        port: {}", event.port()),
+    );
+    replace_once(
+        body,
+        "liveView:\n        port: 55742",
+        format!("liveView:\n        port: {}", live_view.port()),
+    )
 }
 
 fn replace_once(body: String, from: &str, to: String) -> String {

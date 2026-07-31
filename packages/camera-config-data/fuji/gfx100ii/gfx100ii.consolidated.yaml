@@ -15463,8 +15463,14 @@ connections:
     bindings:
       host: 192.168.0.1
       command: 55740
-      event: 55741
-      liveView: 55742
+      event:
+        port: 55741
+        availableAfter:
+          operation: '0x101c'
+      liveView:
+        port: 55742
+        availableAfter:
+          operation: '0x101c'
     transportClose:
       sentinel: ptpipCloseSentinel
       when: before-image-transfer-reestablishment
