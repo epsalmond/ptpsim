@@ -122,7 +122,8 @@ slogans. Avoid copywriting tics: epigram headlines, antithesis frames ("it's
 not X, it's Y"), tricolons ("one engine, no forks, all data"), and
 mirror-clause endings. Avoid em dashes: use commas, colons, parentheses, or
 two sentences. If a sentence would fit on a landing page, rewrite it as a
-fact.
+fact. Applies to new and edited prose: existing text predates this rule, so
+fix it when you touch it rather than sweeping.
 
 ### Private evidence and operator-only tooling
 
