@@ -43,6 +43,21 @@ The test: would the line make sense on a stranger's laptop? If not, it belongs
 in the consumer's repo or a private tree. Existing violations are tracked
 (#255, #160, #259) — do not add new ones while those burn down.
 
+### Prose register
+
+Write short declarative sentences that state facts. Titles state the content
+("Vendor manifest schema"), never slogans. Banned copywriting tics: epigram
+headlines ("One protocol, many cameras"), antithesis frames ("It's not X,
+it's Y"), tricolons ("small services, one bus, one truth"), and mirror-clause
+endings (a closing line that echoes the opening line). Avoid em dashes: use
+commas, colons, parentheses, or two sentences. The antithesis ban is on the
+rhetorical slogan shape; ordinary contrast that states a fact ("this measures
+X, not Y") is fine, and so are words that record real design intent
+("deliberately"). Test: if a sentence would fit on a landing page, rewrite it
+as a fact. Applies to new and edited prose in docs, PR bodies, issues, and
+code comments. Clean up an existing violation when editing that text anyway;
+do not sweep-rewrite otherwise-untouched prose to conform.
+
 ### Work tracking — GitHub issues, not in-process task lists
 
 **Work is tracked as GitHub issues.** Agent in-process task lists
