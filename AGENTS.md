@@ -114,6 +114,17 @@ owning agent merging its own PR — is
 before running or remediating a `/code-review` pass, and when resuming a PR
 after context loss (resume from PR state, not chat).
 
+### Prose register
+
+Docs, PR bodies, and issues are reference material: terse, concrete,
+declarative. Titles state the content ("Manifest schema changes"), never
+slogans. Avoid copywriting tics: epigram headlines, antithesis frames ("it's
+not X, it's Y"), tricolons ("one engine, no forks, all data"), and
+mirror-clause endings. Avoid em dashes: use commas, colons, parentheses, or
+two sentences. If a sentence would fit on a landing page, rewrite it as a
+fact. Applies to new and edited prose: existing text predates this rule, so
+fix it when you touch it rather than sweeping.
+
 ### Private evidence and operator-only tooling
 
 This public repository must remain usable without access to private hosts,
