@@ -730,13 +730,20 @@ fn read_reserved_count(s: &mut TcpStream, tid: u32) -> u32 {
     let payload = manifest.properties["0xd212"].payload.as_ref().unwrap();
     let (count_width, code_width, default_value_width) = payload.record_widths();
     let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
-        count_width,
-        code_width,
+        protocol_primitives::quirk::RecordStreamLayout::new(
+            count_width,
+            code_width,
+            default_value_width,
+        )
+        .unwrap(),
         payload.members.iter().map(|member| {
             let code = camera_config::parse_hex_code(member.code()).unwrap();
             let encoding = match member.encoding(default_value_width) {
                 camera_config::RecordValueEncoding::Fixed { width } => {
                     protocol_primitives::quirk::RecordValueEncoding::Fixed { width }
+                }
+                camera_config::RecordValueEncoding::Signed { width } => {
+                    protocol_primitives::quirk::RecordValueEncoding::Signed { width }
                 }
                 camera_config::RecordValueEncoding::PtpString => {
                     protocol_primitives::quirk::RecordValueEncoding::PtpString
@@ -748,6 +755,7 @@ fn read_reserved_count(s: &mut TcpStream, tid: u32) -> u32 {
     .unwrap();
     protocol_primitives::quirk::parse_typed_record_stream(&bytes, &descriptor)
         .unwrap()
+        .records
         .into_iter()
         .find_map(|(code, value)| match (code, value) {
             (0xdf41, ptp_core::PropValue::U32(value)) => Some(value),

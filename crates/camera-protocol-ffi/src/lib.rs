@@ -655,11 +655,29 @@ pub struct RecordStreamRecord {
     pub value: PtpValue,
 }
 
+/// One recoverable record-stream decode condition.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum RecordStreamDiagnostic {
+    SkippedUndeclaredMember { code: u16, value: u32 },
+}
+
+impl From<protocol_primitives::quirk::RecordStreamDiagnostic> for RecordStreamDiagnostic {
+    fn from(diagnostic: protocol_primitives::quirk::RecordStreamDiagnostic) -> Self {
+        match diagnostic {
+            protocol_primitives::quirk::RecordStreamDiagnostic::SkippedUndeclaredMember {
+                code,
+                value,
+            } => Self::SkippedUndeclaredMember { code, value },
+        }
+    }
+}
+
 /// A successfully decoded record stream. Member absence is represented by no
-/// matching record, independently of malformed input and numeric zero.
+/// matching record. Recoverable catalog drift is reported in `diagnostics`.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct RecordStreamResult {
     pub records: Vec<RecordStreamRecord>,
+    pub diagnostics: Vec<RecordStreamDiagnostic>,
 }
 
 /// Parse a record-stream payload at the manifest-declared widths — pass the
@@ -673,15 +691,21 @@ pub fn parse_record_stream(
     info: PayloadInfo,
 ) -> Result<RecordStreamResult, CodecError> {
     let descriptor = record_stream_descriptor(&info).map_err(codec_decode)?;
-    let records = protocol_primitives::quirk::parse_typed_record_stream(&payload, &descriptor)
-        .map_err(codec_decode)?
+    let decoded = protocol_primitives::quirk::parse_typed_record_stream(&payload, &descriptor)
+        .map_err(codec_decode)?;
+    let records = decoded
+        .records
         .into_iter()
         .map(|(code, value)| RecordStreamRecord {
             code,
             value: (&value).into(),
         })
         .collect();
-    Ok(RecordStreamResult { records })
+    let diagnostics = decoded.diagnostics.into_iter().map(Into::into).collect();
+    Ok(RecordStreamResult {
+        records,
+        diagnostics,
+    })
 }
 
 fn record_stream_descriptor(
@@ -690,17 +714,26 @@ fn record_stream_descriptor(
     protocol_primitives::quirk::RecordStreamDescriptor,
     protocol_primitives::quirk::RecordStreamError,
 > {
-    use protocol_primitives::quirk::{RecordStreamDescriptor, RecordValueEncoding};
+    use protocol_primitives::quirk::{
+        RecordStreamDescriptor, RecordStreamLayout, RecordValueEncoding,
+    };
 
     RecordStreamDescriptor::new(
-        info.count_width.unwrap_or(2),
-        info.record
-            .as_ref()
-            .map(|record| record.code_width)
-            .unwrap_or(2),
+        RecordStreamLayout::new(
+            info.count_width.unwrap_or(2),
+            info.record
+                .as_ref()
+                .map(|record| record.code_width)
+                .unwrap_or(2),
+            info.record
+                .as_ref()
+                .map(|record| record.value_width)
+                .unwrap_or(4),
+        )?,
         info.members.iter().map(|member| {
             let encoding = match member.encoding {
                 RecordValueEncodingInfo::Fixed { width } => RecordValueEncoding::Fixed { width },
+                RecordValueEncodingInfo::Signed { width } => RecordValueEncoding::Signed { width },
                 RecordValueEncodingInfo::PtpString => RecordValueEncoding::PtpString,
             };
             (member.code, encoding)
@@ -1055,6 +1088,7 @@ pub struct RecordMemberInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum RecordValueEncodingInfo {
     Fixed { width: u8 },
+    Signed { width: u8 },
     PtpString,
 }
 
@@ -1324,6 +1358,9 @@ impl From<&cc::Payload> for PayloadInfo {
                         encoding: match member.encoding(default_value_width) {
                             cc::RecordValueEncoding::Fixed { width } => {
                                 RecordValueEncodingInfo::Fixed { width }
+                            }
+                            cc::RecordValueEncoding::Signed { width } => {
+                                RecordValueEncodingInfo::Signed { width }
                             }
                             cc::RecordValueEncoding::PtpString => {
                                 RecordValueEncodingInfo::PtpString

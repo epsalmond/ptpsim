@@ -1047,43 +1047,56 @@ payload:
   record: { codeWidth: 2, valueWidth: 4 }
   members:
     - "0xdf41"
+    - code: "0x5010"
+      encoding: { kind: signed, width: 4 }
     - code: "0xd22f"
       encoding: { kind: ptpString }
       simulatorValue: ""
 ```
 
-Detailed encodings are the closed forms `{ kind: fixed, width: 1|2|4 }` and
-`{ kind: ptpString }`. `simulatorValue` is optional for fixed members and must
-match the declared encoding when present. A nonnumeric member without matching
-mutable property state requires a simulator value so the generic responder
-does not invent one.
+Detailed encodings are the closed forms `{ kind: fixed, width: 1|2|4 }`,
+`{ kind: signed, width: 1|2|4 }`, and `{ kind: ptpString }`.
+`simulatorValue` is optional for numeric members and must fit the declared
+encoding when present. A nonnumeric member without matching mutable property
+state requires a simulator value so the generic responder does not invent one.
 
 `fixed` is a raw unsigned little-endian field. A signed runtime value is valid
 only when it is nonnegative and its full magnitude fits the declared width.
 Negative values are rejected for every signed source width; the codec never
 infers two's-complement, sign-extension, or zero-extension from the source
 value type. A producer that owns a signed-to-raw conversion supplies the
-canonical unsigned value. Any signed record-stream encoding must be introduced
-as a separate explicit schema form.
+canonical unsigned value. `signed` decodes to the matching signed PTP value and
+encodes negative values as two's-complement at its declared width. A narrower
+signed source value is sign-extended to that width.
 
-The decoder reads the member code first, rejects codes absent from the declared
-allowlist, then consumes the value using that member's effective encoding. It
-never pads a short fixed value or coerces a PTP string into a number. Bytes
-after the declared record count retain the existing count-authoritative
-behavior. Duplicate members, unsupported widths, incompatible simulator
-values, and direct-codec value/encoding mismatches fail loud. The simulator
-ignores encoding-incompatible mutable state in favor of a compatible declared
-fallback or the encoding's zero value; a compatible positive value that exceeds
-the declared width still fails loud rather than falling back or truncating.
+The decoder reads records in order. Declared codes consume their payload-local
+encoding, including declared fixed, signed, and PTP-string members. An
+undeclared code tentatively consumes the default fixed width. The decoder
+accepts the tolerant result only when exactly the declared record count
+consumes the complete payload. It omits the undeclared record and adds a
+`skippedUndeclaredMember` diagnostic containing its code and raw value.
+
+An inconsistent declaration-driven walk returns the original undeclared-member
+error. It does not expose records or diagnostics from a guessed alignment. It
+never pads a short fixed value or coerces a PTP string into a number. Payloads
+without an undeclared member retain the existing count-authoritative handling
+of bytes after the declared record count.
+Duplicate members, unsupported widths, incompatible simulator values, and
+direct-codec value/encoding mismatches fail loud. The simulator ignores
+encoding-incompatible mutable state in favor of a compatible declared fallback
+or the encoding's zero value. A compatible positive value that exceeds the
+declared width still fails loud rather than falling back or truncating.
 
 The public codec returns a `RecordStreamResult` containing ordered
-`RecordStreamRecord` values. Each record carries its code and lossless
-`PtpValue`; the current encodings produce `U32` or `Str`. A member lookup returns
-`Option<PtpValue>`, so malformed input is a codec error, an absent member is
-`None`, numeric zero is `Some(U32(0))`, and an empty PTP string is
-`Some(Str(""))`. The old fixed-layout `parse_live_status` convenience is not a
-valid decoder for heterogeneous D212 payloads and is retired; consumers resolve
-`PayloadInfo` from the manifest and call `parse_record_stream`.
+`RecordStreamRecord` values and collected decode diagnostics. Each record
+carries its code and lossless `PtpValue`; the current encodings produce `U32`
+or `Str`. A member lookup returns `Option<PtpValue>`, so malformed input is a
+codec error, an absent member is `None`, numeric zero is `Some(U32(0))`, and an
+empty PTP string is `Some(Str(""))`. Callers inspect diagnostics to distinguish
+a normal absent member from an undeclared fixed-width member that was skipped.
+The old fixed-layout `parse_live_status` convenience is not a valid decoder for
+heterogeneous D212 payloads and is retired; consumers resolve `PayloadInfo`
+from the manifest and call `parse_record_stream`.
 
 Record encodings are scoped to the containing payload. They do not assign a
 global datatype to a mode/persona-overloaded property code. The PTP executor

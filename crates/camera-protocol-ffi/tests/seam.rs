@@ -3041,6 +3041,148 @@ fn parse_record_stream_preserves_member_types_and_absence() {
 }
 
 #[test]
+fn gfx100ii_d212_catalog_decodes_observed_exposure_bias_member() {
+    for catalog in [store(), consolidated_store()] {
+        let decoded = parse_record_stream(
+            vec![
+                0x03, 0x00, // count
+                0x07, 0x50, 0x18, 0x01, 0x00, 0x00, // aperture F2.8
+                0x10, 0x50, 0x00, 0x00, 0x00, 0x00, // exposure bias 0
+                0x2a, 0xd0, 0x80, 0x0c, 0x00, 0x00, // ISO 3200
+            ],
+            catalog
+                .property_payload(0xd212)
+                .expect("D212 payload descriptor"),
+        )
+        .expect("device-observed D212 payload decodes");
+
+        assert_eq!(decoded.records.len(), 3);
+        assert!(decoded.diagnostics.is_empty());
+        assert_eq!(
+            record_stream_value(decoded, 0x5010),
+            Some(PtpValue::I32 { value: 0 })
+        );
+    }
+}
+
+#[test]
+fn gfx100ii_d212_catalog_decodes_negative_exposure_bias_as_signed() {
+    for catalog in [store(), consolidated_store()] {
+        let decoded = parse_record_stream(
+            vec![
+                0x01, 0x00, // count
+                0x10, 0x50, 0xb3, 0xfe, 0xff, 0xff, // exposure bias -333 milliEV
+            ],
+            catalog
+                .property_payload(0xd212)
+                .expect("D212 payload descriptor"),
+        )
+        .expect("negative exposure bias decodes");
+
+        assert_eq!(
+            record_stream_value(decoded, 0x5010),
+            Some(PtpValue::I32 { value: -333 })
+        );
+    }
+}
+
+#[test]
+fn parse_record_stream_skips_undeclared_fixed_member() {
+    let source = store()
+        .property_payload(0xd212)
+        .expect("source D212 payload descriptor");
+    let consolidated = consolidated_store()
+        .property_payload(0xd212)
+        .expect("consolidated D212 payload descriptor");
+    assert!(source.members.iter().all(|member| member.code != 0x5fff));
+    assert!(consolidated
+        .members
+        .iter()
+        .all(|member| member.code != 0x5fff));
+
+    let decoded = parse_record_stream(
+        vec![
+            0x03, 0x00, // count
+            0x07, 0x50, 0x18, 0x01, 0x00, 0x00, // aperture F2.8
+            0xff, 0x5f, 0xef, 0xbe, 0xad, 0xde, // undeclared fixed member
+            0x2a, 0xd0, 0x80, 0x0c, 0x00, 0x00, // ISO 3200
+        ],
+        source,
+    )
+    .expect("fixed-width catalog drift is tolerated");
+
+    assert_eq!(
+        decoded.records,
+        vec![
+            RecordStreamRecord {
+                code: 0x5007,
+                value: PtpValue::U32 { value: 280 },
+            },
+            RecordStreamRecord {
+                code: 0xd02a,
+                value: PtpValue::U32 { value: 3200 },
+            },
+        ]
+    );
+    assert_eq!(
+        decoded.diagnostics,
+        vec![RecordStreamDiagnostic::SkippedUndeclaredMember {
+            code: 0x5fff,
+            value: 0xdead_beef,
+        }]
+    );
+}
+
+#[test]
+fn parse_record_stream_tolerates_drift_in_complete_mixed_snapshot() {
+    for catalog in [store(), consolidated_store()] {
+        let info = catalog
+            .property_payload(0xd212)
+            .expect("D212 payload descriptor");
+        assert!(info.members.iter().all(|member| member.code != 0x5fff));
+
+        let decoded = parse_record_stream(
+            vec![
+                0x04, 0x00, // count
+                0xff, 0x5f, 0x12, 0x00, 0x00, 0x00, // captured DF00 record, code swapped
+                0x20, 0xd2, 0x01, 0x00, 0x00, 0x00, // captured D220 record
+                0x41, 0xdf, 0x01, 0x00, 0x00, 0x00, // captured DF41 record
+                0x2f, 0xd2, 0x01, 0x00, 0x00, // captured empty D22F PTP string
+            ],
+            info,
+        )
+        .expect("declaration-driven walk reaches the exact payload end");
+
+        assert_eq!(
+            decoded.records,
+            vec![
+                RecordStreamRecord {
+                    code: 0xd220,
+                    value: PtpValue::U32 { value: 1 },
+                },
+                RecordStreamRecord {
+                    code: 0xdf41,
+                    value: PtpValue::U32 { value: 1 },
+                },
+                RecordStreamRecord {
+                    code: 0xd22f,
+                    value: PtpValue::Str {
+                        value: String::new(),
+                    },
+                },
+            ]
+        );
+        assert_eq!(
+            decoded.diagnostics,
+            vec![RecordStreamDiagnostic::SkippedUndeclaredMember {
+                code: 0x5fff,
+                value: 0x12,
+            }]
+        );
+    }
+}
+
+#[test]
 fn parse_record_stream_honors_declared_widths_with_d212_defaults() {
     // Omitted widths use the schema defaults from
     // camera_config::Payload::record_widths (#161).

@@ -142,8 +142,8 @@ pub trait BleExecutorTransport: Send + Sync {
 pub enum StepOutcome {
     Started,
     Succeeded,
-    /// The step failed after its retries but was `tolerant: true` — swallowed,
-    /// walk continues. The diagnostically critical case.
+    /// The walk continued after a declared tolerant failure or a recoverable
+    /// decode condition. `error` carries the diagnostic detail.
     Tolerated,
     Failed,
 }
@@ -165,7 +165,7 @@ pub struct StepReport {
     /// The step's declared response tolerance.
     pub tolerant: bool,
     pub outcome: StepOutcome,
-    /// `Display` of the failure on `Tolerated`/`Failed`, else `None`.
+    /// Failure or recoverable diagnostic detail on `Tolerated`/`Failed`.
     pub error: Option<String>,
     /// Retries consumed so far (0 on first-try success).
     pub attempts: u32,

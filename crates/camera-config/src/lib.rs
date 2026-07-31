@@ -657,6 +657,32 @@ fn require_valid_payload(
                     }
                 }
             }
+            RecordValueEncoding::Signed { width } => {
+                if !matches!(width, 1 | 2 | 4) {
+                    return Err(ManifestError::Contract(format!(
+                        "{member_path} uses unsupported signed width {width}"
+                    )));
+                }
+                if let Some(value) = simulator_value {
+                    let value = match value {
+                        RecordValueLiteral::Unsigned(value) => i64::from(*value),
+                        RecordValueLiteral::Signed(value) => i64::from(*value),
+                        RecordValueLiteral::String(_) => {
+                            return Err(ManifestError::Contract(format!(
+                                "{member_path}.simulatorValue must be numeric for a signed encoding"
+                            )));
+                        }
+                    };
+                    let bits = u32::from(width) * 8;
+                    let min = -(1_i64 << (bits - 1));
+                    let max = (1_i64 << (bits - 1)) - 1;
+                    if !(min..=max).contains(&value) {
+                        return Err(ManifestError::Contract(format!(
+                            "{member_path}.simulatorValue {value} does not fit signed width {width}"
+                        )));
+                    }
+                }
+            }
             RecordValueEncoding::PtpString => {
                 if simulator_value
                     .is_some_and(|value| !matches!(value, RecordValueLiteral::String(_)))

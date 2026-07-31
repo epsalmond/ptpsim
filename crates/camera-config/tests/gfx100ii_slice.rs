@@ -82,6 +82,15 @@ fn d212_declares_heterogeneous_member_encoding() {
         member.simulator_value(),
         Some(&RecordValueLiteral::String(String::new()))
     );
+    let exposure_bias = payload
+        .members
+        .iter()
+        .find(|member| member.code() == "0x5010")
+        .expect("exposure-bias payload member");
+    assert_eq!(
+        exposure_bias.encoding(4),
+        RecordValueEncoding::Signed { width: 4 }
+    );
 }
 
 #[test]

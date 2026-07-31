@@ -27,6 +27,10 @@ pub enum RecordStreamError {
          {width}-byte fixed encoding"
     )]
     NegativeFixedValue { code: u16, value: i64, width: u8 },
+    #[error(
+        "record-stream member {code:#06x} signed value {value} does not fit a {width}-byte field"
+    )]
+    SignedOverflow { code: u16, value: i128, width: u8 },
     #[error("record-stream member {code:#06x} is not declared")]
     UndeclaredMember { code: u16 },
     #[error("record-stream member {code:#06x} is declared more than once")]
@@ -43,10 +47,12 @@ pub enum RecordStreamError {
 }
 
 /// Payload-local wire encoding for a record member. `Fixed` is raw unsigned
-/// little-endian; negative signed values do not match it at any width.
+/// little-endian. `Signed` preserves the declared signed value at its payload
+/// width, including sign extension when the source type is narrower.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordValueEncoding {
     Fixed { width: u8 },
+    Signed { width: u8 },
     PtpString,
 }
 
@@ -57,6 +63,7 @@ impl RecordValueEncoding {
     pub fn accepts_value(self, value: &PropValue) -> bool {
         match self {
             Self::Fixed { .. } => matches!(numeric_value(value), NumericValue::Unsigned(_)),
+            Self::Signed { .. } => !matches!(numeric_value(value), NumericValue::NotNumeric),
             Self::PtpString => matches!(value, PropValue::Str(_)),
         }
     }
@@ -65,38 +72,31 @@ impl RecordValueEncoding {
 /// A heterogeneous record-stream descriptor resolved from manifest data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordStreamDescriptor {
-    count_width: u8,
-    code_width: u8,
+    layout: RecordStreamLayout,
     members: BTreeMap<u16, RecordValueEncoding>,
 }
 
 impl RecordStreamDescriptor {
     pub fn new(
-        count_width: u8,
-        code_width: u8,
+        layout: RecordStreamLayout,
         members: impl IntoIterator<Item = (u16, RecordValueEncoding)>,
     ) -> Result<Self, RecordStreamError> {
-        if !matches!(count_width, 1 | 2 | 4) || !matches!(code_width, 1 | 2) {
-            return Err(RecordStreamError::UnsupportedWidths {
-                count: count_width,
-                code: code_width,
-                value: 0,
-            });
-        }
         let mut resolved = BTreeMap::new();
         for (code, encoding) in members {
-            if code_width == 1 && code > u8::MAX as u16 {
+            if layout.code_width == 1 && code > u8::MAX as u16 {
                 return Err(RecordStreamError::Overflow {
                     field: "prop code",
                     value: code.into(),
-                    width: code_width,
+                    width: layout.code_width,
                 });
             }
-            if let RecordValueEncoding::Fixed { width } = encoding {
+            if let RecordValueEncoding::Fixed { width } | RecordValueEncoding::Signed { width } =
+                encoding
+            {
                 if !matches!(width, 1 | 2 | 4) {
                     return Err(RecordStreamError::UnsupportedWidths {
-                        count: count_width,
-                        code: code_width,
+                        count: layout.count_width,
+                        code: layout.code_width,
                         value: width,
                     });
                 }
@@ -106,8 +106,7 @@ impl RecordStreamDescriptor {
             }
         }
         Ok(Self {
-            count_width,
-            code_width,
+            layout,
             members: resolved,
         })
     }
@@ -229,18 +228,18 @@ pub fn typed_record_stream(
     descriptor: &RecordStreamDescriptor,
 ) -> Result<Vec<u8>, RecordStreamError> {
     let count = records.len() as u64;
-    if count > max_for(descriptor.count_width) {
+    if count > max_for(descriptor.layout.count_width) {
         return Err(RecordStreamError::Overflow {
             field: "record count",
             value: count,
-            width: descriptor.count_width,
+            width: descriptor.layout.count_width,
         });
     }
     let mut out = Vec::new();
-    write_le(&mut out, count, descriptor.count_width);
+    write_le(&mut out, count, descriptor.layout.count_width);
     for (code, value) in records {
         let encoding = descriptor.encoding(*code)?;
-        write_le(&mut out, (*code).into(), descriptor.code_width);
+        write_le(&mut out, (*code).into(), descriptor.layout.code_width);
         match encoding {
             RecordValueEncoding::Fixed { width } => {
                 let value = match numeric_value(value) {
@@ -268,6 +267,29 @@ pub fn typed_record_stream(
                 }
                 write_le(&mut out, value, width);
             }
+            RecordValueEncoding::Signed { width } => {
+                let value = match numeric_value(value) {
+                    NumericValue::Unsigned(value) => i128::from(value),
+                    NumericValue::Negative(value) => i128::from(value),
+                    NumericValue::NotNumeric => {
+                        return Err(RecordStreamError::ValueTypeMismatch {
+                            code: *code,
+                            encoding,
+                        });
+                    }
+                };
+                let bits = u32::from(width) * 8;
+                let min = -(1_i128 << (bits - 1));
+                let max = (1_i128 << (bits - 1)) - 1;
+                if !(min..=max).contains(&value) {
+                    return Err(RecordStreamError::SignedOverflow {
+                        code: *code,
+                        value,
+                        width,
+                    });
+                }
+                write_le(&mut out, value as i64 as u64, width);
+            }
             RecordValueEncoding::PtpString => {
                 let PropValue::Str(value) = value else {
                     return Err(RecordStreamError::ValueTypeMismatch {
@@ -282,26 +304,83 @@ pub fn typed_record_stream(
     Ok(out)
 }
 
+/// One recoverable record-stream decode condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordStreamDiagnostic {
+    SkippedUndeclaredMember { code: u16, value: u32 },
+}
+
+/// Records and recoverable diagnostics from one record-stream decode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedRecordStream {
+    pub records: Vec<(u16, PropValue)>,
+    pub diagnostics: Vec<RecordStreamDiagnostic>,
+}
+
 /// Decode a manifest-resolved heterogeneous record stream. The count remains
-/// authoritative; bytes after the declared records are ignored.
+/// authoritative. Declared members consume their declared encoding. An
+/// undeclared member tentatively consumes the payload's default fixed width.
+/// That tolerant result is accepted only when exactly `count` records consume
+/// the complete payload. Otherwise the first undeclared member remains a hard
+/// error. Payloads without undeclared members retain count-authoritative
+/// handling of trailing bytes.
 pub fn parse_typed_record_stream(
     bytes: &[u8],
     descriptor: &RecordStreamDescriptor,
-) -> Result<Vec<(u16, PropValue)>, RecordStreamError> {
+) -> Result<DecodedRecordStream, RecordStreamError> {
     let mut reader = Reader::new(bytes);
-    let count = read_le(&mut reader, descriptor.count_width)? as usize;
+    let count = read_le(&mut reader, descriptor.layout.count_width)? as usize;
     let mut out = Vec::with_capacity(count.min(bytes.len()));
+    let mut diagnostics = Vec::new();
+    let mut first_undeclared = None;
     for _ in 0..count {
-        let code = read_le(&mut reader, descriptor.code_width)? as u16;
-        let value = match descriptor.encoding(code)? {
-            RecordValueEncoding::Fixed { width } => {
-                PropValue::U32(read_le(&mut reader, width)? as u32)
+        let code = match read_le(&mut reader, descriptor.layout.code_width) {
+            Ok(code) => code as u16,
+            Err(error) => {
+                return Err(first_undeclared
+                    .map(|code| RecordStreamError::UndeclaredMember { code })
+                    .unwrap_or_else(|| error.into()));
             }
-            RecordValueEncoding::PtpString => PropValue::Str(reader.ptp_string()?),
         };
-        out.push((code, value));
+        let Some(encoding) = descriptor.members.get(&code).copied() else {
+            let original = *first_undeclared.get_or_insert(code);
+            let value = match read_le(&mut reader, descriptor.layout.value_width) {
+                Ok(value) => value as u32,
+                Err(_) => return Err(RecordStreamError::UndeclaredMember { code: original }),
+            };
+            diagnostics.push(RecordStreamDiagnostic::SkippedUndeclaredMember { code, value });
+            continue;
+        };
+        let value = match encoding {
+            RecordValueEncoding::Fixed { width } => {
+                read_le(&mut reader, width).map(|value| PropValue::U32(value as u32))
+            }
+            RecordValueEncoding::Signed { width } => match width {
+                1 => reader.i8().map(PropValue::I8),
+                2 => reader.i16().map(PropValue::I16),
+                _ => reader.i32().map(PropValue::I32),
+            },
+            RecordValueEncoding::PtpString => reader.ptp_string().map(PropValue::Str),
+        };
+        match value {
+            Ok(value) => out.push((code, value)),
+            Err(error) => {
+                if let Some(code) = first_undeclared {
+                    return Err(RecordStreamError::UndeclaredMember { code });
+                }
+                return Err(error.into());
+            }
+        }
     }
-    Ok(out)
+    if let Some(code) = first_undeclared {
+        if reader.remaining() != 0 {
+            return Err(RecordStreamError::UndeclaredMember { code });
+        }
+    }
+    Ok(DecodedRecordStream {
+        records: out,
+        diagnostics,
+    })
 }
 
 /// Assemble a live-status record stream (e.g. Fuji `0xD212`): an LE element
@@ -461,8 +540,7 @@ mod tests {
 
     fn heterogeneous_descriptor() -> RecordStreamDescriptor {
         RecordStreamDescriptor::new(
-            2,
-            2,
+            RecordStreamLayout::D212,
             [
                 (0xdf00, RecordValueEncoding::Fixed { width: 4 }),
                 (0xd220, RecordValueEncoding::Fixed { width: 4 }),
@@ -474,14 +552,20 @@ mod tests {
     }
 
     fn fixed_descriptor(width: u8) -> RecordStreamDescriptor {
-        RecordStreamDescriptor::new(2, 2, [(0xd100, RecordValueEncoding::Fixed { width })]).unwrap()
+        RecordStreamDescriptor::new(
+            RecordStreamLayout::new(2, 2, width).unwrap(),
+            [(0xd100, RecordValueEncoding::Fixed { width })],
+        )
+        .unwrap()
     }
 
     #[test]
     fn decodes_complete_empty_ptp_string_record() {
         let bytes = [0x01, 0x00, 0x2f, 0xd2, 0x01, 0x00, 0x00];
         assert_eq!(
-            parse_typed_record_stream(&bytes, &heterogeneous_descriptor()).unwrap(),
+            parse_typed_record_stream(&bytes, &heterogeneous_descriptor())
+                .unwrap()
+                .records,
             vec![(0xd22f, PropValue::Str(String::new()))]
         );
     }
@@ -493,7 +577,9 @@ mod tests {
             0x41, 0xdf, 0x01, 0x00, 0x00, 0x00, 0x2f, 0xd2, 0x01, 0x00, 0x00,
         ];
         assert_eq!(
-            parse_typed_record_stream(&bytes, &heterogeneous_descriptor()).unwrap(),
+            parse_typed_record_stream(&bytes, &heterogeneous_descriptor())
+                .unwrap()
+                .records,
             vec![
                 (0xdf00, PropValue::U32(0x12)),
                 (0xd220, PropValue::U32(1)),
@@ -513,8 +599,28 @@ mod tests {
         let bytes = typed_record_stream(&records, &descriptor).unwrap();
         assert_eq!(&bytes[4..7], &[1, 0, 0]);
         assert_eq!(
-            parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+            parse_typed_record_stream(&bytes, &descriptor)
+                .unwrap()
+                .records,
             records
+        );
+    }
+
+    #[test]
+    fn signed_member_sign_extends_a_narrow_negative_value() {
+        let descriptor = RecordStreamDescriptor::new(
+            RecordStreamLayout::D212,
+            [(0x5010, RecordValueEncoding::Signed { width: 4 })],
+        )
+        .unwrap();
+        let bytes = typed_record_stream(&[(0x5010, PropValue::I16(-333))], &descriptor).unwrap();
+
+        assert_eq!(bytes, [0x01, 0x00, 0x10, 0x50, 0xb3, 0xfe, 0xff, 0xff]);
+        assert_eq!(
+            parse_typed_record_stream(&bytes, &descriptor)
+                .unwrap()
+                .records,
+            vec![(0x5010, PropValue::I32(-333))]
         );
     }
 
@@ -563,7 +669,9 @@ mod tests {
                 assert!(encoding.accepts_value(value));
                 let bytes = typed_record_stream(&[(0xd100, value.clone())], &descriptor).unwrap();
                 assert_eq!(
-                    parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+                    parse_typed_record_stream(&bytes, &descriptor)
+                        .unwrap()
+                        .records,
                     vec![(0xd100, PropValue::U32(0))]
                 );
             }
@@ -577,7 +685,9 @@ mod tests {
             let descriptor = fixed_descriptor(width);
             let bytes = typed_record_stream(&[(0xd100, value)], &descriptor).unwrap();
             assert_eq!(
-                parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+                parse_typed_record_stream(&bytes, &descriptor)
+                    .unwrap()
+                    .records,
                 vec![(0xd100, PropValue::U32(expected))]
             );
         }
@@ -621,13 +731,47 @@ mod tests {
     }
 
     #[test]
-    fn typed_stream_rejects_undeclared_and_truncated_members() {
+    fn typed_stream_skips_undeclared_member_in_fixed_framing() {
         let descriptor = heterogeneous_descriptor();
-        let unknown = [1, 0, 0x34, 0x12, 0, 0, 0, 0];
+        let bytes = [
+            0x03, 0x00, // count
+            0x00, 0xdf, 0x12, 0x00, 0x00, 0x00, // declared fixed member
+            0x34, 0x12, 0xef, 0xbe, 0xad, 0xde, // undeclared fixed member
+            0x41, 0xdf, 0x01, 0x00, 0x00, 0x00, // declared fixed member
+        ];
+
+        let decoded = parse_typed_record_stream(&bytes, &descriptor).unwrap();
+        assert_eq!(
+            decoded.records,
+            vec![(0xdf00, PropValue::U32(0x12)), (0xdf41, PropValue::U32(1)),]
+        );
+        assert_eq!(
+            decoded.diagnostics,
+            vec![RecordStreamDiagnostic::SkippedUndeclaredMember {
+                code: 0x1234,
+                value: 0xdead_beef,
+            }]
+        );
+    }
+
+    #[test]
+    fn typed_stream_rejects_undeclared_member_before_inconsistent_string_tail() {
+        let descriptor = heterogeneous_descriptor();
+        let bytes = [
+            0x02, 0x00, // count
+            0x34, 0x12, 0xef, 0xbe, 0xad, 0xde, // undeclared fixed member
+            0x2f, 0xd2, 0x02, 0x00, 0x00, // declared PTP string missing one code unit
+        ];
+
         assert!(matches!(
-            parse_typed_record_stream(&unknown, &descriptor),
+            parse_typed_record_stream(&bytes, &descriptor),
             Err(RecordStreamError::UndeclaredMember { code: 0x1234 })
         ));
+    }
+
+    #[test]
+    fn typed_stream_rejects_truncated_member() {
+        let descriptor = heterogeneous_descriptor();
         let truncated = [1, 0, 0x41, 0xdf, 1, 0, 0];
         assert!(matches!(
             parse_typed_record_stream(&truncated, &descriptor),

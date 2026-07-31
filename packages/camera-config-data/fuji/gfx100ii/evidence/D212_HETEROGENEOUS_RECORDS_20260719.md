@@ -50,3 +50,13 @@ code `0xD22F`, whose meaning is mode/persona-overloaded.
 A valid decoded snapshot may omit `0xDF41`. Absence is distinct from numeric
 zero and from malformed framing. These observations do not establish a retry
 interval, an absent-to-present transition, or session-maintenance behavior.
+
+## Tight live-view member validation on 2026-07-31
+
+A GFX100 II running firmware 2.30 emitted a six-byte member record for `0x5010`.
+The observed value was `0x00000000`. The record declaration establishes its
+four-byte width. The `0x5010` property documentation establishes signed milliEV
+semantics. A negative value in this stream has not been observed. Declaring
+`0x5010` as `exposureBias` allowed the complete snapshot to decode. Aperture,
+ISO, shutter, exposure bias, white balance, and focus mode then populated from
+the same payload.

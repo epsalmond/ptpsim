@@ -314,13 +314,20 @@ fn decode_typed_record_stream(b: &[u8]) -> Vec<(u16, PropValue)> {
         .expect("D212 payload descriptor");
     let (count_width, code_width, default_value_width) = payload.record_widths();
     let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
-        count_width,
-        code_width,
+        protocol_primitives::quirk::RecordStreamLayout::new(
+            count_width,
+            code_width,
+            default_value_width,
+        )
+        .expect("valid D212 record layout"),
         payload.members.iter().map(|member| {
             let code = parse_hex_code(member.code()).expect("valid D212 member code");
             let encoding = match member.encoding(default_value_width) {
                 RecordValueEncoding::Fixed { width } => {
                     protocol_primitives::quirk::RecordValueEncoding::Fixed { width }
+                }
+                RecordValueEncoding::Signed { width } => {
+                    protocol_primitives::quirk::RecordValueEncoding::Signed { width }
                 }
                 RecordValueEncoding::PtpString => {
                     protocol_primitives::quirk::RecordValueEncoding::PtpString
@@ -332,6 +339,7 @@ fn decode_typed_record_stream(b: &[u8]) -> Vec<(u16, PropValue)> {
     .expect("valid D212 record descriptor");
     protocol_primitives::quirk::parse_typed_record_stream(b, &descriptor)
         .expect("valid D212 record stream")
+        .records
 }
 
 fn decode_record_stream(b: &[u8]) -> Vec<(u16, u32)> {
@@ -339,6 +347,10 @@ fn decode_record_stream(b: &[u8]) -> Vec<(u16, u32)> {
         .into_iter()
         .filter_map(|(code, value)| match value {
             PropValue::U32(value) => Some((code, value)),
+            PropValue::I32(value) => Some((
+                code,
+                u32::try_from(value).expect("D212 helper requires a nonnegative signed value"),
+            )),
             PropValue::Str(_) => None,
             other => panic!("unexpected D212 value type for {code:#06x}: {other:?}"),
         })
@@ -564,6 +576,12 @@ fn app_live_controls_start_from_neutral_labeled_values() {
 
 #[test]
 fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
+    let expected_member_count = consolidated().properties["0xd212"]
+        .payload
+        .as_ref()
+        .expect("D212 payload descriptor")
+        .members
+        .len();
     let mut e = engine();
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None)); // OpenSession
 
@@ -571,7 +589,11 @@ fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
     // hand-coded blob — its members come from the payload descriptor (#51).
     let bytes = data_of(e.on_operation(&req(0x1015, 2, vec![0xd212]), None));
     let typed_records = decode_typed_record_stream(&bytes);
-    assert_eq!(typed_records.len(), 28, "all 28 descriptor members emitted");
+    assert_eq!(
+        typed_records.len(),
+        expected_member_count,
+        "all descriptor members emitted"
+    );
     assert_eq!(
         typed_records.iter().find(|(code, _)| *code == 0xd22f),
         Some(&(0xd22f, PropValue::Str(String::new()))),
@@ -579,7 +601,7 @@ fn d212_live_status_emits_member_record_stream_from_the_descriptor() {
     );
     let records = decode_record_stream(&bytes);
     // The named sub-fields the bundle carries survive into the stream.
-    for code in [0x5007u16, 0xd17c, 0xd209, 0xd02a, 0xdf41] {
+    for code in [0x5007u16, 0x5010, 0xd17c, 0xd209, 0xd02a, 0xdf41] {
         assert!(
             records.iter().any(|(c, _)| *c == code),
             "member {code:#06x} present in the stream"

@@ -1756,25 +1756,27 @@ impl Engine {
         property: u16,
     ) -> Result<Vec<u8>, protocol_primitives::quirk::RecordStreamError> {
         use protocol_primitives::quirk::{
-            typed_record_stream, RecordStreamDescriptor, RecordValueEncoding,
+            typed_record_stream, RecordStreamDescriptor, RecordStreamLayout, RecordValueEncoding,
         };
         let Some(payload) = self
             .manifest
             .property(property)
             .and_then(|p| p.payload.as_ref())
         else {
-            let descriptor = RecordStreamDescriptor::new(2, 2, [])?;
+            let descriptor = RecordStreamDescriptor::new(RecordStreamLayout::D212, [])?;
             return typed_record_stream(&[], &descriptor);
         };
         let (count_w, code_w, value_w) = payload.record_widths();
         let descriptor = RecordStreamDescriptor::new(
-            count_w,
-            code_w,
+            RecordStreamLayout::new(count_w, code_w, value_w)?,
             payload.members.iter().filter_map(|member| {
                 let code = parse_hex_code(member.code())?;
                 let encoding = match member.encoding(value_w) {
                     camera_config::RecordValueEncoding::Fixed { width } => {
                         RecordValueEncoding::Fixed { width }
+                    }
+                    camera_config::RecordValueEncoding::Signed { width } => {
+                        RecordValueEncoding::Signed { width }
                     }
                     camera_config::RecordValueEncoding::PtpString => RecordValueEncoding::PtpString,
                 };
@@ -1790,6 +1792,9 @@ impl Engine {
                     camera_config::RecordValueEncoding::Fixed { width } => {
                         RecordValueEncoding::Fixed { width }
                     }
+                    camera_config::RecordValueEncoding::Signed { width } => {
+                        RecordValueEncoding::Signed { width }
+                    }
                     camera_config::RecordValueEncoding::PtpString => RecordValueEncoding::PtpString,
                 };
                 let value = self
@@ -1801,6 +1806,9 @@ impl Engine {
                     .or_else(|| match member.simulator_value() {
                         Some(camera_config::RecordValueLiteral::Unsigned(value)) => {
                             Some(PropValue::U32(*value))
+                        }
+                        Some(camera_config::RecordValueLiteral::Signed(value)) => {
+                            Some(PropValue::I32(*value))
                         }
                         Some(camera_config::RecordValueLiteral::String(value)) => {
                             Some(PropValue::Str(value.clone()))
@@ -2153,6 +2161,9 @@ fn value_to_i64(v: &PropValue) -> Option<i64> {
 fn record_value_zero(encoding: protocol_primitives::quirk::RecordValueEncoding) -> PropValue {
     match encoding {
         protocol_primitives::quirk::RecordValueEncoding::Fixed { .. } => PropValue::U32(0),
+        protocol_primitives::quirk::RecordValueEncoding::Signed { width: 1 } => PropValue::I8(0),
+        protocol_primitives::quirk::RecordValueEncoding::Signed { width: 2 } => PropValue::I16(0),
+        protocol_primitives::quirk::RecordValueEncoding::Signed { .. } => PropValue::I32(0),
         protocol_primitives::quirk::RecordValueEncoding::PtpString => PropValue::Str(String::new()),
     }
 }
@@ -2286,8 +2297,7 @@ properties:
 
         let bytes = engine.record_stream_property(0xd212).unwrap();
         let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
-            2,
-            2,
+            protocol_primitives::quirk::RecordStreamLayout::D212,
             [(
                 0xd22f,
                 protocol_primitives::quirk::RecordValueEncoding::PtpString,
@@ -2295,7 +2305,9 @@ properties:
         )
         .unwrap();
         assert_eq!(
-            protocol_primitives::quirk::parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+            protocol_primitives::quirk::parse_typed_record_stream(&bytes, &descriptor)
+                .unwrap()
+                .records,
             vec![(0xd22f, PropValue::Str(String::new()))]
         );
     }
@@ -2345,8 +2357,7 @@ properties:
 
         let bytes = engine.record_stream_property(0xd212).unwrap();
         let descriptor = protocol_primitives::quirk::RecordStreamDescriptor::new(
-            2,
-            2,
+            protocol_primitives::quirk::RecordStreamLayout::D212,
             [
                 (
                     0xd100,
@@ -2376,7 +2387,9 @@ properties:
         )
         .unwrap();
         assert_eq!(
-            protocol_primitives::quirk::parse_typed_record_stream(&bytes, &descriptor).unwrap(),
+            protocol_primitives::quirk::parse_typed_record_stream(&bytes, &descriptor)
+                .unwrap()
+                .records,
             vec![
                 (0xd100, PropValue::U32(7)),
                 (0xd101, PropValue::U32(0)),

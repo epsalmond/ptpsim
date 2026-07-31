@@ -714,13 +714,14 @@ pub struct RecordMemberDetail {
 }
 
 /// Wire encoding of one record-stream value. `Fixed` is a raw unsigned
-/// little-endian field: producers must supply a nonnegative value and may not
-/// infer signed extension from a source property type. `PtpString` is the
-/// standard length-prefixed UTF-16LE PTP string grammar.
+/// little-endian field. `Signed` is a signed little-endian field whose declared
+/// width controls sign extension. `PtpString` is the standard length-prefixed
+/// UTF-16LE PTP string grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RecordValueEncoding {
     Fixed { width: u8 },
+    Signed { width: u8 },
     PtpString,
 }
 
@@ -730,6 +731,7 @@ pub enum RecordValueEncoding {
 #[serde(untagged)]
 pub enum RecordValueLiteral {
     Unsigned(u32),
+    Signed(i32),
     String(String),
 }
 

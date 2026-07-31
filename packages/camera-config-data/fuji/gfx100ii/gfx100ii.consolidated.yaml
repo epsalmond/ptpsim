@@ -9079,6 +9079,10 @@ properties:
       - '0x500a'
       - '0x500c'
       - '0x500e'
+      - code: '0x5010'
+        encoding:
+          kind: signed
+          width: 4
       - '0x5012'
       - '0xd001'
       - '0xd018'

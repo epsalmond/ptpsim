@@ -607,12 +607,18 @@ selects only the response codes declared in the manifest.
 
 Scalar property reads always update predicate scope, whether or not they bind a
 named capture. A property with a manifest-declared record-stream payload is
-decoded into typed allowed-member records. Fixed numeric members update
+decoded into typed allowed-member records. Numeric members update
 predicate scope; PTP-string members remain available in `RecordStreamResult`
-but are not coerced into numeric observations. `record_stream_value` returns an
-optional typed value: absence is `None`, a present zero is `U32(0)`, and
-malformed payloads remain codec errors. Composite polling therefore remains
-manifest-driven and does not move camera-specific parsing into the host.
+but are not coerced into numeric observations. The decoder walks declared
+members at their declared size. It tentatively consumes an undeclared member at
+the payload's default fixed width. The skip is accepted only when exactly the
+declared record count consumes the complete payload.
+`RecordStreamResult.diagnostics` reports the skipped code and raw value. An
+inconsistent walk remains an undeclared-member codec error.
+`record_stream_value` returns an optional typed value: absence is `None`, a
+present zero is `U32(0)`, and malformed payloads remain codec errors. Composite
+polling therefore remains manifest-driven and does not move camera-specific
+parsing into the host.
 
 Mode entries and actions may declare complete, ordered `executorSpan`
 activities over their top-level steps (§11.24). When present, the PTP executor

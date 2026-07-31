@@ -1558,9 +1558,25 @@ impl PtpCtx {
             let status = crate::parse_record_stream(payload.to_vec(), info)
                 .map_err(|error| self.decode_failure(here, error.to_string()))?;
             for observation in status.records {
-                if let crate::PtpValue::U32 { value } = observation.value {
-                    self.observed.set(observation.code, value as i64);
+                if let Some(value) = ptp_value_i64(observation.value) {
+                    self.observed.set(observation.code, value);
                 }
+            }
+            if !status.diagnostics.is_empty() {
+                let diagnostics = status
+                    .diagnostics
+                    .into_iter()
+                    .map(|diagnostic| match diagnostic {
+                        crate::RecordStreamDiagnostic::SkippedUndeclaredMember { code, value } => {
+                            format!("skipped undeclared member {code:#06x} value {value:#010x}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.deferred_tolerance = Some(self.other(
+                    here,
+                    format!("property {prop:#06x} record stream: {diagnostics}"),
+                ));
             }
             Ok(())
         } else {
@@ -1752,6 +1768,20 @@ impl PtpCtx {
             meta: None,
         }
     }
+}
+
+fn ptp_value_i64(value: crate::PtpValue) -> Option<i64> {
+    Some(match value {
+        crate::PtpValue::I8 { value } => i64::from(value),
+        crate::PtpValue::U8 { value } => i64::from(value),
+        crate::PtpValue::I16 { value } => i64::from(value),
+        crate::PtpValue::U16 { value } => i64::from(value),
+        crate::PtpValue::I32 { value } => i64::from(value),
+        crate::PtpValue::U32 { value } => i64::from(value),
+        crate::PtpValue::I64 { value } => value,
+        crate::PtpValue::U64 { value } => i64::try_from(value).ok()?,
+        crate::PtpValue::Str { .. } => return None,
+    })
 }
 
 fn numeric_runtime_params(values: Vec<PtpRuntimeValue>) -> Vec<PtpScopeValue> {

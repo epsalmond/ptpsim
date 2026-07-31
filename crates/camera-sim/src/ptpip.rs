@@ -24,7 +24,7 @@ use camera_config::model::{
 use camera_config::{parse_hex_code, PropView, RetryFailureClass};
 use camera_media_store::ByteSource;
 use protocol_primitives::quirk::{
-    parse_typed_record_stream, RecordStreamDescriptor, RecordValueEncoding,
+    parse_typed_record_stream, RecordStreamDescriptor, RecordStreamLayout, RecordValueEncoding,
 };
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
@@ -708,13 +708,16 @@ impl Ctx<'_> {
                 {
                     let (count_width, code_width, value_width) = payload.record_widths();
                     let decoded = RecordStreamDescriptor::new(
-                        count_width,
-                        code_width,
+                        RecordStreamLayout::new(count_width, code_width, value_width)
+                            .map_err(|error| error.to_string())?,
                         payload.members.iter().filter_map(|member| {
                             let code = parse_hex_code(member.code())?;
                             let encoding = match member.encoding(value_width) {
                                 camera_config::RecordValueEncoding::Fixed { width } => {
                                     RecordValueEncoding::Fixed { width }
+                                }
+                                camera_config::RecordValueEncoding::Signed { width } => {
+                                    RecordValueEncoding::Signed { width }
                                 }
                                 camera_config::RecordValueEncoding::PtpString => {
                                     RecordValueEncoding::PtpString
@@ -726,8 +729,26 @@ impl Ctx<'_> {
                     .map_err(|error| error.to_string())
                     .and_then(|descriptor| {
                         parse_typed_record_stream(&data, &descriptor)
-                            .map(|_| ())
                             .map_err(|error| format!("decode prop {code:#06x}: {error:?}"))
+                            .and_then(|decoded| {
+                                if decoded.diagnostics.is_empty() {
+                                    return Ok(());
+                                }
+                                let diagnostics = decoded
+                                    .diagnostics
+                                    .into_iter()
+                                    .map(|diagnostic| match diagnostic {
+                                        protocol_primitives::quirk::RecordStreamDiagnostic::SkippedUndeclaredMember {
+                                            code,
+                                            value,
+                                        } => format!(
+                                            "skipped undeclared member {code:#06x} value {value:#010x}"
+                                        ),
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                Err(format!("decode prop {code:#06x}: {diagnostics}"))
+                            })
                     });
                     if let Err(message) = decoded {
                         self.last_failure_class = Some(RetryFailureClass::Decode);
@@ -1298,6 +1319,52 @@ media:
         )
         .expect_err("a scalar payload is not a count-prefixed u32 array");
         assert!(error.message.contains("decode array prop"));
+    }
+
+    #[test]
+    fn record_stream_self_check_reports_skipped_undeclared_member() {
+        let mut engine = engine(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TEST, model: Record Stream, firmware: "1" }
+properties:
+  "0xd209": { name: result, type: u32, access: readOnly, initialValue: 0 }
+  "0xd212":
+    name: status
+    type: u8a
+    access: readOnly
+    payload: { form: recordStream, members: ["0xd209"] }
+"#,
+        );
+        engine
+            .install_fault(crate::FaultSpec {
+                selector: crate::FaultSelector {
+                    operation: op::GET_DEVICE_PROP_VALUE,
+                    params: Some(vec![0xd212]),
+                    skip: 0,
+                    count: Some(1),
+                },
+                mutation: crate::FaultMutation::ReplaceData {
+                    bytes: vec![
+                        0x01, 0x00, // count
+                        0xff, 0x5f, 0xef, 0xbe, 0xad, 0xde, // undeclared fixed member
+                    ],
+                },
+            })
+            .unwrap();
+
+        let error = walk_ptpip(
+            &mut engine,
+            &[Step {
+                get_prop: Some("0xd212".into()),
+                ..Default::default()
+            }],
+            &BTreeMap::new(),
+        )
+        .expect_err("sim self-check rejects its own undeclared member");
+
+        assert!(error.message.contains("0x5fff"));
+        assert!(error.message.contains("0xdeadbeef"));
     }
 
     #[test]

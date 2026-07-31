@@ -1574,6 +1574,57 @@ fn composite_poll_populates_manifest_declared_member_scope() {
 }
 
 #[test]
+fn composite_poll_surfaces_skipped_member_through_step_observer() {
+    let store = store_with_composite_poll_action();
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(run_mode_entry(
+        store.clone(),
+        "app".into(),
+        None,
+        "shooting/stills".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("cold entry succeeds");
+    transport.override_next_data(
+        0x1015,
+        vec![0xd212],
+        vec![
+            0x02, 0x00, // count
+            0xff, 0x5f, 0xef, 0xbe, 0xad, 0xde, // undeclared fixed member
+            0x09, 0xd2, 0x00, 0x00, 0x00, 0x00, // declared predicate member
+        ],
+    );
+    let reports = Arc::new(Reports::default());
+
+    block_on(run_initiator_action(
+        store,
+        "app".into(),
+        ActionVerb::Shutter,
+        transport,
+        reports.clone(),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("record-stream drift remains recoverable");
+
+    assert!(reports.0.lock().expect("reports").iter().any(|report| {
+        report.property == Some(0xd212)
+            && matches!(report.outcome, StepOutcome::Tolerated)
+            && report
+                .error
+                .as_ref()
+                .is_some_and(|detail| detail.contains("0x5fff") && detail.contains("0xdeadbeef"))
+    }));
+}
+
+#[test]
 fn await_deadline_covers_the_pending_event_pull() {
     let transport = Arc::new(EngineTransport::new(
         "app",
