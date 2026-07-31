@@ -488,9 +488,12 @@ Per §2.2, with operation-specific values:
 5. GetDevicePropValue(0xDF2A)          // GetFunctionVersion(Fpcsh_VersionRemoteEx)
                                        //   camera returns its max supported version
 6. SetDevicePropValue(0xDF2A, min(camera_max, 4))  // SetFunctionVersion to negotiated value
-7. Open TCP 55741 (event channel) — passive listen
-8. Open TCP 55742 (through-picture channel) — passive listen
-9. Begin polling 0xD212 on 55740 at ~1-3 Hz (your choice; reference app does 3.6 Hz)
+7. InitiateOpenCapture (0x101C)        // opens the capture session (§6); fw 2.30
+                                       //   refuses TCP on 55741/55742 until this
+                                       //   completes (device-validated 2026-07-31)
+8. Open TCP 55741 (event channel) — passive listen
+9. Open TCP 55742 (through-picture channel) — passive listen
+10. Begin polling 0xD212 on 55740 at ~1-3 Hz (your choice; reference app does 3.6 Hz)
    Begin reading frames on 55742 (60 fps source)
    Begin reading events on 55741 (sparse)
 ```
@@ -505,8 +508,9 @@ Optional. The body has sensible defaults baked in via `xlv_settings_org.yaml`, s
 app that doesn't `SetDevicePropValue` any of these still gets a working 640×480 stream at
 "new command" mode with variable aspect ratio. Set them only if you need to change the
 trade-off between bandwidth, latency, and resolution. **Best placement: between step 6
-(SetFunctionVersion) and step 7 (open 55741) in §4.1.** Setting after the through-channel
-opens may or may not take effect on the next frame — untested.
+(SetFunctionVersion) and step 7 (InitiateOpenCapture) in §4.1.** Setting after the
+through-channel opens may or may not take effect on the next frame — untested, as is
+placement between 0x101C and the channel opens.
 
 #### `0xD173 Fpcsh_LiveImage_Quality` — JPEG quality preset
 
@@ -831,7 +835,8 @@ live view; it is not sent after every shutter press.
 ```
 1. Live-view startup:
    InitiateOpenCapture (0x101C) tid=N   params=(StorageID=0, ObjectFormatCode=0)
-   → "lock into remote-shutter mode" and keep 55741/55742 open
+   → "lock into remote-shutter mode"; 55741/55742 accept TCP only after this
+     completes (§4.1 step 7)
 
 2. Each shutter press:
    InitiateCapture (0x100E) tid=M       params=(StorageID=0, ObjectFormatCode=0)

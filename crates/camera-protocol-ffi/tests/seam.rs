@@ -1603,7 +1603,7 @@ connections:
 }
 
 #[test]
-fn get_to_take_entry_reopens_then_starts_live_view() {
+fn get_to_take_entry_switches_in_session_then_starts_live_view() {
     let s = store();
     let plan = s
         .mode_entry(
@@ -1613,10 +1613,10 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
         )
         .expect("from-image-transfer live-view entry");
     let steps = ptp_steps(&plan);
-    assert!(matches!(
-        steps[0],
-        EntryStep::ReopenSession { tolerant: false }
-    ));
+    assert_eq!(steps.len(), 7);
+    assert!(!steps
+        .iter()
+        .any(|step| matches!(step, EntryStep::ReopenSession { .. })));
     assert!(steps.iter().any(|st| matches!(
         st,
         EntryStep::SetProp {
@@ -1644,6 +1644,7 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
     assert!(matches!(
         &steps[steps.len() - 3..],
         [
+            EntryStep::SendOp { op: 0x101c, .. },
             EntryStep::OpenChannel {
                 role: SocketRole::Event,
                 ..
@@ -1651,8 +1652,7 @@ fn get_to_take_entry_reopens_then_starts_live_view() {
             EntryStep::OpenChannel {
                 role: SocketRole::LiveView,
                 ..
-            },
-            EntryStep::SendOp { op: 0x101c, .. }
+            }
         ]
     ));
     assert!(

@@ -1889,11 +1889,13 @@ pub struct Step {
     /// exist until a preceding camera operation has completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_channel: Option<SocketRole>,
-    /// Re-establish the PTP/IP session in-place (reference app Get→Take switch on `app`):
-    /// CloseSession 0x1003 → 8B `0xffffffff` sentinel → new TCP socket to the
-    /// connection's command port → cached 82B InitCmdReq → InitCmdAck →
-    /// OpenSession sid=1. Engine reuses the connection's cached identity, so
-    /// the action carries no params — `reopenSession: {}`.
+    /// Re-establish the PTP/IP session in-place: CloseSession 0x1003 → 8B
+    /// `0xffffffff` sentinel → new TCP socket to the connection's command port →
+    /// cached 82B InitCmdReq → InitCmdAck → OpenSession sid=1. Engine reuses the
+    /// connection's cached identity, so the action carries no params —
+    /// `reopenSession: {}`. A reference-app Get→Take trace exhibits this shape,
+    /// but GFX100 II fw 2.30 refuses the manifest executor's reconnect, so that
+    /// body's canonical Get→Take edge stays in-session.
     #[serde(default)]
     pub reopen_session: Option<ReopenSession>,
     /// End the PTP/IP session, optionally using the connection's declared

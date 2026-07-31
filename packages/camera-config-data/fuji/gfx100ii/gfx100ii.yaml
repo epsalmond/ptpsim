@@ -33,8 +33,10 @@ evidence:
   # Authoritative for the wireless-tether supported-ops set (2026-05-27 wire capture);
   # stills and video snapshots had the same ops/props/events surface.
   wireTetherCaps20260527: { kind: wire-capture, path: "packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
-  # reference-app Take↔Get session-reopen wire trace (full byte trace + identity decode).
-  # Source for the `reopenSession` step in the image-transfer → shooting/stills entry.
+  # Reference-app Take↔Get session-reopen wire trace (full byte trace + identity decode).
+  # The trace includes a reopen, but GFX100 II fw 2.30 refuses the manifest executor's
+  # reconnect on Get→Take (device-validated 2026-07-31). Other decoded event facts
+  # below still cite this evidence.
 
   # Wire-decoded 0xD212 tight-format live-status snapshot stream (u16 count +
   # 6-byte <propCode u16><value u32> records) + the v6/v8/v9 member catalogs.
@@ -151,8 +153,10 @@ connections:
     eventFraming: usb
     # Closing the active PTP/IP transport can remove the :55740 listener. A
     # direct redial is therefore not generic recovery; Take→Get performs the
-    # manifest-authored outer BLE/AP re-establishment below (#244). Get→Take can
-    # still reopen in place because no open-capture stream owns that edge.
+    # manifest-authored outer BLE/AP re-establishment below (#244). Get→Take
+    # stays in-session: fw 2.30 independently refuses the manifest executor's
+    # reopen on that edge (device-validated 2026-07-31), a separate refusal
+    # from the listener volatility above.
     commandListenerVolatile: true
     discovery: { mechanism: ble, announces: camera }
     modes: [shooting/stills, shooting/video, image-transfer, reserved-photo-receive]
@@ -191,24 +195,25 @@ connections:
           - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)
           - { readEcho: "0xdf2a" }               # read then write back
           - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
+          # fw 2.30 accepts the event/live-view TCP connections only after
+          # InitiateOpenCapture succeeds (device-validated 2026-07-31).
+          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
           - { openChannel: event }
           - { openChannel: liveView }
-          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
       - to: shooting/stills          # from image-import back to live-view
         from: image-transfer
-        # Ground truth: MODE_CHANGES.md §5b. Get→Take reopens the PTP/IP
-        # session while the Wi-Fi AP stays up, then selects FunctionMode=Take
-        # and starts live-view. Unlike the #103 Take→Get regression, no live
-        # open-capture stream is active on this edge.
+        # The reference-app trace shows a reopen, but GFX100 II fw 2.30 refuses
+        # the manifest executor's reconnect on this edge. The canonical entry
+        # switches FunctionMode in-session (device-validated 2026-07-31).
         steps:
-          - { reopenSession: {} }
           - { setProp: "0xdf00", value: 6, tolerant: true }  # functionModeMajor
           - { setProp: "0xdf01", value: 0x16 }               # functionMode = 22 (live-view)
           - { setProp: "0xdf2a", value: 2 }                  # Fpcsh_VersionRemoteEx
           - { sendOp: "0x902b", repeat: 4 }                  # FujiVendor_902B startup ×4
+          # The same fw 2.30 aux-port gate requires successful open capture first.
+          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
           - { openChannel: event }
           - { openChannel: liveView }
-          - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
       - to: shooting/video          # in-live-view stills→video selector
         from: shooting/stills
         steps:

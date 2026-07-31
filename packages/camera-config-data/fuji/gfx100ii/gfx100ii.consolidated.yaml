@@ -15531,6 +15531,20 @@ connections:
       - setProp: null
         getProp: null
         readEcho: null
+        sendOp: '0x101c'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        captures:
+        - bind: openCaptureTxId
+          as: transactionId
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
         sendOp: null
         openChannel: event
         reopenSession: null
@@ -15552,34 +15566,9 @@ connections:
         tolerant: false
         repeat: 1
         awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x101c'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        captures:
-        - bind: openCaptureTxId
-          as: transactionId
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
     - to: shooting/stills
       from: image-transfer
       steps:
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: {}
-        closeSession: null
-        value: null
-        params: []
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
       - setProp: '0xdf00'
         getProp: null
         readEcho: null
@@ -15627,6 +15616,20 @@ connections:
       - setProp: null
         getProp: null
         readEcho: null
+        sendOp: '0x101c'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        captures:
+        - bind: openCaptureTxId
+          as: transactionId
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
         sendOp: null
         openChannel: event
         reopenSession: null
@@ -15645,20 +15648,6 @@ connections:
         closeSession: null
         value: null
         params: []
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x101c'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        captures:
-        - bind: openCaptureTxId
-          as: transactionId
         tolerant: false
         repeat: 1
         awaitUntil: null

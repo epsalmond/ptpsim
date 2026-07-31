@@ -282,20 +282,20 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     assert_eq!(steps[1].value, Some(0x16.into())); // functionMode 22
     assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
     assert_eq!(steps[3].repeat, 4); // 902B ×4
+    assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
+    assert_eq!(steps[4].captures.len(), 1);
+    assert_eq!(steps[4].captures[0].bind, "openCaptureTxId");
     assert_eq!(
-        steps[4].open_channel,
-        Some(camera_config::SocketRole::Event)
+        steps[4].captures[0].source,
+        camera_config::CaptureSource::TransactionId
     );
     assert_eq!(
         steps[5].open_channel,
-        Some(camera_config::SocketRole::LiveView)
+        Some(camera_config::SocketRole::Event)
     );
-    assert_eq!(steps[6].send_op.as_deref(), Some("0x101c"));
-    assert_eq!(steps[6].captures.len(), 1);
-    assert_eq!(steps[6].captures[0].bind, "openCaptureTxId");
     assert_eq!(
-        steps[6].captures[0].source,
-        camera_config::CaptureSource::TransactionId
+        steps[6].open_channel,
+        Some(camera_config::SocketRole::LiveView)
     );
     assert!(steps.iter().all(camera_config::Step::is_well_formed));
     let reverse = entries
@@ -303,22 +303,25 @@ fn live_view_entry_is_the_ground_truth_sequence() {
         .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
         .expect("image-transfer can return to live view");
     let reverse_steps = reverse.ptp_steps().expect("reverse live-view entry");
+    assert!(reverse_steps
+        .iter()
+        .all(|step| step.reopen_session.is_none()));
     let reverse_tail = &reverse_steps[reverse_steps.len() - 3..];
-    assert_eq!(
-        reverse_tail[0].open_channel,
-        Some(camera_config::SocketRole::Event)
-    );
-    assert_eq!(
-        reverse_tail[1].open_channel,
-        Some(camera_config::SocketRole::LiveView)
-    );
-    let reverse_open = &reverse_tail[2];
+    let reverse_open = &reverse_tail[0];
     assert_eq!(reverse_open.send_op.as_deref(), Some("0x101c"));
     assert_eq!(reverse_open.captures.len(), 1);
     assert_eq!(reverse_open.captures[0].bind, "openCaptureTxId");
     assert_eq!(
         reverse_open.captures[0].source,
         camera_config::CaptureSource::TransactionId
+    );
+    assert_eq!(
+        reverse_tail[1].open_channel,
+        Some(camera_config::SocketRole::Event)
+    );
+    assert_eq!(
+        reverse_tail[2].open_channel,
+        Some(camera_config::SocketRole::LiveView)
     );
     assert_eq!(
         reverse_steps
@@ -1721,19 +1724,17 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
     assert!(close.transport_close);
     assert_eq!(reestablish.exit_steps.len(), 2);
 
-    // Get→Take is the reverse edge: reopen from image-import, select
-    // FunctionMode=Take, negotiate the live-view function version as u32, and
-    // restart open capture. It must not terminate an open-capture stream because
-    // image-transfer has none active.
+    // Get→Take is the reverse edge: switch in-session from image-import, select
+    // FunctionMode=Take, negotiate the live-view function version as u32, then
+    // restart open capture before opening the auxiliary channels.
     let reverse = entries
         .iter()
         .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
         .expect("image-transfer → shooting/stills entry");
     let reverse_steps = reverse.ptp_steps().expect("Get→Take PTP entry");
-    assert!(
-        reverse_steps[0].reopen_session.is_some(),
-        "Get→Take re-establishes PTP/IP from image-import"
-    );
+    assert!(reverse_steps
+        .iter()
+        .all(|step| step.reopen_session.is_none()));
     assert!(reverse_steps
         .iter()
         .any(|s| { s.set_prop.as_deref() == Some("0xdf01") && s.value == Some(0x16.into()) }));
@@ -1744,22 +1745,22 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
         .iter()
         .any(|s| s.send_op.as_deref() == Some("0x902b") && s.repeat == 4));
     assert_eq!(
-        reverse_steps[reverse_steps.len() - 3].open_channel,
-        Some(camera_config::SocketRole::Event)
+        reverse_steps[reverse_steps.len() - 3].send_op.as_deref(),
+        Some("0x101c")
     );
     assert_eq!(
         reverse_steps[reverse_steps.len() - 2].open_channel,
-        Some(camera_config::SocketRole::LiveView)
+        Some(camera_config::SocketRole::Event)
     );
     assert_eq!(
-        reverse_steps.last().and_then(|s| s.send_op.as_deref()),
-        Some("0x101c")
+        reverse_steps.last().and_then(|s| s.open_channel),
+        Some(camera_config::SocketRole::LiveView)
     );
     assert!(
         reverse_steps
             .iter()
             .all(|s| s.send_op.as_deref() != Some("0x1018")),
-        "Get→Take must not terminate live-view before reopening it"
+        "Get→Take must not terminate live-view before restarting it"
     );
 }
 

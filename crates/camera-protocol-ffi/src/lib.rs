@@ -1623,8 +1623,10 @@ pub enum EntryStep {
     /// socket, send the connection's manifest-declared transport-close frame,
     /// open a new socket to the connection's command port, replay the cached
     /// InitCommandRequest, and OpenSession again. Reuses the connection's cached
-    /// identity, so the verb carries no parameters. Wire-confirmed for reference app
-    /// Get→Take. Take→Get uses an outer connection re-establishment (#244).
+    /// identity, so the verb carries no parameters. A reference-app Get→Take
+    /// trace exhibits this shape, but GFX100 II fw 2.30 refuses the manifest
+    /// executor's reconnect, so that body's canonical edge stays in-session.
+    /// Take→Get uses an outer connection re-establishment (#244).
     ReopenSession { tolerant: bool },
     /// End the PTP/IP session. `transport_close` means use the connection's
     /// manifest-declared orderly transport-close frame instead of a bare TCP

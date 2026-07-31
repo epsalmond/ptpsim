@@ -131,10 +131,19 @@ fn store_with_tolerant_repeated_startup() -> Arc<ConfigStore> {
 }
 
 fn store_with_tolerant_reopen() -> Arc<ConfigStore> {
-    let body = data("fuji/gfx100ii/gfx100ii.yaml").replacen(
-        "- { reopenSession: {} }",
-        "- { reopenSession: {}, tolerant: true }",
+    let original = data("fuji/gfx100ii/gfx100ii.yaml");
+    // Anchor on the transfer→stills edge's unique comment so the injection
+    // cannot silently no-op or land in the cold entry if alignment changes.
+    let anchor =
+        "# switches FunctionMode in-session (device-validated 2026-07-31).\n        steps:\n";
+    let body = original.replacen(
+        anchor,
+        &format!("{anchor}          - {{ reopenSession: {{}}, tolerant: true }}\n"),
         1,
+    );
+    assert_ne!(
+        body, original,
+        "tolerant-reopen anchor missing from gfx100ii.yaml"
     );
     store_from_body(body)
 }
@@ -1302,10 +1311,10 @@ fn real_gfx_cold_entry_runs_in_manifest_wire_order() {
         [
             ..,
             ExecutorCall::OperationCompleted(0x902b),
-            ExecutorCall::OpenChannel(SocketRole::Event),
-            ExecutorCall::OpenChannel(SocketRole::LiveView),
             ExecutorCall::Operation(0x101c),
-            ExecutorCall::OperationCompleted(0x101c)
+            ExecutorCall::OperationCompleted(0x101c),
+            ExecutorCall::OpenChannel(SocketRole::Event),
+            ExecutorCall::OpenChannel(SocketRole::LiveView)
         ]
     ));
     assert_eq!(outcome.steps_run, 7);
@@ -1658,7 +1667,7 @@ fn match_aware_event_delivery_preserves_unrelated_events() {
 }
 
 #[test]
-fn real_in_place_reopen_transition_runs_through_the_transport_seam() {
+fn real_image_transfer_to_live_view_transition_stays_in_session() {
     let transport = Arc::new(EngineTransport::new(
         "app",
         PtpFraming::Compressed,
@@ -1682,7 +1691,7 @@ fn real_in_place_reopen_transition_runs_through_the_transport_seam() {
         "app".into(),
         Some("image-transfer".into()),
         "shooting/stills".into(),
-        transport,
+        transport.clone(),
         Arc::new(Reports::default()),
         Arc::new(Activities::default()),
         vec![PtpRuntimeValue {
@@ -1690,8 +1699,10 @@ fn real_in_place_reopen_transition_runs_through_the_transport_seam() {
             value: 10,
         }],
     ))
-    .expect("reopen transition succeeds");
-    assert!(outcome.steps_run > 1);
+    .expect("in-session transition succeeds");
+    assert_eq!(outcome.steps_run, 7);
+    assert_eq!(transport.close_calls(), 0);
+    assert_eq!(transport.reopen_calls(), 0);
 }
 
 #[test]

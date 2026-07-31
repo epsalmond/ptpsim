@@ -1692,10 +1692,10 @@ fn live_view_to_image_transfer_reestablishes_then_runs_cold_entry() {
 }
 
 #[test]
-fn image_transfer_to_live_view_reopens_then_streams() {
-    // #180 reverse edge: image-transfer has no open-capture stream, so the
-    // reference-app Get→Take path can re-establish the PTP/IP session and then
-    // bring live-view back up.
+fn image_transfer_to_live_view_switches_in_session_then_streams() {
+    // The reference-app trace includes a Get→Take reopen, but fw 2.30 refuses
+    // the manifest executor's reconnect. The device-validated edge switches
+    // FunctionMode in-session before bringing live-view back up.
     let m = consolidated();
     let app = &m.connections["app"];
     let xfer = app
@@ -1708,10 +1708,9 @@ fn image_transfer_to_live_view_reopens_then_streams() {
         .iter()
         .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
         .expect("image-transfer → live-view entry");
-    assert!(
-        entry_steps(live)[0].reopen_session.is_some(),
-        "Get→Take begins with the reconnect observed in reference app"
-    );
+    assert!(entry_steps(live)
+        .iter()
+        .all(|step| step.reopen_session.is_none()));
 
     let mut e = engine();
     walk_ptpip_in(&mut e, entry_steps(xfer), &BTreeMap::new(), Some("app"))
