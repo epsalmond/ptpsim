@@ -43,6 +43,17 @@ The test: would the line make sense on a stranger's laptop? If not, it belongs
 in the consumer's repo or a private tree. Existing violations are tracked
 (#255, #160, #259) — do not add new ones while those burn down.
 
+### Prose register
+
+Write terse, concrete, declarative. Titles state the content ("Vendor
+manifest schema"), never slogans. Banned copywriting tics: epigram headlines
+("One protocol, many cameras"), antithesis frames ("It's not X, it's Y"),
+tricolons ("small services, one bus, one truth"), and mirror-clause endings.
+Avoid em dashes: use commas, colons, parentheses, or two sentences. Test: if
+a sentence would fit on a landing page, rewrite it as a fact. Words like
+"deliberately" are fine when they record real design intent. Applies to
+docs, PR bodies, issues, and code comments.
+
 ### Work tracking — GitHub issues, not in-process task lists
 
 **Work is tracked as GitHub issues.** Agent in-process task lists
