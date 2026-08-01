@@ -390,8 +390,8 @@ properties:
     #[test]
     fn string_property_without_initial_value_describes_empty_string() {
         // #417: a str property with no descriptor and no initial value used to
-        // fall back to typed(STR, 0) — two raw U16 bytes under a declared STR
-        // datatype, a malformed dataset.
+        // fall back to typed(STR, 0). That is two raw U16 bytes under a
+        // declared STR datatype, a malformed dataset.
         let manifest = CameraManifest::from_yaml(
             r#"
 schema: camera-config/v1

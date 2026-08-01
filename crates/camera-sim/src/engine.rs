@@ -2287,7 +2287,7 @@ properties:
 
     #[test]
     fn get_prop_value_for_string_property_without_value_is_empty_string() {
-        // #417: the read path must agree with GetDevicePropDesc — an str
+        // #417: the read path must agree with GetDevicePropDesc. A str
         // property with no seeded value reports the empty string, not a
         // fabricated "0" (which also violates structuredText layouts).
         let manifest = CameraManifest::from_yaml(

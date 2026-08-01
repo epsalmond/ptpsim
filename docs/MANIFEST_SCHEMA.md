@@ -820,13 +820,14 @@ the authored form compact. Unknown classification strings are schema errors.
 FFI consumers receive the resolved classifications as `OperationKind` and
 `PropertyKind`, never as optional or open-ended strings.
 
+`initialValue` is the property's seed value before any camera read or
+write. A numeric-typed property takes an integer; a `type: str` property takes
+a quoted YAML string (`initialValue: "4000x2664"`), and an integer there is a
+schema error, as is a string on a numeric type.
+
 Property value metadata has three distinct layers. Consumers must keep them
 separate:
 
-- `initialValue`: the property's seed value before any camera read or write.
-  A numeric-typed property takes an integer; a `type: str` property takes a
-  quoted YAML string (`initialValue: "4000x2664"`), and an integer there is a
-  schema error, as is a string on a numeric type.
 - `valueRows`: presentation/codec rows for known raw values. Exact rows win for
   label lookup and preserve non-literal encoded forms for round-trip.
 - `valueEncoding.sentinel` and `valueEncoding.masks`: generic bit-mask forms for
