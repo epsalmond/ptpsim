@@ -523,10 +523,18 @@ impl CameraManifest {
 
 fn require_valid_descriptor(property: &Property, code: &str) -> Result<(), ManifestError> {
     let is_string = property.ptype.as_deref() == Some("str");
-    if is_string && property.initial_value.is_some() {
-        return Err(ManifestError::Contract(format!(
-            "properties.{code}.initialValue must be omitted for a property with type str"
-        )));
+    match (is_string, &property.initial_value) {
+        (true, Some(DescriptorValue::Int(_))) => {
+            return Err(ManifestError::Contract(format!(
+                "properties.{code}.initialValue must be a quoted string for a property with type str"
+            )));
+        }
+        (false, Some(DescriptorValue::Str(_))) => {
+            return Err(ManifestError::Contract(format!(
+                "properties.{code}.initialValue must be an integer for a property with a numeric type"
+            )));
+        }
+        _ => {}
     }
     let Some(descriptor) = &property.descriptor else {
         return Ok(());
@@ -2183,7 +2191,44 @@ properties:
         .to_string();
         assert!(
             error.contains(
-                "properties.0xd001.initialValue must be omitted for a property with type str"
+                "properties.0xd001.initialValue must be a quoted string for a property with type str"
+            ),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn string_properties_accept_quoted_string_initial_values() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties:
+  "0xd001": { name: example, type: str, initialValue: "4000x2664" }
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.properties["0xd001"].initial_value,
+            Some(DescriptorValue::Str("4000x2664".to_string()))
+        );
+    }
+
+    #[test]
+    fn numeric_properties_reject_string_initial_values() {
+        let error = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties:
+  "0xd001": { name: example, type: u16, initialValue: "4000x2664" }
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains(
+                "properties.0xd001.initialValue must be an integer for a property with a numeric type"
             ),
             "got: {error}"
         );

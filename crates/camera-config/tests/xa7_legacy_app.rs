@@ -82,8 +82,8 @@ fn xa7_viewer_and_remote_paths_keep_the_apk_backed_operations() {
         manifest
             .properties
             .get("0xdf24")
-            .and_then(|property| property.initial_value),
-        Some(0)
+            .and_then(|property| property.initial_value.clone()),
+        Some(camera_config::DescriptorValue::Int(0))
     );
 }
 

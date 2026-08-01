@@ -545,7 +545,7 @@ fn app_live_controls_start_from_neutral_labeled_values() {
     for (code, value) in expected {
         assert_eq!(
             manifest.properties[code].initial_value,
-            Some(value),
+            Some(camera_config::DescriptorValue::Int(value)),
             "{code} has an explicit simulator startup value"
         );
     }

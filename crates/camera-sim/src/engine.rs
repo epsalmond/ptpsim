@@ -1643,7 +1643,14 @@ impl Engine {
         } else {
             cur_idx.saturating_sub(1)
         };
-        if let Some(value) = typed_descriptor_value(datatype, &desc.values[new_idx]) {
+        let converted = typed_descriptor_value(datatype, &desc.values[new_idx]);
+        // Load-time validation rejects unconvertible descriptor values, so a
+        // None here means the manifest slipped past it; do not no-op quietly.
+        debug_assert!(
+            converted.is_some(),
+            "vendor_step target value for {prop_code:#06x} does not convert at its declared datatype"
+        );
+        if let Some(value) = converted {
             self.state.props.insert(prop_code, value);
         }
     }

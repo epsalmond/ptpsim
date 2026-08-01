@@ -3113,7 +3113,7 @@ properties:
         let property = applied.properties.get("0xd001").unwrap();
         assert_eq!(property.name, "semanticProperty");
         assert_eq!(property.ptp_name.as_deref(), Some("NativeProperty"));
-        assert_eq!(property.initial_value, Some(7));
+        assert_eq!(property.initial_value, Some(DescriptorValue::Int(7)));
         assert_eq!(property.access.as_deref(), Some("readOnly"));
         assert_eq!(property.kind, PropertyKind::CatalogOnly);
         let descriptor = property.descriptor.as_ref().unwrap();
