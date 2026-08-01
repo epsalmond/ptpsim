@@ -603,20 +603,30 @@ operation, property, response-code, and transaction-id correlation plus the
 step's declared tolerance. A composite step reports the transaction that
 determined its terminal outcome. Raw transport failures are never tolerated;
 only a non-OK PTP response may be swallowed by `tolerant: true`, and `retry`
-selects only the response codes declared in the manifest.
+selects only the response codes declared in the manifest. A step carries one
+deferred-tolerance slot: when a single step both tolerates a non-OK response
+and records a record-stream skip diagnostic, the later detail replaces the
+earlier one, and only the surviving detail surfaces on the step's tolerated
+outcome.
 
 Scalar property reads always update predicate scope, whether or not they bind a
 named capture. A property with a manifest-declared record-stream payload is
 decoded into typed allowed-member records. Numeric members update
 predicate scope; PTP-string members remain available in `RecordStreamResult`
 but are not coerced into numeric observations. The decoder walks declared
-members at their declared size. It tentatively consumes an undeclared member at
-the payload's default fixed width. The skip is accepted only when exactly the
-declared record count consumes the complete payload.
-`RecordStreamResult.diagnostics` reports the skipped code and raw value. An
-inconsistent walk remains an undeclared-member codec error.
+members at their declared size. An undeclared member triggers a bounded
+re-frame search over the candidate fixed widths (1, 2, 4): a walk is accepted
+only when exactly the declared record count consumes the complete payload, the
+walk with the fewest undeclared members wins, and a tie between distinct
+minimal walks is an undeclared-member codec error, as is a search that
+exhausts its state budget.
+`RecordStreamResult.diagnostics` reports the skipped code and raw value at the
+winning walk's width; treat skip diagnostics as best-effort, since a uniquely
+clean re-frame of a misaligned stream can still guess the wrong width.
 `record_stream_value` returns an optional typed value: absence is `None`, a
-present zero is `U32(0)`, and malformed payloads remain codec errors. Composite
+present zero is the member's decoded zero (`U32(0)` for fixed members, the
+matching signed zero for signed members), and malformed payloads remain codec
+errors. Composite
 polling therefore remains manifest-driven and does not move camera-specific
 parsing into the host.
 
