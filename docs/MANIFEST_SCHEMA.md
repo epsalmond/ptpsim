@@ -1071,16 +1071,21 @@ signed source value is sign-extended to that width.
 
 The decoder reads records in order. Declared codes consume their payload-local
 encoding, including declared fixed, signed, and PTP-string members. An
-undeclared code tentatively consumes the default fixed width. The decoder
-accepts the tolerant result only when exactly the declared record count
-consumes the complete payload. It omits the undeclared record and adds a
-`skippedUndeclaredMember` diagnostic containing its code and raw value.
+undeclared code triggers a bounded re-frame search over the candidate fixed
+widths (1, 2, and 4 bytes). A candidate walk is accepted only when it consumes
+exactly the declared record count and the complete payload, and the complete
+walk with the fewest undeclared members wins. The decoder omits each
+undeclared record and adds a `skippedUndeclaredMember` diagnostic containing
+its code and raw value at the winning walk's width.
 
-An inconsistent declaration-driven walk returns the original undeclared-member
-error. It does not expose records or diagnostics from a guessed alignment. It
-never pads a short fixed value or coerces a PTP string into a number. Payloads
-without an undeclared member retain the existing count-authoritative handling
-of bytes after the declared record count.
+Two distinct minimal walks that both re-frame cleanly are a hard
+undeclared-member error rather than a coin flip, as is a payload no candidate
+walk completes. Skip diagnostics are best-effort: a misaligned stream that
+re-frames cleanly at one unique width can still attribute the wrong width and
+raw value to a skipped member. The decoder never guesses an undeclared PTP
+string, never pads a short fixed value, and never coerces a PTP string into a
+number. Payloads without an undeclared member retain the existing
+count-authoritative handling of bytes after the declared record count.
 Duplicate members, unsupported widths, incompatible simulator values, and
 direct-codec value/encoding mismatches fail loud. The simulator ignores
 encoding-incompatible mutable state in favor of a compatible declared fallback
