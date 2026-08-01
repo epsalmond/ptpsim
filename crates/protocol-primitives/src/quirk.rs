@@ -334,7 +334,8 @@ const REFRAME_STATE_BUDGET: usize = 4096;
 /// fixed widths (1, 2, 4): a walk is accepted only when it consumes exactly
 /// `count` records and the complete payload, the walk with the fewest
 /// undeclared members wins, and a tie between distinct walks is a hard error
-/// rather than a coin flip. When no walk re-frames cleanly the first
+/// rather than a coin flip, as is a search that exhausts its state budget.
+/// When no walk re-frames cleanly the first
 /// undeclared member remains a hard error, terminal for that response but not
 /// for the session: callers parse from a fully-read dataphase buffer, so no
 /// unread bytes stay behind to misalign the next read. Payloads without
@@ -986,8 +987,8 @@ mod tests {
         let mut bytes = vec![0x08, 0x00]; // count
         bytes.extend_from_slice(&[0x34; 45]);
         // Eight undeclared members whose candidate widths must sum to 29 value
-        // bytes admit many distinct complete walks: the search both ties and
-        // exhausts its budget, and either way the payload must not decode.
+        // bytes admit many distinct complete walks; the search exhausts its
+        // state budget and the payload fails closed rather than decoding.
         assert!(matches!(
             parse_typed_record_stream(&bytes, &descriptor),
             Err(RecordStreamError::UndeclaredMember { code: 0x3434 })
