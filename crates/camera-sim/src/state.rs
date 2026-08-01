@@ -279,7 +279,7 @@ pub fn typed(datatype: u16, v: i64) -> PropValue {
 /// The value a property reports when state holds none: the encoding's zero for
 /// numeric datatypes, the empty string for STR. Using `typed(datatype, 0)`
 /// here put two raw bytes under a declared STR datatype (#417).
-fn default_prop_value(datatype: u16) -> PropValue {
+pub(crate) fn default_prop_value(datatype: u16) -> PropValue {
     if datatype == dt::STR {
         PropValue::Str(String::new())
     } else {
