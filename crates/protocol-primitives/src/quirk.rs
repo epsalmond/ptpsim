@@ -317,70 +317,205 @@ pub struct DecodedRecordStream {
     pub diagnostics: Vec<RecordStreamDiagnostic>,
 }
 
+/// Fixed widths an undeclared member may re-frame at, narrowest first. An
+/// undeclared PTP string cannot be re-framed honestly: the skip diagnostic
+/// carries a u32 value, and a guessed string length byte can manufacture
+/// plausible-looking records out of the following payload.
+const UNDECLARED_REFRAME_WIDTHS: [u8; 3] = [1, 2, 4];
+
+/// Bound on re-frame search states. Real streams carry a handful of
+/// undeclared members; a payload that branches past this budget is treated
+/// as undecodable rather than walked into a coincident alignment.
+const REFRAME_STATE_BUDGET: usize = 4096;
+
 /// Decode a manifest-resolved heterogeneous record stream. The count remains
 /// authoritative. Declared members consume their declared encoding. An
-/// undeclared member tentatively consumes the payload's default fixed width.
-/// That tolerant result is accepted only when exactly `count` records consume
-/// the complete payload. Otherwise the first undeclared member remains a hard
-/// error. Payloads without undeclared members retain count-authoritative
-/// handling of trailing bytes.
+/// undeclared member triggers a bounded re-frame search over the candidate
+/// fixed widths (1, 2, 4): a walk is accepted only when it consumes exactly
+/// `count` records and the complete payload, the walk with the fewest
+/// undeclared members wins, and a tie between distinct walks is a hard error
+/// rather than a coin flip. When no walk re-frames cleanly the first
+/// undeclared member remains a hard error, terminal for that response but not
+/// for the session: callers parse from a fully-read dataphase buffer, so no
+/// unread bytes stay behind to misalign the next read. Payloads without
+/// undeclared members retain count-authoritative handling of trailing bytes.
 pub fn parse_typed_record_stream(
     bytes: &[u8],
     descriptor: &RecordStreamDescriptor,
 ) -> Result<DecodedRecordStream, RecordStreamError> {
     let mut reader = Reader::new(bytes);
     let count = read_le(&mut reader, descriptor.layout.count_width)? as usize;
-    let mut out = Vec::with_capacity(count.min(bytes.len()));
-    let mut diagnostics = Vec::new();
-    let mut first_undeclared = None;
+    let body = &bytes[reader.position()..];
+    if let Some(outcome) = walk_declared_only(body, descriptor, count) {
+        return outcome;
+    }
+    reframe_undeclared(body, descriptor, count)
+}
+
+/// Strict walk for streams whose members are all declared. Returns `None` at
+/// the first undeclared member, handing the payload to the re-frame search.
+fn walk_declared_only(
+    body: &[u8],
+    descriptor: &RecordStreamDescriptor,
+    count: usize,
+) -> Option<Result<DecodedRecordStream, RecordStreamError>> {
+    let mut reader = Reader::new(body);
+    let mut out = Vec::with_capacity(count.min(body.len()));
     for _ in 0..count {
         let code = match read_le(&mut reader, descriptor.layout.code_width) {
             Ok(code) => code as u16,
-            Err(error) => {
-                return Err(first_undeclared
-                    .map(|code| RecordStreamError::UndeclaredMember { code })
-                    .unwrap_or_else(|| error.into()));
-            }
+            Err(error) => return Some(Err(error.into())),
         };
-        let Some(encoding) = descriptor.members.get(&code).copied() else {
-            let original = *first_undeclared.get_or_insert(code);
-            let value = match read_le(&mut reader, descriptor.layout.value_width) {
-                Ok(value) => value as u32,
-                Err(_) => return Err(RecordStreamError::UndeclaredMember { code: original }),
-            };
-            diagnostics.push(RecordStreamDiagnostic::SkippedUndeclaredMember { code, value });
-            continue;
-        };
-        let value = match encoding {
-            RecordValueEncoding::Fixed { width } => {
-                read_le(&mut reader, width).map(|value| PropValue::U32(value as u32))
-            }
-            RecordValueEncoding::Signed { width } => match width {
-                1 => reader.i8().map(PropValue::I8),
-                2 => reader.i16().map(PropValue::I16),
-                _ => reader.i32().map(PropValue::I32),
-            },
-            RecordValueEncoding::PtpString => reader.ptp_string().map(PropValue::Str),
-        };
-        match value {
+        let encoding = descriptor.members.get(&code).copied()?;
+        match read_record_value(&mut reader, encoding) {
             Ok(value) => out.push((code, value)),
-            Err(error) => {
-                if let Some(code) = first_undeclared {
-                    return Err(RecordStreamError::UndeclaredMember { code });
+            Err(error) => return Some(Err(error)),
+        }
+    }
+    Some(Ok(DecodedRecordStream {
+        records: out,
+        diagnostics: Vec::new(),
+    }))
+}
+
+/// One complete re-framed walk over the payload.
+#[derive(Clone)]
+struct CandidateWalk {
+    records: Vec<(u16, PropValue)>,
+    diagnostics: Vec<RecordStreamDiagnostic>,
+    undeclared: usize,
+}
+
+/// Depth-first re-frame search state. Keeps the complete walk with the
+/// fewest undeclared members; a second complete walk at the same count makes
+/// the payload ambiguous.
+struct ReframeSearch<'a> {
+    descriptor: &'a RecordStreamDescriptor,
+    count: usize,
+    best: Option<CandidateWalk>,
+    tie: bool,
+    states: usize,
+    first_undeclared: Option<u16>,
+}
+
+impl ReframeSearch<'_> {
+    fn walk(&mut self, body: &[u8], index: usize, mut walk: CandidateWalk) {
+        if self.states >= REFRAME_STATE_BUDGET {
+            return;
+        }
+        self.states += 1;
+        if let Some(best) = &self.best {
+            // A branch that can no longer beat the best walk, nor add new
+            // information to an established tie, is not worth exploring.
+            if walk.undeclared > best.undeclared || (self.tie && walk.undeclared == best.undeclared)
+            {
+                return;
+            }
+        }
+        if index == self.count {
+            if !body.is_empty() {
+                return;
+            }
+            match &self.best {
+                None => self.best = Some(walk),
+                Some(best) if walk.undeclared < best.undeclared => {
+                    self.best = Some(walk);
+                    self.tie = false;
                 }
-                return Err(error.into());
+                Some(_) => self.tie = true,
+            }
+            return;
+        }
+        let mut reader = Reader::new(body);
+        let Ok(code) = read_le(&mut reader, self.descriptor.layout.code_width) else {
+            return;
+        };
+        let code = code as u16;
+        let after_code = &body[reader.position()..];
+        match self.descriptor.members.get(&code).copied() {
+            Some(encoding) => {
+                let mut value_reader = Reader::new(after_code);
+                if let Ok(value) = read_record_value(&mut value_reader, encoding) {
+                    walk.records.push((code, value));
+                    self.walk(&after_code[value_reader.position()..], index + 1, walk);
+                }
+            }
+            None => {
+                // Every branch shares the walk up to the first undeclared
+                // member, so this code is the same on every path that sets it.
+                if self.first_undeclared.is_none() {
+                    self.first_undeclared = Some(code);
+                }
+                for width in UNDECLARED_REFRAME_WIDTHS {
+                    let mut branch_reader = Reader::new(after_code);
+                    if let Ok(value) = read_le(&mut branch_reader, width) {
+                        let mut branch = walk.clone();
+                        branch.undeclared += 1;
+                        branch
+                            .diagnostics
+                            .push(RecordStreamDiagnostic::SkippedUndeclaredMember {
+                                code,
+                                value: value as u32,
+                            });
+                        self.walk(&after_code[branch_reader.position()..], index + 1, branch);
+                    }
+                }
             }
         }
     }
-    if let Some(code) = first_undeclared {
-        if reader.remaining() != 0 {
-            return Err(RecordStreamError::UndeclaredMember { code });
-        }
+}
+
+fn reframe_undeclared(
+    body: &[u8],
+    descriptor: &RecordStreamDescriptor,
+    count: usize,
+) -> Result<DecodedRecordStream, RecordStreamError> {
+    let mut search = ReframeSearch {
+        descriptor,
+        count,
+        best: None,
+        tie: false,
+        states: 0,
+        first_undeclared: None,
+    };
+    search.walk(
+        body,
+        0,
+        CandidateWalk {
+            records: Vec::with_capacity(count.min(body.len())),
+            diagnostics: Vec::new(),
+            undeclared: 0,
+        },
+    );
+    match search.best {
+        Some(walk) if !search.tie => Ok(DecodedRecordStream {
+            records: walk.records,
+            diagnostics: walk.diagnostics,
+        }),
+        _ => Err(RecordStreamError::UndeclaredMember {
+            code: search
+                .first_undeclared
+                .expect("re-frame search only runs after an undeclared member was seen"),
+        }),
     }
-    Ok(DecodedRecordStream {
-        records: out,
-        diagnostics,
-    })
+}
+
+fn read_record_value(
+    reader: &mut Reader<'_>,
+    encoding: RecordValueEncoding,
+) -> Result<PropValue, RecordStreamError> {
+    let value = match encoding {
+        RecordValueEncoding::Fixed { width } => {
+            read_le(reader, width).map(|value| PropValue::U32(value as u32))
+        }
+        RecordValueEncoding::Signed { width } => match width {
+            1 => reader.i8().map(PropValue::I8),
+            2 => reader.i16().map(PropValue::I16),
+            _ => reader.i32().map(PropValue::I32),
+        },
+        RecordValueEncoding::PtpString => reader.ptp_string().map(PropValue::Str),
+    };
+    value.map_err(Into::into)
 }
 
 /// Assemble a live-status record stream (e.g. Fuji `0xD212`): an LE element
@@ -752,6 +887,91 @@ mod tests {
                 value: 0xdead_beef,
             }]
         );
+    }
+
+    #[test]
+    fn typed_stream_reframes_undeclared_one_byte_member() {
+        let descriptor = heterogeneous_descriptor();
+        let bytes = [
+            0x02, 0x00, // count
+            0x34, 0x12, 0xef, // undeclared member, 1-byte value
+            0x00, 0xdf, 0x12, 0x00, 0x00, 0x00, // declared fixed member
+        ];
+
+        // The default-width walk misaligns here: it consumes the declared
+        // member's code as the undeclared value. The 1-byte re-frame is the
+        // unique walk with one undeclared member.
+        let decoded = parse_typed_record_stream(&bytes, &descriptor).unwrap();
+        assert_eq!(decoded.records, vec![(0xdf00, PropValue::U32(0x12))]);
+        assert_eq!(
+            decoded.diagnostics,
+            vec![RecordStreamDiagnostic::SkippedUndeclaredMember {
+                code: 0x1234,
+                value: 0xef,
+            }]
+        );
+    }
+
+    #[test]
+    fn typed_stream_reframes_undeclared_two_byte_member() {
+        let descriptor = heterogeneous_descriptor();
+        let bytes = [
+            0x02, 0x00, // count
+            0x34, 0x12, 0xef, 0xbe, // undeclared member, 2-byte value
+            0x41, 0xdf, 0x01, 0x00, 0x00, 0x00, // declared fixed member
+        ];
+
+        let decoded = parse_typed_record_stream(&bytes, &descriptor).unwrap();
+        assert_eq!(decoded.records, vec![(0xdf41, PropValue::U32(1))]);
+        assert_eq!(
+            decoded.diagnostics,
+            vec![RecordStreamDiagnostic::SkippedUndeclaredMember {
+                code: 0x1234,
+                value: 0xbeef,
+            }]
+        );
+    }
+
+    #[test]
+    fn typed_stream_rejects_ambiguous_reframe() {
+        // Both the 2-byte and the 4-byte guess re-frame cleanly with one
+        // undeclared member each: at 2 bytes the second record reads as
+        // 0xdf00 (fixed 4), at 4 bytes as 0xd220 (fixed 2). Two distinct
+        // minimal walks cannot both be right, so the payload is a hard
+        // error rather than a coin flip.
+        let descriptor = RecordStreamDescriptor::new(
+            RecordStreamLayout::D212,
+            [
+                (0xdf00, RecordValueEncoding::Fixed { width: 4 }),
+                (0xd220, RecordValueEncoding::Fixed { width: 2 }),
+            ],
+        )
+        .unwrap();
+        let bytes = [
+            0x02, 0x00, // count
+            0x34, 0x12, 0xef, 0xbe, // undeclared member
+            0x00, 0xdf, 0x20, 0xd2, 0x11, 0x11,
+        ];
+
+        assert!(matches!(
+            parse_typed_record_stream(&bytes, &descriptor),
+            Err(RecordStreamError::UndeclaredMember { code: 0x1234 })
+        ));
+    }
+
+    #[test]
+    fn typed_stream_rejects_unreframeable_undeclared_member() {
+        let descriptor = heterogeneous_descriptor();
+        let bytes = [
+            0x02, 0x00, // count
+            0x34, 0x12, 0xef, 0xbe,
+            0xad, // undeclared member; no candidate width completes the stream
+        ];
+
+        assert!(matches!(
+            parse_typed_record_stream(&bytes, &descriptor),
+            Err(RecordStreamError::UndeclaredMember { code: 0x1234 })
+        ));
     }
 
     #[test]
