@@ -2663,7 +2663,10 @@ fn property_catalog_enumerates_through_ffi() {
         .find(|p| p.code == 0xd235)
         .expect("reference app import chunk-size property in the catalog");
     assert_eq!(chunk_size.ptype.as_deref(), Some("u32"));
-    assert_eq!(chunk_size.initial_value, Some(0x00bf_ffe0));
+    assert_eq!(
+        chunk_size.initial_value,
+        Some(DescriptorValue::Int { value: 0x00bf_ffe0 })
+    );
 }
 
 #[test]

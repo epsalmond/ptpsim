@@ -1328,7 +1328,7 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
     let d246 = &m.properties["0xd246"];
     assert_eq!(d246.ptype.as_deref(), Some("u8"));
     assert_eq!(d246.access.as_deref(), Some("readWrite"));
-    assert_eq!(d246.initial_value, Some(0));
+    assert_eq!(d246.initial_value, Some(DescriptorValue::Int(0)));
     let d246_desc = d246.descriptor.as_ref().expect("D246 descriptor");
     assert_eq!(d246_desc.form, "enum");
     assert_eq!(

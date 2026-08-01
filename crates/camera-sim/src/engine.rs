@@ -1013,7 +1013,9 @@ impl Engine {
                         }
                         None => match self.manifest.property(code) {
                             Some(prop) => {
-                                let v = crate::state::typed(datatype_of(prop.ptype.as_deref()), 0);
+                                let v = crate::state::default_prop_value(datatype_of(
+                                    prop.ptype.as_deref(),
+                                ));
                                 let mut w = Writer::new();
                                 let _ = v.encode(&mut w);
                                 Self::data(tid, w.into_vec())
@@ -1643,7 +1645,14 @@ impl Engine {
         } else {
             cur_idx.saturating_sub(1)
         };
-        if let Some(value) = typed_descriptor_value(datatype, &desc.values[new_idx]) {
+        let converted = typed_descriptor_value(datatype, &desc.values[new_idx]);
+        // Load-time validation rejects unconvertible descriptor values, so a
+        // None here means the manifest slipped past it; do not no-op quietly.
+        debug_assert!(
+            converted.is_some(),
+            "vendor_step target value for {prop_code:#06x} does not convert at its declared datatype"
+        );
+        if let Some(value) = converted {
             self.state.props.insert(prop_code, value);
         }
     }
@@ -2274,6 +2283,35 @@ properties:
             terminal: PropertyTransitionTerminal::Fixed { value: terminal },
             settle_after_polls,
         }
+    }
+
+    #[test]
+    fn get_prop_value_for_string_property_without_value_is_empty_string() {
+        // #417: the read path must agree with GetDevicePropDesc. A str
+        // property with no seeded value reports the empty string, not a
+        // fabricated "0" (which also violates structuredText layouts).
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd395":
+    name: liveViewFocusArea
+    type: str
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        let reply = engine.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 2, vec![0xd395]), None);
+        let Reply::Data { data, .. } = reply else {
+            panic!("expected data reply for 0xd395, got {reply:?}")
+        };
+        let mut r = ptp_core::Reader::new(&data);
+        assert_eq!(
+            PropValue::decode(&mut r, ptp_core::codes::datatype_code::STR).unwrap(),
+            PropValue::Str(String::new())
+        );
     }
 
     #[test]

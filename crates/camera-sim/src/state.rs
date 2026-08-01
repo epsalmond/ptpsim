@@ -99,8 +99,17 @@ impl CameraState {
                 continue;
             };
             let datatype = datatype_of(prop.ptype.as_deref());
-            if let Some(value) = prop.initial_value {
-                props.insert(code, typed(datatype, value));
+            if let Some(value) = &prop.initial_value {
+                let typed = typed_descriptor_value(datatype, value);
+                // Load-time validation keeps the initial value's shape
+                // consistent with the declared type, so a None here is a bug.
+                debug_assert!(
+                    typed.is_some(),
+                    "initial value for {code_key} does not convert at its declared datatype"
+                );
+                if let Some(typed) = typed {
+                    props.insert(code, typed);
+                }
             } else if let Some(desc) = &prop.descriptor {
                 if let Some(first) = desc.values.first() {
                     if let Some(value) = typed_descriptor_value(datatype, first) {
@@ -260,7 +269,21 @@ pub fn typed(datatype: u16, v: i64) -> PropValue {
         dt::UINT32 => PropValue::U32(v as u32),
         dt::INT64 => PropValue::I64(v),
         dt::UINT64 => PropValue::U64(v as u64),
+        // Total, honest conversion: never emit a fixed-width value under a
+        // declared STR datatype (the old wildcard produced U16 bytes there).
+        dt::STR => PropValue::Str(v.to_string()),
         _ => PropValue::U16(v as u16),
+    }
+}
+
+/// The value a property reports when state holds none: the encoding's zero for
+/// numeric datatypes, the empty string for STR. Using `typed(datatype, 0)`
+/// here put two raw bytes under a declared STR datatype (#417).
+pub(crate) fn default_prop_value(datatype: u16) -> PropValue {
+    if datatype == dt::STR {
+        PropValue::Str(String::new())
+    } else {
+        typed(datatype, 0)
     }
 }
 
@@ -285,7 +308,7 @@ pub fn build_prop_desc(
         .props
         .get(&code)
         .cloned()
-        .unwrap_or(typed(datatype, 0));
+        .unwrap_or_else(|| default_prop_value(datatype));
     let get_set = match prop.access.as_deref() {
         Some("readWrite") => 1,
         _ => 0,
@@ -294,7 +317,16 @@ pub fn build_prop_desc(
         Some(d) if d.form == "enum" => PropForm::Enum(
             d.values
                 .iter()
-                .filter_map(|value| typed_descriptor_value(datatype, value))
+                .filter_map(|value| {
+                    let converted = typed_descriptor_value(datatype, value);
+                    // Load-time validation rejects unconvertible descriptor
+                    // values, so a None here means the manifest slipped past it.
+                    debug_assert!(
+                        converted.is_some(),
+                        "descriptor value for {code:#06x} does not convert at its declared datatype"
+                    );
+                    converted
+                })
                 .collect(),
         ),
         Some(d) if d.form == "range" && d.values.len() == 3 => {
@@ -353,5 +385,46 @@ properties:
                 PropValue::Str("4000x2248".into()),
             ])
         );
+    }
+
+    #[test]
+    fn string_property_without_initial_value_describes_empty_string() {
+        // #417: a str property with no descriptor and no initial value used to
+        // fall back to typed(STR, 0). That is two raw U16 bytes under a
+        // declared STR datatype, a malformed dataset.
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties:
+  "0xd226": { name: copyright, type: str }
+"#,
+        )
+        .unwrap();
+        let state = CameraState::from_manifest(&manifest);
+        let descriptor = build_prop_desc(&manifest, &state, 0xd226).unwrap();
+
+        assert_eq!(descriptor.current, PropValue::Str(String::new()));
+        assert_eq!(descriptor.factory_default, PropValue::Str(String::new()));
+    }
+
+    #[test]
+    fn string_initial_value_seeds_state_and_describes() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }
+properties:
+  "0xd226": { name: copyright, type: str, initialValue: "client application" }
+"#,
+        )
+        .unwrap();
+        let state = CameraState::from_manifest(&manifest);
+        assert_eq!(
+            state.props.get(&0xd226),
+            Some(&PropValue::Str("client application".into()))
+        );
+        let descriptor = build_prop_desc(&manifest, &state, 0xd226).unwrap();
+        assert_eq!(descriptor.current, PropValue::Str("client application".into()));
     }
 }

@@ -396,7 +396,7 @@ pub struct Property {
     #[serde(default)]
     pub access: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initial_value: Option<i64>,
+    pub initial_value: Option<DescriptorValue>,
     /// Closed classification used by clients to filter what surfaces as a user
     /// setting. Omitted manifests default to [`PropertyKind::Setting`].
     #[serde(default, skip_serializing_if = "PropertyKind::is_setting")]
