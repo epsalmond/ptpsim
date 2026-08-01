@@ -618,7 +618,8 @@ members at their declared size. An undeclared member triggers a bounded
 re-frame search over the candidate fixed widths (1, 2, 4): a walk is accepted
 only when exactly the declared record count consumes the complete payload, the
 walk with the fewest undeclared members wins, and a tie between distinct
-minimal walks is an undeclared-member codec error.
+minimal walks is an undeclared-member codec error, as is a search that
+exhausts its state budget.
 `RecordStreamResult.diagnostics` reports the skipped code and raw value at the
 winning walk's width; treat skip diagnostics as best-effort, since a uniquely
 clean re-frame of a misaligned stream can still guess the wrong width.

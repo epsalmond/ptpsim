@@ -395,12 +395,17 @@ struct ReframeSearch<'a> {
     best: Option<CandidateWalk>,
     tie: bool,
     states: usize,
+    /// Set when the state budget cut the search short. A truncated search can
+    /// miss a tie or a better walk, so its result is not trustworthy and the
+    /// payload fails closed.
+    exhausted: bool,
     first_undeclared: Option<u16>,
 }
 
 impl ReframeSearch<'_> {
     fn walk(&mut self, body: &[u8], index: usize, mut walk: CandidateWalk) {
         if self.states >= REFRAME_STATE_BUDGET {
+            self.exhausted = true;
             return;
         }
         self.states += 1;
@@ -476,6 +481,7 @@ fn reframe_undeclared(
         best: None,
         tie: false,
         states: 0,
+        exhausted: false,
         first_undeclared: None,
     };
     search.walk(
@@ -488,7 +494,7 @@ fn reframe_undeclared(
         },
     );
     match search.best {
-        Some(walk) if !search.tie => Ok(DecodedRecordStream {
+        Some(walk) if !search.tie && !search.exhausted => Ok(DecodedRecordStream {
             records: walk.records,
             diagnostics: walk.diagnostics,
         }),
@@ -971,6 +977,20 @@ mod tests {
         assert!(matches!(
             parse_typed_record_stream(&bytes, &descriptor),
             Err(RecordStreamError::UndeclaredMember { code: 0x1234 })
+        ));
+    }
+
+    #[test]
+    fn typed_stream_fails_closed_when_reframe_search_is_budget_limited() {
+        let descriptor = heterogeneous_descriptor();
+        let mut bytes = vec![0x08, 0x00]; // count
+        bytes.extend_from_slice(&[0x34; 45]);
+        // Eight undeclared members whose candidate widths must sum to 29 value
+        // bytes admit many distinct complete walks: the search both ties and
+        // exhausts its budget, and either way the payload must not decode.
+        assert!(matches!(
+            parse_typed_record_stream(&bytes, &descriptor),
+            Err(RecordStreamError::UndeclaredMember { code: 0x3434 })
         ));
     }
 

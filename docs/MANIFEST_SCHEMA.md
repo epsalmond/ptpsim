@@ -1080,7 +1080,8 @@ its code and raw value at the winning walk's width.
 
 Two distinct minimal walks that both re-frame cleanly are a hard
 undeclared-member error rather than a coin flip, as is a payload no candidate
-walk completes. Skip diagnostics are best-effort: a misaligned stream that
+walk completes, and a search that exhausts its state budget fails closed the
+same way. Skip diagnostics are best-effort: a misaligned stream that
 re-frames cleanly at one unique width can still attribute the wrong width and
 raw value to a skipped member. The decoder never guesses an undeclared PTP
 string, never pads a short fixed value, and never coerces a PTP string into a
