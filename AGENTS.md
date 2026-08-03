@@ -95,10 +95,11 @@ both labels.
 2. **Close issues with Pull Requests.** An issue SHOULD precede the PR (see
    *Work tracking*); footer the PR `Closes #N`. A self-evident doc fix may
    skip the issue.
-3. **Use Codex (GPT-5.6 Sol) for implementation.** Open a draft PR from the
-   first commit; the draft is the work's visible home while in flight, so don't
-   wait for polish to push. Before marking it ready: run the workspace checks
-   (*Build + test*), then run exactly one independent `/code-review` pass with
+3. **Delegate implementation to Codex (GPT-5.6 Sol), or to Kimi `K3/high`
+   subagents when Kimi is the orchestrating harness.** Open a draft PR from
+   the first commit; the draft is the work's visible home while in flight, so
+   don't wait for polish to push. Before marking it ready: run the workspace
+   checks (*Build + test*), then run exactly one independent `/code-review`
 
    review-thread workflow below.
 4. **Single-line commit messages.** Imperative (`Add logging for X`), no
