@@ -1728,6 +1728,12 @@ async fn run_step_once(
             walk_steps(ctx, branch, &branch_path, top_next).await
         }
         Step::Retry(_) => unreachable!("retry is handled by run_step"),
+        Step::UsbClaim(_)
+        | Step::UsbBulkOut(_)
+        | Step::UsbBulkIn(_)
+        | Step::UsbAwaitInterrupt(_) => Err(err(
+            "USB establishment verbs do not run on the BLE executor".into(),
+        )),
     }
 }
 

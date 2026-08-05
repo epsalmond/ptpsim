@@ -779,6 +779,7 @@ mod tests {
             fallback: false,
             manifest_path: PathBuf::from(format!("{id}.yaml")),
             ble: None,
+            usb: None,
             pcss: Some(FamilyPcssBlock {
                 callback_port: 51560,
                 knock_port,

@@ -609,6 +609,12 @@ fn collect_step_scope_outputs(steps: &[Step], outputs: &mut BTreeSet<String>) {
                     outputs.insert(name.clone());
                 }
             }
+            Step::UsbBulkIn(step) => {
+                outputs.insert(step.capture_as.clone());
+            }
+            Step::UsbAwaitInterrupt(step) => {
+                outputs.insert(step.capture_as.clone());
+            }
             Step::BleConnect(_)
             | Step::BleDelay(_)
             | Step::BleAwaitDisconnect(_)
@@ -617,7 +623,9 @@ fn collect_step_scope_outputs(steps: &[Step], outputs: &mut BTreeSet<String>) {
             | Step::BleWrite(_)
             | Step::BleSubscribe(_)
             | Step::BleWriteChunk(_)
-            | Step::NikonLssAuthenticate(_) => {}
+            | Step::NikonLssAuthenticate(_)
+            | Step::UsbClaim(_)
+            | Step::UsbBulkOut(_) => {}
         }
     }
 }

@@ -1104,6 +1104,14 @@ impl TryFrom<&ix::Step> for Step {
                     opts: (&inner.opts).into(),
                 }
             }
+            ix::Step::UsbClaim(_)
+            | ix::Step::UsbBulkOut(_)
+            | ix::Step::UsbBulkIn(_)
+            | ix::Step::UsbAwaitInterrupt(_) => {
+                return Err(crate::ConfigError::Schema(
+                    "USB establishment verbs are not yet surfaced over the FFI".into(),
+                ));
+            }
         })
     }
 }
