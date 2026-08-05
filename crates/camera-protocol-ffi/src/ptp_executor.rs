@@ -556,6 +556,27 @@ async fn run_steps(
         .ok_or_else(|| PtpExecutorError::UnknownPlan {
             detail: format!("unknown connection {connection}"),
         })?;
+    // §11.29: the declared session ownership, not the kind string, selects
+    // the seam. An entry-point mismatch fails fast, before any I/O. A
+    // connection with no declared ownership keeps the legacy behavior.
+    let session_ownership = connection_config.session.map(|session| session.ownership);
+    match (session_ownership, &backend) {
+        (Some(cc::SessionOwnership::DaemonAttached), TxnBackend::Frame(_)) => {
+            return Err(PtpExecutorError::UnsupportedPlan {
+                detail: format!(
+                    "{connection}: session.ownership daemonAttached cannot enter a frame-based entry point (§11.29)"
+                ),
+            });
+        }
+        (Some(cc::SessionOwnership::InitiatorOwned), TxnBackend::Transaction(_)) => {
+            return Err(PtpExecutorError::UnsupportedPlan {
+                detail: format!(
+                    "{connection}: session.ownership initiatorOwned cannot enter a transaction entry point (§11.29)"
+                ),
+            });
+        }
+        _ => {}
+    }
     let command_framing: PtpFraming = match connection_config.command_framing {
         Some(framing) => framing.into(),
         None if matches!(backend, TxnBackend::Frame(_)) => {
@@ -586,6 +607,7 @@ async fn run_steps(
         command_framing,
         event_framing,
         event_delivery,
+        session_ownership,
         backend,
         observer,
         activity_observer,
@@ -718,6 +740,7 @@ struct PtpCtx {
     command_framing: PtpFraming,
     event_framing: PtpFraming,
     event_delivery: cc::EventDelivery,
+    session_ownership: Option<cc::SessionOwnership>,
     backend: TxnBackend,
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
@@ -1815,11 +1838,25 @@ impl PtpCtx {
         Ok(WireReply { meta, payload })
     }
 
-    /// Session- and channel-management steps exist only on the host-owned
-    /// frame seam: a `daemonAttached` connection runs no session-management
-    /// operations (§11.29), so a plan authoring one against the transaction
-    /// seam fails as a manifest error before any I/O.
+    /// Session- and channel-management steps exist only for an initiator that
+    /// owns its session (§11.29). The declared ownership is the primary guard:
+    /// a `daemonAttached` connection runs no session-management operations on
+    /// any backend, so a plan authoring one fails as a manifest error before
+    /// any I/O. The backend check stays as a secondary assertion for
+    /// connections with no declared ownership.
     fn frame_transport(&self, here: &str) -> Result<Arc<dyn PtpExecutorTransport>, StepError> {
+        if matches!(
+            self.session_ownership,
+            Some(cc::SessionOwnership::DaemonAttached)
+        ) {
+            return Err(self.other(
+                here,
+                format!(
+                    "{}: session.ownership daemonAttached forbids session-management steps (§11.29)",
+                    self.connection
+                ),
+            ));
+        }
         match &self.backend {
             TxnBackend::Frame(transport) => Ok(Arc::clone(transport)),
             TxnBackend::Transaction(_) => Err(self.other(

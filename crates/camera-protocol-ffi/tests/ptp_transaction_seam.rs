@@ -8,10 +8,11 @@
 use std::sync::{Arc, Mutex};
 
 use camera_protocol_ffi::{
-    run_initiator_action_txn, ActionInvocationRequest, ActionRole, ConfigStore,
+    run_initiator_action_txn, run_mode_entry, ActionInvocationRequest, ActionRole, ConfigStore,
     ConnectionActivityEvent, ConnectionActivityObserver, ExecutorStepFailureKind, PtpExecutorError,
-    PtpTransactionError, PtpTransactionEvent, PtpTransactionResult, PtpTransactionTransport,
-    StepObserver, StepReport,
+    PtpExecutorTransport, PtpSessionOpenResult, PtpTransactionError, PtpTransactionEvent,
+    PtpTransactionResult, PtpTransactionTransport, PtpTransportError, SocketRole, StepObserver,
+    StepReport,
 };
 use camera_sim::usb::{UsbEvent, UsbResponder, UsbTxnReply};
 use futures::executor::block_on;
@@ -258,6 +259,159 @@ fn best_effort_event_miss_falls_back_to_the_then_poll_loop() {
                 timeout_ms: 10_000,
             },
         ]
+    );
+}
+
+/// A store whose single `usbTether` connection block is spliced in verbatim,
+/// so a test picks the trait fields and plan shapes it exercises.
+fn connection_store(connection: &str) -> Arc<ConfigStore> {
+    ConfigStore::from_bundle(
+        format!(
+            r#"schema: camera-config/v1
+camera: {{ manufacturer: Test, model: Txn, firmware: "1" }}
+properties:
+  "0xd209": {{ name: autofocusResult, type: u16, access: readWrite }}
+connections:
+{connection}
+"#
+        ),
+        None,
+    )
+    .expect("connection store loads")
+}
+
+/// A frame-seam transport that records every call. The ownership guard must
+/// fail the run before any I/O, so the recording stays empty.
+#[derive(Default)]
+struct RecordingFrameTransport {
+    calls: Mutex<Vec<&'static str>>,
+}
+
+#[async_trait::async_trait]
+impl PtpExecutorTransport for RecordingFrameTransport {
+    async fn reserve_transaction_id(&self) -> Result<u32, PtpTransportError> {
+        self.calls.lock().unwrap().push("reserveTransactionId");
+        Ok(0)
+    }
+
+    async fn send_command_frame(&self, _frame: Vec<u8>) -> Result<(), PtpTransportError> {
+        self.calls.lock().unwrap().push("sendCommandFrame");
+        Ok(())
+    }
+
+    async fn next_command_frame(&self) -> Result<Vec<u8>, PtpTransportError> {
+        self.calls.lock().unwrap().push("nextCommandFrame");
+        futures::future::pending().await
+    }
+
+    async fn next_event_frame(&self, _event_code: u16) -> Result<Vec<u8>, PtpTransportError> {
+        self.calls.lock().unwrap().push("nextEventFrame");
+        futures::future::pending().await
+    }
+
+    async fn open_channel(&self, _role: SocketRole) -> Result<(), PtpTransportError> {
+        self.calls.lock().unwrap().push("openChannel");
+        Ok(())
+    }
+
+    async fn close_command_channel(
+        &self,
+        _transport_close_frame: Option<Vec<u8>>,
+    ) -> Result<(), PtpTransportError> {
+        self.calls.lock().unwrap().push("closeCommandChannel");
+        Ok(())
+    }
+
+    async fn reopen_command_session(&self) -> Result<PtpSessionOpenResult, PtpTransportError> {
+        self.calls.lock().unwrap().push("reopenCommandSession");
+        Ok(PtpSessionOpenResult {
+            transaction_id: 0,
+            response_code: 0x2001,
+            response_params: vec![],
+        })
+    }
+
+    async fn sleep(&self, _ms: u32) -> Result<(), PtpTransportError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn daemon_attached_connection_cannot_enter_a_frame_entry_point() {
+    let store = connection_store(
+        r#"  usbTether:
+    kind: usb-passthrough
+    session: { ownership: daemonAttached }
+    events: { delivery: bestEffort }
+    entries:
+      - to: shooting
+        steps:
+          - { closeSession: {} }"#,
+    );
+    let transport = Arc::new(RecordingFrameTransport::default());
+
+    let error = block_on(run_mode_entry(
+        store,
+        "usbTether".into(),
+        None,
+        "shooting".into(),
+        transport.clone(),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        vec![],
+    ))
+    .expect_err("a daemonAttached connection cannot walk the frame seam");
+    let message = error.to_string();
+    assert!(
+        message.contains("usbTether"),
+        "names the connection, got: {message}",
+    );
+    assert!(
+        message.contains("daemonAttached"),
+        "names the declared ownership, got: {message}",
+    );
+    assert!(
+        transport.calls.lock().unwrap().is_empty(),
+        "no OpenSession/CloseSession or channel call reached the transport",
+    );
+}
+
+#[test]
+fn initiator_owned_connection_cannot_enter_a_transaction_entry_point() {
+    let store = connection_store(
+        r#"  usbTether:
+    kind: usb
+    session: { ownership: initiatorOwned }
+    events: { delivery: reliable }
+    actions:
+      autofocusLock:
+        mode: ""
+        initiator:
+          steps:
+            - getProp: "0xd209""#,
+    );
+    let transport = Arc::new(ResponderTxnTransport::new(UsbResponder::new(), &[]));
+
+    let error = block_on(run_initiator_action_txn(
+        store.clone(),
+        action_request(&store),
+        transport.clone(),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+    ))
+    .expect_err("an initiatorOwned connection cannot walk the transaction seam");
+    let message = error.to_string();
+    assert!(
+        message.contains("usbTether"),
+        "names the connection, got: {message}",
+    );
+    assert!(
+        message.contains("initiatorOwned"),
+        "names the declared ownership, got: {message}",
+    );
+    assert!(
+        transport.log().is_empty(),
+        "no transaction reached the daemon seam",
     );
 }
 
