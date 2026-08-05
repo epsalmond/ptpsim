@@ -5,10 +5,13 @@
 //! validation, and the two-directional verb scoping between BLE and USB
 //! establishment plans.
 
+use std::collections::BTreeMap;
+
 use camera_config::index::{
     Encoding, FamilyBlock, ResolvedManufacturerIndex, Step, StepValue, Transform,
     UsbInterfaceTriple,
 };
+use camera_config::ConfigStore;
 
 /// Synthetic index with one family carrying a `usb` block. `steps` is spliced
 /// into the single `usb-claim-session` establishment plan.
@@ -266,6 +269,45 @@ fn control_flow_verbs_stay_valid_in_usb_plans() {
         4,
     ))
     .expect("if, retry, acquire, and acquireFirmware remain valid in USB plans");
+}
+
+#[test]
+fn none_event_channel_rejects_usb_await_interrupt_in_the_establishment_plan() {
+    let index = usb_index(
+        "            - usbClaim: { interface: stillImage }\n            - usbAwaitInterrupt: { encoding: bytes, captureAs: eventFrame }",
+        2,
+    );
+    let store_with_delivery = |delivery: &str| {
+        let body = format!(
+            r#"
+schema: camera-config/v1
+camera: {{ manufacturer: TESTCO, model: Test, firmware: "1" }}
+connections:
+  usbTether:
+    kind: usb
+    establishment: usb-claim-session
+    events: {{ delivery: {delivery} }}
+"#
+        );
+        ConfigStore::from_manufacturer_index(&index, BTreeMap::from([("tm1".to_string(), body)]))
+    };
+
+    let error = store_with_delivery("none")
+        .expect_err("a none event channel forbids an interrupt await in the plan");
+    let message = error.to_string();
+    assert!(
+        message.contains("usbTether"),
+        "names the connection, got: {message}",
+    );
+    assert!(
+        message.contains("usbAwaitInterrupt"),
+        "names the plan step, got: {message}",
+    );
+
+    store_with_delivery("reliable")
+        .expect("the raw kind owns the interrupt pipe, so reliable loads");
+    store_with_delivery("bestEffort")
+        .expect("the thenPoll rule scopes to the EntryStep awaitUntil grammar, not USB verbs");
 }
 
 #[test]

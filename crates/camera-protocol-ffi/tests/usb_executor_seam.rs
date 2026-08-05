@@ -84,7 +84,9 @@ connections:
     kind: usb
     establishment: usb-claim-open
     session: { ownership: initiatorOwned }
-    events: { delivery: bestEffort }
+    # The raw kind owns the interrupt pipe, so delivery is reliable; the
+    # thenPoll rule scopes to the EntryStep awaitUntil grammar (§11.29).
+    events: { delivery: reliable }
 "#;
     ConfigStore::from_manufacturer_index(
         index.into(),

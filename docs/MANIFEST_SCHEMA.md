@@ -1764,11 +1764,13 @@ connections:
 - `events.delivery` is `reliable` (every pushed event is delivered; the
   current event-socket semantics of §11.16.1), `bestEffort` (pushed events
   exist but any single event may be lost), or `none` (the connection has no
-  event channel). On a `bestEffort` connection every event-source
+  event channel). The `thenPoll` requirement scopes to the `EntryStep`
+  `awaitUntil` grammar: on a `bestEffort` connection every event-source
   `awaitUntil` MUST declare `thenPoll` so a missed event reconciles by
   polling (§11.16.1); the loader rejects an event-source await without
   `thenPoll` on such a connection. `none` forbids event-source awaits on
-  the connection outright.
+  the connection outright, and the loader also rejects a `none` connection
+  whose USB establishment plan awaits interrupt frames.
 
 **Family `usb` block.** `families.<fam>.usb` owns the family-level USB
 facts, parallel to `ble` (§11.4) and `pcss` (§11.25):
@@ -1815,7 +1817,11 @@ mirroring the BLE verb design (§11.4, §11.4a):
   string) and bind the result under `captureAs`.
 - `usbAwaitInterrupt: { encoding: <Encoding>, captureAs: <slot>, transform?: [...] }`:
   await one interrupt IN event frame and capture it with the same pipeline
-  as `usbBulkIn`.
+  as `usbBulkIn`. A strict wait verb: a miss fails the step after its
+  budget. The `events.delivery` `thenPoll` rule does not govern it (that
+  rule scopes to the `EntryStep` `awaitUntil` grammar), but a connection
+  declaring `events.delivery: none` has no event channel, so the loader
+  rejects its establishment plan when the plan awaits an interrupt frame.
 
 USB verbs are valid only inside `families.<fam>.usb.establishments` plans;
 the loader rejects them anywhere else. BLE verbs keep their existing

@@ -490,7 +490,7 @@ connections:
     platforms: [macos, android, linux]   # NOT iOS (no USB-host PTP); hidden on iOS
     establishment: usb-claim-open    # family usb plan: claim stillImage, OpenSession, GetDeviceInfo
     session: { ownership: initiatorOwned }
-    events: { delivery: reliable }   # interrupt-IN events ride the claimed interface
+    events: { delivery: reliable }   # the raw kind owns the interrupt pipe and PIMA 15740 guarantees transport delivery; camera-side event production is a manifest-authoring concern
     discovery: { mechanism: usb, announces: none, vid: 0x04cb }   # Fuji USB vendor id; per-model PID TBD
     modes: [raw-conv-backup-restore, webcam]
     # USB sub-mode is chosen by an on-camera menu setting, so this is a user-instruction
