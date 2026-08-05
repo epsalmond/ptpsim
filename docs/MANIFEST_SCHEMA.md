@@ -1738,7 +1738,9 @@ who owns the session, the framing, and the transaction ids.
 Both kinds remain ordinary `connections.<id>` entries. Platform
 availability stays data-driven through `connections(platform)`; modes,
 actions, and mode entries are declared per connection exactly as on the
-existing kinds.
+existing kinds. A `platforms:` list gates a connection per host OS against
+the closed token set `ios|macos|android|linux`; the loader rejects an
+unknown token with an error naming the token and the connection.
 
 **Connection trait fields.** Two per-connection trait fields in the #81
 pattern (declarative data the consumer selects behavior from, never an

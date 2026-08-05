@@ -720,6 +720,49 @@ fn platform_filters_connections_macos_vs_ios() {
 }
 
 #[test]
+fn session_ownership_and_event_delivery_cross_the_ffi_seam() {
+    let store = ConfigStore::from_bundle(
+        r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  usbTether:
+    kind: usb
+    establishment: usb-claim-session
+    session: { ownership: daemonAttached }
+    events: { delivery: bestEffort }
+  plain:
+    kind: wifi
+"#
+        .into(),
+        None,
+    )
+    .expect("synthetic trait manifest loads");
+
+    let infos = store.connections(Platform::Linux);
+    let usb = infos
+        .iter()
+        .find(|c| c.id == "usbTether")
+        .expect("usbTether listed");
+    assert!(matches!(
+        usb.session_ownership,
+        Some(FfiSessionOwnership::DaemonAttached)
+    ));
+    assert!(matches!(
+        usb.event_delivery,
+        Some(FfiEventDelivery::BestEffort)
+    ));
+
+    // Undeclared trait fields surface as `None`; the consumer falls back.
+    let plain = infos
+        .iter()
+        .find(|c| c.id == "plain")
+        .expect("plain listed");
+    assert!(plain.session_ownership.is_none());
+    assert!(plain.event_delivery.is_none());
+}
+
+#[test]
 fn operation_gating_is_connection_and_mode_keyed() {
     let s = store();
     // 0x9018 (tether live-view) is available over the tether, wrong-connection over app.

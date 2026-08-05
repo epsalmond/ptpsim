@@ -858,6 +858,12 @@ pub struct ConnectionInfo {
     /// The wire framing for this connection's event socket, when it differs from
     /// the command channel (the Fuji `app` event socket is USB/PIMA type-4).
     pub event_framing: Option<PtpFraming>,
+    /// Who owns the PTP session on this connection (§11.29). `None` → not
+    /// modeled for this connection yet; the consumer falls back.
+    pub session_ownership: Option<FfiSessionOwnership>,
+    /// How pushed events arrive on this connection (§11.29). `None` → not
+    /// modeled; the consumer falls back to the §11.16.1 default (`reliable`).
+    pub event_delivery: Option<FfiEventDelivery>,
 }
 
 impl From<cc::WireFraming> for PtpFraming {
@@ -909,6 +915,43 @@ impl From<cc::ShutterRecipe> for ShutterRecipe {
         match r {
             cc::ShutterRecipe::AppPostview => ShutterRecipe::AppPostview,
             cc::ShutterRecipe::WirelessTether3Beat => ShutterRecipe::WirelessTether3Beat,
+        }
+    }
+}
+
+/// Mirror of `cc::SessionOwnership` (§11.29): who owns the PTP session on a
+/// connection. The executor selects session behavior from this trait, never
+/// from the connection id.
+#[derive(Debug, uniffi::Enum)]
+pub enum FfiSessionOwnership {
+    InitiatorOwned,
+    DaemonAttached,
+}
+
+/// Mirror of `cc::EventDelivery` (§11.29): how pushed events arrive on a
+/// connection.
+#[derive(Debug, uniffi::Enum)]
+pub enum FfiEventDelivery {
+    Reliable,
+    BestEffort,
+    None,
+}
+
+impl From<cc::SessionOwnership> for FfiSessionOwnership {
+    fn from(o: cc::SessionOwnership) -> Self {
+        match o {
+            cc::SessionOwnership::InitiatorOwned => FfiSessionOwnership::InitiatorOwned,
+            cc::SessionOwnership::DaemonAttached => FfiSessionOwnership::DaemonAttached,
+        }
+    }
+}
+
+impl From<cc::EventDelivery> for FfiEventDelivery {
+    fn from(d: cc::EventDelivery) -> Self {
+        match d {
+            cc::EventDelivery::Reliable => FfiEventDelivery::Reliable,
+            cc::EventDelivery::BestEffort => FfiEventDelivery::BestEffort,
+            cc::EventDelivery::None => FfiEventDelivery::None,
         }
     }
 }
@@ -2630,6 +2673,8 @@ impl ConfigStore {
                 shutter_recipe: c.shutter_recipe.map(Into::into),
                 command_framing: c.command_framing.map(Into::into),
                 event_framing: c.event_framing.map(Into::into),
+                session_ownership: c.session.map(|s| s.ownership.into()),
+                event_delivery: c.events.map(|e| e.delivery.into()),
             })
             .collect()
     }

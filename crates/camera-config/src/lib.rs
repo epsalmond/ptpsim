@@ -50,23 +50,24 @@ pub use model::{
     CameraInitiatedMonitorRecovery, CameraInitiatedReceive, CameraInitiatedTransfer,
     CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, Connection,
     ConnectionTransition, Control, ControlOwner, ControlReadSource, ControlRole,
-    ControlSurfaceEntry, Descriptor, DescriptorValue, GateFailure, GateRequirement, InitIdentity,
-    InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop,
-    ManufacturerDefaults, Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry,
-    ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
-    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
-    ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationKind,
-    Payload, PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent,
-    Property, PropertyKind, PropertySemanticAssertions, PropertyTransitionTerminal,
-    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
-    ProvenancedName, ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout,
-    RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
-    ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
-    SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SetPropValue,
-    ShutterRecipe, SocketAvailability, SocketBinding, SocketBindingDescriptor, SocketBindings,
-    SocketRole, Step, StepParam, StepRetry, StructuredTextField, StructuredTextLayout,
-    StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy,
-    ValueSource, VersionCond, WireFraming, Workflow,
+    ControlSurfaceEntry, Descriptor, DescriptorValue, EventDelivery, EventDeliveryContract,
+    GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery,
+    LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat,
+    MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution, ObjectTransferCompletionPolicy,
+    ObjectTransferCompletionTiming, ObjectTransferContract, ObjectTransferFormatSupport,
+    ObjectTransferResumePolicy, ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect,
+    Operation, OperationKind, Payload, PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets,
+    PcssKnock, PostviewEvent, Property, PropertyKind, PropertySemanticAssertions,
+    PropertyTransitionTerminal, PropertyValueEncoding, PropertyValueProfile,
+    PropertyValueProfileRow, PropertyValueRow, ProvenancedName, ProvenancedPropertyValueProfile,
+    ProvenancedPropertyValueRow, RecordLayout, RecordMember, RecordMemberDetail, RecordMemberRef,
+    RecordValueEncoding, RecordValueLiteral, ReestablishConnection, ResponderMutation,
+    RetryFailureClass, RuntimeSetPropValue, SemanticAssertionLedger, SentinelFrame, SentinelMask,
+    SequenceGate, SessionContract, SessionOwnership, SetPropValue, ShutterRecipe,
+    SocketAvailability, SocketBinding, SocketBindingDescriptor, SocketBindings, SocketRole, Step,
+    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
+    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
+    WireFraming, Workflow,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -382,6 +383,7 @@ impl CameraManifest {
             require_valid_pcss_rendezvous(connection, connection_id)?;
             require_valid_object_transfer(self, connection, connection_id)?;
             require_valid_control_surfaces(self, connection, connection_id)?;
+            require_valid_platforms(connection, connection_id)?;
             for descriptor in &connection.activities {
                 let key = (descriptor.id.clone(), descriptor.version);
                 let value = (
@@ -824,6 +826,48 @@ fn require_valid_init_shape(
         return Err(ManifestError::Contract(format!(
             "connections.{connection_id}.commandFraming must be usb for initShape legacyApp82"
         )));
+    }
+    Ok(())
+}
+
+/// The platform vocabulary a `platforms:` list gates a connection against.
+/// Mirrors the FFI `Platform` tokens (`Platform::as_str`); a consumer maps
+/// its host OS to one of these.
+const PLATFORMS: [&str; 4] = ["ios", "macos", "android", "linux"];
+
+/// `platforms:` hides a connection on the platforms it excludes (the FFI
+/// `connections(platform)` filter). The token set is closed and validated at
+/// load so a typo fails loudly instead of hiding the connection everywhere.
+fn require_valid_platforms(
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(value) = connection.extra.get("platforms") else {
+        return Ok(());
+    };
+    let path = format!("connections.{connection_id}.platforms");
+    let Some(sequence) = value.as_sequence() else {
+        return Err(ManifestError::Contract(format!(
+            "{path} must be a sequence of platform tokens ({})",
+            PLATFORMS.join(", ")
+        )));
+    };
+    for item in sequence {
+        match item.as_str() {
+            Some(token) if PLATFORMS.contains(&token) => {}
+            Some(token) => {
+                return Err(ManifestError::Contract(format!(
+                    "{path} names unknown platform '{token}' (expected one of: {})",
+                    PLATFORMS.join(", ")
+                )));
+            }
+            None => {
+                return Err(ManifestError::Contract(format!(
+                    "{path} entries must be platform tokens ({})",
+                    PLATFORMS.join(", ")
+                )));
+            }
+        }
     }
     Ok(())
 }
