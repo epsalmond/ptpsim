@@ -390,7 +390,7 @@ release engineering, not manifest schema.
 Things explicitly NOT defined here, to be picked up in P2 or as separate decisions:
 
 - mDNS observation shape.
-- USB enumeration encoding (descriptor strings, interface details).
+- USB connections and establishment plans: now defined (§11.29).
 - WiFi-join primitive's success/failure semantics (platform-dependent).
 - Live re-loading of the manifest set after FFI init (not needed for MVP).
 - Authentication / signing of the manifest bundle (not needed for MVP).
@@ -728,6 +728,17 @@ dispatcher must match this: await `code` on the connection's event socket
 (55740+1), then pace `thenPoll` reads by `intervalMs` (0 = dispatcher default)
 within `timeoutMs`.
 
+**Event delivery fallback (§11.29).** The single-shot event wait above
+assumes a `reliable` event channel: the push either arrives within the
+budget or never will. On a `bestEffort` connection any single event may be
+lost, so an event wait that exhausts its budget is not proof the event
+never fired. Such a step falls back to its `thenPoll` loop instead of
+failing: polling starts at the `intervalMs` cadence and continues until
+`until` holds or `timeoutMs` elapses. Every event-source `awaitUntil` on a
+`bestEffort` connection MUST declare `thenPoll`; the loader rejects one
+without it. A connection with `events.delivery: none` forbids event-source
+awaits outright. `reliable` keeps the current semantics.
+
 **Emission and settle (authoring note).** An op declares the events it pushes
 via `Operation.emits: [<code>]` (parallel to `effects`; the engine queues them
 on an OK response, and the `app` event socket forwards them — see below). The
@@ -751,10 +762,11 @@ event socket during session setup, before triggering a capture. Reference test:
 **Per-connection applicability.** The `app` (BLE→Wi-Fi-AP reference app, 55740/55741)
 connection is the hybrid push-then-read **happy path** — its event channel is
 wire-proven. `wireless-tether` (PCSS, 15740) has **no event channel** (wire-audit:
-zero event packets across active shooting) → poll-only. `usb` (PIMA over USB) is
-**uncharacterized** (events ride a USB interrupt endpoint, a different mechanism)
-→ poll-only until analyzed. The source is per-step manifest data, so poll-only
-connections simply keep authoring `{ poll: }` — no engine branch.
+zero event packets across active shooting) → poll-only. USB connections declare
+their event behavior per connection with the §11.29 `events.delivery` trait:
+`none` is poll-only, `bestEffort` takes the fallback above, and `reliable`
+keeps the happy path. The source is per-step manifest data, so poll-only
+connections simply keep authoring `{ poll: }` and the engine needs no branch.
 
 **Out of scope (deferred follow-ups).** The real gfx100ii data authoring —
 `0x9026 emits: ["0xc005"]` and switching the `app` AF/capture entry steps to
@@ -1707,3 +1719,170 @@ and its current cursor.
 The TUI fetches and proxies the simulator catalog. Local phase patches and quit
 are named under reserved `operator:*` ids and use `/operator/actions/{id}`;
 they never appear as manifest actions.
+
+### 11.29 USB connections and establishment plans
+
+USB adds two connection `kind` values and a USB step vocabulary for their
+establishment plans (#342). Both kinds carry PTP over USB. They differ in
+who owns the session, the framing, and the transaction ids.
+
+- `usb` (raw). The initiator owns the device handle, the interface claim,
+  the bulk OUT/IN and interrupt IN endpoints, the PTP session, and
+  transaction ids. PTP containers ride the bulk endpoints with USB/PIMA
+  framing; events ride the interrupt IN endpoint.
+- `usb-passthrough`. A platform daemon owns the device, framing, session,
+  and transaction ids. The host speaks typed PTP transactions and never
+  handles raw containers. Establishment attaches to the session the daemon
+  already opened: no interface claim, no `OpenSession`.
+
+Both kinds remain ordinary `connections.<id>` entries. Platform
+availability stays data-driven through `connections(platform)`; modes,
+actions, and mode entries are declared per connection exactly as on the
+existing kinds.
+
+**Connection trait fields.** Two per-connection trait fields in the #81
+pattern (declarative data the consumer selects behavior from, never an
+`id` branch):
+
+```yaml
+connections:
+  usbTether:
+    kind: usb
+    establishment: usb-claim-session
+    session: { ownership: initiatorOwned }
+    events: { delivery: bestEffort }
+```
+
+- `session.ownership` is `initiatorOwned` (the executor opens and owns the
+  PTP session) or `daemonAttached` (a platform daemon owns the session; the
+  executor attaches and sends no session-management operations). A `usb`
+  connection is `initiatorOwned`; a `usb-passthrough` connection is
+  `daemonAttached`. The trait field, not the `kind` string, selects
+  executor behavior.
+- `events.delivery` is `reliable` (every pushed event is delivered; the
+  current event-socket semantics of §11.16.1), `bestEffort` (pushed events
+  exist but any single event may be lost), or `none` (the connection has no
+  event channel). On a `bestEffort` connection every event-source
+  `awaitUntil` MUST declare `thenPoll` so a missed event reconciles by
+  polling (§11.16.1); the loader rejects an event-source await without
+  `thenPoll` on such a connection. `none` forbids event-source awaits on
+  the connection outright.
+
+**Family `usb` block.** `families.<fam>.usb` owns the family-level USB
+facts, parallel to `ble` (§11.4) and `pcss` (§11.25):
+
+```yaml
+families:
+  fuji:
+    usb:
+      interfaces:
+        stillImage: { class: 6, subclass: 1, protocol: 1 }
+        vendor: { class: 255, subclass: 255, protocol: 0 }
+      establishments:
+        usb-claim-session:
+          mechanism: usb-claim-session
+          steps:
+            - usbClaim: { interface: stillImage }
+            - usbBulkOut: { data: { captured: openSessionContainer } }
+            - usbBulkIn: { maxLength: 512, encoding: bytes-raw, captureAs: openSessionResponse }
+```
+
+- `interfaces` maps a symbolic interface name to its USB
+  class/subclass/protocol triple (each a u8). `usbClaim` references the
+  symbolic name; the FFI resolves it to the triple at index-build time,
+  exactly like §11.3 GATT-name resolution. The Step variant returned over
+  the uniffi boundary carries the resolved triple, not the name. A step
+  naming an undeclared interface is a load-time error.
+- `establishments` are named plans keyed by mechanism. A body connection's
+  `establishment:` field selects one. The plans reuse the §11
+  `EstablishmentBlock` shape (`params`, `persist`, `activities`,
+  `postExitReadiness`, `steps`).
+
+**USB verbs.** One-entry YAML mappings carrying the usual `StepOptions`,
+mirroring the BLE verb design (§11.4, §11.4a):
+
+- `usbClaim: { interface: <symbolic name> }`: claim the resolved interface
+  on the bound device. Valid only in a raw `usb` establishment; a
+  `daemonAttached` connection has no interface to claim.
+- `usbBulkOut: { data: <StepValue> }`: resolve `data` per §11.1 and write
+  the bytes to the bulk OUT endpoint. The §11.13 write pipeline applies
+  (resolve → encoding decode → transform chain → wire bytes).
+- `usbBulkIn: { maxLength: <u32>, encoding: <Encoding>, captureAs: <slot>, transform?: [...] }`:
+  read up to `maxLength` bytes from the bulk IN endpoint, then run the
+  §11.13 capture pipeline (transform chain → encoding decode → scope
+  string) and bind the result under `captureAs`.
+- `usbAwaitInterrupt: { encoding: <Encoding>, captureAs: <slot>, transform?: [...] }`:
+  await one interrupt IN event frame and capture it with the same pipeline
+  as `usbBulkIn`.
+
+USB verbs are valid only inside `families.<fam>.usb.establishments` plans;
+the loader rejects them anywhere else. BLE verbs keep their existing
+scoping. A `usb-passthrough` connection runs no USB verbs: its mode entries
+and actions execute the existing `EntryStep` transaction grammar over
+`PtpTransactionTransport` instead.
+
+**Raw executor transport.** `UsbExecutorTransport` is the foreign
+(`with_foreign`) async trait a host implements for raw `usb`
+establishments, the USB counterpart to §9.3's BLE executor. It is raw I/O
+only. Rust owns step sequencing, capture/transform/encoding evaluation,
+retry and tolerance policy, and deadlines.
+
+| method | contract |
+|---|---|
+| `claim_interface(class: u8, subclass: u8, protocol: u8)` | claim the interface matching the resolved triple |
+| `bulk_out(data: Vec<u8>)` | write one bulk OUT transfer |
+| `bulk_in(max_length: u32) -> Vec<u8>` | read one bulk IN transfer of at most `max_length` bytes |
+| `next_interrupt_event() -> Vec<u8>` | await one interrupt IN event frame; may pend indefinitely, the executor owns every deadline |
+| `release_and_close()` | release the claimed interface and close the device handle |
+| `sleep(ms: u32)` | the host wall clock |
+
+Every method is fallible with `UsbTransportError`:
+
+| variant | raised when |
+|---|---|
+| `NotConnected` | no matching device is attached |
+| `DeviceGone` | the device detached mid-operation |
+| `Stall` | an endpoint answered STALL |
+| `Timeout` | a transfer exceeded its deadline |
+| `NotAuthorized` | the platform denied USB access |
+| `ClaimFailed { owner }` | another driver holds the interface; `owner` names it when the platform reports one |
+| `OpenFailed` | the device could not be opened |
+| `Failed` | any remaining failure |
+
+Deadlines are executor-owned: the executor races each pending transport
+call against `sleep`, the same contract as the BLE trait. A lost or
+cancelled race drops the foreign future, so every method must be
+cancellation-safe.
+
+**Transaction transport.** `PtpTransactionTransport` is the foreign async
+trait a host implements for `daemonAttached` connections. The daemon owns
+framing and session state, so the seam is typed transactions, not byte
+frames.
+
+| method | contract |
+|---|---|
+| `execute(opcode: u16, params: Vec<u32>, data_out: Option<Vec<u8>>, timeout_ms: u32) -> PtpTransactionResult` | run one typed PTP transaction; `PtpTransactionResult` carries `response_code`, response `params`, and optional `data_in`; the daemon enforces the per-call `timeout_ms` |
+| `read_partial_object(handle: u32, offset: u64, length: u32, timeout_ms: u32) -> Vec<u8>` | read one object range |
+| `next_event(event_code: u16) -> PtpTransactionEvent` | return the next event matching `event_code` as `{ event_code, params }`; code-selective, the host retains unrelated events for their normal consumers, the same contract as `PtpExecutorTransport::next_event_frame` (§11.24) |
+| `close()` | detach from the daemon session |
+| `sleep(ms: u32)` | the host wall clock |
+
+Every method is fallible with `PtpTransactionError` (`NotConnected`,
+`DeviceGone`, `Stall`, `Timeout`, `NotAuthorized`, `Failed`), the
+`UsbTransportError` vocabulary minus the claim/open variants the daemon
+owns. The executor supplies `timeout_ms` from the step's manifest budget
+(§11.24 defaults apply). Aggregate budgets (`awaitUntil.timeoutMs`, the
+60-second step aggregate) stay executor-owned and race against `sleep`.
+
+**Executor entry points.**
+
+| call | walks |
+|---|---|
+| `run_usb_establishment` | a raw `usb` establishment plan over `UsbExecutorTransport` |
+| `run_mode_entry_txn` | a mode entry's `EntryStep` grammar over `PtpTransactionTransport` |
+| `run_initiator_action_txn` | one action's initiator binding over `PtpTransactionTransport` |
+
+The transaction entry points run the same grammar, retry, tolerance,
+capture, predicate, loop, and deadline semantics as their frame-based
+counterparts (§11.24); only the transport seam differs. The existing
+frame-based entry points are unchanged.
