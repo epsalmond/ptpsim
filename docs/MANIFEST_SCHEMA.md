@@ -80,10 +80,16 @@ Three setup verbs make those expressible:
 - `bleDelay: { durationMs: <u32> }` — wait for one nonzero, manifest-authored
   interval using the transport clock. legacy manufacturer app uses it between connect and
   MTU request; it is not folded into `bleConnect` or retry policy.
-- `bleRequestMtu: { mtu: <u16> }` — on platforms without an explicit request
-  API (CoreBluetooth negotiates automatically) the dispatcher treats this as
-  a checkpoint: succeed if the negotiated MTU ≥ `mtu`, else step failure
-  (tolerant-aware per §11.6).
+- `bleRequestMtu: { requestedMtu: <u16>, minimumMtu: <u16>? }` —
+  `requestedMtu` is the request target the reference app asks the stack for
+  (the Android `requestMtu` argument). `minimumMtu` is a separately
+  evidenced floor below which the flow actually fails; declare it only with
+  wire-capture or hardware evidence, never from one data point on one
+  camera/phone/OS combination. On platforms without an explicit request API
+  (CoreBluetooth negotiates automatically) the dispatcher treats the step as
+  a checkpoint: with no `minimumMtu` it succeeds at any negotiated MTU; with
+  one it fails (tolerant-aware per §11.6) when the negotiated MTU is below
+  the floor. `minimumMtu` greater than `requestedMtu` is a load-time error.
 - `bleDiscoverServices: {}` — on auto-discovering stacks this is a
   completion checkpoint, not a re-trigger. Discovery timeout is dispatcher
   policy.

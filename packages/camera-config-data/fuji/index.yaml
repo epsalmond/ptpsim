@@ -545,11 +545,11 @@ families:
             - bleDelay: { durationMs: 600 }
             # legacy manufacturer app 4.10.2 treats requestMtu(515) as fire-and-forget:
             # onMtuChanged ignores the callback status and the negotiated value, so
-            # there is no evidenced MTU floor. CoreBluetooth has no request API and
-            # auto-negotiates below 515 (185 observed on X-A7 hardware) — tolerate a
-            # below-target checkpoint while keeping 515 as the request target for
-            # platforms with a request API. (#399)
-            - bleRequestMtu: { mtu: 515, tolerant: true }
+            # 515 is a request target with no evidenced floor (#400). CoreBluetooth
+            # has no request API and auto-negotiates below it (185 observed on X-A7
+            # hardware); with no minimumMtu declared, the checkpoint accepts any
+            # negotiated value and no tolerance annotation is needed. (#399)
+            - bleRequestMtu: { requestedMtu: 515 }
             - bleDiscoverServices: {}
             - bleWrite: { gatt: pairingKey, value: { captured: pairingKeyBytes } }
             - bleWrite:

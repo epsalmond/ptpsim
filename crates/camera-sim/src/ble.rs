@@ -735,13 +735,16 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
         Step::BleRequestMtu(s) => {
             let negotiated = ctx
                 .responder
-                .request_mtu(s.mtu)
+                .request_mtu(s.requested_mtu)
                 .map_err(|e| err(e.to_string()))?;
-            if negotiated < s.mtu {
-                return Err(err(format!(
-                    "negotiated MTU {negotiated} < required {}",
-                    s.mtu
-                )));
+            // §11.4a: the checkpoint is the evidenced floor, not the request
+            // target. No floor means any negotiated MTU succeeds.
+            if let Some(minimum) = s.minimum_mtu {
+                if negotiated < minimum {
+                    return Err(err(format!(
+                        "negotiated MTU {negotiated} < required {minimum}"
+                    )));
+                }
             }
             Ok(())
         }
