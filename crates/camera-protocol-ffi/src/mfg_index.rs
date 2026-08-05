@@ -572,6 +572,9 @@ pub enum Step {
         capture_as: String,
         /// Applied to the frame bytes BEFORE `encoding` decode (§11.13).
         transform: Vec<Transform>,
+        /// The wait's wall-clock budget; `None` applies the executor's
+        /// single-call backstop.
+        timeout_ms: Option<u32>,
         opts: StepOptions,
     },
 }
@@ -1201,6 +1204,7 @@ fn step_from_ix(
                 encoding: inner.encoding.as_token().to_string(),
                 capture_as: inner.capture_as.clone(),
                 transform: transforms(&inner.transform),
+                timeout_ms: inner.timeout_ms,
                 opts: (&inner.opts).into(),
             }
         }

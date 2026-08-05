@@ -1815,13 +1815,16 @@ mirroring the BLE verb design (§11.4, §11.4a):
   read up to `maxLength` bytes from the bulk IN endpoint, then run the
   §11.13 capture pipeline (transform chain → encoding decode → scope
   string) and bind the result under `captureAs`.
-- `usbAwaitInterrupt: { encoding: <Encoding>, captureAs: <slot>, transform?: [...] }`:
+- `usbAwaitInterrupt: { encoding: <Encoding>, captureAs: <slot>, transform?: [...], timeoutMs?: <u32> }`:
   await one interrupt IN event frame and capture it with the same pipeline
   as `usbBulkIn`. A strict wait verb: a miss fails the step after its
-  budget. The `events.delivery` `thenPoll` rule does not govern it (that
-  rule scopes to the `EntryStep` `awaitUntil` grammar), but a connection
-  declaring `events.delivery: none` has no event channel, so the loader
-  rejects its establishment plan when the plan awaits an interrupt frame.
+  budget. The budget is `timeoutMs`; absent, the executor's 10-second
+  single-call backstop applies, so plans authored before the field existed
+  are unaffected. The `events.delivery` `thenPoll` rule does not govern it
+  (that rule scopes to the `EntryStep` `awaitUntil` grammar), but a
+  connection declaring `events.delivery: none` has no event channel, so the
+  loader rejects its establishment plan when the plan awaits an interrupt
+  frame.
 
 USB verbs are valid only inside `families.<fam>.usb.establishments` plans;
 the loader rejects them anywhere else. BLE verbs keep their existing

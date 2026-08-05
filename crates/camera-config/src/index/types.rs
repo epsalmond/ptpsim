@@ -532,9 +532,9 @@ pub struct UsbBulkInStep {
     pub opts: StepOptions,
 }
 
-/// `usbAwaitInterrupt: { encoding, captureAs, transform? }`: await one
-/// interrupt IN event frame and capture it with the same pipeline as
-/// [`UsbBulkInStep`] (§11.29). The transport may pend indefinitely; the
+/// `usbAwaitInterrupt: { encoding, captureAs, transform?, timeoutMs? }`:
+/// await one interrupt IN event frame and capture it with the same pipeline
+/// as [`UsbBulkInStep`] (§11.29). The transport may pend indefinitely; the
 /// executor owns every deadline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -547,6 +547,11 @@ pub struct UsbAwaitInterruptStep {
     /// (§11.13 capture pipeline). Empty = decode the raw payload.
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
     pub transform: Vec<Transform>,
+    /// Wall-clock budget of the wait. Absent = the executor's single-call
+    /// backstop (10s), so plans authored before the field existed are
+    /// unaffected.
+    #[serde(default)]
+    pub timeout_ms: Option<u32>,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }

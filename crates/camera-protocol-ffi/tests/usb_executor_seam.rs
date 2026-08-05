@@ -46,13 +46,20 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 fn store() -> Arc<ConfigStore> {
-    let index = r#"
+    store_with_interrupt_step("usbAwaitInterrupt: { encoding: bytes-raw, captureAs: sessionEvent }")
+}
+
+/// The fixture store with the `usbAwaitInterrupt` step spliced in verbatim,
+/// so a test picks the wait verb's fields.
+fn store_with_interrupt_step(step: &str) -> Arc<ConfigStore> {
+    let index = format!(
+        r#"
 manufacturer: TESTCO
 families:
   test:
     usb:
       interfaces:
-        stillImage: { class: 6, subclass: 1, protocol: 1 }
+        stillImage: {{ class: 6, subclass: 1, protocol: 1 }}
       establishments:
         usb-claim-open:
           mechanism: usb-claim-open
@@ -62,18 +69,19 @@ families:
               displayRole: connecting
               defaultExpectedDurationMs: 5
               interactionRequired: false
-              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 4 }
+              executorSpan: {{ sequence: steps, startStep: 0, endStepExclusive: 4 }}
           steps:
-            - usbClaim: { interface: stillImage }
-            - usbBulkOut: { data: { captured: openSessionContainer } }
-            - usbBulkIn: { maxLength: 512, encoding: bytes-raw, captureAs: openSessionResponse }
-            - usbAwaitInterrupt: { encoding: bytes-raw, captureAs: sessionEvent }
+            - usbClaim: {{ interface: stillImage }}
+            - usbBulkOut: {{ data: {{ captured: openSessionContainer }} }}
+            - usbBulkIn: {{ maxLength: 512, encoding: bytes-raw, captureAs: openSessionResponse }}
+            - {step}
 models:
   - id: tu1
     displayName: "Test USB One"
     inherits: [test]
     manifest: tu1.yaml
-"#;
+"#
+    );
     let body = r#"
 schema: camera-config/v1
 camera:
@@ -89,7 +97,7 @@ connections:
     events: { delivery: reliable }
 "#;
     ConfigStore::from_manufacturer_index(
-        index.into(),
+        index,
         vec![KeyValue {
             key: "tu1".into(),
             value: body.into(),
@@ -107,12 +115,22 @@ connections:
 
 struct ResponderUsbTransport {
     responder: Mutex<UsbResponder>,
+    interrupt_timeout: bool,
 }
 
 impl ResponderUsbTransport {
     fn new(responder: UsbResponder) -> Self {
         ResponderUsbTransport {
             responder: Mutex::new(responder),
+            interrupt_timeout: false,
+        }
+    }
+
+    /// The platform's own interrupt read reports a USB timeout.
+    fn with_interrupt_timeout(responder: UsbResponder) -> Self {
+        ResponderUsbTransport {
+            interrupt_timeout: true,
+            ..Self::new(responder)
         }
     }
 
@@ -163,6 +181,11 @@ impl UsbExecutorTransport for ResponderUsbTransport {
     }
 
     async fn next_interrupt_event(&self) -> Result<Vec<u8>, UsbTransportError> {
+        if self.interrupt_timeout {
+            return Err(UsbTransportError::Timeout {
+                detail: "platform interrupt read timed out".into(),
+            });
+        }
         let frame = self
             .responder
             .lock()
@@ -460,5 +483,196 @@ fn establishment_plan_mirrors_resolved_usb_steps() {
         matches!(&plan.steps[3], Step::UsbAwaitInterrupt { .. }),
         "{:?}",
         plan.steps[3]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The manifest wait budget on `usbAwaitInterrupt` (§11.29): a late frame and
+// a fast-failing budget, both modeled on a virtual clock so no test waits on
+// real wall-clock time.
+// ---------------------------------------------------------------------------
+
+/// Virtual arrival time of the scripted interrupt frame: past the executor's
+/// 10-second single-call backstop, inside a longer manifest budget.
+const LATE_FRAME_MS: u32 = 12_000;
+
+/// A transport whose interrupt frame arrives `LATE_FRAME_MS` of virtual time
+/// out. `sleep` below the mark resolves at once (virtual time passes for
+/// free), at the mark resolves on a later poll (the frame lands between an
+/// earlier deadline and a later one), and past the mark pends (a deadline
+/// beyond the arrival never wins the race).
+struct LateInterruptTransport {
+    responder: Mutex<UsbResponder>,
+}
+
+#[async_trait::async_trait]
+impl UsbExecutorTransport for LateInterruptTransport {
+    async fn claim_interface(
+        &self,
+        class: u8,
+        subclass: u8,
+        protocol: u8,
+    ) -> Result<(), UsbTransportError> {
+        self.responder
+            .lock()
+            .expect("responder")
+            .claim(class, subclass, protocol)
+            .map_err(usb_err)
+    }
+
+    async fn bulk_out(&self, data: Vec<u8>) -> Result<(), UsbTransportError> {
+        self.responder
+            .lock()
+            .expect("responder")
+            .bulk_out(&data)
+            .map_err(usb_err)
+    }
+
+    async fn bulk_in(&self, max_length: u32) -> Result<Vec<u8>, UsbTransportError> {
+        self.responder
+            .lock()
+            .expect("responder")
+            .bulk_in(max_length)
+            .map_err(usb_err)
+    }
+
+    async fn next_interrupt_event(&self) -> Result<Vec<u8>, UsbTransportError> {
+        self.sleep(LATE_FRAME_MS).await?;
+        let frame = self
+            .responder
+            .lock()
+            .expect("responder")
+            .next_interrupt_event();
+        frame.ok_or_else(|| UsbTransportError::Failed {
+            detail: "no scripted interrupt frame".into(),
+        })
+    }
+
+    async fn release_and_close(&self) -> Result<(), UsbTransportError> {
+        self.responder
+            .lock()
+            .expect("responder")
+            .release_and_close();
+        Ok(())
+    }
+
+    async fn sleep(&self, ms: u32) -> Result<(), UsbTransportError> {
+        if ms < LATE_FRAME_MS {
+            return Ok(());
+        }
+        if ms == LATE_FRAME_MS {
+            // The frame lands at this mark: resolve on a later poll so an
+            // earlier deadline (the 10s backstop) wins the race first.
+            let mut armed = false;
+            futures::future::poll_fn(|cx| {
+                if armed {
+                    std::task::Poll::Ready(())
+                } else {
+                    armed = true;
+                    cx.waker().wake_by_ref();
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
+            return Ok(());
+        }
+        futures::future::pending().await
+    }
+}
+
+#[test]
+fn interrupt_wait_timeout_ms_extends_past_the_backstop() {
+    let store = store_with_interrupt_step(
+        "usbAwaitInterrupt: { encoding: bytes-raw, captureAs: sessionEvent, timeoutMs: 30000 }",
+    );
+    let transport = Arc::new(LateInterruptTransport {
+        responder: Mutex::new(scripted_responder()),
+    });
+
+    let outcome = block_on(run_usb_establishment(
+        store,
+        "tu1:usbTether".into(),
+        transport,
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        initial_scope(),
+        initial_encodings(),
+        vec![],
+    ))
+    .expect("the 30s manifest budget outlasts the 10s backstop");
+
+    assert_eq!(outcome.steps_run, 4);
+    assert_eq!(
+        scope_get(&outcome.scope, "sessionEvent"),
+        Some(hex_lower(&INTERRUPT_EVENT).as_str()),
+        "the late interrupt frame binds under captureAs"
+    );
+}
+
+#[test]
+fn interrupt_wait_timeout_ms_fails_fast() {
+    let store = store_with_interrupt_step(
+        "usbAwaitInterrupt: { encoding: bytes-raw, captureAs: sessionEvent, timeoutMs: 500 }",
+    );
+    // No scripted interrupt frame: the wait pends until its budget lapses.
+    let responder = UsbResponder::new().queue_bulk_in(&OPEN_SESSION_RESPONSE);
+    let transport = Arc::new(ResponderUsbTransport::new(responder));
+
+    let error = block_on(run_usb_establishment(
+        store,
+        "tu1:usbTether".into(),
+        transport,
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        initial_scope(),
+        initial_encodings(),
+        vec![],
+    ))
+    .expect_err("the 500ms manifest budget fails the wait fast");
+
+    assert!(
+        matches!(
+            &error,
+            UsbExecutorError::StepFailed {
+                kind: ExecutorStepFailureKind::DeadlineExceeded,
+                step,
+                detail,
+                ..
+            } if step == "steps[3].usbAwaitInterrupt" && detail.contains("500")
+        ),
+        "the manifest budget owns the deadline: {error:?}"
+    );
+}
+
+#[test]
+fn interrupt_transport_timeout_keeps_deadline_classification() {
+    let transport = Arc::new(ResponderUsbTransport::with_interrupt_timeout(
+        scripted_responder(),
+    ));
+
+    let error = block_on(run_usb_establishment(
+        store(),
+        "tu1:usbTether".into(),
+        transport,
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        initial_scope(),
+        initial_encodings(),
+        vec![],
+    ))
+    .expect_err("a platform USB timeout fails the wait");
+
+    assert!(
+        matches!(
+            &error,
+            UsbExecutorError::StepFailed {
+                kind: ExecutorStepFailureKind::DeadlineExceeded,
+                step,
+                detail,
+                ..
+            } if step == "steps[3].usbAwaitInterrupt"
+                && detail.contains("platform interrupt read timed out")
+        ),
+        "UsbTransportError::Timeout keeps its deadline identity: {error:?}"
     );
 }

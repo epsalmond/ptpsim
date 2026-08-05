@@ -1882,7 +1882,7 @@ async fn run_step_once(
             let transport = usb_transport(ctx, here)?;
             let frame = usb_deadline(
                 transport,
-                DEFAULT_OP_TIMEOUT_MS,
+                s.timeout_ms.unwrap_or(DEFAULT_OP_TIMEOUT_MS),
                 "usbAwaitInterrupt",
                 async { transport.next_interrupt_event().await },
             )
