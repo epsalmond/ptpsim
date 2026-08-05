@@ -36,6 +36,10 @@ pub use pcss_executor::{
     run_pcss_auto_establishment, run_pcss_known_address_establishment, PcssCallback,
     PcssEstablishmentOutcome, PcssExecutorError, PcssExecutorTransport,
 };
+pub mod usb_executor;
+pub use usb_executor::{
+    run_usb_establishment, UsbExecutorError, UsbExecutorTransport, UsbTransportError,
+};
 pub mod streaming_executor;
 pub use streaming_executor::{
     run_streaming_action, run_streaming_operation, PtpStreamingError, PtpStreamingOutcome,
@@ -2598,10 +2602,12 @@ impl ConfigStore {
     /// [`Recognition::Candidate`]).
     ///
     /// Returns `None` if the model is unknown, the connection declares no
-    /// establishment mechanism (e.g. `usb`), or no plan is registered under
-    /// that mechanism. The plan's [`Step`] values keep their structured
-    /// `Captured` / `Runtime` / `Template` forms — scope is resolved by the
-    /// dispatcher mid-walk (plan §11.1).
+    /// establishment mechanism, or no plan is registered under that mechanism.
+    /// The connection's `kind` selects the family registry the plan comes
+    /// from: raw `usb` connections resolve in the family USB registry
+    /// (§11.29), everything else in the BLE registry. The plan's [`Step`]
+    /// values keep their structured `Captured` / `Runtime` / `Template`
+    /// forms — scope is resolved by the dispatcher mid-walk (plan §11.1).
     pub fn establishment(
         &self,
         model: String,
@@ -2614,8 +2620,14 @@ impl ConfigStore {
         let body = self.inner.body(&model)?;
         let connection_config = body.connections.get(&connection)?;
         let mechanism = connection_config.establishment.clone()?;
-        let mut plan =
-            mfg_index::build_establishment(index, &model, &connection, &mechanism, &initial_scope)?;
+        let mut plan = mfg_index::build_establishment(
+            index,
+            &model,
+            &connection,
+            &mechanism,
+            connection_config.kind.as_deref(),
+            &initial_scope,
+        )?;
         plan.activities
             .extend(connection_config.activities.iter().map(Into::into));
         Some(plan)
@@ -3827,7 +3839,8 @@ fn refine_establishment_native(
             "{model}:{selector}: unknown model"
         )));
     };
-    let mechanism = match body.connections.get(selector) {
+    let connection = body.connections.get(selector);
+    let mechanism = match connection {
         Some(connection) => connection.establishment.clone().ok_or_else(|| {
             EstablishmentError::UnknownPlan(format!(
                 "{model}:{selector}: connection has no establishment"
@@ -3835,7 +3848,9 @@ fn refine_establishment_native(
         })?,
         None => selector.to_string(),
     };
-    let Some(plan) = mfg_index::build_establishment(index, model, selector, &mechanism, &scope)
+    let connection_kind = connection.and_then(|connection| connection.kind.as_deref());
+    let Some(plan) =
+        mfg_index::build_establishment(index, model, selector, &mechanism, connection_kind, &scope)
     else {
         return Err(EstablishmentError::UnknownPlan(format!(
             "{model}:{selector}: missing mechanism {mechanism}"
@@ -3947,6 +3962,7 @@ fn build_manufacturer_index_store(
         .as_ref()
         .expect("manufacturer index store has a resolved index");
     mfg_index::validate_ble_plan_mappings(index)?;
+    mfg_index::validate_usb_plan_mappings(index)?;
     let manufacturer = manufacturer_yaml
         .map(|yaml| {
             cc::ManufacturerDefaults::from_yaml(&yaml)
