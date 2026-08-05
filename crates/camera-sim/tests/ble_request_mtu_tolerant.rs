@@ -155,3 +155,55 @@ fn tolerant_unmet_floor_is_skipped_and_recorded() {
         "the tolerated checkpoint is recorded at its step path"
     );
 }
+
+#[test]
+fn tolerant_step_absorbs_a_failed_mtu_request() {
+    // legacy manufacturer app's onMtuChanged ignores the callback status, so a failed
+    // requestMtu call must not block registration (#449): tolerance absorbs
+    // the call error itself, not just an unmet floor.
+    let idx = index_with_steps(
+        r#"          - bleRequestMtu: { requestedMtu: 515, tolerant: true }
+"#,
+    );
+    let mut responder = BleResponder::new(Vec::<String>::new()).with_failing_mtu_request();
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("a tolerant step must absorb a failed MTU request");
+
+    assert_eq!(
+        outcome.summary.tolerated_step_paths,
+        vec!["steps[2].bleRequestMtu".to_string()],
+        "the tolerated call failure is recorded at its step path"
+    );
+}
+
+#[test]
+fn strict_step_fails_on_a_failed_mtu_request() {
+    let idx = index_with_steps(
+        r#"          - bleRequestMtu: { requestedMtu: 515 }
+"#,
+    );
+    let mut responder = BleResponder::new(Vec::<String>::new()).with_failing_mtu_request();
+
+    let error = match walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    ) {
+        Ok(_) => panic!("a failed MTU request must fail a strict step"),
+        Err(e) => e,
+    };
+
+    assert!(
+        error.to_string().contains("MTU request failed"),
+        "the failure reports the call error: {error}"
+    );
+}

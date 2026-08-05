@@ -2495,6 +2495,9 @@ mod tests {
         /// The platform peripheral name served to `blePeripheralName` (§11.4b).
         /// Empty models a stack that cannot supply one.
         peripheral_name: String,
+        /// Fail the MTU request itself (a GATT error or timeout), as distinct
+        /// from negotiating below a manifest floor (#449).
+        request_mtu_fails: bool,
         sleep_log: Arc<Mutex<Vec<u32>>>,
         subscribe_log: Arc<Mutex<Vec<String>>>,
         dropped_inflight: Arc<AtomicBool>,
@@ -2524,6 +2527,11 @@ mod tests {
             self.play(io).await.map(|_| ())
         }
         async fn request_mtu(&self, _mtu: u16) -> Result<u16, TransportError> {
+            if self.request_mtu_fails {
+                return Err(TransportError::Failed {
+                    detail: "requestMtu rejected by the GATT stack".to_string(),
+                });
+            }
             Ok(158)
         }
         async fn ensure_services_discovered(&self) -> Result<(), TransportError> {
@@ -3585,6 +3593,60 @@ mod tests {
             opts: StepOptions::default(),
         })];
         block_on(walk_plan(&mut ctx, steps)).expect("negotiated 158 with no floor must succeed");
+    }
+
+    #[test]
+    fn tolerant_mtu_step_absorbs_a_failed_request_call() {
+        // legacy manufacturer app's onMtuChanged ignores the callback status, so a
+        // failed requestMtu call must not block registration (#449):
+        // tolerance absorbs the call error itself, not just an unmet floor.
+        let (transport, recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            request_mtu_fails: true,
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BleRequestMtu(BleRequestMtuStep {
+            requested_mtu: 517,
+            minimum_mtu: None,
+            opts: StepOptions {
+                tolerant: true,
+                ..StepOptions::default()
+            },
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("tolerance absorbs the call failure");
+
+        let reports = recorder.0.lock().unwrap();
+        let outcomes: Vec<StepOutcome> = reports.iter().map(|r| r.outcome).collect();
+        assert_eq!(outcomes, vec![StepOutcome::Started, StepOutcome::Tolerated]);
+        // The tolerated error is the scripted call failure, provably not the
+        // executor's own deadline firing (a pend would report a timeout).
+        assert!(reports[1]
+            .error
+            .as_deref()
+            .expect("tolerated report carries the error")
+            .contains("requestMtu rejected by the GATT stack"));
+    }
+
+    #[test]
+    fn strict_mtu_step_fails_on_a_failed_request_call() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            request_mtu_fails: true,
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BleRequestMtu(BleRequestMtuStep {
+            requested_mtu: 517,
+            minimum_mtu: None,
+            opts: StepOptions::default(),
+        })];
+        let err = block_on(walk_plan(&mut ctx, steps))
+            .expect_err("a failed request call fails a strict step");
+        assert_eq!(err.kind, ExecutorStepFailureKind::Other);
+        assert!(err
+            .message
+            .contains("requestMtu rejected by the GATT stack"));
     }
 
     #[test]
