@@ -764,10 +764,18 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
             Ok(())
         }
         Step::BlePeripheralName(s) => {
-            let name = ctx
+            let raw = ctx
                 .responder
                 .peripheral_name()
                 .map_err(|e| err(e.to_string()))?;
+            // §11.4b: UTF-8 with any NUL terminator removed; a name that is
+            // empty after the trim is unavailable and fails like an unserved
+            // one.
+            let name = eval::decode_bytes(raw.as_bytes(), Encoding::Utf8Cstring)
+                .ok_or_else(|| err("peripheral name is not valid UTF-8".into()))?;
+            if name.is_empty() {
+                return Err(err("peripheral name unavailable".into()));
+            }
             ctx.scope.insert(s.capture_as.clone(), name);
             ctx.encodings.insert(s.capture_as.clone(), Encoding::Utf8);
             Ok(())

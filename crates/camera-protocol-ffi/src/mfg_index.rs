@@ -394,7 +394,8 @@ pub enum Step {
     /// The connected peripheral's platform name (§11.4b): `CBPeripheral.name`
     /// on CoreBluetooth, where the GAP service is filtered from discovery and
     /// a GATT 0x2A00 read cannot succeed; a GATT read on stacks that expose
-    /// it. Binds a UTF-8 string.
+    /// it. Binds a UTF-8 string with any NUL terminator removed; an
+    /// unavailable name fails the step rather than binding an empty string.
     BlePeripheralName {
         capture_as: String,
         opts: StepOptions,

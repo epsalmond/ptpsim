@@ -114,10 +114,13 @@ available as `CBPeripheral.name`. A step that needs the peripheral's name
 must not be authored as a 0x2A00 `bleRead`.
 
 - `blePeripheralName: { captureAs: <slot> }` captures the connected
-  peripheral's platform name into scope as a UTF-8 string. Hosts without GAP
-  access use the platform peripheral-name property; hosts with GAP access
-  may satisfy the step with the 0x2A00 GATT read. The step implies no GATT
-  traffic on checkpoint platforms and takes the usual `StepOptions`.
+  peripheral's platform name into scope as a UTF-8 string with any NUL
+  terminator removed. Hosts without GAP access use the platform
+  peripheral-name property; hosts with GAP access may satisfy the step with
+  the 0x2A00 GATT read. The step implies no GATT traffic on checkpoint
+  platforms and takes the usual `StepOptions`. An unavailable name
+  (`CBPeripheral.name` is optional) is a transport error, never an empty
+  string: the step fails, tolerant-aware as usual.
 
 ### 11.5 `refine_establishment` semantics
 

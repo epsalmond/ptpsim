@@ -111,6 +111,59 @@ fn unserved_peripheral_name_fails_the_walk() {
 }
 
 #[test]
+fn served_peripheral_name_strips_the_nul_terminator() {
+    // GAP-exposing hosts satisfy the step with the raw 0x2A00 read, which is
+    // NUL-terminated; the bound value must not carry it (#444 review).
+    let idx = index_with_steps(
+        r#"          - blePeripheralName: { captureAs: cameraName }
+"#,
+    );
+    let mut responder =
+        BleResponder::new(Vec::<String>::new()).with_peripheral_name("1361X-A7-1361\0");
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("a NUL-terminated name binds trimmed");
+
+    assert_eq!(
+        outcome.scope.get("cameraName").map(String::as_str),
+        Some("1361X-A7-1361")
+    );
+}
+
+#[test]
+fn empty_peripheral_name_fails_like_an_unserved_one() {
+    // CBPeripheral.name is optional; an unavailable name is a step failure,
+    // never a silently empty capture (#444 review).
+    let idx = index_with_steps(
+        r#"          - blePeripheralName: { captureAs: cameraName }
+"#,
+    );
+    let mut responder = BleResponder::new(Vec::<String>::new()).with_peripheral_name("");
+
+    let error = match walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    ) {
+        Ok(_) => panic!("an empty peripheral name must fail the walk"),
+        Err(e) => e,
+    };
+
+    assert!(
+        error.to_string().contains("peripheral name unavailable"),
+        "the failure names the unavailable name: {error}"
+    );
+}
+
+#[test]
 fn tolerant_unserved_peripheral_name_is_skipped_and_recorded() {
     let idx = index_with_steps(
         r#"          - blePeripheralName: { captureAs: cameraName, tolerant: true }

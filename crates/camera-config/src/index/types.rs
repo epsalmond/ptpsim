@@ -437,7 +437,9 @@ pub struct BleReadStep {
 /// (0x1800) from discovery, so a GATT read of the Device Name characteristic
 /// (0x2A00) deterministically fails on iOS; the same value is only available
 /// as `CBPeripheral.name`. Hosts with GAP access (Android) may satisfy this
-/// with the GATT read. The name binds into scope as a UTF-8 string.
+/// with the GATT read. The name binds into scope as a UTF-8 string with any
+/// NUL terminator removed; an unavailable name fails the step (tolerant-aware
+/// as usual), never binds an empty string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlePeripheralNameStep {
