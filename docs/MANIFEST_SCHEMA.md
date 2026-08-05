@@ -1883,6 +1883,7 @@ owns. The executor supplies `timeout_ms` from the step's manifest budget
 | `run_usb_establishment` | a raw `usb` establishment plan over `UsbExecutorTransport` |
 | `run_mode_entry_txn` | a mode entry's `EntryStep` grammar over `PtpTransactionTransport` |
 | `run_initiator_action_txn` | one action's initiator binding over `PtpTransactionTransport` |
+| `run_initiator_action_txn_to_sink` | the same initiator walk over `PtpTransactionTransport`, streaming each completed data output to `PtpDataOutputSink` |
 
 The transaction entry points run the same grammar, retry, tolerance,
 capture, predicate, loop, and deadline semantics as their frame-based

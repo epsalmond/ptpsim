@@ -585,6 +585,7 @@ executor; only the transport seam differs.
 | `runStreamingAction(store, connection, action, transport, sink, runtimeParams, expectedPayloadBytes)` | one compressed, single-`sendOp` data-in action through bounded raw reads. Rust validates the 12-byte data header, streams the exact body to `PtpStreamingSink` in chunks no larger than 1 MiB, then validates the separate final response. |
 | `run_mode_entry_txn(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | `runModeEntry` over `PtpTransactionTransport` (`usb-passthrough`, §11.29). The grammar and plan-shape rules are identical; only the transport seam differs. |
 | `run_initiator_action_txn(store, connection, action, transport, observer, activityObserver, runtimeParams)` | `runInitiatorAction` over `PtpTransactionTransport`: one action's initiator binding on the daemon-owned session. |
+| `run_initiator_action_txn_to_sink(store, connection, action, transport, observer, activityObserver, sink, runtimeParams)` | `runInitiatorActionToSink` over `PtpTransactionTransport`: each completed ordinary data output goes to `PtpDataOutputSink` instead of accumulating in the outcome. |
 
 Invocation parameter values are `ActionArgument`: untagged unsigned numbers or
 strings in serde/HTTP, and a closed `U64`/`String` enum across UniFFI. Catalog
