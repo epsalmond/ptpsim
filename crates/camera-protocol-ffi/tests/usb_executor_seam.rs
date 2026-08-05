@@ -1,11 +1,11 @@
 //! Issue #342 seam: a raw USB establishment plan (§11.29) walked by the Rust
 //! executor through the foreign-transport seam (`run_usb_establishment`)
-//! against a scripted in-memory USB device. The transport's call log must
-//! show the claim, the bulk OUT OpenSession container, and the bulk IN and
-//! interrupt captures in plan order, and the returned scope must hold the
+//! against the scripted in-memory USB responder (`camera_sim::usb`, shared
+//! with the camera-sim acceptance tests). The responder's interaction log
+//! must show the claim, the bulk OUT OpenSession container, and the bulk IN
+//! and interrupt captures in plan order, and the returned scope must hold the
 //! captured bulk IN payload.
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use camera_protocol_ffi::{
@@ -13,6 +13,7 @@ use camera_protocol_ffi::{
     ExecutorStepFailureKind, KeyValue, Step, StepObserver, StepOutcome, StepReport,
     UsbExecutorError, UsbExecutorTransport, UsbTransportError,
 };
+use camera_sim::usb::{UsbError, UsbEvent, UsbResponder};
 use futures::executor::block_on;
 
 /// PTP-over-USB OpenSession command container (session id 1, transaction 0).
@@ -96,112 +97,102 @@ connections:
 }
 
 // ---------------------------------------------------------------------------
-// The foreign-transport seam, implemented as a scripted USB device — what a
-// platform app does over its USB stack, minus the bus.
+// The foreign-transport seam, backed by the shared responder — what a
+// platform app does over its USB stack, minus the bus. The adapter owns the
+// async deadline plumbing the deterministic responder does not model (the
+// BLE `ResponderTransport` precedent).
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum UsbCall {
-    Claim {
-        class: u8,
-        subclass: u8,
-        protocol: u8,
-    },
-    BulkOut {
-        data: Vec<u8>,
-    },
-    BulkIn {
-        max_length: u32,
-    },
-    AwaitInterrupt,
-    ReleaseAndClose,
+struct ResponderUsbTransport {
+    responder: Mutex<UsbResponder>,
 }
 
-struct ScriptedUsbTransport {
-    calls: Mutex<Vec<UsbCall>>,
-    fail_claim: bool,
-    bulk_out_results: Mutex<VecDeque<Result<(), UsbTransportError>>>,
-    bulk_in_replies: Mutex<VecDeque<Vec<u8>>>,
-    interrupt_replies: Mutex<VecDeque<Vec<u8>>>,
-}
-
-impl ScriptedUsbTransport {
-    fn new() -> Self {
-        ScriptedUsbTransport {
-            calls: Mutex::new(Vec::new()),
-            fail_claim: false,
-            bulk_out_results: Mutex::new(VecDeque::new()),
-            bulk_in_replies: Mutex::new(VecDeque::from(vec![OPEN_SESSION_RESPONSE.to_vec()])),
-            interrupt_replies: Mutex::new(VecDeque::from(vec![INTERRUPT_EVENT.to_vec()])),
+impl ResponderUsbTransport {
+    fn new(responder: UsbResponder) -> Self {
+        ResponderUsbTransport {
+            responder: Mutex::new(responder),
         }
     }
 
-    fn calls(&self) -> Vec<UsbCall> {
-        self.calls.lock().unwrap().clone()
+    fn log(&self) -> Vec<UsbEvent> {
+        self.responder.lock().expect("responder").log().to_vec()
+    }
+}
+
+fn usb_err(error: UsbError) -> UsbTransportError {
+    match error {
+        UsbError::ClaimRefused { owner } => UsbTransportError::ClaimFailed { owner },
+        UsbError::Stall { detail } => UsbTransportError::Stall { detail },
+        other => UsbTransportError::Failed {
+            detail: other.to_string(),
+        },
     }
 }
 
 #[async_trait::async_trait]
-impl UsbExecutorTransport for ScriptedUsbTransport {
+impl UsbExecutorTransport for ResponderUsbTransport {
     async fn claim_interface(
         &self,
         class: u8,
         subclass: u8,
         protocol: u8,
     ) -> Result<(), UsbTransportError> {
-        self.calls.lock().unwrap().push(UsbCall::Claim {
-            class,
-            subclass,
-            protocol,
-        });
-        if self.fail_claim {
-            return Err(UsbTransportError::ClaimFailed {
-                owner: Some("kernel.driver".into()),
-            });
-        }
-        Ok(())
+        self.responder
+            .lock()
+            .expect("responder")
+            .claim(class, subclass, protocol)
+            .map_err(usb_err)
     }
 
     async fn bulk_out(&self, data: Vec<u8>) -> Result<(), UsbTransportError> {
-        self.calls.lock().unwrap().push(UsbCall::BulkOut { data });
-        self.bulk_out_results
+        self.responder
             .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(Ok(()))
+            .expect("responder")
+            .bulk_out(&data)
+            .map_err(usb_err)
     }
 
     async fn bulk_in(&self, max_length: u32) -> Result<Vec<u8>, UsbTransportError> {
-        self.calls
+        self.responder
             .lock()
-            .unwrap()
-            .push(UsbCall::BulkIn { max_length });
-        Ok(self
-            .bulk_in_replies
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("scripted bulk-in reply"))
+            .expect("responder")
+            .bulk_in(max_length)
+            .map_err(usb_err)
     }
 
     async fn next_interrupt_event(&self) -> Result<Vec<u8>, UsbTransportError> {
-        self.calls.lock().unwrap().push(UsbCall::AwaitInterrupt);
-        Ok(self
-            .interrupt_replies
+        let frame = self
+            .responder
             .lock()
-            .unwrap()
-            .pop_front()
-            .expect("scripted interrupt reply"))
+            .expect("responder")
+            .next_interrupt_event();
+        match frame {
+            Some(frame) => Ok(frame),
+            // A lost or unscripted frame never arrives; the executor's
+            // deadline owns the outcome.
+            None => futures::future::pending().await,
+        }
     }
 
     async fn release_and_close(&self) -> Result<(), UsbTransportError> {
-        self.calls.lock().unwrap().push(UsbCall::ReleaseAndClose);
+        self.responder
+            .lock()
+            .expect("responder")
+            .release_and_close();
         Ok(())
     }
 
     async fn sleep(&self, _ms: u32) -> Result<(), UsbTransportError> {
         Ok(())
     }
+}
+
+/// The default scripting for the fixture plan: the OpenSession OK response
+/// and one interrupt event frame.
+fn scripted_responder() -> UsbResponder {
+    UsbResponder::new()
+        .queue_bulk_in(&OPEN_SESSION_RESPONSE)
+        .inject_interrupt_frame(&INTERRUPT_EVENT, false)
 }
 
 #[derive(Default)]
@@ -243,7 +234,7 @@ fn initial_encodings() -> Vec<KeyValue> {
 
 #[test]
 fn usb_claim_open_plan_runs_end_to_end() {
-    let transport = Arc::new(ScriptedUsbTransport::new());
+    let transport = Arc::new(ResponderUsbTransport::new(scripted_responder()));
     let recorder = Arc::new(Recorder::default());
     let activities = Arc::new(ActivityRecorder::default());
     let outcome = block_on(run_usb_establishment(
@@ -271,18 +262,18 @@ fn usb_claim_open_plan_runs_end_to_end() {
     );
 
     assert_eq!(
-        transport.calls(),
+        transport.log(),
         vec![
-            UsbCall::Claim {
+            UsbEvent::Claim {
                 class: 6,
                 subclass: 1,
                 protocol: 1,
             },
-            UsbCall::BulkOut {
+            UsbEvent::BulkOut {
                 data: OPEN_SESSION_CONTAINER.to_vec(),
             },
-            UsbCall::BulkIn { max_length: 512 },
-            UsbCall::AwaitInterrupt,
+            UsbEvent::BulkIn { max_length: 512 },
+            UsbEvent::AwaitInterrupt,
         ],
         "the transport saw the plan's verbs in order, claim first"
     );
@@ -327,9 +318,8 @@ fn usb_claim_open_plan_runs_end_to_end() {
 
 #[test]
 fn claim_failure_leaves_nothing_to_release() {
-    let mut transport = ScriptedUsbTransport::new();
-    transport.fail_claim = true;
-    let transport = Arc::new(transport);
+    let responder = scripted_responder().with_claim_refusal(Some("kernel.driver".into()));
+    let transport = Arc::new(ResponderUsbTransport::new(responder));
     let error = block_on(run_usb_establishment(
         store(),
         "tu1:usbTether".into(),
@@ -354,8 +344,8 @@ fn claim_failure_leaves_nothing_to_release() {
         "the claim failure surfaces as a step failure: {error:?}"
     );
     assert_eq!(
-        transport.calls(),
-        vec![UsbCall::Claim {
+        transport.log(),
+        vec![UsbEvent::Claim {
             class: 6,
             subclass: 1,
             protocol: 1,
@@ -366,15 +356,8 @@ fn claim_failure_leaves_nothing_to_release() {
 
 #[test]
 fn bulk_out_failure_releases_the_claimed_interface() {
-    let transport = ScriptedUsbTransport::new();
-    transport
-        .bulk_out_results
-        .lock()
-        .unwrap()
-        .push_back(Err(UsbTransportError::Stall {
-            detail: "bulk OUT endpoint stalled".into(),
-        }));
-    let transport = Arc::new(transport);
+    let responder = scripted_responder().queue_bulk_out_stall("bulk OUT endpoint stalled");
+    let transport = Arc::new(ResponderUsbTransport::new(responder));
     let error = block_on(run_usb_establishment(
         store(),
         "tu1:usbTether".into(),
@@ -399,17 +382,17 @@ fn bulk_out_failure_releases_the_claimed_interface() {
         "the stall surfaces as a step failure: {error:?}"
     );
     assert_eq!(
-        transport.calls(),
+        transport.log(),
         vec![
-            UsbCall::Claim {
+            UsbEvent::Claim {
                 class: 6,
                 subclass: 1,
                 protocol: 1,
             },
-            UsbCall::BulkOut {
+            UsbEvent::BulkOut {
                 data: OPEN_SESSION_CONTAINER.to_vec(),
             },
-            UsbCall::ReleaseAndClose,
+            UsbEvent::ReleaseAndClose,
         ],
         "a failed walk releases the claimed interface"
     );
@@ -420,7 +403,7 @@ fn unknown_mechanism_is_an_unknown_plan() {
     let error = block_on(run_usb_establishment(
         store(),
         "tu1:no-such-mechanism".into(),
-        Arc::new(ScriptedUsbTransport::new()),
+        Arc::new(ResponderUsbTransport::new(scripted_responder())),
         Arc::new(Recorder::default()),
         Arc::new(ActivityRecorder::default()),
         vec![],
