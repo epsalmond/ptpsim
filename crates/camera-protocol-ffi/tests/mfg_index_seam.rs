@@ -1385,7 +1385,7 @@ fn usb_claim_open_plan_resolves_across_the_seam() {
     };
     expect_container(
         &plan.steps[1],
-        &[0x16, 0, 0, 0, 1, 0, 2, 0x10, 0, 0, 0, 0, 1, 0, 0, 0],
+        &[0x10, 0, 0, 0, 1, 0, 2, 0x10, 0, 0, 0, 0, 1, 0, 0, 0],
     );
     match &plan.steps[2] {
         Step::UsbBulkIn {

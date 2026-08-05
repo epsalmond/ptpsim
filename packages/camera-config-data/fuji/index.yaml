@@ -51,7 +51,7 @@ families:
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 5 }
           steps:
             - usbClaim: { interface: stillImage }
-            - usbBulkOut: { data: { literal: "16000000010002100000000001000000" } }  # OpenSession(1), tid 0, USB container
+            - usbBulkOut: { data: { literal: "10000000010002100000000001000000" } }  # OpenSession(1), tid 0, USB container
             - usbBulkIn: { maxLength: 512, encoding: bytes, captureAs: openSessionResponse }
             - usbBulkOut: { data: { literal: "0c0000000100011001000000" } }          # GetDeviceInfo, tid 1
             - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }
