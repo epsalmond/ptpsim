@@ -3,13 +3,13 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    parse_hex_code, ActionInitiatorParameterKind, ActionVerb, Availability, CameraManifest,
-    CaptureSource, ConfigStore, DescriptorValue, InventoryCompleteness, ManufacturerDefaults,
-    MissingRuntimeValue, ModeEntryExecution, ObjectTransferCompletionTiming,
-    ObjectTransferResumePolicy, ObjectTransferStrategy, ObjectsAvailable, ObservationLine,
-    OperationKind, PcssDiscoveryTarget, Predicate, PropView, PropertyKind,
-    PropertyTransitionTerminal, RecordValueEncoding, RecordValueLiteral, ResponderMutation,
-    SetPropValue, StepParam, ValuePolicy, VersionScheme,
+    parse_hex_code, ActionInitiatorParameterKind, ActionVerb, Availability, AwaitSource,
+    CameraManifest, CaptureSource, ConfigStore, DescriptorValue, EventDelivery,
+    InventoryCompleteness, Loop, ManufacturerDefaults, MissingRuntimeValue, ModeEntryExecution,
+    ObjectTransferCompletionTiming, ObjectTransferResumePolicy, ObjectTransferStrategy,
+    ObjectsAvailable, ObservationLine, OperationKind, PcssDiscoveryTarget, Predicate, PropView,
+    PropertyKind, PropertyTransitionTerminal, RecordValueEncoding, RecordValueLiteral,
+    ResponderMutation, SessionOwnership, SetPropValue, Step, StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -395,7 +395,25 @@ fn usb_mode_is_user_instruction_and_ops_gate_appropriately() {
     use camera_config::Availability::*;
     let m = gfx();
     let usb = &m.connections["usb"];
-    assert_eq!(usb.kind.as_deref(), Some("usb-ptp"));
+    assert_eq!(usb.kind.as_deref(), Some("usb"));
+    assert_eq!(usb.establishment.as_deref(), Some("usb-claim-open"));
+    // Raw USB is desktop-class: the initiator owns handle, claim, and session.
+    let platforms: Vec<String> = serde_yaml::from_value(
+        usb.extra
+            .get("platforms")
+            .expect("usb declares platforms")
+            .clone(),
+    )
+    .expect("platforms is a string list");
+    assert_eq!(platforms, ["macos", "android", "linux"]);
+    assert_eq!(
+        usb.session.as_ref().map(|s| s.ownership),
+        Some(SessionOwnership::InitiatorOwned)
+    );
+    assert_eq!(
+        usb.events.as_ref().map(|e| e.delivery),
+        Some(EventDelivery::Reliable)
+    );
     // One on-camera USB mode (raw-conv + backup-restore), a userInstruction edge, no PTP steps.
     let entry = usb
         .entries
@@ -435,6 +453,98 @@ fn usb_mode_is_user_instruction_and_ops_gate_appropriately() {
         m.operation_available("app", "shooting/stills", 0x100c, &any),
         WrongConnection
     );
+}
+
+#[test]
+fn usb_passthrough_is_daemon_attached_for_ios_and_macos() {
+    let m = gfx();
+    let passthrough = &m.connections["usb-passthrough"];
+    assert_eq!(passthrough.kind.as_deref(), Some("usb-passthrough"));
+    // A platform daemon owns device, framing, session, and transaction ids, so
+    // the connection runs no establishment plan of its own.
+    assert!(passthrough.establishment.is_none());
+    let platforms: Vec<String> = serde_yaml::from_value(
+        passthrough
+            .extra
+            .get("platforms")
+            .expect("usb-passthrough declares platforms")
+            .clone(),
+    )
+    .expect("platforms is a string list");
+    assert_eq!(platforms, ["ios", "macos"]);
+    assert_eq!(
+        passthrough.session.as_ref().map(|s| s.ownership),
+        Some(SessionOwnership::DaemonAttached)
+    );
+    assert_eq!(
+        passthrough.events.as_ref().map(|e| e.delivery),
+        Some(EventDelivery::BestEffort)
+    );
+}
+
+#[test]
+fn passthrough_event_awaits_always_declare_then_poll() {
+    // §11.29: on a bestEffort connection any single pushed event may be lost,
+    // so every event-source awaitUntil reachable from the connection MUST
+    // declare thenPoll to reconcile a missed event by polling. Written as a
+    // walk so a future mode-entry or action edit cannot drop the guard.
+    fn collect_steps<'a>(steps: &'a [Step], out: &mut Vec<&'a Step>) {
+        for step in steps {
+            out.push(step);
+            if let Some(await_until) = &step.await_until {
+                collect_steps(&await_until.on_each, out);
+            }
+            if let Some(retry) = &step.retry {
+                collect_steps(&retry.steps, out);
+            }
+            if let Some(r#loop) = &step.r#loop {
+                match r#loop {
+                    Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => {
+                        collect_steps(body, out);
+                    }
+                }
+            }
+            if let Some(if_step) = &step.if_step {
+                collect_steps(&if_step.then_steps, out);
+                collect_steps(&if_step.else_steps, out);
+            }
+        }
+    }
+
+    let m = gfx();
+    let passthrough = &m.connections["usb-passthrough"];
+    assert_eq!(
+        passthrough.events.as_ref().map(|e| e.delivery),
+        Some(EventDelivery::BestEffort),
+        "the guard only means anything while the connection stays bestEffort"
+    );
+    let mut steps = Vec::new();
+    for entry in &passthrough.entries {
+        match &entry.execution {
+            ModeEntryExecution::Ptp { steps: entry_steps } => {
+                collect_steps(entry_steps, &mut steps);
+            }
+            ModeEntryExecution::ReestablishConnection(reestablish) => {
+                collect_steps(&reestablish.exit_steps, &mut steps);
+            }
+            ModeEntryExecution::UserInstruction { .. } => {}
+        }
+    }
+    for action in passthrough.actions.values() {
+        if let Some(initiator) = &action.initiator {
+            collect_steps(&initiator.steps, &mut steps);
+        }
+    }
+    for step in steps {
+        if let Some(await_until) = &step.await_until {
+            if let AwaitSource::Event { code, then_poll } = &await_until.source {
+                assert!(
+                    then_poll.is_some(),
+                    "event await {code:?} on usb-passthrough must declare thenPoll (§11.29 bestEffort)"
+                );
+            }
+        }
+    }
 }
 
 #[test]

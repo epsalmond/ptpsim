@@ -1001,6 +1001,12 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
                 }
             }
         }
+        Step::UsbClaim(_)
+        | Step::UsbBulkOut(_)
+        | Step::UsbBulkIn(_)
+        | Step::UsbAwaitInterrupt(_) => Err(err(
+            "USB establishment verbs are unsupported in the BLE reference walker".into(),
+        )),
     }
 }
 

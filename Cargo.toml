@@ -28,6 +28,7 @@ camera-config = { path = "crates/camera-config" }
 camera-media-store = { path = "crates/camera-media-store" }
 camera-sim = { path = "crates/camera-sim" }
 protocol-primitives = { path = "crates/protocol-primitives" }
+camera-protocol-ffi = { path = "crates/camera-protocol-ffi" }
 
 # Shared third-party
 thiserror = "2"

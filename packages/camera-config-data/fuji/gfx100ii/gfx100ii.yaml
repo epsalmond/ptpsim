@@ -486,13 +486,28 @@ connections:
     evidence: [iosBLEReg]
 
   usb:
-    kind: usb-ptp                    # PIMA 15740 over USB (desktop, via ImageCaptureCore)
+    kind: usb                        # raw PIMA 15740 over USB: the initiator owns handle, interface claim, session, tids
     platforms: [macos, android, linux]   # NOT iOS (no USB-host PTP); hidden on iOS
+    establishment: usb-claim-open    # family usb plan: claim stillImage, OpenSession, GetDeviceInfo
+    session: { ownership: initiatorOwned }
+    events: { delivery: reliable }   # the raw kind owns the interrupt pipe and PIMA 15740 guarantees transport delivery; camera-side event production is a manifest-authoring concern
     discovery: { mechanism: usb, announces: none, vid: 0x04cb }   # Fuji USB vendor id; per-model PID TBD
     modes: [raw-conv-backup-restore, webcam]
     # USB sub-mode is chosen by an on-camera menu setting, so this is a user-instruction
     # edge (not app-driven). raw-conv-backup-restore is ONE on-camera mode enabling two
     # workflows (raw conversion + settings backup-restore).
+    entries:
+      - to: raw-conv-backup-restore
+        userInstruction: "Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB"
+    evidence: [staticRawStudio]
+
+  usb-passthrough:
+    kind: usb-passthrough            # a platform daemon owns device, framing, session, tids; no claim, no OpenSession
+    platforms: [ios, macos]
+    session: { ownership: daemonAttached }
+    events: { delivery: bestEffort } # daemon pushes may drop single events; awaits re-poll (thenPoll)
+    discovery: { mechanism: usb, announces: none, vid: 0x04cb }
+    modes: [raw-conv-backup-restore, webcam]
     entries:
       - to: raw-conv-backup-restore
         userInstruction: "Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB"

@@ -1334,10 +1334,12 @@ fn establishment_returns_walkable_ble_plan() {
 }
 
 #[test]
-fn establishment_returns_none_for_unknown_connection() {
+fn establishment_returns_none_for_connection_without_plan() {
+    // The daemon-attached pass-through connection owns no establishment plan:
+    // the platform daemon already opened the session it attaches to.
     let s = store();
     assert!(s
-        .establishment("gfx100ii".into(), "usb".into(), vec![])
+        .establishment("gfx100ii".into(), "usb-passthrough".into(), vec![])
         .is_none());
 }
 
@@ -1347,6 +1349,71 @@ fn establishment_returns_none_for_unknown_model() {
     assert!(s
         .establishment("xt5".into(), "ble".into(), vec![])
         .is_none());
+}
+
+#[test]
+fn usb_claim_open_plan_resolves_across_the_seam() {
+    // §11.29: the raw `usb` connection's family plan crosses the FFI with the
+    // symbolic interface name resolved to its PIMA still-image triple and the
+    // OpenSession / GetDeviceInfo containers carried as literal bytes.
+    let s = store();
+    let plan = s
+        .establishment("gfx100ii".into(), "usb".into(), vec![])
+        .expect("the usb connection's usb-claim-open plan resolves");
+    assert_eq!(plan.mechanism, "usb-claim-open");
+    assert_eq!(plan.steps.len(), 5);
+
+    match &plan.steps[0] {
+        Step::UsbClaim {
+            class,
+            subclass,
+            protocol,
+            ..
+        } => assert_eq!(
+            (*class, *subclass, *protocol),
+            (6, 1, 1),
+            "stillImage resolves to the PIMA 15740 still-image class"
+        ),
+        other => panic!("expected UsbClaim, got {other:?}"),
+    }
+    let expect_container = |step: &Step, bytes: &[u8]| match step {
+        Step::UsbBulkOut {
+            data: StepValue::Literal { bytes: actual },
+            ..
+        } => assert_eq!(actual, bytes),
+        other => panic!("expected UsbBulkOut literal, got {other:?}"),
+    };
+    expect_container(
+        &plan.steps[1],
+        &[0x10, 0, 0, 0, 1, 0, 2, 0x10, 0, 0, 0, 0, 1, 0, 0, 0],
+    );
+    match &plan.steps[2] {
+        Step::UsbBulkIn {
+            max_length,
+            encoding,
+            capture_as,
+            ..
+        } => {
+            assert_eq!(*max_length, 512);
+            assert_eq!(encoding, "bytes");
+            assert_eq!(capture_as, "openSessionResponse");
+        }
+        other => panic!("expected UsbBulkIn, got {other:?}"),
+    }
+    expect_container(&plan.steps[3], &[0x0c, 0, 0, 0, 1, 0, 1, 0x10, 1, 0, 0, 0]);
+    match &plan.steps[4] {
+        Step::UsbBulkIn {
+            max_length,
+            encoding,
+            capture_as,
+            ..
+        } => {
+            assert_eq!(*max_length, 65536);
+            assert_eq!(encoding, "bytes");
+            assert_eq!(capture_as, "deviceInfo");
+        }
+        other => panic!("expected UsbBulkIn, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1798,7 +1865,7 @@ fn refine_establishment_rejects_bad_handles_and_indices() {
     assert!(matches!(unknown, Err(EstablishmentError::UnknownPlan(_))));
 
     let connection_without_plan =
-        s.refine_establishment("gfx100ii:usb".into(), "2.30".into(), vec![], 0);
+        s.refine_establishment("gfx100ii:usb-passthrough".into(), "2.30".into(), vec![], 0);
     assert!(matches!(
         connection_without_plan,
         Err(EstablishmentError::UnknownPlan(_))

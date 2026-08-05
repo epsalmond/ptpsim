@@ -457,6 +457,15 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
   CoreBluetooth, which hides the GAP service; a GATT 0x2A00 read is fine on
   stacks that expose it). An unavailable name is a transport error, never an
   empty string.
+- `UsbExecutorTransport` (a `with_foreign` async trait): raw USB I/O only,
+  for `usb` (raw) connection establishments (§11.29). `claimInterface` /
+  `bulkOut` / `bulkIn` / `nextInterruptEvent` / `releaseAndClose` / `sleep`.
+  `claimInterface` takes the interface's resolved class/subclass/protocol
+  triple. `nextInterruptEvent` may pend indefinitely; the executor owns
+  every deadline and races each pending call against `sleep`, exactly like
+  the BLE trait. Every method fails with `UsbTransportError`
+  (`NotConnected`, `DeviceGone`, `Stall`, `Timeout`, `NotAuthorized`,
+  `ClaimFailed { owner }`, `OpenFailed`, `Failed`).
 - `StepObserver` — receives the `StepReport` outcome stream: `Started` plus
   exactly one terminal (`Succeeded` / `Tolerated` / `Failed`) per step at every
   nesting level, with a `stepPath` position path (`steps[3].bleWrite`,
@@ -478,6 +487,7 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 | `runEstablishment(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `steps`, including §11.5 `acquireFirmware` refinement. `initialScope` / `initialEncodings` are the `Candidate`'s `runtimeScope` / `runtimeScopeEncodings` — thread both verbatim so a `{ captured: … }` write-back re-encodes with the capture's true encoding instead of an app-side guess (#43). The returned `ExecutionOutcome.summary` carries the establishment confirmation verdict and tolerated-step aggregate described below. |
 | `runBleAction(store, model, action, transport, observer, initialScope, runtimeParams)` | a named BLE-native control action (#91) over an already-established link; no refinement. |
 | `runPostExitReadiness(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `postExitReadiness` gate. Run it after an orderly feature exit, before replaying `runEstablishment`. A plan whose establishment declares no gate returns immediately with `stepsRun == 0` and touches no I/O; a handle with no establishment at all is `UnknownPlan`, same as `runEstablishment`. |
+| `run_usb_establishment(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | a raw `usb` connection's establishment plan (§11.29): USB verbs over `UsbExecutorTransport`, with the same scope and encoding threading as `runEstablishment`. |
 
 Activity display roles are consumer-neutral hints: `connecting`,
 `waitingForCamera`, `confirmingPairing`, `preparingConnection`,
@@ -551,6 +561,20 @@ event role with `InitEventRequest` and requires `InitEventAck`, reads
 `OpenSession` as transaction 1. Standard probes use packet types 13/14 on the
 initialized event channel. Closing either associated socket closes the pair.
 
+`PtpTransactionTransport` is the typed-transaction seam for `usb-passthrough`
+connections, where a platform daemon owns the device, framing, session, and
+transaction ids (§11.29). The host supplies `execute` (one typed PTP
+transaction with a per-call daemon timeout, returning the response code,
+response parameters, and optional data-in), `readPartialObject` (one object
+range), code-selective `nextEvent` (the host retains unrelated events for
+their normal consumers, the same contract as `next_event_frame` above),
+`close`-equivalent `shutdown` (named to avoid the Kotlin
+`AutoCloseable.close()` clash), and the host `sleep` clock. Every method fails with
+`PtpTransactionError` (`NotConnected`, `DeviceGone`, `Stall`, `Timeout`,
+`NotAuthorized`, `Failed`). Rust owns the same grammar, retry, tolerance,
+capture, predicate, and aggregate-deadline semantics as the frame-based
+executor; only the transport seam differs.
+
 | call | walks |
 |---|---|
 | `runModeEntry(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | a current-session `ptp` mode entry. `UserInstruction` and `ReestablishConnection` fail with `UnsupportedPlan` so the host cannot accidentally skip their outer lifecycle. |
@@ -560,6 +584,9 @@ initialized event channel. Closing either associated socket closes the pair.
 | `runInitiatorActionToSink(store, connection, action, transport, observer, activityObserver, sink, runtimeParams)` | the same initiator walker, delivering each completed ordinary data output to `PtpDataOutputSink` after its response has been consumed instead of accumulating payloads in the outcome. A sink failure fails the step but leaves the synchronized command session reusable. |
 | `runSelectedObjectPreparation(store, connection, transport, observer, activityObserver, runtimeParams)` | the selected-object prefix projected from the canonical import action, preserving capture bindings for later chunk reads. |
 | `runStreamingAction(store, connection, action, transport, sink, runtimeParams, expectedPayloadBytes)` | one compressed, single-`sendOp` data-in action through bounded raw reads. Rust validates the 12-byte data header, streams the exact body to `PtpStreamingSink` in chunks no larger than 1 MiB, then validates the separate final response. |
+| `run_mode_entry_txn(store, connection, from, to, transport, observer, activityObserver, runtimeParams)` | `runModeEntry` over `PtpTransactionTransport` (`usb-passthrough`, §11.29). The grammar and plan-shape rules are identical; only the transport seam differs. |
+| `run_initiator_action_txn(store, connection, action, transport, observer, activityObserver, runtimeParams)` | `runInitiatorAction` over `PtpTransactionTransport`: one action's initiator binding on the daemon-owned session. |
+| `run_initiator_action_txn_to_sink(store, connection, action, transport, observer, activityObserver, sink, runtimeParams)` | `runInitiatorActionToSink` over `PtpTransactionTransport`: each completed ordinary data output goes to `PtpDataOutputSink` instead of accumulating in the outcome. |
 
 Invocation parameter values are `ActionArgument`: untagged unsigned numbers or
 strings in serde/HTTP, and a closed `U64`/`String` enum across UniFFI. Catalog
@@ -798,7 +825,8 @@ the pull model is that the app source is identical with one manifest or fifty.
 
 ### 9.7 Out of scope (queued for P2+)
 
-USB / mDNS / UDP / WiFi-join verbs and their I/O primitives.
+USB verbs and their I/O primitives are defined in schema §11.29. Still queued:
+mDNS / UDP / WiFi-join verbs and their I/O primitives.
 `promptableModels()`. The `dev-direct` assertive PTP/IP flow. Full PTP session
 layer / live-view socket. BLE plans can expose credentials and request camera
 AP establishment, but OS network association, DHCP, and AP management remain

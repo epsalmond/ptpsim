@@ -11,6 +11,7 @@ pub mod link;
 pub mod ptpip;
 pub mod state;
 pub mod state_overlay;
+pub mod usb;
 
 pub use ble::{
     walk_establishment, BleError, BleEvent, BleResponder, EstablishmentConfirmOutcome,
@@ -29,6 +30,7 @@ pub use link::{CameraLink, SharedLink};
 pub use ptpip::{walk_ptpip, walk_ptpip_in, PtpIpError, PtpIpOutcome};
 pub use state::{CameraState, Phase};
 pub use state_overlay::{AppliedStateOverlay, StateOverlay};
+pub use usb::{UsbError, UsbEvent, UsbResponder, UsbTxnReply};
 
 #[cfg(test)]
 mod tests {

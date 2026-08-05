@@ -316,8 +316,11 @@ dependencies = [
 name = "camera-sim"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "camera-config",
  "camera-media-store",
+ "camera-protocol-ffi",
+ "futures",
  "protocol-primitives",
  "ptp-core",
  "serde",

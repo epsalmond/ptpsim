@@ -16635,13 +16635,17 @@ connections:
     ref: null
     availableWhen: null
     requiresHardware: null
-    kind: usb-ptp
-    establishment: null
+    kind: usb
+    establishment: usb-claim-open
     activities: []
     init: null
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    session:
+      ownership: initiatorOwned
+    events:
+      delivery: reliable
     commandFraming: null
     eventFraming: null
     commandListenerVolatile: false
@@ -16669,6 +16673,47 @@ connections:
     - macos
     - android
     - linux
+  usb-passthrough:
+    ref: null
+    availableWhen: null
+    requiresHardware: null
+    kind: usb-passthrough
+    establishment: null
+    activities: []
+    init: null
+    initShape: null
+    liveViewDelivery: null
+    shutterRecipe: null
+    session:
+      ownership: daemonAttached
+    events:
+      delivery: bestEffort
+    commandFraming: null
+    eventFraming: null
+    commandListenerVolatile: false
+    bindings: null
+    transportClose: null
+    knock: null
+    initRetries: null
+    objectTransfer: null
+    controlSurfaces: {}
+    modes:
+    - raw-conv-backup-restore
+    - webcam
+    entries:
+    - to: raw-conv-backup-restore
+      userInstruction: Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB
+    actions: {}
+    enables: []
+    discovery:
+      mechanism: usb
+      announces: none
+      vid: 1227
+    evidence:
+    - staticRawStudio
+    platforms:
+    - ios
+    - macos
   wireless-tether:
     ref: null
     availableWhen: null

@@ -112,7 +112,7 @@ pub enum Platform { Ios, Macos, Android, Linux }
 #[derive(uniffi::Record)]
 pub struct ConnectionInfo {
     pub id: String,            // "app" | "ble" | "usb" | "wireless-tether" | "xlv"
-    pub kind: String,          // "ptpip-app" | "ble" | "usb-ptp" | "ptpip-direct" | "http-xlv"
+    pub kind: String,          // "ptpip-app" | "ble" | "usb" | "usb-passthrough" | "ptpip-direct" | "http-xlv"
     pub discovery: String,     // "ble" | "usb" | "pcss-knock" | "http-probe"
     pub auto_discoverable: bool,
     // + per-connection traits (#81): init_shape, live_view_delivery, shutter_recipe;

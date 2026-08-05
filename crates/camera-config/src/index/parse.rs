@@ -21,8 +21,9 @@ use serde_yaml::Value;
 
 use super::types::{
     AwaitSource, BleAdvertSignature, BleRequestMtuStep, EstablishmentBlock, FamilyBleBlock,
-    FamilyPcssBlock, IndexedModel, ManufacturerIndex, ModelView, PcssNotifySignature, Predicate,
-    PredicateOp, Signature, SignatureKind, Step, StepValue, MAX_PAD_RIGHT_LENGTH,
+    FamilyPcssBlock, FamilyUsbBlock, IndexedModel, ManufacturerIndex, ModelView,
+    PcssNotifySignature, Predicate, PredicateOp, Signature, SignatureKind, Step, StepValue,
+    MAX_PAD_RIGHT_LENGTH,
 };
 use crate::error::ConfigError;
 
@@ -54,30 +55,33 @@ impl ResolvedManufacturerIndex {
         }
         let mut metadata = BTreeMap::new();
         for model in &models {
-            if let Some(ble) = &model.ble {
-                for (mechanism, establishment) in &ble.establishments {
-                    for (activity_index, activity) in establishment.activities.iter().enumerate() {
-                        let key = (activity.id.clone(), activity.version);
-                        let value = (
-                            activity.display_role.clone(),
-                            activity.default_expected_duration_ms,
-                            activity.interaction_required,
-                            activity.optional,
-                            activity.identity(),
-                        );
-                        if let Some(previous) = metadata.insert(key, value.clone()) {
-                            if previous != value {
-                                return Err(ConfigError::Validation {
-                                    path: format!(
-                                        "models.{}.establishments.{mechanism}.activities[{activity_index}]",
-                                        model.id
-                                    ),
-                                    message: format!(
-                                        "activity '{}@{}' metadata differs or binding identity differs from another descriptor",
-                                        activity.id, activity.version
-                                    ),
-                                });
-                            }
+            let establishments = model
+                .ble
+                .iter()
+                .flat_map(|ble| ble.establishments.iter())
+                .chain(model.usb.iter().flat_map(|usb| usb.establishments.iter()));
+            for (mechanism, establishment) in establishments {
+                for (activity_index, activity) in establishment.activities.iter().enumerate() {
+                    let key = (activity.id.clone(), activity.version);
+                    let value = (
+                        activity.display_role.clone(),
+                        activity.default_expected_duration_ms,
+                        activity.interaction_required,
+                        activity.optional,
+                        activity.identity(),
+                    );
+                    if let Some(previous) = metadata.insert(key, value.clone()) {
+                        if previous != value {
+                            return Err(ConfigError::Validation {
+                                path: format!(
+                                    "models.{}.establishments.{mechanism}.activities[{activity_index}]",
+                                    model.id
+                                ),
+                                message: format!(
+                                    "activity '{}@{}' metadata differs or binding identity differs from another descriptor",
+                                    activity.id, activity.version
+                                ),
+                            });
                         }
                     }
                 }
@@ -95,6 +99,7 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
     //    Values throughout the merge; typed decode happens at the very end).
     let (ble, ble_value_for_resolve) = build_ble_block(index, model)?;
     let (pcss, pcss_value_for_resolve) = build_pcss_block(index, model)?;
+    let usb = build_usb_block(index, model)?;
 
     // -- Signatures: per-signature, plant the merged BLE Value as a sibling
     //    so paths like `{ble.advert.manufacturerCompanyId}` resolve, then typed-decode.
@@ -135,6 +140,7 @@ fn resolve_one(index: &ManufacturerIndex, model: &IndexedModel) -> Result<ModelV
         fallback: model.fallback,
         manifest_path: model.manifest.clone(),
         ble,
+        usb,
         pcss,
         signatures,
     })
@@ -344,6 +350,92 @@ fn build_ble_block(
     Ok((Some(ble), value_for_resolve))
 }
 
+// ---------------------------------------------------------------------------
+// USB block: inheritance merge + interface-name validation
+// ---------------------------------------------------------------------------
+
+/// Build the merged + validated USB block for one model (§11.29). Mirrors
+/// [`build_ble_block`]: deep-merge the inherited family `usb` Values, walk
+/// every establishment plan validating `usbClaim` interface names and verb
+/// scoping on the raw tree, then typed-decode. The interface name stays
+/// symbolic on the step; the FFI mirror resolves it to the
+/// class/subclass/protocol triple.
+fn build_usb_block(
+    index: &ManufacturerIndex,
+    model: &IndexedModel,
+) -> Result<Option<FamilyUsbBlock>, ConfigError> {
+    let mut merged: Value = Value::Null;
+    for fam_id in &model.inherits {
+        let fam_value = index
+            .families
+            .get(fam_id)
+            .ok_or_else(|| ConfigError::UnknownFamily {
+                model_id: model.id.clone(),
+                family_id: fam_id.clone(),
+            })?;
+        let Some(usb_v) = fam_value.get("usb").cloned() else {
+            continue;
+        };
+        merged = deep_merge(merged, usb_v);
+    }
+
+    if matches!(merged, Value::Null) {
+        return Ok(None);
+    }
+
+    let interfaces = usb_interface_names_from_merged(&merged);
+    if let Some(plans) = merged
+        .get_mut("establishments")
+        .and_then(|e| e.as_mapping_mut())
+    {
+        for (name, plan) in plans.iter_mut() {
+            let mech = name.as_str().unwrap_or("?").to_string();
+            if let Some(steps) = plan
+                .get_mut("postExitReadiness")
+                .and_then(|s| s.as_sequence_mut())
+            {
+                resolve_usb_interface_names_in_steps(
+                    steps,
+                    &interfaces,
+                    &format!(
+                        "models.{}.usb.establishments.{mech}.postExitReadiness",
+                        model.id
+                    ),
+                )?;
+            }
+            if let Some(steps) = plan.get_mut("steps").and_then(|s| s.as_sequence_mut()) {
+                resolve_usb_interface_names_in_steps(
+                    steps,
+                    &interfaces,
+                    &format!("models.{}.usb.establishments.{mech}.steps", model.id),
+                )?;
+            }
+        }
+    }
+
+    let usb: FamilyUsbBlock =
+        serde_yaml::from_value(merged).map_err(|e| ConfigError::Validation {
+            path: format!("models.{}.usb", model.id),
+            message: format!("typed usb decode: {e}"),
+        })?;
+    for (mech, est) in &usb.establishments {
+        validate_establishment(est, &BTreeMap::new(), &model.id, mech)?;
+    }
+    Ok(Some(usb))
+}
+
+fn usb_interface_names_from_merged(v: &Value) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    if let Some(Value::Mapping(m)) = v.get("interfaces").map(|x| x.to_owned()).as_ref() {
+        for k in m.keys() {
+            if let Some(k) = k.as_str() {
+                out.insert(k.to_string());
+            }
+        }
+    }
+    out
+}
+
 fn ble_gatt_from_merged(v: &Value) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     if let Some(Value::Mapping(m)) = v.get("gatt").map(|x| x.to_owned()).as_ref() {
@@ -465,10 +557,138 @@ fn resolve_gatt_names_in_steps(
                     }
                 }
             }
+            "usbClaim" | "usbBulkOut" | "usbBulkIn" | "usbAwaitInterrupt" => {
+                return Err(ConfigError::Validation {
+                    path: here.clone(),
+                    message: format!(
+                        "USB step verb '{verb}' is not valid in a BLE establishment plan"
+                    ),
+                });
+            }
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
                     message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, blePeripheralName, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The USB-scope counterpart to [`resolve_gatt_names_in_steps`] (§11.29).
+/// Validates every `usbClaim` interface name against the family
+/// `usb.interfaces` map (the name stays symbolic on the step; the FFI mirror
+/// resolves it to the triple), rejects BLE verbs so scoping holds in both
+/// directions, and recurses into control-flow bodies.
+fn resolve_usb_interface_names_in_steps(
+    steps: &mut serde_yaml::Sequence,
+    interfaces: &BTreeSet<String>,
+    path_ctx: &str,
+) -> Result<(), ConfigError> {
+    for (i, step) in steps.iter_mut().enumerate() {
+        let Value::Mapping(m) = step else {
+            continue;
+        };
+        // Externally tagged: exactly one key per step.
+        let Some((verb_key, body)) = m.iter_mut().next() else {
+            continue;
+        };
+        let verb = verb_key.as_str().unwrap_or("");
+        let here = format!("{path_ctx}[{i}].{verb}");
+        match verb {
+            "usbClaim" => {
+                if let Some(Value::String(name)) = body
+                    .as_mapping()
+                    .and_then(|m| m.get(Value::String("interface".into())))
+                {
+                    if !interfaces.contains(name) {
+                        return Err(ConfigError::Validation {
+                            path: format!("{here}.interface"),
+                            message: format!("undefined usb interface name '{name}'"),
+                        });
+                    }
+                }
+            }
+            "usbBulkOut" | "usbBulkIn" | "usbAwaitInterrupt" => {}
+            "bleConnect"
+            | "bleDelay"
+            | "bleAwaitDisconnect"
+            | "bleRequestMtu"
+            | "bleDiscoverServices"
+            | "bleRead"
+            | "blePeripheralName"
+            | "bleWrite"
+            | "bleSubscribe"
+            | "bleNotify"
+            | "bleAwaitUntil"
+            | "bleWriteChunk"
+            | "nikonLssAuthenticate"
+            | "nikonLssReadConnectionConfiguration" => {
+                return Err(ConfigError::Validation {
+                    path: here.clone(),
+                    message: format!(
+                        "BLE step verb '{verb}' is not valid in a USB establishment plan"
+                    ),
+                });
+            }
+            "acquire" => {
+                if let Some(inner) = body
+                    .as_mapping_mut()
+                    .and_then(|m| m.get_mut(Value::String("from".into())))
+                {
+                    let mut single = serde_yaml::Sequence::new();
+                    single.push(inner.clone());
+                    resolve_usb_interface_names_in_steps(
+                        &mut single,
+                        interfaces,
+                        &format!("{here}.from"),
+                    )?;
+                    *inner = single.into_iter().next().unwrap_or(Value::Null);
+                }
+            }
+            "acquireFirmware" => {}
+            "retry" => {
+                if let Some(body_map) = body.as_mapping_mut() {
+                    for key in ["steps", "onFailure"] {
+                        if let Some(Value::Sequence(nested)) =
+                            body_map.get_mut(Value::String(key.into()))
+                        {
+                            resolve_usb_interface_names_in_steps(
+                                nested,
+                                interfaces,
+                                &format!("{here}.{key}"),
+                            )?;
+                        }
+                    }
+                }
+            }
+            "if" => {
+                if let Some(body_map) = body.as_mapping_mut() {
+                    if let Some(Value::Sequence(then_seq)) =
+                        body_map.get_mut(Value::String("then".into()))
+                    {
+                        resolve_usb_interface_names_in_steps(
+                            then_seq,
+                            interfaces,
+                            &format!("{here}.then"),
+                        )?;
+                    }
+                    if let Some(Value::Sequence(else_seq)) =
+                        body_map.get_mut(Value::String("else".into()))
+                    {
+                        resolve_usb_interface_names_in_steps(
+                            else_seq,
+                            interfaces,
+                            &format!("{here}.else"),
+                        )?;
+                    }
+                }
+            }
+            other => {
+                return Err(ConfigError::Validation {
+                    path: here.clone(),
+                    message: format!("unknown step verb '{other}' (allowlist: usbClaim, usbBulkOut, usbBulkIn, usbAwaitInterrupt, acquire, acquireFirmware, if, retry)"),
                 });
             }
         }
@@ -1433,6 +1653,18 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleWriteChunk" => Ok(Step::BleWriteChunk(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleWriteChunk", e))?,
             )),
+            "usbClaim" => Ok(Step::UsbClaim(
+                serde_yaml::from_value(body).map_err(|e| dec_err("usbClaim", e))?,
+            )),
+            "usbBulkOut" => Ok(Step::UsbBulkOut(
+                serde_yaml::from_value(body).map_err(|e| dec_err("usbBulkOut", e))?,
+            )),
+            "usbBulkIn" => Ok(Step::UsbBulkIn(
+                serde_yaml::from_value(body).map_err(|e| dec_err("usbBulkIn", e))?,
+            )),
+            "usbAwaitInterrupt" => Ok(Step::UsbAwaitInterrupt(
+                serde_yaml::from_value(body).map_err(|e| dec_err("usbAwaitInterrupt", e))?,
+            )),
             "acquire" => Ok(Step::Acquire(
                 serde_yaml::from_value(body).map_err(|e| dec_err("acquire", e))?,
             )),
@@ -1456,7 +1688,7 @@ impl<'de> serde::Deserialize<'de> for Step {
                 ))
             }
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, blePeripheralName, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, blePeripheralName, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, usbClaim, usbBulkOut, usbBulkIn, usbAwaitInterrupt, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"
             ))),
         }
     }

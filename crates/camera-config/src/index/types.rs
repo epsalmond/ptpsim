@@ -102,6 +102,8 @@ pub struct FamilyBlock {
     pub ble: Option<FamilyBleBlock>,
     #[serde(default)]
     pub pcss: Option<FamilyPcssBlock>,
+    #[serde(default)]
+    pub usb: Option<FamilyUsbBlock>,
 }
 
 /// PCSS facts available before a body manifest has been selected. The caller
@@ -183,6 +185,39 @@ pub struct BleAdvertConstants {
     /// presence classifies the pre-RED "legacy" style.
     #[serde(default)]
     pub service_uuids: BTreeMap<String, String>,
+}
+
+/// Family-shared USB facts (§11.29): the interface triples `usbClaim` steps
+/// reference by symbolic name, and the named establishment plans a raw `usb`
+/// connection's `establishment:` mechanism selects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FamilyUsbBlock {
+    /// `symbolic name -> USB class/subclass/protocol triple`. The loader
+    /// validates `usbClaim` names against this map at index-build time but
+    /// keeps the step symbolic; the FFI mirror resolves name to triple.
+    #[serde(default)]
+    pub interfaces: BTreeMap<String, UsbInterfaceTriple>,
+    /// Named establishment plans keyed by mechanism (`usb-claim-session`, …).
+    /// Resolve via [`Self::establishment`].
+    #[serde(default)]
+    pub establishments: BTreeMap<String, EstablishmentBlock>,
+}
+
+impl FamilyUsbBlock {
+    /// The establishment plan registered under `mechanism`, if any.
+    pub fn establishment(&self, mechanism: &str) -> Option<&EstablishmentBlock> {
+        self.establishments.get(mechanism)
+    }
+}
+
+/// A USB interface's class/subclass/protocol triple (§11.29). The executor
+/// claims the interface matching all three bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsbInterfaceTriple {
+    pub class: u8,
+    pub subclass: u8,
+    pub protocol: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +302,13 @@ pub enum Step {
     BleNotify(BleNotifyStep),
     BleAwaitUntil(BleAwaitUntilStep),
     BleWriteChunk(BleWriteChunkStep),
+    /// USB establishment verbs (§11.29). Valid only inside
+    /// `families.<fam>.usb.establishments` plans; the loader rejects them
+    /// anywhere else.
+    UsbClaim(UsbClaimStep),
+    UsbBulkOut(UsbBulkOutStep),
+    UsbBulkIn(UsbBulkInStep),
+    UsbAwaitInterrupt(UsbAwaitInterruptStep),
     Acquire(AcquireStep),
     AcquireFirmware(AcquireFirmwareStep),
     If(IfStep),
@@ -297,6 +339,10 @@ impl Step {
             Step::BleNotify(_) => "bleNotify",
             Step::BleAwaitUntil(_) => "bleAwaitUntil",
             Step::BleWriteChunk(_) => "bleWriteChunk",
+            Step::UsbClaim(_) => "usbClaim",
+            Step::UsbBulkOut(_) => "usbBulkOut",
+            Step::UsbBulkIn(_) => "usbBulkIn",
+            Step::UsbAwaitInterrupt(_) => "usbAwaitInterrupt",
             Step::Acquire(_) => "acquire",
             Step::AcquireFirmware(_) => "acquireFirmware",
             Step::If(_) => "if",
@@ -323,6 +369,10 @@ impl Step {
             Step::BleNotify(s) => s.opts.clone(),
             Step::BleAwaitUntil(s) => s.opts.clone(),
             Step::BleWriteChunk(s) => s.opts.clone(),
+            Step::UsbClaim(s) => s.opts.clone(),
+            Step::UsbBulkOut(s) => s.opts.clone(),
+            Step::UsbBulkIn(s) => s.opts.clone(),
+            Step::UsbAwaitInterrupt(s) => s.opts.clone(),
             Step::Acquire(s) => s.opts.clone(),
             Step::AcquireFirmware(s) => s.opts.clone(),
             Step::If(_) => StepOptions::default(),
@@ -434,6 +484,74 @@ pub struct BleReadStep {
     /// (§11.13 capture pipeline). Empty = decode the raw payload.
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
     pub transform: Vec<Transform>,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `usbClaim: { interface: stillImage }`: claim the named interface on the
+/// bound device (§11.29). The symbolic name is validated against the family
+/// `usb.interfaces` map at index-build time and stays on the step; the FFI
+/// mirror resolves it to the class/subclass/protocol triple. Valid only in a
+/// raw `usb` establishment plan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbClaimStep {
+    pub interface: String,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `usbBulkOut: { data: ... }`: resolve `data` per §11.1 and write the bytes
+/// to the bulk OUT endpoint (§11.29). The §11.13 write pipeline applies
+/// (resolve, encoding decode, transform chain, wire bytes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbBulkOutStep {
+    pub data: StepValue,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `usbBulkIn: { maxLength, encoding, captureAs, transform? }`: read up to
+/// `maxLength` bytes from the bulk IN endpoint, then run the §11.13 capture
+/// pipeline (transform chain, encoding decode, scope string) and bind the
+/// result under `captureAs` (§11.29).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbBulkInStep {
+    pub max_length: u32,
+    pub encoding: Encoding,
+    /// Scope slot that receives the read value, decoded per `encoding`.
+    #[serde(alias = "capture_as")]
+    pub capture_as: String,
+    /// Transform chain applied to the wire bytes BEFORE `encoding` decode
+    /// (§11.13 capture pipeline). Empty = decode the raw payload.
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub transform: Vec<Transform>,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `usbAwaitInterrupt: { encoding, captureAs, transform?, timeoutMs? }`:
+/// await one interrupt IN event frame and capture it with the same pipeline
+/// as [`UsbBulkInStep`] (§11.29). The transport may pend indefinitely; the
+/// executor owns every deadline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbAwaitInterruptStep {
+    pub encoding: Encoding,
+    /// Scope slot that receives the event frame, decoded per `encoding`.
+    #[serde(alias = "capture_as")]
+    pub capture_as: String,
+    /// Transform chain applied to the frame bytes BEFORE `encoding` decode
+    /// (§11.13 capture pipeline). Empty = decode the raw payload.
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub transform: Vec<Transform>,
+    /// Wall-clock budget of the wait. Absent = the executor's single-call
+    /// backstop (10s), so plans authored before the field existed are
+    /// unaffected.
+    #[serde(default)]
+    pub timeout_ms: Option<u32>,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }
@@ -1367,6 +1485,9 @@ pub struct ModelView {
     /// Merged family + model BLE block, with GATT names already resolved on
     /// every Step's `gatt:` field.
     pub ble: Option<FamilyBleBlock>,
+    /// Merged family USB block (§11.29), with every `usbClaim` interface name
+    /// validated against `usb.interfaces`.
+    pub usb: Option<FamilyUsbBlock>,
     /// Merged family PCSS discovery policy.
     pub pcss: Option<FamilyPcssBlock>,
     /// Signatures in file-declaration order (top-of-file first), with all

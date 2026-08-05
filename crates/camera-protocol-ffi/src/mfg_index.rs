@@ -19,6 +19,7 @@
 
 use camera_config as cc;
 use camera_config::index as ix;
+use std::collections::BTreeMap;
 
 use crate::executor::ExecutorStepFailureKind;
 use crate::{KeyValue, SocketRole};
@@ -350,8 +351,8 @@ pub enum StepConfirmation {
     Registration,
 }
 
-/// The BLE step verbs (plan §3.3 + §11). Externally inlined so each variant
-/// is a flat record at the uniffi layer.
+/// The establishment step verbs (plan §3.3 + §11, USB per §11.29).
+/// Externally inlined so each variant is a flat record at the uniffi layer.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum Step {
     BleConnect {
@@ -535,6 +536,45 @@ pub enum Step {
         password_capture_as: String,
         security_mode_capture_as: String,
         spp_max_length_capture_as: Option<String>,
+        opts: StepOptions,
+    },
+    /// `usbClaim` (§11.29) with the symbolic interface name already resolved
+    /// to its class/subclass/protocol triple against the family
+    /// `usb.interfaces` map: the transport claims the interface matching all
+    /// three bytes.
+    UsbClaim {
+        class: u8,
+        subclass: u8,
+        protocol: u8,
+        opts: StepOptions,
+    },
+    /// `usbBulkOut` (§11.29): resolve `data` per §11.1 and write the bytes to
+    /// the bulk OUT endpoint.
+    UsbBulkOut {
+        data: StepValue,
+        opts: StepOptions,
+    },
+    /// `usbBulkIn` (§11.29): read up to `max_length` bytes from the bulk IN
+    /// endpoint, run the §11.13 capture pipeline, and bind the result under
+    /// `capture_as`.
+    UsbBulkIn {
+        max_length: u32,
+        encoding: String,
+        capture_as: String,
+        /// Applied to the wire bytes BEFORE `encoding` decode (§11.13).
+        transform: Vec<Transform>,
+        opts: StepOptions,
+    },
+    /// `usbAwaitInterrupt` (§11.29): await one interrupt IN event frame and
+    /// capture it with the `usbBulkIn` pipeline.
+    UsbAwaitInterrupt {
+        encoding: String,
+        capture_as: String,
+        /// Applied to the frame bytes BEFORE `encoding` decode (§11.13).
+        transform: Vec<Transform>,
+        /// The wait's wall-clock budget; `None` applies the executor's
+        /// single-call backstop.
+        timeout_ms: Option<u32>,
         opts: StepOptions,
     },
 }
@@ -958,154 +998,217 @@ impl TryFrom<&ix::Step> for Step {
     type Error = crate::ConfigError;
 
     fn try_from(s: &ix::Step) -> Result<Self, Self::Error> {
-        Ok(match s {
-            ix::Step::BleConnect(inner) => Step::BleConnect {
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleDelay(inner) => Step::BleDelay {
-                duration_ms: inner.duration_ms,
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleAwaitDisconnect(inner) => Step::BleAwaitDisconnect {
-                timeout_ms: inner.timeout_ms,
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleRequestMtu(inner) => Step::BleRequestMtu {
-                requested_mtu: inner.requested_mtu,
-                minimum_mtu: inner.minimum_mtu,
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleDiscoverServices(inner) => Step::BleDiscoverServices {
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleRead(inner) => Step::BleRead {
+        step_from_ix(s, None)
+    }
+}
+
+/// USB verbs carry family context: one surfacing without the family
+/// `usb.interfaces` map escaped the loader's plan scoping (§11.29).
+fn usb_outside_family_block() -> crate::ConfigError {
+    crate::ConfigError::Schema(
+        "USB establishment verbs are only valid inside family usb establishments".into(),
+    )
+}
+
+/// Mirror one index step into its FFI record. `usb_interfaces` is the family
+/// `usb.interfaces` map (§11.29) when converting a raw USB establishment
+/// plan: `usbClaim` names resolve to their triple against it, mirroring how
+/// the index build resolves §11.3 GATT names before the FFI sees them. BLE
+/// plans, BLE actions, and refined tails convert with `None`; USB verbs
+/// cannot load there.
+fn step_from_ix(
+    s: &ix::Step,
+    usb_interfaces: Option<&BTreeMap<String, ix::UsbInterfaceTriple>>,
+) -> Result<Step, crate::ConfigError> {
+    Ok(match s {
+        ix::Step::BleConnect(inner) => Step::BleConnect {
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleDelay(inner) => Step::BleDelay {
+            duration_ms: inner.duration_ms,
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleAwaitDisconnect(inner) => Step::BleAwaitDisconnect {
+            timeout_ms: inner.timeout_ms,
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleRequestMtu(inner) => Step::BleRequestMtu {
+            requested_mtu: inner.requested_mtu,
+            minimum_mtu: inner.minimum_mtu,
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleDiscoverServices(inner) => Step::BleDiscoverServices {
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleRead(inner) => Step::BleRead {
+            gatt: inner.gatt.clone(),
+            encoding: inner.encoding.as_token().to_string(),
+            capture_as: inner.capture_as.clone(),
+            transform: transforms(&inner.transform),
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BlePeripheralName(inner) => Step::BlePeripheralName {
+            capture_as: inner.capture_as.clone(),
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleWrite(inner) => Step::BleWrite {
+            gatt: inner.gatt.clone(),
+            value: StepValue::try_from(&inner.value)?,
+            notification_fence: inner.notification_fence.clone(),
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleSubscribe(inner) => Step::BleSubscribe {
+            gatt: inner.gatt.clone(),
+            timeout_ms: inner.timeout_ms,
+            mode: inner.mode.into(),
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleNotify(inner) => Step::BleNotify {
+            gatt: inner.gatt.clone(),
+            until: BleNotifyUntil::try_from(&inner.until)?,
+            capture_as: inner.capture_as.clone(),
+            capture: inner.capture.iter().map(Into::into).collect(),
+            mode: inner.mode.into(),
+            timeout_ms: inner.timeout_ms,
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleAwaitUntil(inner) => Step::BleAwaitUntil {
+            source: (&inner.source).into(),
+            capture: inner.capture.iter().map(Into::into).collect(),
+            capture_as: inner.capture_as.clone(),
+            until: (&inner.until).into(),
+            fail_when: inner.fail_when.as_ref().map(Into::into),
+            failure_evidence: inner
+                .failure_evidence
+                .as_ref()
+                .map(BleAwaitFailureEvidence::try_from)
+                .transpose()?,
+            on_each: inner
+                .on_each
+                .iter()
+                .map(|step| step_from_ix(step, usb_interfaces))
+                .collect::<Result<_, _>>()?,
+            timeout_ms: inner.timeout_ms,
+            interval_ms: inner.interval_ms,
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::BleWriteChunk(inner) => Step::BleWriteChunk {
+            source: inner.source.clone(),
+            index: inner.index.clone(),
+            size: inner.size,
+            gatt: inner.gatt.clone(),
+            frame: inner
+                .frame
+                .iter()
+                .map(|f| ChunkFrameField {
+                    field: f.field.into(),
+                    encoding: f.encoding.as_token().to_string(),
+                })
+                .collect(),
+            sentinel_index: inner.sentinel_index,
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::Acquire(inner) => Step::Acquire {
+            name: inner.name.clone(),
+            from: vec![step_from_ix(&inner.from, usb_interfaces)?],
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::AcquireFirmware(inner) => Step::AcquireFirmware {
+            from: (&inner.from).into(),
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::If(inner) => Step::If {
+            condition: (&inner.condition).into(),
+            then_branch: inner
+                .then
+                .iter()
+                .map(|step| step_from_ix(step, usb_interfaces))
+                .collect::<Result<_, _>>()?,
+            else_branch: inner
+                .else_branch
+                .iter()
+                .map(|step| step_from_ix(step, usb_interfaces))
+                .collect::<Result<_, _>>()?,
+            tolerant: inner.tolerant,
+        },
+        ix::Step::Retry(inner) => Step::Retry {
+            steps: inner
+                .steps
+                .iter()
+                .map(|step| step_from_ix(step, usb_interfaces))
+                .collect::<Result<_, _>>()?,
+            when_failure: inner.when_failure.into(),
+            on_failure: inner
+                .on_failure
+                .iter()
+                .map(|step| step_from_ix(step, usb_interfaces))
+                .collect::<Result<_, _>>()?,
+            retry_when: (&inner.retry_when).into(),
+            max_attempts: inner.max_attempts,
+            retry_delay_ms: inner.retry_delay_ms,
+            failure_context: inner.failure_context.clone(),
+        },
+        ix::Step::NikonLssAuthenticate(inner) => Step::NikonLssAuthenticate {
+            gatt: inner.gatt.clone(),
+            client_device_id: StepValue::try_from(&inner.client_device_id)?,
+            nonce: StepValue::try_from(&inner.nonce)?,
+            timeout_ms: inner.timeout_ms,
+            opts: (&inner.opts).into(),
+        },
+        ix::Step::NikonLssReadConnectionConfiguration(inner) => {
+            Step::NikonLssReadConnectionConfiguration {
                 gatt: inner.gatt.clone(),
+                flags_capture_as: inner.flags_capture_as.clone(),
+                ssid_capture_as: inner.ssid_capture_as.clone(),
+                password_capture_as: inner.password_capture_as.clone(),
+                security_mode_capture_as: inner.security_mode_capture_as.clone(),
+                spp_max_length_capture_as: inner.spp_max_length_capture_as.clone(),
+                opts: (&inner.opts).into(),
+            }
+        }
+        ix::Step::UsbClaim(inner) => {
+            let interfaces = usb_interfaces.ok_or_else(usb_outside_family_block)?;
+            let triple = interfaces.get(&inner.interface).ok_or_else(|| {
+                crate::ConfigError::Contract(format!(
+                    "usbClaim interface '{}' is not declared in the family usb.interfaces map",
+                    inner.interface
+                ))
+            })?;
+            Step::UsbClaim {
+                class: triple.class,
+                subclass: triple.subclass,
+                protocol: triple.protocol,
+                opts: (&inner.opts).into(),
+            }
+        }
+        ix::Step::UsbBulkOut(inner) => {
+            let _ = usb_interfaces.ok_or_else(usb_outside_family_block)?;
+            Step::UsbBulkOut {
+                data: StepValue::try_from(&inner.data)?,
+                opts: (&inner.opts).into(),
+            }
+        }
+        ix::Step::UsbBulkIn(inner) => {
+            let _ = usb_interfaces.ok_or_else(usb_outside_family_block)?;
+            Step::UsbBulkIn {
+                max_length: inner.max_length,
                 encoding: inner.encoding.as_token().to_string(),
                 capture_as: inner.capture_as.clone(),
                 transform: transforms(&inner.transform),
                 opts: (&inner.opts).into(),
-            },
-            ix::Step::BlePeripheralName(inner) => Step::BlePeripheralName {
-                capture_as: inner.capture_as.clone(),
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleWrite(inner) => Step::BleWrite {
-                gatt: inner.gatt.clone(),
-                value: StepValue::try_from(&inner.value)?,
-                notification_fence: inner.notification_fence.clone(),
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleSubscribe(inner) => Step::BleSubscribe {
-                gatt: inner.gatt.clone(),
-                timeout_ms: inner.timeout_ms,
-                mode: inner.mode.into(),
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleNotify(inner) => Step::BleNotify {
-                gatt: inner.gatt.clone(),
-                until: BleNotifyUntil::try_from(&inner.until)?,
-                capture_as: inner.capture_as.clone(),
-                capture: inner.capture.iter().map(Into::into).collect(),
-                mode: inner.mode.into(),
-                timeout_ms: inner.timeout_ms,
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleAwaitUntil(inner) => Step::BleAwaitUntil {
-                source: (&inner.source).into(),
-                capture: inner.capture.iter().map(Into::into).collect(),
-                capture_as: inner.capture_as.clone(),
-                until: (&inner.until).into(),
-                fail_when: inner.fail_when.as_ref().map(Into::into),
-                failure_evidence: inner
-                    .failure_evidence
-                    .as_ref()
-                    .map(BleAwaitFailureEvidence::try_from)
-                    .transpose()?,
-                on_each: inner
-                    .on_each
-                    .iter()
-                    .map(Step::try_from)
-                    .collect::<Result<_, _>>()?,
-                timeout_ms: inner.timeout_ms,
-                interval_ms: inner.interval_ms,
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::BleWriteChunk(inner) => Step::BleWriteChunk {
-                source: inner.source.clone(),
-                index: inner.index.clone(),
-                size: inner.size,
-                gatt: inner.gatt.clone(),
-                frame: inner
-                    .frame
-                    .iter()
-                    .map(|f| ChunkFrameField {
-                        field: f.field.into(),
-                        encoding: f.encoding.as_token().to_string(),
-                    })
-                    .collect(),
-                sentinel_index: inner.sentinel_index,
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::Acquire(inner) => Step::Acquire {
-                name: inner.name.clone(),
-                from: vec![Step::try_from(&*inner.from)?],
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::AcquireFirmware(inner) => Step::AcquireFirmware {
-                from: (&inner.from).into(),
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::If(inner) => Step::If {
-                condition: (&inner.condition).into(),
-                then_branch: inner
-                    .then
-                    .iter()
-                    .map(Step::try_from)
-                    .collect::<Result<_, _>>()?,
-                else_branch: inner
-                    .else_branch
-                    .iter()
-                    .map(Step::try_from)
-                    .collect::<Result<_, _>>()?,
-                tolerant: inner.tolerant,
-            },
-            ix::Step::Retry(inner) => Step::Retry {
-                steps: inner
-                    .steps
-                    .iter()
-                    .map(Step::try_from)
-                    .collect::<Result<_, _>>()?,
-                when_failure: inner.when_failure.into(),
-                on_failure: inner
-                    .on_failure
-                    .iter()
-                    .map(Step::try_from)
-                    .collect::<Result<_, _>>()?,
-                retry_when: (&inner.retry_when).into(),
-                max_attempts: inner.max_attempts,
-                retry_delay_ms: inner.retry_delay_ms,
-                failure_context: inner.failure_context.clone(),
-            },
-            ix::Step::NikonLssAuthenticate(inner) => Step::NikonLssAuthenticate {
-                gatt: inner.gatt.clone(),
-                client_device_id: StepValue::try_from(&inner.client_device_id)?,
-                nonce: StepValue::try_from(&inner.nonce)?,
-                timeout_ms: inner.timeout_ms,
-                opts: (&inner.opts).into(),
-            },
-            ix::Step::NikonLssReadConnectionConfiguration(inner) => {
-                Step::NikonLssReadConnectionConfiguration {
-                    gatt: inner.gatt.clone(),
-                    flags_capture_as: inner.flags_capture_as.clone(),
-                    ssid_capture_as: inner.ssid_capture_as.clone(),
-                    password_capture_as: inner.password_capture_as.clone(),
-                    security_mode_capture_as: inner.security_mode_capture_as.clone(),
-                    spp_max_length_capture_as: inner.spp_max_length_capture_as.clone(),
-                    opts: (&inner.opts).into(),
-                }
             }
-        })
-    }
+        }
+        ix::Step::UsbAwaitInterrupt(inner) => {
+            let _ = usb_interfaces.ok_or_else(usb_outside_family_block)?;
+            Step::UsbAwaitInterrupt {
+                encoding: inner.encoding.as_token().to_string(),
+                capture_as: inner.capture_as.clone(),
+                transform: transforms(&inner.transform),
+                timeout_ms: inner.timeout_ms,
+                opts: (&inner.opts).into(),
+            }
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1346,6 +1449,7 @@ pub fn reconnect_decision(
             model,
             &route.mechanism,
             &route.mechanism,
+            None,
             persisted_scope,
         ) else {
             return ReconnectDecision::NoMatch;
@@ -1441,11 +1545,48 @@ pub(crate) fn validate_ble_plan_mappings(
     Ok(())
 }
 
+/// USB mirror of [`validate_ble_plan_mappings`] (§11.29): every family USB
+/// establishment plan must convert to its FFI mirror, which also resolves
+/// every `usbClaim` interface name against the family `usb.interfaces` map.
+pub(crate) fn validate_usb_plan_mappings(
+    index: &ix::ResolvedManufacturerIndex,
+) -> Result<(), crate::ConfigError> {
+    for model in &index.models {
+        let Some(usb) = &model.usb else {
+            continue;
+        };
+        for (mechanism, establishment) in &usb.establishments {
+            for (sequence, steps) in [
+                ("steps", establishment.steps.as_slice()),
+                (
+                    "postExitReadiness",
+                    establishment.post_exit_readiness.as_slice(),
+                ),
+            ] {
+                for (step_index, step) in steps.iter().enumerate() {
+                    step_from_ix(step, Some(&usb.interfaces)).map_err(|error| match error {
+                        crate::ConfigError::Contract(message) => crate::ConfigError::Contract(
+                            format!(
+                                "model `{}` mechanism `{mechanism}` {sequence}[{step_index}]: {message}",
+                                model.id
+                            ),
+                        ),
+                        other => other,
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build the establishment plan registered under `mechanism` for `model`.
 /// The caller resolves `mechanism` from the body manifest's
-/// `connections[connection].establishment`; this looks it up in the index
-/// family BLE `establishments` registry. Returns `None` if the model has no
-/// BLE block or no plan is registered under `mechanism`.
+/// `connections[connection].establishment` and supplies that connection's
+/// `kind`; the kind selects the family registry the plan comes from — the
+/// family USB registry for a raw `usb` connection (§11.29), the BLE registry
+/// otherwise. Returns `None` if the model lacks that family block or no plan
+/// is registered under `mechanism`.
 ///
 /// `initial_scope` is currently informational — the plan's steps don't
 /// inline-resolve scope at this layer (the dispatcher does that mid-walk).
@@ -1456,9 +1597,17 @@ pub fn build_establishment(
     model: &str,
     connection: &str,
     mechanism: &str,
+    connection_kind: Option<&str>,
     _initial_scope: &[KeyValue],
 ) -> Option<EstablishmentPlan> {
-    build_establishment_mechanism(index, model, connection, mechanism, _initial_scope)
+    build_establishment_mechanism(
+        index,
+        model,
+        connection,
+        mechanism,
+        connection_kind,
+        _initial_scope,
+    )
 }
 
 fn build_establishment_mechanism(
@@ -1466,17 +1615,26 @@ fn build_establishment_mechanism(
     model: &str,
     handle_selector: &str,
     mechanism: &str,
+    connection_kind: Option<&str>,
     _initial_scope: &[KeyValue],
 ) -> Option<EstablishmentPlan> {
     let model_view = index.models.iter().find(|m| m.id == model)?;
-    let ble = model_view.ble.as_ref()?;
-    let block = ble.establishment(mechanism)?;
+    // The connection kind selects the family registry (§11.29). Only a raw
+    // `usb` connection's establishment lives in the USB block; everything
+    // else resolves against BLE exactly as before.
+    let (block, usb_interfaces) = match connection_kind {
+        Some("usb") => {
+            let usb = model_view.usb.as_ref()?;
+            (usb.establishment(mechanism)?, Some(&usb.interfaces))
+        }
+        _ => (model_view.ble.as_ref()?.establishment(mechanism)?, None),
+    };
     let steps = block
         .steps
         .iter()
-        .map(Step::try_from)
+        .map(|step| step_from_ix(step, usb_interfaces))
         .collect::<Result<_, _>>()
-        .expect("BLE plans validated at store load");
+        .expect("plans validated at store load");
     Some(EstablishmentPlan {
         plan_handle: format!("{model}:{handle_selector}"),
         mechanism: block.mechanism.clone(),
@@ -1488,9 +1646,9 @@ fn build_establishment_mechanism(
         post_exit_readiness: block
             .post_exit_readiness
             .iter()
-            .map(Step::try_from)
+            .map(|step| step_from_ix(step, usb_interfaces))
             .collect::<Result<_, _>>()
-            .expect("BLE plans validated at store load"),
+            .expect("plans validated at store load"),
         steps,
     })
 }
