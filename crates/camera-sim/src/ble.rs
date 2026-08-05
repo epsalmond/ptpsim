@@ -73,6 +73,9 @@ pub enum BleError {
     /// No peripheral name was scripted; the in-memory analogue of a host
     /// stack that cannot supply `CBPeripheral.name` for the bound peripheral.
     NoPeripheralName,
+    /// The ATT MTU request itself failed (a GATT error or timeout), as
+    /// distinct from negotiating below a manifest floor.
+    MtuRequestFailed,
     /// An exact-write script was active and the next write did not match it.
     UnexpectedWrite {
         expected_uuid: String,
@@ -94,6 +97,7 @@ impl std::fmt::Display for BleError {
             BleError::PeerDisconnectNotObserved => write!(f, "peer disconnect not observed"),
             BleError::NotExposed(uuid) => write!(f, "characteristic {uuid} not exposed"),
             BleError::NoPeripheralName => write!(f, "peripheral name not served"),
+            BleError::MtuRequestFailed => write!(f, "MTU request failed"),
             BleError::UnexpectedWrite {
                 expected_uuid,
                 expected_value,
@@ -132,6 +136,9 @@ pub struct BleResponder {
     gatt_script: Vec<ScriptedGattAction>,
     fenced_write_counts: BTreeMap<String, u32>,
     mtu_cap: u16,
+    /// Script the MTU request itself failing (a GATT error or timeout), as
+    /// distinct from negotiating below a manifest floor.
+    mtu_request_fails: bool,
     /// The platform peripheral name a `blePeripheralName` step serves (§11.4b).
     /// Unset fails the step, like a catalogued-but-unserved read.
     peripheral_name: Option<String>,
@@ -162,6 +169,7 @@ impl BleResponder {
             gatt_script: Vec::new(),
             fenced_write_counts: BTreeMap::new(),
             mtu_cap: 247,
+            mtu_request_fails: false,
             peripheral_name: None,
             connected: false,
             services_discovered: false,
@@ -286,6 +294,13 @@ impl BleResponder {
         self
     }
 
+    /// Script the MTU request itself failing, like a GATT error or timeout on
+    /// a request-API platform (#449).
+    pub fn with_failing_mtu_request(mut self) -> Self {
+        self.mtu_request_fails = true;
+        self
+    }
+
     /// Serve a platform peripheral name to `blePeripheralName` steps (§11.4b).
     pub fn with_peripheral_name(mut self, name: &str) -> Self {
         self.peripheral_name = Some(name.to_string());
@@ -333,6 +348,9 @@ impl BleResponder {
     pub fn request_mtu(&mut self, requested: u16) -> Result<u16, BleError> {
         if !self.connected {
             return Err(BleError::NotConnected);
+        }
+        if self.mtu_request_fails {
+            return Err(BleError::MtuRequestFailed);
         }
         let negotiated = requested.min(self.mtu_cap);
         self.log.push(BleEvent::RequestMtu {
