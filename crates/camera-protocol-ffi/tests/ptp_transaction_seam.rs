@@ -142,7 +142,7 @@ impl PtpTransactionTransport for ResponderTxnTransport {
         }
     }
 
-    async fn close(&self) -> Result<(), PtpTransactionError> {
+    async fn shutdown(&self) -> Result<(), PtpTransactionError> {
         Ok(())
     }
 

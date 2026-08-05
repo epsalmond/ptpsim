@@ -164,8 +164,10 @@ pub trait PtpTransactionTransport: Send + Sync {
     /// `PtpExecutorTransport::next_event_frame`.
     async fn next_event(&self, event_code: u16)
         -> Result<PtpTransactionEvent, PtpTransactionError>;
-    /// Detach from the daemon session.
-    async fn close(&self) -> Result<(), PtpTransactionError>;
+    /// Detach from the daemon session. Named `shutdown`, not `close`: uniffi's
+    /// Kotlin bindings give callback interfaces an `AutoCloseable.close()`, and
+    /// a trait method of the same name clashes on the JVM.
+    async fn shutdown(&self) -> Result<(), PtpTransactionError>;
     /// Resolve after `ms` milliseconds of wall-clock time.
     async fn sleep(&self, ms: u32) -> Result<(), PtpTransactionError>;
 }

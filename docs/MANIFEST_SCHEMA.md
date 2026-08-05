@@ -1875,7 +1875,7 @@ frames.
 | `execute(opcode: u16, params: Vec<u32>, data_out: Option<Vec<u8>>, timeout_ms: u32) -> PtpTransactionResult` | run one typed PTP transaction; `PtpTransactionResult` carries `response_code`, response `params`, and optional `data_in`; the daemon enforces the per-call `timeout_ms` |
 | `read_partial_object(handle: u32, offset: u64, length: u32, timeout_ms: u32) -> Vec<u8>` | read one object range |
 | `next_event(event_code: u16) -> PtpTransactionEvent` | return the next event matching `event_code` as `{ event_code, params }`; code-selective, the host retains unrelated events for their normal consumers, the same contract as `PtpExecutorTransport::next_event_frame` (§11.24) |
-| `close()` | detach from the daemon session |
+| `shutdown()` | detach from the daemon session (named `shutdown`: a `close` method clashes with `AutoCloseable.close()` in the Kotlin bindings) |
 | `sleep(ms: u32)` | the host wall clock |
 
 Every method is fallible with `PtpTransactionError` (`NotConnected`,

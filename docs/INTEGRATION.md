@@ -568,7 +568,8 @@ transaction with a per-call daemon timeout, returning the response code,
 response parameters, and optional data-in), `readPartialObject` (one object
 range), code-selective `nextEvent` (the host retains unrelated events for
 their normal consumers, the same contract as `next_event_frame` above),
-`close`, and the host `sleep` clock. Every method fails with
+`close`-equivalent `shutdown` (named to avoid the Kotlin
+`AutoCloseable.close()` clash), and the host `sleep` clock. Every method fails with
 `PtpTransactionError` (`NotConnected`, `DeviceGone`, `Stall`, `Timeout`,
 `NotAuthorized`, `Failed`). Rust owns the same grammar, retry, tolerance,
 capture, predicate, and aggregate-deadline semantics as the frame-based
