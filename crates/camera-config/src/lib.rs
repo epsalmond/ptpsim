@@ -384,6 +384,7 @@ impl CameraManifest {
             require_valid_object_transfer(self, connection, connection_id)?;
             require_valid_control_surfaces(self, connection, connection_id)?;
             require_valid_platforms(connection, connection_id)?;
+            require_valid_event_delivery(connection, connection_id)?;
             for descriptor in &connection.activities {
                 let key = (descriptor.id.clone(), descriptor.version);
                 let value = (
@@ -867,6 +868,104 @@ fn require_valid_platforms(
                     PLATFORMS.join(", ")
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// `events.delivery` (§11.29) constrains the `EntryStep` `awaitUntil` grammar
+/// on the connection: a `bestEffort` channel may lose any single push, so an
+/// event-source await reconciles a miss by polling and MUST declare
+/// `thenPoll`; a `none` channel has no pushes at all, so an event-source
+/// await can never be satisfied. Both are rejected here at load; the executor
+/// keeps a runtime guard as defense in depth.
+fn require_valid_event_delivery(
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(events) = &connection.events else {
+        return Ok(());
+    };
+    if events.delivery == EventDelivery::Reliable {
+        return Ok(());
+    }
+    for (index, entry) in connection.entries.iter().enumerate() {
+        let path = format!("connections.{connection_id}.entries[{index}]");
+        match &entry.execution {
+            ModeEntryExecution::Ptp { steps } => {
+                require_valid_event_awaits(steps, &path, events.delivery)?;
+            }
+            ModeEntryExecution::ReestablishConnection(reestablish) => {
+                require_valid_event_awaits(
+                    &reestablish.exit_steps,
+                    &format!("{path}.reestablishConnection.exitSteps"),
+                    events.delivery,
+                )?;
+            }
+            ModeEntryExecution::UserInstruction { .. } => {}
+        }
+    }
+    for (verb, action) in &connection.actions {
+        if let Some(initiator) = &action.initiator {
+            require_valid_event_awaits(
+                &initiator.steps,
+                &format!("connections.{connection_id}.actions.{verb:?}"),
+                events.delivery,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn require_valid_event_awaits(
+    steps: &[Step],
+    path: &str,
+    delivery: EventDelivery,
+) -> Result<(), ManifestError> {
+    for (index, step) in steps.iter().enumerate() {
+        let step_path = format!("{path}.steps[{index}]");
+        if let Some(await_until) = &step.await_until {
+            if let AwaitSource::Event { then_poll, .. } = &await_until.source {
+                match delivery {
+                    EventDelivery::None => {
+                        return Err(ManifestError::Contract(format!(
+                            "{step_path}.awaitUntil names an event source, but the connection declares events.delivery none (§11.29)"
+                        )));
+                    }
+                    EventDelivery::BestEffort if then_poll.is_none() => {
+                        return Err(ManifestError::Contract(format!(
+                            "{step_path}.awaitUntil event source must declare thenPoll on an events.delivery bestEffort connection (§11.29)"
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+            require_valid_event_awaits(
+                &await_until.on_each,
+                &format!("{step_path}.awaitUntil"),
+                delivery,
+            )?;
+        }
+        if let Some(retry) = &step.retry {
+            require_valid_event_awaits(&retry.steps, &format!("{step_path}.retry"), delivery)?;
+        }
+        if let Some(loop_step) = &step.r#loop {
+            let body = match loop_step {
+                Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => body,
+            };
+            require_valid_event_awaits(body, &format!("{step_path}.loop"), delivery)?;
+        }
+        if let Some(condition) = &step.if_step {
+            require_valid_event_awaits(
+                &condition.then_steps,
+                &format!("{step_path}.if.then"),
+                delivery,
+            )?;
+            require_valid_event_awaits(
+                &condition.else_steps,
+                &format!("{step_path}.if.else"),
+                delivery,
+            )?;
         }
     }
     Ok(())

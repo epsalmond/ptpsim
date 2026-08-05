@@ -1394,11 +1394,11 @@ impl PtpCtx {
                     // On a bestEffort connection any single event may be lost,
                     // so an exhausted event-wait budget proves nothing
                     // (§11.29): fall through to the declared thenPoll loop.
-                    // Without thenPoll the await is a manifest error, guarded
-                    // here; the loader rejects it first. A `none` event
-                    // channel forbids event-source awaits outright, also at
-                    // manifest level, so there is deliberately no runtime
-                    // `None` branch here.
+                    // The loader's require_valid_event_delivery rejects an
+                    // event-source await without thenPoll on a bestEffort
+                    // connection and any event-source await on a `none`
+                    // connection; this guard is defense in depth, so there is
+                    // deliberately no runtime `None` branch here.
                     let lost_events_are_expected =
                         matches!(self.event_delivery, cc::EventDelivery::BestEffort)
                             && error.class == FailureClass::Deadline;

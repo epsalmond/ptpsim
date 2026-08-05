@@ -93,6 +93,85 @@ fn trait_fields_are_closed_vocabularies() {
 }
 
 #[test]
+fn best_effort_event_await_without_then_poll_fails_load() {
+    let error = CameraManifest::from_yaml(&manifest(
+        r#"  usbTether:
+    kind: usb
+    events: { delivery: bestEffort }
+    entries:
+      - to: shooting
+        steps:
+          - awaitUntil:
+              source: { event: { code: "0xc005" } }
+              until: { prop: "0xd209", eq: 1 }
+              timeoutMs: 30000"#,
+    ))
+    .expect_err("a bestEffort event-source await without thenPoll is a load error");
+    let message = error.to_string();
+    assert!(
+        message.contains("usbTether"),
+        "names the connection, got: {message}",
+    );
+    assert!(
+        message.contains("entries[0].steps[0]"),
+        "names the step path, got: {message}",
+    );
+}
+
+#[test]
+fn none_event_channel_forbids_event_source_awaits() {
+    // `thenPoll` is declared, so only the `none` rule can reject this.
+    let error = CameraManifest::from_yaml(&manifest(
+        r#"  usbTether:
+    kind: usb
+    events: { delivery: none }
+    actions:
+      autofocusLock:
+        mode: ""
+        initiator:
+          steps:
+            - awaitUntil:
+                source: { event: { code: "0xc005", thenPoll: "0xd209" } }
+                until: { prop: "0xd209", eq: 1 }
+                timeoutMs: 30000"#,
+    ))
+    .expect_err("a none event channel forbids event-source awaits outright");
+    let message = error.to_string();
+    assert!(
+        message.contains("usbTether"),
+        "names the connection, got: {message}",
+    );
+    assert!(
+        message.contains("actions.AutofocusLock.steps[0]"),
+        "names the step path, got: {message}",
+    );
+}
+
+#[test]
+fn best_effort_event_await_with_then_poll_loads() {
+    let m = CameraManifest::from_yaml(&manifest(
+        r#"  usbTether:
+    kind: usb
+    events: { delivery: bestEffort }
+    entries:
+      - to: shooting
+        steps:
+          - awaitUntil:
+              source: { event: { code: "0xc005", thenPoll: "0xd209" } }
+              until: { prop: "0xd209", eq: 1 }
+              timeoutMs: 30000"#,
+    ))
+    .expect("a bestEffort event-source await with thenPoll loads");
+    assert_eq!(
+        m.connections["usbTether"]
+            .events
+            .as_ref()
+            .map(|e| e.delivery),
+        Some(EventDelivery::BestEffort),
+    );
+}
+
+#[test]
 fn platform_tokens_accept_the_full_vocabulary() {
     CameraManifest::from_yaml(&manifest(
         "  usb:\n    platforms: [ios, macos, android, linux]",
