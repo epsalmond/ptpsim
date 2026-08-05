@@ -2528,8 +2528,8 @@ mod tests {
         }
         async fn request_mtu(&self, _mtu: u16) -> Result<u16, TransportError> {
             if self.request_mtu_fails {
-                return Err(TransportError::Timeout {
-                    detail: "requestMtu".to_string(),
+                return Err(TransportError::Failed {
+                    detail: "requestMtu rejected by the GATT stack".to_string(),
                 });
             }
             Ok(158)
@@ -3619,6 +3619,13 @@ mod tests {
         let reports = recorder.0.lock().unwrap();
         let outcomes: Vec<StepOutcome> = reports.iter().map(|r| r.outcome).collect();
         assert_eq!(outcomes, vec![StepOutcome::Started, StepOutcome::Tolerated]);
+        // The tolerated error is the scripted call failure, provably not the
+        // executor's own deadline firing (a pend would report a timeout).
+        assert!(reports[1]
+            .error
+            .as_deref()
+            .expect("tolerated report carries the error")
+            .contains("requestMtu rejected by the GATT stack"));
     }
 
     #[test]
@@ -3636,7 +3643,10 @@ mod tests {
         })];
         let err = block_on(walk_plan(&mut ctx, steps))
             .expect_err("a failed request call fails a strict step");
-        assert!(err.message.contains("requestMtu"));
+        assert_eq!(err.kind, ExecutorStepFailureKind::Other);
+        assert!(err
+            .message
+            .contains("requestMtu rejected by the GATT stack"));
     }
 
     #[test]
