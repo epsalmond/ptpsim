@@ -31,6 +31,30 @@ families:
       knockPort: 51562
       protocol: "PCSS/1.0"
       discovery: { retryIntervalMs: 1000, maxAttempts: 60 }
+    usb:
+      # USB interface triples `usbClaim` steps reference by symbolic name (§11.29).
+      interfaces:
+        stillImage: { class: 6, subclass: 1, protocol: 1 }   # PIMA 15740 still-image class
+      establishments:
+        # Raw-USB bring-up on the PIMA containers alone: claim the still-image
+        # interface, OpenSession, GetDeviceInfo. No manufacturer data and no
+        # camera-conditional content; response verification is the conformance
+        # layer's assertion point over the captureAs slots.
+        usb-claim-open:
+          mechanism: usb-claim-open
+          activities:
+            - id: camera.session.open.usb
+              version: 1
+              displayRole: openingSession
+              defaultExpectedDurationMs: 2000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 5 }
+          steps:
+            - usbClaim: { interface: stillImage }
+            - usbBulkOut: { data: { literal: "16000000010002100000000001000000" } }  # OpenSession(1), tid 0, USB container
+            - usbBulkIn: { maxLength: 512, encoding: bytes, captureAs: openSessionResponse }
+            - usbBulkOut: { data: { literal: "0c0000000100011001000000" } }          # GetDeviceInfo, tid 1
+            - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }
     ble:
       # Universal GATT catalog. Every Fuji BLE camera, every firmware.
       # The same UUIDs are used for both LEGACY and RED styles (observed in

@@ -707,12 +707,27 @@ fn platform_filters_connections_macos_vs_ios() {
     let s = store();
     let mac = s.connections(Platform::Macos);
     let ios = s.connections(Platform::Ios);
-    // macOS sees USB + the wired tether; iOS does not (platforms: excludes it).
-    assert!(ids(&mac).contains(&"usb"), "macOS has USB");
+    let android = s.connections(Platform::Android);
+    // Raw USB is desktop-class (macOS, Android, Linux); the daemon-attached
+    // pass-through row serves iOS and macOS.
+    assert!(ids(&mac).contains(&"usb"), "macOS has raw USB");
+    assert!(
+        ids(&mac).contains(&"usb-passthrough"),
+        "macOS has USB pass-through"
+    );
     assert!(ids(&mac).contains(&"wireless-tether"));
     assert!(
         !ids(&ios).contains(&"usb"),
-        "iOS hides USB — same build, data-driven"
+        "iOS hides raw USB — same build, data-driven"
+    );
+    assert!(
+        ids(&ios).contains(&"usb-passthrough"),
+        "iOS has USB pass-through"
+    );
+    assert!(ids(&android).contains(&"usb"), "Android has raw USB");
+    assert!(
+        !ids(&android).contains(&"usb-passthrough"),
+        "Android hides USB pass-through"
     );
     // App + XLV available to both.
     assert!(ids(&ios).contains(&"app"));
