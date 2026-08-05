@@ -392,13 +392,13 @@ pub struct BleAwaitDisconnectStep {
 
 /// `bleRequestMtu: { requestedMtu: 158 }` — ask the link for an ATT MTU
 /// before GATT traffic. `requestedMtu` is the reference app's request target
-/// (the Android `requestMtu` argument), an observed request, nothing more.
+/// (the Android `requestMtu` argument), an observed request, nothing more;
+/// a platform without a request API (CoreBluetooth) makes no call.
 /// `minimumMtu` is a separately evidenced floor below which the flow fails;
 /// declare it only with wire-capture or hardware evidence, never from one
-/// data point. On platforms without an explicit request API (CoreBluetooth
-/// negotiates automatically), the dispatcher treats the step as a checkpoint:
-/// with no `minimumMtu` it succeeds at any negotiated MTU; with one it fails
-/// (tolerant-aware as usual) when the negotiated MTU is below the floor.
+/// data point. After any request, the step compares the negotiated MTU
+/// against a declared floor on every platform and fails (tolerant-aware as
+/// usual) below it; with no floor it succeeds at any negotiated MTU.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BleRequestMtuStep {

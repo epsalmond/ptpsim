@@ -133,9 +133,9 @@ fn family_ble_block_merges_into_gfx100ii_view() {
 
 // legacy manufacturer app treats requestMtu(515) as fire-and-forget: onMtuChanged
 // ignores the callback status and the negotiated value, so there is no
-// evidenced MTU floor. The X-A7 negotiates 185 on hardware and pairing works,
-// so the manifest declares the request target only (#400); a checkpoint
-// platform accepts any negotiated MTU without a tolerance annotation.
+// evidenced MTU floor, and a failed request call must not block registration
+// either. The manifest declares the request target, no floor, and stays
+// tolerant of the call itself (#399, #400, PR #448 review).
 #[test]
 fn xa7_legacy_app_mtu_declares_request_target_without_floor() {
     let idx = real_index();
@@ -164,8 +164,8 @@ fn xa7_legacy_app_mtu_declares_request_target_without_floor() {
             "{name} has no evidenced floor and declares none (#400)"
         );
         assert!(
-            !mtus[0].opts.tolerant,
-            "{name} needs no tolerance annotation without a floor (#400)"
+            mtus[0].opts.tolerant,
+            "{name} stays tolerant of a failed requestMtu call (#399)"
         );
     }
 }

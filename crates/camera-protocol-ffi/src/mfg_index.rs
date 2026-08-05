@@ -364,9 +364,10 @@ pub enum Step {
         opts: StepOptions,
     },
     /// Request an ATT MTU before GATT traffic. `requested_mtu` is the
-    /// reference app's request target. On platforms without an explicit
-    /// request API (CoreBluetooth), the step is a checkpoint against
-    /// `minimum_mtu` only: no floor means any negotiated MTU succeeds.
+    /// reference app's request target; a platform without a request API
+    /// (CoreBluetooth) makes no call. The step compares the negotiated MTU
+    /// against a declared `minimum_mtu` on every platform and fails below
+    /// it; with no floor, any negotiated MTU succeeds.
     BleRequestMtu {
         requested_mtu: u16,
         minimum_mtu: Option<u16>,

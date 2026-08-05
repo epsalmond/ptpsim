@@ -1,10 +1,10 @@
 //! `bleRequestMtu` checkpoint semantics (#400). `requestedMtu` is the
 //! reference app's request target; `minimumMtu` is a separately evidenced
-//! floor. On checkpoint platforms (CoreBluetooth has no request API) the step
-//! succeeds at any negotiated MTU when no floor is declared, and fails
-//! (tolerant-aware) only when a declared floor is unmet. The X-A7 negotiates
-//! 185 against a 515 request target and the reference app enforces no floor,
-//! so its legacy-app establishments declare no `minimumMtu`.
+//! floor. With no floor declared the step succeeds at any negotiated MTU;
+//! with one it fails (tolerant-aware) when the negotiated MTU is below the
+//! floor, on every platform. The X-A7 negotiates 185 against a 515 request
+//! target and the reference app enforces no floor, so its legacy-app
+//! establishments declare no `minimumMtu`.
 
 use std::collections::BTreeMap;
 

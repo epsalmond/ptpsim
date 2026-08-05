@@ -547,9 +547,10 @@ families:
             # onMtuChanged ignores the callback status and the negotiated value, so
             # 515 is a request target with no evidenced floor (#400). CoreBluetooth
             # has no request API and auto-negotiates below it (185 observed on X-A7
-            # hardware); with no minimumMtu declared, the checkpoint accepts any
-            # negotiated value and no tolerance annotation is needed. (#399)
-            - bleRequestMtu: { requestedMtu: 515 }
+            # hardware); with no minimumMtu the checkpoint passes at any negotiated
+            # value. tolerant keeps a failed requestMtu call itself from blocking
+            # registration, matching the fire-and-forget reference behavior. (#399)
+            - bleRequestMtu: { requestedMtu: 515, tolerant: true }
             - bleDiscoverServices: {}
             - bleWrite: { gatt: pairingKey, value: { captured: pairingKeyBytes } }
             - bleWrite:
