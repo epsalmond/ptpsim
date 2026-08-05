@@ -1423,15 +1423,18 @@ async fn run_step_once(
         }
         Step::BleRequestMtu(s) => {
             let negotiated = deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "requestMtu", async {
-                ctx.transport.request_mtu(s.mtu).await
+                ctx.transport.request_mtu(s.requested_mtu).await
             })
             .await
             .map_err(op_err)?;
-            if negotiated < s.mtu {
-                return Err(err(format!(
-                    "negotiated MTU {negotiated} < required {}",
-                    s.mtu
-                )));
+            // §11.4a: the checkpoint is the evidenced floor, not the request
+            // target. No floor means any negotiated MTU succeeds.
+            if let Some(minimum) = s.minimum_mtu {
+                if negotiated < minimum {
+                    return Err(err(format!(
+                        "negotiated MTU {negotiated} < required {minimum}"
+                    )));
+                }
             }
             Ok(None)
         }
@@ -3558,12 +3561,30 @@ mod tests {
         });
         let mut ctx = ctx(&transport, &observer);
         let steps = vec![Step::BleRequestMtu(BleRequestMtuStep {
-            mtu: 517,
+            requested_mtu: 517,
+            minimum_mtu: Some(517),
             opts: StepOptions::default(),
         })];
         let err = block_on(walk_plan(&mut ctx, steps)).expect_err("negotiated 158 < 517");
         assert_eq!(err.kind, ExecutorStepFailureKind::Other);
         assert!(err.message.contains("negotiated MTU 158"));
+    }
+
+    #[test]
+    fn mtu_without_floor_succeeds_below_the_request_target() {
+        // §11.4a: with no evidenced floor, any negotiated MTU passes the
+        // checkpoint (the X-A7 pairs at 185 against a 515 target).
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BleRequestMtu(BleRequestMtuStep {
+            requested_mtu: 517,
+            minimum_mtu: None,
+            opts: StepOptions::default(),
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("negotiated 158 with no floor must succeed");
     }
 
     #[test]

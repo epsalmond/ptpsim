@@ -20,9 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_yaml::Value;
 
 use super::types::{
-    AwaitSource, BleAdvertSignature, EstablishmentBlock, FamilyBleBlock, FamilyPcssBlock,
-    IndexedModel, ManufacturerIndex, ModelView, PcssNotifySignature, Predicate, PredicateOp,
-    Signature, SignatureKind, Step, StepValue, MAX_PAD_RIGHT_LENGTH,
+    AwaitSource, BleAdvertSignature, BleRequestMtuStep, EstablishmentBlock, FamilyBleBlock,
+    FamilyPcssBlock, IndexedModel, ManufacturerIndex, ModelView, PcssNotifySignature, Predicate,
+    PredicateOp, Signature, SignatureKind, Step, StepValue, MAX_PAD_RIGHT_LENGTH,
 };
 use crate::error::ConfigError;
 
@@ -1396,9 +1396,19 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleAwaitDisconnect" => Ok(Step::BleAwaitDisconnect(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleAwaitDisconnect", e))?,
             )),
-            "bleRequestMtu" => Ok(Step::BleRequestMtu(
-                serde_yaml::from_value(body).map_err(|e| dec_err("bleRequestMtu", e))?,
-            )),
+            "bleRequestMtu" => {
+                let step: BleRequestMtuStep =
+                    serde_yaml::from_value(body).map_err(|e| dec_err("bleRequestMtu", e))?;
+                if let Some(minimum) = step.minimum_mtu {
+                    if minimum > step.requested_mtu {
+                        return Err(D::Error::custom(format!(
+                            "decoding bleRequestMtu: minimumMtu ({minimum}) exceeds requestedMtu ({})",
+                            step.requested_mtu
+                        )));
+                    }
+                }
+                Ok(Step::BleRequestMtu(step))
+            }
             "bleDiscoverServices" => Ok(Step::BleDiscoverServices(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleDiscoverServices", e))?,
             )),

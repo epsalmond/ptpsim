@@ -390,15 +390,21 @@ pub struct BleAwaitDisconnectStep {
     pub opts: StepOptions,
 }
 
-/// `bleRequestMtu: { mtu: 158 }` — ask the link for an ATT MTU before GATT
-/// traffic. Sony pairing/Wi-Fi flows request 158. On platforms without an
-/// explicit request API (CoreBluetooth negotiates automatically), the
-/// dispatcher treats this as a checkpoint: succeed if the negotiated MTU
-/// is ≥ `mtu`, else step failure (tolerant-aware as usual).
+/// `bleRequestMtu: { requestedMtu: 158 }` — ask the link for an ATT MTU
+/// before GATT traffic. `requestedMtu` is the reference app's request target
+/// (the Android `requestMtu` argument), an observed request, nothing more;
+/// a platform without a request API (CoreBluetooth) makes no call.
+/// `minimumMtu` is a separately evidenced floor below which the flow fails;
+/// declare it only with wire-capture or hardware evidence, never from one
+/// data point. After any request, the step compares the negotiated MTU
+/// against a declared floor on every platform and fails (tolerant-aware as
+/// usual) below it; with no floor it succeeds at any negotiated MTU.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BleRequestMtuStep {
-    pub mtu: u16,
+    pub requested_mtu: u16,
+    #[serde(default)]
+    pub minimum_mtu: Option<u16>,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }

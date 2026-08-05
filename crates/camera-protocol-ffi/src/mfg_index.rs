@@ -363,11 +363,14 @@ pub enum Step {
         timeout_ms: u32,
         opts: StepOptions,
     },
-    /// Request an ATT MTU before GATT traffic. On platforms without an
-    /// explicit request API (CoreBluetooth), succeed if the negotiated MTU
-    /// is ≥ `mtu`, else step failure.
+    /// Request an ATT MTU before GATT traffic. `requested_mtu` is the
+    /// reference app's request target; a platform without a request API
+    /// (CoreBluetooth) makes no call. The step compares the negotiated MTU
+    /// against a declared `minimum_mtu` on every platform and fails below
+    /// it; with no floor, any negotiated MTU succeeds.
     BleRequestMtu {
-        mtu: u16,
+        requested_mtu: u16,
+        minimum_mtu: Option<u16>,
         opts: StepOptions,
     },
     /// Explicit GATT service-discovery checkpoint. On auto-discovering
@@ -968,7 +971,8 @@ impl TryFrom<&ix::Step> for Step {
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleRequestMtu(inner) => Step::BleRequestMtu {
-                mtu: inner.mtu,
+                requested_mtu: inner.requested_mtu,
+                minimum_mtu: inner.minimum_mtu,
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleDiscoverServices(inner) => Step::BleDiscoverServices {

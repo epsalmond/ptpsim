@@ -761,7 +761,11 @@ fn xa7_registration_uses_legacy_app_queue_and_timing() {
     ));
     assert!(matches!(
         &plan.steps[2],
-        Step::BleRequestMtu { mtu: 515, .. }
+        Step::BleRequestMtu {
+            requested_mtu: 515,
+            minimum_mtu: None,
+            ..
+        }
     ));
     match &plan.steps[5] {
         Step::BleWrite { value, .. } => match value {
@@ -2452,7 +2456,7 @@ families:
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 }
           steps:
             - bleConnect: {}
-            - bleRequestMtu: { mtu: 158, tolerant: true }
+            - bleRequestMtu: { requestedMtu: 158, minimumMtu: 120, tolerant: true }
             - bleDiscoverServices: {}
 models:
   - id: tm1
@@ -2472,8 +2476,13 @@ models:
         .establishment("tm1".into(), "ble".into(), vec![])
         .expect("plan present");
     match &plan.steps[1] {
-        Step::BleRequestMtu { mtu, opts } => {
-            assert_eq!(*mtu, 158);
+        Step::BleRequestMtu {
+            requested_mtu,
+            minimum_mtu,
+            opts,
+        } => {
+            assert_eq!(*requested_mtu, 158);
+            assert_eq!(*minimum_mtu, Some(120));
             assert!(opts.tolerant);
         }
         other => panic!("expected BleRequestMtu, got {other:?}"),
