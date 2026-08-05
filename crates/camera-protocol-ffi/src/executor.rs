@@ -109,6 +109,13 @@ pub trait BleExecutorTransport: Send + Sync {
     /// auto-discover during connect).
     async fn ensure_services_discovered(&self) -> Result<(), TransportError>;
     async fn read(&self, characteristic: String) -> Result<Vec<u8>, TransportError>;
+    /// The bound peripheral's platform name (§11.4b): `CBPeripheral.name` on
+    /// stacks that filter the GAP service from discovery (CoreBluetooth),
+    /// a GATT 0x2A00 read elsewhere. Host-side, never dispatched by the
+    /// executor as a characteristic read. Return the UTF-8 name with any NUL
+    /// terminator removed; report an unavailable name as a transport error,
+    /// never an empty string.
+    async fn peripheral_name(&self) -> Result<String, TransportError>;
     async fn write(&self, characteristic: String, value: Vec<u8>) -> Result<(), TransportError>;
     /// Atomically fence the already-buffered prefix for
     /// `notification_characteristic` immediately before issuing the write.
@@ -1454,6 +1461,27 @@ async fn run_step_once(
             ctx.encodings.insert(s.capture_as.clone(), s.encoding);
             Ok(None)
         }
+        Step::BlePeripheralName(s) => {
+            let raw = deadline(
+                ctx.transport,
+                DEFAULT_OP_TIMEOUT_MS,
+                "peripheralName",
+                async { ctx.transport.peripheral_name().await },
+            )
+            .await
+            .map_err(op_err)?;
+            // §11.4b: UTF-8 with any NUL terminator removed; a name that is
+            // empty after the trim is unavailable and must fail the step, so
+            // a host never silently binds an empty capture.
+            let name = eval::decode_bytes(raw.as_bytes(), Encoding::Utf8Cstring)
+                .ok_or_else(|| err("peripheral name is not valid UTF-8".into()))?;
+            if name.is_empty() {
+                return Err(err("peripheral name unavailable".into()));
+            }
+            ctx.scope.insert(s.capture_as.clone(), name);
+            ctx.encodings.insert(s.capture_as.clone(), Encoding::Utf8);
+            Ok(None)
+        }
         Step::BleWrite(s) => {
             let bytes = resolve_value(ctx, &s.value).map_err(err)?;
             deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "write", async {
@@ -2217,6 +2245,7 @@ async fn deadline<T>(
 fn primary_capture_name(step: &Step) -> Option<&str> {
     match step {
         Step::BleRead(s) => Some(&s.capture_as),
+        Step::BlePeripheralName(s) => Some(&s.capture_as),
         Step::BleNotify(s) => s.capture_as.as_deref(),
         Step::BleAwaitUntil(s) => s.capture_as.as_deref(),
         _ => None,
@@ -2422,8 +2451,8 @@ mod tests {
     use super::*;
     use camera_config::index::{
         AcquireFirmwareStep, AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleDelayStep,
-        BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate,
-        RetryFailureKind, RetryStep, StepConfirmation, StepOptions,
+        BlePeripheralNameStep, BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep,
+        NotifyCapture, Predicate, RetryFailureKind, RetryStep, StepConfirmation, StepOptions,
     };
     use std::collections::VecDeque;
     use std::future::Future;
@@ -2460,6 +2489,9 @@ mod tests {
         /// Fire only the clock with this exact duration. This lets tests keep
         /// nested operation deadlines frozen while the enclosing await lapses.
         sleep_fire_ms: Option<u32>,
+        /// The platform peripheral name served to `blePeripheralName` (§11.4b).
+        /// Empty models a stack that cannot supply one.
+        peripheral_name: String,
         sleep_log: Arc<Mutex<Vec<u32>>>,
         subscribe_log: Arc<Mutex<Vec<String>>>,
         dropped_inflight: Arc<AtomicBool>,
@@ -2497,6 +2529,9 @@ mod tests {
         async fn read(&self, _characteristic: String) -> Result<Vec<u8>, TransportError> {
             let io = self.reads.lock().unwrap().pop_front();
             self.play(io).await
+        }
+        async fn peripheral_name(&self) -> Result<String, TransportError> {
+            Ok(self.peripheral_name.clone())
         }
         async fn write(
             &self,
@@ -3529,6 +3564,66 @@ mod tests {
         let err = block_on(walk_plan(&mut ctx, steps)).expect_err("negotiated 158 < 517");
         assert_eq!(err.kind, ExecutorStepFailureKind::Other);
         assert!(err.message.contains("negotiated MTU 158"));
+    }
+
+    #[test]
+    fn peripheral_name_binds_scope_from_the_platform_surface() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            peripheral_name: "TEST-PERIPHERAL".into(),
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BlePeripheralName(BlePeripheralNameStep {
+            capture_as: "cameraName".into(),
+            opts: StepOptions::default(),
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("mock transport serves a name");
+        assert_eq!(
+            ctx.scope.get("cameraName").map(String::as_str),
+            Some("TEST-PERIPHERAL")
+        );
+    }
+
+    #[test]
+    fn peripheral_name_strips_the_nul_terminator() {
+        // GAP-exposing hosts may satisfy the step with the raw 0x2A00 read,
+        // which is NUL-terminated; the bound value must not carry it (#444
+        // review).
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            peripheral_name: "TEST-PERIPHERAL\0".into(),
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BlePeripheralName(BlePeripheralNameStep {
+            capture_as: "cameraName".into(),
+            opts: StepOptions::default(),
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("a NUL-terminated name binds trimmed");
+        assert_eq!(
+            ctx.scope.get("cameraName").map(String::as_str),
+            Some("TEST-PERIPHERAL")
+        );
+    }
+
+    #[test]
+    fn empty_peripheral_name_fails_instead_of_binding_empty() {
+        // CBPeripheral.name is optional; an unavailable name is a step
+        // failure, never a silently empty capture (#444 review).
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            peripheral_name: String::new(),
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BlePeripheralName(BlePeripheralNameStep {
+            capture_as: "cameraName".into(),
+            opts: StepOptions::default(),
+        })];
+        let err = block_on(walk_plan(&mut ctx, steps)).expect_err("empty name must fail");
+        assert!(err.message.contains("peripheral name unavailable"));
+        assert!(!ctx.scope.contains_key("cameraName"));
     }
 
     #[test]

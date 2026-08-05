@@ -40,6 +40,7 @@ pub enum BleEvent {
     RequestMtu { requested: u16, negotiated: u16 },
     DiscoverServices,
     Read { uuid: String },
+    PeripheralName,
     NotificationFence { uuid: String },
     Write { uuid: String, value: Vec<u8> },
     Subscribe { uuid: String, mode: CccdMode },
@@ -69,6 +70,9 @@ pub enum BleError {
     /// read, has no value policy) — the in-memory analogue of a GATT
     /// attribute-not-found error.
     NotExposed(String),
+    /// No peripheral name was scripted; the in-memory analogue of a host
+    /// stack that cannot supply `CBPeripheral.name` for the bound peripheral.
+    NoPeripheralName,
     /// An exact-write script was active and the next write did not match it.
     UnexpectedWrite {
         expected_uuid: String,
@@ -89,6 +93,7 @@ impl std::fmt::Display for BleError {
             BleError::ServicesNotDiscovered => write!(f, "GATT services not discovered"),
             BleError::PeerDisconnectNotObserved => write!(f, "peer disconnect not observed"),
             BleError::NotExposed(uuid) => write!(f, "characteristic {uuid} not exposed"),
+            BleError::NoPeripheralName => write!(f, "peripheral name not served"),
             BleError::UnexpectedWrite {
                 expected_uuid,
                 expected_value,
@@ -127,6 +132,9 @@ pub struct BleResponder {
     gatt_script: Vec<ScriptedGattAction>,
     fenced_write_counts: BTreeMap<String, u32>,
     mtu_cap: u16,
+    /// The platform peripheral name a `blePeripheralName` step serves (§11.4b).
+    /// Unset fails the step, like a catalogued-but-unserved read.
+    peripheral_name: Option<String>,
     connected: bool,
     services_discovered: bool,
     peer_disconnect_pending: bool,
@@ -154,6 +162,7 @@ impl BleResponder {
             gatt_script: Vec::new(),
             fenced_write_counts: BTreeMap::new(),
             mtu_cap: 247,
+            peripheral_name: None,
             connected: false,
             services_discovered: false,
             peer_disconnect_pending: false,
@@ -275,6 +284,24 @@ impl BleResponder {
     pub fn with_mtu_cap(mut self, cap: u16) -> Self {
         self.mtu_cap = cap;
         self
+    }
+
+    /// Serve a platform peripheral name to `blePeripheralName` steps (§11.4b).
+    pub fn with_peripheral_name(mut self, name: &str) -> Self {
+        self.peripheral_name = Some(name.to_string());
+        self
+    }
+
+    /// The platform peripheral-name lookup: host-side on stacks that hide the
+    /// GAP service, never a GATT read. Unserved fails like an unserved read.
+    pub fn peripheral_name(&mut self) -> Result<String, BleError> {
+        if !self.connected {
+            return Err(BleError::NotConnected);
+        }
+        self.log.push(BleEvent::PeripheralName);
+        self.peripheral_name
+            .clone()
+            .ok_or(BleError::NoPeripheralName)
     }
 
     pub fn connect(&mut self) {
@@ -678,6 +705,7 @@ fn step_declares_confirmation(step: &Step) -> bool {
 fn primary_capture_name(step: &Step) -> Option<&str> {
     match step {
         Step::BleRead(s) => Some(&s.capture_as),
+        Step::BlePeripheralName(s) => Some(&s.capture_as),
         Step::BleNotify(s) => s.capture_as.as_deref(),
         Step::BleAwaitUntil(s) => s.capture_as.as_deref(),
         _ => None,
@@ -733,6 +761,23 @@ fn run_step(ctx: &mut WalkCtx<'_>, step: &Step, here: &str) -> Result<(), WalkEr
                 .ok_or_else(|| err(format!("decode as {} failed", s.encoding.as_token())))?;
             ctx.scope.insert(s.capture_as.clone(), value);
             ctx.encodings.insert(s.capture_as.clone(), s.encoding);
+            Ok(())
+        }
+        Step::BlePeripheralName(s) => {
+            let raw = ctx
+                .responder
+                .peripheral_name()
+                .map_err(|e| err(e.to_string()))?;
+            // §11.4b: UTF-8 with any NUL terminator removed; a name that is
+            // empty after the trim is unavailable and fails like an unserved
+            // one.
+            let name = eval::decode_bytes(raw.as_bytes(), Encoding::Utf8Cstring)
+                .ok_or_else(|| err("peripheral name is not valid UTF-8".into()))?;
+            if name.is_empty() {
+                return Err(err("peripheral name unavailable".into()));
+            }
+            ctx.scope.insert(s.capture_as.clone(), name);
+            ctx.encodings.insert(s.capture_as.clone(), Encoding::Utf8);
             Ok(())
         }
         Step::BleWrite(s) => {

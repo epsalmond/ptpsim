@@ -559,9 +559,13 @@ families:
                 gatt: connectedDeviceBleProtocolVersion
                 value: { literal: "0200" }
                 tolerant: true
-            - bleRead: { gatt: gapDeviceName, encoding: utf8-cstring, captureAs: cameraName }
-            # GAP-name completion starts this idempotent second name write while
-            # the app's read queue continues.
+            # CoreBluetooth filters the GAP service (0x1800) from discovery, so
+            # the reference app's 0x2A00 Device Name read can never succeed on
+            # iOS (#403, hardware-proven 2026-07-24). Capture the platform
+            # peripheral name instead; it carries the same value.
+            - blePeripheralName: { captureAs: cameraName }
+            # Name-capture completion starts this idempotent second name write
+            # while the app's read queue continues.
             - bleWrite:
                 gatt: deviceNameString
                 value: { runtime: terminalName, encoding: utf8, transform: { appendNul: {} } }

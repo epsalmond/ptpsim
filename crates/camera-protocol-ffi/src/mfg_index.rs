@@ -391,6 +391,15 @@ pub enum Step {
         transform: Vec<Transform>,
         opts: StepOptions,
     },
+    /// The connected peripheral's platform name (§11.4b): `CBPeripheral.name`
+    /// on CoreBluetooth, where the GAP service is filtered from discovery and
+    /// a GATT 0x2A00 read cannot succeed; a GATT read on stacks that expose
+    /// it. Binds a UTF-8 string with any NUL terminator removed; an
+    /// unavailable name fails the step rather than binding an empty string.
+    BlePeripheralName {
+        capture_as: String,
+        opts: StepOptions,
+    },
     /// CCCD-enable only. Success on descriptor-write ack — no notification
     /// payload is waited for. Use for pair-finalization rounds where the
     /// camera advances on the CCCD write itself.
@@ -970,6 +979,10 @@ impl TryFrom<&ix::Step> for Step {
                 encoding: inner.encoding.as_token().to_string(),
                 capture_as: inner.capture_as.clone(),
                 transform: transforms(&inner.transform),
+                opts: (&inner.opts).into(),
+            },
+            ix::Step::BlePeripheralName(inner) => Step::BlePeripheralName {
+                capture_as: inner.capture_as.clone(),
                 opts: (&inner.opts).into(),
             },
             ix::Step::BleWrite(inner) => Step::BleWrite {

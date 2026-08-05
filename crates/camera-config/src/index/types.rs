@@ -261,6 +261,7 @@ pub enum Step {
     BleRequestMtu(BleRequestMtuStep),
     BleDiscoverServices(BleDiscoverServicesStep),
     BleRead(BleReadStep),
+    BlePeripheralName(BlePeripheralNameStep),
     BleWrite(BleWriteStep),
     BleSubscribe(BleSubscribeStep),
     BleNotify(BleNotifyStep),
@@ -290,6 +291,7 @@ impl Step {
             Step::BleRequestMtu(_) => "bleRequestMtu",
             Step::BleDiscoverServices(_) => "bleDiscoverServices",
             Step::BleRead(_) => "bleRead",
+            Step::BlePeripheralName(_) => "blePeripheralName",
             Step::BleWrite(_) => "bleWrite",
             Step::BleSubscribe(_) => "bleSubscribe",
             Step::BleNotify(_) => "bleNotify",
@@ -315,6 +317,7 @@ impl Step {
             Step::BleRequestMtu(s) => s.opts.clone(),
             Step::BleDiscoverServices(s) => s.opts.clone(),
             Step::BleRead(s) => s.opts.clone(),
+            Step::BlePeripheralName(s) => s.opts.clone(),
             Step::BleWrite(s) => s.opts.clone(),
             Step::BleSubscribe(s) => s.opts.clone(),
             Step::BleNotify(s) => s.opts.clone(),
@@ -425,6 +428,24 @@ pub struct BleReadStep {
     /// (§11.13 capture pipeline). Empty = decode the raw payload.
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
     pub transform: Vec<Transform>,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `blePeripheralName: { captureAs: cameraName }` captures the connected
+/// peripheral's platform name (§11.4b). CoreBluetooth filters the GAP service
+/// (0x1800) from discovery, so a GATT read of the Device Name characteristic
+/// (0x2A00) deterministically fails on iOS; the same value is only available
+/// as `CBPeripheral.name`. Hosts with GAP access (Android) may satisfy this
+/// with the GATT read. The name binds into scope as a UTF-8 string with any
+/// NUL terminator removed; an unavailable name fails the step (tolerant-aware
+/// as usual), never binds an empty string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlePeripheralNameStep {
+    /// Scope slot that receives the peripheral name.
+    #[serde(alias = "capture_as")]
+    pub capture_as: String,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }
