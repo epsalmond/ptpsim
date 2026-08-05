@@ -1533,6 +1533,51 @@ models:
 }
 
 // ---------------------------------------------------------------------------
+// blePeripheralName platform-name capture (#403)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn peripheral_name_verb_parses() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {}
+      advert: { manufacturerCompanyId: 1 }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - { id: camera.test.setup, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 } }
+          steps:
+            - bleConnect: {}
+            - blePeripheralName: { captureAs: cameraName, tolerant: true }
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("peripheral-name verb loads");
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
+    match &steps[1] {
+        Step::BlePeripheralName(s) => {
+            assert_eq!(s.capture_as, "cameraName");
+            assert!(s.opts.tolerant);
+        }
+        other => panic!("expected blePeripheralName, got {other:?}"),
+    }
+    assert_eq!(steps[1].verb_name(), "blePeripheralName");
+}
+
+// ---------------------------------------------------------------------------
 // §11.14 advert predicate model (multivendor pass)
 // ---------------------------------------------------------------------------
 

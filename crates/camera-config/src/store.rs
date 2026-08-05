@@ -568,6 +568,9 @@ fn collect_step_scope_outputs(steps: &[Step], outputs: &mut BTreeSet<String>) {
             Step::BleRead(step) => {
                 outputs.insert(step.capture_as.clone());
             }
+            Step::BlePeripheralName(step) => {
+                outputs.insert(step.capture_as.clone());
+            }
             Step::BleNotify(step) => {
                 if let Some(name) = &step.capture_as {
                     outputs.insert(name.clone());

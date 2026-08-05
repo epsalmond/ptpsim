@@ -775,6 +775,13 @@ fn xa7_registration_uses_legacy_app_queue_and_timing() {
         },
         other => panic!("expected terminal-name write, got {other:?}"),
     }
+    // The camera-name capture rides the platform peripheral-name surface:
+    // CoreBluetooth filters the GAP service, so a 0x2A00 read cannot succeed
+    // on iOS (#403).
+    assert!(matches!(
+        &plan.steps[7],
+        Step::BlePeripheralName { capture_as, .. } if capture_as == "cameraName"
+    ));
     assert!(matches!(
         &plan.steps[28],
         Step::BleRead { encoding, .. } if encoding == "u16-le"
@@ -2472,6 +2479,57 @@ models:
         other => panic!("expected BleRequestMtu, got {other:?}"),
     }
     assert!(matches!(&plan.steps[2], Step::BleDiscoverServices { .. }));
+}
+
+// ---------------------------------------------------------------------------
+// blePeripheralName crosses the seam (#403)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn peripheral_name_surfaces_through_ffi() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { c: "00002A25-0000-1000-8000-00805F9B34FB" }
+      advert: { manufacturerCompanyId: 1 }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.setup
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
+          steps:
+            - bleConnect: {}
+            - blePeripheralName: { captureAs: cameraName }
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let s = ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".to_string(),
+            value: tm1_body(),
+        }],
+    )
+    .expect("synthetic index loads");
+    let plan = s
+        .establishment("tm1".into(), "ble".into(), vec![])
+        .expect("plan present");
+    match &plan.steps[1] {
+        Step::BlePeripheralName { capture_as, .. } => {
+            assert_eq!(capture_as, "cameraName");
+        }
+        other => panic!("expected BlePeripheralName, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

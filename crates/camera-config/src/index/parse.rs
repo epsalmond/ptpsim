@@ -376,7 +376,8 @@ fn resolve_gatt_names_in_steps(
             | "bleDelay"
             | "bleAwaitDisconnect"
             | "bleRequestMtu"
-            | "bleDiscoverServices" => {}
+            | "bleDiscoverServices"
+            | "blePeripheralName" => {}
             "bleRead" | "bleWrite" | "bleSubscribe" | "bleNotify" | "bleWriteChunk" => {
                 resolve_gatt_field(body, gatt, &here)?;
                 if verb == "bleWrite" {
@@ -467,7 +468,7 @@ fn resolve_gatt_names_in_steps(
             other => {
                 return Err(ConfigError::Validation {
                     path: here.clone(),
-                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"),
+                    message: format!("unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, blePeripheralName, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"),
                 });
             }
         }
@@ -1404,6 +1405,9 @@ impl<'de> serde::Deserialize<'de> for Step {
             "bleRead" => Ok(Step::BleRead(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleRead", e))?,
             )),
+            "blePeripheralName" => Ok(Step::BlePeripheralName(
+                serde_yaml::from_value(body).map_err(|e| dec_err("blePeripheralName", e))?,
+            )),
             "bleWrite" => Ok(Step::BleWrite(
                 serde_yaml::from_value(body).map_err(|e| dec_err("bleWrite", e))?,
             )),
@@ -1442,7 +1446,7 @@ impl<'de> serde::Deserialize<'de> for Step {
                 ))
             }
             other => Err(D::Error::custom(format!(
-                "unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"
+                "unknown step verb '{other}' (allowlist: bleConnect, bleDelay, bleAwaitDisconnect, bleRequestMtu, bleDiscoverServices, bleRead, blePeripheralName, bleWrite, bleSubscribe, bleNotify, bleAwaitUntil, bleWriteChunk, acquire, acquireFirmware, if, retry, nikonLssAuthenticate, nikonLssReadConnectionConfiguration)"
             ))),
         }
     }

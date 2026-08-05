@@ -109,6 +109,11 @@ pub trait BleExecutorTransport: Send + Sync {
     /// auto-discover during connect).
     async fn ensure_services_discovered(&self) -> Result<(), TransportError>;
     async fn read(&self, characteristic: String) -> Result<Vec<u8>, TransportError>;
+    /// The bound peripheral's platform name (§11.4b): `CBPeripheral.name` on
+    /// stacks that filter the GAP service from discovery (CoreBluetooth),
+    /// a GATT 0x2A00 read elsewhere. Host-side, never dispatched by the
+    /// executor as a characteristic read.
+    async fn peripheral_name(&self) -> Result<String, TransportError>;
     async fn write(&self, characteristic: String, value: Vec<u8>) -> Result<(), TransportError>;
     /// Atomically fence the already-buffered prefix for
     /// `notification_characteristic` immediately before issuing the write.
@@ -1454,6 +1459,19 @@ async fn run_step_once(
             ctx.encodings.insert(s.capture_as.clone(), s.encoding);
             Ok(None)
         }
+        Step::BlePeripheralName(s) => {
+            let name = deadline(
+                ctx.transport,
+                DEFAULT_OP_TIMEOUT_MS,
+                "peripheralName",
+                async { ctx.transport.peripheral_name().await },
+            )
+            .await
+            .map_err(op_err)?;
+            ctx.scope.insert(s.capture_as.clone(), name);
+            ctx.encodings.insert(s.capture_as.clone(), Encoding::Utf8);
+            Ok(None)
+        }
         Step::BleWrite(s) => {
             let bytes = resolve_value(ctx, &s.value).map_err(err)?;
             deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "write", async {
@@ -2217,6 +2235,7 @@ async fn deadline<T>(
 fn primary_capture_name(step: &Step) -> Option<&str> {
     match step {
         Step::BleRead(s) => Some(&s.capture_as),
+        Step::BlePeripheralName(s) => Some(&s.capture_as),
         Step::BleNotify(s) => s.capture_as.as_deref(),
         Step::BleAwaitUntil(s) => s.capture_as.as_deref(),
         _ => None,
@@ -2422,8 +2441,8 @@ mod tests {
     use super::*;
     use camera_config::index::{
         AcquireFirmwareStep, AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleDelayStep,
-        BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate,
-        RetryFailureKind, RetryStep, StepConfirmation, StepOptions,
+        BlePeripheralNameStep, BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep,
+        NotifyCapture, Predicate, RetryFailureKind, RetryStep, StepConfirmation, StepOptions,
     };
     use std::collections::VecDeque;
     use std::future::Future;
@@ -2497,6 +2516,9 @@ mod tests {
         async fn read(&self, _characteristic: String) -> Result<Vec<u8>, TransportError> {
             let io = self.reads.lock().unwrap().pop_front();
             self.play(io).await
+        }
+        async fn peripheral_name(&self) -> Result<String, TransportError> {
+            Ok("TEST-PERIPHERAL".to_string())
         }
         async fn write(
             &self,
@@ -3529,6 +3551,24 @@ mod tests {
         let err = block_on(walk_plan(&mut ctx, steps)).expect_err("negotiated 158 < 517");
         assert_eq!(err.kind, ExecutorStepFailureKind::Other);
         assert!(err.message.contains("negotiated MTU 158"));
+    }
+
+    #[test]
+    fn peripheral_name_binds_scope_from_the_platform_surface() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BlePeripheralName(BlePeripheralNameStep {
+            capture_as: "cameraName".into(),
+            opts: StepOptions::default(),
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("mock transport serves a name");
+        assert_eq!(
+            ctx.scope.get("cameraName").map(String::as_str),
+            Some("TEST-PERIPHERAL")
+        );
     }
 
     #[test]

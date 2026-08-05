@@ -448,11 +448,13 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 
 - `BleExecutorTransport` (a `with_foreign` async trait) — raw I/O only:
   `connect` / `awaitDisconnect` / `requestMtu` / `ensureServicesDiscovered` /
-  `read` / `write` / `writeWithNotificationFence` / `subscribe` /
+  `read` / `peripheralName` / `write` / `writeWithNotificationFence` / `subscribe` /
   `nextNotification` / `sleep`.
   `awaitDisconnect` resolves when the connected peer drops the link and may
-  pend indefinitely — the executor races it against the step's manifest
-  `timeoutMs`.
+  pend indefinitely; the executor races it against the step's manifest
+  `timeoutMs`. `peripheralName` returns the bound peripheral's platform name
+  (`CBPeripheral.name` on CoreBluetooth, which hides the GAP service; a GATT
+  0x2A00 read is fine on stacks that expose it).
 - `StepObserver` — receives the `StepReport` outcome stream: `Started` plus
   exactly one terminal (`Succeeded` / `Tolerated` / `Failed`) per step at every
   nesting level, with a `stepPath` position path (`steps[3].bleWrite`,
@@ -720,6 +722,7 @@ called out above.
 | `bleRequestMtu` | request ATT MTU `mtu` before GATT traffic. If your platform has no request API (CoreBluetooth negotiates on its own), treat as a checkpoint: succeed when the negotiated MTU ≥ `mtu`. |
 | `bleDiscoverServices` | explicit service-discovery state transition. If your stack auto-discovers, complete when discovery has completed — don't re-trigger. Discovery timeout is your policy. |
 | `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13 — empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
+| `blePeripheralName` | store the connected peripheral's platform name in scope under `captureAs` (UTF-8). Use `CBPeripheral.name` on CoreBluetooth, which filters the GAP service from discovery, so a GATT 0x2A00 read cannot succeed there; a 0x2A00 read is fine on stacks that expose it. |
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. Optional `notificationFence` names a subscribed GATT characteristic whose buffered prefix the transport atomically fences immediately before issuing this write; notifications caused by the write remain consumable. |
 | `bleWriteChunk` | frame and write one manifest-declared window from a runtime blob, using the captured chunk index, frame fields, size, and sentinel index. |
 | `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate — CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |

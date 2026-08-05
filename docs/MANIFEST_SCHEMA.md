@@ -105,6 +105,20 @@ name, and no Fuji manufacturer data; it captures the local-name short serial as
 the saved-camera identity. The manufacturer-data form is pairing-mode discovery,
 not awake readiness. See issue #264 for the wire observation behind this split.
 
+### 11.4b `blePeripheralName`: platform peripheral-name capture
+
+CoreBluetooth filters the GAP (0x1800) and GATT (0x1801) services from
+discovery. A GATT read of the Device Name characteristic (0x2A00) therefore
+cannot succeed on iOS, regardless of camera behavior; the same value is only
+available as `CBPeripheral.name`. A step that needs the peripheral's name
+must not be authored as a 0x2A00 `bleRead`.
+
+- `blePeripheralName: { captureAs: <slot> }` captures the connected
+  peripheral's platform name into scope as a UTF-8 string. Hosts without GAP
+  access use the platform peripheral-name property; hosts with GAP access
+  may satisfy the step with the 0x2A00 GATT read. The step implies no GATT
+  traffic on checkpoint platforms and takes the usual `StepOptions`.
+
 ### 11.5 `refine_establishment` semantics
 
 The FFI validates the plan handle and returns either "no change" or ONLY the
