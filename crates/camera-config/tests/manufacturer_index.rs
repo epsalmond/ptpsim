@@ -165,6 +165,46 @@ fn xa7_legacy_app_mtu_checkpoint_is_tolerant() {
     }
 }
 
+// The X-A7 starts its AP on the launch write but confirms state only by
+// read: no apState indication arrived within 20s on hardware, twice
+// (2026-07-24, #412). The establish-wifi-ap await polls the readable
+// characteristic; a pre-launch 0 is the normal not-yet state, so no failWhen.
+#[test]
+fn xa7_legacy_app_ap_start_confirms_by_read_poll() {
+    let idx = real_index();
+    let xa7 = idx
+        .models
+        .iter()
+        .find(|m| m.id == "xa7")
+        .expect("xa7 is in the index");
+    let ble = xa7.ble.as_ref().expect("xa7 carries the family ble block");
+    let establishment = ble
+        .establishment("legacy-app-establish-wifi-ap")
+        .unwrap();
+    let awaits: Vec<_> = establishment
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::BleAwaitUntil(inner) => Some(inner),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(awaits.len(), 1, "one await in the AP-launch walk");
+    assert!(
+        matches!(awaits[0].source, AwaitSource::Read { .. }),
+        "AP-start confirmation polls the readable apState characteristic (#412)"
+    );
+    assert!(
+        awaits[0].fail_when.is_none(),
+        "a pre-launch 0 is the normal not-yet state, not a refusal (#412)"
+    );
+    assert_eq!(
+        establishment.steps.len(),
+        6,
+        "the read-poll swap is one step for one step; the executor span still covers the walk"
+    );
+}
+
 #[test]
 fn reconnect_routes_fail_closed_at_index_load() {
     let original = data("fuji/index.yaml");

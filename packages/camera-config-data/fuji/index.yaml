@@ -622,20 +622,25 @@ families:
           steps:
             - bleConnect: {}
             - bleDiscoverServices: {}
-            # No pre-read baseline and no reference app 0x8000 state family: Camera
-            # Remote subscribes, writes launch, then accepts u16-le state 1.
+            # legacy manufacturer app subscribes before the launch write; the CCCD write
+            # is accepted on hardware. No pre-read baseline and no reference app 0x8000
+            # state family.
             - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
             - bleWrite:
                 gatt: functionLaunchRequest
                 value: { runtime: launchMode, encoding: u16-le }
-                notificationFence: apState
+            # The X-A7 (fw 02.30-era) starts its AP on the launch write but
+            # confirms state only by read: no apState indication arrived within
+            # 20s on hardware, twice (2026-07-24, #412). Poll the
+            # characteristic. A pre-launch 0 is the normal not-yet state, not
+            # a refusal, so there is no failWhen.
             - bleAwaitUntil:
-                source: { notify: { gatt: apState, mode: indicate } }
+                source: { read: apState }
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }
                 captureAs: apStateRaw
                 until: { apState: { eq: "1" } }
-                failWhen: { apState: { eq: "0" } }
                 timeoutMs: 20000
+                intervalMs: 1000
             - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
 
       # BLE-native control actions runnable from the resting BLE link without
