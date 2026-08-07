@@ -263,11 +263,17 @@ impl Ctx<'_> {
                 .iter()
                 .any(|capture| capture.source == CaptureSource::PtpU32Array)
             {
-                let values = self.poll_collection(code).map_err(err)?;
+                let Some(values) = self.poll_collection(code, step.tolerant).map_err(err)? else {
+                    // Tolerated non-OK advisory read: skip, capture nothing.
+                    return Ok(());
+                };
                 self.capture_collection(&step.captures, &values)
                     .map_err(err)?;
             } else {
-                let v = self.poll_prop(code).map_err(err)?;
+                let Some(v) = self.poll_prop(code, step.tolerant).map_err(err)? else {
+                    // Tolerated non-OK advisory read: skip, capture nothing.
+                    return Ok(());
+                };
                 self.observed.set(code, v);
                 self.capture_prop_value(&step.captures, v).map_err(err)?;
             }
@@ -275,7 +281,9 @@ impl Ctx<'_> {
         } else if let Some(p) = &step.read_echo {
             // Read, then write the same value back (the live-view 0xdf2a echo).
             let code = parse_hex_code(p).ok_or_else(|| err(format!("bad prop code {p:?}")))?;
-            let v = self.poll_prop(code).map_err(err)?;
+            let Some(v) = self.poll_prop(code, step.tolerant).map_err(err)? else {
+                return Ok(());
+            };
             self.observed.set(code, v);
             self.capture_prop_value(&step.captures, v).map_err(err)?;
             self.set_prop(code, v, step.tolerant).map_err(err)
@@ -499,8 +507,9 @@ impl Ctx<'_> {
     /// GetDevicePropValue for an array-valued property (e.g. `0xd621`, the handle
     /// list) → decode the count-prefixed `u32` array → `Vec<u64>`. The result is
     /// captured into collection scope before `forEach`; a scalar/non-array reply
-    /// is a hard error.
-    fn poll_collection(&mut self, code: u16) -> Result<Vec<u64>, String> {
+    /// is a hard error. A non-OK response with `tolerant` returns `Ok(None)`
+    /// (skipped advisory read); decode failures stay fatal (#407).
+    fn poll_collection(&mut self, code: u16, tolerant: bool) -> Result<Option<Vec<u64>>, String> {
         let tid = self.next_tid();
         let req = OperationRequest {
             data_phase_info: 1,
@@ -519,8 +528,9 @@ impl Ctx<'_> {
                 if decoded.is_err() {
                     self.last_failure_class = Some(RetryFailureClass::Decode);
                 }
-                decoded.map(|items| items.into_iter().map(|v| v as u64).collect())
+                decoded.map(|items| Some(items.into_iter().map(|v| v as u64).collect()))
             }
+            _ if tolerant => Ok(None),
             other => Err(format!(
                 "GetDevicePropValue({code:#06x}) -> {}",
                 describe_reply(&other)
@@ -550,7 +560,10 @@ impl Ctx<'_> {
                 let code =
                     parse_hex_code(prop).ok_or_else(|| err(format!("bad source prop {prop:?}")))?;
                 for iter in 1..=MAX_AWAIT_ITERS {
-                    let v = self.poll_prop(code).map_err(err)?;
+                    let v = self
+                        .poll_prop(code, false)
+                        .map_err(err)?
+                        .expect("strict poll returns Err, never a skip");
                     self.observed.set(code, v);
                     if aw.until.eval(&self.observed) {
                         self.await_iterations.push(iter);
@@ -591,7 +604,10 @@ impl Ctx<'_> {
                     let pc = parse_hex_code(tp)
                         .ok_or_else(|| err(format!("bad thenPoll prop {tp:?}")))?;
                     for iter in 1..=MAX_AWAIT_ITERS {
-                        let v = self.poll_prop(pc).map_err(err)?;
+                        let v = self
+                            .poll_prop(pc, false)
+                            .map_err(err)?
+                            .expect("strict poll returns Err, never a skip");
                         self.observed.set(pc, v);
                         if aw.until.eval(&self.observed) {
                             self.await_iterations.push(iter);
@@ -687,7 +703,9 @@ impl Ctx<'_> {
     }
 
     /// GetDevicePropValue → decode at the property's datatype width → i64.
-    fn poll_prop(&mut self, code: u16) -> Result<i64, String> {
+    /// A non-OK response with `tolerant` returns `Ok(None)` (skipped advisory
+    /// read); transport and decode failures stay fatal (#407).
+    fn poll_prop(&mut self, code: u16, tolerant: bool) -> Result<Option<i64>, String> {
         let dt = self.datatype(code);
         let tid = self.next_tid();
         let req = OperationRequest {
@@ -765,8 +783,9 @@ impl Ctx<'_> {
                 if decoded.is_err() {
                     self.last_failure_class = Some(RetryFailureClass::Decode);
                 }
-                decoded
+                decoded.map(Some)
             }
+            _ if tolerant => Ok(None),
             other => Err(format!(
                 "GetDevicePropValue({code:#06x}) -> {}",
                 describe_reply(&other)
@@ -1407,8 +1426,8 @@ connections:
     modes: [image-transfer]
 operations:
   "0x1002": { name: OpenSession, connections: [wireless-tether] }
-  "0x1007": { name: GetObjectHandles, modes: [image-transfer], connections: [wireless-tether] }
-  "0x1008": { name: GetObjectInfo, modes: [image-transfer], connections: [wireless-tether] }
+  "0x1007": { name: GetObjectHandles, connections: [wireless-tether] }
+  "0x1008": { name: GetObjectInfo, connections: [wireless-tether] }
 properties: {}
 "#;
         let (mut engine, _) = engine_with_file(manifest, b"jpeg");
@@ -1424,7 +1443,7 @@ properties: {}
         );
         assert!(matches!(reply, Reply::Response(response) if response.code == resp::OK));
 
-        let outcome = walk_ptpip(
+        let outcome = walk_ptpip_in(
             &mut engine,
             &[
                 Step {
@@ -1454,6 +1473,7 @@ properties: {}
                 },
             ],
             &BTreeMap::new(),
+            Some("wireless-tether"),
         )
         .expect("sendOp collection capture succeeds");
 
@@ -1668,6 +1688,43 @@ properties: {}
             err.message.contains("if slot 'missingObjectHead' unbound"),
             "unexpected error: {err}"
         );
+    }
+
+    /// #407: a tolerant `getProp` skips a non-OK advisory read instead of
+    /// aborting the walk; a strict read still fails.
+    #[test]
+    fn tolerant_get_prop_skips_non_ok_reads() {
+        let mut e = engine(MANIFEST);
+        let steps = vec![
+            Step {
+                get_prop: Some("0x4321".into()), // undeclared → DevicePropNotSupported
+                tolerant: true,
+                ..Default::default()
+            },
+            Step {
+                get_prop: Some("0xdf00".into()),
+                ..Default::default()
+            },
+        ];
+        let out = walk_ptpip(&mut e, &steps, &BTreeMap::new()).expect("tolerant read skips");
+        assert_eq!(out.observed.get(0x4321), None, "skipped read binds nothing");
+        assert_eq!(out.observed.get(0xdf00), Some(0));
+        assert_eq!(out.steps_run, 2);
+    }
+
+    #[test]
+    fn strict_get_prop_aborts_on_non_ok_reads() {
+        let mut e = engine(MANIFEST);
+        let steps = vec![Step {
+            get_prop: Some("0x4321".into()),
+            ..Default::default()
+        }];
+        let err = walk_ptpip(&mut e, &steps, &BTreeMap::new()).unwrap_err();
+        assert!(
+            err.message.contains("GetDevicePropValue(0x4321)"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(err.response_code, Some(resp::DEVICE_PROP_NOT_SUPPORTED));
     }
 
     #[test]

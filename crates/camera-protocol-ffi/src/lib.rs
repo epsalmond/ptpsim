@@ -1167,7 +1167,7 @@ pub struct PropertyInfo {
     pub name: String,
     pub ptp_name: Option<String>,
     pub ptype: Option<String>,
-    pub access: Option<String>,
+    pub access: Option<PropertyAccess>,
     pub initial_value: Option<DescriptorValue>,
     pub kind: PropertyKind,
     pub observed_scopes: Vec<ObservedScopeInfo>,
@@ -1215,6 +1215,23 @@ impl From<cc::PropertyKind> for PropertyKind {
             cc::PropertyKind::Setting => Self::Setting,
             cc::PropertyKind::Scaffold => Self::Scaffold,
             cc::PropertyKind::CatalogOnly => Self::CatalogOnly,
+        }
+    }
+}
+
+/// Declared PTP access for a property (#407). Closed set; the simulator
+/// rejects writes unless this is `ReadWrite`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PropertyAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+impl From<cc::PropertyAccess> for PropertyAccess {
+    fn from(access: cc::PropertyAccess) -> Self {
+        match access {
+            cc::PropertyAccess::ReadOnly => Self::ReadOnly,
+            cc::PropertyAccess::ReadWrite => Self::ReadWrite,
         }
     }
 }
@@ -3605,7 +3622,7 @@ impl ConfigStore {
                     name: p.name.clone(),
                     ptp_name: p.ptp_name.clone(),
                     ptype: p.ptype.clone(),
-                    access: p.access.clone(),
+                    access: p.access.map(Into::into),
                     initial_value: p.initial_value.as_ref().map(DescriptorValue::from),
                     kind: p.kind.into(),
                     observed_scopes: p.observed_scopes.iter().map(Into::into).collect(),

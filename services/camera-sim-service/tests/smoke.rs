@@ -1533,19 +1533,29 @@ fn occurrence_windows_cross_reconnects_and_fault_trace_is_structured() {
             other => panic!("expected response, got {other:?}"),
         };
         assert_eq!(code, if occurrence == 2 { 0x2019 } else { 0x2001 });
+        if occurrence != 2 {
+            // The engine refuses a second open while a session is active
+            // (#407), so release the session before the next connection opens
+            // one. Occurrence 2's fault short-circuits before the session
+            // opens, leaving nothing to close.
+            write_frame(&mut stream, &op(0x1003, 2, vec![]));
+            read_ok(&mut stream);
+        }
     }
     assert_eq!(delivered[0], delivered[1]);
     assert_eq!(delivered[1], delivered[3]);
 
     let mut reopened = connect_ptpip(command, "close-open");
-    write_frame(&mut reopened, &op(0x1003, 2, vec![]));
+    write_frame(&mut reopened, &op(0x1002, 2, vec![1]));
     read_ok(&mut reopened);
-    write_frame(&mut reopened, &op(0x1002, 3, vec![2]));
+    write_frame(&mut reopened, &op(0x1003, 3, vec![]));
+    read_ok(&mut reopened);
+    write_frame(&mut reopened, &op(0x1002, 4, vec![1]));
     read_ok(&mut reopened);
 
     let snapshot: serde_json::Value =
         serde_json::from_str(http_body(&http_get(control, "/faults"))).unwrap();
-    assert_eq!(snapshot["faults"][0]["seen"], 5);
+    assert_eq!(snapshot["faults"][0]["seen"], 6);
     assert_eq!(snapshot["faults"][0]["applied"], 1);
     assert_eq!(snapshot["faults"][0]["exhausted"], true);
 
@@ -1582,6 +1592,9 @@ fn deleting_an_unapplied_fault_restores_reference_bytes_and_emits_no_fault_trace
     let mut reference = connect_ptpip(command, "reference");
     write_frame(&mut reference, &op(0x1002, 1, vec![1]));
     let reference_bytes = read_frame(&mut reference);
+    // Free the shared session so the next connection can open one (#407).
+    write_frame(&mut reference, &op(0x1003, 2, vec![]));
+    read_ok(&mut reference);
 
     let response = http_post_json(
         control,
@@ -2863,6 +2876,10 @@ connections:
           - { openChannel: event }
           - { openChannel: liveView }
           - { sendOp: "0x101c" }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+    phase: liveView
 operations:
   "0x1002": { name: OpenSession, connections: [app] }
   "0x1003": { name: CloseSession, connections: [app] }
@@ -2936,7 +2953,7 @@ properties:
         "session close must restore live-view-port refusal"
     );
 
-    write_frame(&mut command, &op(0x1002, 5, vec![2]));
+    write_frame(&mut command, &op(0x1002, 5, vec![1]));
     read_ok(&mut command);
     assert!(
         TcpStream::connect(event_addr).is_err(),
@@ -3000,6 +3017,10 @@ connections:
           - { sendOp: "0x101c" }
           - { openChannel: event }
           - { openChannel: liveView }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+    phase: liveView
 operations:
   "0x1002": { name: OpenSession, connections: [app] }
   "0x101c": { name: InitiateOpenCapture, connections: [app] }

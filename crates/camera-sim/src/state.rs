@@ -2,16 +2,16 @@
 //! current workflow phase. Everything here is generic; what the values *mean*
 //! comes from the manifest.
 
-use camera_config::{CameraManifest, DescriptorValue};
+use camera_config::{CameraManifest, DescriptorValue, PropertyAccess};
 use ptp_core::codes::datatype_code as dt;
 use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-/// Fuji function-mode selector properties.
+/// Fuji function-mode major selector property. Unreferenced by the engine;
+/// kept for the dead-surface audit (#410). The function-mode minor selector
+/// that drives workflow phase is manifest data now (modes.*.detect + phase,
+/// #407), not an engine constant.
 pub const PROP_DF00: u16 = 0xdf00;
-pub const PROP_DF01: u16 = 0xdf01;
-pub const DF01_IMAGE_IMPORT: u32 = 20;
-pub const DF01_LIVE_VIEW: u32 = 22;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -309,9 +309,9 @@ pub fn build_prop_desc(
         .get(&code)
         .cloned()
         .unwrap_or_else(|| default_prop_value(datatype));
-    let get_set = match prop.access.as_deref() {
-        Some("readWrite") => 1,
-        _ => 0,
+    let get_set = match prop.access {
+        Some(PropertyAccess::ReadWrite) => 1,
+        Some(PropertyAccess::ReadOnly) | None => 0,
     };
     let form = match &prop.descriptor {
         Some(d) if d.form == "enum" => PropForm::Enum(

@@ -2634,7 +2634,7 @@ fn property_catalog_enumerates_through_ffi() {
     assert_eq!(aperture.name, "aperture");
     assert_eq!(aperture.ptp_name.as_deref(), Some("FNumber"));
     assert_eq!(aperture.ptype.as_deref(), Some("u16"));
-    assert_eq!(aperture.access.as_deref(), Some("readWrite"));
+    assert_eq!(aperture.access, Some(PropertyAccess::ReadWrite));
     assert_eq!(aperture.kind, PropertyKind::Setting);
     assert!(aperture
         .evidence
@@ -2653,7 +2653,10 @@ fn property_catalog_enumerates_through_ffi() {
         .expect("PCSS live-view selector in the catalog");
     assert_eq!(pcss_live_view_selector.name, "pcssLiveViewSelector");
     assert_eq!(pcss_live_view_selector.ptype.as_deref(), Some("u16"));
-    assert_eq!(pcss_live_view_selector.access.as_deref(), Some("readWrite"));
+    assert_eq!(
+        pcss_live_view_selector.access,
+        Some(PropertyAccess::ReadWrite)
+    );
     // The newly-declared 0xD212 member is enumerable.
     assert!(cat
         .iter()

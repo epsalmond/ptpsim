@@ -49,6 +49,13 @@ camera:
   manufacturer: FUJIFILM
   model: GFX100 II
   firmware: "2.30"
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+    phase: liveView
+  image-transfer:
+    detect: { prop: "0xdf01", eq: 20 }
+    phase: imageImport
 operations:
   "0x1002": { name: OpenSession, owner: standard-ptp }
   "0x9054": { name: GetCurrentObjectMeta, owner: fuji-vendor, workflows: [imageImport] }
@@ -388,16 +395,30 @@ properties:
     }
 
     #[test]
-    fn state_overlay_rejects_signed_property_types_explicitly() {
+    fn state_overlay_accepts_signed_property_types() {
         let (mut e, root) = empty_engine(SIGNED_PROP_MANIFEST);
         let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
             "props": { "0x5010": -333 }
         }))
         .unwrap();
 
+        let applied = e.apply_state_overlay(&overlay).unwrap();
+        assert_eq!(applied.props, 1);
+        assert_eq!(e.state().props.get(&0x5010), Some(&PropValue::I16(-333)));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn state_overlay_rejects_out_of_range_signed_values() {
+        let (mut e, root) = empty_engine(SIGNED_PROP_MANIFEST);
+        let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
+            "props": { "0x5010": -40000 }
+        }))
+        .unwrap();
+
         let err = e.apply_state_overlay(&overlay).unwrap_err();
         assert!(
-            err.contains("signed property type 'i16' is not supported"),
+            err.contains("value -40000 is outside -32768..=32767"),
             "err: {err}"
         );
         assert!(!e.state().props.contains_key(&0x5010));
