@@ -510,6 +510,23 @@ pub enum ComputedValue {
     ObjectHandles,
 }
 
+/// A simulator workflow phase a detected mode corresponds to (#407). Closed
+/// set validated at manifest load, consistent with [`OperationHandler`] and
+/// [`PropertyAccess`]: a typo fails `from_yaml` instead of aborting engine
+/// construction. Transport states (`disconnected`, `closed`) are not workflow
+/// phases a mode can declare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkflowPhase {
+    #[serde(rename = "sessionOpen")]
+    SessionOpen,
+    #[serde(rename = "imageImport")]
+    ImageImport,
+    #[serde(rename = "liveView")]
+    LiveView,
+    #[serde(rename = "streaming")]
+    Streaming,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PropertyValueRow {
@@ -1027,9 +1044,9 @@ pub struct Mode {
     /// Simulator workflow phase this mode corresponds to (e.g. `imageImport`,
     /// `liveView`). When mode detection selects this mode, the engine enters
     /// the declared phase. Absent = detection changes the mode but not the
-    /// phase.
+    /// phase. Closed set; an unknown value is a manifest load error (#407).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<String>,
+    pub phase: Option<WorkflowPhase>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
 }

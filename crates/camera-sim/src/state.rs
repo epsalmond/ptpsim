@@ -2,7 +2,7 @@
 //! current workflow phase. Everything here is generic; what the values *mean*
 //! comes from the manifest.
 
-use camera_config::{CameraManifest, DescriptorValue, PropertyAccess};
+use camera_config::{CameraManifest, DescriptorValue, PropertyAccess, WorkflowPhase};
 use ptp_core::codes::datatype_code as dt;
 use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -47,6 +47,20 @@ impl Phase {
             "streaming" => Some(Phase::Streaming),
             "closed" => Some(Phase::Closed),
             _ => None,
+        }
+    }
+}
+
+/// The manifest's closed workflow-phase vocabulary maps onto the engine's
+/// runtime phases (#407). Transport-only phases (`Disconnected`,
+/// `QueuedReceive`, `Closed`) have no manifest form.
+impl From<WorkflowPhase> for Phase {
+    fn from(phase: WorkflowPhase) -> Self {
+        match phase {
+            WorkflowPhase::SessionOpen => Phase::SessionOpen,
+            WorkflowPhase::ImageImport => Phase::ImageImport,
+            WorkflowPhase::LiveView => Phase::LiveView,
+            WorkflowPhase::Streaming => Phase::Streaming,
         }
     }
 }

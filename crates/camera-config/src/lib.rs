@@ -67,6 +67,7 @@ pub use model::{
     SocketBindingDescriptor, SocketBindings, SocketRole, Step, StepParam, StepRetry,
     StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
     TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    WorkflowPhase,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -2539,5 +2540,21 @@ properties:
 "#;
         let err = CameraManifest::from_yaml(text).unwrap_err().to_string();
         assert!(err.contains("access"), "err: {err}");
+    }
+
+    #[test]
+    fn unknown_mode_phase_is_a_load_error() {
+        // #455 review: mode phase is a closed set validated at manifest load,
+        // consistent with handler and access — a typo must not load and then
+        // abort engine construction.
+        let text = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+modes:
+  shooting/stills:
+    phase: liveview
+"#;
+        let err = CameraManifest::from_yaml(text).unwrap_err().to_string();
+        assert!(err.contains("phase"), "err: {err}");
     }
 }

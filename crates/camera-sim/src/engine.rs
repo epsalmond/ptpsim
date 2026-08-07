@@ -271,15 +271,6 @@ impl Engine {
     pub const DEFAULT_CONNECTION: &'static str = "app";
 
     pub fn new(manifest: CameraManifest, store: MediaStore) -> Self {
-        // A mode's declared phase must name a real workflow phase; a typo here
-        // would silently strand mode detection, so fail at construction (#407).
-        for (path, mode) in &manifest.modes {
-            if let Some(phase) = &mode.phase {
-                if Phase::from_state_name(phase).is_none() {
-                    panic!("mode '{path}' declares unknown simulator phase '{phase}'");
-                }
-            }
-        }
         let state = CameraState::from_manifest(&manifest);
         let mut gate_sequences = compile_gate_sequences(&manifest);
         gate_sequences.extend(compile_channel_sequences(&manifest));
@@ -312,6 +303,24 @@ impl Engine {
     pub fn bind_connection(&mut self, connection: &str) {
         self.connection.clear();
         self.connection.push_str(connection);
+    }
+
+    /// The owning command transport ended without `CloseSession` (client
+    /// killed, Wi-Fi dropped, the transport-close the manifest itself models):
+    /// a real camera binds the session to its link, so the session state goes
+    /// with the transport (#455 review). Camera state (property values, media)
+    /// outlives the connection; without this, a shared engine wedges on
+    /// `SessionAlreadyOpen` until restart.
+    pub fn transport_lost(&mut self) {
+        self.clear_session();
+    }
+
+    fn clear_session(&mut self) {
+        self.state.reset_gates();
+        self.state.active_mode = None;
+        self.camera_initiated_pre_mode_probe_armed = false;
+        self.state.session_open = false;
+        self.state.phase = Phase::Closed;
     }
 
     /// Whether a manifest-authored auxiliary socket has crossed its causal
@@ -844,12 +853,12 @@ impl Engine {
         let reply = match req.code {
             op::OPEN_SESSION => {
                 // A real camera refuses a second open instead of silently
-                // resetting the session, and the session parameter is fixed
-                // at 1 (#407).
+                // resetting the session (#407). PTP only forbids session id 0;
+                // non-1 ids are accepted absent wire evidence of refusal.
                 if self.state.session_open {
                     return Self::err(tid, resp::SESSION_ALREADY_OPEN);
                 }
-                if p(0) != 1 {
+                if p(0) == 0 {
                     return Self::err(tid, resp::INVALID_PARAMETER);
                 }
                 self.state.reset_gates();
@@ -860,11 +869,7 @@ impl Engine {
                 Self::ok(tid)
             }
             op::CLOSE_SESSION => {
-                self.state.reset_gates();
-                self.state.active_mode = None;
-                self.camera_initiated_pre_mode_probe_armed = false;
-                self.state.session_open = false;
-                self.state.phase = Phase::Closed;
+                self.clear_session();
                 Self::ok(tid)
             }
             op::GET_DEVICE_INFO => Self::data(tid, self.device_info_bytes()),
@@ -1474,20 +1479,25 @@ impl Engine {
         // the engine never branches on a selector property code. Writes that
         // keep the same mode leave the phase alone, so in-session states like
         // Streaming survive them.
+        let declared = |path: Option<&str>| -> Option<Phase> {
+            path.and_then(|path| self.manifest.modes.get(path))
+                .and_then(|mode| mode.phase)
+                .map(Phase::from)
+        };
+        let previous_declared = declared(previous_mode.as_deref());
+        let new_declared = declared(detected.as_deref());
         if !transfer_active {
-            if let Some(phase) = detected
-                .as_deref()
-                .and_then(|path| self.manifest.modes.get(path))
-                .and_then(|mode| mode.phase.as_deref())
-                .and_then(Phase::from_state_name)
-            {
+            if let Some(phase) = new_declared {
                 self.state.phase = phase;
             }
         }
-        // Leaving the import workflow clears bootstrap gate progress. The
-        // former DF01-keyed reset fired on every non-import selector write;
-        // mode-change detection covers the same transitions generically.
-        if self.state.phase != Phase::ImageImport {
+        // Leaving the import workflow clears bootstrap gate progress. Keyed on
+        // the transition out of a mode whose declared phase is imageImport
+        // (#455 review): modes that declare no phase leave `state.phase`
+        // sticky, so a phase-based check would let earned import gates
+        // survive leaving the workflow.
+        if previous_declared == Some(Phase::ImageImport) && new_declared != Some(Phase::ImageImport)
+        {
             self.state.reset_gates();
         }
     }
@@ -3142,8 +3152,9 @@ properties:
         ));
     }
 
-    /// #407: OpenSession validates the session parameter and refuses a second
-    /// open instead of silently resetting the session.
+    /// #407: OpenSession refuses session id 0 and a second open instead of
+    /// silently resetting the session. PTP only forbids id 0; non-1 ids are
+    /// accepted absent wire evidence of refusal (#455 review).
     #[test]
     fn open_session_validates_parameter_and_reentry() {
         let manifest = CameraManifest::from_yaml(
@@ -3156,13 +3167,13 @@ camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
         let mut e = Engine::new(manifest, empty_store());
 
         assert_eq!(
-            response_code_of(e.on_operation(&req(op::OPEN_SESSION, 1, vec![2]), None)),
+            response_code_of(e.on_operation(&req(op::OPEN_SESSION, 1, vec![0]), None)),
             resp::INVALID_PARAMETER
         );
         assert!(!e.state().session_open);
 
         assert!(reply_is_ok(
-            &e.on_operation(&req(op::OPEN_SESSION, 2, vec![1]), None)
+            &e.on_operation(&req(op::OPEN_SESSION, 2, vec![7]), None)
         ));
         assert_eq!(
             response_code_of(e.on_operation(&req(op::OPEN_SESSION, 3, vec![1]), None)),
@@ -3175,6 +3186,91 @@ camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
         assert!(reply_is_ok(
             &e.on_operation(&req(op::OPEN_SESSION, 5, vec![1]), None)
         ));
+    }
+
+    /// #455 review: a command transport that ends without CloseSession takes
+    /// the session with it, so a reconnecting client can open again.
+    #[test]
+    fn transport_lost_clears_the_wedged_session() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+    phase: liveView
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut e);
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0xdf01]),
+            Some(&22u16.to_le_bytes()),
+        );
+        assert_eq!(e.state().phase, Phase::LiveView);
+
+        e.transport_lost();
+        assert!(!e.state().session_open);
+        assert_eq!(e.state().phase, Phase::Closed);
+        assert!(reply_is_ok(
+            &e.on_operation(&req(op::OPEN_SESSION, 3, vec![1]), None)
+        ));
+    }
+
+    /// #455 review: leaving the import workflow through a mode that declares
+    /// no phase still resets the bootstrap gates — `state.phase` is sticky
+    /// there, so keying the reset on the phase alone would skip it.
+    #[test]
+    fn leaving_import_mode_through_a_phaseless_mode_resets_gates() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+modes:
+  image-transfer:
+    detect: { prop: "0xdf01", eq: 20 }
+    phase: imageImport
+  card-reader:
+    detect: { prop: "0xdf01", eq: 23 }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut e);
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0xdf01]),
+            Some(&20u16.to_le_bytes()),
+        );
+        assert_eq!(e.state().phase, Phase::ImageImport);
+        e.state.satisfy_gate("imageImportBootstrap");
+
+        // Enter a mode with no declared phase: the phase stays sticky, but
+        // the import workflow was left, so earned gates reset.
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 3, vec![0xdf01]),
+            Some(&23u16.to_le_bytes()),
+        );
+        assert_eq!(e.state().phase, Phase::ImageImport, "phase is sticky");
+        assert!(!e.state().gate_satisfied("imageImportBootstrap"));
+
+        // Re-entering import does not reset: gates earned inside the
+        // workflow survive.
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0xdf01]),
+            Some(&20u16.to_le_bytes()),
+        );
+        e.state.satisfy_gate("imageImportBootstrap");
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 5, vec![0xdf01]),
+            Some(&20u16.to_le_bytes()),
+        );
+        assert!(e.state().gate_satisfied("imageImportBootstrap"));
     }
 
     /// #407: computed properties are declared by the manifest and served from

@@ -851,12 +851,16 @@ served instead of stored property state:
 
 The manifest names the quantity; the engine holds no per-code special cases.
 
-`Mode.phase` maps a detected mode to a simulator workflow phase (for example
-`imageImport` or `liveView`). When a mode's `detect` predicate selects it on
-a property write, the engine enters the declared phase. The phase applies on
-mode transitions; writes that keep the same mode leave in-session phase state
-(such as streaming) untouched. An unknown phase name fails engine
-construction.
+`Mode.phase` is a closed set (`sessionOpen`, `imageImport`, `liveView`,
+`streaming`) mapping a detected mode to a simulator workflow phase. When a
+mode's `detect` predicate selects it on a property write, the engine enters
+the declared phase. The phase applies on mode transitions; writes that keep
+the same mode leave in-session phase state (such as streaming) untouched. An
+unknown phase value is a manifest load error. Leaving a mode whose declared
+phase is `imageImport` resets the simulator's bootstrap gate progress,
+including transitions into modes that declare no phase. Transport states
+(`disconnected`, `queuedReceive`, `closed`) are not declarable workflow
+phases.
 
 The simulator enforces catalog availability before it dispatches an
 operation: connection, mode, `kind`, and `requires` all resolve first, and a
@@ -870,9 +874,12 @@ operations (`GetDevicePropDesc`, `GetDevicePropValue`,
 `SetDevicePropValue`) skip the mode axis: the property surface is modeled
 per property (`access`, `requiresGate`), and catalog mode rows for those
 standard operations are transport observations, not camera refusals.
-`OpenSession` additionally validates its fixed session parameter (1) and
+`OpenSession` rejects the session id 0 with `InvalidParameter` (PTP forbids
+only zero; non-1 ids are accepted absent wire evidence of refusal) and
 answers `SessionAlreadyOpen` on a second open instead of resetting the
-session.
+session. A camera binds its session to the transport: when the owning command
+connection ends without `CloseSession`, the session state (open flag, phase,
+gates) is cleared so a reconnecting client can open again.
 
 `initialValue` is the property's seed value before any camera read or
 write. A numeric-typed property takes an integer; a `type: str` property takes

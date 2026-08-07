@@ -530,7 +530,10 @@ impl Ctx<'_> {
                 }
                 decoded.map(|items| Some(items.into_iter().map(|v| v as u64).collect()))
             }
-            _ if tolerant => Ok(None),
+            // A coded non-OK response is the advisory skip; `Close` and
+            // `NoResponse` have no response code and stay fatal even when
+            // tolerant (check_ok precedent, #455 review).
+            other if tolerant && response_code(&other).is_some() => Ok(None),
             other => Err(format!(
                 "GetDevicePropValue({code:#06x}) -> {}",
                 describe_reply(&other)
@@ -785,7 +788,10 @@ impl Ctx<'_> {
                 }
                 decoded.map(Some)
             }
-            _ if tolerant => Ok(None),
+            // A coded non-OK response is the advisory skip; `Close` and
+            // `NoResponse` have no response code and stay fatal even when
+            // tolerant (check_ok precedent, #455 review).
+            other if tolerant && response_code(&other).is_some() => Ok(None),
             other => Err(format!(
                 "GetDevicePropValue({code:#06x}) -> {}",
                 describe_reply(&other)
@@ -1194,6 +1200,7 @@ fn transform_runtime_value(value: u64, shift: u32, mask: Option<u64>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fault::{FaultMutation, FaultSelector, FaultSpec, FaultStage};
     use camera_config::{CameraManifest, Leaf, Predicate};
     use camera_media_store::{MediaStore, ObjectQuery};
 
@@ -1725,6 +1732,35 @@ properties: {}
             "unexpected error: {err}"
         );
         assert_eq!(err.response_code, Some(resp::DEVICE_PROP_NOT_SUPPORTED));
+    }
+
+    /// #455 review: a tolerant read skips coded non-OK responses, but a
+    /// dropped socket (`Reply::Close`) stays fatal, matching `check_ok`.
+    #[test]
+    fn tolerant_get_prop_still_fails_on_close_fault() {
+        let mut e = engine(MANIFEST);
+        e.install_fault(FaultSpec {
+            selector: FaultSelector {
+                operation: op::GET_DEVICE_PROP_VALUE,
+                params: Some(vec![0x4321]),
+                skip: 0,
+                count: None,
+            },
+            mutation: FaultMutation::Close {
+                stage: FaultStage::Command,
+            },
+        })
+        .unwrap();
+        let steps = vec![Step {
+            get_prop: Some("0x4321".into()),
+            tolerant: true,
+            ..Default::default()
+        }];
+        let err = walk_ptpip(&mut e, &steps, &BTreeMap::new()).unwrap_err();
+        assert!(
+            err.message.contains("GetDevicePropValue(0x4321)"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

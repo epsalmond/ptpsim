@@ -1418,6 +1418,23 @@ async fn acknowledge_standard_event<W: AsyncWrite + Unpin>(
 }
 
 async fn handle_command_conn(
+    stream: TcpStream,
+    resources: CommandResources,
+    first_frame: Option<Vec<u8>>,
+    session_sequence: u64,
+) -> std::io::Result<()> {
+    let engine = resources.engine.clone();
+    let result = handle_command_conn_inner(stream, resources, first_frame, session_sequence).await;
+    // A real camera binds the session to its transport: a command socket that
+    // ends without CloseSession (killed client, dropped Wi-Fi, the modeled
+    // live-view transport-close) must not leave the shared session wedged
+    // open, or every later OpenSession answers SessionAlreadyOpen (#455
+    // review). Idempotent when the client closed properly.
+    engine.lock().await.transport_lost();
+    result
+}
+
+async fn handle_command_conn_inner(
     mut stream: TcpStream,
     resources: CommandResources,
     first_frame: Option<Vec<u8>>,
