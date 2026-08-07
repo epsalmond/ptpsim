@@ -190,11 +190,8 @@ impl Default for FaultSet {
 }
 
 impl FaultSet {
-    pub fn insert(&mut self, spec: FaultSpec) -> u64 {
-        self.try_insert(spec)
-            .expect("fault inserted directly into FaultSet must be valid")
-    }
-
+    /// Install a fault spec. Invalid specs are a caller-facing error, never a
+    /// panic (#407): the former infallible `insert` wrapper is gone.
     pub fn try_insert(&mut self, spec: FaultSpec) -> Result<u64, String> {
         spec.mutation.validate()?;
         let id = self.next_id;
@@ -427,11 +424,13 @@ mod tests {
     #[test]
     fn occurrence_window_uses_seen_before_and_exhausts() {
         let mut faults = FaultSet::default();
-        faults.insert(spec(
-            2,
-            Some(1),
-            FaultMutation::FailResponse { response: 0x2019 },
-        ));
+        faults
+            .try_insert(spec(
+                2,
+                Some(1),
+                FaultMutation::FailResponse { response: 0x2019 },
+            ))
+            .unwrap();
         assert!(faults.apply(0x1015, &[53]).is_none());
         assert!(faults.apply(0x1015, &[53]).is_none());
         assert!(faults.apply(0x1015, &[53]).is_some());
@@ -444,18 +443,22 @@ mod tests {
     #[test]
     fn every_match_advances_but_lowest_armed_id_wins() {
         let mut faults = FaultSet::default();
-        let first = faults.insert(spec(
-            0,
-            None,
-            FaultMutation::Suppress {
-                stage: DataOrResponse::Data,
-            },
-        ));
-        faults.insert(spec(
-            0,
-            Some(1),
-            FaultMutation::FailResponse { response: 0x2005 },
-        ));
+        let first = faults
+            .try_insert(spec(
+                0,
+                None,
+                FaultMutation::Suppress {
+                    stage: DataOrResponse::Data,
+                },
+            ))
+            .unwrap();
+        faults
+            .try_insert(spec(
+                0,
+                Some(1),
+                FaultMutation::FailResponse { response: 0x2005 },
+            ))
+            .unwrap();
         assert_eq!(faults.apply(0x1015, &[53]).unwrap().id, first);
         let views = faults.list();
         assert_eq!((views[0].seen, views[0].applied), (1, 1));

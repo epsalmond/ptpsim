@@ -8,8 +8,9 @@ use camera_config::{
     InventoryCompleteness, Loop, ManufacturerDefaults, MissingRuntimeValue, ModeEntryExecution,
     ObjectTransferCompletionTiming, ObjectTransferResumePolicy, ObjectTransferStrategy,
     ObjectsAvailable, ObservationLine, OperationKind, PcssDiscoveryTarget, Predicate, PropView,
-    PropertyKind, PropertyTransitionTerminal, RecordValueEncoding, RecordValueLiteral,
-    ResponderMutation, SessionOwnership, SetPropValue, Step, StepParam, ValuePolicy, VersionScheme,
+    PropertyAccess, PropertyKind, PropertyTransitionTerminal, RecordValueEncoding,
+    RecordValueLiteral, ResponderMutation, SessionOwnership, SetPropValue, Step, StepParam,
+    ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -729,7 +730,7 @@ fn wireless_tether_keepalive_action_is_session_scaffold_not_settings() {
     let priority_mode = &m.properties["0xd207"];
     assert_eq!(priority_mode.name, "priorityMode");
     assert_eq!(priority_mode.ptype.as_deref(), Some("u16"));
-    assert_eq!(priority_mode.access.as_deref(), Some("readWrite"));
+    assert_eq!(priority_mode.access, Some(PropertyAccess::ReadWrite));
     assert_eq!(priority_mode.kind, PropertyKind::Scaffold);
     assert_eq!(priority_mode.labels["1"], "cameraPriority");
     assert_eq!(priority_mode.labels["2"], "pcPriority");
@@ -913,7 +914,7 @@ fn wireless_tether_live_view_actions_keep_pcss_request_shapes_connection_scoped(
     assert!(!start.initiator().unwrap().steps[2].tolerant);
     let selector = &m.properties["0xd1bc"];
     assert_eq!(selector.ptype.as_deref(), Some("u16"));
-    assert_eq!(selector.access.as_deref(), Some("readWrite"));
+    assert_eq!(selector.access, Some(PropertyAccess::ReadWrite));
     assert_eq!(selector.kind, PropertyKind::Scaffold);
 
     let poll = m
@@ -1428,7 +1429,7 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
     assert_eq!(ev.operation.as_deref(), Some("0x902e"));
     let focus = &m.properties["0x500a"];
     assert_eq!(focus.ptype.as_deref(), Some("u16"));
-    assert_eq!(focus.access.as_deref(), Some("readWrite"));
+    assert_eq!(focus.access, Some(PropertyAccess::ReadWrite));
 
     assert!(m.connections["app"]
         .modes
@@ -1437,7 +1438,7 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
     assert_eq!(m.properties["0xdf2a"].ptype.as_deref(), Some("u32"));
     let d246 = &m.properties["0xd246"];
     assert_eq!(d246.ptype.as_deref(), Some("u8"));
-    assert_eq!(d246.access.as_deref(), Some("readWrite"));
+    assert_eq!(d246.access, Some(PropertyAccess::ReadWrite));
     assert_eq!(d246.initial_value, Some(DescriptorValue::Int(0)));
     let d246_desc = d246.descriptor.as_ref().expect("D246 descriptor");
     assert_eq!(d246_desc.form, "enum");
@@ -1544,12 +1545,12 @@ fn af_tap_ops_and_props_are_ingested_from_the_wire_doc() {
     // 0xD17C S1_LOCK — AF area state; high bytes also encode aspect ratio (§5.1).
     let s1 = &m.properties["0xd17c"];
     assert_eq!(s1.name, "s1Lock");
-    assert_eq!(s1.access.as_deref(), Some("readOnly"));
+    assert_eq!(s1.access, Some(PropertyAccess::ReadOnly));
     // 0xD209 S1_LOCK_COLOR — 0=white/none, 1=green/locked, 2=red/failed (§5.3).
     let color = &m.properties["0xd209"];
     assert_eq!(color.name, "s1LockColor");
     assert_eq!(color.ptype.as_deref(), Some("u16"));
-    assert_eq!(color.access.as_deref(), Some("readOnly"));
+    assert_eq!(color.access, Some(PropertyAccess::ReadOnly));
 
     // All four cite the in-repo wire doc (docLiveControls → PTP_PROPERTIES_REFERENCE.md).
     assert_eq!(m.evidence["docLiveControls"].kind, "doc");

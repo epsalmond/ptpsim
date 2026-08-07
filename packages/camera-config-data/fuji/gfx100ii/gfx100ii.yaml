@@ -826,9 +826,11 @@ modes:
   shooting/stills:                   # live-view: app drives the camera, screen taken over
     capabilities: [liveView, remoteControl, screenTakeover]
     detect: { prop: "0xdf01", eq: 0x16 }
+    phase: liveView
   image-transfer:
     capabilities: [browse, download]
     detect: { prop: "0xdf01", eq: 0x14 }
+    phase: imageImport
   reserved-photo-receive:
     capabilities: [download]
     detect: { prop: "0xdf01", eq: 21 }
@@ -1034,9 +1036,11 @@ properties:
   "0xdf41": { name: reservedPhotoObjectCount, type: u32, access: readOnly, evidence: [wireAutoImageTransfer] }
   "0xd244": { name: imageImportD244,   type: u8a, access: readOnly,  evidence: [docImageTransfer] }
   "0xd620": { name: imageImportObjectCount,   type: u32, access: readOnly,
+              computed: objectCount,
               requiresGate: { name: imageImportBootstrap, failure: noResponse },
               evidence: [docImageTransfer] }
   "0xd621": { name: imageImportObjectHandles, type: u8a, access: readOnly,
+              computed: objectHandles,
               requiresGate: { name: imageImportBootstrap, failure: noResponse },
               evidence: [docImageTransfer] }
   "0xd235": { name: imageImportChunkSize, type: u32, access: readOnly, initialValue: 0x00bfffe0, evidence: [docLargeMovObjectInfo, wireAutoImageTransfer] }

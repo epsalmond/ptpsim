@@ -1924,6 +1924,7 @@ fn apply_candidate(
                 })
                 .collect::<Vec<_>>();
             let observed_scopes = scopes.iter().map(model_scope).collect::<Vec<_>>();
+            let proposal_access = access.as_deref().and_then(parse_property_access);
             let property = manifest
                 .properties
                 .entry(code.clone())
@@ -1934,11 +1935,12 @@ fn apply_candidate(
                         .unwrap_or_else(|| format!("raw_{code}")),
                     ptp_name: None,
                     ptype: property_type.clone(),
-                    access: access.clone(),
+                    access: proposal_access,
                     initial_value: None,
                     kind: PropertyKind::CatalogOnly,
                     descriptor: proposal_descriptor.clone(),
                     payload: None,
+                    computed: None,
                     controls: BTreeMap::new(),
                     labels: BTreeMap::new(),
                     value_rows: Vec::new(),
@@ -1952,8 +1954,8 @@ fn apply_candidate(
             if let Some(property_type) = property_type {
                 property.ptype = Some(property_type.clone());
             }
-            if let Some(access) = access {
-                property.access = Some(access.clone());
+            if let Some(access) = proposal_access {
+                property.access = Some(access);
             }
             if proposal_descriptor.is_some() {
                 property.descriptor = proposal_descriptor;
@@ -2268,6 +2270,20 @@ fn model_scope(scope: &ExecutionContext) -> ObservedScope {
         connection: scope.connection.clone(),
         mode: scope.mode.clone(),
         state: scope.state.clone(),
+    }
+}
+
+/// Map an observation's access string to the closed manifest enum. Values the
+/// closed model cannot represent (legacy GetSet passthroughs like `gs2`, where
+/// a vendor descriptor reported a nonstandard GetSet byte) normalize to no
+/// access claim — the conservative get-only direction (#407). The manifest
+/// model itself stays closed: YAML manifests still fail to load on unknown
+/// access values.
+fn parse_property_access(access: &str) -> Option<PropertyAccess> {
+    match access {
+        "readOnly" => Some(PropertyAccess::ReadOnly),
+        "readWrite" => Some(PropertyAccess::ReadWrite),
+        _ => None,
     }
 }
 
@@ -3086,7 +3102,8 @@ operations:
     name: raw_0x9999
     kind: advertisedOnly
     owner: immutableOwner
-    handler: immutableHandler
+    handler: property.step
+    property: "0xd001"
     modes: [shooting/stills]
     connections: [usb]
 properties:
@@ -3106,7 +3123,8 @@ properties:
         assert_eq!(operation.name, "semanticOperation");
         assert_eq!(operation.kind, OperationKind::AdvertisedOnly);
         assert_eq!(operation.owner, "immutableOwner");
-        assert_eq!(operation.handler.as_deref(), Some("immutableHandler"));
+        assert_eq!(operation.handler, Some(OperationHandler::PropertyStep));
+        assert_eq!(operation.property.as_deref(), Some("0xd001"));
         assert_eq!(operation.modes, ["shooting/stills"]);
         assert_eq!(operation.connections, ["usb"]);
 
@@ -3114,7 +3132,7 @@ properties:
         assert_eq!(property.name, "semanticProperty");
         assert_eq!(property.ptp_name.as_deref(), Some("NativeProperty"));
         assert_eq!(property.initial_value, Some(DescriptorValue::Int(7)));
-        assert_eq!(property.access.as_deref(), Some("readOnly"));
+        assert_eq!(property.access, Some(PropertyAccess::ReadOnly));
         assert_eq!(property.kind, PropertyKind::CatalogOnly);
         let descriptor = property.descriptor.as_ref().unwrap();
         assert_eq!(descriptor.form, "enum");

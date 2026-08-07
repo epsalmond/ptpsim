@@ -447,9 +447,10 @@ Constants, supported ops, property forms, and workflow gates come from manifests
 
 ### `protocol-primitives` (concern-organized, shared)
 
-The only code that is genuinely not data, kept finite and shared — never a brand
-silo. Each primitive has an id that manifests reference (`framing:`, `quirk:`,
-`handler:`):
+The only code that is genuinely not data, kept finite and shared, never a brand
+silo. Each primitive has an id that manifests reference (`framing:`, `quirk:`).
+Operation dispatch behaviors form a separate closed vocabulary (`handler:`, see
+MANIFEST_SCHEMA.md §11.18):
 
 - Wire framing transforms beyond `ptp-core`'s vanilla codec (e.g. Fuji's
   compressed framing, later Canon EOS events) — peers in one codec registry.
@@ -614,7 +615,6 @@ operations:
       - { name: offset, type: u32 }
       - { name: length, type: u32 }
     workflows: [imageImport]
-    handler: media.partialObject
     evidence: [appImageImportCapture]
   "0x902d":
     name: StepFNumber

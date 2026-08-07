@@ -856,6 +856,67 @@ the authored form compact. Unknown classification strings are schema errors.
 FFI consumers receive the resolved classifications as `OperationKind` and
 `PropertyKind`, never as optional or open-ended strings.
 
+`Operation.handler` is a closed set selecting the simulator's dispatch behavior
+for a cataloged operation:
+
+- `property.step`: advance the `property` enum one slot; the request's first
+  parameter is the direction. The operation MUST declare `property`.
+- `object.size`: answer an extended object-size query from the `objectSize`
+  block. The operation MUST declare `objectSize`.
+
+An unknown handler string is a schema error at load, not a silent dispatch
+fallback. An `objectSize` block without the `object.size` handler is also a
+schema error. A cataloged operation with no handler is an executable no-op:
+the camera acknowledges it without a simulated camera-side effect.
+
+`Property.access` is a closed set with two values, `readOnly` and
+`readWrite`. The simulator answers `SetDevicePropValue` with `AccessDenied`
+unless the property declares `readWrite`, and the served `DevicePropDesc`
+GetSet flag matches the same claim. A property with no `access` makes no
+write claim and is served get-only. Observation intake normalizes an access
+value the closed model cannot represent (a legacy reduction carrying a
+nonstandard descriptor GetSet byte, e.g. `gs2`) to no claim; the manifest
+itself never loads an unknown value.
+
+`Property.computed` is a closed set naming a simulator-computed value source,
+served instead of stored property state:
+
+- `objectCount`: the count of currently enumerable objects, served as `u32`.
+- `objectHandles`: the enumerable object handles, served as a count-prefixed
+  `u32` array (the `GetObjectHandles` encoding).
+
+The manifest names the quantity; the engine holds no per-code special cases.
+
+`Mode.phase` is a closed set (`sessionOpen`, `imageImport`, `liveView`,
+`streaming`) mapping a detected mode to a simulator workflow phase. When a
+mode's `detect` predicate selects it on a property write, the engine enters
+the declared phase. The phase applies on mode transitions; writes that keep
+the same mode leave in-session phase state (such as streaming) untouched. An
+unknown phase value is a manifest load error. Leaving a mode whose declared
+phase is `imageImport` resets the simulator's bootstrap gate progress,
+including transitions into modes that declare no phase. Transport states
+(`disconnected`, `queuedReceive`, `closed`) are not declarable workflow
+phases.
+
+The simulator enforces catalog availability before it dispatches an
+operation: connection, mode, `kind`, and `requires` all resolve first, and a
+refused operation answers `OperationNotSupported` (a failed `requires`
+prerequisite answers `GeneralError`). Three bootstrap operations are exempt:
+`OpenSession`, `CloseSession`, and `GetDeviceInfo`. The mode axis engages
+only once a mode is detected; a session with no detected mode gates on
+connection, kind, and `requires` alone, because some transports never flip a
+mode selector (PCSS enters transfer implicitly). The three property-access
+operations (`GetDevicePropDesc`, `GetDevicePropValue`,
+`SetDevicePropValue`) skip the mode axis: the property surface is modeled
+per property (`access`, `requiresGate`), and catalog mode rows for those
+standard operations are transport observations, not camera refusals.
+`OpenSession` rejects the session id 0 with `InvalidParameter` (PTP forbids
+only zero; non-1 ids are accepted absent wire evidence of refusal) and
+answers `SessionAlreadyOpen` on a second open instead of resetting the
+session. A camera binds its session to the transport: when the owning command
+connection ends without `CloseSession`, the session state (open flag, phase,
+gates) is cleared so a reconnecting client can open again.
+
 `initialValue` is the property's seed value before any camera read or
 write. A numeric-typed property takes an integer; a `type: str` property takes
 a quoted YAML string (`initialValue: "4000x2664"`), and an integer there is a

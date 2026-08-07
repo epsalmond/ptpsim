@@ -849,7 +849,7 @@ fn wireless_tether_unterminated_stream_survives_session_close() {
     )
     .expect("initial live-view stream starts");
     assert_ok(&e.on_operation(&req(0x1003, 20, vec![]), None));
-    assert_ok(&e.on_operation(&req(0x1002, 21, vec![2]), None));
+    assert_ok(&e.on_operation(&req(0x1002, 21, vec![1]), None));
     e.apply_state_overlay(
         &serde_json::from_value(serde_json::json!({ "phase": "liveView" })).unwrap(),
     )
@@ -1013,25 +1013,32 @@ fn believable_enumeration_from_the_rich_manifest() {
 
 #[test]
 fn gate3_image_import_choreography_runs_from_the_manifest() {
+    let m = consolidated();
+    let app = &m.connections["app"];
+    let cold = app
+        .entries
+        .iter()
+        .find(|entry| entry.to == "image-transfer" && entry.from.is_none())
+        .expect("cold image-transfer entry");
+    let cold_steps = entry_steps(cold).to_vec();
+    let enumerate_steps = app
+        .actions
+        .get(&ActionVerb::EnumerateObjects)
+        .expect("enumerateObjects action")
+        .initiator()
+        .expect("enumerate initiator")
+        .steps
+        .clone();
+
     let mut e = engine();
-    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None)); // OpenSession
-                                                                // The image-import entry sequence (df01=0x14, df28=3, vendor-prime chord) — each
-                                                                // step responds believably purely from the manifest (vendor ops are no-op OK).
-    assert_ok(&e.on_operation(&req(0x1016, 2, vec![0xdf01]), Some(&0x14u16.to_le_bytes())));
-    assert_ok(&e.on_operation(&req(0x1016, 3, vec![0xdf28]), Some(&3u32.to_le_bytes())));
-    for (i, (op, params)) in [
-        (0x9054u16, vec![0x1000_0001u32]),
-        (0x9055, vec![0x1000_0001]),
-        (0x9050, vec![]),
-        (0x9053, vec![0, 0x7530]),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        assert_ok(&e.on_operation(&req(op, 10 + i as u32, params), None));
-    }
-    // Enumerate + download a file (gate #3 proper).
-    let handles_bytes = data_of(e.on_operation(&req(0x1007, 20, vec![0x0001_0001, 0, 0]), None));
+    walk_ptpip_in(&mut e, &cold_steps, &BTreeMap::new(), Some("app"))
+        .expect("cold image-transfer entry");
+    // The app never sends 0x1007 on this connection (fw2.30 rejects it with
+    // 0x2005, and #407's catalog gating now reproduces that); enumeration is
+    // the 0xD620/D621 property pair after the bootstrap ritual.
+    walk_ptpip_in(&mut e, &enumerate_steps, &BTreeMap::new(), Some("app"))
+        .expect("enumerateObjects completes the bootstrap gate");
+    let handles_bytes = data_of(e.on_operation(&req(0x1015, 20, vec![0xd621]), None));
     let mut r = Reader::new(&handles_bytes);
     let handles = r.ptp_array(|r| r.u32()).unwrap();
     assert_eq!(handles.len(), 1);

@@ -48,7 +48,7 @@ pub use model::{
     AwaitUntil, BleLiteralWrite, BleStateTrigger, CameraIdentity, CameraInitiatedData,
     CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
     CameraInitiatedMonitorRecovery, CameraInitiatedReceive, CameraInitiatedTransfer,
-    CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, Connection,
+    CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, ComputedValue, Connection,
     ConnectionTransition, Control, ControlOwner, ControlReadSource, ControlRole,
     ControlSurfaceEntry, Descriptor, DescriptorValue, EventDelivery, EventDeliveryContract,
     GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery,
@@ -56,18 +56,19 @@ pub use model::{
     MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution, ObjectTransferCompletionPolicy,
     ObjectTransferCompletionTiming, ObjectTransferContract, ObjectTransferFormatSupport,
     ObjectTransferResumePolicy, ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect,
-    Operation, OperationKind, Payload, PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets,
-    PcssKnock, PostviewEvent, Property, PropertyKind, PropertySemanticAssertions,
-    PropertyTransitionTerminal, PropertyValueEncoding, PropertyValueProfile,
-    PropertyValueProfileRow, PropertyValueRow, ProvenancedName, ProvenancedPropertyValueProfile,
-    ProvenancedPropertyValueRow, RecordLayout, RecordMember, RecordMemberDetail, RecordMemberRef,
-    RecordValueEncoding, RecordValueLiteral, ReestablishConnection, ResponderMutation,
-    RetryFailureClass, RuntimeSetPropValue, SemanticAssertionLedger, SentinelFrame, SentinelMask,
-    SequenceGate, SessionContract, SessionOwnership, SetPropValue, ShutterRecipe,
-    SocketAvailability, SocketBinding, SocketBindingDescriptor, SocketBindings, SocketRole, Step,
-    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
-    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
-    WireFraming, Workflow,
+    Operation, OperationHandler, OperationKind, Payload, PayloadForm, PcssDiscoveryTarget,
+    PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyAccess, PropertyKind,
+    PropertySemanticAssertions, PropertyTransitionTerminal, PropertyValueEncoding,
+    PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow, ProvenancedName,
+    ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout, RecordMember,
+    RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
+    ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
+    SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SessionContract,
+    SessionOwnership, SetPropValue, ShutterRecipe, SocketAvailability, SocketBinding,
+    SocketBindingDescriptor, SocketBindings, SocketRole, Step, StepParam, StepRetry,
+    StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
+    TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    WorkflowPhase,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -370,6 +371,9 @@ impl CameraManifest {
                 )));
             }
         }
+        for (code, operation) in &self.operations {
+            require_valid_operation_handler(operation, code)?;
+        }
         for (code, property) in &self.properties {
             require_valid_descriptor(property, code)?;
             require_valid_structured_text(property, code)?;
@@ -522,6 +526,38 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+fn require_valid_operation_handler(operation: &Operation, code: &str) -> Result<(), ManifestError> {
+    match operation.handler {
+        Some(OperationHandler::PropertyStep) => {
+            let property = operation.property.as_deref().ok_or_else(|| {
+                ManifestError::Contract(format!(
+                    "operation '{code}' handler 'property.step' requires a 'property' code"
+                ))
+            })?;
+            if parse_hex_code(property).is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "operation '{code}' handler 'property.step' property '{property}' is not a hex property code"
+                )));
+            }
+        }
+        Some(OperationHandler::ObjectSize) => {
+            if operation.object_size.is_none() {
+                return Err(ManifestError::Contract(format!(
+                    "operation '{code}' handler 'object.size' requires an 'objectSize' block"
+                )));
+            }
+        }
+        None => {
+            if operation.object_size.is_some() {
+                return Err(ManifestError::Contract(format!(
+                    "operation '{code}' declares 'objectSize' without handler 'object.size'"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn require_valid_descriptor(property: &Property, code: &str) -> Result<(), ManifestError> {
@@ -2572,5 +2608,96 @@ connections:
         let text = SAMPLE.replace("camera-config/v1", "camera-config/v999");
         let m = CameraManifest::from_yaml(&text).unwrap();
         assert!(m.require_supported_schema().is_err());
+    }
+
+    #[test]
+    fn unknown_operation_handler_is_a_load_error() {
+        // #407: a handler typo must fail closed at load, not dispatch as a
+        // successful no-op.
+        let text = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+operations:
+  "0x902c": { name: StepSomething, handler: property.stepp }
+"#;
+        let err = CameraManifest::from_yaml(text).unwrap_err().to_string();
+        assert!(err.contains("handler"), "err: {err}");
+    }
+
+    #[test]
+    fn property_step_handler_requires_a_property_code() {
+        let text = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+operations:
+  "0x902c": { name: StepSomething, handler: property.step }
+"#;
+        let err = CameraManifest::from_yaml(text).unwrap_err().to_string();
+        assert!(
+            err.contains("handler 'property.step' requires a 'property' code"),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn object_size_handler_requires_its_block_and_vice_versa() {
+        let missing_block = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+operations:
+  "0x9803": { name: ObjectSize, handler: object.size }
+"#;
+        let err = CameraManifest::from_yaml(missing_block)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("handler 'object.size' requires an 'objectSize' block"),
+            "err: {err}"
+        );
+
+        let missing_handler = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+operations:
+  "0x9803":
+    name: ObjectSize
+    objectSize: { handleParam: 0, encoding: u64Le }
+"#;
+        let err = CameraManifest::from_yaml(missing_handler)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("declares 'objectSize' without handler 'object.size'"),
+            "err: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_property_access_is_a_load_error() {
+        // #407: access is a closed set; an unknown value must not load.
+        let text = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+properties:
+  "0xd260": { name: mystery, type: u16, access: gs2 }
+"#;
+        let err = CameraManifest::from_yaml(text).unwrap_err().to_string();
+        assert!(err.contains("access"), "err: {err}");
+    }
+
+    #[test]
+    fn unknown_mode_phase_is_a_load_error() {
+        // #455 review: mode phase is a closed set validated at manifest load,
+        // consistent with handler and access — a typo must not load and then
+        // abort engine construction.
+        let text = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+modes:
+  shooting/stills:
+    phase: liveview
+"#;
+        let err = CameraManifest::from_yaml(text).unwrap_err().to_string();
+        assert!(err.contains("phase"), "err: {err}");
     }
 }

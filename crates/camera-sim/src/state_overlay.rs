@@ -140,15 +140,25 @@ fn prop_value_from_json(
     value: &serde_json::Value,
 ) -> Result<PropValue, String> {
     match prop_type {
-        Some(signed @ ("i8" | "i16" | "i32" | "i64")) => Err(format!(
-            "signed property type '{signed}' is not supported by simulator state overlays yet"
-        )),
-        Some("u8") => checked_numeric(value, u8::MAX as i128).map(|v| PropValue::U8(v as u8)),
-        Some("u16") | None => {
-            checked_numeric(value, u16::MAX as i128).map(|v| PropValue::U16(v as u16))
+        Some("i8") => {
+            checked_numeric(value, i8::MIN as i128, i8::MAX as i128).map(|v| PropValue::I8(v as i8))
         }
-        Some("u32") => checked_numeric(value, u32::MAX as i128).map(|v| PropValue::U32(v as u32)),
-        Some("u64") => checked_numeric(value, u64::MAX as i128).map(|v| PropValue::U64(v as u64)),
+        Some("i16") => checked_numeric(value, i16::MIN as i128, i16::MAX as i128)
+            .map(|v| PropValue::I16(v as i16)),
+        Some("i32") => checked_numeric(value, i32::MIN as i128, i32::MAX as i128)
+            .map(|v| PropValue::I32(v as i32)),
+        Some("i64") => checked_numeric(value, i64::MIN as i128, i64::MAX as i128)
+            .map(|v| PropValue::I64(v as i64)),
+        Some("u8") => checked_numeric(value, 0, u8::MAX as i128).map(|v| PropValue::U8(v as u8)),
+        Some("u16") | None => {
+            checked_numeric(value, 0, u16::MAX as i128).map(|v| PropValue::U16(v as u16))
+        }
+        Some("u32") => {
+            checked_numeric(value, 0, u32::MAX as i128).map(|v| PropValue::U32(v as u32))
+        }
+        Some("u64") => {
+            checked_numeric(value, 0, u64::MAX as i128).map(|v| PropValue::U64(v as u64))
+        }
         Some("str") => value
             .as_str()
             .map(|s| PropValue::Str(s.to_string()))
@@ -157,7 +167,7 @@ fn prop_value_from_json(
     }
 }
 
-fn checked_numeric(value: &serde_json::Value, max: i128) -> Result<i128, String> {
+fn checked_numeric(value: &serde_json::Value, min: i128, max: i128) -> Result<i128, String> {
     let raw = match value {
         serde_json::Value::Number(n) => n
             .as_i64()
@@ -167,8 +177,8 @@ fn checked_numeric(value: &serde_json::Value, max: i128) -> Result<i128, String>
         serde_json::Value::String(s) => parse_numeric_string(s)?,
         _ => return Err("expected numeric value".to_string()),
     };
-    if raw < 0 || raw > max {
-        Err(format!("value {raw} is outside 0..={max}"))
+    if raw < min || raw > max {
+        Err(format!("value {raw} is outside {min}..={max}"))
     } else {
         Ok(raw)
     }

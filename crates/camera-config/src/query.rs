@@ -258,6 +258,31 @@ impl CameraManifest {
         code: u16,
         observed: &PropView,
     ) -> Availability {
+        self.evaluate_availability(connection, Some(mode_path), code, observed)
+    }
+
+    /// Availability before any workflow mode is detected: the connection,
+    /// kind, and `requires` axes still gate, but the mode axis is
+    /// unconstrained (#407). Some transports never flip a mode selector at
+    /// all (PCSS enters transfer implicitly), and a fresh session has no
+    /// detected mode — refusing ops off a guessed fallback mode would invent
+    /// a persona the evidence doesn't assert.
+    pub fn operation_available_predetect(
+        &self,
+        connection: &str,
+        code: u16,
+        observed: &PropView,
+    ) -> Availability {
+        self.evaluate_availability(connection, None, code, observed)
+    }
+
+    fn evaluate_availability(
+        &self,
+        connection: &str,
+        mode_path: Option<&str>,
+        code: u16,
+        observed: &PropView,
+    ) -> Availability {
         let Some(op) = self.operation(code) else {
             return Availability::Unavailable;
         };
@@ -267,8 +292,10 @@ impl CameraManifest {
         if !op.connections.is_empty() && !op.connections.iter().any(|c| c == connection) {
             return Availability::WrongConnection;
         }
-        if !mode_matches(&op.modes, mode_path) {
-            return Availability::WrongMode;
+        if let Some(mode_path) = mode_path {
+            if !mode_matches(&op.modes, mode_path) {
+                return Availability::WrongMode;
+            }
         }
         if let Some(req) = &op.requires {
             if !req.eval(observed) {

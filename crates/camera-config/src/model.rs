@@ -241,8 +241,11 @@ pub struct Operation {
     pub params: Vec<serde_yaml::Value>,
     #[serde(default)]
     pub workflows: Vec<String>,
+    /// Simulator dispatch behavior for this operation. Closed set; an unknown
+    /// string is a load error. Absent = executable no-op (a cataloged op with
+    /// no simulated camera-side effect).
     #[serde(default)]
-    pub handler: Option<String>,
+    pub handler: Option<OperationHandler>,
     #[serde(default)]
     pub property: Option<HexCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -307,6 +310,21 @@ impl OperationKind {
     fn is_executable(&self) -> bool {
         *self == Self::Executable
     }
+}
+
+/// The dispatch behavior a cataloged operation carries. Closed set so a
+/// handler typo fails at manifest load instead of silently dispatching as a
+/// successful no-op (#407).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OperationHandler {
+    /// Step the `property` enum one slot; the request's first parameter is the
+    /// direction.
+    #[serde(rename = "property.step")]
+    PropertyStep,
+    /// Answer an extended object-size query; the `object_size` block declares
+    /// the parameter layout and encoding.
+    #[serde(rename = "object.size")]
+    ObjectSize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -393,8 +411,11 @@ pub struct Property {
     pub ptp_name: Option<String>,
     #[serde(default, rename = "type")]
     pub ptype: Option<String>,
+    /// Declared PTP access. Closed set; the simulator rejects writes unless
+    /// this is `readWrite` (#407). Absent = no write claim, matching the
+    /// get-only `DevicePropDesc` it serves.
     #[serde(default)]
-    pub access: Option<String>,
+    pub access: Option<PropertyAccess>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_value: Option<DescriptorValue>,
     /// Closed classification used by clients to filter what surfaces as a user
@@ -408,6 +429,11 @@ pub struct Property {
     /// live-status). Absent for scalar properties. See [`Payload`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Payload>,
+    /// Simulator-computed value source: the read value is derived from engine
+    /// state (object store / transfer queue) instead of stored property state.
+    /// Closed set; absent = stored value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed: Option<ComputedValue>,
     #[serde(default)]
     pub controls: BTreeMap<String, Control>,
     /// Value -> human label, e.g. `280: "f/2.8"`.
@@ -458,6 +484,47 @@ impl PropertyKind {
     fn is_setting(&self) -> bool {
         *self == Self::Setting
     }
+}
+
+/// Declared PTP access for a property (#407). Closed set so a typo fails at
+/// manifest load instead of silently widening or narrowing write behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PropertyAccess {
+    #[serde(rename = "readOnly")]
+    ReadOnly,
+    #[serde(rename = "readWrite")]
+    ReadWrite,
+}
+
+/// A simulator-computed property value source (#407). The manifest declares
+/// WHICH engine quantity a property serves; no property code is special in the
+/// engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ComputedValue {
+    /// Count of currently enumerable objects (served as u32).
+    #[serde(rename = "objectCount")]
+    ObjectCount,
+    /// Currently enumerable object handles (served as a count-prefixed u32
+    /// array, same encoding as GetObjectHandles).
+    #[serde(rename = "objectHandles")]
+    ObjectHandles,
+}
+
+/// A simulator workflow phase a detected mode corresponds to (#407). Closed
+/// set validated at manifest load, consistent with [`OperationHandler`] and
+/// [`PropertyAccess`]: a typo fails `from_yaml` instead of aborting engine
+/// construction. Transport states (`disconnected`, `closed`) are not workflow
+/// phases a mode can declare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorkflowPhase {
+    #[serde(rename = "sessionOpen")]
+    SessionOpen,
+    #[serde(rename = "imageImport")]
+    ImageImport,
+    #[serde(rename = "liveView")]
+    LiveView,
+    #[serde(rename = "streaming")]
+    Streaming,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -974,6 +1041,12 @@ pub struct Mode {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub detect: Option<Predicate>,
+    /// Simulator workflow phase this mode corresponds to (e.g. `imageImport`,
+    /// `liveView`). When mode detection selects this mode, the engine enters
+    /// the declared phase. Absent = detection changes the mode but not the
+    /// phase. Closed set; an unknown value is a manifest load error (#407).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<WorkflowPhase>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
 }

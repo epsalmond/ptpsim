@@ -19,10 +19,7 @@ use serde::Serialize;
 use crate::fault::{
     AppliedFault, FaultApplication, FaultMutation, FaultSet, FaultSpec, FaultStage, FaultView,
 };
-use crate::state::{
-    build_prop_desc, datatype_of, typed_descriptor_value, CameraState, Phase, DF01_IMAGE_IMPORT,
-    DF01_LIVE_VIEW, PROP_DF01,
-};
+use crate::state::{build_prop_desc, datatype_of, typed_descriptor_value, CameraState, Phase};
 use crate::state_overlay::{AppliedStateOverlay, StateOverlay};
 
 const STORAGE_ID: u32 = 0x0001_0001;
@@ -306,6 +303,24 @@ impl Engine {
     pub fn bind_connection(&mut self, connection: &str) {
         self.connection.clear();
         self.connection.push_str(connection);
+    }
+
+    /// The owning command transport ended without `CloseSession` (client
+    /// killed, Wi-Fi dropped, the transport-close the manifest itself models):
+    /// a real camera binds the session to its link, so the session state goes
+    /// with the transport (#455 review). Camera state (property values, media)
+    /// outlives the connection; without this, a shared engine wedges on
+    /// `SessionAlreadyOpen` until restart.
+    pub fn transport_lost(&mut self) {
+        self.clear_session();
+    }
+
+    fn clear_session(&mut self) {
+        self.state.reset_gates();
+        self.state.active_mode = None;
+        self.camera_initiated_pre_mode_probe_armed = false;
+        self.state.session_open = false;
+        self.state.phase = Phase::Closed;
     }
 
     /// Whether a manifest-authored auxiliary socket has crossed its causal
@@ -821,8 +836,31 @@ impl Engine {
             return reply;
         }
 
+        // Catalog availability gates dispatch (#407): connection, mode, kind,
+        // and `requires` resolve before any handler runs, so the sim refuses
+        // out-of-context ops like the persona-gated real camera. Session
+        // lifecycle and device identity are bootstrap ops a camera answers
+        // regardless of catalog context.
+        if !matches!(
+            req.code,
+            op::OPEN_SESSION | op::CLOSE_SESSION | op::GET_DEVICE_INFO
+        ) {
+            if let Some(response) = self.operation_availability_error(req.code) {
+                return Self::err(tid, response);
+            }
+        }
+
         let reply = match req.code {
             op::OPEN_SESSION => {
+                // A real camera refuses a second open instead of silently
+                // resetting the session (#407). PTP only forbids session id 0;
+                // non-1 ids are accepted absent wire evidence of refusal.
+                if self.state.session_open {
+                    return Self::err(tid, resp::SESSION_ALREADY_OPEN);
+                }
+                if p(0) == 0 {
+                    return Self::err(tid, resp::INVALID_PARAMETER);
+                }
                 self.state.reset_gates();
                 self.state.active_mode = None;
                 self.camera_initiated_pre_mode_probe_armed = false;
@@ -831,11 +869,7 @@ impl Engine {
                 Self::ok(tid)
             }
             op::CLOSE_SESSION => {
-                self.state.reset_gates();
-                self.state.active_mode = None;
-                self.camera_initiated_pre_mode_probe_armed = false;
-                self.state.session_open = false;
-                self.state.phase = Phase::Closed;
+                self.clear_session();
                 Self::ok(tid)
             }
             op::GET_DEVICE_INFO => Self::data(tid, self.device_info_bytes()),
@@ -938,15 +972,10 @@ impl Engine {
             op::GET_DEVICE_PROP_VALUE => {
                 let code = p(0) as u16;
                 if self.transfer_queue.is_some() {
-                    if code == 0xd621 {
-                        let mut w = Writer::new();
-                        w.ptp_array(&self.enumerated_object_handles(), |w, v| w.u32(*v));
-                        return Self::data(tid, w.into_vec());
-                    }
-                    if code == 0xd620 {
-                        let mut w = Writer::new();
-                        w.u32(self.enumerated_object_handles().len() as u32);
-                        return Self::data(tid, w.into_vec());
+                    // Computed sources serve queue-scoped enumeration while a
+                    // camera-initiated transfer queue owns visibility (#407).
+                    if let Some(reply) = self.computed_property_reply(tid, code) {
+                        return reply;
                     }
                 }
                 if let Some(reply) = self.property_gate_reply(code) {
@@ -987,19 +1016,11 @@ impl Engine {
                         // the wire, not served as misframed bytes (#161).
                         Err(_) => Self::err(tid, resp::GENERAL_ERROR),
                     }
-                } else if code == 0xd621 {
-                    // The Fuji object-handle list property (#46): the manifest's
-                    // enumerate/import actions read it as a u32 array. Serve the
-                    // real handles (same encoding as GetObjectHandles 0x1007) so
-                    // the property-driven enumeration is believable, not a default.
-                    let mut w = Writer::new();
-                    w.ptp_array(&self.store_file_handles(), |w, v| w.u32(*v));
-                    Self::data(tid, w.into_vec())
-                } else if code == 0xd620 {
-                    // The object count that sizes the 0xd621 list (declared u32).
-                    let mut w = Writer::new();
-                    w.u32(self.store_file_handles().len() as u32);
-                    Self::data(tid, w.into_vec())
+                } else if let Some(reply) = self.computed_property_reply(tid, code) {
+                    // Manifest-declared computed source (#407): the manifest
+                    // names the engine quantity this property serves, so no
+                    // property code is special in the engine.
+                    reply
                 } else {
                     // A manifest-declared prop always returns a value (current, else
                     // a typed default) — a real camera doesn't reject a supported
@@ -1435,6 +1456,7 @@ impl Engine {
             .filter_map(|(code, value)| value_to_i64(value).map(|value| (*code, value)))
             .collect();
         let detected = self.manifest.detect_mode(&observed).map(str::to_string);
+        let previous_mode = self.state.active_mode.clone();
         self.state.active_mode = detected.clone();
         let transfer_active = detected.as_deref().is_some_and(|mode| {
             self.manifest
@@ -1446,10 +1468,37 @@ impl Engine {
         });
         if transfer_active {
             self.state.phase = Phase::QueuedReceive;
-        } else {
-            if self.state.phase == Phase::QueuedReceive {
-                self.state.phase = Phase::SessionOpen;
+        } else if self.state.phase == Phase::QueuedReceive {
+            self.state.phase = Phase::SessionOpen;
+        }
+        if previous_mode == detected {
+            return;
+        }
+        // Mode transition: the new mode's declared phase drives the workflow
+        // phase (#407) — the manifest's detect predicate selects the mode, and
+        // the engine never branches on a selector property code. Writes that
+        // keep the same mode leave the phase alone, so in-session states like
+        // Streaming survive them.
+        let declared = |path: Option<&str>| -> Option<Phase> {
+            path.and_then(|path| self.manifest.modes.get(path))
+                .and_then(|mode| mode.phase)
+                .map(Phase::from)
+        };
+        let previous_declared = declared(previous_mode.as_deref());
+        let new_declared = declared(detected.as_deref());
+        if !transfer_active {
+            if let Some(phase) = new_declared {
+                self.state.phase = phase;
             }
+        }
+        // Leaving the import workflow clears bootstrap gate progress. Keyed on
+        // the transition out of a mode whose declared phase is imageImport
+        // (#455 review): modes that declare no phase leave `state.phase`
+        // sticky, so a phase-based check would let earned import gates
+        // survive leaving the workflow.
+        if previous_declared == Some(Phase::ImageImport) && new_declared != Some(Phase::ImageImport)
+        {
+            self.state.reset_gates();
         }
     }
 
@@ -1465,6 +1514,61 @@ impl Engine {
             .as_ref()
             .map(TransferQueue::handles)
             .unwrap_or_else(|| self.store_file_handles())
+    }
+
+    /// Serve a manifest-declared computed property from engine state (#407).
+    /// `None` when the property declares no computed source.
+    fn computed_property_reply(&self, tid: u32, code: u16) -> Option<Reply> {
+        let computed = self.manifest.property(code)?.computed?;
+        let handles = self.enumerated_object_handles();
+        let mut w = Writer::new();
+        match computed {
+            camera_config::ComputedValue::ObjectCount => w.u32(handles.len() as u32),
+            camera_config::ComputedValue::ObjectHandles => w.ptp_array(&handles, |w, v| w.u32(*v)),
+        }
+        Some(Self::data(tid, w.into_vec()))
+    }
+
+    /// The response refusing a cataloged operation that is unavailable in the
+    /// current connection/mode/state, or `None` when it may proceed (#407).
+    /// Operations absent from the catalog are not gated. The mode axis applies
+    /// only once a mode is detected; before that, connection, kind, and
+    /// `requires` still gate, but the sim doesn't refuse ops off a guessed
+    /// fallback mode (PCSS never flips a selector at all). The three
+    /// property-access ops skip the mode axis entirely: the property surface
+    /// is modeled per property (`access`, `requiresGate`), and the catalog's
+    /// mode rows for those standard ops are transport observations, not
+    /// camera refusals.
+    fn operation_availability_error(&self, code: u16) -> Option<u16> {
+        self.manifest.operation(code)?;
+        let observed: camera_config::PropView = self
+            .state
+            .props
+            .iter()
+            .filter_map(|(code, value)| value_to_i64(value).map(|value| (*code, value)))
+            .collect();
+        let property_access_op = matches!(
+            code,
+            op::GET_DEVICE_PROP_DESC | op::GET_DEVICE_PROP_VALUE | op::SET_DEVICE_PROP_VALUE
+        );
+        let availability = match self.state.active_mode.as_deref() {
+            Some(mode) if !property_access_op => {
+                self.manifest
+                    .operation_available(&self.connection, mode, code, &observed)
+            }
+            _ => self
+                .manifest
+                .operation_available_predetect(&self.connection, code, &observed),
+        };
+        match availability {
+            camera_config::Availability::Available => None,
+            // A failed `requires` prerequisite is a runtime refusal, not an
+            // out-of-catalog one.
+            camera_config::Availability::Blocked => Some(resp::GENERAL_ERROR),
+            camera_config::Availability::WrongMode
+            | camera_config::Availability::WrongConnection
+            | camera_config::Availability::Unavailable => Some(resp::OPERATION_NOT_SUPPORTED),
+        }
     }
 
     fn connection_models_live_view_stream(&self, connection_id: &str) -> bool {
@@ -1570,15 +1674,16 @@ impl Engine {
         self.state.drain_events()
     }
 
-    /// Manifest-driven dispatch for non-standard ops: a `property.step` handler
-    /// runs the generic vendor-step; any other supported op is a successful
-    /// no-op; unknown ops are unsupported.
+    /// Manifest-driven dispatch for non-standard ops: the catalog row's handler
+    /// selects the generic behavior; a handler-less executable row is a
+    /// successful no-op. Handler values are a closed set validated at manifest
+    /// load (#407), so no fallthrough can swallow a typo.
     fn dispatch_manifest_op(&mut self, tid: u32, code: u16, params: &[u32]) -> Reply {
         let Some(opdef) = self.manifest.operation(code) else {
             return Self::err(tid, resp::OPERATION_NOT_SUPPORTED);
         };
-        match opdef.handler.as_deref() {
-            Some("property.step") => {
+        match opdef.handler {
+            Some(camera_config::OperationHandler::PropertyStep) => {
                 let Some(prop_code) = opdef.property.as_deref().and_then(parse_hex_code) else {
                     return Self::err(tid, resp::GENERAL_ERROR);
                 };
@@ -1586,8 +1691,10 @@ impl Engine {
                 self.vendor_step(prop_code, direction);
                 Self::ok(tid)
             }
-            Some("object.size") => self.object_size_op(tid, opdef, params),
-            _ => Self::ok(tid),
+            Some(camera_config::OperationHandler::ObjectSize) => {
+                self.object_size_op(tid, opdef, params)
+            }
+            None => Self::ok(tid),
         }
     }
 
@@ -1661,6 +1768,11 @@ impl Engine {
         let Some(prop) = self.manifest.property(code) else {
             return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
         };
+        // The manifest's declared access is the write claim; anything else is
+        // get-only, matching the DevicePropDesc the camera reports (#407).
+        if prop.access != Some(camera_config::PropertyAccess::ReadWrite) {
+            return Self::err(tid, resp::ACCESS_DENIED);
+        }
         let datatype = datatype_of(prop.ptype.as_deref());
         let Some(bytes) = data_in else {
             return Self::err(tid, resp::INVALID_PARAMETER);
@@ -1675,19 +1787,6 @@ impl Engine {
                     || self.stale_stream_blocks_live_view_arming())
         }) {
             return Self::err(tid, LIVE_VIEW_ARMING_BLOCKED);
-        }
-        // Function-mode selector drives the workflow phase.
-        if code == PROP_DF01 {
-            if let Some(n) = value_to_i64(&value) {
-                self.state.phase = match n as u32 {
-                    DF01_IMAGE_IMPORT => Phase::ImageImport,
-                    DF01_LIVE_VIEW => Phase::LiveView,
-                    _ => self.state.phase,
-                };
-                if n as u32 != DF01_IMAGE_IMPORT {
-                    self.state.reset_gates();
-                }
-            }
         }
         let value = self.normalized_property_write(code, prop, datatype, value);
         self.state.props.insert(code, value);
@@ -2805,6 +2904,10 @@ connections:
           - { sendOp: "0x101c" }
           - { openChannel: event }
           - { openChannel: liveView }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+    phase: liveView
 operations:
   "0x1002": { name: OpenSession, connections: [app] }
 properties:
@@ -2849,6 +2952,10 @@ connections:
           - { setProp: "0xdf01", value: 22 }
           - { openChannel: event }
           - { sendOp: "0x101c" }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+    phase: liveView
 operations:
   "0x1002": { name: OpenSession, connections: [app] }
   "0x101c": { name: InitiateOpenCapture, connections: [app] }
@@ -2911,5 +3018,307 @@ properties:
             Some(&22u16.to_le_bytes()),
         );
         assert!(engine.channel_ready(camera_config::SocketRole::Event));
+    }
+
+    fn response_code_of(reply: Reply) -> u16 {
+        match reply {
+            Reply::Response(r) => r.code,
+            Reply::Data { response, .. } => response.code,
+            Reply::DataStream { response, .. } => response.code,
+            other => panic!("expected a coded response, got {other:?}"),
+        }
+    }
+
+    /// #407: cataloged ops resolve connection × mode × kind × `requires`
+    /// before dispatch. The mode axis engages once a mode is detected; before
+    /// that, only connection/kind/requires gate.
+    #[test]
+    fn catalog_gating_refuses_out_of_context_ops() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+connections:
+  app: { kind: ptpip-app }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+  image-transfer:
+    detect: { prop: "0xdf01", eq: 20 }
+    phase: imageImport
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+  "0x9001": { name: UsbOnly, connections: [usb] }
+  "0x9002": { name: ImportOnly, modes: [image-transfer] }
+  "0x9003": { name: InventoryRow, kind: advertisedOnly }
+  "0x9004": { name: NeedsCard, requires: { prop: "0xd001", eq: 1 } }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+  "0xd001": { name: cardPresent, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut e);
+
+        // Wrong connection is refused regardless of mode state.
+        assert_eq!(
+            response_code_of(e.on_operation(&req(0x9001, 2, vec![]), None)),
+            resp::OPERATION_NOT_SUPPORTED
+        );
+        // Advertised-only inventory rows never execute.
+        assert_eq!(
+            response_code_of(e.on_operation(&req(0x9003, 3, vec![]), None)),
+            resp::OPERATION_NOT_SUPPORTED
+        );
+        // No detected mode yet: the mode axis is open, so the mode-gated op
+        // proceeds (a successful no-op here).
+        assert!(reply_is_ok(&e.on_operation(&req(0x9002, 4, vec![]), None)));
+        // `requires` unmet → runtime refusal.
+        assert_eq!(
+            response_code_of(e.on_operation(&req(0x9004, 5, vec![]), None)),
+            resp::GENERAL_ERROR
+        );
+
+        // Enter image-transfer: the mode-gated op is now available.
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 6, vec![0xdf01]),
+            Some(&20u16.to_le_bytes()),
+        );
+        assert_eq!(e.state().phase, Phase::ImageImport);
+        assert!(reply_is_ok(&e.on_operation(&req(0x9002, 7, vec![]), None)));
+
+        // Switch to a different detected mode: now it is wrong-mode.
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 8, vec![0xdf01]),
+            Some(&22u16.to_le_bytes()),
+        );
+        assert_eq!(
+            response_code_of(e.on_operation(&req(0x9002, 9, vec![]), None)),
+            resp::OPERATION_NOT_SUPPORTED
+        );
+
+        // Satisfy the prerequisite → the requires-gated op becomes available.
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 10, vec![0xd001]),
+            Some(&1u16.to_le_bytes()),
+        );
+        assert!(reply_is_ok(&e.on_operation(&req(0x9004, 11, vec![]), None)));
+    }
+
+    /// #407: SetDevicePropValue honors the declared access; only `readWrite`
+    /// properties accept writes.
+    #[test]
+    fn set_prop_enforces_declared_access() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+properties:
+  "0x5001": { name: writableProp, type: u16, access: readWrite }
+  "0x5002": { name: readOnlyProp, type: u16, access: readOnly }
+  "0x5003": { name: undeclaredProp, type: u16 }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut e);
+
+        assert!(reply_is_ok(&e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0x5001]),
+            Some(&7u16.to_le_bytes()),
+        )));
+        assert_eq!(e.state().props.get(&0x5001), Some(&PropValue::U16(7)));
+
+        assert_eq!(
+            response_code_of(e.on_operation(
+                &req(op::SET_DEVICE_PROP_VALUE, 3, vec![0x5002]),
+                Some(&7u16.to_le_bytes()),
+            )),
+            resp::ACCESS_DENIED
+        );
+        // No write claim = no write, matching the get-only descriptor served.
+        assert_eq!(
+            response_code_of(e.on_operation(
+                &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0x5003]),
+                Some(&7u16.to_le_bytes()),
+            )),
+            resp::ACCESS_DENIED
+        );
+        // Reads remain available on all three.
+        assert!(matches!(
+            e.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 5, vec![0x5002]), None),
+            Reply::Data { .. }
+        ));
+    }
+
+    /// #407: OpenSession refuses session id 0 and a second open instead of
+    /// silently resetting the session. PTP only forbids id 0; non-1 ids are
+    /// accepted absent wire evidence of refusal (#455 review).
+    #[test]
+    fn open_session_validates_parameter_and_reentry() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+
+        assert_eq!(
+            response_code_of(e.on_operation(&req(op::OPEN_SESSION, 1, vec![0]), None)),
+            resp::INVALID_PARAMETER
+        );
+        assert!(!e.state().session_open);
+
+        assert!(reply_is_ok(
+            &e.on_operation(&req(op::OPEN_SESSION, 2, vec![7]), None)
+        ));
+        assert_eq!(
+            response_code_of(e.on_operation(&req(op::OPEN_SESSION, 3, vec![1]), None)),
+            resp::SESSION_ALREADY_OPEN
+        );
+
+        assert!(reply_is_ok(
+            &e.on_operation(&req(op::CLOSE_SESSION, 4, vec![]), None)
+        ));
+        assert!(reply_is_ok(
+            &e.on_operation(&req(op::OPEN_SESSION, 5, vec![1]), None)
+        ));
+    }
+
+    /// #455 review: a command transport that ends without CloseSession takes
+    /// the session with it, so a reconnecting client can open again.
+    #[test]
+    fn transport_lost_clears_the_wedged_session() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+    phase: liveView
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut e);
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0xdf01]),
+            Some(&22u16.to_le_bytes()),
+        );
+        assert_eq!(e.state().phase, Phase::LiveView);
+
+        e.transport_lost();
+        assert!(!e.state().session_open);
+        assert_eq!(e.state().phase, Phase::Closed);
+        assert!(reply_is_ok(
+            &e.on_operation(&req(op::OPEN_SESSION, 3, vec![1]), None)
+        ));
+    }
+
+    /// #455 review: leaving the import workflow through a mode that declares
+    /// no phase still resets the bootstrap gates — `state.phase` is sticky
+    /// there, so keying the reset on the phase alone would skip it.
+    #[test]
+    fn leaving_import_mode_through_a_phaseless_mode_resets_gates() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+modes:
+  image-transfer:
+    detect: { prop: "0xdf01", eq: 20 }
+    phase: imageImport
+  card-reader:
+    detect: { prop: "0xdf01", eq: 23 }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut e);
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0xdf01]),
+            Some(&20u16.to_le_bytes()),
+        );
+        assert_eq!(e.state().phase, Phase::ImageImport);
+        e.state.satisfy_gate("imageImportBootstrap");
+
+        // Enter a mode with no declared phase: the phase stays sticky, but
+        // the import workflow was left, so earned gates reset.
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 3, vec![0xdf01]),
+            Some(&23u16.to_le_bytes()),
+        );
+        assert_eq!(e.state().phase, Phase::ImageImport, "phase is sticky");
+        assert!(!e.state().gate_satisfied("imageImportBootstrap"));
+
+        // Re-entering import does not reset: gates earned inside the
+        // workflow survive.
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0xdf01]),
+            Some(&20u16.to_le_bytes()),
+        );
+        e.state.satisfy_gate("imageImportBootstrap");
+        e.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 5, vec![0xdf01]),
+            Some(&20u16.to_le_bytes()),
+        );
+        assert!(e.state().gate_satisfied("imageImportBootstrap"));
+    }
+
+    /// #407: computed properties are declared by the manifest and served from
+    /// engine state — no property code is special in the engine.
+    #[test]
+    fn computed_properties_serve_object_state() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+properties:
+  "0xd620": { name: objectCount, type: u32, access: readOnly, computed: objectCount }
+  "0xd621": { name: objectHandles, type: u8a, access: readOnly, computed: objectHandles }
+"#,
+        )
+        .unwrap();
+        let mut e = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut e);
+
+        let Reply::Data { data, .. } =
+            e.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 2, vec![0xd620]), None)
+        else {
+            panic!("expected count data");
+        };
+        assert_eq!(u32::from_le_bytes(data.try_into().unwrap()), 0);
+
+        let Reply::Data { data, .. } =
+            e.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 3, vec![0xd621]), None)
+        else {
+            panic!("expected handle-list data");
+        };
+        let mut r = Reader::new(&data);
+        let handles = r.ptp_array(|r| r.u32()).unwrap();
+        assert!(handles.is_empty(), "empty store enumerates nothing");
+
+        // Computed properties are still readOnly on the wire.
+        assert_eq!(
+            response_code_of(e.on_operation(
+                &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0xd620]),
+                Some(&1u32.to_le_bytes()),
+            )),
+            resp::ACCESS_DENIED
+        );
+    }
+
+    fn assert_ok_open(e: &mut Engine) {
+        assert!(reply_is_ok(
+            &e.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None)
+        ));
     }
 }

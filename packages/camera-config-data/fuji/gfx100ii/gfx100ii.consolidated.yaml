@@ -11331,7 +11331,7 @@ properties:
     name: raw_0xd260
     ptpName: null
     type: u16
-    access: gs2
+    access: null
     kind: catalogOnly
     descriptor:
       form: enum
@@ -11367,7 +11367,7 @@ properties:
     name: raw_0xd261
     ptpName: null
     type: u16
-    access: gs2
+    access: null
     kind: catalogOnly
     descriptor:
       form: enum
@@ -11403,7 +11403,7 @@ properties:
     name: raw_0xd262
     ptpName: null
     type: u16
-    access: gs2
+    access: null
     kind: catalogOnly
     descriptor:
       form: range
@@ -11587,7 +11587,7 @@ properties:
     name: raw_0xd268
     ptpName: null
     type: u16
-    access: gs2
+    access: null
     kind: catalogOnly
     descriptor:
       form: enum
@@ -15165,6 +15165,7 @@ properties:
     type: u32
     access: readOnly
     descriptor: null
+    computed: objectCount
     controls: {}
     labels: {}
     requiresGate:
@@ -15178,6 +15179,7 @@ properties:
     type: u8a
     access: readOnly
     descriptor: null
+    computed: objectHandles
     controls: {}
     labels: {}
     requiresGate:
@@ -15364,6 +15366,7 @@ modes:
     detect:
       prop: '0xdf01'
       eq: 20
+    phase: imageImport
   raw-conv-backup-restore:
     capabilities:
     - rawDevelop
@@ -15396,6 +15399,7 @@ modes:
     detect:
       prop: '0xdf01'
       eq: 22
+    phase: liveView
   shooting/stills/pc-priority:
     capabilities: []
     detect: null
