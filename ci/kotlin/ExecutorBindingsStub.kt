@@ -28,6 +28,8 @@ class ExecutorBindingsStub : BleExecutorTransport {
 
     override suspend fun read(characteristic: String): ByteArray = byteArrayOf()
 
+    override suspend fun peripheralName(): String = ""
+
     override suspend fun write(characteristic: String, value: ByteArray) = Unit
 
     override suspend fun writeWithNotificationFence(

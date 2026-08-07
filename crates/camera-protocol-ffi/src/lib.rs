@@ -25,16 +25,22 @@ pub use executor::{
 };
 pub mod ptp_executor;
 pub use ptp_executor::{
-    run_initiator_action, run_initiator_action_to_sink, run_mode_entry,
+    run_initiator_action, run_initiator_action_to_sink, run_initiator_action_txn,
+    run_initiator_action_txn_to_sink, run_mode_entry, run_mode_entry_txn,
     run_mode_reestablishment_exit, run_selected_object_preparation, PtpCollectionValue,
     PtpDataOutput, PtpDataOutputSink, PtpDataOutputSinkError, PtpExecutionOutcome,
     PtpExecutorError, PtpExecutorTransport, PtpRuntimeValue, PtpScopeValue, PtpSessionOpenResult,
+    PtpTransactionError, PtpTransactionEvent, PtpTransactionResult, PtpTransactionTransport,
     PtpTransportError,
 };
 pub mod pcss_executor;
 pub use pcss_executor::{
     run_pcss_auto_establishment, run_pcss_known_address_establishment, PcssCallback,
     PcssEstablishmentOutcome, PcssExecutorError, PcssExecutorTransport,
+};
+pub mod usb_executor;
+pub use usb_executor::{
+    run_usb_establishment, UsbExecutorError, UsbExecutorTransport, UsbTransportError,
 };
 pub mod streaming_executor;
 pub use streaming_executor::{
@@ -858,6 +864,12 @@ pub struct ConnectionInfo {
     /// The wire framing for this connection's event socket, when it differs from
     /// the command channel (the Fuji `app` event socket is USB/PIMA type-4).
     pub event_framing: Option<PtpFraming>,
+    /// Who owns the PTP session on this connection (§11.29). `None` → not
+    /// modeled for this connection yet; the consumer falls back.
+    pub session_ownership: Option<FfiSessionOwnership>,
+    /// How pushed events arrive on this connection (§11.29). `None` → not
+    /// modeled; the consumer falls back to the §11.16.1 default (`reliable`).
+    pub event_delivery: Option<FfiEventDelivery>,
 }
 
 impl From<cc::WireFraming> for PtpFraming {
@@ -909,6 +921,43 @@ impl From<cc::ShutterRecipe> for ShutterRecipe {
         match r {
             cc::ShutterRecipe::AppPostview => ShutterRecipe::AppPostview,
             cc::ShutterRecipe::WirelessTether3Beat => ShutterRecipe::WirelessTether3Beat,
+        }
+    }
+}
+
+/// Mirror of `cc::SessionOwnership` (§11.29): who owns the PTP session on a
+/// connection. The executor selects session behavior from this trait, never
+/// from the connection id.
+#[derive(Debug, uniffi::Enum)]
+pub enum FfiSessionOwnership {
+    InitiatorOwned,
+    DaemonAttached,
+}
+
+/// Mirror of `cc::EventDelivery` (§11.29): how pushed events arrive on a
+/// connection.
+#[derive(Debug, uniffi::Enum)]
+pub enum FfiEventDelivery {
+    Reliable,
+    BestEffort,
+    None,
+}
+
+impl From<cc::SessionOwnership> for FfiSessionOwnership {
+    fn from(o: cc::SessionOwnership) -> Self {
+        match o {
+            cc::SessionOwnership::InitiatorOwned => FfiSessionOwnership::InitiatorOwned,
+            cc::SessionOwnership::DaemonAttached => FfiSessionOwnership::DaemonAttached,
+        }
+    }
+}
+
+impl From<cc::EventDelivery> for FfiEventDelivery {
+    fn from(d: cc::EventDelivery) -> Self {
+        match d {
+            cc::EventDelivery::Reliable => FfiEventDelivery::Reliable,
+            cc::EventDelivery::BestEffort => FfiEventDelivery::BestEffort,
+            cc::EventDelivery::None => FfiEventDelivery::None,
         }
     }
 }
@@ -2572,10 +2621,12 @@ impl ConfigStore {
     /// [`Recognition::Candidate`]).
     ///
     /// Returns `None` if the model is unknown, the connection declares no
-    /// establishment mechanism (e.g. `usb`), or no plan is registered under
-    /// that mechanism. The plan's [`Step`] values keep their structured
-    /// `Captured` / `Runtime` / `Template` forms — scope is resolved by the
-    /// dispatcher mid-walk (plan §11.1).
+    /// establishment mechanism, or no plan is registered under that mechanism.
+    /// The connection's `kind` selects the family registry the plan comes
+    /// from: raw `usb` connections resolve in the family USB registry
+    /// (§11.29), everything else in the BLE registry. The plan's [`Step`]
+    /// values keep their structured `Captured` / `Runtime` / `Template`
+    /// forms — scope is resolved by the dispatcher mid-walk (plan §11.1).
     pub fn establishment(
         &self,
         model: String,
@@ -2588,8 +2639,14 @@ impl ConfigStore {
         let body = self.inner.body(&model)?;
         let connection_config = body.connections.get(&connection)?;
         let mechanism = connection_config.establishment.clone()?;
-        let mut plan =
-            mfg_index::build_establishment(index, &model, &connection, &mechanism, &initial_scope)?;
+        let mut plan = mfg_index::build_establishment(
+            index,
+            &model,
+            &connection,
+            &mechanism,
+            connection_config.kind.as_deref(),
+            &initial_scope,
+        )?;
         plan.activities
             .extend(connection_config.activities.iter().map(Into::into));
         Some(plan)
@@ -2647,6 +2704,8 @@ impl ConfigStore {
                 shutter_recipe: c.shutter_recipe.map(Into::into),
                 command_framing: c.command_framing.map(Into::into),
                 event_framing: c.event_framing.map(Into::into),
+                session_ownership: c.session.map(|s| s.ownership.into()),
+                event_delivery: c.events.map(|e| e.delivery.into()),
             })
             .collect()
     }
@@ -3799,7 +3858,8 @@ fn refine_establishment_native(
             "{model}:{selector}: unknown model"
         )));
     };
-    let mechanism = match body.connections.get(selector) {
+    let connection = body.connections.get(selector);
+    let mechanism = match connection {
         Some(connection) => connection.establishment.clone().ok_or_else(|| {
             EstablishmentError::UnknownPlan(format!(
                 "{model}:{selector}: connection has no establishment"
@@ -3807,7 +3867,9 @@ fn refine_establishment_native(
         })?,
         None => selector.to_string(),
     };
-    let Some(plan) = mfg_index::build_establishment(index, model, selector, &mechanism, &scope)
+    let connection_kind = connection.and_then(|connection| connection.kind.as_deref());
+    let Some(plan) =
+        mfg_index::build_establishment(index, model, selector, &mechanism, connection_kind, &scope)
     else {
         return Err(EstablishmentError::UnknownPlan(format!(
             "{model}:{selector}: missing mechanism {mechanism}"
@@ -3919,6 +3981,7 @@ fn build_manufacturer_index_store(
         .as_ref()
         .expect("manufacturer index store has a resolved index");
     mfg_index::validate_ble_plan_mappings(index)?;
+    mfg_index::validate_usb_plan_mappings(index)?;
     let manufacturer = manufacturer_yaml
         .map(|yaml| {
             cc::ManufacturerDefaults::from_yaml(&yaml)

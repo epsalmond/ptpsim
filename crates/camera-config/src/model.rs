@@ -1099,6 +1099,15 @@ pub struct Connection {
     /// in `actions.shutter`.
     #[serde(default)]
     pub shutter_recipe: Option<ShutterRecipe>,
+    /// Who owns the PTP session on this connection (§11.29): the executor
+    /// selects session behavior from this trait, never from the `kind` string.
+    /// `None` → not modeled for this connection; the consumer falls back.
+    #[serde(default)]
+    pub session: Option<SessionContract>,
+    /// How pushed events arrive on this connection (§11.29). `None` → not
+    /// modeled; the consumer falls back to the §11.16.1 default (`reliable`).
+    #[serde(default)]
+    pub events: Option<EventDeliveryContract>,
     /// The PTP/IP wire framing of this connection's command channel (#133/#140):
     /// so a consumer picks the codec from data instead of mapping the connection
     /// kind to a framing in its own code.
@@ -1753,6 +1762,48 @@ pub enum ShutterRecipe {
     AppPostview,
     /// `wireless-tether`: the 3-beat `0xD039` + `0x100E` virtual shutter.
     WirelessTether3Beat,
+}
+
+/// Who owns the PTP session on a connection (§11.29). The executor selects its
+/// session behavior from this trait, never from the connection kind. Closed
+/// vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionOwnership {
+    /// The executor opens and owns the PTP session (raw `usb`).
+    InitiatorOwned,
+    /// A platform daemon owns the session; the executor attaches and sends no
+    /// session-management operations (`usb-passthrough`).
+    DaemonAttached,
+}
+
+/// The session contract of a connection (§11.29), declared per connection in
+/// the #81 trait pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContract {
+    pub ownership: SessionOwnership,
+}
+
+/// How pushed events arrive on a connection (§11.29). Closed vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventDelivery {
+    /// Every pushed event is delivered (the §11.16.1 event-socket semantics).
+    Reliable,
+    /// Pushed events exist but any single event may be lost; §11.16.1 requires
+    /// an event-source `awaitUntil` on such a connection to declare `thenPoll`.
+    BestEffort,
+    /// The connection has no event channel.
+    None,
+}
+
+/// The event-delivery contract of a connection (§11.29), declared per
+/// connection in the #81 trait pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventDeliveryContract {
+    pub delivery: EventDelivery,
 }
 
 /// A PTP/IP wire framing (#133/#140). Declared per connection/channel so a

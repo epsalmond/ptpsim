@@ -1,21 +1,21 @@
 ---
-description: Paper design, not yet implemented — PTP/USB, XLV (HTTP/HTTPS), and wireless-tether transports as manifest-driven adapters over the one generic engine.
+description: PTP/USB, XLV (HTTP/HTTPS), and wireless-tether transports as manifest-driven adapters over the one generic engine. The initiator-side USB model is specified in MANIFEST_SCHEMA §11.29; the USB responder, XLV, and wireless tether remain paper design.
 status: plan
 read-when: Planning or implementing a new transport, or checking the transport-adapter invariant before touching the engine/transport boundary.
 ---
 
-# ptpsim Transport Designs (paper)
+# ptpsim Transport Designs
 
-Covers the transports shipping
-soon — PTP/USB, XLV (HTTP/HTTPS), and wireless tether — for the Fuji GFX100 II
+Covers PTP/USB, XLV (HTTP/HTTPS), and wireless tether, for the Fuji GFX100 II
 first. These extend the design in [`../DESIGN.md`](../DESIGN.md); read its
 "Transport And Mode Matrix" and "Architecture: generic engine" sections first.
 NB: the YAML sketches below predate the `connections` schema that superseded
 the draft `transports:` block (#162); on implementation, this material lands
 as `connections.*` entries.
 
-USB captures are in progress; this doc is the target the captures + manifests
-land against.
+USB captures are in progress. The initiator-side USB schema has landed
+([`MANIFEST_SCHEMA.md`](MANIFEST_SCHEMA.md) §11.29); the responder-side design
+below remains the target the captures and manifests land against.
 
 ## The transport-adapter invariant
 
@@ -56,23 +56,44 @@ pub trait TransportAdapter {
 USB is a single link carrying mutually-exclusive **modes**. PTP containers ride
 bulk IN/OUT; events ride an interrupt IN endpoint (USB Still-Image-Capture
 class). The container payloads are the **same `ptp-core` types** already used by
-PTP/IP — only the framing/transport differ, so the engine is unchanged.
+PTP/IP; only the framing/transport differ, so the engine is unchanged.
 
-### Responder (simulating USB to a host)
+### Initiator (implemented)
+
+The initiator-side model is manifest schema, specified in
+[`MANIFEST_SCHEMA.md`](MANIFEST_SCHEMA.md) §11.29. Two connection kinds:
+
+- `usb` (raw): the initiator owns the device, interface claim, endpoints,
+  session, and transaction ids. Establishment plans live in
+  `families.<fam>.usb.establishments` and use the USB verbs (`usbClaim`,
+  `usbBulkOut`, `usbBulkIn`, `usbAwaitInterrupt`). The host implements the
+  foreign `UsbExecutorTransport` trait; the executor entry point is
+  `run_usb_establishment`.
+- `usb-passthrough`: a platform daemon owns framing, session, and transaction
+  ids. The host speaks typed transactions through the foreign
+  `PtpTransactionTransport` trait; mode entries and actions run through
+  `run_mode_entry_txn` and `run_initiator_action_txn`.
+
+Per-connection trait fields (`session.ownership`, `events.delivery`) tell the
+consumer which behavior to select, following the #81 pattern. Platform
+availability of each kind stays manifest data through `connections(platform)`.
+
+### Responder (paper: simulating USB to a host)
 
 A normal machine is a USB host; presenting a *device* needs a PHY:
 
 - **Preferred:** Linux USB gadget on an SBC (Pi Zero 2 W / Pi 4 in peripheral
-  mode) via **FunctionFS** — the PTP responder runs in userspace and bridges bulk
+  mode) via **FunctionFS**: the PTP responder runs in userspace and bridges bulk
   transfers to `camera-sim`. ~$15, all logic stays in our software.
-- **Alternative:** Facedancer-class hardware (Cynthion / GreatFET) — device logic
+- **Alternative:** Facedancer-class hardware (Cynthion / GreatFET): device logic
   on a full PC, board is just the PHY.
 - The macOS app compiles as a macOS host app to get USB3 host control/support
-  "for free" — that is the **host/probe** side, not the responder.
+  "for free"; that is the **host/probe** side, not the responder.
 
 The adapter is a `UsbResponder` that reads a bulk frame → decodes (PTP-over-USB
 container framing, a `protocol-primitives` entry) → `engine.on_operation` →
 encodes the reply → bulk write. Same `Reply` enum as every other transport.
+The responder side remains paper design.
 
 ### Modes
 
@@ -81,7 +102,7 @@ encodes the reply → bulk write. Same `Reply` enum as every other transport.
 bleed (ops legal in a mode where they "make no sense") is captured as data, not
 special-cased.
 
-### Manifest block
+### Responder descriptor data (paper)
 
 ```yaml
 transports:
@@ -103,9 +124,12 @@ transports:
       webcam:         { operations: [/* … */] }
 ```
 
+This descriptor block is what the gadget presents to a host. On implementation
+it lands as `connections.*` and family `usb` data per §11.29.
+
 ### Probe
 
-`camera-probe` over USB is an ordinary host (libusb/nusb) — **no PHY hardware
+`camera-probe` over USB is an ordinary host (libusb/nusb); **no PHY hardware
 needed** to learn USB behavior. Plans keyed `fuji/usb/<mode>/…` capture each
 mode's operation set + cross-mode bleed into bundles → manifest. (This is what
 the in-progress USB captures feed.)

@@ -31,6 +31,30 @@ families:
       knockPort: 51562
       protocol: "PCSS/1.0"
       discovery: { retryIntervalMs: 1000, maxAttempts: 60 }
+    usb:
+      # USB interface triples `usbClaim` steps reference by symbolic name (§11.29).
+      interfaces:
+        stillImage: { class: 6, subclass: 1, protocol: 1 }   # PIMA 15740 still-image class
+      establishments:
+        # Raw-USB bring-up on the PIMA containers alone: claim the still-image
+        # interface, OpenSession, GetDeviceInfo. No manufacturer data and no
+        # camera-conditional content; response verification is the conformance
+        # layer's assertion point over the captureAs slots.
+        usb-claim-open:
+          mechanism: usb-claim-open
+          activities:
+            - id: camera.session.open.usb
+              version: 1
+              displayRole: openingSession
+              defaultExpectedDurationMs: 2000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 5 }
+          steps:
+            - usbClaim: { interface: stillImage }
+            - usbBulkOut: { data: { literal: "10000000010002100000000001000000" } }  # OpenSession(1), tid 0, USB container
+            - usbBulkIn: { maxLength: 512, encoding: bytes, captureAs: openSessionResponse }
+            - usbBulkOut: { data: { literal: "0c0000000100011001000000" } }          # GetDeviceInfo, tid 1
+            - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }
     ble:
       # Universal GATT catalog. Every Fuji BLE camera, every firmware.
       # The same UUIDs are used for both LEGACY and RED styles (observed in
@@ -545,11 +569,12 @@ families:
             - bleDelay: { durationMs: 600 }
             # legacy manufacturer app 4.10.2 treats requestMtu(515) as fire-and-forget:
             # onMtuChanged ignores the callback status and the negotiated value, so
-            # there is no evidenced MTU floor. CoreBluetooth has no request API and
-            # auto-negotiates below 515 (185 observed on X-A7 hardware) — tolerate a
-            # below-target checkpoint while keeping 515 as the request target for
-            # platforms with a request API. (#399)
-            - bleRequestMtu: { mtu: 515, tolerant: true }
+            # 515 is a request target with no evidenced floor (#400). CoreBluetooth
+            # has no request API and auto-negotiates below it (185 observed on X-A7
+            # hardware); with no minimumMtu the checkpoint passes at any negotiated
+            # value. tolerant keeps a failed requestMtu call itself from blocking
+            # registration, matching the fire-and-forget reference behavior. (#399)
+            - bleRequestMtu: { requestedMtu: 515, tolerant: true }
             - bleDiscoverServices: {}
             - bleWrite: { gatt: pairingKey, value: { captured: pairingKeyBytes } }
             - bleWrite:
@@ -559,9 +584,13 @@ families:
                 gatt: connectedDeviceBleProtocolVersion
                 value: { literal: "0200" }
                 tolerant: true
-            - bleRead: { gatt: gapDeviceName, encoding: utf8-cstring, captureAs: cameraName }
-            # GAP-name completion starts this idempotent second name write while
-            # the app's read queue continues.
+            # CoreBluetooth filters the GAP service (0x1800) from discovery, so
+            # the reference app's 0x2A00 Device Name read can never succeed on
+            # iOS (#403, hardware-proven 2026-07-24). Capture the platform
+            # peripheral name instead; it carries the same value.
+            - blePeripheralName: { captureAs: cameraName }
+            # Name-capture completion starts this idempotent second name write
+            # while the app's read queue continues.
             - bleWrite:
                 gatt: deviceNameString
                 value: { runtime: terminalName, encoding: utf8, transform: { appendNul: {} } }
@@ -618,20 +647,25 @@ families:
           steps:
             - bleConnect: {}
             - bleDiscoverServices: {}
-            # No pre-read baseline and no reference app 0x8000 state family: Camera
-            # Remote subscribes, writes launch, then accepts u16-le state 1.
+            # legacy manufacturer app subscribes before the launch write; the CCCD write
+            # is accepted on hardware. No pre-read baseline and no reference app 0x8000
+            # state family.
             - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
             - bleWrite:
                 gatt: functionLaunchRequest
                 value: { runtime: launchMode, encoding: u16-le }
-                notificationFence: apState
+            # The X-A7 (fw 02.30-era) starts its AP on the launch write but
+            # confirms state only by read: no apState indication arrived within
+            # 20s on hardware, twice (2026-07-24, #412). Poll the
+            # characteristic. A pre-launch 0 is the normal not-yet state, not
+            # a refusal, so there is no failWhen.
             - bleAwaitUntil:
-                source: { notify: { gatt: apState, mode: indicate } }
+                source: { read: apState }
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }
                 captureAs: apStateRaw
                 until: { apState: { eq: "1" } }
-                failWhen: { apState: { eq: "0" } }
                 timeoutMs: 20000
+                intervalMs: 1000
             - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
 
       # BLE-native control actions runnable from the resting BLE link without

@@ -102,6 +102,8 @@ pub struct FamilyBlock {
     pub ble: Option<FamilyBleBlock>,
     #[serde(default)]
     pub pcss: Option<FamilyPcssBlock>,
+    #[serde(default)]
+    pub usb: Option<FamilyUsbBlock>,
 }
 
 /// PCSS facts available before a body manifest has been selected. The caller
@@ -185,6 +187,39 @@ pub struct BleAdvertConstants {
     pub service_uuids: BTreeMap<String, String>,
 }
 
+/// Family-shared USB facts (§11.29): the interface triples `usbClaim` steps
+/// reference by symbolic name, and the named establishment plans a raw `usb`
+/// connection's `establishment:` mechanism selects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FamilyUsbBlock {
+    /// `symbolic name -> USB class/subclass/protocol triple`. The loader
+    /// validates `usbClaim` names against this map at index-build time but
+    /// keeps the step symbolic; the FFI mirror resolves name to triple.
+    #[serde(default)]
+    pub interfaces: BTreeMap<String, UsbInterfaceTriple>,
+    /// Named establishment plans keyed by mechanism (`usb-claim-session`, …).
+    /// Resolve via [`Self::establishment`].
+    #[serde(default)]
+    pub establishments: BTreeMap<String, EstablishmentBlock>,
+}
+
+impl FamilyUsbBlock {
+    /// The establishment plan registered under `mechanism`, if any.
+    pub fn establishment(&self, mechanism: &str) -> Option<&EstablishmentBlock> {
+        self.establishments.get(mechanism)
+    }
+}
+
+/// A USB interface's class/subclass/protocol triple (§11.29). The executor
+/// claims the interface matching all three bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsbInterfaceTriple {
+    pub class: u8,
+    pub subclass: u8,
+    pub protocol: u8,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EstablishmentBlock {
@@ -261,11 +296,19 @@ pub enum Step {
     BleRequestMtu(BleRequestMtuStep),
     BleDiscoverServices(BleDiscoverServicesStep),
     BleRead(BleReadStep),
+    BlePeripheralName(BlePeripheralNameStep),
     BleWrite(BleWriteStep),
     BleSubscribe(BleSubscribeStep),
     BleNotify(BleNotifyStep),
     BleAwaitUntil(BleAwaitUntilStep),
     BleWriteChunk(BleWriteChunkStep),
+    /// USB establishment verbs (§11.29). Valid only inside
+    /// `families.<fam>.usb.establishments` plans; the loader rejects them
+    /// anywhere else.
+    UsbClaim(UsbClaimStep),
+    UsbBulkOut(UsbBulkOutStep),
+    UsbBulkIn(UsbBulkInStep),
+    UsbAwaitInterrupt(UsbAwaitInterruptStep),
     Acquire(AcquireStep),
     AcquireFirmware(AcquireFirmwareStep),
     If(IfStep),
@@ -290,11 +333,16 @@ impl Step {
             Step::BleRequestMtu(_) => "bleRequestMtu",
             Step::BleDiscoverServices(_) => "bleDiscoverServices",
             Step::BleRead(_) => "bleRead",
+            Step::BlePeripheralName(_) => "blePeripheralName",
             Step::BleWrite(_) => "bleWrite",
             Step::BleSubscribe(_) => "bleSubscribe",
             Step::BleNotify(_) => "bleNotify",
             Step::BleAwaitUntil(_) => "bleAwaitUntil",
             Step::BleWriteChunk(_) => "bleWriteChunk",
+            Step::UsbClaim(_) => "usbClaim",
+            Step::UsbBulkOut(_) => "usbBulkOut",
+            Step::UsbBulkIn(_) => "usbBulkIn",
+            Step::UsbAwaitInterrupt(_) => "usbAwaitInterrupt",
             Step::Acquire(_) => "acquire",
             Step::AcquireFirmware(_) => "acquireFirmware",
             Step::If(_) => "if",
@@ -315,11 +363,16 @@ impl Step {
             Step::BleRequestMtu(s) => s.opts.clone(),
             Step::BleDiscoverServices(s) => s.opts.clone(),
             Step::BleRead(s) => s.opts.clone(),
+            Step::BlePeripheralName(s) => s.opts.clone(),
             Step::BleWrite(s) => s.opts.clone(),
             Step::BleSubscribe(s) => s.opts.clone(),
             Step::BleNotify(s) => s.opts.clone(),
             Step::BleAwaitUntil(s) => s.opts.clone(),
             Step::BleWriteChunk(s) => s.opts.clone(),
+            Step::UsbClaim(s) => s.opts.clone(),
+            Step::UsbBulkOut(s) => s.opts.clone(),
+            Step::UsbBulkIn(s) => s.opts.clone(),
+            Step::UsbAwaitInterrupt(s) => s.opts.clone(),
             Step::Acquire(s) => s.opts.clone(),
             Step::AcquireFirmware(s) => s.opts.clone(),
             Step::If(_) => StepOptions::default(),
@@ -387,15 +440,21 @@ pub struct BleAwaitDisconnectStep {
     pub opts: StepOptions,
 }
 
-/// `bleRequestMtu: { mtu: 158 }` — ask the link for an ATT MTU before GATT
-/// traffic. Sony pairing/Wi-Fi flows request 158. On platforms without an
-/// explicit request API (CoreBluetooth negotiates automatically), the
-/// dispatcher treats this as a checkpoint: succeed if the negotiated MTU
-/// is ≥ `mtu`, else step failure (tolerant-aware as usual).
+/// `bleRequestMtu: { requestedMtu: 158 }` — ask the link for an ATT MTU
+/// before GATT traffic. `requestedMtu` is the reference app's request target
+/// (the Android `requestMtu` argument), an observed request, nothing more;
+/// a platform without a request API (CoreBluetooth) makes no call.
+/// `minimumMtu` is a separately evidenced floor below which the flow fails;
+/// declare it only with wire-capture or hardware evidence, never from one
+/// data point. After any request, the step compares the negotiated MTU
+/// against a declared floor on every platform and fails (tolerant-aware as
+/// usual) below it; with no floor it succeeds at any negotiated MTU.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BleRequestMtuStep {
-    pub mtu: u16,
+    pub requested_mtu: u16,
+    #[serde(default)]
+    pub minimum_mtu: Option<u16>,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }
@@ -425,6 +484,92 @@ pub struct BleReadStep {
     /// (§11.13 capture pipeline). Empty = decode the raw payload.
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
     pub transform: Vec<Transform>,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `usbClaim: { interface: stillImage }`: claim the named interface on the
+/// bound device (§11.29). The symbolic name is validated against the family
+/// `usb.interfaces` map at index-build time and stays on the step; the FFI
+/// mirror resolves it to the class/subclass/protocol triple. Valid only in a
+/// raw `usb` establishment plan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbClaimStep {
+    pub interface: String,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `usbBulkOut: { data: ... }`: resolve `data` per §11.1 and write the bytes
+/// to the bulk OUT endpoint (§11.29). The §11.13 write pipeline applies
+/// (resolve, encoding decode, transform chain, wire bytes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbBulkOutStep {
+    pub data: StepValue,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `usbBulkIn: { maxLength, encoding, captureAs, transform? }`: read up to
+/// `maxLength` bytes from the bulk IN endpoint, then run the §11.13 capture
+/// pipeline (transform chain, encoding decode, scope string) and bind the
+/// result under `captureAs` (§11.29).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbBulkInStep {
+    pub max_length: u32,
+    pub encoding: Encoding,
+    /// Scope slot that receives the read value, decoded per `encoding`.
+    #[serde(alias = "capture_as")]
+    pub capture_as: String,
+    /// Transform chain applied to the wire bytes BEFORE `encoding` decode
+    /// (§11.13 capture pipeline). Empty = decode the raw payload.
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub transform: Vec<Transform>,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `usbAwaitInterrupt: { encoding, captureAs, transform?, timeoutMs? }`:
+/// await one interrupt IN event frame and capture it with the same pipeline
+/// as [`UsbBulkInStep`] (§11.29). The transport may pend indefinitely; the
+/// executor owns every deadline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbAwaitInterruptStep {
+    pub encoding: Encoding,
+    /// Scope slot that receives the event frame, decoded per `encoding`.
+    #[serde(alias = "capture_as")]
+    pub capture_as: String,
+    /// Transform chain applied to the frame bytes BEFORE `encoding` decode
+    /// (§11.13 capture pipeline). Empty = decode the raw payload.
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
+    pub transform: Vec<Transform>,
+    /// Wall-clock budget of the wait. Absent = the executor's single-call
+    /// backstop (10s), so plans authored before the field existed are
+    /// unaffected.
+    #[serde(default)]
+    pub timeout_ms: Option<u32>,
+    #[serde(flatten, default)]
+    pub opts: StepOptions,
+}
+
+/// `blePeripheralName: { captureAs: cameraName }` captures the connected
+/// peripheral's platform name (§11.4b). CoreBluetooth filters the GAP service
+/// (0x1800) from discovery, so a GATT read of the Device Name characteristic
+/// (0x2A00) deterministically fails on iOS; the same value is only available
+/// as `CBPeripheral.name`. Hosts with GAP access (Android) may satisfy this
+/// with the GATT read. The name binds into scope as a UTF-8 string with any
+/// NUL terminator removed; an unavailable name fails the step (tolerant-aware
+/// as usual), never binds an empty string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlePeripheralNameStep {
+    /// Scope slot that receives the peripheral name.
+    #[serde(alias = "capture_as")]
+    pub capture_as: String,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }
@@ -1340,6 +1485,9 @@ pub struct ModelView {
     /// Merged family + model BLE block, with GATT names already resolved on
     /// every Step's `gatt:` field.
     pub ble: Option<FamilyBleBlock>,
+    /// Merged family USB block (§11.29), with every `usbClaim` interface name
+    /// validated against `usb.interfaces`.
+    pub usb: Option<FamilyUsbBlock>,
     /// Merged family PCSS discovery policy.
     pub pcss: Option<FamilyPcssBlock>,
     /// Signatures in file-declaration order (top-of-file first), with all

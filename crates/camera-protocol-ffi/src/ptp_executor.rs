@@ -70,6 +70,108 @@ pub trait PtpExecutorTransport: Send + Sync {
     async fn sleep(&self, ms: u32) -> Result<(), PtpTransportError>;
 }
 
+/// Failure surface a transaction transport implementation may raise (§11.29):
+/// the `UsbTransportError` vocabulary minus the claim/open variants the
+/// daemon owns. `Timeout` classifies as a deadline to the executor; every
+/// other variant is an ordinary transport failure.
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum PtpTransactionError {
+    /// No daemon session is attached.
+    #[error("transaction session is not connected")]
+    NotConnected,
+    /// The device detached mid-operation.
+    #[error("device detached mid-operation")]
+    DeviceGone,
+    /// An endpoint answered STALL.
+    #[error("endpoint stalled: {detail}")]
+    Stall { detail: String },
+    /// The transaction exceeded its deadline.
+    #[error("transaction timed out: {detail}")]
+    Timeout { detail: String },
+    /// The platform denied device access.
+    #[error("platform denied device access: {detail}")]
+    NotAuthorized { detail: String },
+    /// Any remaining failure.
+    #[error("transaction transport failure: {detail}")]
+    Failed { detail: String },
+}
+
+/// How a transaction transport failure reads in the executor's frame-path
+/// vocabulary: `Timeout` keeps its identity so the executor still classifies
+/// it as a deadline; the transaction-only variants fold into `Failed` with
+/// their display text preserved.
+impl From<PtpTransactionError> for PtpTransportError {
+    fn from(error: PtpTransactionError) -> Self {
+        match error {
+            PtpTransactionError::NotConnected => PtpTransportError::NotConnected,
+            PtpTransactionError::Timeout { detail } => PtpTransportError::Timeout { detail },
+            other => PtpTransportError::Failed {
+                detail: other.to_string(),
+            },
+        }
+    }
+}
+
+/// The typed result of one daemon-run PTP transaction (§11.29). The daemon
+/// owns the transaction id, so it is not reported here.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PtpTransactionResult {
+    pub response_code: u16,
+    pub params: Vec<u32>,
+    pub data_in: Option<Vec<u8>>,
+}
+
+/// One typed event off a daemon-owned event channel (§11.29).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PtpTransactionEvent {
+    pub event_code: u16,
+    pub params: Vec<u32>,
+}
+
+/// Typed PTP transactions the host supplies for a `daemonAttached` connection
+/// (§11.29): a platform daemon owns the device, framing, session, and
+/// transaction ids, so the seam is typed I/O, not byte frames. Rust owns step
+/// sequencing, retry/tolerance policy, captures, and aggregate deadlines,
+/// exactly as on the frame-based seam.
+///
+/// The executor passes a per-call `timeout_ms` for the daemon to enforce and
+/// races every pending call against `sleep` as the aggregate-budget backstop.
+/// A dropped in-flight call (deadline lost the race, or the whole run future
+/// was cancelled) surfaces on the foreign side as task/coroutine
+/// cancellation, so every method must be cancellation-safe.
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
+pub trait PtpTransactionTransport: Send + Sync {
+    /// Run one typed PTP transaction; the daemon enforces `timeout_ms`.
+    async fn execute(
+        &self,
+        opcode: u16,
+        params: Vec<u32>,
+        data_out: Option<Vec<u8>>,
+        timeout_ms: u32,
+    ) -> Result<PtpTransactionResult, PtpTransactionError>;
+    /// Read one object range.
+    async fn read_partial_object(
+        &self,
+        handle: u32,
+        offset: u64,
+        length: u32,
+        timeout_ms: u32,
+    ) -> Result<Vec<u8>, PtpTransactionError>;
+    /// Return the next event matching `event_code`, retaining unrelated
+    /// events for their normal consumers instead of draining them from the
+    /// host queue. Code-selective like
+    /// `PtpExecutorTransport::next_event_frame`.
+    async fn next_event(&self, event_code: u16)
+        -> Result<PtpTransactionEvent, PtpTransactionError>;
+    /// Detach from the daemon session. Named `shutdown`, not `close`: uniffi's
+    /// Kotlin bindings give callback interfaces an `AutoCloseable.close()`, and
+    /// a trait method of the same name clashes on the JVM.
+    async fn shutdown(&self) -> Result<(), PtpTransactionError>;
+    /// Resolve after `ms` milliseconds of wall-clock time.
+    async fn sleep(&self, ms: u32) -> Result<(), PtpTransactionError>;
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PtpRuntimeValue {
     pub key: String,
@@ -164,7 +266,45 @@ pub async fn run_mode_entry(
         connection,
         steps,
         plan.activities,
-        transport,
+        TxnBackend::Frame(transport),
+        observer,
+        activity_observer,
+        numeric_runtime_params(runtime_params),
+        None,
+    )
+    .await
+}
+
+/// The `run_mode_entry` grammar over the daemon-owned transaction seam
+/// (§11.29): identical plan-shape rules, only the transport differs.
+#[uniffi::export]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_mode_entry_txn(
+    store: Arc<ConfigStore>,
+    connection: String,
+    from: Option<String>,
+    to: String,
+    transport: Arc<dyn PtpTransactionTransport>,
+    observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
+    runtime_params: Vec<PtpRuntimeValue>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    let plan = store
+        .mode_entry(connection.clone(), from, to)
+        .ok_or_else(|| PtpExecutorError::UnknownPlan {
+            detail: format!("{connection}: mode entry not found"),
+        })?;
+    let crate::ModeEntryExecution::Ptp { steps } = plan.execution else {
+        return Err(PtpExecutorError::UnsupportedPlan {
+            detail: format!("{connection}: mode entry requires host orchestration"),
+        });
+    };
+    run_steps(
+        store,
+        connection,
+        steps,
+        plan.activities,
+        TxnBackend::Transaction(transport),
         observer,
         activity_observer,
         numeric_runtime_params(runtime_params),
@@ -200,7 +340,7 @@ pub async fn run_mode_reestablishment_exit(
         connection,
         exit_steps,
         plan.activities,
-        transport,
+        TxnBackend::Frame(transport),
         observer,
         activity_observer,
         numeric_runtime_params(runtime_params),
@@ -229,7 +369,38 @@ pub async fn run_initiator_action(
         connection,
         initiator.steps,
         initiator.activities,
-        transport,
+        TxnBackend::Frame(transport),
+        observer,
+        activity_observer,
+        runtime_params,
+        None,
+    )
+    .await
+}
+
+/// The `run_initiator_action` grammar over the daemon-owned transaction seam
+/// (§11.29): one action's initiator binding on the daemon-owned session.
+#[uniffi::export]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_initiator_action_txn(
+    store: Arc<ConfigStore>,
+    request: ActionInvocationRequest,
+    transport: Arc<dyn PtpTransactionTransport>,
+    observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    let (connection, action, runtime_params) = resolve_initiator(&store, request)?;
+    let initiator = action
+        .initiator
+        .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
+            detail: format!("{connection}: action has no initiator binding"),
+        })?;
+    run_steps(
+        store,
+        connection,
+        initiator.steps,
+        initiator.activities,
+        TxnBackend::Transaction(transport),
         observer,
         activity_observer,
         runtime_params,
@@ -259,7 +430,40 @@ pub async fn run_initiator_action_to_sink(
         connection,
         initiator.steps,
         initiator.activities,
-        transport,
+        TxnBackend::Frame(transport),
+        observer,
+        activity_observer,
+        runtime_params,
+        Some(sink),
+    )
+    .await
+}
+
+/// The `run_initiator_action_to_sink` grammar over the daemon-owned
+/// transaction seam (§11.29): completed ordinary data outputs stream to the
+/// sink instead of accumulating in the outcome.
+#[uniffi::export]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_initiator_action_txn_to_sink(
+    store: Arc<ConfigStore>,
+    request: ActionInvocationRequest,
+    transport: Arc<dyn PtpTransactionTransport>,
+    observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
+    sink: Arc<dyn PtpDataOutputSink>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    let (connection, action, runtime_params) = resolve_initiator(&store, request)?;
+    let initiator = action
+        .initiator
+        .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
+            detail: format!("{connection}: action has no initiator binding"),
+        })?;
+    run_steps(
+        store,
+        connection,
+        initiator.steps,
+        initiator.activities,
+        TxnBackend::Transaction(transport),
         observer,
         activity_observer,
         runtime_params,
@@ -325,7 +529,7 @@ pub async fn run_selected_object_preparation(
         connection,
         plan.preparation_steps,
         Vec::new(),
-        transport,
+        TxnBackend::Frame(transport),
         observer,
         activity_observer,
         numeric_runtime_params(runtime_params),
@@ -340,7 +544,7 @@ async fn run_steps(
     connection: String,
     steps: Vec<EntryStep>,
     activities: Vec<ConnectionActivityDescriptor>,
-    transport: Arc<dyn PtpExecutorTransport>,
+    backend: TxnBackend,
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
     runtime_params: Vec<PtpScopeValue>,
@@ -354,16 +558,46 @@ async fn run_steps(
         .ok_or_else(|| PtpExecutorError::UnknownPlan {
             detail: format!("unknown connection {connection}"),
         })?;
-    let command_framing: PtpFraming = connection_config
-        .command_framing
-        .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
-            detail: format!("connection {connection} has no command framing"),
-        })?
-        .into();
+    // §11.29: the declared session ownership, not the kind string, selects
+    // the seam. An entry-point mismatch fails fast, before any I/O. A
+    // connection with no declared ownership keeps the legacy behavior.
+    let session_ownership = connection_config.session.map(|session| session.ownership);
+    match (session_ownership, &backend) {
+        (Some(cc::SessionOwnership::DaemonAttached), TxnBackend::Frame(_)) => {
+            return Err(PtpExecutorError::UnsupportedPlan {
+                detail: format!(
+                    "{connection}: session.ownership daemonAttached cannot enter a frame-based entry point (§11.29)"
+                ),
+            });
+        }
+        (Some(cc::SessionOwnership::InitiatorOwned), TxnBackend::Transaction(_)) => {
+            return Err(PtpExecutorError::UnsupportedPlan {
+                detail: format!(
+                    "{connection}: session.ownership initiatorOwned cannot enter a transaction entry point (§11.29)"
+                ),
+            });
+        }
+        _ => {}
+    }
+    let command_framing: PtpFraming = match connection_config.command_framing {
+        Some(framing) => framing.into(),
+        None if matches!(backend, TxnBackend::Frame(_)) => {
+            return Err(PtpExecutorError::UnsupportedPlan {
+                detail: format!("connection {connection} has no command framing"),
+            });
+        }
+        // The daemon owns framing on the transaction seam (§11.29); the value
+        // is never encoded or decoded there.
+        None => PtpFraming::Standard,
+    };
     let event_framing = connection_config
         .event_framing
         .map(Into::into)
         .unwrap_or(command_framing);
+    let event_delivery = connection_config
+        .events
+        .map(|events| events.delivery)
+        .unwrap_or(cc::EventDelivery::Reliable);
     let runtime_params: BTreeMap<String, ActionValue> = runtime_params
         .into_iter()
         .map(|value| (value.key, value.value))
@@ -374,7 +608,9 @@ async fn run_steps(
         connection,
         command_framing,
         event_framing,
-        transport,
+        event_delivery,
+        session_ownership,
+        backend,
         observer,
         activity_observer,
         activities,
@@ -474,12 +710,40 @@ struct PtpActiveActivity {
     lifecycle: ActiveActivity,
 }
 
+/// The transport seam a run walks (internal, not exported): raw host-owned
+/// PTP/IP frames (`Frame`, §11.24) or typed daemon-owned transactions
+/// (`Transaction`, §11.29). The exported entry points pick the variant; the
+/// grammar above the seam is shared.
+#[derive(Clone)]
+enum TxnBackend {
+    Frame(Arc<dyn PtpExecutorTransport>),
+    Transaction(Arc<dyn PtpTransactionTransport>),
+}
+
+impl TxnBackend {
+    /// The host wall clock of the selected seam, in the frame-path error
+    /// vocabulary the deadline races already speak.
+    fn sleep(
+        &self,
+        ms: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PtpTransportError>> + Send + '_>> {
+        match self {
+            TxnBackend::Frame(transport) => transport.sleep(ms),
+            TxnBackend::Transaction(transport) => {
+                Box::pin(async move { transport.sleep(ms).await.map_err(PtpTransportError::from) })
+            }
+        }
+    }
+}
+
 struct PtpCtx {
     store: Arc<ConfigStore>,
     connection: String,
     command_framing: PtpFraming,
     event_framing: PtpFraming,
-    transport: Arc<dyn PtpExecutorTransport>,
+    event_delivery: cc::EventDelivery,
+    session_ownership: Option<cc::SessionOwnership>,
+    backend: TxnBackend,
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
     activities: Vec<ConnectionActivityDescriptor>,
@@ -647,10 +911,10 @@ impl PtpCtx {
             let result = if matches!(step, EntryStep::AwaitUntil { .. }) {
                 self.run_step_once(step, here).await
             } else {
-                let transport = self.transport.clone();
+                let backend = self.backend.clone();
                 let selected = select(
                     Box::pin(self.run_step_once(step, here)),
-                    Box::pin(transport.sleep(DEFAULT_STEP_TIMEOUT_MS)),
+                    backend.sleep(DEFAULT_STEP_TIMEOUT_MS),
                 )
                 .await;
                 match selected {
@@ -891,8 +1155,9 @@ impl PtpCtx {
                     Ok(last)
                 }
                 EntryStep::OpenChannel { role, .. } => {
+                    let transport = self.frame_transport(here)?;
                     self.transport_deadline(
-                        self.transport.open_channel(*role),
+                        transport.open_channel(*role),
                         DEFAULT_OP_TIMEOUT_MS,
                         here,
                     )
@@ -902,6 +1167,7 @@ impl PtpCtx {
                 EntryStep::CloseSession {
                     transport_close, ..
                 } => {
+                    let transport = self.frame_transport(here)?;
                     let reply = self
                         .issue(here, op::CLOSE_SESSION, Vec::new(), None, None)
                         .await?;
@@ -915,7 +1181,7 @@ impl PtpCtx {
                         None
                     };
                     self.transport_deadline(
-                        self.transport.close_command_channel(close_frame),
+                        transport.close_command_channel(close_frame),
                         DEFAULT_OP_TIMEOUT_MS,
                         here,
                     )
@@ -923,6 +1189,7 @@ impl PtpCtx {
                     Ok(Some(meta))
                 }
                 EntryStep::ReopenSession { .. } => {
+                    let transport = self.frame_transport(here)?;
                     let reply = self
                         .issue(here, op::CLOSE_SESSION, Vec::new(), None, None)
                         .await?;
@@ -933,14 +1200,14 @@ impl PtpCtx {
                         .map_err(|error| self.other(here, error.to_string()))?
                         .map(|info| info.packet);
                     self.transport_deadline(
-                        self.transport.close_command_channel(close_frame),
+                        transport.close_command_channel(close_frame),
                         DEFAULT_OP_TIMEOUT_MS,
                         here,
                     )
                     .await?;
                     let opened = self
                         .transport_deadline(
-                            self.transport.reopen_command_session(),
+                            transport.reopen_command_session(),
                             DEFAULT_OP_TIMEOUT_MS,
                             here,
                         )
@@ -967,11 +1234,11 @@ impl PtpCtx {
                     interval_ms,
                     ..
                 } => {
-                    let transport = self.transport.clone();
+                    let backend = self.backend.clone();
                     let budget = (*timeout_ms).max(1);
                     let walk =
                         self.run_await_body(source, until, on_each, captures, *interval_ms, here);
-                    let selected = select(Box::pin(walk), Box::pin(transport.sleep(budget))).await;
+                    let selected = select(Box::pin(walk), backend.sleep(budget)).await;
                     match selected {
                         Either::Left((result, pending_clock)) => {
                             drop(pending_clock);
@@ -1025,7 +1292,7 @@ impl PtpCtx {
                                 self.retry_activity(attempt + 1, limit, &error);
                                 if *retry_delay_ms > 0 {
                                     self.transport_deadline(
-                                        self.transport.sleep(*retry_delay_ms),
+                                        self.backend.sleep(*retry_delay_ms),
                                         retry_delay_ms.saturating_add(DEFAULT_OP_TIMEOUT_MS),
                                         here,
                                     )
@@ -1087,6 +1354,53 @@ impl PtpCtx {
         })
     }
 
+    /// The single-shot event wait of an event-source `awaitUntil`, dispatched
+    /// on the selected seam: a decoded frame check on the frame path, a typed
+    /// code check on the transaction path.
+    async fn await_event(&self, code: u16, here: &str) -> Result<(), StepError> {
+        match self.backend.clone() {
+            TxnBackend::Frame(transport) => {
+                let frame = self
+                    .transport_deadline(
+                        transport.next_event_frame(code),
+                        DEFAULT_OP_TIMEOUT_MS,
+                        here,
+                    )
+                    .await?;
+                let packet = frame_decode(self.event_framing, &frame)
+                    .map_err(|error| self.other(here, error.to_string()))?;
+                if !matches!(packet, ptp_core::PtpIpPacket::Event(event) if event.code == code) {
+                    return Err(self.other(
+                        here,
+                        format!("event transport returned a frame other than {code:#06x}"),
+                    ));
+                }
+                Ok(())
+            }
+            TxnBackend::Transaction(transport) => {
+                let event = self
+                    .transport_deadline(
+                        async move {
+                            transport
+                                .next_event(code)
+                                .await
+                                .map_err(PtpTransportError::from)
+                        },
+                        DEFAULT_OP_TIMEOUT_MS,
+                        here,
+                    )
+                    .await?;
+                if event.event_code != code {
+                    return Err(self.other(
+                        here,
+                        format!("event transport returned an event other than {code:#06x}"),
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn run_await_body<'a>(
         &'a mut self,
         source: &'a FfiAwaitSource,
@@ -1100,21 +1414,29 @@ impl PtpCtx {
             let predicate = cc::Predicate::from(until);
             let mut last = None;
             let mut final_property = None;
-            if let FfiAwaitSource::Event { code, .. } = source {
-                let frame = self
-                    .transport_deadline(
-                        self.transport.next_event_frame(*code),
-                        DEFAULT_OP_TIMEOUT_MS,
-                        here,
-                    )
-                    .await?;
-                let packet = frame_decode(self.event_framing, &frame)
-                    .map_err(|error| self.other(here, error.to_string()))?;
-                if !matches!(packet, ptp_core::PtpIpPacket::Event(event) if event.code == *code) {
-                    return Err(self.other(
-                        here,
-                        format!("event transport returned a frame other than {code:#06x}"),
-                    ));
+            if let FfiAwaitSource::Event { code, then_poll } = source {
+                if let Err(error) = self.await_event(*code, here).await {
+                    // On a bestEffort connection any single event may be lost,
+                    // so an exhausted event-wait budget proves nothing
+                    // (§11.29): fall through to the declared thenPoll loop.
+                    // The loader's require_valid_event_delivery rejects an
+                    // event-source await without thenPoll on a bestEffort
+                    // connection and any event-source await on a `none`
+                    // connection; this guard is defense in depth, so there is
+                    // deliberately no runtime `None` branch here.
+                    let lost_events_are_expected =
+                        matches!(self.event_delivery, cc::EventDelivery::BestEffort)
+                            && error.class == FailureClass::Deadline;
+                    if !lost_events_are_expected {
+                        return Err(error);
+                    }
+                    if then_poll.is_none() {
+                        return Err(self.other(
+                            here,
+                            "event-source await on a bestEffort connection must declare thenPoll (§11.29)"
+                                .into(),
+                        ));
+                    }
                 }
             }
             let poll = match source {
@@ -1158,7 +1480,7 @@ impl PtpCtx {
                     interval_ms
                 };
                 self.transport_deadline(
-                    self.transport.sleep(cadence),
+                    self.backend.sleep(cadence),
                     cadence.saturating_add(DEFAULT_OP_TIMEOUT_MS),
                     here,
                 )
@@ -1271,9 +1593,30 @@ impl PtpCtx {
         data_out: Option<Vec<u8>>,
         property: Option<u16>,
     ) -> Result<WireReply, StepError> {
+        match self.backend.clone() {
+            TxnBackend::Frame(transport) => {
+                self.issue_frames(here, transport, operation, params, data_out, property)
+                    .await
+            }
+            TxnBackend::Transaction(transport) => {
+                self.issue_typed(here, transport, operation, params, data_out, property)
+                    .await
+            }
+        }
+    }
+
+    async fn issue_frames(
+        &mut self,
+        here: &str,
+        transport: Arc<dyn PtpExecutorTransport>,
+        operation: u16,
+        params: Vec<u32>,
+        data_out: Option<Vec<u8>>,
+        property: Option<u16>,
+    ) -> Result<WireReply, StepError> {
         let transaction_id = self
             .transport_deadline(
-                self.transport.reserve_transaction_id(),
+                transport.reserve_transaction_id(),
                 DEFAULT_OP_TIMEOUT_MS,
                 here,
             )
@@ -1287,7 +1630,7 @@ impl PtpCtx {
         let command = frame_encode(self.command_framing, &command)
             .map_err(|error| self.other(here, error.to_string()))?;
         self.transport_deadline(
-            self.transport.send_command_frame(command),
+            transport.send_command_frame(command),
             DEFAULT_OP_TIMEOUT_MS,
             here,
         )
@@ -1307,7 +1650,7 @@ impl PtpCtx {
                         let frame = frame_encode(self.command_framing, &packet)
                             .map_err(|error| self.other(here, error.to_string()))?;
                         self.transport_deadline(
-                            self.transport.send_command_frame(frame),
+                            transport.send_command_frame(frame),
                             DEFAULT_OP_TIMEOUT_MS,
                             here,
                         )
@@ -1319,7 +1662,7 @@ impl PtpCtx {
                         crate::build_data(self.command_framing, operation, transaction_id, payload)
                             .map_err(|error| self.other(here, error.to_string()))?;
                     self.transport_deadline(
-                        self.transport.send_command_frame(data),
+                        transport.send_command_frame(data),
                         DEFAULT_OP_TIMEOUT_MS,
                         here,
                     )
@@ -1334,11 +1677,7 @@ impl PtpCtx {
         let mut standard_ended = false;
         for _ in 0..MAX_COMMAND_FRAMES {
             let frame = self
-                .transport_deadline(
-                    self.transport.next_command_frame(),
-                    DEFAULT_OP_TIMEOUT_MS,
-                    here,
-                )
+                .transport_deadline(transport.next_command_frame(), DEFAULT_OP_TIMEOUT_MS, here)
                 .await?;
             let packet = frame_decode(self.command_framing, &frame)
                 .map_err(|error| self.other(here, error.to_string()))?;
@@ -1443,6 +1782,90 @@ impl PtpCtx {
             }
         }
         Err(self.other(here, "command frame limit exceeded".into()))
+    }
+
+    /// One typed transaction against the daemon-owned seam (§11.29): a single
+    /// `execute` carries the operation and optional data-out, the daemon
+    /// returns the response and optional data-in, and the executor's
+    /// race-against-`sleep` deadline backs the per-call `timeout_ms`. The
+    /// daemon owns transaction ids, so the reply meta and any data output
+    /// report `0`; a manifest `transactionId` capture on this path binds 0.
+    async fn issue_typed(
+        &mut self,
+        here: &str,
+        transport: Arc<dyn PtpTransactionTransport>,
+        operation: u16,
+        params: Vec<u32>,
+        data_out: Option<Vec<u8>>,
+        property: Option<u16>,
+    ) -> Result<WireReply, StepError> {
+        let result = self
+            .transport_deadline(
+                async move {
+                    transport
+                        .execute(operation, params, data_out, DEFAULT_OP_TIMEOUT_MS)
+                        .await
+                        .map_err(PtpTransportError::from)
+                },
+                DEFAULT_OP_TIMEOUT_MS,
+                here,
+            )
+            .await?;
+        let payload = result.data_in.unwrap_or_default();
+        let meta = TxMeta {
+            operation,
+            property,
+            response_code: result.response_code,
+            transaction_id: 0,
+        };
+        if !payload.is_empty() || !result.params.is_empty() {
+            let output = PtpDataOutput {
+                step_path: here.to_string(),
+                operation,
+                transaction_id: 0,
+                payload: payload.clone(),
+                response_params: result.params,
+            };
+            if let Some(sink) = self.output_sink.clone() {
+                sink.write(output).await.map_err(|error| StepError {
+                    step: here.to_string(),
+                    detail: error.to_string(),
+                    class: FailureClass::Other,
+                    meta: Some(meta.clone()),
+                })?;
+            } else {
+                self.outputs.push(output);
+            }
+        }
+        Ok(WireReply { meta, payload })
+    }
+
+    /// Session- and channel-management steps exist only for an initiator that
+    /// owns its session (§11.29). The declared ownership is the primary guard:
+    /// a `daemonAttached` connection runs no session-management operations on
+    /// any backend, so a plan authoring one fails as a manifest error before
+    /// any I/O. The backend check stays as a secondary assertion for
+    /// connections with no declared ownership.
+    fn frame_transport(&self, here: &str) -> Result<Arc<dyn PtpExecutorTransport>, StepError> {
+        if matches!(
+            self.session_ownership,
+            Some(cc::SessionOwnership::DaemonAttached)
+        ) {
+            return Err(self.other(
+                here,
+                format!(
+                    "{}: session.ownership daemonAttached forbids session-management steps (§11.29)",
+                    self.connection
+                ),
+            ));
+        }
+        match &self.backend {
+            TxnBackend::Frame(transport) => Ok(Arc::clone(transport)),
+            TxnBackend::Transaction(_) => Err(self.other(
+                here,
+                "session/channel steps require the host-owned frame transport (§11.29)".into(),
+            )),
+        }
     }
 
     fn require_ok(&self, here: &str, reply: WireReply) -> Result<TxMeta, StepError> {
@@ -1677,8 +2100,7 @@ impl PtpCtx {
         F: Future<Output = Result<T, PtpTransportError>> + Send,
         T: Send,
     {
-        let transport = self.transport.clone();
-        let selected = select(Box::pin(future), Box::pin(transport.sleep(timeout_ms))).await;
+        let selected = select(Box::pin(future), self.backend.sleep(timeout_ms)).await;
         match selected {
             Either::Left((result, pending_clock)) => {
                 drop(pending_clock);

@@ -131,12 +131,13 @@ fn family_ble_block_merges_into_gfx100ii_view() {
     );
 }
 
-// The X-A7 negotiates ATT MTU below the legacy manufacturer app request target (185
-// observed on hardware vs requested 515), and the reference app enforces no
-// floor — onMtuChanged ignores status and the negotiated value. The checkpoint
-// must therefore be tolerant or CoreBluetooth consumers can never pair (#399).
+// legacy manufacturer app treats requestMtu(515) as fire-and-forget: onMtuChanged
+// ignores the callback status and the negotiated value, so there is no
+// evidenced MTU floor, and a failed request call must not block registration
+// either. The manifest declares the request target, no floor, and stays
+// tolerant of the call itself (#399, #400, PR #448 review).
 #[test]
-fn xa7_legacy_app_mtu_checkpoint_is_tolerant() {
+fn xa7_legacy_app_mtu_declares_request_target_without_floor() {
     let idx = real_index();
     let xa7 = idx
         .models
@@ -155,14 +156,58 @@ fn xa7_legacy_app_mtu_checkpoint_is_tolerant() {
             .collect();
         assert_eq!(mtus.len(), 1, "{name} declares exactly one MTU checkpoint");
         assert_eq!(
-            mtus[0].mtu, 515,
+            mtus[0].requested_mtu, 515,
             "{name} keeps the reference request target"
         );
         assert!(
+            mtus[0].minimum_mtu.is_none(),
+            "{name} has no evidenced floor and declares none (#400)"
+        );
+        assert!(
             mtus[0].opts.tolerant,
-            "{name} MTU checkpoint must be tolerant (#399)"
+            "{name} stays tolerant of a failed requestMtu call (#399)"
         );
     }
+}
+
+// The X-A7 starts its AP on the launch write but confirms state only by
+// read: no apState indication arrived within 20s on hardware, twice
+// (2026-07-24, #412). The establish-wifi-ap await polls the readable
+// characteristic; a pre-launch 0 is the normal not-yet state, so no failWhen.
+#[test]
+fn xa7_legacy_app_ap_start_confirms_by_read_poll() {
+    let idx = real_index();
+    let xa7 = idx
+        .models
+        .iter()
+        .find(|m| m.id == "xa7")
+        .expect("xa7 is in the index");
+    let ble = xa7.ble.as_ref().expect("xa7 carries the family ble block");
+    let establishment = ble
+        .establishment("legacy-app-establish-wifi-ap")
+        .unwrap();
+    let awaits: Vec<_> = establishment
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::BleAwaitUntil(inner) => Some(inner),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(awaits.len(), 1, "one await in the AP-launch walk");
+    assert!(
+        matches!(awaits[0].source, AwaitSource::Read { .. }),
+        "AP-start confirmation polls the readable apState characteristic (#412)"
+    );
+    assert!(
+        awaits[0].fail_when.is_none(),
+        "a pre-launch 0 is the normal not-yet state, not a refusal (#412)"
+    );
+    assert_eq!(
+        establishment.steps.len(),
+        6,
+        "the read-poll swap is one step for one step; the executor span still covers the walk"
+    );
 }
 
 #[test]
@@ -1495,7 +1540,7 @@ families:
             - { id: camera.test.setup, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 4 } }
           steps:
             - bleConnect: {}
-            - bleRequestMtu: { mtu: 158 }
+            - bleRequestMtu: { requestedMtu: 158, minimumMtu: 120 }
             - bleDiscoverServices: { tolerant: true, retries: 3, retryDelayMs: 250 }
             - bleRead: { gatt: c, encoding: bytes, captureAs: x }
 models:
@@ -1514,7 +1559,8 @@ models:
         .steps;
     match &steps[1] {
         Step::BleRequestMtu(s) => {
-            assert_eq!(s.mtu, 158);
+            assert_eq!(s.requested_mtu, 158);
+            assert_eq!(s.minimum_mtu, Some(120));
             assert!(!s.opts.tolerant);
         }
         other => panic!("expected bleRequestMtu, got {other:?}"),
@@ -1530,6 +1576,93 @@ models:
     }
     assert_eq!(steps[1].verb_name(), "bleRequestMtu");
     assert_eq!(steps[2].verb_name(), "bleDiscoverServices");
+}
+
+// `bleRequestMtu` floor validation (#400): a minimumMtu above the request
+// target is contradictory, and the pre-split `mtu` field no longer parses.
+#[test]
+fn mtu_floor_above_request_target_is_rejected() {
+    let template = |mtu_fields: &str| {
+        format!(
+            r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {{}}
+      advert: {{ manufacturerCompanyId: 1 }}
+      establishments:
+        test:
+          mechanism: test
+          steps:
+            - bleConnect: {{}}
+            - bleRequestMtu: {{ {mtu_fields} }}
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+        )
+    };
+
+    let err = ResolvedManufacturerIndex::from_yaml(&template("requestedMtu: 158, minimumMtu: 200"))
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("exceeds requestedMtu"),
+        "got: {err}"
+    );
+
+    let err = ResolvedManufacturerIndex::from_yaml(&template("mtu: 158")).unwrap_err();
+    assert!(
+        err.to_string().contains("requestedMtu"),
+        "the legacy field fails as a missing requestedMtu, got: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// blePeripheralName platform-name capture (#403)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn peripheral_name_verb_parses() {
+    let yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {}
+      advert: { manufacturerCompanyId: 1 }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - { id: camera.test.setup, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 } }
+          steps:
+            - bleConnect: {}
+            - blePeripheralName: { captureAs: cameraName, tolerant: true }
+models:
+  - id: tm1
+    displayName: "Test"
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("peripheral-name verb loads");
+    let steps = &idx.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .steps;
+    match &steps[1] {
+        Step::BlePeripheralName(s) => {
+            assert_eq!(s.capture_as, "cameraName");
+            assert!(s.opts.tolerant);
+        }
+        other => panic!("expected blePeripheralName, got {other:?}"),
+    }
+    assert_eq!(steps[1].verb_name(), "blePeripheralName");
 }
 
 // ---------------------------------------------------------------------------

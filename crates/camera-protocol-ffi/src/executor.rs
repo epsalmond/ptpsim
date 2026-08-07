@@ -31,7 +31,7 @@ use camera_config::index::eval;
 use camera_config::index::{
     AcquireSource, AwaitSource, BleAwaitUntilStep, BleNotifyStep, BleNotifyUntil,
     BleWriteChunkStep, Encoding, EstablishmentBlock, NotifyCapture, Predicate, PredicateOp, Step,
-    StepValue,
+    StepValue, UsbInterfaceTriple,
 };
 use camera_config::{
     ConnectionActivityBinding as ConfigActivityBinding,
@@ -41,6 +41,7 @@ use camera_config::{
 use futures_util::future::{select, Either, FutureExt};
 use protocol_primitives::{NikonConnectionConfiguration, NikonLssClient, NikonLssSession};
 
+use crate::usb_executor::{UsbExecutorTransport, UsbTransportError};
 use crate::{ConfigStore, KeyValue};
 
 /// Default deadline on a single transport call (read/write/subscribe/MTU/
@@ -109,6 +110,13 @@ pub trait BleExecutorTransport: Send + Sync {
     /// auto-discover during connect).
     async fn ensure_services_discovered(&self) -> Result<(), TransportError>;
     async fn read(&self, characteristic: String) -> Result<Vec<u8>, TransportError>;
+    /// The bound peripheral's platform name (§11.4b): `CBPeripheral.name` on
+    /// stacks that filter the GAP service from discovery (CoreBluetooth),
+    /// a GATT 0x2A00 read elsewhere. Host-side, never dispatched by the
+    /// executor as a characteristic read. Return the UTF-8 name with any NUL
+    /// terminator removed; report an unavailable name as a transport error,
+    /// never an empty string.
+    async fn peripheral_name(&self) -> Result<String, TransportError>;
     async fn write(&self, characteristic: String, value: Vec<u8>) -> Result<(), TransportError>;
     /// Atomically fence the already-buffered prefix for
     /// `notification_characteristic` immediately before issuing the write.
@@ -351,7 +359,7 @@ enum NativeEstablishmentConfirmOutcome {
 }
 
 #[derive(Debug)]
-struct NativeEstablishmentWalkSummary {
+pub(crate) struct NativeEstablishmentWalkSummary {
     confirm_outcome: NativeEstablishmentConfirmOutcome,
     tolerated_step_paths: Vec<String>,
 }
@@ -366,7 +374,7 @@ impl Default for NativeEstablishmentWalkSummary {
 }
 
 impl NativeEstablishmentWalkSummary {
-    fn for_steps(steps: &[Step]) -> Self {
+    pub(crate) fn for_steps(steps: &[Step]) -> Self {
         let mut summary = Self::default();
         summary.declare_for_steps(steps);
         summary
@@ -436,7 +444,7 @@ pub async fn run_establishment(
         .collect();
 
     let mut ctx = ExecCtx {
-        transport: &transport,
+        transport: ExecTransport::Ble(&transport),
         observer: &observer,
         activity_observer: Some(&activity_observer),
         active_activity: None,
@@ -457,6 +465,8 @@ pub async fn run_establishment(
             source: RefinementSource::Store(&store),
             plan_handle: plan_handle.clone(),
         }),
+        usb_interfaces: BTreeMap::new(),
+        usb_interface_claimed: false,
     };
     walk_plan_with_activities(
         &mut ctx,
@@ -495,7 +505,7 @@ pub async fn run_post_exit_readiness(
         .collect();
 
     let mut ctx = ExecCtx {
-        transport: &transport,
+        transport: ExecTransport::Ble(&transport),
         observer: &observer,
         activity_observer: Some(&activity_observer),
         active_activity: None,
@@ -513,6 +523,8 @@ pub async fn run_post_exit_readiness(
         steps_run: 0,
         summary: NativeEstablishmentWalkSummary::default(),
         refine: None,
+        usb_interfaces: BTreeMap::new(),
+        usb_interface_claimed: false,
     };
     walk_plan_with_activities(
         &mut ctx,
@@ -524,14 +536,21 @@ pub async fn run_post_exit_readiness(
     Ok(outcome(ctx))
 }
 
-/// Resolve `plan_handle` (`model:selector`) to its establishment block.
-/// Declared connections take precedence; a non-connection selector falls back
-/// to a direct establishment-mechanism key for reconnect plans.
-fn resolve_establishment(
-    store: &ConfigStore,
-    plan_handle: &str,
-) -> Result<EstablishmentBlock, ExecutorError> {
-    let unknown = |detail: String| ExecutorError::UnknownPlan { detail };
+/// Shared plan-handle resolution: parse `model:selector` and resolve the
+/// establishment mechanism connection-first — a selector naming a declared
+/// body connection must declare an establishment; any other selector is
+/// itself the mechanism key (reconnect handles). The caller picks the family
+/// registry (BLE, or USB per §11.29) the mechanism then resolves in.
+pub(crate) struct ResolvedPlanRef<'a> {
+    pub(crate) view: &'a camera_config::index::ModelView,
+    pub(crate) mechanism: String,
+}
+
+pub(crate) fn resolve_plan_ref<'a, E>(
+    store: &'a ConfigStore,
+    plan_handle: &'a str,
+    unknown: impl Fn(String) -> E,
+) -> Result<ResolvedPlanRef<'a>, E> {
     let (model, selector) = plan_handle
         .split_once(':')
         .filter(|(m, c)| !m.is_empty() && !c.is_empty() && !c.contains(':'))
@@ -556,11 +575,30 @@ fn resolve_establishment(
         .iter()
         .find(|m| m.id == model)
         .ok_or_else(|| unknown(format!("model {model} not in index")))?;
-    view.ble
+    Ok(ResolvedPlanRef { view, mechanism })
+}
+
+/// Resolve `plan_handle` (`model:selector`) to its establishment block,
+/// looking the mechanism up in the family BLE registry. Raw USB
+/// establishments resolve through [`crate::usb_executor::run_usb_establishment`].
+fn resolve_establishment(
+    store: &ConfigStore,
+    plan_handle: &str,
+) -> Result<EstablishmentBlock, ExecutorError> {
+    let unknown = |detail: String| ExecutorError::UnknownPlan { detail };
+    let resolved = resolve_plan_ref(store, plan_handle, unknown)?;
+    resolved
+        .view
+        .ble
         .as_ref()
-        .and_then(|ble| ble.establishment(&mechanism))
+        .and_then(|ble| ble.establishment(&resolved.mechanism))
         .cloned()
-        .ok_or_else(|| unknown(format!("{plan_handle}: missing mechanism {mechanism}")))
+        .ok_or_else(|| {
+            unknown(format!(
+                "{plan_handle}: missing mechanism {}",
+                resolved.mechanism
+            ))
+        })
 }
 
 /// Execute the BLE-native control action `action` for `model` (#91) over an
@@ -591,7 +629,7 @@ pub async fn run_ble_action(
         .ok_or_else(|| unknown(format!("{model}: unknown action {action}")))?;
 
     let mut ctx = ExecCtx {
-        transport: &transport,
+        transport: ExecTransport::Ble(&transport),
         observer: &observer,
         activity_observer: None,
         active_activity: None,
@@ -609,6 +647,8 @@ pub async fn run_ble_action(
         steps_run: 0,
         summary: NativeEstablishmentWalkSummary::default(),
         refine: None,
+        usb_interfaces: BTreeMap::new(),
+        usb_interface_claimed: false,
     };
     walk_plan_with_activities(
         &mut ctx,
@@ -620,7 +660,7 @@ pub async fn run_ble_action(
     Ok(outcome(ctx))
 }
 
-fn outcome(ctx: ExecCtx<'_>) -> ExecutionOutcome {
+pub(crate) fn outcome(ctx: ExecCtx<'_>) -> ExecutionOutcome {
     ExecutionOutcome {
         scope: ctx
             .scope
@@ -636,12 +676,12 @@ fn outcome(ctx: ExecCtx<'_>) -> ExecutionOutcome {
 // Walk state
 // ---------------------------------------------------------------------------
 
-struct RefineCtx<'a> {
-    source: RefinementSource<'a>,
-    plan_handle: String,
+pub(crate) struct RefineCtx<'a> {
+    pub(crate) source: RefinementSource<'a>,
+    pub(crate) plan_handle: String,
 }
 
-enum RefinementSource<'a> {
+pub(crate) enum RefinementSource<'a> {
     Store(&'a ConfigStore),
     #[cfg(test)]
     #[allow(dead_code)]
@@ -649,7 +689,7 @@ enum RefinementSource<'a> {
 }
 
 #[cfg(test)]
-trait NativeRefinementResolver: Send + Sync {
+pub(crate) trait NativeRefinementResolver: Send + Sync {
     fn refine(
         &self,
         plan_handle: String,
@@ -682,26 +722,69 @@ impl RefineCtx<'_> {
     }
 }
 
-struct ExecCtx<'a> {
-    transport: &'a Arc<dyn BleExecutorTransport>,
-    observer: &'a Arc<dyn StepObserver>,
-    activity_observer: Option<&'a Arc<dyn ConnectionActivityObserver>>,
-    active_activity: Option<ActiveActivity>,
-    scope: BTreeMap<String, String>,
+/// The transport behind a walk: BLE for `run_establishment` /
+/// `run_post_exit_readiness` / `run_ble_action`, raw USB for
+/// `run_usb_establishment` (§11.29). A verb addressed at the other transport
+/// fails in `run_step_once`; the loader's plan scoping keeps such plans from
+/// loading at all, so the mismatch arms are defensive.
+pub(crate) enum ExecTransport<'a> {
+    Ble(&'a Arc<dyn BleExecutorTransport>),
+    Usb(&'a Arc<dyn UsbExecutorTransport>),
+}
+
+impl<'a> ExecTransport<'a> {
+    /// The BLE transport, when this walk runs over BLE.
+    fn ble(&self) -> Option<&'a Arc<dyn BleExecutorTransport>> {
+        match self {
+            Self::Ble(transport) => Some(*transport),
+            Self::Usb(_) => None,
+        }
+    }
+
+    /// The USB transport, when this walk runs over raw USB.
+    fn usb(&self) -> Option<&'a Arc<dyn UsbExecutorTransport>> {
+        match self {
+            Self::Usb(transport) => Some(*transport),
+            Self::Ble(_) => None,
+        }
+    }
+
+    /// Host wall clock for retry backoff and poll cadence: both transports
+    /// expose `sleep`, so the shared retry ladder runs unchanged on either.
+    async fn sleep(&self, ms: u32) -> Result<(), TransportError> {
+        match self {
+            Self::Ble(transport) => transport.sleep(ms).await,
+            Self::Usb(transport) => transport.sleep(ms).await.map_err(Into::into),
+        }
+    }
+}
+
+pub(crate) struct ExecCtx<'a> {
+    pub(crate) transport: ExecTransport<'a>,
+    pub(crate) observer: &'a Arc<dyn StepObserver>,
+    pub(crate) activity_observer: Option<&'a Arc<dyn ConnectionActivityObserver>>,
+    pub(crate) active_activity: Option<ActiveActivity>,
+    pub(crate) scope: BTreeMap<String, String>,
     /// Encoding each scope key was captured with — `{ captured: … }` writes
     /// re-encode by this instead of guessing from the scope string.
-    encodings: BTreeMap<String, Encoding>,
-    runtime_params: BTreeMap<String, String>,
+    pub(crate) encodings: BTreeMap<String, Encoding>,
+    pub(crate) runtime_params: BTreeMap<String, String>,
     /// Successful CCCD enables in this walk. A retry reuses transport state.
-    subscriptions: BTreeSet<(String, bool)>,
+    pub(crate) subscriptions: BTreeSet<(String, bool)>,
     /// Opaque authenticated Nikon LSS cipher state. It deliberately has no
     /// scope/FFI/log representation and lives only for this executor walk.
-    nikon_lss_session: Option<NikonLssSession>,
-    steps_run: u32,
-    summary: NativeEstablishmentWalkSummary,
+    pub(crate) nikon_lss_session: Option<NikonLssSession>,
+    pub(crate) steps_run: u32,
+    pub(crate) summary: NativeEstablishmentWalkSummary,
     /// Present for establishment walks; `acquireFirmware` re-resolves the
     /// tail through it (§11.5). `None` for BLE actions.
-    refine: Option<RefineCtx<'a>>,
+    pub(crate) refine: Option<RefineCtx<'a>>,
+    /// The family `usb.interfaces` map a `usbClaim` step's symbolic interface
+    /// name resolves against (§11.29). Empty on BLE walks.
+    pub(crate) usb_interfaces: BTreeMap<String, UsbInterfaceTriple>,
+    /// Set once a `usbClaim` succeeds, so a failed raw USB walk can release
+    /// the claimed interface. Unused on BLE walks.
+    pub(crate) usb_interface_claimed: bool,
 }
 
 pub(crate) struct ActiveActivity {
@@ -840,11 +923,15 @@ impl ExecCtx<'_> {
 
 /// Step failure: which step (verb + position path) and why.
 #[derive(Debug)]
-struct StepError {
-    step: String,
-    kind: ExecutorStepFailureKind,
-    message: String,
-    context: Vec<KeyValue>,
+pub(crate) struct StepError {
+    pub(crate) step: String,
+    pub(crate) kind: ExecutorStepFailureKind,
+    pub(crate) message: String,
+    pub(crate) context: Vec<KeyValue>,
+    /// The step's verb does not run on this walk's transport (§11.29). The
+    /// BLE executor surfaces it as an ordinary step failure; the USB
+    /// executor maps it to its typed `UnsupportedVerb` variant.
+    pub(crate) unsupported_verb: bool,
 }
 
 impl StepError {
@@ -854,6 +941,19 @@ impl StepError {
             kind: ExecutorStepFailureKind::Other,
             message,
             context: Vec::new(),
+            unsupported_verb: false,
+        }
+    }
+
+    /// A verb reached through a walk over the wrong transport (§11.29). The
+    /// loader's plan scoping makes this unreachable from manifest data.
+    fn unsupported_verb(step: &str, verb: &str, transport: &str) -> Self {
+        Self {
+            step: step.to_string(),
+            kind: ExecutorStepFailureKind::Other,
+            message: format!("verb `{verb}` is not supported by the {transport} transport"),
+            context: Vec::new(),
+            unsupported_verb: true,
         }
     }
 
@@ -863,6 +963,7 @@ impl StepError {
             kind: ExecutorStepFailureKind::DeadlineExceeded,
             message,
             context: Vec::new(),
+            unsupported_verb: false,
         }
     }
 
@@ -872,6 +973,7 @@ impl StepError {
             kind: ExecutorStepFailureKind::ConditionRejected,
             message,
             context: Vec::new(),
+            unsupported_verb: false,
         }
     }
 
@@ -881,6 +983,7 @@ impl StepError {
             kind: failure.kind,
             message: failure.message,
             context: Vec::new(),
+            unsupported_verb: false,
         }
     }
 
@@ -942,7 +1045,7 @@ type RefinedTail = Option<NativeRefinedTail>;
 /// Top-level walk with §11.5 tail splicing: a step that returns a refined
 /// tail replaces everything after itself, and the walk continues into the
 /// spliced steps.
-async fn walk_plan_with_activities(
+pub(crate) async fn walk_plan_with_activities(
     ctx: &mut ExecCtx<'_>,
     mut steps: Vec<Step>,
     mut activities: Vec<ConfigActivityDescriptor>,
@@ -1390,10 +1493,12 @@ async fn run_step_once(
 ) -> Result<RefinedTail, StepError> {
     let err = |message: String| StepError::other(here, message);
     let op_err = |failure: OperationFailure| StepError::operation(here, failure);
+    let verb = step.verb_name();
     match step {
         Step::BleConnect(_) => {
-            deadline(ctx.transport, CONNECT_TIMEOUT_MS, "connect", async {
-                ctx.transport.connect().await
+            let transport = ble_transport(ctx, here, verb)?;
+            deadline(transport, CONNECT_TIMEOUT_MS, "connect", async {
+                transport.connect().await
             })
             .await
             .map_err(op_err)?;
@@ -1407,41 +1512,48 @@ async fn run_step_once(
             Ok(None)
         }
         Step::BleAwaitDisconnect(s) => {
-            deadline(ctx.transport, s.timeout_ms, "awaitDisconnect", async {
-                ctx.transport.await_disconnect().await
+            let transport = ble_transport(ctx, here, verb)?;
+            deadline(transport, s.timeout_ms, "awaitDisconnect", async {
+                transport.await_disconnect().await
             })
             .await
             .map_err(op_err)?;
             Ok(None)
         }
         Step::BleRequestMtu(s) => {
-            let negotiated = deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "requestMtu", async {
-                ctx.transport.request_mtu(s.mtu).await
+            let transport = ble_transport(ctx, here, verb)?;
+            let negotiated = deadline(transport, DEFAULT_OP_TIMEOUT_MS, "requestMtu", async {
+                transport.request_mtu(s.requested_mtu).await
             })
             .await
             .map_err(op_err)?;
-            if negotiated < s.mtu {
-                return Err(err(format!(
-                    "negotiated MTU {negotiated} < required {}",
-                    s.mtu
-                )));
+            // §11.4a: the checkpoint is the evidenced floor, not the request
+            // target. No floor means any negotiated MTU succeeds.
+            if let Some(minimum) = s.minimum_mtu {
+                if negotiated < minimum {
+                    return Err(err(format!(
+                        "negotiated MTU {negotiated} < required {minimum}"
+                    )));
+                }
             }
             Ok(None)
         }
         Step::BleDiscoverServices(_) => {
+            let transport = ble_transport(ctx, here, verb)?;
             deadline(
-                ctx.transport,
+                transport,
                 DEFAULT_OP_TIMEOUT_MS,
                 "discoverServices",
-                async { ctx.transport.ensure_services_discovered().await },
+                async { transport.ensure_services_discovered().await },
             )
             .await
             .map_err(op_err)?;
             Ok(None)
         }
         Step::BleRead(s) => {
-            let wire = deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "read", async {
-                ctx.transport.read(s.gatt.clone()).await
+            let transport = ble_transport(ctx, here, verb)?;
+            let wire = deadline(transport, DEFAULT_OP_TIMEOUT_MS, "read", async {
+                transport.read(s.gatt.clone()).await
             })
             .await
             .map_err(op_err)?;
@@ -1454,12 +1566,32 @@ async fn run_step_once(
             ctx.encodings.insert(s.capture_as.clone(), s.encoding);
             Ok(None)
         }
+        Step::BlePeripheralName(s) => {
+            let transport = ble_transport(ctx, here, verb)?;
+            let raw = deadline(transport, DEFAULT_OP_TIMEOUT_MS, "peripheralName", async {
+                transport.peripheral_name().await
+            })
+            .await
+            .map_err(op_err)?;
+            // §11.4b: UTF-8 with any NUL terminator removed; a name that is
+            // empty after the trim is unavailable and must fail the step, so
+            // a host never silently binds an empty capture.
+            let name = eval::decode_bytes(raw.as_bytes(), Encoding::Utf8Cstring)
+                .ok_or_else(|| err("peripheral name is not valid UTF-8".into()))?;
+            if name.is_empty() {
+                return Err(err("peripheral name unavailable".into()));
+            }
+            ctx.scope.insert(s.capture_as.clone(), name);
+            ctx.encodings.insert(s.capture_as.clone(), Encoding::Utf8);
+            Ok(None)
+        }
         Step::BleWrite(s) => {
+            let transport = ble_transport(ctx, here, verb)?;
             let bytes = resolve_value(ctx, &s.value).map_err(err)?;
-            deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "write", async {
+            deadline(transport, DEFAULT_OP_TIMEOUT_MS, "write", async {
                 match &s.notification_fence {
                     Some(notification_characteristic) => {
-                        ctx.transport
+                        transport
                             .write_with_notification_fence(
                                 s.gatt.clone(),
                                 bytes,
@@ -1467,7 +1599,7 @@ async fn run_step_once(
                             )
                             .await
                     }
-                    None => ctx.transport.write(s.gatt.clone(), bytes).await,
+                    None => transport.write(s.gatt.clone(), bytes).await,
                 }
             })
             .await
@@ -1475,23 +1607,29 @@ async fn run_step_once(
             Ok(None)
         }
         Step::BleSubscribe(s) => {
+            let transport = ble_transport(ctx, here, verb)?;
             let budget = if s.timeout_ms > 0 {
                 s.timeout_ms
             } else {
                 DEFAULT_OP_TIMEOUT_MS
             };
-            ensure_subscribed(ctx, &s.gatt, s.mode, budget)
+            ensure_subscribed(ctx, transport, &s.gatt, s.mode, budget)
                 .await
                 .map_err(op_err)?;
             Ok(None)
         }
         Step::BleNotify(s) => {
-            run_notify(ctx, s, here).await?;
+            let transport = ble_transport(ctx, here, verb)?;
+            run_notify(ctx, transport, s, here).await?;
             Ok(None)
         }
-        Step::BleAwaitUntil(s) => run_await_until(ctx, s, here, top_next).await,
+        Step::BleAwaitUntil(s) => {
+            let transport = ble_transport(ctx, here, verb)?;
+            run_await_until(ctx, transport, s, here, top_next).await
+        }
         Step::BleWriteChunk(s) => {
-            run_write_chunk(ctx, s, here).await?;
+            let transport = ble_transport(ctx, here, verb)?;
+            run_write_chunk(ctx, transport, s, here).await?;
             Ok(None)
         }
         Step::Acquire(s) => {
@@ -1524,8 +1662,9 @@ async fn run_step_once(
         Step::AcquireFirmware(s) => {
             let firmware = match &s.from {
                 AcquireSource::BleRead { gatt, encoding } => {
-                    let wire = deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "read", async {
-                        ctx.transport.read(gatt.clone()).await
+                    let transport = ble_transport(ctx, here, verb)?;
+                    let wire = deadline(transport, DEFAULT_OP_TIMEOUT_MS, "read", async {
+                        transport.read(gatt.clone()).await
                     })
                     .await
                     .map_err(op_err)?;
@@ -1588,6 +1727,7 @@ async fn run_step_once(
             }
         }
         Step::NikonLssAuthenticate(s) => {
+            let transport = ble_transport(ctx, here, verb)?;
             // Re-authentication must fail closed: a failed exchange must never
             // leave a prior session available to later encrypted reads.
             ctx.nikon_lss_session = None;
@@ -1611,6 +1751,7 @@ async fn run_step_once(
                 })?;
             ensure_subscribed(
                 ctx,
+                transport,
                 &s.gatt,
                 camera_config::index::CccdMode::Indicate,
                 s.timeout_ms,
@@ -1622,37 +1763,31 @@ async fn run_step_once(
             let stage1 = client
                 .stage1_record()
                 .map_err(|e| err(format!("LSS stage 1 failed: {e}")))?;
-            deadline(ctx.transport, s.timeout_ms, "LSS stage 1 write", async {
-                ctx.transport
+            deadline(transport, s.timeout_ms, "LSS stage 1 write", async {
+                transport
                     .write_with_notification_fence(s.gatt.clone(), stage1.to_vec(), s.gatt.clone())
                     .await
             })
             .await
             .map_err(op_err)?;
-            let stage2 = deadline(
-                ctx.transport,
-                s.timeout_ms,
-                "LSS stage 2 indication",
-                async { ctx.transport.next_notification(s.gatt.clone()).await },
-            )
+            let stage2 = deadline(transport, s.timeout_ms, "LSS stage 2 indication", async {
+                transport.next_notification(s.gatt.clone()).await
+            })
             .await
             .map_err(op_err)?;
             let stage3 = client
                 .handle_stage2(&stage2)
                 .map_err(|e| err(format!("LSS stage 2 failed: {e}")))?;
-            deadline(ctx.transport, s.timeout_ms, "LSS stage 3 write", async {
-                ctx.transport
+            deadline(transport, s.timeout_ms, "LSS stage 3 write", async {
+                transport
                     .write_with_notification_fence(s.gatt.clone(), stage3.to_vec(), s.gatt.clone())
                     .await
             })
             .await
             .map_err(op_err)?;
-            let stage4 = deadline(
-                ctx.transport,
-                s.timeout_ms,
-                "LSS stage 4 indication",
-                async { ctx.transport.next_notification(s.gatt.clone()).await },
-            )
+            let stage4 = deadline(transport, s.timeout_ms, "LSS stage 4 indication", async {
+                transport.next_notification(s.gatt.clone()).await
+            })
             .await
             .map_err(op_err)?;
             ctx.nikon_lss_session = Some(
@@ -1663,16 +1798,14 @@ async fn run_step_once(
             Ok(None)
         }
         Step::NikonLssReadConnectionConfiguration(s) => {
+            let transport = ble_transport(ctx, here, verb)?;
             let session = ctx
                 .nikon_lss_session
                 .as_ref()
                 .ok_or_else(|| err("Nikon LSS session is not authenticated".into()))?;
-            let wire = deadline(
-                ctx.transport,
-                DEFAULT_OP_TIMEOUT_MS,
-                "LSS config read",
-                async { ctx.transport.read(s.gatt.clone()).await },
-            )
+            let wire = deadline(transport, DEFAULT_OP_TIMEOUT_MS, "LSS config read", async {
+                transport.read(s.gatt.clone()).await
+            })
             .await
             .map_err(op_err)?;
             let config = session
@@ -1697,6 +1830,73 @@ async fn run_step_once(
             walk_steps(ctx, branch, &branch_path, top_next).await
         }
         Step::Retry(_) => unreachable!("retry is handled by run_step"),
+        Step::UsbClaim(s) => {
+            let transport = usb_transport(ctx, here)?;
+            let triple = ctx
+                .usb_interfaces
+                .get(&s.interface)
+                .copied()
+                .ok_or_else(|| {
+                    err(format!(
+                        "usbClaim interface '{}' is not declared in the family usb.interfaces map",
+                        s.interface
+                    ))
+                })?;
+            usb_deadline(transport, DEFAULT_OP_TIMEOUT_MS, "usbClaim", async {
+                transport
+                    .claim_interface(triple.class, triple.subclass, triple.protocol)
+                    .await
+            })
+            .await
+            .map_err(op_err)?;
+            ctx.usb_interface_claimed = true;
+            Ok(None)
+        }
+        Step::UsbBulkOut(s) => {
+            let transport = usb_transport(ctx, here)?;
+            let bytes = resolve_value(ctx, &s.data).map_err(err)?;
+            usb_deadline(transport, DEFAULT_OP_TIMEOUT_MS, "usbBulkOut", async {
+                transport.bulk_out(bytes).await
+            })
+            .await
+            .map_err(op_err)?;
+            Ok(None)
+        }
+        Step::UsbBulkIn(s) => {
+            let transport = usb_transport(ctx, here)?;
+            let wire = usb_deadline(transport, DEFAULT_OP_TIMEOUT_MS, "usbBulkIn", async {
+                transport.bulk_in(s.max_length).await
+            })
+            .await
+            .map_err(op_err)?;
+            // §11.13 capture pipeline: bytes → transform chain → encoding.
+            let bytes = eval::apply_transforms(&wire, &s.transform)
+                .ok_or_else(|| err("transform chain failed".into()))?;
+            let value = eval::decode_bytes(&bytes, s.encoding)
+                .ok_or_else(|| err(format!("decode as {} failed", s.encoding.as_token())))?;
+            ctx.scope.insert(s.capture_as.clone(), value);
+            ctx.encodings.insert(s.capture_as.clone(), s.encoding);
+            Ok(None)
+        }
+        Step::UsbAwaitInterrupt(s) => {
+            let transport = usb_transport(ctx, here)?;
+            let frame = usb_deadline(
+                transport,
+                s.timeout_ms.unwrap_or(DEFAULT_OP_TIMEOUT_MS),
+                "usbAwaitInterrupt",
+                async { transport.next_interrupt_event().await },
+            )
+            .await
+            .map_err(op_err)?;
+            // §11.13 capture pipeline, same as `usbBulkIn`.
+            let bytes = eval::apply_transforms(&frame, &s.transform)
+                .ok_or_else(|| err("transform chain failed".into()))?;
+            let value = eval::decode_bytes(&bytes, s.encoding)
+                .ok_or_else(|| err(format!("decode as {} failed", s.encoding.as_token())))?;
+            ctx.scope.insert(s.capture_as.clone(), value);
+            ctx.encodings.insert(s.capture_as.clone(), s.encoding);
+            Ok(None)
+        }
     }
 }
 
@@ -1706,6 +1906,7 @@ async fn run_step_once(
 
 async fn ensure_subscribed(
     ctx: &mut ExecCtx<'_>,
+    transport: &Arc<dyn BleExecutorTransport>,
     gatt: &str,
     mode: camera_config::index::CccdMode,
     timeout_ms: u32,
@@ -1717,8 +1918,8 @@ async fn ensure_subscribed(
     if ctx.subscriptions.contains(&key) {
         return Ok(());
     }
-    deadline(ctx.transport, timeout_ms, "subscribe", async {
-        ctx.transport.subscribe(gatt.to_string(), mode.into()).await
+    deadline(transport, timeout_ms, "subscribe", async {
+        transport.subscribe(gatt.to_string(), mode.into()).await
     })
     .await?;
     ctx.subscriptions.insert(key);
@@ -1729,16 +1930,21 @@ async fn ensure_subscribed(
 /// until a payload satisfies `until` or the wall-clock budget lapses. A
 /// non-matching payload keeps the wait alive (the app dispatcher's semantics;
 /// the deterministic walker fails on it instead).
-async fn run_notify(ctx: &mut ExecCtx<'_>, s: &BleNotifyStep, here: &str) -> Result<(), StepError> {
+async fn run_notify(
+    ctx: &mut ExecCtx<'_>,
+    transport: &Arc<dyn BleExecutorTransport>,
+    s: &BleNotifyStep,
+    here: &str,
+) -> Result<(), StepError> {
     let err = |message: String| StepError::other(here, message);
-    ensure_subscribed(ctx, &s.gatt, s.mode, DEFAULT_OP_TIMEOUT_MS)
+    ensure_subscribed(ctx, transport, &s.gatt, s.mode, DEFAULT_OP_TIMEOUT_MS)
         .await
         .map_err(|failure| StepError::operation(here, failure))?;
 
-    let mut budget = ctx.transport.sleep(s.timeout_ms).fuse();
+    let mut budget = transport.sleep(s.timeout_ms).fuse();
     let mut observations: Vec<String> = Vec::new();
     for _ in 0..MAX_LOOP_ITERS {
-        let payload = next_or_budget(ctx.transport, &s.gatt, &mut budget)
+        let payload = next_or_budget(transport, &s.gatt, &mut budget)
             .await
             .map_err(|failure| match failure {
                 BudgetFailure::Lapsed => StepError::deadline(
@@ -1779,6 +1985,7 @@ async fn run_notify(ctx: &mut ExecCtx<'_>, s: &BleNotifyStep, here: &str) -> Res
 /// wall-clock budget.
 async fn run_await_until(
     ctx: &mut ExecCtx<'_>,
+    transport: &Arc<dyn BleExecutorTransport>,
     s: &BleAwaitUntilStep,
     here: &str,
     top_next: u32,
@@ -1790,11 +1997,11 @@ async fn run_await_until(
             mode,
             seed_read,
         } => {
-            ensure_subscribed(ctx, gatt, *mode, DEFAULT_OP_TIMEOUT_MS)
+            ensure_subscribed(ctx, transport, gatt, *mode, DEFAULT_OP_TIMEOUT_MS)
                 .await
                 .map_err(|failure| StepError::operation(here, failure))?;
 
-            let mut budget = ctx.transport.sleep(s.timeout_ms).fuse();
+            let mut budget = transport.sleep(s.timeout_ms).fuse();
             let mut observations: Vec<String> = Vec::new();
             let mut seed_pending = *seed_read;
             let mut tail = None;
@@ -1803,7 +2010,7 @@ async fn run_await_until(
                     // One fresh read routed through the same acceptance path,
                     // so an already-satisfied state resolves immediately.
                     seed_pending = false;
-                    let read = ctx.transport.read(gatt.clone());
+                    let read = transport.read(gatt.clone());
                     futures_util::pin_mut!(read);
                     match select(read, &mut budget).await {
                         Either::Left((res, _)) => {
@@ -1815,7 +2022,7 @@ async fn run_await_until(
                         },
                     }
                 } else {
-                    match next_or_budget(ctx.transport, gatt, &mut budget).await {
+                    match next_or_budget(transport, gatt, &mut budget).await {
                         Ok(res) => res.map_err(|error| StepError::transport(here, error))?,
                         Err(BudgetFailure::Lapsed) => {
                             return Err(await_timeout_err(here, s, &observations));
@@ -1894,10 +2101,10 @@ async fn run_await_until(
             } else {
                 DEFAULT_POLL_INTERVAL_MS
             };
-            let mut budget = ctx.transport.sleep(s.timeout_ms).fuse();
+            let mut budget = transport.sleep(s.timeout_ms).fuse();
             let mut tail = None;
             for _ in 0..MAX_LOOP_ITERS {
-                let read = ctx.transport.read(gatt.clone());
+                let read = transport.read(gatt.clone());
                 futures_util::pin_mut!(read);
                 let value = match select(read, &mut budget).await {
                     Either::Left((res, _)) => {
@@ -1995,7 +2202,7 @@ async fn run_await_until(
                         }
                     }
                 }
-                let pause = ctx.transport.sleep(interval);
+                let pause = transport.sleep(interval);
                 futures_util::pin_mut!(pause);
                 match select(pause, &mut budget).await {
                     Either::Left((Ok(()), _)) => {}
@@ -2117,6 +2324,7 @@ const MAX_CHUNK_WINDOWS: usize = 4096;
 /// here; the manifest declares only policy.
 async fn run_write_chunk(
     ctx: &mut ExecCtx<'_>,
+    transport: &Arc<dyn BleExecutorTransport>,
     s: &BleWriteChunkStep,
     here: &str,
 ) -> Result<(), StepError> {
@@ -2182,8 +2390,8 @@ async fn run_write_chunk(
     }
     frame.extend_from_slice(&blob[offset..offset + len]);
 
-    deadline(ctx.transport, DEFAULT_OP_TIMEOUT_MS, "write", async {
-        ctx.transport.write(s.gatt.clone(), frame).await
+    deadline(transport, DEFAULT_OP_TIMEOUT_MS, "write", async {
+        transport.write(s.gatt.clone(), frame).await
     })
     .await
     .map_err(|failure| StepError::operation(here, failure))?;
@@ -2212,11 +2420,58 @@ async fn deadline<T>(
     }
 }
 
+/// USB analog of [`deadline`] (§11.29): race one USB transfer against the
+/// host clock. `UsbTransportError` folds into the shared vocabulary via its
+/// `From` impl, which keeps the timeout → deadline-exceeded classification.
+async fn usb_deadline<T>(
+    transport: &Arc<dyn UsbExecutorTransport>,
+    ms: u32,
+    what: &str,
+    io: impl std::future::Future<Output = Result<T, UsbTransportError>>,
+) -> Result<T, OperationFailure> {
+    futures_util::pin_mut!(io);
+    let clock = async { transport.sleep(ms).await.map_err(TransportError::from) };
+    futures_util::pin_mut!(clock);
+    match select(io, clock).await {
+        Either::Left((res, _)) => res.map_err(|error| OperationFailure::transport(error.into())),
+        Either::Right((Ok(()), _)) => Err(OperationFailure::deadline(what, ms)),
+        Either::Right((Err(error), _)) => Err(OperationFailure::transport(error)),
+    }
+}
+
+/// The BLE transport for a BLE-only verb, or the typed transport-mismatch
+/// failure the verb raises on a raw USB walk (§11.29).
+fn ble_transport<'a>(
+    ctx: &ExecCtx<'a>,
+    here: &str,
+    verb: &'static str,
+) -> Result<&'a Arc<dyn BleExecutorTransport>, StepError> {
+    ctx.transport
+        .ble()
+        .ok_or_else(|| StepError::unsupported_verb(here, verb, "USB"))
+}
+
+/// The USB transport for a USB verb (§11.29). USB verbs never load into BLE
+/// plans, so a BLE walk reaching one is a loader escape, not a plan shape to
+/// support.
+fn usb_transport<'a>(
+    ctx: &ExecCtx<'a>,
+    here: &str,
+) -> Result<&'a Arc<dyn UsbExecutorTransport>, StepError> {
+    ctx.transport.usb().ok_or_else(|| {
+        StepError::other(
+            here,
+            "USB establishment verbs do not run on the BLE executor".into(),
+        )
+    })
+}
+
 /// The scope slot an `acquire` delegate binds its result to — the delegate's
 /// own explicit `capture_as` (#44).
 fn primary_capture_name(step: &Step) -> Option<&str> {
     match step {
         Step::BleRead(s) => Some(&s.capture_as),
+        Step::BlePeripheralName(s) => Some(&s.capture_as),
         Step::BleNotify(s) => s.capture_as.as_deref(),
         Step::BleAwaitUntil(s) => s.capture_as.as_deref(),
         _ => None,
@@ -2422,8 +2677,8 @@ mod tests {
     use super::*;
     use camera_config::index::{
         AcquireFirmwareStep, AwaitSource, BleAwaitDisconnectStep, BleAwaitUntilStep, BleDelayStep,
-        BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep, NotifyCapture, Predicate,
-        RetryFailureKind, RetryStep, StepConfirmation, StepOptions,
+        BlePeripheralNameStep, BleReadStep, BleRequestMtuStep, BleWriteStep, CccdMode, IfStep,
+        NotifyCapture, Predicate, RetryFailureKind, RetryStep, StepConfirmation, StepOptions,
     };
     use std::collections::VecDeque;
     use std::future::Future;
@@ -2460,6 +2715,12 @@ mod tests {
         /// Fire only the clock with this exact duration. This lets tests keep
         /// nested operation deadlines frozen while the enclosing await lapses.
         sleep_fire_ms: Option<u32>,
+        /// The platform peripheral name served to `blePeripheralName` (§11.4b).
+        /// Empty models a stack that cannot supply one.
+        peripheral_name: String,
+        /// Fail the MTU request itself (a GATT error or timeout), as distinct
+        /// from negotiating below a manifest floor (#449).
+        request_mtu_fails: bool,
         sleep_log: Arc<Mutex<Vec<u32>>>,
         subscribe_log: Arc<Mutex<Vec<String>>>,
         dropped_inflight: Arc<AtomicBool>,
@@ -2489,6 +2750,11 @@ mod tests {
             self.play(io).await.map(|_| ())
         }
         async fn request_mtu(&self, _mtu: u16) -> Result<u16, TransportError> {
+            if self.request_mtu_fails {
+                return Err(TransportError::Failed {
+                    detail: "requestMtu rejected by the GATT stack".to_string(),
+                });
+            }
             Ok(158)
         }
         async fn ensure_services_discovered(&self) -> Result<(), TransportError> {
@@ -2497,6 +2763,9 @@ mod tests {
         async fn read(&self, _characteristic: String) -> Result<Vec<u8>, TransportError> {
             let io = self.reads.lock().unwrap().pop_front();
             self.play(io).await
+        }
+        async fn peripheral_name(&self) -> Result<String, TransportError> {
+            Ok(self.peripheral_name.clone())
         }
         async fn write(
             &self,
@@ -2605,7 +2874,7 @@ mod tests {
         observer: &'a Arc<dyn StepObserver>,
     ) -> ExecCtx<'a> {
         ExecCtx {
-            transport,
+            transport: ExecTransport::Ble(transport),
             observer,
             activity_observer: None,
             active_activity: None,
@@ -2617,6 +2886,8 @@ mod tests {
             steps_run: 0,
             summary: NativeEstablishmentWalkSummary::default(),
             refine: None,
+            usb_interfaces: BTreeMap::new(),
+            usb_interface_claimed: false,
         }
     }
 
@@ -3523,12 +3794,144 @@ mod tests {
         });
         let mut ctx = ctx(&transport, &observer);
         let steps = vec![Step::BleRequestMtu(BleRequestMtuStep {
-            mtu: 517,
+            requested_mtu: 517,
+            minimum_mtu: Some(517),
             opts: StepOptions::default(),
         })];
         let err = block_on(walk_plan(&mut ctx, steps)).expect_err("negotiated 158 < 517");
         assert_eq!(err.kind, ExecutorStepFailureKind::Other);
         assert!(err.message.contains("negotiated MTU 158"));
+    }
+
+    #[test]
+    fn mtu_without_floor_succeeds_below_the_request_target() {
+        // §11.4a: with no evidenced floor, any negotiated MTU passes the
+        // checkpoint (the X-A7 pairs at 185 against a 515 target).
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BleRequestMtu(BleRequestMtuStep {
+            requested_mtu: 517,
+            minimum_mtu: None,
+            opts: StepOptions::default(),
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("negotiated 158 with no floor must succeed");
+    }
+
+    #[test]
+    fn tolerant_mtu_step_absorbs_a_failed_request_call() {
+        // legacy manufacturer app's onMtuChanged ignores the callback status, so a
+        // failed requestMtu call must not block registration (#449):
+        // tolerance absorbs the call error itself, not just an unmet floor.
+        let (transport, recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            request_mtu_fails: true,
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BleRequestMtu(BleRequestMtuStep {
+            requested_mtu: 517,
+            minimum_mtu: None,
+            opts: StepOptions {
+                tolerant: true,
+                ..StepOptions::default()
+            },
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("tolerance absorbs the call failure");
+
+        let reports = recorder.0.lock().unwrap();
+        let outcomes: Vec<StepOutcome> = reports.iter().map(|r| r.outcome).collect();
+        assert_eq!(outcomes, vec![StepOutcome::Started, StepOutcome::Tolerated]);
+        // The tolerated error is the scripted call failure, provably not the
+        // executor's own deadline firing (a pend would report a timeout).
+        assert!(reports[1]
+            .error
+            .as_deref()
+            .expect("tolerated report carries the error")
+            .contains("requestMtu rejected by the GATT stack"));
+    }
+
+    #[test]
+    fn strict_mtu_step_fails_on_a_failed_request_call() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            request_mtu_fails: true,
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BleRequestMtu(BleRequestMtuStep {
+            requested_mtu: 517,
+            minimum_mtu: None,
+            opts: StepOptions::default(),
+        })];
+        let err = block_on(walk_plan(&mut ctx, steps))
+            .expect_err("a failed request call fails a strict step");
+        assert_eq!(err.kind, ExecutorStepFailureKind::Other);
+        assert!(err
+            .message
+            .contains("requestMtu rejected by the GATT stack"));
+    }
+
+    #[test]
+    fn peripheral_name_binds_scope_from_the_platform_surface() {
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            peripheral_name: "TEST-PERIPHERAL".into(),
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BlePeripheralName(BlePeripheralNameStep {
+            capture_as: "cameraName".into(),
+            opts: StepOptions::default(),
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("mock transport serves a name");
+        assert_eq!(
+            ctx.scope.get("cameraName").map(String::as_str),
+            Some("TEST-PERIPHERAL")
+        );
+    }
+
+    #[test]
+    fn peripheral_name_strips_the_nul_terminator() {
+        // GAP-exposing hosts may satisfy the step with the raw 0x2A00 read,
+        // which is NUL-terminated; the bound value must not carry it (#444
+        // review).
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            peripheral_name: "TEST-PERIPHERAL\0".into(),
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BlePeripheralName(BlePeripheralNameStep {
+            capture_as: "cameraName".into(),
+            opts: StepOptions::default(),
+        })];
+        block_on(walk_plan(&mut ctx, steps)).expect("a NUL-terminated name binds trimmed");
+        assert_eq!(
+            ctx.scope.get("cameraName").map(String::as_str),
+            Some("TEST-PERIPHERAL")
+        );
+    }
+
+    #[test]
+    fn empty_peripheral_name_fails_instead_of_binding_empty() {
+        // CBPeripheral.name is optional; an unavailable name is a step
+        // failure, never a silently empty capture (#444 review).
+        let (transport, _recorder, observer) = harness(MockTransport {
+            sleeps_fire: true,
+            peripheral_name: String::new(),
+            ..Default::default()
+        });
+        let mut ctx = ctx(&transport, &observer);
+        let steps = vec![Step::BlePeripheralName(BlePeripheralNameStep {
+            capture_as: "cameraName".into(),
+            opts: StepOptions::default(),
+        })];
+        let err = block_on(walk_plan(&mut ctx, steps)).expect_err("empty name must fail");
+        assert!(err.message.contains("peripheral name unavailable"));
+        assert!(!ctx.scope.contains_key("cameraName"));
     }
 
     #[test]

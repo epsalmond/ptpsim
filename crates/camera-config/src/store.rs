@@ -129,6 +129,7 @@ impl ConfigStore {
             validate_reestablishment_params(id, &body, model_view)?;
             validate_pcss_camera_names(id, &body, model_view)?;
             validate_host_establishment_scopes(id, &body, model_view)?;
+            validate_usb_event_delivery(id, &body, model_view)?;
             bodies.insert(id.clone(), body);
         }
         validate_activity_metadata_consistency(&index, &bodies)?;
@@ -385,6 +386,94 @@ fn validate_activity_metadata_consistency(
     Ok(())
 }
 
+/// §11.29: a connection declaring `events.delivery: none` has no event
+/// channel, so the USB establishment plan it selects cannot await interrupt
+/// frames. `usbAwaitInterrupt` is a strict wait verb outside the `EntryStep`
+/// `awaitUntil` grammar, so the `bestEffort` thenPoll rule does not govern
+/// it; only `none` contradicts it.
+fn validate_usb_event_delivery(
+    model_id: &str,
+    body: &CameraManifest,
+    model_view: &crate::index::ModelView,
+) -> Result<(), ConfigError> {
+    for (connection_id, connection) in &body.connections {
+        let no_event_channel = matches!(
+            connection.events,
+            Some(contract) if contract.delivery == crate::model::EventDelivery::None
+        );
+        if !no_event_channel {
+            continue;
+        }
+        let Some(mechanism) = &connection.establishment else {
+            continue;
+        };
+        let Some(establishment) = model_view
+            .usb
+            .as_ref()
+            .and_then(|usb| usb.establishment(mechanism))
+        else {
+            continue;
+        };
+        let plan = format!("establishments.{mechanism}");
+        for (steps, suffix) in [
+            (&establishment.steps, "steps"),
+            (&establishment.post_exit_readiness, "postExitReadiness"),
+        ] {
+            if let Some(step_path) = usb_await_interrupt_step(steps, &format!("{plan}.{suffix}")) {
+                return Err(ConfigError::Validation {
+                    path: format!("models.{model_id}.connections.{connection_id}.events.delivery"),
+                    message: format!(
+                        "none forbids event-source waits, but the establishment plan declares {step_path}"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Depth-first search for a `usbAwaitInterrupt` under control flow, returning
+/// the offending step path. BLE verbs never load into a USB plan, so only
+/// `if`/`retry`/`acquire` can nest one.
+fn usb_await_interrupt_step(steps: &[Step], path: &str) -> Option<String> {
+    for (index, step) in steps.iter().enumerate() {
+        let step_path = format!("{path}[{index}]");
+        match step {
+            Step::UsbAwaitInterrupt(_) => {
+                return Some(format!("{step_path}.usbAwaitInterrupt"));
+            }
+            Step::If(if_step) => {
+                for (branch, name) in [(&if_step.then, "then"), (&if_step.else_branch, "else")] {
+                    if let Some(found) =
+                        usb_await_interrupt_step(branch, &format!("{step_path}.{name}"))
+                    {
+                        return Some(found);
+                    }
+                }
+            }
+            Step::Retry(retry) => {
+                for (nested, name) in [(&retry.steps, "steps"), (&retry.on_failure, "onFailure")] {
+                    if let Some(found) =
+                        usb_await_interrupt_step(nested, &format!("{step_path}.{name}"))
+                    {
+                        return Some(found);
+                    }
+                }
+            }
+            Step::Acquire(acquire) => {
+                if let Some(found) = usb_await_interrupt_step(
+                    std::slice::from_ref(acquire.from.as_ref()),
+                    &format!("{step_path}.from"),
+                ) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn validate_merged_activity_ids(
     index: &ResolvedManufacturerIndex,
     bodies: &BTreeMap<String, CameraManifest>,
@@ -568,6 +657,9 @@ fn collect_step_scope_outputs(steps: &[Step], outputs: &mut BTreeSet<String>) {
             Step::BleRead(step) => {
                 outputs.insert(step.capture_as.clone());
             }
+            Step::BlePeripheralName(step) => {
+                outputs.insert(step.capture_as.clone());
+            }
             Step::BleNotify(step) => {
                 if let Some(name) = &step.capture_as {
                     outputs.insert(name.clone());
@@ -606,6 +698,12 @@ fn collect_step_scope_outputs(steps: &[Step], outputs: &mut BTreeSet<String>) {
                     outputs.insert(name.clone());
                 }
             }
+            Step::UsbBulkIn(step) => {
+                outputs.insert(step.capture_as.clone());
+            }
+            Step::UsbAwaitInterrupt(step) => {
+                outputs.insert(step.capture_as.clone());
+            }
             Step::BleConnect(_)
             | Step::BleDelay(_)
             | Step::BleAwaitDisconnect(_)
@@ -614,7 +712,9 @@ fn collect_step_scope_outputs(steps: &[Step], outputs: &mut BTreeSet<String>) {
             | Step::BleWrite(_)
             | Step::BleSubscribe(_)
             | Step::BleWriteChunk(_)
-            | Step::NikonLssAuthenticate(_) => {}
+            | Step::NikonLssAuthenticate(_)
+            | Step::UsbClaim(_)
+            | Step::UsbBulkOut(_) => {}
         }
     }
 }

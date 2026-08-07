@@ -707,16 +707,74 @@ fn platform_filters_connections_macos_vs_ios() {
     let s = store();
     let mac = s.connections(Platform::Macos);
     let ios = s.connections(Platform::Ios);
-    // macOS sees USB + the wired tether; iOS does not (platforms: excludes it).
-    assert!(ids(&mac).contains(&"usb"), "macOS has USB");
+    let android = s.connections(Platform::Android);
+    // Raw USB is desktop-class (macOS, Android, Linux); the daemon-attached
+    // pass-through row serves iOS and macOS.
+    assert!(ids(&mac).contains(&"usb"), "macOS has raw USB");
+    assert!(
+        ids(&mac).contains(&"usb-passthrough"),
+        "macOS has USB pass-through"
+    );
     assert!(ids(&mac).contains(&"wireless-tether"));
     assert!(
         !ids(&ios).contains(&"usb"),
-        "iOS hides USB — same build, data-driven"
+        "iOS hides raw USB — same build, data-driven"
+    );
+    assert!(
+        ids(&ios).contains(&"usb-passthrough"),
+        "iOS has USB pass-through"
+    );
+    assert!(ids(&android).contains(&"usb"), "Android has raw USB");
+    assert!(
+        !ids(&android).contains(&"usb-passthrough"),
+        "Android hides USB pass-through"
     );
     // App + XLV available to both.
     assert!(ids(&ios).contains(&"app"));
     assert!(ids(&mac).contains(&"xlv"));
+}
+
+#[test]
+fn session_ownership_and_event_delivery_cross_the_ffi_seam() {
+    let store = ConfigStore::from_bundle(
+        r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  usbTether:
+    kind: usb
+    establishment: usb-claim-session
+    session: { ownership: daemonAttached }
+    events: { delivery: bestEffort }
+  plain:
+    kind: wifi
+"#
+        .into(),
+        None,
+    )
+    .expect("synthetic trait manifest loads");
+
+    let infos = store.connections(Platform::Linux);
+    let usb = infos
+        .iter()
+        .find(|c| c.id == "usbTether")
+        .expect("usbTether listed");
+    assert!(matches!(
+        usb.session_ownership,
+        Some(FfiSessionOwnership::DaemonAttached)
+    ));
+    assert!(matches!(
+        usb.event_delivery,
+        Some(FfiEventDelivery::BestEffort)
+    ));
+
+    // Undeclared trait fields surface as `None`; the consumer falls back.
+    let plain = infos
+        .iter()
+        .find(|c| c.id == "plain")
+        .expect("plain listed");
+    assert!(plain.session_ownership.is_none());
+    assert!(plain.event_delivery.is_none());
 }
 
 #[test]

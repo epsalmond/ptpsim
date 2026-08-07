@@ -260,6 +260,13 @@ impl camera_protocol_ffi::BleExecutorTransport for ResponderTransport {
             .read(&characteristic)
             .map_err(transport_err)
     }
+    async fn peripheral_name(&self) -> Result<String, TransportError> {
+        self.responder
+            .lock()
+            .unwrap()
+            .peripheral_name()
+            .map_err(transport_err)
+    }
     async fn write(&self, characteristic: String, value: Vec<u8>) -> Result<(), TransportError> {
         self.responder
             .lock()
@@ -345,6 +352,9 @@ impl camera_protocol_ffi::BleExecutorTransport for ClockTestTransport {
             Some(value) => Ok(value),
             None => std::future::pending().await,
         }
+    }
+    async fn peripheral_name(&self) -> Result<String, TransportError> {
+        Ok("CLOCK-TEST".to_string())
     }
     async fn write(&self, _characteristic: String, _value: Vec<u8>) -> Result<(), TransportError> {
         Ok(())

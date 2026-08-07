@@ -1,9 +1,10 @@
-//! `bleRequestMtu` checkpoint tolerance (#399). The reference app treats
-//! `requestMtu(515)` as fire-and-forget — no negotiated-MTU floor — and
-//! CoreBluetooth has no request API, so the X-A7 legacy-app establishments
-//! mark the step `tolerant: true`. These pin both walker arms against a
-//! responder whose ATT MTU cap sits below the request target: tolerant skips
-//! and records the tolerated path; strict (the default) aborts the walk.
+//! `bleRequestMtu` checkpoint semantics (#400). `requestedMtu` is the
+//! reference app's request target; `minimumMtu` is a separately evidenced
+//! floor. With no floor declared the step succeeds at any negotiated MTU;
+//! with one it fails (tolerant-aware) when the negotiated MTU is below the
+//! floor, on every platform. The X-A7 negotiates 185 against a 515 request
+//! target and the reference app enforces no floor, so its legacy-app
+//! establishments declare no `minimumMtu`.
 
 use std::collections::BTreeMap;
 
@@ -64,11 +65,11 @@ fn steps_of(idx: &ResolvedManufacturerIndex) -> Vec<Step> {
 }
 
 #[test]
-fn tolerant_mtu_checkpoint_below_target_is_skipped_and_recorded() {
+fn no_floor_checkpoint_accepts_any_negotiated_mtu() {
     // The X-A7 hardware observation: negotiated 185 against a 515 request
-    // target. With `tolerant: true` the walk continues past the checkpoint.
+    // target. With no `minimumMtu` the walk continues, untolerated.
     let idx = index_with_steps(
-        r#"          - bleRequestMtu: { mtu: 515, tolerant: true }
+        r#"          - bleRequestMtu: { requestedMtu: 515 }
 "#,
     );
     let mut responder = BleResponder::new(Vec::<String>::new()).with_mtu_cap(185);
@@ -80,21 +81,18 @@ fn tolerant_mtu_checkpoint_below_target_is_skipped_and_recorded() {
         &BTreeMap::new(),
         &BTreeMap::new(),
     )
-    .expect("a tolerant MTU checkpoint below the target must not fail the walk");
+    .expect("a no-floor MTU checkpoint must succeed at any negotiated value");
 
-    assert_eq!(
-        outcome.summary.tolerated_step_paths,
-        vec!["steps[2].bleRequestMtu".to_string()],
-        "the tolerated checkpoint is recorded at its step path"
+    assert!(
+        outcome.summary.tolerated_step_paths.is_empty(),
+        "no tolerance annotation is involved"
     );
 }
 
 #[test]
-fn strict_mtu_checkpoint_below_target_aborts_the_walk() {
-    // Without `tolerant` the §11.4a checkpoint semantics stand: negotiated
-    // below the manifest `mtu` is a step failure.
+fn unmet_floor_checkpoint_aborts_the_walk() {
     let idx = index_with_steps(
-        r#"          - bleRequestMtu: { mtu: 515 }
+        r#"          - bleRequestMtu: { requestedMtu: 515, minimumMtu: 200 }
 "#,
     );
     let mut responder = BleResponder::new(Vec::<String>::new()).with_mtu_cap(185);
@@ -106,12 +104,106 @@ fn strict_mtu_checkpoint_below_target_aborts_the_walk() {
         &BTreeMap::new(),
         &BTreeMap::new(),
     ) {
-        Ok(_) => panic!("a strict MTU checkpoint below the target must fail the walk"),
+        Ok(_) => panic!("negotiated 185 below the 200 floor must fail the walk"),
         Err(e) => e,
     };
 
     assert!(
-        error.to_string().contains("515"),
-        "the failure names the unmet requirement: {error}"
+        error.to_string().contains("200"),
+        "the failure names the unmet floor: {error}"
+    );
+}
+
+#[test]
+fn met_floor_checkpoint_succeeds() {
+    let idx = index_with_steps(
+        r#"          - bleRequestMtu: { requestedMtu: 515, minimumMtu: 185 }
+"#,
+    );
+    let mut responder = BleResponder::new(Vec::<String>::new()).with_mtu_cap(185);
+
+    walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("a negotiated value equal to the floor meets it");
+}
+
+#[test]
+fn tolerant_unmet_floor_is_skipped_and_recorded() {
+    let idx = index_with_steps(
+        r#"          - bleRequestMtu: { requestedMtu: 515, minimumMtu: 200, tolerant: true }
+"#,
+    );
+    let mut responder = BleResponder::new(Vec::<String>::new()).with_mtu_cap(185);
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("a tolerant unmet-floor checkpoint must not fail the walk");
+
+    assert_eq!(
+        outcome.summary.tolerated_step_paths,
+        vec!["steps[2].bleRequestMtu".to_string()],
+        "the tolerated checkpoint is recorded at its step path"
+    );
+}
+
+#[test]
+fn tolerant_step_absorbs_a_failed_mtu_request() {
+    // legacy manufacturer app's onMtuChanged ignores the callback status, so a failed
+    // requestMtu call must not block registration (#449): tolerance absorbs
+    // the call error itself, not just an unmet floor.
+    let idx = index_with_steps(
+        r#"          - bleRequestMtu: { requestedMtu: 515, tolerant: true }
+"#,
+    );
+    let mut responder = BleResponder::new(Vec::<String>::new()).with_failing_mtu_request();
+
+    let outcome = walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("a tolerant step must absorb a failed MTU request");
+
+    assert_eq!(
+        outcome.summary.tolerated_step_paths,
+        vec!["steps[2].bleRequestMtu".to_string()],
+        "the tolerated call failure is recorded at its step path"
+    );
+}
+
+#[test]
+fn strict_step_fails_on_a_failed_mtu_request() {
+    let idx = index_with_steps(
+        r#"          - bleRequestMtu: { requestedMtu: 515 }
+"#,
+    );
+    let mut responder = BleResponder::new(Vec::<String>::new()).with_failing_mtu_request();
+
+    let error = match walk_establishment(
+        &mut responder,
+        &steps_of(&idx),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    ) {
+        Ok(_) => panic!("a failed MTU request must fail a strict step"),
+        Err(e) => e,
+    };
+
+    assert!(
+        error.to_string().contains("MTU request failed"),
+        "the failure reports the call error: {error}"
     );
 }

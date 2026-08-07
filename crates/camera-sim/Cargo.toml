@@ -13,3 +13,11 @@ camera-media-store = { workspace = true }
 protocol-primitives = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# The USB acceptance tests drive the FFI executor seams against the scripted
+# USB responder, the mirror image of the BLE seam tests in camera-protocol-ffi
+# (which dev-depend on camera-sim for the BleResponder).
+camera-protocol-ffi = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
