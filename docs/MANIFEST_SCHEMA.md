@@ -1815,10 +1815,12 @@ discovery:
   # pid: 0x1234  # optional, only when descriptor evidence establishes it
 ```
 
+`discovery.mechanism` is a lowercase kebab-case token. Whitespace is invalid.
 `discovery.platforms` controls automatic recognition and must be a subset of
-the connection's `platforms` list. It may be narrower than connection
-availability. macOS can therefore expose raw `usb` for an explicit adapter
-while its ImageCapture attachment selects `usb-passthrough`.
+the connection's `platforms` list. USB discovery requires at least one entry.
+The list may be narrower than connection availability. macOS can therefore
+expose raw `usb` for an explicit adapter while its ImageCapture attachment
+selects `usb-passthrough`.
 
 `vid` is required and nonzero for `mechanism: usb`. `pid` is optional and
 nonzero when declared. An absent PID is a vendor-level candidate, not durable
