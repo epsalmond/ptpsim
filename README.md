@@ -1,17 +1,18 @@
 # ptpsim
 
-A scriptable, open-source **camera-protocol simulator** (PTP/IP, responder role).
-ptpsim runs a believable camera from manifest **data** — one generic engine, no
-per-manufacturer code — and records real-camera and simulator traffic through
-one fail-closed `camera-observation/v1` evidence contract.
+`ptpsim` is a scriptable, open-source **camera-protocol simulator** for the
+PTP/IP responder role. It loads camera behavior from manifest **data** through
+one generic engine. The engine contains no per-manufacturer code. Real-camera
+and simulator traffic use the same fail-closed `camera-observation/v1` evidence
+contract.
 
-See [`DESIGN.md`](DESIGN.md) for the full design.
+[`DESIGN.md`](DESIGN.md) documents the full architecture.
 
-The deployable `camera-sim-service` container contract is documented in
-[`docs/CONTAINER.md`](docs/CONTAINER.md).
+[`docs/CONTAINER.md`](docs/CONTAINER.md) documents the deployable
+`camera-sim-service` container contract.
 
-The headless real-camera workflow is documented in
-[`docs/REAL_CAMERA_PTPIP.md`](docs/REAL_CAMERA_PTPIP.md).
+[`docs/REAL_CAMERA_PTPIP.md`](docs/REAL_CAMERA_PTPIP.md) documents the headless
+real-camera workflow.
 
 ## Layout
 
@@ -34,7 +35,7 @@ packages/
   fixtures              small redistributable media fixtures
 ```
 
-## Build & test
+## Build and test
 
 ```sh
 cargo test            # Rust workspace
@@ -46,24 +47,26 @@ cargo test            # Rust workspace
 scripts/run-tui
 ```
 
-This attaches to an existing local `camera-sim-service`, or starts `./run` with
-the default GFX100 II fixture service before launching the operator console.
+This attaches to an existing local `camera-sim-service`. If none is running, it
+starts `./run` with the default GFX100 II fixture service, then launches the
+operator console.
 
 ## CI
 
-Continuous integration runs via the workflows under [`.woodpecker/`](.woodpecker/).
-The Linux and OCI workflows request Docker `linux/amd64` lanes by repository
-and trust capabilities rather than a named host. Deployments must supply the
-trusted clone image. An optional workstation can reuse an isolated durable
-checkout for default-branch pushes on the unprivileged Linux lane; other
-compatible agents may use ephemeral workspaces.
+Continuous integration uses the workflows under [`.woodpecker/`](.woodpecker/).
+The Linux and OCI workflows select Docker `linux/amd64` lanes through repository
+and trust requirements. They do not target named hosts. Deployments must supply
+the trusted clone image.
 
-Linux steps keep build caches inside their disposable containers rather than
-requesting host volumes. This lets the public workflow use an unprivileged
-runner while Docker image layers and the durable Git object database provide
+An optional workstation can reuse an isolated durable checkout for
+default-branch pushes on the unprivileged Linux lane. Other compatible agents
+may use ephemeral workspaces.
+
+Linux build caches stay inside disposable containers. The steps do not request
+host volumes. Docker image layers and the durable Git object database provide
 cross-run reuse. The privileged multi-architecture OCI workflow requires the
-deployment's `host-root` lane; Apple XCFramework promotion remains a separate
-Darwin workflow.
+deployment's `host-root` lane. A separate Darwin workflow promotes the Apple
+XCFramework.
 
 ## License
 
