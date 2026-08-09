@@ -1,6 +1,5 @@
 //! Entry point: parse config, bind, install a SIGTERM handler, and serve until
 
-
 use std::net::SocketAddr;
 use std::path::PathBuf;
 

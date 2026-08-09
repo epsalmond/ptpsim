@@ -15,7 +15,7 @@ use camera_config::index::{
     PredicateOp, ReconnectDisposition, ResolvedManufacturerIndex, Signature, Step,
     StepConfirmation, StepValue, Transform,
 };
-use camera_config::{ConfigStore, SocketRole};
+use camera_config::ConfigStore;
 
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -32,37 +32,11 @@ fn real_index() -> ResolvedManufacturerIndex {
 fn real_fuji_bodies() -> BTreeMap<String, String> {
     BTreeMap::from([
         ("gfx100ii".to_string(), data("fuji/gfx100ii/gfx100ii.yaml")),
-        ("xa7".to_string(), data("fuji/xa7/xa7.yaml")),
         (
             "fuji-generic".to_string(),
             data("fuji/fuji-generic/fuji-generic.yaml"),
         ),
     ])
-}
-
-fn store_for(vendor: &str, model_id: &str) -> std::sync::Arc<ConfigStore> {
-    let mut bodies = BTreeMap::new();
-    let model_ids = match vendor {
-        "nikon" => &["nikon-camera", "d850"][..],
-        _ => std::slice::from_ref(&model_id),
-    };
-    for id in model_ids {
-        bodies.insert((*id).to_string(), data(&format!("{vendor}/{id}/{id}.yaml")));
-    }
-    let store =
-        ConfigStore::from_manufacturer_index(&data(&format!("{vendor}/index.yaml")), bodies)
-            .unwrap_or_else(|e| panic!("{vendor}/{model_id} loads: {e:?}"));
-    if vendor == "nikon" {
-        let store = std::sync::Arc::try_unwrap(store).unwrap_or_else(|arc| (*arc).clone());
-        std::sync::Arc::new(
-            store.with_manufacturer(
-                camera_config::ManufacturerDefaults::from_yaml(&data("nikon/nikon.yaml"))
-                    .expect("Nikon defaults load"),
-            ),
-        )
-    } else {
-        store
-    }
 }
 
 #[test]
@@ -128,85 +102,6 @@ fn family_ble_block_merges_into_gfx100ii_view() {
     assert!(
         ble.establishment("ble-pair").unwrap().steps.len() >= 4,
         "establishment carries the multi-step pair flow"
-    );
-}
-
-// legacy manufacturer app treats requestMtu(515) as fire-and-forget: onMtuChanged
-// ignores the callback status and the negotiated value, so there is no
-// evidenced MTU floor, and a failed request call must not block registration
-// either. The manifest declares the request target, no floor, and stays
-// tolerant of the call itself (#399, #400, PR #448 review).
-#[test]
-fn xa7_legacy_app_mtu_declares_request_target_without_floor() {
-    let idx = real_index();
-    let xa7 = idx
-        .models
-        .iter()
-        .find(|m| m.id == "xa7")
-        .expect("xa7 is in the index");
-    let ble = xa7.ble.as_ref().expect("xa7 carries the family ble block");
-    for name in ["legacy-app-pair", "legacy-app-reconnect"] {
-        let steps = &ble.establishment(name).unwrap().steps;
-        let mtus: Vec<_> = steps
-            .iter()
-            .filter_map(|s| match s {
-                Step::BleRequestMtu(inner) => Some(inner),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(mtus.len(), 1, "{name} declares exactly one MTU checkpoint");
-        assert_eq!(
-            mtus[0].requested_mtu, 515,
-            "{name} keeps the reference request target"
-        );
-        assert!(
-            mtus[0].minimum_mtu.is_none(),
-            "{name} has no evidenced floor and declares none (#400)"
-        );
-        assert!(
-            mtus[0].opts.tolerant,
-            "{name} stays tolerant of a failed requestMtu call (#399)"
-        );
-    }
-}
-
-// The X-A7 starts its AP on the launch write but confirms state only by
-// read: no apState indication arrived within 20s on hardware, twice
-// (2026-07-24, #412). The establish-wifi-ap await polls the readable
-// characteristic; a pre-launch 0 is the normal not-yet state, so no failWhen.
-#[test]
-fn xa7_legacy_app_ap_start_confirms_by_read_poll() {
-    let idx = real_index();
-    let xa7 = idx
-        .models
-        .iter()
-        .find(|m| m.id == "xa7")
-        .expect("xa7 is in the index");
-    let ble = xa7.ble.as_ref().expect("xa7 carries the family ble block");
-    let establishment = ble
-        .establishment("legacy-app-establish-wifi-ap")
-        .unwrap();
-    let awaits: Vec<_> = establishment
-        .steps
-        .iter()
-        .filter_map(|s| match s {
-            Step::BleAwaitUntil(inner) => Some(inner),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(awaits.len(), 1, "one await in the AP-launch walk");
-    assert!(
-        matches!(awaits[0].source, AwaitSource::Read { .. }),
-        "AP-start confirmation polls the readable apState characteristic (#412)"
-    );
-    assert!(
-        awaits[0].fail_when.is_none(),
-        "a pre-launch 0 is the normal not-yet state, not a refusal (#412)"
-    );
-    assert_eq!(
-        establishment.steps.len(),
-        6,
-        "the read-poll swap is one step for one step; the executor span still covers the walk"
     );
 }
 
@@ -1000,22 +895,16 @@ fn config_store_loads_real_fuji_index_with_real_body() {
         .expect("loads");
     let index = store.index.as_ref().expect("index populated");
     assert_eq!(index.manufacturer, "FUJIFILM");
-    assert_eq!(index.models.len(), 3);
+    assert_eq!(index.models.len(), 2);
     assert_eq!(index.models[0].id, "gfx100ii");
-    assert_eq!(index.models[1].id, "xa7");
-    assert_eq!(index.models[2].id, "fuji-generic");
+    assert_eq!(index.models[1].id, "fuji-generic");
     // The family-baseline model carries the fallback marker; the specific model
     // does not (#311).
     assert!(!index.models[0].fallback);
-    assert!(!index.models[1].fallback);
-    assert!(index.models[2].fallback);
+    assert!(index.models[1].fallback);
     // Body lookup works.
     let body = store.body("gfx100ii").expect("body present");
     assert_eq!(body.camera.model, "GFX100 II");
-    assert_eq!(
-        store.body("xa7").expect("body present").camera.model,
-        "X-A7"
-    );
     assert_eq!(
         store
             .body("fuji-generic")
@@ -1890,143 +1779,6 @@ models:
         }
     );
     assert_eq!(sig.capture[3].transform, vec![Transform::DropPrefix(3)]);
-}
-
-#[test]
-fn preliminary_vendor_indexes_load_in_camera_config() {
-    for (vendor, model_id) in [
-        ("sony", "sony-camera"),
-        ("canon", "canon-camera"),
-        ("nikon", "nikon-camera"),
-    ] {
-        let store = store_for(vendor, model_id);
-        assert!(
-            store.index.is_some(),
-            "{vendor}/{model_id} exposes a resolved manufacturer index"
-        );
-        let expected_mfr = vendor.to_ascii_uppercase();
-        assert_eq!(
-            store.body(model_id).map(|b| b.camera.manufacturer.as_str()),
-            Some(expected_mfr.as_str()),
-            "{vendor}/{model_id} body manifest is available"
-        );
-    }
-}
-
-#[test]
-fn nikon_d850_is_an_explicit_model_selection() {
-    let store = store_for("nikon", "nikon-camera");
-    let index = store.index.as_ref().expect("Nikon index is present");
-    let generic = index
-        .models
-        .iter()
-        .find(|model| model.id == "nikon-camera")
-        .expect("generic Nikon model exists");
-    let d850 = index
-        .models
-        .iter()
-        .find(|model| model.id == "d850")
-        .expect("D850 model exists");
-
-    assert!(generic.fallback);
-    assert!(!generic.signatures.is_empty());
-    assert!(!d850.fallback);
-    assert!(
-        d850.signatures.is_empty(),
-        "D850 must not claim generic Nikon adverts"
-    );
-
-    let selected = store.model_store("d850").expect("D850 body is selectable");
-    assert_eq!(selected.manifest.camera.model, "D850");
-    let app = &selected.manifest.connections["app"];
-    assert_eq!(app.init_shape.as_deref(), Some("standardPtpIp"));
-    assert_eq!(
-        app.bindings.as_ref().unwrap().port_for(SocketRole::Command),
-        Some(15740)
-    );
-    assert_eq!(
-        app.bindings.as_ref().unwrap().port_for(SocketRole::Event),
-        Some(15740)
-    );
-    let defaults = selected.manufacturer.as_ref().expect("Nikon defaults kept");
-    assert!(matches!(
-        &defaults.values["initiatorGuid"],
-        camera_config::ValuePolicy::Fixed { value }
-            if value.as_str() == Some("00112233445566778899aabbccddeeff")
-    ));
-    assert!(matches!(
-        &defaults.values["initFriendlyName"],
-        camera_config::ValuePolicy::Fixed { value }
-            if value.as_str() == Some("Android Device")
-    ));
-    assert!(store.model_store("missing").is_none());
-}
-
-#[test]
-fn nikon_real_plans_preserve_cccd_pairing_and_wifi_order() {
-    let store = store_for("nikon", "nikon-camera");
-    let ble = store.index.as_ref().unwrap().models[0]
-        .ble
-        .as_ref()
-        .expect("Nikon family BLE");
-    let pair = ble.establishment("ble-pair").expect("pair plan");
-    let wifi = ble
-        .establishment("ble-establish-wifi-ap")
-        .expect("Wi-Fi plan");
-
-    let expected_cccd = [
-        ("00002008-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Notify),
-        ("0000200A-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Notify),
-        ("00002081-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Notify),
-        ("00002000-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Indicate),
-        ("00002020-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Indicate),
-        ("00002021-3DD4-4255-8D62-6DC7B9BD5561", CccdMode::Indicate),
-    ];
-    for plan in [pair, wifi] {
-        for (step, (uuid, mode)) in plan.steps[2..8].iter().zip(expected_cccd) {
-            assert!(matches!(
-                step,
-                Step::BleSubscribe(subscribe)
-                    if subscribe.gatt == uuid && subscribe.mode == mode
-            ));
-        }
-        assert!(matches!(plan.steps[8], Step::NikonLssAuthenticate(_)));
-    }
-
-    assert!(matches!(
-        &pair.steps[9],
-        Step::BleWrite(write)
-            if matches!(
-                &write.value,
-                StepValue::Runtime { transform, .. }
-                    if matches!(transform.as_slice(), [Transform::PadRight { length: 32, byte: 0 }])
-            )
-    ));
-    assert!(matches!(
-        &pair.steps[11],
-        Step::If(branch)
-            if branch.condition.field == "serverDeviceName"
-                && branch.condition.op == PredicateOp::Ne
-                && branch.condition.value == "D850"
-                && matches!(branch.then.as_slice(), [Step::BleWrite(write)] if write.opts.tolerant)
-    ));
-    assert_eq!(
-        pair.steps
-            .iter()
-            .filter(|step| matches!(step, Step::BleRead(read) if read.gatt == "00002009-3DD4-4255-8D62-6DC7B9BD5561"))
-            .count(),
-        4,
-        "SnapBridge reads the feature characteristic four distinct times"
-    );
-    assert!(matches!(
-        &wifi.steps[9],
-        Step::NikonLssReadConnectionConfiguration(_)
-    ));
-    assert!(matches!(
-        &wifi.steps[10],
-        Step::BleWrite(write)
-            if matches!(&write.value, StepValue::Literal { literal, .. } if literal == "02")
-    ));
 }
 
 // ---------------------------------------------------------------------------

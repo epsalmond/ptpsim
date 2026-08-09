@@ -15,28 +15,28 @@ evidence:
     date: ''
   captureXlv:
     kind: wire-capture
-    path: https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/scripts/xlv_capsweep.py
+    path: docs/TRANSPORTS.md#xlv
     date: ''
   docD212TightFormat:
-    kind: wire-capture
-
-    date: 2026-06-02
+    kind: doc
+    path: evidence/PTP_PROPERTIES_REFERENCE.md
+    date: ''
   docFujiPtpPropReference:
     kind: doc
-
-    date: 2026-06-04
+    path: evidence/PTP_PROPERTIES_REFERENCE.md
+    date: ''
   docImageTransfer:
     kind: doc
     path: evidence/IMAGE_TRANSFER_FW230.md
     date: ''
   docIsoModel20260707:
-    kind: wire-capture
-
-    date: 2026-05-23
+    kind: doc
+    path: evidence/PTP_PROPERTIES_REFERENCE.md
+    date: ''
   docLargeMovObjectInfo:
-    kind: wire-capture
-
-    date: 2026-07-06
+    kind: doc
+    path: evidence/IMAGE_TRANSFER_FW230.md
+    date: ''
   docLiveControls:
     kind: doc
     path: evidence/PTP_PROPERTIES_REFERENCE.md
@@ -45,26 +45,6 @@ evidence:
     kind: doc
     path: docs/TRANSPORTS.md#xlv
     date: ''
-  iosBLEReg:
-    kind: ios-source
-    path: client application/.../client applicationCore/FujiBLERegistration.swift
-    date: 2026-05-26
-  iosFeatureMode:
-    kind: ios-source
-    path: client application/.../client applicationCore/CameraFeatureMode.swift
-    date: 2026-05-26
-  iosFujiPTPIP:
-    kind: ios-source
-    path: client application/.../client applicationCore/FujiPTPIP.swift
-    date: 2026-05-26
-  iosLiveControls:
-    kind: ios-source
-    path: client application/.../client applicationApp/FujiCameraAPISession.swift
-    date: 2026-05-27
-  iosStartupSeq:
-    kind: ios-source
-    path: client application/.../client applicationApp/FujiCameraAPISession.swift
-    date: 2026-05-26
   sdkPcssAutofocus20260718:
     kind: vendor-sdk
     path: evidence/PCSS_PARITY_20260714.md
@@ -73,41 +53,30 @@ evidence:
     kind: vendor-sdk
     path: evidence/PCSS_PARITY_20260714.md
     date: 2026-07-14
-  staticAutoImageTransfer:
-    kind: app-source
-
-    date: 2026-07-07
-  staticAutoTransferResize:
-    kind: app-source
-
-    date: 2026-05-26
-  staticRawStudio:
-    path: evidence/RAW_CONVERSION.md
-    date: ''
   valueCapability:
     kind: semantic-assertion
     path: ''
     date: ''
   wireAutoImageTransfer:
     kind: wire-capture
-
-    date: 2026-07-07
+    path: evidence/AUTO_TRANSFER_OBSERVATIONS.md
+    date: ''
   wireAutoImageTransferQueued:
     kind: wire-capture
-
-    date: 2026-07-07
+    path: evidence/AUTO_TRANSFER_OBSERVATIONS.md
+    date: ''
   wireBleAutoTransfer:
     kind: wire-capture
-
-    date: 2026-07-06
+    path: evidence/AUTO_TRANSFER_OBSERVATIONS.md
+    date: ''
   wireD212Heterogeneous20260719:
     kind: wire-capture
     path: evidence/D212_HETEROGENEOUS_RECORDS_20260719.md
     date: 2026-07-19
   wirePCSSShootDownload20260523:
     kind: wire-capture
-
-    date: 2026-06-02
+    path: evidence/PCSS_SHOOT_DOWNLOAD_OBSERVATIONS.md
+    date: 2026-05-23
   wirePcssAutofocus20260718:
     kind: wire-capture
     path: evidence/PCSS_PARITY_20260714.md
@@ -118,15 +87,15 @@ evidence:
     date: 2026-07-14
   wireReopenTrace:
     kind: wire-capture
-
-    date: 2026-06-02
+    path: evidence/APP_PTPIP_OBSERVATIONS.md
+    date: 2026-07-31
   wireTether:
     kind: wire-capture
-    path: https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/WIRED_TETHER_CONTROL.md
+    path: evidence/PCSS_SHOOT_DOWNLOAD_OBSERVATIONS.md
     date: 2026-05-23
   wireTetherCaps20260527:
     kind: wire-capture
-    path: packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
+    path: evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
     date: 2026-05-27
 semanticAssertions:
   properties:
@@ -1855,7 +1824,6 @@ cameraInitiatedTransfer:
   - wireAutoImageTransfer
   - wireAutoImageTransferQueued
   - wireBleAutoTransfer
-  - staticAutoImageTransfer
 operations:
   '0x1001':
     name: GetDeviceInfo
@@ -1922,7 +1890,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosStartupSeq
     - wirePCSSShootDownload20260523
     observedScopes:
     - connection: usb
@@ -1965,7 +1932,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosStartupSeq
     - wirePCSSShootDownload20260523
     observedScopes:
     - connection: usb
@@ -2193,10 +2159,8 @@ operations:
     modes:
     - image-transfer
     - reserved-photo-receive
-    - raw-conv-backup-restore
     connections:
     - app
-    - usb
     - wireless-tether
     requires: null
     effects: []
@@ -2204,8 +2168,6 @@ operations:
     evidence:
     - docImageTransfer
     - wireAutoImageTransfer
-    - staticAutoImageTransfer
-    - staticRawStudio
     - wirePCSSShootDownload20260523
     observedScopes:
     - connection: usb
@@ -2242,15 +2204,12 @@ operations:
     property: null
     modes:
     - image-transfer
-    - raw-conv-backup-restore
     connections:
-    - usb
     - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
-    - staticRawStudio
     - wirePCSSShootDownload20260523
     observedScopes:
     - connection: usb
@@ -2364,21 +2323,29 @@ operations:
       mode: shooting/video
       state: descriptor-enumeration
   '0x100c':
-    name: SetBackupSettingsInfo
-    owner: standard-ptp
+    name: SendObjectInfo
+    kind: advertisedOnly
+    owner: ''
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
-    modes: []
+    modes:
+    - card-reader
+    - raw-conv-backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - shooting/video
+    - tether-auto
     connections:
     - usb
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
-    - staticRawStudio
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: card-reader
@@ -2405,21 +2372,29 @@ operations:
       mode: shooting/video
       state: descriptor-enumeration
   '0x100d':
-    name: SetBackupSettings
-    owner: standard-ptp
+    name: SendObject
+    kind: advertisedOnly
+    owner: ''
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
-    modes: []
+    modes:
+    - card-reader
+    - raw-conv-backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - shooting/video
+    - tether-auto
     connections:
     - usb
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
-    - staticRawStudio
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: card-reader
@@ -2463,7 +2438,6 @@ operations:
     emits:
     - '0xc001'
     evidence:
-    - iosLiveControls
     - docLiveControls
     - wireTetherCaps20260527
     observedScopes:
@@ -2525,7 +2499,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosLiveControls
     - wireTetherCaps20260527
     observedScopes:
     - connection: usb
@@ -2571,8 +2544,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosStartupSeq
-    - iosLiveControls
     - docImageTransfer
     - wireAutoImageTransfer
     - wireTetherCaps20260527
@@ -2621,8 +2592,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosStartupSeq
-    - iosLiveControls
     - docImageTransfer
     - wireAutoImageTransfer
     - wireTether
@@ -2709,7 +2678,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosStartupSeq
     - wirePCSSShootDownload20260523
     observedScopes:
     - connection: usb
@@ -2770,7 +2738,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosStartupSeq
     - wirePCSSShootDownload20260523
     observedScopes:
     - connection: usb
@@ -2789,22 +2756,29 @@ operations:
       mode: shooting/video
       state: descriptor-enumeration
   '0x900c':
-    name: SendRawFromPcObjectInfo
-    owner: fuji-vendor
+    name: raw_0x900c
+    kind: advertisedOnly
+    owner: ''
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
+    - card-reader
     - raw-conv-backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - shooting/video
+    - tether-auto
     connections:
     - usb
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
-    - staticRawStudio
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: card-reader
@@ -2831,22 +2805,29 @@ operations:
       mode: shooting/video
       state: descriptor-enumeration
   '0x900d':
-    name: SendRawFromPcObject
-    owner: fuji-vendor
+    name: raw_0x900d
+    kind: advertisedOnly
+    owner: ''
     dataPhase: null
     params: []
     workflows: []
     handler: null
     property: null
     modes:
+    - card-reader
     - raw-conv-backup-restore
+    - shooting/stills
+    - shooting/stills/pc-priority
+    - shooting/video
+    - tether-auto
     connections:
     - usb
+    - wireless-tether
     requires: null
     effects: []
     emits: []
     evidence:
-    - staticRawStudio
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: card-reader
@@ -3004,7 +2985,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosLiveControls
     - docLiveControls
   '0x9026':
     name: LockS1Lock
@@ -3032,7 +3012,6 @@ operations:
     emits:
     - '0xc005'
     evidence:
-    - iosLiveControls
     - docLiveControls
   '0x9027':
     name: UnlockS1Lock
@@ -3053,26 +3032,7 @@ operations:
       settleAfterPolls: 0
     emits: []
     evidence:
-    - iosLiveControls
     - docLiveControls
-  '0x902b':
-    name: FujiVendor902B
-    owner: fuji-vendor
-    dataPhase: null
-    params: []
-    workflows: []
-    handler: null
-    property: null
-    modes:
-    - shooting/stills
-    - shooting/video
-    connections:
-    - app
-    requires: null
-    effects: []
-    emits: []
-    evidence:
-    - iosStartupSeq
   '0x902c':
     name: StepShutterspeed
     owner: fuji-vendor
@@ -3089,7 +3049,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosLiveControls
     - docLiveControls
   '0x902d':
     name: StepFnumber
@@ -3107,7 +3066,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosLiveControls
     - docLiveControls
   '0x902e':
     name: StepExposureBias
@@ -3125,7 +3083,6 @@ operations:
     effects: []
     emits: []
     evidence:
-    - iosLiveControls
     - docLiveControls
   '0x9040':
     name: FujiSendObjectInfoDatHypothesis
@@ -3446,10 +3403,11 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0x5005':
-    name: whiteBalance
-    ptpName: WhiteBalance
+    name: WhiteBalance
+    ptpName: null
     type: u16
     access: readWrite
+    kind: catalogOnly
     descriptor:
       form: enum
       values:
@@ -3468,14 +3426,10 @@ properties:
       - 32800
       - 32801
       source: camera
-    controls:
-      app:
-        setMethod: absolute
-        operation: '0x1016'
-        readback: null
+    controls: {}
     labels: {}
     evidence:
-    - iosLiveControls
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: raw-conv-backup-restore
@@ -3548,7 +3502,6 @@ properties:
       '800': F8.0
       '900': F9.0
     evidence:
-    - iosLiveControls
     - docLiveControls
     - wireTether
     observedScopes:
@@ -3571,10 +3524,11 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0x500a':
-    name: focusMode
-    ptpName: FocusMode
+    name: FocusMode
+    ptpName: null
     type: u16
     access: readWrite
+    kind: catalogOnly
     descriptor:
       form: enum
       values:
@@ -3583,7 +3537,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - iosLiveControls
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: shooting/stills
@@ -3631,20 +3585,6 @@ properties:
     - connection: wireless-tether
       mode: shooting/video
       state: descriptor-enumeration
-  '0x500c':
-    name: flashMode
-    ptpName: FlashMode
-    type: u16
-    access: readWrite
-    descriptor: null
-    controls:
-      app:
-        setMethod: absolute
-        operation: '0x1016'
-        readback: null
-    labels: {}
-    evidence:
-    - iosLiveControls
   '0x500d':
     name: shutterSpeed
     ptpName: ExposureTime
@@ -3813,7 +3753,6 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - iosLiveControls
     - wireTether
     observedScopes:
     - connection: usb
@@ -4009,7 +3948,6 @@ properties:
       '5000': '+5.0'
       '667': '+0.7'
     evidence:
-    - iosLiveControls
     - docLiveControls
     - wireTether
     observedScopes:
@@ -4062,10 +4000,11 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0x5012':
-    name: selfTimer
-    ptpName: SelfTimer
+    name: CaptureDelay
+    ptpName: null
     type: u16
     access: readWrite
+    kind: catalogOnly
     descriptor:
       form: enum
       values:
@@ -4073,14 +4012,10 @@ properties:
       - 2000
       - 0
       source: camera
-    controls:
-      app:
-        setMethod: absolute
-        operation: '0x1016'
-        readback: null
+    controls: {}
     labels: {}
     evidence:
-    - iosLiveControls
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: shooting/stills
@@ -4164,10 +4099,11 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0xd001':
-    name: filmSimulation
+    name: raw_0xd001
     ptpName: null
     type: u16
     access: readWrite
+    kind: catalogOnly
     descriptor:
       form: enum
       values:
@@ -4192,14 +4128,10 @@ properties:
       - 18
       - 19
       source: camera
-    controls:
-      app:
-        setMethod: absolute
-        operation: '0x1016'
-        readback: null
+    controls: {}
     labels: {}
     evidence:
-    - iosLiveControls
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: raw-conv-backup-restore
@@ -5189,7 +5121,6 @@ properties:
     evidence:
     - docIsoModel20260707
     - docLiveControls
-    - iosLiveControls
     - valueCapability
     observedScopes:
     - connection: app
@@ -5211,20 +5142,17 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0xd02b':
-    name: movieIso
-    ptpName: MovieISO
-    type: u32
-    access: readWrite
+    name: raw_0xd02b
+    ptpName: null
+    type: null
+    access: null
+    kind: catalogOnly
     descriptor:
       form: enum
       values:
       - 32769
       source: camera
-    controls:
-      app:
-        setMethod: absolute
-        operation: '0x1016'
-        readback: null
+    controls: {}
     labels:
       '100': '100'
       '1000': '1000'
@@ -5297,7 +5225,7 @@ properties:
       '8000': '8000'
       '80000': '80000'
     evidence:
-    - iosLiveControls
+    - canonicalObservation
     observedScopes:
     - connection: app
       mode: shooting/stills
@@ -6940,7 +6868,6 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - iosLiveControls
     - docLiveControls
   '0xd17e':
     name: raw_0xd17e
@@ -7126,15 +7053,16 @@ properties:
       mode: raw-conv-backup-restore
       state: descriptor-enumeration
   '0xd185':
-    name: rawSettings
+    name: raw_0xd185
     ptpName: null
-    type: u8a
-    access: readWrite
+    type: null
+    access: null
+    kind: catalogOnly
     descriptor: null
     controls: {}
     labels: {}
     evidence:
-    - staticRawStudio
+    - canonicalObservation
     observedScopes:
     - connection: usb
       mode: raw-conv-backup-restore
@@ -8832,7 +8760,6 @@ properties:
       - wirePcssAutofocus20260718
       - sdkPcssAutofocus20260718
     evidence:
-    - iosLiveControls
     - docLiveControls
     observedScopes:
     - connection: usb
@@ -9074,36 +9001,87 @@ properties:
         codeWidth: 2
         valueWidth: 4
       members:
-      - '0x5005'
+      - code: '0x5005'
+        encoding:
+          kind: fixed
+          width: 4
       - '0x5007'
-      - '0x500a'
-      - '0x500c'
+      - code: '0x500a'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0x500c'
+        encoding:
+          kind: fixed
+          width: 4
       - '0x500e'
       - code: '0x5010'
         encoding:
           kind: signed
           width: 4
-      - '0x5012'
-      - '0xd001'
-      - '0xd018'
+      - code: '0x5012'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xd001'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xd018'
+        encoding:
+          kind: fixed
+          width: 4
       - '0xd028'
       - '0xd02a'
-      - '0xd02b'
+      - code: '0xd02b'
+        encoding:
+          kind: fixed
+          width: 4
       - '0xd17c'
       - '0xd209'
-      - '0xd21b'
-      - '0xd220'
-      - '0xd222'
-      - '0xd229'
-      - '0xd22a'
+      - code: '0xd21b'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xd220'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xd222'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xd229'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xd22a'
+        encoding:
+          kind: fixed
+          width: 4
       - '0xd240'
-      - '0xd241'
+      - code: '0xd241'
+        encoding:
+          kind: fixed
+          width: 4
       - '0xd242'
       - '0xd246'
-      - '0xd400'
-      - '0xd401'
-      - '0xd52f'
-      - '0xdf00'
+      - code: '0xd400'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xd401'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xd52f'
+        encoding:
+          kind: fixed
+          width: 4
+      - code: '0xdf00'
+        encoding:
+          kind: fixed
+          width: 4
       - code: '0xd22f'
         encoding:
           kind: ptpString
@@ -10284,7 +10262,6 @@ properties:
       '2153883648': 1/6400
       '2155483648': 1/8000
     evidence:
-    - iosLiveControls
     - docLiveControls
     observedScopes:
     - connection: app
@@ -15187,16 +15164,6 @@ properties:
       failure: noResponse
     evidence:
     - docImageTransfer
-  '0xdf00':
-    name: functionModeMajor
-    ptpName: null
-    type: u16
-    access: readWrite
-    descriptor: null
-    controls: {}
-    labels: {}
-    evidence:
-    - iosStartupSeq
   '0xdf01':
     name: functionMode
     ptpName: null
@@ -15206,7 +15173,8 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - iosStartupSeq
+    - docLiveControls
+    - docImageTransfer
   '0xdf28':
     name: featureVersion
     ptpName: null
@@ -15216,7 +15184,6 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - iosStartupSeq
     - docImageTransfer
   '0xdf29':
     name: reservedPhotoReceiveVersion
@@ -15228,17 +15195,6 @@ properties:
     labels: {}
     evidence:
     - wireAutoImageTransfer
-    - staticAutoImageTransfer
-  '0xdf2a':
-    name: liveDf2a
-    ptpName: null
-    type: u32
-    access: readWrite
-    descriptor: null
-    controls: {}
-    labels: {}
-    evidence:
-    - iosStartupSeq
   '0xdf41':
     name: reservedPhotoObjectCount
     ptpName: null
@@ -15249,42 +15205,7 @@ properties:
     labels: {}
     evidence:
     - wireAutoImageTransfer
-workflows:
-  cameraSettings:
-    transport: ble
-    states: []
-    transitions: []
-    sockets: {}
-    evidence:
-    - iosFeatureMode
-  gpsPersistence:
-    transport: ble
-    states: []
-    transitions: []
-    sockets: {}
-    evidence:
-    - iosFeatureMode
-  imageTransfer:
-    transport: app
-    states: []
-    transitions: []
-    sockets: {}
-    evidence:
-    - iosFeatureMode
-  liveView:
-    transport: app
-    states: []
-    transitions: []
-    sockets: {}
-    evidence:
-    - iosFeatureMode
-  remoteShutter:
-    transport: ble
-    states: []
-    transitions: []
-    sockets: {}
-    evidence:
-    - iosFeatureMode
+workflows: {}
 media:
   formats:
     '0x300d':
@@ -15368,18 +15289,11 @@ modes:
       eq: 20
     phase: imageImport
   raw-conv-backup-restore:
-    capabilities:
-    - rawDevelop
-    - settingsBackup
-    - settingsRestore
+    capabilities: []
     detect: null
   remote-trigger:
     capabilities:
     - shutterControl
-    - eepromTransfer
-    - gpsPersistence
-    - cameraSettings
-    - screenOn
     detect: null
   reserved-photo-receive:
     capabilities:
@@ -15408,10 +15322,6 @@ modes:
     detect: null
   tether-auto:
     capabilities: []
-    detect: null
-  webcam:
-    capabilities:
-    - webcamStream
     detect: null
 connections:
   app:
@@ -15461,6 +15371,8 @@ connections:
       kind: stream
       pollOp: null
     shutterRecipe: appPostview
+    session: null
+    events: null
     commandFraming: compressed
     eventFraming: usb
     commandListenerVolatile: true
@@ -15498,17 +15410,6 @@ connections:
     entries:
     - to: shooting/stills
       steps:
-      - setProp: '0xdf00'
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: 6
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
       - setProp: '0xdf01'
         getProp: null
         readEcho: null
@@ -15519,28 +15420,6 @@ connections:
         params: []
         tolerant: false
         repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: '0xdf2a'
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x902b'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: false
-        repeat: 4
         awaitUntil: null
       - setProp: null
         getProp: null
@@ -15583,17 +15462,6 @@ connections:
     - to: shooting/stills
       from: image-transfer
       steps:
-      - setProp: '0xdf00'
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: 6
-        params: []
-        tolerant: true
-        repeat: 1
-        awaitUntil: null
       - setProp: '0xdf01'
         getProp: null
         readEcho: null
@@ -15604,28 +15472,6 @@ connections:
         params: []
         tolerant: false
         repeat: 1
-        awaitUntil: null
-      - setProp: '0xdf2a'
-        getProp: null
-        readEcho: null
-        sendOp: null
-        reopenSession: null
-        closeSession: null
-        value: 2
-        params: []
-        tolerant: false
-        repeat: 1
-        awaitUntil: null
-      - setProp: null
-        getProp: null
-        readEcho: null
-        sendOp: '0x902b'
-        reopenSession: null
-        closeSession: null
-        value: null
-        params: []
-        tolerant: false
-        repeat: 4
         awaitUntil: null
       - setProp: null
         getProp: null
@@ -15915,7 +15761,6 @@ connections:
         - postviewEvent: {}
         evidence:
         - wireReopenTrace
-        - iosLiveControls
         - docLiveControls
       enumerateObjects:
         mode: image-transfer
@@ -16191,7 +16036,6 @@ connections:
           activities: []
         triggers: []
         evidence:
-        - iosLiveControls
         - docLiveControls
       autofocusRelease:
         mode: shooting/stills
@@ -16212,7 +16056,6 @@ connections:
           activities: []
         triggers: []
         evidence:
-        - iosLiveControls
         - docLiveControls
       importObjects:
         mode: image-transfer
@@ -16601,6 +16444,8 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    session: null
+    events: null
     commandFraming: null
     eventFraming: null
     commandListenerVolatile: false
@@ -16610,8 +16455,7 @@ connections:
     initRetries: null
     objectTransfer: null
     controlSurfaces: {}
-    modes:
-    - remote-trigger
+    modes: []
     entries: []
     actions: {}
     enables:
@@ -16625,7 +16469,7 @@ connections:
       mechanism: ble
       announces: camera
     evidence:
-    - iosBLEReg
+    - wireBleAutoTransfer
     gatt:
       service: A9D2B304-E8D6-4902-8336-352B772D7597
       registrationService: 123D8F06-62A1-4935-9322-833C531EE225
@@ -16635,89 +16479,6 @@ connections:
       cameraSSIDName: BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4
       cameraWiFiPassphrase: E809256A-915C-4967-92E8-53B7D4CAD213
       fileTransferXHalfService: 462426E1-D712-4A28-BE62-61A786DAA866
-  usb:
-    ref: null
-    availableWhen: null
-    requiresHardware: null
-    kind: usb
-    establishment: usb-claim-open
-    activities: []
-    init: null
-    initShape: null
-    liveViewDelivery: null
-    shutterRecipe: null
-    session:
-      ownership: initiatorOwned
-    events:
-      delivery: reliable
-    commandFraming: null
-    eventFraming: null
-    commandListenerVolatile: false
-    bindings: null
-    transportClose: null
-    knock: null
-    initRetries: null
-    objectTransfer: null
-    controlSurfaces: {}
-    modes:
-    - raw-conv-backup-restore
-    - webcam
-    entries:
-    - to: raw-conv-backup-restore
-      userInstruction: Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB
-    actions: {}
-    enables: []
-    discovery:
-      mechanism: usb
-      announces: none
-      vid: 1227
-    evidence:
-    - staticRawStudio
-    platforms:
-    - macos
-    - android
-    - linux
-  usb-passthrough:
-    ref: null
-    availableWhen: null
-    requiresHardware: null
-    kind: usb-passthrough
-    establishment: null
-    activities: []
-    init: null
-    initShape: null
-    liveViewDelivery: null
-    shutterRecipe: null
-    session:
-      ownership: daemonAttached
-    events:
-      delivery: bestEffort
-    commandFraming: null
-    eventFraming: null
-    commandListenerVolatile: false
-    bindings: null
-    transportClose: null
-    knock: null
-    initRetries: null
-    objectTransfer: null
-    controlSurfaces: {}
-    modes:
-    - raw-conv-backup-restore
-    - webcam
-    entries:
-    - to: raw-conv-backup-restore
-      userInstruction: Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB
-    actions: {}
-    enables: []
-    discovery:
-      mechanism: usb
-      announces: none
-      vid: 1227
-    evidence:
-    - staticRawStudio
-    platforms:
-    - ios
-    - macos
   wireless-tether:
     ref: null
     availableWhen: null
@@ -16746,6 +16507,8 @@ connections:
       kind: poll
       pollOp: '0x9018'
     shutterRecipe: wirelessTether3Beat
+    session: null
+    events: null
     commandFraming: compressed
     eventFraming: null
     commandListenerVolatile: false
@@ -17427,6 +17190,8 @@ connections:
     initShape: null
     liveViewDelivery: null
     shutterRecipe: null
+    session: null
+    events: null
     commandFraming: null
     eventFraming: null
     commandListenerVolatile: false

@@ -526,7 +526,9 @@ impl NativePtpTransport {
                 let camera = match endpoint.ip() {
                     IpAddr::V4(camera) => camera,
                     IpAddr::V6(_) => {
-                        return Err(failed("legacy manufacturer app requires an IPv4 camera address"))
+                        return Err(failed(
+                            "legacy manufacturer app requires an IPv4 camera address",
+                        ))
                     }
                 };
                 let local_ip = route_selected_ipv4(camera)?;
@@ -538,7 +540,9 @@ impl NativePtpTransport {
                 let init = self
                     .store
                     .connection_init_with_runtime(self.config.connection.clone(), runtime)
-                    .ok_or_else(|| failed("legacy manufacturer app init identity could not be resolved"))?;
+                    .ok_or_else(|| {
+                        failed("legacy manufacturer app init identity could not be resolved")
+                    })?;
                 Ok((endpoint, init.packet))
             }
             "standardPtpIp" => {

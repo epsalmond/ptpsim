@@ -15,7 +15,6 @@ const MANUFACTURER: &str = include_str!("../../../packages/camera-config-data/fu
 const BODY: &str = include_str!("../../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml");
 const GENERIC_BODY: &str =
     include_str!("../../../packages/camera-config-data/fuji/fuji-generic/fuji-generic.yaml");
-const XA7_BODY: &str = include_str!("../../../packages/camera-config-data/fuji/xa7/xa7.yaml");
 
 #[derive(Default)]
 struct State {
@@ -160,10 +159,6 @@ fn store_with_body(body: &str) -> Arc<ConfigStore> {
             KeyValue {
                 key: "gfx100ii".into(),
                 value: body.into(),
-            },
-            KeyValue {
-                key: "xa7".into(),
-                value: XA7_BODY.into(),
             },
             KeyValue {
                 key: "fuji-generic".into(),

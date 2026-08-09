@@ -1138,10 +1138,6 @@ The app uses manifests for:
 The app must not share responder state machines. It may share parser/serializer
 tests and manifest compatibility queries.
 
-Agent-paste handoff for the Apple-side track:
-[`docs/handoff-ios-agent.md`](docs/handoff-ios-agent.md) (production app
-adopting the manifest/FFI).
-
 ## Relationship To The Fixture TUI
 
 The repository TUI is an operator projection over the simulator service. It

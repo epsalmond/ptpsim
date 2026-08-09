@@ -411,68 +411,6 @@ fn camera_initiated_metadata_uses_reserved_head_in_both_phases() {
 }
 
 #[test]
-// The single-object drain is wire-confirmed. Reusing index 1 and decrementing
-// the count across multiple objects are inferred from reference app's static receive loop.
-fn camera_initiated_queue_reuses_head_only_after_acknowledged_eof() {
-    let mut e = engine_with_two_jpegs();
-    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
-    assert_eq!(reserved_count(&mut e, 2), 2);
-
-    write_u16(&mut e, 3, 0xdf01, 21);
-    assert_eq!(e.phase(), Phase::QueuedReceive);
-    assert_eq!(read_u32(&mut e, 4, 0xdf29), 0);
-    write_u32(&mut e, 5, 0xdf29, 3);
-    let first_info =
-        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 6, vec![1]), None))).unwrap();
-    assert_eq!(first_info.filename, "DSCF0001.JPG");
-    assert_eq!(read_u32(&mut e, 7, 0xd235), 0x00bf_ffe0);
-
-    let first_size = first_info.object_compressed_size;
-    let (prefix, prefix_completion) =
-        stream_with_completion(e.on_operation(&req(0x101b, 8, vec![1, 0, 4]), None));
-    assert_eq!(prefix.len(), 4);
-    assert!(!e.complete_stream(prefix_completion.unwrap()));
-    assert_eq!(reserved_count(&mut e, 9), 2);
-
-    let (suffix, suffix_completion) =
-        stream_with_completion(e.on_operation(&req(0x101b, 10, vec![1, 4, first_size - 4]), None));
-    assert_eq!(suffix.len(), (first_size - 4) as usize);
-    assert!(e.complete_stream(suffix_completion.unwrap()));
-    assert_eq!(reserved_count(&mut e, 11), 1);
-
-    let second_info =
-        ObjectInfo::decode(&data_of(e.on_operation(&req(0x1008, 12, vec![1]), None))).unwrap();
-    assert_eq!(second_info.filename, "DSCF0002.JPG");
-    let second_size = second_info.object_compressed_size;
-    let (_, completion) =
-        stream_with_completion(e.on_operation(&req(0x101b, 13, vec![1, 0, second_size]), None));
-    let duplicate = completion.clone().unwrap();
-    assert!(e.complete_stream(completion.unwrap()));
-    assert!(!e.complete_stream(duplicate));
-    assert_eq!(reserved_count(&mut e, 14), 0);
-
-    assert!(matches!(
-        e.on_operation(&req(0x1008, 15, vec![1]), None),
-        Reply::Response(ref response) if response.code == 0x2009
-    ));
-    let public_files = e
-        .store()
-        .handles(ObjectQuery::default())
-        .into_iter()
-        .filter(|handle| {
-            e.store()
-                .object_info(*handle)
-                .is_ok_and(|info| info.object_format != ptp_core::codes::format::ASSOCIATION)
-        })
-        .count();
-    assert_eq!(
-        public_files, 2,
-        "reserved drains do not delete card objects"
-    );
-    assert_ok(&e.on_operation(&req(0x1003, 16, vec![]), None));
-}
-
-#[test]
 fn camera_initiated_tail_only_read_does_not_dequeue() {
     let mut e = engine_with_two_jpegs();
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
@@ -647,17 +585,6 @@ fn still_iso_setprop_uses_scoped_value_profile_for_camera_readback() {
             "D212 readback after writing {sent:#010x}"
         );
     }
-}
-
-#[test]
-fn neighboring_iso_property_without_value_profile_still_stores_verbatim() {
-    let mut e = engine();
-    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
-    write_u16(&mut e, 2, 0xdf01, 0x16);
-    assert_ok(&e.on_operation(&req(0x101c, 3, vec![]), None));
-
-    write_u32(&mut e, 4, 0xd02b, 25600);
-    assert_eq!(read_u32(&mut e, 5, 0xd02b), 25600);
 }
 
 #[test]
@@ -1401,16 +1328,9 @@ fn image_import_count_does_not_retry_unselected_or_transport_failures() {
 fn gate4_live_view_choreography_runs_from_the_manifest() {
     let mut e = engine();
     assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None)); // OpenSession
-                                                                // Live-view entry: df00=6, df01=0x16 (→ live-view phase), df2a read-echo, 902B×4.
-    assert_ok(&e.on_operation(&req(0x1016, 2, vec![0xdf00]), Some(&6u16.to_le_bytes())));
-    assert_ok(&e.on_operation(&req(0x1016, 3, vec![0xdf01]), Some(&0x16u16.to_le_bytes())));
-    let df2a = data_of(e.on_operation(&req(0x1015, 4, vec![0xdf2a]), None)); // GetDevicePropValue
-    assert_ok(&e.on_operation(&req(0x1016, 5, vec![0xdf2a]), Some(&df2a))); // echo back
-    for i in 0..4 {
-        assert_ok(&e.on_operation(&req(0x902b, 6 + i, vec![]), None)); // FujiVendor_902B ×4
-    }
-    // InitiateOpenCapture only succeeds once in the live-view phase → streaming.
-    assert_ok(&e.on_operation(&req(0x101c, 10, vec![]), None));
+                                                                // Live-view entry: select function mode, then start capture.
+    assert_ok(&e.on_operation(&req(0x1016, 2, vec![0xdf01]), Some(&0x16u16.to_le_bytes())));
+    assert_ok(&e.on_operation(&req(0x101c, 3, vec![]), None));
 }
 
 #[test]

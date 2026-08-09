@@ -1,10 +1,7 @@
 schema: camera-config/v1
 
-# GFX100 II body manifest — App/WiFi-AP connection slice. Derived from documentation
-# + the shipping client application iOS source (NOT a live wire capture yet); each fact cites
-# its source via evidence `kind: ios-source | doc`. This is the backtest oracle: a
-# future protocol-mapper run emits `kind: wire-capture` evidence and every mismatch
-# is a source misread or a doc that lied.
+# GFX100 II firmware 2.30 manifest. Claims cite retained wire captures,
+# public-safe reductions, or protocol documents.
 camera:
   manufacturer: FUJIFILM
   model: GFX100 II
@@ -18,57 +15,26 @@ camera:
     serialNumber: PTPSIM-GFX100II-0001
 
 evidence:
-  iosFujiPTPIP:    { kind: ios-source, path: "client application/.../client applicationCore/FujiPTPIP.swift", date: "2026-05-26" }
-  iosFeatureMode:  { kind: ios-source, path: "client application/.../client applicationCore/CameraFeatureMode.swift", date: "2026-05-26" }
-  iosStartupSeq:   { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-26" }
-  iosLiveControls: { kind: ios-source, path: "client application/.../client applicationApp/FujiCameraAPISession.swift", date: "2026-05-27" }
   docLiveControls: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
   docImageTransfer: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW230.md" }
-  iosBLEReg:       { kind: ios-source, path: "client application/.../client applicationCore/FujiBLERegistration.swift", date: "2026-05-26" }
-
-  # NOT wire-captured. These USB opcodes are leads pending a golden capture.
-  # STRONGEST tier: wire-confirmed over wired-gigabit + Wi-Fi infra PTP-IP tether.
-  wireTether:      { kind: wire-capture, path: "https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/WIRED_TETHER_CONTROL.md", date: "2026-05-23" }
-  # Per-(connection,mode) GetDeviceInfo + GetDevicePropDesc snapshots on PCSS/15740.
-  # Authoritative for the wireless-tether supported-ops set (2026-05-27 wire capture);
-  # stills and video snapshots had the same ops/props/events surface.
-  wireTetherCaps20260527: { kind: wire-capture, path: "packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
-  # Reference-app Take↔Get session-reopen wire trace (full byte trace + identity decode).
-  # The trace includes a reopen, but GFX100 II fw 2.30 refuses the manifest executor's
-  # reconnect on Get→Take (device-validated 2026-07-31). Other decoded event facts
-  # below still cite this evidence.
-
-  # Wire-decoded 0xD212 tight-format live-status snapshot stream (u16 count +
-  # 6-byte <propCode u16><value u32> records) + the v6/v8/v9 member catalogs.
-
-  # 14.9-min Hyper-Utility shoot-while-download capture on PCSS/15740. Wire-confirms
-  # the 3-beat D039+0x100E shutter verb, the 0x1007/8/A/9/B transfer triad,
-  # 0x500F ISO encoding (signed -1/-2 sentinels), and event-less command socket.
-
-  docXlv:          { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
-  captureXlv:      { kind: wire-capture, path: "https://github.com/epsalmond/camera-protocol-mapper/blob/1808084c6bf048d89ea5038af4e7d10e07331946/scripts/xlv_capsweep.py" }   # routes confirmed vs camera
-  # Wire-derived PTP/IP property + opcode reference, combining live B1 enum + reference-app instrumentation
-  # wire-decode work. Authoritative for the new gallery-filter triplet
-  # (0x9051/0x9052/0x9060), the post-shutter event codes (0xC001/0xC004/0x400D),
-  # and the firmware-update event (0x80F8). Labels disagreeing with curated
-  # wire+protocol-mapper sources (e.g. 0x9050 "FujiImageImportBegin"
-  # curated wire-derived names hold per the precedence rule.
-
-
-
-
-
-
-
-
+  docD212TightFormat: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
+  docFujiPtpPropReference: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
+  docIsoModel20260707: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
+  docLargeMovObjectInfo: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW230.md" }
+  wireReopenTrace: { kind: wire-capture, path: "evidence/APP_PTPIP_OBSERVATIONS.md", date: "2026-07-31" }
+  wireAutoImageTransfer: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
+  wireAutoImageTransferQueued: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
+  wireBleAutoTransfer: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
+  wireTether: { kind: wire-capture, path: "evidence/PCSS_SHOOT_DOWNLOAD_OBSERVATIONS.md", date: "2026-05-23" }
+  wirePCSSShootDownload20260523: { kind: wire-capture, path: "evidence/PCSS_SHOOT_DOWNLOAD_OBSERVATIONS.md", date: "2026-05-23" }
+  wireTetherCaps20260527: { kind: wire-capture, path: "evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
   wirePcssParity20260714: { kind: wire-capture, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-14" }
   sdkPcssParity20260714: { kind: vendor-sdk, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-14" }
-  # Public-safe PCSS autofocus sequence, captured values, and cleanup responses.
   wirePcssAutofocus20260718: { kind: wire-capture, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-18" }
-  # Public-safe vendor SDK labels for PCSS autofocus and live-view magnification values.
   sdkPcssAutofocus20260718: { kind: vendor-sdk, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-18" }
-  # Public-safe reduction of complete numeric + PTP-string D212 records.
   wireD212Heterogeneous20260719: { kind: wire-capture, path: "evidence/D212_HETEROGENEOUS_RECORDS_20260719.md", date: "2026-07-19" }
+  docXlv: { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
+  captureXlv: { kind: wire-capture, path: "docs/TRANSPORTS.md#xlv" }
 
 sentinels:
   # PTP/IP length-8 frame with body 0xffffffff. Sent and flushed before the
@@ -105,9 +71,8 @@ cameraInitiatedTransfer:
     metadata: { operation: "0x1008", phases: [afterCountBeforeModeEntry, afterModeEntry] }
     data: { operation: "0x101b", chunkLimitProperty: "0xd235" }
     completion: readToEof
-  # One-object drain is wire-confirmed. Reusing index 1 for the next head and
-  # decrementing DF41 after EOF are inferred from reference app's static receive loop.
-  evidence: [wireAutoImageTransfer, wireAutoImageTransferQueued, wireBleAutoTransfer, staticAutoImageTransfer]
+  # One-object drain is wire-confirmed.
+  evidence: [wireAutoImageTransfer, wireAutoImageTransferQueued, wireBleAutoTransfer]
 
 # Connection-name convention:
 #   `app`             = reference-app PTP/IP on :55740 (BLE -> camera Wi-Fi AP -> 82B WMB-tail init).
@@ -195,10 +160,7 @@ connections:
           # tolerant: the GFX100 II rejects this advisory write with 0x201d
           # on hardware — mode entry must continue past it. Device-validated
           # in client application (their #4; previously a local vendor patch there).
-          - { setProp: "0xdf00", value: 6, tolerant: true }   # functionModeMajor
           - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)
-          - { readEcho: "0xdf2a" }               # read then write back
-          - { sendOp: "0x902b", repeat: 4 }      # FujiVendor_902B startup ×4
           # fw 2.30 accepts the event/live-view TCP connections only after
           # InitiateOpenCapture succeeds (device-validated 2026-07-31).
           - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
@@ -210,10 +172,7 @@ connections:
         # the manifest executor's reconnect on this edge. The canonical entry
         # switches FunctionMode in-session (device-validated 2026-07-31).
         steps:
-          - { setProp: "0xdf00", value: 6, tolerant: true }  # functionModeMajor
           - { setProp: "0xdf01", value: 0x16 }               # functionMode = 22 (live-view)
-          - { setProp: "0xdf2a", value: 2 }                  # Fpcsh_VersionRemoteEx
-          - { sendOp: "0x902b", repeat: 4 }                  # FujiVendor_902B startup ×4
           # The same fw 2.30 aux-port gate requires successful open capture first.
           - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
           - { openChannel: event }
@@ -283,7 +242,7 @@ connections:
             - { sendOp: "0x9022" }
         triggers:
           - postviewEvent: {}
-        evidence: [wireReopenTrace, iosLiveControls, docLiveControls]
+        evidence: [wireReopenTrace, docLiveControls]
       # Tap-to-AF (#35, §5.5): lock S1 on a packed focus-area, await the AF
       # completion event (0xC005), then read the lock result. The packed area
       # u32 is an app-supplied runtime slot — the app owns cursor→cell packing
@@ -306,13 +265,13 @@ connections:
                 # pre-settle, so the post-event read re-polls at this cadence
                 # within timeoutMs (client application#157, #185).
                 intervalMs: 100
-        evidence: [iosLiveControls, docLiveControls]
+        evidence: [docLiveControls]
       autofocusRelease:
         mode: shooting/stills
         initiator:
           steps:
             - { sendOp: "0x9027" }
-        evidence: [iosLiveControls, docLiveControls]
+        evidence: [docLiveControls]
       # reference-app enumeration. Wire-confirmed by IMAGE_TRANSFER_FW230.md
       # §"Confirmed enumeration": reference-app **never** calls 0x1007
       # GetObjectHandles — camera rejects with 0x2005 Operation_Not_Supported
@@ -465,10 +424,6 @@ connections:
     kind: ble
     establishment: ble-pair    # named mechanism; GATT detail below (overlay-able)
     discovery: { mechanism: ble, announces: camera }
-    modes: [remote-trigger]
-    # GATT service + key characteristics (shipping-app facts; candidate for a private
-    # establishment overlay). FT-XH adapter advertises its own service — concrete
-    # basis for the X-H2S `requiresHardware: ft-xh` model.
     gatt:
       service: "A9D2B304-E8D6-4902-8336-352B772D7597"
       registrationService: "123D8F06-62A1-4935-9322-833C531EE225"
@@ -483,35 +438,8 @@ connections:
     enables:
       - to: app
         mechanism: ble-establish-wifi-ap
-    evidence: [iosBLEReg]
+    evidence: [wireBleAutoTransfer]
 
-  usb:
-    kind: usb                        # raw PIMA 15740 over USB: the initiator owns handle, interface claim, session, tids
-    platforms: [macos, android, linux]   # NOT iOS (no USB-host PTP); hidden on iOS
-    establishment: usb-claim-open    # family usb plan: claim stillImage, OpenSession, GetDeviceInfo
-    session: { ownership: initiatorOwned }
-    events: { delivery: reliable }   # the raw kind owns the interrupt pipe and PIMA 15740 guarantees transport delivery; camera-side event production is a manifest-authoring concern
-    discovery: { mechanism: usb, announces: none, vid: 0x04cb }   # Fuji USB vendor id; per-model PID TBD
-    modes: [raw-conv-backup-restore, webcam]
-    # USB sub-mode is chosen by an on-camera menu setting, so this is a user-instruction
-    # edge (not app-driven). raw-conv-backup-restore is ONE on-camera mode enabling two
-    # workflows (raw conversion + settings backup-restore).
-    entries:
-      - to: raw-conv-backup-restore
-        userInstruction: "Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB"
-    evidence: [staticRawStudio]
-
-  usb-passthrough:
-    kind: usb-passthrough            # a platform daemon owns device, framing, session, tids; no claim, no OpenSession
-    platforms: [ios, macos]
-    session: { ownership: daemonAttached }
-    events: { delivery: bestEffort } # daemon pushes may drop single events; awaits re-poll (thenPoll)
-    discovery: { mechanism: usb, announces: none, vid: 0x04cb }
-    modes: [raw-conv-backup-restore, webcam]
-    entries:
-      - to: raw-conv-backup-restore
-        userInstruction: "Set the camera's USB connection mode for RAW conversion / settings backup-restore, then connect USB"
-    evidence: [staticRawStudio]
 
   wireless-tether:
     kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference-app family)
@@ -834,38 +762,18 @@ modes:
   reserved-photo-receive:
     capabilities: [download]
     detect: { prop: "0xdf01", eq: 21 }
-  remote-trigger:                     # screen STAYS ON (vs shooting/stills screenTakeover).
-    # Transport-independent: reached over BLE now, and over WirelessTether PTP/IP later
-    # (same camera mode, different connection). No `detect`: over BLE the mode is
-    # connection-implied (no PTP functionMode read).
-    capabilities: [shutterControl, eepromTransfer, gpsPersistence, cameraSettings, screenOn]
-  # One on-camera USB mode enabling two workflows. NOTE: settings backup-restore is
-  # available in ~every mode, so its ops gate to ALL modes (see operations); only the
-  # raw-conversion ops are specific to this mode.
-  raw-conv-backup-restore:
-    capabilities: [rawDevelop, settingsBackup, settingsRestore]
-  webcam:
-    capabilities: [webcamStream]     # known to exist; protocol not yet characterized
-
-# Workflows = app tasks (CameraFeatureMode), gated by required connection/transport.
-# bluetooth-transport features (remoteShutter/gpsPersistence/cameraSettings) belong
-# to the BLE connection slice — added when that connection is modeled.
-workflows:
-  liveView:      { transport: app, evidence: [iosFeatureMode] }
-  imageTransfer: { transport: app, evidence: [iosFeatureMode] }
-  remoteShutter:  { transport: ble, evidence: [iosFeatureMode] }   # CameraFeatureMode bluetooth features
-  gpsPersistence: { transport: ble, evidence: [iosFeatureMode] }
-  cameraSettings: { transport: ble, evidence: [iosFeatureMode] }   # eeprom up/download
+  remote-trigger:
+    capabilities: [shutterControl]
 
 operations:
-  "0x1002": { name: OpenSession,          owner: standard-ptp, connections: [app, wireless-tether], evidence: [iosStartupSeq, wirePCSSShootDownload20260523] }
-  "0x1003": { name: CloseSession,         owner: standard-ptp, connections: [app, wireless-tether], evidence: [iosStartupSeq, wirePCSSShootDownload20260523] }
+  "0x1002": { name: OpenSession,          owner: standard-ptp, connections: [app, wireless-tether], evidence: [wirePCSSShootDownload20260523] }
+  "0x1003": { name: CloseSession,         owner: standard-ptp, connections: [app, wireless-tether], evidence: [wirePCSSShootDownload20260523] }
   # PCSS image-transfer triad (wireless-tether). Hyper-Utility's actual download path,
   # wire-confirmed: 0x1007(0xFFFFFFFF, 0) → 0x1008(handle) → 0x100A(handle, optional)
   # → 0x1009(handle) → 0x100B(handle, optional delete). No 0x101B chunking; whole
   # objects only on this connection. Evidence: wirePCSSShootDownload20260523.
   "0x1007": { name: GetObjectHandles,     owner: standard-ptp, modes: [shooting/stills, image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
-  "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, reserved-photo-receive, raw-conv-backup-restore], connections: [app, usb, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, staticAutoImageTransfer, staticRawStudio, wirePCSSShootDownload20260523] }
+  "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, wirePCSSShootDownload20260523] }
   "0x100a": { name: GetThumb,             owner: standard-ptp, modes: [image-transfer], connections: [app, wireless-tether], evidence: [docImageTransfer, wirePCSSShootDownload20260523] }
   "0x100b": { name: DeleteObject,         owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
   # 0x100e is advertised by wireless-tether (PCSS/15740) too — see the 05-27 capability
@@ -873,14 +781,14 @@ operations:
   # whether 0x9022 fires) is not yet wire-captured; authorizing the op here unblocks
   # the app-side shutter call. wireless-tether entries: filled in once the wire
   # capture lands (see 2026-06-02 consult).
-  "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], emits: ["0xc001"], evidence: [iosLiveControls, docLiveControls, wireTetherCaps20260527] }   # 0xC001 PostviewComplete (delivered on the app event socket; wireless-tether has no event channel)
-  "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [iosLiveControls, wireTetherCaps20260527] }
-  "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireAutoImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }
-  "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [iosStartupSeq, iosLiveControls, docImageTransfer, wireAutoImageTransfer, wireTether] }
+  "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], emits: ["0xc001"], evidence: [docLiveControls, wireTetherCaps20260527] }   # 0xC001 PostviewComplete (delivered on the app event socket; wireless-tether has no event channel)
+  "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [wireTetherCaps20260527] }
+  "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }
+  "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, wireTether] }
   "0x101b": { name: GetPartialObject,     owner: standard-ptp, modes: [image-transfer, reserved-photo-receive], connections: [app], evidence: [docImageTransfer, wireAutoImageTransfer] }
-  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [iosStartupSeq, wirePCSSShootDownload20260523] }
-  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [iosStartupSeq, wirePCSSShootDownload20260523] }
-  "0x9022": { name: FujiVendor9022,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [iosLiveControls, docLiveControls] }
+  "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [wirePCSSShootDownload20260523] }
+  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [wirePCSSShootDownload20260523] }
+  "0x9022": { name: FujiVendor9022,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [docLiveControls] }
   # Tap-to-AF (S1 lock). PTP_PROPERTIES_REFERENCE.md §5.1/§5.2: param is a 4-byte
   # LE u32 packing the AF area, built by the reference app as the hex
   # string "WWHHIIJJ". As wire bytes (LE) it unpacks: byte15=W=asp_w (aspect-ratio
@@ -906,7 +814,7 @@ operations:
     effects:
       - { setProp: "0xd209", value: 1, settleAfterPolls: 2 }
       - { setProp: "0xd17c", fromParam: { index: 0 } }
-    evidence: [iosLiveControls, docLiveControls]
+    evidence: [docLiveControls]
   # AF unlock/release companion to 0x9026 (PTP_PROPERTIES_REFERENCE.md §5.1: clears
   # the AF lock, resets 0xD209 S1_LOCK_COLOR to 0). PRELIMINARY: §5.1 marks the
   # opcode→UnlockS1Lock mapping itself "likely", and a label reconcile is pending
@@ -921,11 +829,10 @@ operations:
     connections: [app]
     effects:
       - { setProp: "0xd209", value: 0 }
-    evidence: [iosLiveControls, docLiveControls]
-  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [shooting/stills, shooting/video], connections: [app], evidence: [iosStartupSeq] }
-  "0x902c": { name: StepShutterspeed,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0xd240", evidence: [iosLiveControls, docLiveControls] }
-  "0x902d": { name: StepFnumber,          owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5007", evidence: [iosLiveControls, docLiveControls] }
-  "0x902e": { name: StepExposureBias,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5010", evidence: [iosLiveControls, docLiveControls] }
+    evidence: [docLiveControls]
+  "0x902c": { name: StepShutterspeed,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0xd240", evidence: [docLiveControls] }
+  "0x902d": { name: StepFnumber,          owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5007", evidence: [docLiveControls] }
+  "0x902e": { name: StepExposureBias,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5010", evidence: [docLiveControls] }
   "0x9054": { name: FujiImageImportCurrentObjectInfo,  owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x9055": { name: FujiImageImportCurrentObjectThumb, owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
   "0x9050": { name: FujiImageImportBegin,              owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docImageTransfer] }
@@ -969,24 +876,13 @@ operations:
   # filename. Seen 9× in May 1 sdcard_import flows; may be the wireless equivalent
   # of 0x100C SendObjectInfo for settings-checkpoint files. Source: single doc.
   "0x9040": { name: FujiSendObjectInfoDatHypothesis,  owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docFujiPtpPropReference] }
-  # raw-conv ops are mode-specific; backup ops are available in ~every mode (no modes key).
-  "0x900c": { name: SendRawFromPcObjectInfo, owner: fuji-vendor, modes: [raw-conv-backup-restore], connections: [usb], evidence: [staticRawStudio] }
-  "0x900d": { name: SendRawFromPcObject,     owner: fuji-vendor, modes: [raw-conv-backup-restore], connections: [usb], evidence: [staticRawStudio] }
-  "0x100c": { name: SetBackupSettingsInfo,   owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }   # backup: all modes
-  "0x100d": { name: SetBackupSettings,       owner: standard-ptp, connections: [usb], evidence: [staticRawStudio] }
-  # 0x1009 is standard PTP GetObject. On USB in raw-conv-backup-restore mode the same
-
-  # wireless-tether in image-transfer it returns the whole image. Same op, mode-
-  # dependent payload semantics.
-  "0x1009": { name: GetObject,               owner: standard-ptp, modes: [image-transfer, raw-conv-backup-restore], connections: [usb, wireless-tether], evidence: [staticRawStudio, wirePCSSShootDownload20260523] }
+  "0x1009": { name: GetObject,               owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
   # PCSS live-view = vendor 0x9018 poll (vs the App connection's 0x101c+GetObject).
   "0x9018": { name: PcssPollLiveViewData,    owner: fuji-vendor,  modes: [shooting/stills], connections: [wireless-tether], evidence: [wireTether] }
 
 properties:
-  "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [iosStartupSeq] }
-  "0xdf01": { name: functionMode,      type: u16, access: readWrite, evidence: [iosStartupSeq] }
-  "0xdf2a": { name: liveDf2a,          type: u32, access: readWrite, evidence: [iosStartupSeq] }  # read-echo'd on live-view entry; Get→Take writes value 2
-  "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [iosStartupSeq, docImageTransfer] }
+  "0xdf01": { name: functionMode, type: u16, access: readWrite, evidence: [docLiveControls, docImageTransfer] }
+  "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [docImageTransfer] }
   # Live-status snapshot (app connection). A self-describing record stream with
   # a u16 count and u16 member codes. Numeric members default to u32; D22F is a
   # payload-local PTP string and does not define that code's global datatype.
@@ -999,12 +895,28 @@ properties:
       form: recordStream
       countWidth: 2
       record: { codeWidth: 2, valueWidth: 4 }
-      members: ["0x5005", "0x5007", "0x500a", "0x500c", "0x500e",
-                { code: "0x5010", encoding: { kind: signed, width: 4 } }, "0x5012",
-                "0xd001", "0xd018", "0xd028", "0xd02a", "0xd02b", "0xd17c",
-                "0xd209", "0xd21b", "0xd220", "0xd222", "0xd229", "0xd22a",
-                "0xd240", "0xd241", "0xd242", "0xd246", "0xd400", "0xd401",
-                "0xd52f", "0xdf00",
+      members: [{ code: "0x5005", encoding: { kind: fixed, width: 4 } }, "0x5007",
+                { code: "0x500a", encoding: { kind: fixed, width: 4 } },
+                { code: "0x500c", encoding: { kind: fixed, width: 4 } }, "0x500e",
+                { code: "0x5010", encoding: { kind: signed, width: 4 } },
+                { code: "0x5012", encoding: { kind: fixed, width: 4 } },
+                { code: "0xd001", encoding: { kind: fixed, width: 4 } },
+                { code: "0xd018", encoding: { kind: fixed, width: 4 } },
+                "0xd028", "0xd02a",
+                { code: "0xd02b", encoding: { kind: fixed, width: 4 } }, "0xd17c",
+                "0xd209",
+                { code: "0xd21b", encoding: { kind: fixed, width: 4 } },
+                { code: "0xd220", encoding: { kind: fixed, width: 4 } },
+                { code: "0xd222", encoding: { kind: fixed, width: 4 } },
+                { code: "0xd229", encoding: { kind: fixed, width: 4 } },
+                { code: "0xd22a", encoding: { kind: fixed, width: 4 } },
+                "0xd240",
+                { code: "0xd241", encoding: { kind: fixed, width: 4 } },
+                "0xd242", "0xd246",
+                { code: "0xd400", encoding: { kind: fixed, width: 4 } },
+                { code: "0xd401", encoding: { kind: fixed, width: 4 } },
+                { code: "0xd52f", encoding: { kind: fixed, width: 4 } },
+                { code: "0xdf00", encoding: { kind: fixed, width: 4 } },
                 { code: "0xd22f", encoding: { kind: ptpString }, simulatorValue: "" },
                 "0xdf41"]
     evidence: [docImageTransfer, docD212TightFormat, wireD212Heterogeneous20260719]
@@ -1012,7 +924,7 @@ properties:
   # PTP_PROPERTIES_REFERENCE.md §5.1/§3.4 the u32 also encodes aspect ratio: high
   # bytes (3,2) = (aspect_w, aspect_h), low bytes (1,0) = (col, row) of the last AF
   # tap. (asp_w, asp_h) feed the 0x9026 LockS1Lock packed-param high bytes.
-  "0xd17c": { name: s1Lock,            type: u32, access: readOnly,  evidence: [iosLiveControls, docLiveControls] }  # sub-property carried in 0xd212
+  "0xd17c": { name: s1Lock,            type: u32, access: readOnly,  evidence: [docLiveControls] }  # sub-property carried in 0xd212
   # Keep the global display-color name for other connections. The PCSS profile
   # uses SDK result labels; only operating=1 and failure=3 were wire-captured in
   # the five autofocus attempts.
@@ -1029,10 +941,10 @@ properties:
           - { label: failure, raw: 3 }
           - { label: noOperation, raw: 4 }
         evidence: [wirePcssAutofocus20260718, sdkPcssAutofocus20260718]
-    evidence: [iosLiveControls, docLiveControls]
+    evidence: [docLiveControls]
   "0xd226": { name: imageImportFilter, type: u16, access: readWrite, evidence: [docImageTransfer] }
   "0xd227": { name: imageImportSort,   type: u16, access: readWrite, evidence: [docImageTransfer] }
-  "0xdf29": { name: reservedPhotoReceiveVersion, type: u32, access: readWrite, evidence: [wireAutoImageTransfer, staticAutoImageTransfer] }
+  "0xdf29": { name: reservedPhotoReceiveVersion, type: u32, access: readWrite, evidence: [wireAutoImageTransfer] }
   "0xdf41": { name: reservedPhotoObjectCount, type: u32, access: readOnly, evidence: [wireAutoImageTransfer] }
   "0xd244": { name: imageImportD244,   type: u8a, access: readOnly,  evidence: [docImageTransfer] }
   "0xd620": { name: imageImportObjectCount,   type: u32, access: readOnly,
@@ -1044,12 +956,9 @@ properties:
               requiresGate: { name: imageImportBootstrap, failure: noResponse },
               evidence: [docImageTransfer] }
   "0xd235": { name: imageImportChunkSize, type: u32, access: readOnly, initialValue: 0x00bfffe0, evidence: [docLargeMovObjectInfo, wireAutoImageTransfer] }
-  "0xd185": { name: rawSettings,       type: u8a, access: readWrite, evidence: [staticRawStudio] }  # 0x275-byte RAW-conv buffer (field map TBD)
-  # Current App/AP controls. ISO/direct-list controls use SetDevicePropValue; ring/body controls
+  # Current reference-app/AP controls. ISO/direct-list controls use SetDevicePropValue; ring/body controls
   # remain step-only or body-driven. WirelessTether exposes absolute big-three variants on the
   # 15740 PCSS connection, so controls are keyed by connection id.
-  "0x5005": { name: whiteBalance, ptpName: WhiteBalance, type: u16, access: readWrite,
-              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
   "0x5007":
     name: aperture
     ptpName: FNumber
@@ -1059,10 +968,7 @@ properties:
     # specific and must not choose the review camera's initial live value.
     initialValue: 400
     controls: { app: { setMethod: vendorStep, operation: "0x902d", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }
-    evidence: [iosLiveControls, docLiveControls, wireTether]
-  "0x500a": { name: focusMode, ptpName: FocusMode, type: u16, access: readWrite, evidence: [iosLiveControls] }
-  "0x500c": { name: flashMode, ptpName: FlashMode, type: u16, access: readWrite,
-              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
+    evidence: [docLiveControls, wireTether]
   # Exposure bias is SIGNED: probe GetDevicePropDesc declares i16, descriptor enum
   # runs -5000..5000 milliEV (negative EV writes two's-complement, e.g. -0.3 → 0xFEB3) (#88).
   "0x5010":
@@ -1072,11 +978,7 @@ properties:
     access: readWrite
     initialValue: 0
     controls: { app: { setMethod: vendorStep, operation: "0x902e", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }
-    evidence: [iosLiveControls, docLiveControls, wireTether]
-  "0x5012": { name: selfTimer, ptpName: SelfTimer, type: u16, access: readWrite,
-              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
-  "0xd001": { name: filmSimulation, type: u16, access: readWrite,
-              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
+    evidence: [docLiveControls, wireTether]
   # 0xD212 live-status member; wire-decoded label DepthOfField, probe type u16 (#50).
   "0xd028": { name: depthOfField, type: u16, access: readWrite, evidence: [docD212TightFormat] }
   # Live-view still ISO is u32, NOT the u16 GetDevicePropDesc returns — fw2.30
@@ -1094,16 +996,14 @@ properties:
                           { label: "25600", raw: 1073767424 }, { label: "102400", raw: 1073844224 }],
               valueEncoding: { sentinel: { mask: 2147483648, meaning: autoCeiling, labelPrefix: AUTO },
                                masks: [{ mask: 1073741824, meaning: extendedSensitivity, labelPrefix: EXT }] },
-              evidence: [iosLiveControls, docLiveControls, docIsoModel20260707] }
-  "0xd02b": { name: movieIso, ptpName: MovieISO, type: u32, access: readWrite,
-              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [iosLiveControls] }
+              evidence: [docLiveControls, docIsoModel20260707] }
   # Shutter readback is u32, NOT the u16 stub the degenerate descriptor reports.
   # Encoding: 0x80000000|(denom*1000) for fractions (1/60 = 0x8000EA60), or
   # seconds*1000 for slow speeds — confirmed by client application's UINT32 DevicePropDesc
   # parser + the [live] 0xD212 readback. Set via the 0x902c step (not a value
   # write). Width override documented in the #53 property-width-audit OVERRIDES.
   "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u32, access: readWrite, initialValue: 0x8001e848,
-              controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [iosLiveControls, docLiveControls] }
+              controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [docLiveControls] }
   # PCSS ISO is the standard PTP ExposureIndex, NOT the reference-app 0xD02A path. Encoding is
   # SIGNED: positive = literal ISO; `-1`/`-2`/`-3` map to the camera AUTO1/AUTO2/AUTO3 slots and
   # `-10` is generic AUTO (SDK header definitions; the Hyper-Utility wire trace shows -1/-2 live).
@@ -1220,7 +1120,7 @@ properties:
       "64000150": "30m"
       "64000180": "60m"
     evidence: [wireTether]
-  "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [iosLiveControls, wireTether] }   # PASM / body dial
+  "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [wireTether] }   # PASM / body dial
   # Camera-side simultaneous card recording policy. Rows 1/2 are controlled
   # capture results; rows 3/4 retain their vendor-definition provenance.
   "0xd20c":

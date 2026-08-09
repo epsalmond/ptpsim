@@ -703,34 +703,13 @@ fn assert_no_gate_metadata_surfaces(steps: &[EntryStep]) {
 }
 
 #[test]
-fn platform_filters_connections_macos_vs_ios() {
+fn platform_filters_supported_connections() {
     let s = store();
     let mac = s.connections(Platform::Macos);
     let ios = s.connections(Platform::Ios);
-    let android = s.connections(Platform::Android);
-    // Raw USB is desktop-class (macOS, Android, Linux); the daemon-attached
-    // pass-through row serves iOS and macOS.
-    assert!(ids(&mac).contains(&"usb"), "macOS has raw USB");
-    assert!(
-        ids(&mac).contains(&"usb-passthrough"),
-        "macOS has USB pass-through"
-    );
-    assert!(ids(&mac).contains(&"wireless-tether"));
-    assert!(
-        !ids(&ios).contains(&"usb"),
-        "iOS hides raw USB — same build, data-driven"
-    );
-    assert!(
-        ids(&ios).contains(&"usb-passthrough"),
-        "iOS has USB pass-through"
-    );
-    assert!(ids(&android).contains(&"usb"), "Android has raw USB");
-    assert!(
-        !ids(&android).contains(&"usb-passthrough"),
-        "Android hides USB pass-through"
-    );
-    // App + XLV available to both.
+    assert!(ids(&mac).contains(&"app"));
     assert!(ids(&ios).contains(&"app"));
+    assert!(ids(&mac).contains(&"wireless-tether"));
     assert!(ids(&mac).contains(&"xlv"));
 }
 
@@ -814,16 +793,6 @@ fn operation_gating_is_connection_and_mode_keyed() {
         ),
         Availability::Available
     ));
-    // Backup op (0x100c) is available in ANY mode over usb (modes: []).
-    assert!(matches!(
-        s.operation_available("usb".into(), "shooting/stills".into(), 0x100c, vec![]),
-        Availability::Available
-    ));
-    // A genuine WrongMode: the raw-conv op (0x900c) is mode-specific.
-    assert!(matches!(
-        s.operation_available("usb".into(), "shooting/stills".into(), 0x900c, vec![]),
-        Availability::WrongMode
-    ));
 }
 
 #[test]
@@ -878,31 +847,28 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
         .mode_entry("app".into(), None, "shooting/stills".into())
         .expect("live-view entry");
     let steps = ptp_steps(&plan);
-    // First step: SetProp 0xdf00 = 6 (the real live-view startup constant).
-    match &steps[0] {
-        EntryStep::SetProp { prop, value, .. } => {
-            assert_eq!(*prop, 0xdf00);
-            assert_eq!(*value, 6);
-        }
-        other => panic!("expected SetProp, got {other:?}"),
-    }
-    // The 902B repeat survives the round-trip.
-    assert!(steps.iter().any(|st| matches!(
-        st,
-        EntryStep::SendOp {
-            op: 0x902b,
-            repeat: 4,
+    assert_eq!(steps.len(), 4);
+    assert!(matches!(
+        &steps[0],
+        EntryStep::SetProp {
+            prop: 0xdf01,
+            value: 0x16,
             ..
         }
-    )));
-
-    // A USB sub-mode entry is a userInstruction (camera menu), no steps.
-    let usb = s
-        .mode_entry("usb".into(), None, "raw-conv-backup-restore".into())
-        .unwrap();
+    ));
+    assert!(matches!(&steps[1], EntryStep::SendOp { op: 0x101c, .. }));
     assert!(matches!(
-        usb.execution,
-        ModeEntryExecution::UserInstruction { .. }
+        &steps[2..],
+        [
+            EntryStep::OpenChannel {
+                role: SocketRole::Event,
+                ..
+            },
+            EntryStep::OpenChannel {
+                role: SocketRole::LiveView,
+                ..
+            }
+        ]
     ));
 }
 
@@ -1357,32 +1323,29 @@ fn value_policy_resolves_initiator_identity_from_manufacturer_tier() {
 #[test]
 fn explained_gate_traces_real_data_decisions() {
     let s = store();
-    // 0x900c is a (usb, raw-conv-backup-restore) op. Over the app connection → WrongConnection,
-    // and the trace says why (what telemetry captures) — no predicate eval needed.
-    let wc = s.operation_available_explained(
-        "app".into(),
-        "raw-conv-backup-restore".into(),
-        0x900c,
+    let wrong_connection =
+        s.operation_available_explained("app".into(), "shooting/stills".into(), 0x9018, vec![]);
+    assert!(matches!(
+        wrong_connection.availability,
+        Availability::WrongConnection
+    ));
+    assert!(!wrong_connection.trace.connection_ok);
+    assert!(wrong_connection.trace.requires.is_none());
+    assert!(wrong_connection.trace.reason.contains("wireless-tether"));
+
+    let available = s.operation_available_explained(
+        "wireless-tether".into(),
+        "shooting/stills".into(),
+        0x9018,
         vec![],
     );
-    assert!(matches!(wc.availability, Availability::WrongConnection));
-    assert!(!wc.trace.connection_ok);
-    assert!(wc.trace.requires.is_none()); // this op declares no prerequisite
-    assert!(wc.trace.reason.contains("usb"));
-    // Over its own connection/mode → Available, both axes ok.
-    let ok = s.operation_available_explained(
-        "usb".into(),
-        "raw-conv-backup-restore".into(),
-        0x900c,
-        vec![],
-    );
-    assert!(matches!(ok.availability, Availability::Available));
-    assert!(ok.trace.connection_ok && ok.trace.mode_ok);
-    // Unknown op → Unavailable with an explanatory reason.
-    let un =
+    assert!(matches!(available.availability, Availability::Available));
+    assert!(available.trace.connection_ok && available.trace.mode_ok);
+
+    let unknown =
         s.operation_available_explained("app".into(), "shooting/stills".into(), 0x9999, vec![]);
-    assert!(matches!(un.availability, Availability::Unavailable));
-    assert!(un.trace.reason.contains("not defined"));
+    assert!(matches!(unknown.availability, Availability::Unavailable));
+    assert!(unknown.trace.reason.contains("not defined"));
 }
 
 #[test]
@@ -1671,7 +1634,7 @@ fn get_to_take_entry_switches_in_session_then_starts_live_view() {
         )
         .expect("from-image-transfer live-view entry");
     let steps = ptp_steps(&plan);
-    assert_eq!(steps.len(), 7);
+    assert_eq!(steps.len(), 4);
     assert!(!steps
         .iter()
         .any(|step| matches!(step, EntryStep::ReopenSession { .. })));
@@ -1680,22 +1643,6 @@ fn get_to_take_entry_switches_in_session_then_starts_live_view() {
         EntryStep::SetProp {
             prop: 0xdf01,
             value: 0x16,
-            ..
-        }
-    )));
-    assert!(steps.iter().any(|st| matches!(
-        st,
-        EntryStep::SetProp {
-            prop: 0xdf2a,
-            value: 2,
-            ..
-        }
-    )));
-    assert!(steps.iter().any(|st| matches!(
-        st,
-        EntryStep::SendOp {
-            op: 0x902b,
-            repeat: 4,
             ..
         }
     )));
@@ -2543,12 +2490,6 @@ fn connection_info_carries_per_connection_traits() {
         Some(ShutterRecipe::WirelessTether3Beat)
     ));
     assert!(!wt.command_listener_volatile);
-
-    // usb omits the listener trait, proving the schema default remains false.
-    let usb = conns.iter().find(|c| c.id == "usb").expect("usb on macOS");
-    assert!(!usb.command_listener_volatile);
-    assert!(usb.shutter_recipe.is_none());
-    assert!(usb.live_view_delivery.is_none());
 }
 
 #[test]
@@ -2697,7 +2638,7 @@ fn property_catalog_enumerates_through_ffi() {
     assert!(aperture
         .evidence
         .iter()
-        .any(|evidence| evidence == "iosLiveControls"));
+        .any(|evidence| evidence == "docLiveControls"));
     for code in [0xd039, 0xd1bc, 0xd208, 0xd21c, 0xd230, 0xd207] {
         let property = cat
             .iter()

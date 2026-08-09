@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use camera_sim_service::{Config, Server};
 use protocol_primitives::{
-    build_legacy_app_init, build_app_init, fuji_framing, parse_pcss_init_ack, usb_ptp,
+    build_app_init, build_legacy_app_init, fuji_framing, parse_pcss_init_ack, usb_ptp,
     validate_legacy_app_init_ack,
 };
 use ptp_core::{PtpCodec, PtpIpPacket};
@@ -512,7 +512,7 @@ fn legacy_app_init_and_usb_ptp_list_images_over_loopback() {
         0x08, 0x70, 0xb0, 0x61, 0x0a, 0x8b, 0x45, 0x93, 0xb2, 0xe7, 0x93, 0x57, 0xdd, 0x36, 0xe0,
         0x50,
     ];
-    const CAMERA_REMOTE_MANIFEST: &str = r#"
+    const LEGACY_APP_MANIFEST: &str = r#"
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: X-A7, firmware: "1.00" }
 values:
@@ -544,7 +544,7 @@ properties: {}
             instance_id: "legacy-app-test".into(),
             profile: "fuji/xa7/static".into(),
             connection: "legacy-app".into(),
-            manifest_yaml: CAMERA_REMOTE_MANIFEST.into(),
+            manifest_yaml: LEGACY_APP_MANIFEST.into(),
             media_root: root.clone(),
             command_bind: Some("127.0.0.1:0".parse().unwrap()),
             liveview_bind: None,
@@ -1142,16 +1142,8 @@ fn service_pushes_gfx_shutter_and_autofocus_events_on_event_socket() {
     let _ = read_frame(&mut s); // InitCommandAck
     write_frame(&mut s, &op(0x1002, 1, vec![1]));
     read_ok(&mut s);
-    set_prop(&mut s, 2, 0xdf00, &6u16.to_le_bytes());
-    set_prop(&mut s, 3, 0xdf01, &0x16u16.to_le_bytes());
-    write_frame(&mut s, &op(0x1015, 4, vec![0xdf2a]));
-    let df2a = read_data_reply(&mut s);
-    set_prop(&mut s, 5, 0xdf2a, &df2a);
-    for tid in 6..10 {
-        write_frame(&mut s, &op(0x902b, tid, vec![]));
-        read_ok(&mut s);
-    }
-    write_frame(&mut s, &op(0x101c, 10, vec![]));
+    set_prop(&mut s, 2, 0xdf01, &0x16u16.to_le_bytes());
+    write_frame(&mut s, &op(0x101c, 3, vec![]));
     read_ok(&mut s);
 
     let mut evt = TcpStream::connect(event_addr).unwrap();

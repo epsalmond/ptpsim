@@ -78,12 +78,9 @@ ship per-manufacturer code paths. New cameras are added by authoring a manifest
 (see [`packages/camera-config-data/`](packages/camera-config-data/)), not by
 patching the engine.
 
-Probing real cameras is folding into the shipping engine itself — a headless
-initiator built on the same crates and manifests (#252) — so probe results can
-never drift from what the engine actually does. The earlier standalone probe
-toolkit ([`epsalmond/camera-protocol-mapper`](https://github.com/epsalmond/camera-protocol-mapper))
-produced the JSONL observation bundles behind existing manifests but is no
-longer where new probe work should land.
+Real-camera probing lives in the shipping engine: a headless initiator built on
+the same crates and manifests (#252). New probe work belongs there so its
+results cannot drift from engine behavior.
 
 New evidence uses `camera-observation/v1`. Run `camera-config-generate validate`
 before proposing a manifest change, inspect the deterministic output from

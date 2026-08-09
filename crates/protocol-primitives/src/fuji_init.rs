@@ -142,7 +142,11 @@ mod tests {
     #[test]
     fn builds_the_82_byte_init_with_correct_structure() {
         let pkt = build_app_init(&GUID, "Pixel-6-4976").unwrap();
-        assert_eq!(pkt.len(), 82, "the fixed reference app init shape is 82 bytes");
+        assert_eq!(
+            pkt.len(),
+            82,
+            "the fixed reference app init shape is 82 bytes"
+        );
         // Header: length == total, type == 1.
         assert_eq!(u32::from_le_bytes(pkt[0..4].try_into().unwrap()), 82);
         assert_eq!(

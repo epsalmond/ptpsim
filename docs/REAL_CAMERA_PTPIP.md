@@ -266,20 +266,6 @@ terminal event-socket rejection and does not disturb an unrelated command
 session. `NativePtpTransport::probe_event_channel` sends a standard probe and
 requires the paired response.
 
-When `GetDeviceInfo.OperationsSupported` advertises Nikon operation `0x9439`,
-the standard startup path performs SnapBridge's post-session vendor-operation
-discovery with selector `9` and decodes the returned exact little-endian `u32`
-array. If the operation is not advertised, startup skips it; if it is advertised
-but fails, establishment fails rather than silently using an incomplete action
-catalog.
-
-The bundled Nikon bodies use the direct-camera defaults from SnapBridge 2.13.3:
-both socket roles target TCP 15740, the initiator GUID is
-`00112233445566778899aabbccddeeff`, and the friendly name is `Android Device`.
-Use `packages/camera-config-data/nikon/d850/d850.yaml` together with
-`packages/camera-config-data/nikon/nikon.yaml`. The D850 body is deliberately
-provisional: these values and the family flow are static application facts, not
-a successful D850 registration or interoperability claim.
 
 ## Reading observations
 

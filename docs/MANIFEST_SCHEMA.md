@@ -398,9 +398,7 @@ Things explicitly NOT defined here, to be picked up in P2 or as separate decisio
 
 ### 11.13 Transform vocabulary (multivendor pass, 2026-06)
 
-Added by the multivendor schema risk pass
-(`docs/plans/manifest-schema-multivendor-risk-pass-2026-06-10.md`). The old
-two-entry `ValueTransform` (`bitOr`/`bitAnd`) is absorbed into a closed,
+The old two-entry `ValueTransform` (`bitOr`/`bitAnd`) is absorbed into a closed,
 chainable `Transform` vocabulary. Every `transform:` site accepts a single
 single-entry mapping (a 1-element chain) or a list applied in order:
 
@@ -1121,10 +1119,9 @@ object lookup cannot alias the fixed reserved index.
 The camera owns one transfer queue. `readToEof` completes a head only after
 successful delivered byte ranges cover the entire object and the final PTP OK
 response is written. Partial reads, failed writes, disconnects, session close,
-and transport sentinels do not dequeue. The next object then appears at the same
-head index and the count member decreases. For GFX100 II, multi-object advancement
-and countdown are inferred from static reference app behavior; only a one-object drain is
-wire-confirmed as of 2026-07-07.
+and transport sentinels do not dequeue. Queue advancement beyond one object is
+not claimed for GFX100 II. The checked wire evidence covers a one-object drain
+as of 2026-07-07.
 
 The FFI mirrors the complete declaration through
 `camera_initiated_transfer(model)`. It returns resolved UUIDs and bytes, the

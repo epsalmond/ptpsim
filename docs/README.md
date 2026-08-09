@@ -30,8 +30,6 @@ index is a navigational summary of it.
 | [`TRANSPORTS.md`](TRANSPORTS.md) | plan | PTP/USB, XLV, and wireless-tether transports as manifest-driven adapters; the initiator-side USB model is specified in `MANIFEST_SCHEMA.md` §11.29, the rest remains paper design |
 | [`plans/canonical-observation-loop.md`](plans/canonical-observation-loop.md) | shipped | Implementation contract (#305) for the one supported fail-closed evidence loop, observation JSONL through atomic manifest apply |
 | [`plans/manifest-system.md`](plans/manifest-system.md) | plan | Cross-cutting direction for the manifest system — data repo / standalone engine / ptpsim as co-consumer |
-| [`plans/ios-rewrite-p0-p1-ble-mvp.md`](plans/ios-rewrite-p0-p1-ble-mvp.md) | shipped | BLE-only MVP slice of the iOS rewrite; its schema contract (§11) moved to `MANIFEST_SCHEMA.md` |
-| [`plans/ios-rewrite-service-architecture.md`](plans/ios-rewrite-service-architecture.md) | shipped | Greenfield manifest-driven iOS service architecture; supersedes `ios-adoption.md` |
 | [`plans/camera-config.md`](plans/camera-config.md) | shipped | Implementation plan for `camera-config`, the manifest/config system with modes as a first-class axis |
 | [`plans/action-verbs.md`](plans/action-verbs.md) | shipped | Approved schema decision adding action verbs (capture/transfer) alongside `entries[]` mode transitions |
 | [`plans/ffi-surface.md`](plans/ffi-surface.md) | historical | Original FFI surface design sketch; superseded by `INTEGRATION.md` |
@@ -41,4 +39,4 @@ index is a navigational summary of it.
 
 [`consults/`](consults/README.md) has its own README and frontmatter schema (cross-project request/response records); it is not covered by the schema above.
 
-Historical root-level docs — [`handoff-ios-agent.md`](handoff-ios-agent.md), [`handoff-ios-ble-mvp.md`](handoff-ios-ble-mvp.md), and [`internal-async-notes.md`](internal-async-notes.md) — are kept for provenance only.
+[`internal-async-notes.md`](internal-async-notes.md) records historical async design notes.

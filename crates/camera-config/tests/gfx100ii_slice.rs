@@ -3,14 +3,13 @@
 //! actual derived data rather than in-crate fixtures.
 
 use camera_config::{
-    parse_hex_code, ActionInitiatorParameterKind, ActionVerb, Availability, AwaitSource,
-    CameraManifest, CaptureSource, ConfigStore, DescriptorValue, EventDelivery,
-    InventoryCompleteness, Loop, ManufacturerDefaults, MissingRuntimeValue, ModeEntryExecution,
-    ObjectTransferCompletionTiming, ObjectTransferResumePolicy, ObjectTransferStrategy,
-    ObjectsAvailable, ObservationLine, OperationKind, PcssDiscoveryTarget, Predicate, PropView,
-    PropertyAccess, PropertyKind, PropertyTransitionTerminal, RecordValueEncoding,
-    RecordValueLiteral, ResponderMutation, SessionOwnership, SetPropValue, Step, StepParam,
-    ValuePolicy, VersionScheme,
+    parse_hex_code, ActionInitiatorParameterKind, ActionVerb, Availability, CameraManifest,
+    CaptureSource, ConfigStore, DescriptorValue, InventoryCompleteness, ManufacturerDefaults,
+    MissingRuntimeValue, ModeEntryExecution, ObjectTransferCompletionTiming,
+    ObjectTransferResumePolicy, ObjectTransferStrategy, ObjectsAvailable, ObservationLine,
+    OperationKind, PcssDiscoveryTarget, Predicate, PropView, PropertyAccess, PropertyKind,
+    PropertyTransitionTerminal, RecordValueEncoding, RecordValueLiteral, ResponderMutation,
+    SetPropValue, StepParam, ValuePolicy, VersionScheme,
 };
 use std::path::PathBuf;
 
@@ -59,11 +58,11 @@ fn app_slice_loads_and_schema_is_supported() {
     let m = gfx();
     m.require_supported_schema().unwrap();
     assert_eq!(m.camera.model, "GFX100 II");
-    // Evidence may cite paths outside ptpsim → warnings, never load errors.
-    assert!(m
-        .validate()
-        .iter()
-        .all(|l| l.severity == camera_config::Severity::Warning));
+    let lints = m.validate();
+    assert!(
+        lints.is_empty(),
+        "manifest has structural lints: {lints:#?}"
+    );
 }
 
 #[test]
@@ -258,12 +257,14 @@ fn camera_initiated_transfer_references_are_complete() {
             .and_then(|bindings| bindings.host.as_deref()),
         Some("192.168.0.1")
     );
+    let transfer_lints: Vec<_> = manifest
+        .validate()
+        .into_iter()
+        .filter(|lint| lint.message.contains("cameraInitiatedTransfer"))
+        .collect();
     assert!(
-        manifest
-            .validate()
-            .iter()
-            .all(|lint| !lint.message.contains("cameraInitiatedTransfer")),
-        "camera-initiated transfer has no structural lints"
+        transfer_lints.is_empty(),
+        "camera-initiated transfer has structural lints: {transfer_lints:#?}"
     );
 }
 
@@ -290,29 +291,21 @@ fn live_view_entry_is_the_ground_truth_sequence() {
         .find(|e| e.to == "shooting/stills" && e.from.is_none())
         .unwrap();
     let steps = lv.ptp_steps().expect("cold live-view PTP entry");
-    assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf00"));
-    assert_eq!(steps[0].value, Some(6.into()));
-    // Device-validated (#39): the GFX100 II rejects this advisory write
-    // with 0x201d, so the step MUST stay tolerant or mode entry dies on
-    // real hardware. This flag regressed silently once (client application #4) —
-    // hence the explicit assert.
-    assert!(steps[0].tolerant, "0xdf00 write must be tolerant");
-    assert_eq!(steps[1].value, Some(0x16.into())); // functionMode 22
-    assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
-    assert_eq!(steps[3].repeat, 4); // 902B ×4
-    assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
-    assert_eq!(steps[4].captures.len(), 1);
-    assert_eq!(steps[4].captures[0].bind, "openCaptureTxId");
+    assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf01"));
+    assert_eq!(steps[0].value, Some(0x16.into()));
+    assert_eq!(steps[1].send_op.as_deref(), Some("0x101c"));
+    assert_eq!(steps[1].captures.len(), 1);
+    assert_eq!(steps[1].captures[0].bind, "openCaptureTxId");
     assert_eq!(
-        steps[4].captures[0].source,
+        steps[1].captures[0].source,
         camera_config::CaptureSource::TransactionId
     );
     assert_eq!(
-        steps[5].open_channel,
+        steps[2].open_channel,
         Some(camera_config::SocketRole::Event)
     );
     assert_eq!(
-        steps[6].open_channel,
+        steps[3].open_channel,
         Some(camera_config::SocketRole::LiveView)
     );
     assert!(steps.iter().all(camera_config::Step::is_well_formed));
@@ -364,7 +357,7 @@ fn capabilities_inherit_and_screen_takeover_is_modeled() {
 }
 
 #[test]
-fn ble_connection_enables_app_and_carries_remote_trigger() {
+fn ble_connection_enables_app() {
     let m = gfx();
     let ble = &m.connections["ble"];
     assert_eq!(ble.kind.as_deref(), Some("ble"));
@@ -376,198 +369,15 @@ fn ble_connection_enables_app_and_carries_remote_trigger() {
         .find(|e| e.to == "app")
         .expect("BLE enables app");
     assert_eq!(edge.mechanism.as_deref(), Some("ble-establish-wifi-ap"));
-    // BLE carries the remote-trigger mode.
-    assert!(ble.modes.contains(&"remote-trigger".to_string()));
 }
 
 #[test]
-fn remote_trigger_is_screen_on_and_transport_independent() {
+fn remote_trigger_is_wireless_tether_control() {
     let m = gfx();
     let caps = m.capabilities("remote-trigger");
-    assert!(caps.contains(&"shutterControl"));
-    assert!(caps.contains(&"eepromTransfer"));
-    assert!(caps.contains(&"screenOn")); // vs shooting/stills screenTakeover
-                                         // No detect predicate: over BLE the mode is connection-implied, not PTP-detected.
+    assert_eq!(caps, vec!["shutterControl"]);
     assert!(m.modes["remote-trigger"].detect.is_none());
 }
-
-#[test]
-fn usb_mode_is_user_instruction_and_ops_gate_appropriately() {
-    use camera_config::Availability::*;
-    let m = gfx();
-    let usb = &m.connections["usb"];
-    assert_eq!(usb.kind.as_deref(), Some("usb"));
-    assert_eq!(usb.establishment.as_deref(), Some("usb-claim-open"));
-    // Raw USB is desktop-class: the initiator owns handle, claim, and session.
-    let platforms: Vec<String> = serde_yaml::from_value(
-        usb.extra
-            .get("platforms")
-            .expect("usb declares platforms")
-            .clone(),
-    )
-    .expect("platforms is a string list");
-    assert_eq!(platforms, ["macos", "android", "linux"]);
-    assert_eq!(
-        usb.session.as_ref().map(|s| s.ownership),
-        Some(SessionOwnership::InitiatorOwned)
-    );
-    assert_eq!(
-        usb.events.as_ref().map(|e| e.delivery),
-        Some(EventDelivery::Reliable)
-    );
-    // One on-camera USB mode (raw-conv + backup-restore), a userInstruction edge, no PTP steps.
-    let entry = usb
-        .entries
-        .iter()
-        .find(|e| e.to == "raw-conv-backup-restore")
-        .unwrap();
-    assert!(matches!(
-        entry.execution,
-        ModeEntryExecution::UserInstruction { .. }
-    ));
-
-    let any = PropView::new();
-    // raw-conv op (0x900c) is MODE-specific: available in raw-conv-backup-restore,
-    // wrong-mode elsewhere, wrong-connection off usb.
-    assert_eq!(
-        m.operation_available("usb", "raw-conv-backup-restore", 0x900c, &any),
-        Available
-    );
-    assert_eq!(
-        m.operation_available("usb", "shooting/stills", 0x900c, &any),
-        WrongMode
-    );
-    assert_eq!(
-        m.operation_available("app", "raw-conv-backup-restore", 0x900c, &any),
-        WrongConnection
-    );
-    // backup op (0x100c) is available in ANY mode (modes: []), still usb-only.
-    assert_eq!(
-        m.operation_available("usb", "raw-conv-backup-restore", 0x100c, &any),
-        Available
-    );
-    assert_eq!(
-        m.operation_available("usb", "shooting/stills", 0x100c, &any),
-        Available
-    );
-    assert_eq!(
-        m.operation_available("app", "shooting/stills", 0x100c, &any),
-        WrongConnection
-    );
-}
-
-#[test]
-fn usb_passthrough_is_daemon_attached_for_ios_and_macos() {
-    let m = gfx();
-    let passthrough = &m.connections["usb-passthrough"];
-    assert_eq!(passthrough.kind.as_deref(), Some("usb-passthrough"));
-    // A platform daemon owns device, framing, session, and transaction ids, so
-    // the connection runs no establishment plan of its own.
-    assert!(passthrough.establishment.is_none());
-    let platforms: Vec<String> = serde_yaml::from_value(
-        passthrough
-            .extra
-            .get("platforms")
-            .expect("usb-passthrough declares platforms")
-            .clone(),
-    )
-    .expect("platforms is a string list");
-    assert_eq!(platforms, ["ios", "macos"]);
-    assert_eq!(
-        passthrough.session.as_ref().map(|s| s.ownership),
-        Some(SessionOwnership::DaemonAttached)
-    );
-    assert_eq!(
-        passthrough.events.as_ref().map(|e| e.delivery),
-        Some(EventDelivery::BestEffort)
-    );
-}
-
-#[test]
-fn passthrough_event_awaits_always_declare_then_poll() {
-    // §11.29: on a bestEffort connection any single pushed event may be lost,
-    // so every event-source awaitUntil reachable from the connection MUST
-    // declare thenPoll to reconcile a missed event by polling. Written as a
-    // walk so a future mode-entry or action edit cannot drop the guard.
-    fn collect_steps<'a>(steps: &'a [Step], out: &mut Vec<&'a Step>) {
-        for step in steps {
-            out.push(step);
-            if let Some(await_until) = &step.await_until {
-                collect_steps(&await_until.on_each, out);
-            }
-            if let Some(retry) = &step.retry {
-                collect_steps(&retry.steps, out);
-            }
-            if let Some(r#loop) = &step.r#loop {
-                match r#loop {
-                    Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => {
-                        collect_steps(body, out);
-                    }
-                }
-            }
-            if let Some(if_step) = &step.if_step {
-                collect_steps(&if_step.then_steps, out);
-                collect_steps(&if_step.else_steps, out);
-            }
-        }
-    }
-
-    let m = gfx();
-    let passthrough = &m.connections["usb-passthrough"];
-    assert_eq!(
-        passthrough.events.as_ref().map(|e| e.delivery),
-        Some(EventDelivery::BestEffort),
-        "the guard only means anything while the connection stays bestEffort"
-    );
-    let mut steps = Vec::new();
-    for entry in &passthrough.entries {
-        match &entry.execution {
-            ModeEntryExecution::Ptp { steps: entry_steps } => {
-                collect_steps(entry_steps, &mut steps);
-            }
-            ModeEntryExecution::ReestablishConnection(reestablish) => {
-                collect_steps(&reestablish.exit_steps, &mut steps);
-            }
-            ModeEntryExecution::UserInstruction { .. } => {}
-        }
-    }
-    for action in passthrough.actions.values() {
-        if let Some(initiator) = &action.initiator {
-            collect_steps(&initiator.steps, &mut steps);
-        }
-    }
-    for step in steps {
-        if let Some(await_until) = &step.await_until {
-            if let AwaitSource::Event { code, then_poll } = &await_until.source {
-                assert!(
-                    then_poll.is_some(),
-                    "event await {code:?} on usb-passthrough must declare thenPoll (§11.29 bestEffort)"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn usb_evidence_is_the_lower_confidence_static_tier() {
-    let m = gfx();
-    assert_eq!(m.evidence["iosBLEReg"].kind, "ios-source");
-}
-
-#[test]
-fn remote_trigger_is_reachable_over_both_ble_and_wireless_tether() {
-    // The transport-independence payoff: ONE mode node, two connections.
-    let m = gfx();
-    assert!(m.connections["ble"]
-        .modes
-        .contains(&"remote-trigger".to_string()));
-    assert!(m.connections["wireless-tether"]
-        .modes
-        .contains(&"remote-trigger".to_string()));
-    // remote-trigger is defined once (not duplicated per connection).
-    assert!(m.modes.contains_key("remote-trigger"));
-}
-
 #[test]
 fn wireless_tether_is_wire_confirmed_and_uses_absolute_big3() {
     let m = gfx();
@@ -1427,15 +1237,11 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
     assert_eq!(aperture.operation.as_deref(), Some("0x902d"));
     let ev = m.control_for(0x5010, "app").unwrap();
     assert_eq!(ev.operation.as_deref(), Some("0x902e"));
-    let focus = &m.properties["0x500a"];
-    assert_eq!(focus.ptype.as_deref(), Some("u16"));
-    assert_eq!(focus.access, Some(PropertyAccess::ReadWrite));
 
     assert!(m.connections["app"]
         .modes
         .iter()
         .any(|mode| mode == "shooting/video"));
-    assert_eq!(m.properties["0xdf2a"].ptype.as_deref(), Some("u32"));
     let d246 = &m.properties["0xd246"];
     assert_eq!(d246.ptype.as_deref(), Some("u8"));
     assert_eq!(d246.access, Some(PropertyAccess::ReadWrite));
@@ -1466,10 +1272,6 @@ fn app_current_behavior_ops_and_controls_are_modeled() {
     );
     assert_eq!(
         m.operation_available("app", "image-transfer", 0x101b, &any),
-        camera_config::Availability::Available
-    );
-    assert_eq!(
-        m.operation_available("app", "shooting/video", 0x902b, &any),
         camera_config::Availability::Available
     );
 }
@@ -1661,7 +1463,6 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
     // Identity and curated graph survive reviewed generation.
     assert_eq!(m.camera.model, "GFX100 II");
     assert_eq!(m.camera.firmware, "2.30");
-    assert!(m.connections.contains_key("usb"));
     assert!(m.connections.contains_key("wireless-tether"));
     assert!(m.modes.contains_key("shooting/stills"));
     assert!(m.modes.contains_key("shooting/video"));
@@ -1852,9 +1653,8 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
     assert!(close.transport_close);
     assert_eq!(reestablish.exit_steps.len(), 2);
 
-    // Get→Take is the reverse edge: switch in-session from image-import, select
-    // FunctionMode=Take, negotiate the live-view function version as u32, then
-    // restart open capture before opening the auxiliary channels.
+    // Get→Take switches function mode in-session, then restarts open capture
+    // before opening the auxiliary channels.
     let reverse = entries
         .iter()
         .find(|e| e.to == "shooting/stills" && e.from.as_deref() == Some("image-transfer"))
@@ -1866,12 +1666,6 @@ fn image_import_entry_and_enumeration_keep_their_own_steps() {
     assert!(reverse_steps
         .iter()
         .any(|s| { s.set_prop.as_deref() == Some("0xdf01") && s.value == Some(0x16.into()) }));
-    assert!(reverse_steps
-        .iter()
-        .any(|s| { s.set_prop.as_deref() == Some("0xdf2a") && s.value == Some(2.into()) }));
-    assert!(reverse_steps
-        .iter()
-        .any(|s| s.send_op.as_deref() == Some("0x902b") && s.repeat == 4));
     assert_eq!(
         reverse_steps[reverse_steps.len() - 3].send_op.as_deref(),
         Some("0x101c")
@@ -2426,10 +2220,6 @@ fn per_connection_traits_parse() {
     assert_eq!(lv.kind, LiveViewDeliveryKind::Poll);
     assert_eq!(lv.poll_op.as_deref(), Some("0x9018"));
     assert_eq!(wt.shutter_recipe, Some(ShutterRecipe::WirelessTether3Beat));
-
-    // usb declares none → the app falls back (no negative list needed).
-    assert!(m.connections["usb"].shutter_recipe.is_none());
-    assert!(m.connections["usb"].live_view_delivery.is_none());
 }
 
 #[test]

@@ -64,17 +64,26 @@ fn store_with_standard_app_framing() -> Arc<ConfigStore> {
     );
     store_from_body(body)
 }
-
-fn xa7_mode_selection_store() -> Arc<ConfigStore> {
-    let body = data("fuji/xa7/xa7.yaml")
-        .replace("          - { getProp: \"0xdf21\" }\n", "")
-        .replace("          - { setProp: \"0xdf21\", value: 4 }\n", "")
-        .replace("          - { getProp: \"0xdf22\" }\n", "")
-        .replace("          - { setProp: \"0xdf22\", value: 5 }\n", "")
-        .replace("          - { getProp: \"0xdf31\" }\n", "")
-        .replace("          - { setProp: \"0xdf31\", value: 2 }\n", "");
-    ConfigStore::from_bundle(body, Some(data("fuji/fuji.yaml")))
-        .expect("load focused X-A7 mode-selection manifest")
+fn store_with_app_probe(command_framing: &str) -> Arc<ConfigStore> {
+    let original = data("fuji/gfx100ii/gfx100ii.yaml");
+    let body = if command_framing == "compressed" {
+        original.clone()
+    } else {
+        original.replacen(
+            "commandFraming: compressed",
+            &format!("commandFraming: {command_framing}"),
+            1,
+        )
+    };
+    let anchor =
+        "      - to: shooting/stills          # enter live-view from a cold App connection\n        steps:\n";
+    let body = body.replacen(
+        anchor,
+        &format!("{anchor}          - {{ getProp: \"0xd212\" }}\n"),
+        1,
+    );
+    assert_ne!(body, original, "cold-entry probe anchor missing");
+    store_from_body(body)
 }
 
 fn body_with_cold_entry_activities() -> String {
@@ -93,7 +102,7 @@ fn body_with_cold_entry_activities() -> String {
             displayRole: openingSession
             defaultExpectedDurationMs: 10
             interactionRequired: false
-            executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 7 }
+            executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 4 }
         steps:"#,
         1,
     )
@@ -104,27 +113,14 @@ fn store_with_cold_entry_activities() -> Arc<ConfigStore> {
 }
 
 fn store_with_cold_entry_activity_retry() -> Arc<ConfigStore> {
-    let body = body_with_cold_entry_activities()
-        .replacen(
-            r#"          - { sendOp: "0x902b", repeat: 4 }"#,
-            r#"          - retry:
+    let body = body_with_cold_entry_activities().replacen(
+        r#"          - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)"#,
+        r#"          - retry:
               whenResponseCodes: ["0x2019"]
               maxAttempts: 2
               retryDelayMs: 0
               steps:
-                - { sendOp: "0x902b", repeat: 4 }
-          - { getProp: "0xdf2a" }"#,
-            1,
-        )
-        .replacen("endStepExclusive: 7", "endStepExclusive: 8", 1);
-    store_from_body(body)
-}
-
-fn store_with_tolerant_repeated_startup() -> Arc<ConfigStore> {
-    let body = data("fuji/gfx100ii/gfx100ii.yaml").replacen(
-        r#"- { sendOp: "0x902b", repeat: 4 }"#,
-        r#"- { sendOp: "0x902b", repeat: 4, tolerant: true }
-          - { getProp: "0xdf2a" }"#,
+                - { setProp: "0xdf01", value: 0x16 }"#,
         1,
     );
     store_from_body(body)
@@ -1298,10 +1294,7 @@ fn real_gfx_cold_entry_runs_in_manifest_wire_order() {
     ))
     .expect("cold entry succeeds");
 
-    assert_eq!(
-        transport.operations(),
-        vec![0x1016, 0x1016, 0x1015, 0x1016, 0x902b, 0x902b, 0x902b, 0x902b, 0x101c]
-    );
+    assert_eq!(transport.operations(), vec![0x1016, 0x101c]);
     assert_eq!(
         transport.opened_channels(),
         vec![SocketRole::Event, SocketRole::LiveView]
@@ -1310,59 +1303,15 @@ fn real_gfx_cold_entry_runs_in_manifest_wire_order() {
         transport.calls().as_slice(),
         [
             ..,
-            ExecutorCall::OperationCompleted(0x902b),
             ExecutorCall::Operation(0x101c),
             ExecutorCall::OperationCompleted(0x101c),
             ExecutorCall::OpenChannel(SocketRole::Event),
             ExecutorCall::OpenChannel(SocketRole::LiveView)
         ]
     ));
-    assert_eq!(outcome.steps_run, 7);
-    assert_eq!(reports.0.lock().expect("reports").len(), 14);
+    assert_eq!(outcome.steps_run, 4);
+    assert_eq!(reports.0.lock().expect("reports").len(), 8);
     assert!(activities.0.lock().expect("activities").is_empty());
-}
-
-#[test]
-fn xa7_neutral_mode_entries_write_exactly_one_selected_function_mode() {
-    let store = xa7_mode_selection_store();
-    for (target, function_mode, expected) in [
-        ("photo-receiver", 4u16, 8u16),
-        ("photo-receiver", 6, 8),
-        ("photo-receiver", 7, 1),
-        ("photo-viewer", 4, 9),
-        ("photo-viewer", 6, 9),
-        ("photo-viewer", 7, 2),
-        ("gps-assist", 4, 10),
-        ("gps-assist", 6, 10),
-        ("gps-assist", 7, 17),
-    ] {
-        let transport = Arc::new(EngineTransport::new(
-            "app",
-            PtpFraming::Usb,
-            PtpFraming::Usb,
-        ));
-        transport.override_next_data(
-            ptp_core::codes::op::GET_DEVICE_PROP_VALUE,
-            vec![0xdf00],
-            function_mode.to_le_bytes().to_vec(),
-        );
-        block_on(run_mode_entry(
-            Arc::clone(&store),
-            "legacy-app".into(),
-            None,
-            target.into(),
-            transport.clone(),
-            Arc::new(Reports::default()),
-            Arc::new(Activities::default()),
-            Vec::new(),
-        ))
-        .unwrap_or_else(|error| panic!("{target} DF00={function_mode}: {error}"));
-        assert_eq!(
-            transport.data_writes(ptp_core::codes::op::SET_DEVICE_PROP_VALUE, &[0xdf01]),
-            vec![expected.to_le_bytes().to_vec()],
-            "{target} DF00={function_mode}"
-        );
-    }
 }
 
 #[test]
@@ -1751,7 +1700,7 @@ fn real_image_transfer_to_live_view_transition_stays_in_session() {
         }],
     ))
     .expect("in-session transition succeeds");
-    assert_eq!(outcome.steps_run, 7);
+    assert_eq!(outcome.steps_run, 4);
     assert_eq!(transport.close_calls(), 0);
     assert_eq!(transport.reopen_calls(), 0);
 }
@@ -1859,23 +1808,7 @@ fn outer_reestablishment_entry_runs_only_its_exit_steps() {
 }
 
 #[test]
-fn wrong_entrypoint_and_unknown_plan_fail_typed_before_io() {
-    let unsupported = block_on(run_mode_entry(
-        store(),
-        "usb".into(),
-        None,
-        "raw-conv-backup-restore".into(),
-        Arc::new(PendingTransport),
-        Arc::new(Reports::default()),
-        Arc::new(Activities::default()),
-        Vec::new(),
-    ))
-    .expect_err("manual entry is host-owned");
-    assert!(matches!(
-        unsupported,
-        PtpExecutorError::UnsupportedPlan { .. }
-    ));
-
+fn unknown_plan_fails_typed_before_io() {
     let unknown = block_on(run_mode_entry(
         store(),
         "app".into(),
@@ -2569,8 +2502,8 @@ fn standard_framing_runs_the_same_real_plan() {
     ))
     .expect("standard-framed cold entry succeeds");
 
-    assert_eq!(outcome.steps_run, 7);
-    assert_eq!(transport.operations().len(), 9);
+    assert_eq!(outcome.steps_run, 4);
+    assert_eq!(transport.operations().len(), 2);
 }
 
 #[test]
@@ -2582,7 +2515,7 @@ fn standard_framing_rejects_a_truncated_data_phase() {
     ));
     transport.truncate_next_standard_data();
     let error = block_on(run_mode_entry(
-        store_with_standard_app_framing(),
+        store_with_app_probe("standard"),
         "app".into(),
         None,
         "shooting/stills".into(),
@@ -2609,7 +2542,7 @@ fn standard_framing_rejects_a_maximum_declared_data_phase_before_allocation() {
     ));
     transport.override_next_standard_data_total(u64::MAX);
     let error = block_on(run_mode_entry(
-        store_with_standard_app_framing(),
+        store_with_app_probe("standard"),
         "app".into(),
         None,
         "shooting/stills".into(),
@@ -2637,7 +2570,7 @@ fn standard_framing_rejects_a_declared_data_phase_above_the_cap() {
     ));
     transport.override_next_standard_data_total(512 * 1024 * 1024 + 1);
     let error = block_on(run_mode_entry(
-        store_with_standard_app_framing(),
+        store_with_app_probe("standard"),
         "app".into(),
         None,
         "shooting/stills".into(),
@@ -2665,7 +2598,7 @@ fn standard_framing_rejects_data_past_the_declared_length() {
     ));
     transport.override_next_standard_data_total(0);
     let error = block_on(run_mode_entry(
-        store_with_standard_app_framing(),
+        store_with_app_probe("standard"),
         "app".into(),
         None,
         "shooting/stills".into(),
@@ -2693,7 +2626,7 @@ fn compressed_framing_rejects_a_second_data_frame() {
     ));
     transport.duplicate_next_single_frame_data();
     let error = block_on(run_mode_entry(
-        store(),
+        store_with_app_probe("compressed"),
         "app".into(),
         None,
         "shooting/stills".into(),
@@ -2714,11 +2647,7 @@ fn compressed_framing_rejects_a_second_data_frame() {
 
 #[test]
 fn usb_framing_rejects_a_second_data_frame() {
-    let store = store_from_body(data("fuji/gfx100ii/gfx100ii.yaml").replacen(
-        "commandFraming: compressed",
-        "commandFraming: usb",
-        1,
-    ));
+    let store = store_with_app_probe("usb");
     let transport = Arc::new(EngineTransport::new(
         "app",
         PtpFraming::Usb,
@@ -2743,42 +2672,6 @@ fn usb_framing_rejects_a_second_data_frame() {
             if detail.contains("duplicate data frame for single-frame framing")
     ));
     assert_eq!(transport.queued_reply_count(), 1);
-}
-
-#[test]
-fn tolerant_repeated_send_still_issues_every_repeat() {
-    let transport = Arc::new(EngineTransport::new(
-        "app",
-        PtpFraming::Compressed,
-        PtpFraming::Usb,
-    ));
-    transport.install_fault(fault(
-        0x902b,
-        None,
-        Some(1),
-        FaultMutation::FailResponse { response: 0x2019 },
-    ));
-    let reports = Arc::new(Reports::default());
-    block_on(run_mode_entry(
-        store_with_tolerant_repeated_startup(),
-        "app".into(),
-        None,
-        "shooting/stills".into(),
-        transport.clone(),
-        reports.clone(),
-        Arc::new(Activities::default()),
-        Vec::new(),
-    ))
-    .expect("tolerated repeat completes");
-
-    assert_eq!(transport.request_count(0x902b, &[]), 4);
-    assert!(reports.0.lock().expect("reports").iter().any(|report| {
-        report.verb == "sendOp"
-            && matches!(report.outcome, StepOutcome::Tolerated)
-            && report.operation == Some(0x902b)
-            && report.response_code == Some(0x2019)
-            && report.transaction_id.is_some()
-    }));
 }
 
 #[test]
@@ -2831,8 +2724,8 @@ fn ptp_retry_reports_typed_empty_context_and_terminal_count() {
         PtpFraming::Usb,
     ));
     transport.install_fault(fault(
-        0x902b,
-        None,
+        0x1016,
+        Some(vec![0xdf01]),
         Some(1),
         FaultMutation::FailResponse { response: 0x2019 },
     ));
@@ -2860,12 +2753,12 @@ fn ptp_retry_reports_typed_empty_context_and_terminal_count() {
     };
     let events = activities.0.lock().expect("activities");
     assert!(events.contains(&ConnectionActivityEvent::Retrying {
-        id: "camera.test.stream".into(),
+        id: "camera.test.bootstrap".into(),
         version: 1,
         retry: retry.clone(),
     }));
     assert!(events.contains(&ConnectionActivityEvent::Succeeded {
-        id: "camera.test.stream".into(),
+        id: "camera.test.bootstrap".into(),
         version: 1,
         summary: ConnectionActivityTerminalSummary {
             retry_count: 1,

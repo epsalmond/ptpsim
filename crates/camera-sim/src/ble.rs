@@ -1188,9 +1188,8 @@ fn await_deadline_error(here: &str, message: String) -> WalkError {
 
 /// Execute a `bleWriteChunk` (#112): frame + write ONE window of the host blob,
 /// selected by the captured chunk index. The walker owns the slice math and the
-/// frame assembly; the manifest declares only policy. Window layout mirrors
-
-/// indexed `0..full`, then a final remainder window addressed by `sentinel_index`
+/// frame assembly; the manifest declares only policy. Frame windows are
+/// indexed `0..full`, then a final remainder window uses `sentinel_index`
 /// (the camera's `0xffff` last chunk, which carries real data, not an empty frame).
 fn run_write_chunk(
     ctx: &mut WalkCtx<'_>,

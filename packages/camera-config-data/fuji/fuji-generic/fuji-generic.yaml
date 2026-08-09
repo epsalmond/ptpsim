@@ -17,7 +17,7 @@ schema: camera-config/v1
 #     `fuji:` block in fuji/index.yaml (READ_THIS_FIRST §3 §2 §5).
 #   - reference app Wi-Fi-AP establishment flow (join-confirmation / associate /
 #     session-open host checkpoints): the same reference app reference-app RE the
-#     gfx100ii `app` connection cites (iosStartupSeq / iosFujiPTPIP), scoped to
+#     gfx100ii `app` connection cites ( / ), scoped to
 #     bodies reference app supports. It is not evidence for X-A7.
 #   - X-A7 field capture (ptpsim#306): confirms the legacy-pairing advert shape
 #     (standard 0x02 + 4-byte key; the service UUID varies), not reference app protocol

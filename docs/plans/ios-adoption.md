@@ -1,7 +1,7 @@
 ---
-description: Plan (drafted 2026-05-25) for the existing client application iOS app to adopt ptpsim as its sans-io protocol layer; superseded by the greenfield rewrite (ios-rewrite-service-architecture.md).
+description: Plan (drafted 2026-05-25) for a client application to adopt ptpsim as its sans-io protocol layer; superseded by the current integration.
 status: historical
-read-when: Tracing the pre-rewrite adoption strategy and parity-unit-test methodology; not the current iOS direction.
+read-when: Tracing the pre-rewrite adoption strategy and parity-unit-test methodology.
 ---
 
 # Plan: Adopt ptpsim as client application iOS's PTP Protocol Layer (sans-io FFI)

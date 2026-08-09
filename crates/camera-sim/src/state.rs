@@ -439,6 +439,9 @@ properties:
             Some(&PropValue::Str("client application".into()))
         );
         let descriptor = build_prop_desc(&manifest, &state, 0xd226).unwrap();
-        assert_eq!(descriptor.current, PropValue::Str("client application".into()));
+        assert_eq!(
+            descriptor.current,
+            PropValue::Str("client application".into())
+        );
     }
 }

@@ -6,7 +6,6 @@
 //! NOT run the RED id-number echo (the camera caches the bond + id).
 //!
 
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

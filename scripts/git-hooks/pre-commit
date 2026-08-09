@@ -25,6 +25,8 @@ case "$(git rev-parse --absolute-git-dir)" in
     ;;
 esac
 
+./scripts/lint-public.sh || exit 1
+
 # Docs discipline: staged Markdown runs the docs lint (frontmatter, index,
 # links). Lints the working tree, mirroring CI.
 if git diff --cached --name-only | grep -q '\.md$'; then

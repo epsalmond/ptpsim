@@ -11,10 +11,9 @@ purpose** — the seam is identical across languages; only binding generation + 
 packaging differ. iOS/macOS get Swift, Android gets Kotlin, from the *same* crate and
 the *same* command.
 
-Full surface + design rationale: `docs/plans/ffi-surface.md`. Manifest/engine model:
-`docs/plans/camera-config.md`. Greenfield iOS rewrite consuming the new pull-model
-surface: `docs/plans/ios-rewrite-p0-p1-ble-mvp.md` (historical) + the handoff
-at `docs/handoff-ios-ble-mvp.md`. Manifest contract: `docs/MANIFEST_SCHEMA.md`.
+Full surface and design rationale: `docs/plans/ffi-surface.md`. The manifest
+engine model is in `docs/plans/camera-config.md`. The manifest contract is in
+`docs/MANIFEST_SCHEMA.md`.
 
 Two seams ship from this crate:
 
@@ -384,7 +383,6 @@ constructor + a few new methods. The app pushes observations to the FFI and gets
 decisions back — **no UUIDs, byte literals, or model names in app source.**
 
 Authoritative spec: `docs/MANIFEST_SCHEMA.md` (the contract tiebreaker).
-Handoff for the iOS planning agent: `docs/handoff-ios-ble-mvp.md` (historical).
 
 ### 9.1 Load (manufacturer index + every model body it references)
 

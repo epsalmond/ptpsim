@@ -40,10 +40,6 @@ const OVERRIDES: &[(&str, &str)] = &[
         "u32 literal/auto ISO despite degenerate u16 stub descriptor (client application UINT32 parser, v6 ISO writes)",
     ),
     (
-        "0xd02b",
-        "u32 movie live-view ISO despite degenerate u16 stub descriptor; shares encoding shape with 0xd02a but not still-mode legality",
-    ),
-    (
         "0xd240",
         "u32 0x80000000|denom*1000 shutter despite degenerate u16 stub descriptor (client application UINT32 parser, live 0xD212)",
     ),

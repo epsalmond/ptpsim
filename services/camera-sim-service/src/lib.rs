@@ -28,7 +28,7 @@ use camera_sim::{
     StreamCompletion, WirePlan,
 };
 use protocol_primitives::{
-    fuji_framing, parse_legacy_app_init, parse_pcss_discovery, parse_pcss_init, parse_app_init,
+    fuji_framing, parse_app_init, parse_legacy_app_init, parse_pcss_discovery, parse_pcss_init,
     pcss_callback_ack_message, pcss_init_ack_message, pcss_notify_message,
 };
 use ptp_core::codes::{op, resp};
@@ -1612,9 +1612,9 @@ async fn handle_command_conn_inner(
     let ack_bytes = if is_pcss {
         pcss_init_ack_message(0, [0; 16], &camera_name).map_err(to_io)?
     } else if is_legacy_app {
-        let responder_guid = context.expected_responder_guid.ok_or_else(|| {
-            invalid_config("legacyApp82 init requires a manifest responder GUID")
-        })?;
+        let responder_guid = context
+            .expected_responder_guid
+            .ok_or_else(|| invalid_config("legacyApp82 init requires a manifest responder GUID"))?;
         pcss_init_ack_message(1, responder_guid, &camera_name).map_err(to_io)?
     } else {
         let ack = PtpIpPacket::InitCommandAck(InitCommandAck {
