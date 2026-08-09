@@ -478,6 +478,7 @@ struct CommandContext {
 #[derive(Clone)]
 struct CommandResources {
     engine: Arc<Mutex<Engine>>,
+    session_owner: Arc<Mutex<Option<u64>>>,
     frames: Arc<Mutex<LoopingFrameSource>>,
     event_tx: broadcast::Sender<u16>,
     state_dirty: Arc<Notify>,
@@ -934,6 +935,7 @@ impl Server {
         // capture, so the subscriber is live when the completion fires.
         let (event_tx, _) = broadcast::channel::<u16>(16);
         let standard_connections = Arc::new(StandardConnections::default());
+        let session_owner = Arc::new(Mutex::new(None));
         let declared_aux = [
             (SocketRole::Event, event.as_ref()),
             (SocketRole::LiveView, liveview.as_ref()),
@@ -974,6 +976,7 @@ impl Server {
         let command_loop = {
             let resources = CommandResources {
                 engine: engine.clone(),
+                session_owner: session_owner.clone(),
                 frames: frames.clone(),
                 event_tx: event_tx.clone(),
                 state_dirty: state_dirty.clone(),
@@ -1289,6 +1292,15 @@ fn response_outcome(code: u16) -> TransactionOutcome {
     }
 }
 
+fn reply_is_ok(reply: &Reply) -> bool {
+    match reply {
+        Reply::Response(response)
+        | Reply::Data { response, .. }
+        | Reply::DataStream { response, .. } => response.code == resp::OK,
+        Reply::NoResponse | Reply::Close => false,
+    }
+}
+
 /// Persist the physical connection allocation before handing its socket to an
 /// asynchronous task. Using the lifecycle record's ordinal makes the identity
 /// unique across concurrent accepts and service restarts, including accepted
@@ -1424,13 +1436,16 @@ async fn handle_command_conn(
     session_sequence: u64,
 ) -> std::io::Result<()> {
     let engine = resources.engine.clone();
+    let session_owner = resources.session_owner.clone();
     let result = handle_command_conn_inner(stream, resources, first_frame, session_sequence).await;
-    // A real camera binds the session to its transport: a command socket that
-    // ends without CloseSession (killed client, dropped Wi-Fi, the modeled
-    // live-view transport-close) must not leave the shared session wedged
-    // open, or every later OpenSession answers SessionAlreadyOpen (#455
-    // review). Idempotent when the client closed properly.
-    engine.lock().await.transport_lost();
+    // Session teardown belongs to the command connection that opened it. A
+    // completed older task must not clear a session opened by a newer socket.
+    let mut engine = engine.lock().await;
+    let mut owner = session_owner.lock().await;
+    if *owner == Some(session_sequence) {
+        engine.transport_lost();
+        *owner = None;
+    }
     result
 }
 
@@ -1442,6 +1457,7 @@ async fn handle_command_conn_inner(
 ) -> std::io::Result<()> {
     let CommandResources {
         engine,
+        session_owner,
         frames,
         event_tx,
         state_dirty,
@@ -1735,6 +1751,14 @@ async fn handle_command_conn_inner(
             let mut e = engine.lock().await;
             let is_poll_live_view = context.poll_live_view_op == Some(req.code);
             let reply = e.on_operation(&req, data_in.as_deref());
+            if reply_is_ok(&reply) {
+                let mut owner = session_owner.lock().await;
+                match req.code {
+                    op::OPEN_SESSION => *owner = Some(session_sequence),
+                    op::CLOSE_SESSION => *owner = None,
+                    _ => {}
+                }
+            }
             let applied_fault = e.take_applied_fault();
             let observation_context = ExecutionContext {
                 connection: context.connection.clone(),
