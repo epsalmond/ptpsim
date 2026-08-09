@@ -707,6 +707,16 @@ fn platform_filters_supported_connections() {
     let s = store();
     let mac = s.connections(Platform::Macos);
     let ios = s.connections(Platform::Ios);
+    let android = s.connections(Platform::Android);
+    let linux = s.connections(Platform::Linux);
+    assert!(ids(&mac).contains(&"usb"));
+    assert!(ids(&mac).contains(&"usb-passthrough"));
+    assert!(!ids(&ios).contains(&"usb"));
+    assert!(ids(&ios).contains(&"usb-passthrough"));
+    assert!(ids(&android).contains(&"usb"));
+    assert!(!ids(&android).contains(&"usb-passthrough"));
+    assert!(ids(&linux).contains(&"usb"));
+    assert!(!ids(&linux).contains(&"usb-passthrough"));
     assert!(ids(&mac).contains(&"app"));
     assert!(ids(&ios).contains(&"app"));
     assert!(ids(&mac).contains(&"wireless-tether"));

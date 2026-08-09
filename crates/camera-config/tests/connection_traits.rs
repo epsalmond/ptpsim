@@ -208,3 +208,80 @@ fn non_sequence_platforms_fails_load() {
         "names the connection, got: {error}",
     );
 }
+
+#[test]
+fn usb_discovery_is_typed_and_pid_is_optional() {
+    let manifest = CameraManifest::from_yaml(&manifest(
+        r#"  usbPassthrough:
+    kind: usb-passthrough
+    platforms: [ios, macos]
+    discovery:
+      mechanism: usb
+      announces: attachment
+      platforms: [ios, macos]
+      vid: 0x04cb"#,
+    ))
+    .expect("vendor-level USB discovery loads");
+    let discovery = manifest.connections["usbPassthrough"]
+        .discovery
+        .as_ref()
+        .expect("typed discovery");
+    assert_eq!(discovery.mechanism, "usb");
+    assert_eq!(discovery.vid, Some(0x04cb));
+    assert_eq!(discovery.pid, None);
+    assert_eq!(discovery.platforms, ["ios", "macos"]);
+}
+
+#[test]
+fn usb_discovery_requires_vendor_id() {
+    let error = CameraManifest::from_yaml(&manifest(
+        "  usb:\n    kind: usb\n    discovery: { mechanism: usb, platforms: [linux] }",
+    ))
+    .expect_err("USB discovery without a vendor ID fails load");
+    assert!(
+        error.to_string().contains("connections.usb.discovery.vid"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn usb_discovery_requires_an_automatic_recognition_platform() {
+    let error = CameraManifest::from_yaml(&manifest(
+        "  usb:\n    kind: usb\n    discovery: { mechanism: usb, vid: 0x04cb }",
+    ))
+    .expect_err("USB discovery without a platform fails load");
+    assert!(
+        error
+            .to_string()
+            .contains("connections.usb.discovery.platforms"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn discovery_mechanism_rejects_noncanonical_whitespace() {
+    let error = CameraManifest::from_yaml(&manifest(
+        "  usb:\n    kind: usb\n    discovery: { mechanism: ' usb ', platforms: [linux], vid: 0x04cb }",
+    ))
+    .expect_err("whitespace cannot bypass USB discovery validation");
+    assert!(
+        error
+            .to_string()
+            .contains("connections.usb.discovery.mechanism must be a lowercase kebab-case token"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn discovery_platforms_must_be_available_on_the_connection() {
+    let error = CameraManifest::from_yaml(&manifest(
+        r#"  usb:
+    kind: usb
+    platforms: [android, linux]
+    discovery: { mechanism: usb, platforms: [macos], vid: 0x04cb }"#,
+    ))
+    .expect_err("automatic recognition cannot name an unavailable platform");
+    let message = error.to_string();
+    assert!(message.contains("connections.usb.discovery.platforms"));
+    assert!(message.contains("macos"));
+}

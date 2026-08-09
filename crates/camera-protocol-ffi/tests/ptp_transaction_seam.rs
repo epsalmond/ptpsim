@@ -17,6 +17,8 @@ use camera_protocol_ffi::{
 use camera_sim::usb::{UsbEvent, UsbResponder, UsbTxnReply};
 use futures::executor::block_on;
 
+mod common;
+
 fn store(delivery: &str, steps: &str) -> Arc<ConfigStore> {
     ConfigStore::from_bundle(
         format!(
@@ -213,6 +215,45 @@ fn daemon_session_runs_typed_transactions_end_to_end() {
                 timeout_ms: 10_000,
             },
         ]
+    );
+}
+
+#[test]
+fn real_pass_through_device_info_action_uses_the_transaction_seam() {
+    let store = common::real_fuji_store();
+    let request = ActionInvocationRequest {
+        catalog_revision: store.action_catalog().revision,
+        action_id: "readDeviceInfo".into(),
+        connection: "usb-passthrough".into(),
+        mode: String::new(),
+        role: ActionRole::Initiator,
+        parameters: Vec::new(),
+    };
+    let responder = UsbResponder::new().reply_transaction(
+        0x1001,
+        &[],
+        UsbTxnReply::ok(Some(vec![0x01, 0x02, 0x03])),
+    );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+
+    let outcome = block_on(run_initiator_action_txn(
+        store,
+        request,
+        transport.clone(),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+    ))
+    .expect("the manifest readDeviceInfo action runs on the daemon session");
+
+    assert_eq!(outcome.steps_run, 1);
+    assert_eq!(
+        transport.log(),
+        vec![UsbEvent::Transaction {
+            opcode: 0x1001,
+            params: Vec::new(),
+            data_out: None,
+            timeout_ms: 10_000,
+        }]
     );
 }
 

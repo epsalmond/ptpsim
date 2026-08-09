@@ -49,26 +49,26 @@ pub use model::{
     CameraInitiatedHandoff, CameraInitiatedMetadata, CameraInitiatedMetadataPhase,
     CameraInitiatedMonitorRecovery, CameraInitiatedReceive, CameraInitiatedTransfer,
     CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, ComputedValue, Connection,
-    ConnectionTransition, Control, ControlOwner, ControlReadSource, ControlRole,
-    ControlSurfaceEntry, Descriptor, DescriptorValue, EventDelivery, EventDeliveryContract,
-    GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape, LiveViewDelivery,
-    LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat,
-    MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution, ObjectTransferCompletionPolicy,
-    ObjectTransferCompletionTiming, ObjectTransferContract, ObjectTransferFormatSupport,
-    ObjectTransferResumePolicy, ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect,
-    Operation, OperationHandler, OperationKind, Payload, PayloadForm, PcssDiscoveryTarget,
-    PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyAccess, PropertyKind,
-    PropertySemanticAssertions, PropertyTransitionTerminal, PropertyValueDecoder,
-    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
-    ProvenancedName, ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout,
-    RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
-    ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
-    SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SessionContract,
-    SessionOwnership, SetPropValue, ShutterRecipe, SocketAvailability, SocketBinding,
-    SocketBindingDescriptor, SocketBindings, SocketRole, Step, StepParam, StepRetry,
-    StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
-    TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
-    WorkflowPhase,
+    ConnectionDiscovery, ConnectionTransition, Control, ControlOwner, ControlReadSource,
+    ControlRole, ControlSurfaceEntry, Descriptor, DescriptorValue, EventDelivery,
+    EventDeliveryContract, GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape,
+    LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media,
+    MediaFormat, MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution,
+    ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
+    ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
+    ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationHandler, OperationKind, Payload,
+    PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property,
+    PropertyAccess, PropertyKind, PropertySemanticAssertions, PropertyTransitionTerminal,
+    PropertyValueDecoder, PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow,
+    PropertyValueRow, ProvenancedName, ProvenancedPropertyValueProfile,
+    ProvenancedPropertyValueRow, RecordLayout, RecordMember, RecordMemberDetail, RecordMemberRef,
+    RecordValueEncoding, RecordValueLiteral, ReestablishConnection, ResponderMutation,
+    RetryFailureClass, RuntimeSetPropValue, SemanticAssertionLedger, SentinelFrame, SentinelMask,
+    SequenceGate, SessionContract, SessionOwnership, SetPropValue, ShutterRecipe,
+    SocketAvailability, SocketBinding, SocketBindingDescriptor, SocketBindings, SocketRole, Step,
+    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
+    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
+    WireFraming, Workflow, WorkflowPhase,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -388,6 +388,7 @@ impl CameraManifest {
             require_valid_object_transfer(self, connection, connection_id)?;
             require_valid_control_surfaces(self, connection, connection_id)?;
             require_valid_platforms(connection, connection_id)?;
+            require_valid_discovery(connection, connection_id)?;
             require_valid_event_delivery(connection, connection_id)?;
             for descriptor in &connection.activities {
                 let key = (descriptor.id.clone(), descriptor.version);
@@ -907,6 +908,78 @@ fn require_valid_platforms(
         }
     }
     Ok(())
+}
+
+/// Discovery-platform tokens use the same closed vocabulary as connection
+/// availability. USB attachments require a nonzero vendor ID. Product ID is
+/// optional because some platform observations only establish a vendor-level
+/// candidate; DeviceInfo confirmation closes that identity before persistence.
+fn require_valid_discovery(
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(discovery) = connection.discovery.as_ref() else {
+        return Ok(());
+    };
+    let path = format!("connections.{connection_id}.discovery");
+    if !is_canonical_discovery_mechanism(&discovery.mechanism) {
+        return Err(ManifestError::Contract(format!(
+            "{path}.mechanism must be a lowercase kebab-case token"
+        )));
+    }
+    for token in &discovery.platforms {
+        if !PLATFORMS.contains(&token.as_str()) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.platforms names unknown platform '{token}' (expected one of: {})",
+                PLATFORMS.join(", ")
+            )));
+        }
+    }
+    if let Some(available) = connection
+        .extra
+        .get("platforms")
+        .and_then(|v| v.as_sequence())
+    {
+        for token in &discovery.platforms {
+            if !available.iter().any(|item| item.as_str() == Some(token)) {
+                return Err(ManifestError::Contract(format!(
+                    "{path}.platforms includes '{token}', which connections.{connection_id}.platforms excludes"
+                )));
+            }
+        }
+    }
+    if discovery.mechanism == "usb" {
+        if discovery.platforms.is_empty() {
+            return Err(ManifestError::Contract(format!(
+                "{path}.platforms must name at least one automatic-recognition platform for USB"
+            )));
+        }
+        if discovery.vid.is_none_or(|vid| vid == 0) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.vid must be a nonzero USB vendor ID"
+            )));
+        }
+        if discovery.pid == Some(0) {
+            return Err(ManifestError::Contract(format!(
+                "{path}.pid must be nonzero when declared"
+            )));
+        }
+    } else if discovery.vid.is_some() || discovery.pid.is_some() {
+        return Err(ManifestError::Contract(format!(
+            "{path}.vid and pid are valid only when mechanism is usb"
+        )));
+    }
+    Ok(())
+}
+
+fn is_canonical_discovery_mechanism(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('-').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
 }
 
 /// `events.delivery` (§11.29) constrains the `EntryStep` `awaitUntil` grammar

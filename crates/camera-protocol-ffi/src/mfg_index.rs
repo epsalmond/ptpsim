@@ -68,6 +68,13 @@ pub enum ScanObservation {
         command_port: u16,
         service: String,
     },
+    /// A USB device attachment surfaced by the host. The engine matches raw
+    /// descriptor facts and platform against connection discovery data.
+    UsbAttachment {
+        platform: crate::Platform,
+        vendor_id: u16,
+        product_id: u16,
+    },
 }
 
 /// The manufacturer-specific AD record split per §11.14: `payload` excludes
@@ -1392,6 +1399,98 @@ pub fn recognize_pcss(
             runtime_scope: scope(),
             hint: Some("Multiple models match this PCSS callback".into()),
         },
+    }
+}
+
+/// Match a host USB attachment against per-connection manifest discovery data.
+/// Connection availability and automatic-recognition platforms are separate:
+/// a raw connection may remain queryable on a host whose attachment callback
+/// is owned by a platform daemon and therefore selects pass-through.
+pub fn recognize_usb_attachment(
+    store: &cc::ConfigStore,
+    platform: &str,
+    vendor_id: u16,
+    product_id: u16,
+) -> Recognition {
+    let Some(index) = store.index.as_ref() else {
+        return Recognition::NoMatch;
+    };
+    let mut matches = Vec::new();
+    for model in &index.models {
+        let Some(model_store) = store.model_store(&model.id) else {
+            continue;
+        };
+        let available: std::collections::BTreeSet<&str> =
+            model_store.connections_available().into_iter().collect();
+        for (connection_id, connection) in &model_store.manifest.connections {
+            if !available.contains(connection_id.as_str())
+                || !connection_platform_matches(connection, platform)
+            {
+                continue;
+            }
+            let Some(discovery) = connection.discovery.as_ref() else {
+                continue;
+            };
+            if discovery.mechanism != "usb"
+                || !discovery.auto_discoverable
+                || (!discovery.platforms.is_empty()
+                    && !discovery.platforms.iter().any(|token| token == platform))
+                || discovery.vid != Some(vendor_id)
+                || discovery.pid.is_some_and(|pid| pid != product_id)
+            {
+                continue;
+            }
+            matches.push((model, connection_id.clone(), discovery.pid.is_some()));
+        }
+    }
+
+    let scope = || {
+        vec![
+            KeyValue {
+                key: "usbVendorId".into(),
+                value: vendor_id.to_string(),
+            },
+            KeyValue {
+                key: "usbProductId".into(),
+                value: product_id.to_string(),
+            },
+        ]
+    };
+    match matches.as_slice() {
+        [] => Recognition::NoMatch,
+        [(model, connection, product_specific)] => Recognition::Candidate {
+            model: model.id.clone(),
+            connection: connection.clone(),
+            confidence: if *product_specific {
+                Confidence::High
+            } else {
+                Confidence::Medium
+            },
+            runtime_scope: scope(),
+            runtime_scope_encodings: Vec::new(),
+        },
+        many => Recognition::Disambiguate {
+            family: index.manufacturer.to_lowercase(),
+            candidates: many
+                .iter()
+                .map(|(model, connection, _)| ModelMatch {
+                    model: model.id.clone(),
+                    display_name: model.display_name.clone(),
+                    connection_hint: Some(connection.clone()),
+                })
+                .collect(),
+            runtime_scope: scope(),
+            hint: Some("Multiple models match this USB attachment".into()),
+        },
+    }
+}
+
+fn connection_platform_matches(connection: &cc::Connection, platform: &str) -> bool {
+    match connection.extra.get("platforms") {
+        Some(serde_yaml::Value::Sequence(platforms)) => platforms
+            .iter()
+            .any(|candidate| candidate.as_str() == Some(platform)),
+        _ => true,
     }
 }
 
