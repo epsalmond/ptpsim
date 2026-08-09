@@ -19,6 +19,13 @@ fn consolidated() -> CameraManifest {
     CameraManifest::from_yaml(&yaml).expect("consolidated manifest loads")
 }
 
+fn authored() -> CameraManifest {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml");
+    let yaml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    CameraManifest::from_yaml(&yaml).expect("authored manifest loads")
+}
+
 #[test]
 fn aperture_labels_resolve_from_the_consolidated_manifest() {
     let m = consolidated();
@@ -62,6 +69,23 @@ fn iso_auto_ceiling_sentinels_label_as_auto_with_the_ceiling() {
 }
 
 #[test]
+fn algorithmic_iso_decode_covers_unlisted_extended_and_auto_values() {
+    let m = authored();
+    for (raw, expected) in [
+        (0x4000_0028, "EXT 40"),
+        (0x4000_0140, "EXT 320"),
+        (0x8000_00c8, "AUTO 200"),
+        (0x8000_3200, "AUTO 12800"),
+    ] {
+        assert_eq!(
+            m.decode_property_label(0xd02a, raw).as_deref(),
+            Some(expected),
+            "raw 0x{raw:08x}"
+        );
+    }
+}
+
+#[test]
 fn still_iso_exposes_value_rows_and_generic_sentinel_metadata() {
     let m = consolidated();
     let p = m.property(0xd02a).expect("still ISO property exists");
@@ -91,6 +115,11 @@ fn still_iso_exposes_value_rows_and_generic_sentinel_metadata() {
         .any(|mask| mask.mask == 0x4000_0000
             && mask.meaning.as_deref() == Some("extendedSensitivity")));
     assert_eq!(m.value_label(0xd02a, 0x4000_6400), Some("25600"));
+    assert_eq!(
+        m.decode_property_label(0xd02a, 0x4000_6400).as_deref(),
+        Some("25600"),
+        "an exact authored row wins over the EXT numeric decoder"
+    );
     let profile = m
         .value_profile_for(0xd02a, "app", "shooting/stills")
         .expect("still ISO profile");
@@ -130,6 +159,25 @@ fn shutter_labels_resolve_from_the_high_bit_u32_form() {
     // 0xD240 is u32: 0x80000000 | (denom × 1000). 1/60 = 0x8000_EA60.
     assert_eq!(m.value_label(0xd240, 0x8000_EA60), Some("1/60"));
     assert_eq!(m.value_label(0xd240, 0x8000_9C40), Some("1/40"));
+}
+
+#[test]
+fn algorithmic_shutter_decode_covers_fractional_and_slow_values() {
+    let m = authored();
+    for (raw, expected) in [
+        (0x8000_0000 | 4_000, "1/4"),
+        (0x8000_0000 | 250_000, "1/250"),
+        (0x8000_0000 | 8_000_000, "1/8000"),
+        (1_000, "1\""),
+        (2_500, "2.5\""),
+        (60_000, "60\""),
+    ] {
+        assert_eq!(
+            m.decode_property_label(0xd240, raw).as_deref(),
+            Some(expected),
+            "raw 0x{raw:08x}"
+        );
+    }
 }
 
 #[test]

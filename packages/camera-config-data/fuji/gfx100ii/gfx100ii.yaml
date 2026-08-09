@@ -995,7 +995,8 @@ properties:
               valueRows: [{ label: "6400", raw: 6400 }, { label: "12800", raw: 12800 },
                           { label: "25600", raw: 1073767424 }, { label: "102400", raw: 1073844224 }],
               valueEncoding: { sentinel: { mask: 2147483648, meaning: autoCeiling, labelPrefix: AUTO },
-                               masks: [{ mask: 1073741824, meaning: extendedSensitivity, labelPrefix: EXT }] },
+                               masks: [{ mask: 1073741824, meaning: extendedSensitivity, labelPrefix: EXT }],
+                               decoder: { kind: integer, min: 40, max: 102400 } },
               evidence: [docLiveControls, docIsoModel20260707] }
   # Shutter readback is u32, NOT the u16 stub the degenerate descriptor reports.
   # Encoding: 0x80000000|(denom*1000) for fractions (1/60 = 0x8000EA60), or
@@ -1003,7 +1004,9 @@ properties:
   # parser + the [live] 0xD212 readback. Set via the 0x902c step (not a value
   # write). Width override documented in the #53 property-width-audit OVERRIDES.
   "0xd240": { name: shutterSpeedEx, ptpName: ShutterSpeedEx, type: u32, access: readWrite, initialValue: 0x8001e848,
-              controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } }, evidence: [docLiveControls] }
+              controls: { app: { setMethod: vendorStep, operation: "0x902c", readback: "0xd212" } },
+              valueEncoding: { decoder: { kind: shutterSpeed, fractionMask: 2147483648, scale: 1000 } },
+              evidence: [docLiveControls] }
   # PCSS ISO is the standard PTP ExposureIndex, NOT the reference-app 0xD02A path. Encoding is
   # SIGNED: positive = literal ISO; `-1`/`-2`/`-3` map to the camera AUTO1/AUTO2/AUTO3 slots and
   # `-10` is generic AUTO (SDK header definitions; the Hyper-Utility wire trace shows -1/-2 live).

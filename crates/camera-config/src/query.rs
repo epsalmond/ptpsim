@@ -3,7 +3,8 @@
 
 use crate::model::{
     parse_hex_code, Action, ActionVerb, CameraManifest, Control, Operation, OperationKind,
-    Property, PropertyValueProfile, PropertyValueProfileRow, SentinelMask, Workflow,
+    Property, PropertyValueDecoder, PropertyValueProfile, PropertyValueProfileRow, SentinelMask,
+    Workflow,
 };
 use crate::predicate::PropView;
 use crate::version::VersionScheme;
@@ -93,8 +94,8 @@ impl CameraManifest {
     }
 
     /// Decode a raw property value to a presentation label. Exact manifest rows
-    /// win; if absent, a generic sentinel/mask descriptor can compose a label
-    /// from the low-bit base value without any manufacturer-specific formula.
+    /// win. Sentinel metadata and the optional numeric decoder handle values
+    /// that do not have authored rows.
     pub fn decode_property_label(&self, property_code: u16, raw: i64) -> Option<String> {
         let p = self.property(property_code)?;
         if let Some(label) = p.static_value_label(raw) {
@@ -106,12 +107,16 @@ impl CameraManifest {
                 continue;
             }
             let base_raw = raw & !sentinel.mask;
-            let Some(base_label) = p.static_value_label(base_raw) else {
+            let base_label = p
+                .static_value_label(base_raw)
+                .map(str::to_string)
+                .or_else(|| p.decode_algorithmically(base_raw));
+            let Some(base_label) = base_label else {
                 continue;
             };
             return Some(format!("{} {base_label}", sentinel.label_prefix));
         }
-        None
+        p.decode_algorithmically(raw)
     }
 
     /// Encode a presentation label to its raw property value. Exact manifest
@@ -230,6 +235,36 @@ impl Property {
             .or_else(|| self.labels.get(&value.to_string()).map(|s| s.as_str()))
     }
 
+    fn decode_algorithmically(&self, raw: i64) -> Option<String> {
+        match self.value_encoding.as_ref()?.decoder.as_ref()? {
+            PropertyValueDecoder::Integer { min, max } => {
+                if min.is_some_and(|min| raw < min) || max.is_some_and(|max| raw > max) {
+                    return None;
+                }
+                Some(raw.to_string())
+            }
+            PropertyValueDecoder::ShutterSpeed {
+                fraction_mask,
+                scale,
+            } => {
+                if *fraction_mask <= 0 || *scale <= 0 || raw < 0 {
+                    return None;
+                }
+                if raw & fraction_mask == *fraction_mask {
+                    let scaled_denominator = raw & !fraction_mask;
+                    if scaled_denominator <= 0 || scaled_denominator % scale != 0 {
+                        return None;
+                    }
+                    Some(format!("1/{}", scaled_denominator / scale))
+                } else if raw & fraction_mask == 0 {
+                    format_scaled_decimal(raw, *scale).map(|seconds| format!("{seconds}\""))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     fn raw_for_label(&self, label: &str) -> Option<i64> {
         self.value_rows
             .iter()
@@ -242,6 +277,23 @@ impl Property {
                     .and_then(|(raw, _)| raw.parse::<i64>().ok())
             })
     }
+}
+
+fn format_scaled_decimal(raw: i64, scale: i64) -> Option<String> {
+    let decimal_places = scale.checked_ilog10()? as usize;
+    if 10_i64.checked_pow(decimal_places as u32)? != scale {
+        return None;
+    }
+    let whole = raw / scale;
+    let remainder = raw % scale;
+    if remainder == 0 {
+        return Some(whole.to_string());
+    }
+    let mut fraction = format!("{remainder:0decimal_places$}");
+    while fraction.ends_with('0') {
+        fraction.pop();
+    }
+    Some(format!("{whole}.{fraction}"))
 }
 
 /// Orthogonal-axis queries (decisions #4–#8): gating intersects connection × mode

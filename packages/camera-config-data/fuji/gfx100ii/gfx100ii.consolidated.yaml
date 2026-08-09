@@ -5118,6 +5118,10 @@ properties:
       - mask: 1073741824
         meaning: extendedSensitivity
         labelPrefix: EXT
+      decoder:
+        kind: integer
+        min: 40
+        max: 102400
     evidence:
     - docIsoModel20260707
     - docLiveControls
@@ -10261,6 +10265,11 @@ properties:
       '2152483648': 1/5000
       '2153883648': 1/6400
       '2155483648': 1/8000
+    valueEncoding:
+      decoder:
+        kind: shutterSpeed
+        fractionMask: 2147483648
+        scale: 1000
     evidence:
     - docLiveControls
     observedScopes:
