@@ -1,17 +1,27 @@
 # ptpsim
 
-A scriptable, open-source **camera-protocol simulator** (PTP/IP, responder role).
-ptpsim runs a believable camera from manifest **data** — one generic engine, no
-per-manufacturer code — and records real-camera and simulator traffic through
-one fail-closed `camera-observation/v1` evidence contract.
+`ptpsim` is a scriptable, open-source **camera-protocol simulator** and behavior
+description engine. It loads camera behavior from manifest data. The engine
+tries very hard to have no per-manufacturer code.
 
-See [`DESIGN.md`](DESIGN.md) for the full design.
+In theory this allows any camera-control app to be written to use any camera
+ptpsim supports. Manifest (camera config) updates can be loaded at runtime. Full
+e2e scripting is possible for testing and development.
 
-The deployable `camera-sim-service` container contract is documented in
-[`docs/CONTAINER.md`](docs/CONTAINER.md).
+It is the camera-behavior driver for https://fujikage.io. Anyone can add new
+camera support, fix camera behavior bugs, etc.
 
-The headless real-camera workflow is documented in
-[`docs/REAL_CAMERA_PTPIP.md`](docs/REAL_CAMERA_PTPIP.md).
+[`DESIGN.md`](DESIGN.md) full architecture.
+
+[`docs/CONTAINER.md`](docs/CONTAINER.md) `camera-sim-service` hosts the ptpsim
+simulator. This lets someone connect real camera tethering apps to a
+real-seeming camera for test and review purposes. Or whatever. One could
+theoretically feed the sim mjpeg frames and make this a more realistic network
+camera.
+
+[`docs/REAL_CAMERA_PTPIP.md`](docs/REAL_CAMERA_PTPIP.md) Opposite of the camera
+simulator. Drive a real camera using the manifest. This could let you test new
+cameras, validate behavior, or reproduce failures.
 
 ## Layout
 
@@ -19,7 +29,7 @@ The headless real-camera workflow is documented in
 crates/
   ptp-core              PTP/IP packet codecs, containers, object/property encoders
   camera-config       manifest schema, validation, queries, bundle->proposal generator
-  camera-media-store    filesystem card model, object handles, thumbnails
+  camera-media-store    camera SDcard model, object handles, thumbnails
   camera-sim            generic responder engine + scripting runtime
   protocol-primitives   concern-organized framing/quirk/establishment primitives
   camera-protocol-ffi   optional Swift/Ruby FFI boundary
@@ -28,13 +38,13 @@ services/
 tools/
   camera-initiator      headless real-camera PTP/IP probe over the shipping engine
   camera-simctl         CLI over the control API
-  camera-sim-tui        colorful terminal operator console over the control API
+  camera-sim-tui        TUI for local app testing
 packages/
   camera-config-data         manifest schema, golden packets, captured camera manifests
   fixtures              small redistributable media fixtures
 ```
 
-## Build & test
+## Build and test
 
 ```sh
 cargo test            # Rust workspace
@@ -46,25 +56,18 @@ cargo test            # Rust workspace
 scripts/run-tui
 ```
 
-This attaches to an existing local `camera-sim-service`, or starts `./run` with
-the default GFX100 II fixture service before launching the operator console.
-
-## CI
-
-Continuous integration runs via the workflows under [`.woodpecker/`](.woodpecker/).
-The Linux and OCI workflows request Docker `linux/amd64` lanes by repository
-and trust capabilities rather than a named host. Deployments must supply the
-trusted clone image. An optional workstation can reuse an isolated durable
-checkout for default-branch pushes on the unprivileged Linux lane; other
-compatible agents may use ephemeral workspaces.
-
-Linux steps keep build caches inside their disposable containers rather than
-requesting host volumes. This lets the public workflow use an unprivileged
-runner while Docker image layers and the durable Git object database provide
-cross-run reuse. The privileged multi-architecture OCI workflow requires the
-deployment's `host-root` lane; Apple XCFramework promotion remains a separate
-Darwin workflow.
+This runs or attaches to an already running `camera-sim-service` on localhost.
+You can see what the state of the camera is. Really handy for app development.
 
 ## License
 
 Dual-licensed under MIT OR Apache-2.0.
+
+## Contributing
+
+To change existing manifest config, I need to see data, namely wire evidence. A
+TSV of a pcap is fine. Part of the reason this project exists is because even
+manufacturer SDKs don't get this exactly right.
+
+Any code submissions need to have test coverage. All contributions must be under
+the same license.

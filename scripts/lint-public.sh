@@ -35,8 +35,10 @@ proprietary_c='PTP|XGFX'
 proprietary_d='API|CCameraEvent::Thread'
 proprietary_e='Proc|X RAW '
 proprietary_f='Studio'
+private_repo_a='github\.com(/repos)?[:/]epsalmond/fuji'
+private_repo_b='kage([/.#?]|$)'
 
-deny_pattern="$op_a$op_b|$mgmt_a$mgmt_b|$rev_a$rev_b|$dec_a$dec_b|$dis_a$dis_b|$static_a$static_b$static_c|$rce_a$rce_b|$current_a$current_b|$legacy_a$legacy_b|$operator_a$operator_b|$home_a$home_b$home_c$home_d|$private_a$private_b$private_c|$proprietary_a$proprietary_b$proprietary_c$proprietary_d$proprietary_e$proprietary_f"
+deny_pattern="$op_a$op_b|$mgmt_a$mgmt_b|$rev_a$rev_b|$dec_a$dec_b|$dis_a$dis_b|$static_a$static_b$static_c|$rce_a$rce_b|$current_a$current_b|$legacy_a$legacy_b|$operator_a$operator_b|$home_a$home_b$home_c$home_d|$private_a$private_b$private_c|$proprietary_a$proprietary_b$proprietary_c$proprietary_d$proprietary_e$proprietary_f|$private_repo_a$private_repo_b"
 
 scan_file() {
     file=$1
@@ -73,6 +75,17 @@ self_test() {
 
     printf '%s\n' 'A clean-room implementation uses wire capture evidence.' >"$temporary/allowed.txt"
     scan_file "$temporary/allowed.txt" >/dev/null
+
+    printf '%s\n' 'Fujikage is public at https://fujikage.io.' >"$temporary/public-product.txt"
+    scan_file "$temporary/public-product.txt" >/dev/null
+
+    private_repo_fixture='https://github.com/epsalmond/fuji'
+    private_repo_fixture="${private_repo_fixture}kage/issues/1"
+    printf '%s\n' "$private_repo_fixture" >"$temporary/private-repo.txt"
+    if scan_file "$temporary/private-repo.txt" >/dev/null 2>&1; then
+        echo "lint-public self-test: private repository link passed unexpectedly" >&2
+        exit 1
+    fi
     echo "lint-public self-test: ok"
 }
 
@@ -93,17 +106,6 @@ if git grep -I -n -E -i "$deny_pattern" -- .; then
     failed=1
 fi
 
-product_name='Fuji'"kage"
-product_hits=$(git grep -I -n -i "$product_name" -- . || true)
-if [ -n "$product_hits" ]; then
-    product_allow_a=':[0-9]+:(Requested|Reported) by Fuji'
-    product_allow_b='kage\.$'
-    bad_product_hits=$(printf '%s\n' "$product_hits" | grep -E -v "$product_allow_a$product_allow_b" || true)
-    if [ -n "$bad_product_hits" ]; then
-        printf '%s\n' "$bad_product_hits"
-        failed=1
-    fi
-fi
 
 if [ "$failed" -ne 0 ]; then
     echo "lint-public: prohibited public content found" >&2
