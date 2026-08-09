@@ -922,9 +922,9 @@ fn require_valid_discovery(
         return Ok(());
     };
     let path = format!("connections.{connection_id}.discovery");
-    if discovery.mechanism.trim().is_empty() {
+    if !is_canonical_discovery_mechanism(&discovery.mechanism) {
         return Err(ManifestError::Contract(format!(
-            "{path}.mechanism must not be empty"
+            "{path}.mechanism must be a lowercase kebab-case token"
         )));
     }
     for token in &discovery.platforms {
@@ -949,6 +949,11 @@ fn require_valid_discovery(
         }
     }
     if discovery.mechanism == "usb" {
+        if discovery.platforms.is_empty() {
+            return Err(ManifestError::Contract(format!(
+                "{path}.platforms must name at least one automatic-recognition platform for USB"
+            )));
+        }
         if discovery.vid.is_none_or(|vid| vid == 0) {
             return Err(ManifestError::Contract(format!(
                 "{path}.vid must be a nonzero USB vendor ID"
@@ -965,6 +970,16 @@ fn require_valid_discovery(
         )));
     }
     Ok(())
+}
+
+fn is_canonical_discovery_mechanism(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('-').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
 }
 
 /// `events.delivery` (§11.29) constrains the `EntryStep` `awaitUntil` grammar

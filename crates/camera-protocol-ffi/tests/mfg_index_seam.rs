@@ -143,6 +143,7 @@ fn usb_attachment_recognition_selects_the_manifest_platform_route() {
         let Recognition::Candidate {
             model,
             connection,
+            confidence,
             runtime_scope,
             ..
         } = recognition
@@ -151,6 +152,7 @@ fn usb_attachment_recognition_selects_the_manifest_platform_route() {
         };
         assert_eq!(model, "gfx100ii");
         assert_eq!(connection, expected_connection);
+        assert!(matches!(confidence, Confidence::Medium));
         assert!(runtime_scope
             .iter()
             .any(|entry| entry.key == "usbVendorId" && entry.value == "1227"));
@@ -191,7 +193,10 @@ fn authored_usb_product_id_is_matched_exactly() {
             vendor_id: 0x04cb,
             product_id: 0x3105,
         }),
-        Recognition::Candidate { .. }
+        Recognition::Candidate {
+            confidence: Confidence::High,
+            ..
+        }
     ));
     assert!(matches!(
         store.recognize(ScanObservation::UsbAttachment {

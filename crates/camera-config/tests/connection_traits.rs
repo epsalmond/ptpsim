@@ -245,6 +245,34 @@ fn usb_discovery_requires_vendor_id() {
 }
 
 #[test]
+fn usb_discovery_requires_an_automatic_recognition_platform() {
+    let error = CameraManifest::from_yaml(&manifest(
+        "  usb:\n    kind: usb\n    discovery: { mechanism: usb, vid: 0x04cb }",
+    ))
+    .expect_err("USB discovery without a platform fails load");
+    assert!(
+        error
+            .to_string()
+            .contains("connections.usb.discovery.platforms"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn discovery_mechanism_rejects_noncanonical_whitespace() {
+    let error = CameraManifest::from_yaml(&manifest(
+        "  usb:\n    kind: usb\n    discovery: { mechanism: ' usb ', platforms: [linux], vid: 0x04cb }",
+    ))
+    .expect_err("whitespace cannot bypass USB discovery validation");
+    assert!(
+        error
+            .to_string()
+            .contains("connections.usb.discovery.mechanism must be a lowercase kebab-case token"),
+        "got: {error}",
+    );
+}
+
+#[test]
 fn discovery_platforms_must_be_available_on_the_connection() {
     let error = CameraManifest::from_yaml(&manifest(
         r#"  usb:

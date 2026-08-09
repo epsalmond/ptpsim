@@ -1440,7 +1440,7 @@ pub fn recognize_usb_attachment(
             {
                 continue;
             }
-            matches.push((model, connection_id.clone()));
+            matches.push((model, connection_id.clone(), discovery.pid.is_some()));
         }
     }
 
@@ -1458,10 +1458,14 @@ pub fn recognize_usb_attachment(
     };
     match matches.as_slice() {
         [] => Recognition::NoMatch,
-        [(model, connection)] => Recognition::Candidate {
+        [(model, connection, product_specific)] => Recognition::Candidate {
             model: model.id.clone(),
             connection: connection.clone(),
-            confidence: Confidence::High,
+            confidence: if *product_specific {
+                Confidence::High
+            } else {
+                Confidence::Medium
+            },
             runtime_scope: scope(),
             runtime_scope_encodings: Vec::new(),
         },
@@ -1469,7 +1473,7 @@ pub fn recognize_usb_attachment(
             family: index.manufacturer.to_lowercase(),
             candidates: many
                 .iter()
-                .map(|(model, connection)| ModelMatch {
+                .map(|(model, connection, _)| ModelMatch {
                     model: model.id.clone(),
                     display_name: model.display_name.clone(),
                     connection_hint: Some(connection.clone()),

@@ -16514,7 +16514,7 @@ connections:
       ownership: initiatorOwned
     events:
       delivery: reliable
-    commandFraming: null
+    commandFraming: usb
     eventFraming: null
     commandListenerVolatile: false
     bindings: null
@@ -16525,7 +16525,27 @@ connections:
     controlSurfaces: {}
     modes: []
     entries: []
-    actions: {}
+    actions:
+      readDeviceInfo:
+        mode: ''
+        initiator:
+          params: []
+          steps:
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x1001'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          activities: []
+        triggers: []
+        evidence:
+        - wireUsbDeviceInfo
     enables: []
     platforms:
     - macos

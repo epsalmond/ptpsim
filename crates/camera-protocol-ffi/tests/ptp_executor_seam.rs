@@ -1923,6 +1923,31 @@ fn real_import_action_captures_collection_then_chunks_each_object() {
 }
 
 #[test]
+fn raw_usb_device_info_action_runs_over_usb_framing() {
+    let store = store();
+    let transport = Arc::new(EngineTransport::new(
+        "usb",
+        PtpFraming::Usb,
+        PtpFraming::Usb,
+    ));
+
+    let outcome = block_on(run_initiator_action(
+        store,
+        "usb".into(),
+        ActionVerb::ReadDeviceInfo,
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("raw USB DeviceInfo action executes");
+
+    assert_eq!(outcome.steps_run, 1);
+    assert_eq!(transport.operations(), [0x1001]);
+    assert_eq!(transport.request_count(0x1001, &[]), 1);
+}
+
+#[test]
 fn ordinary_action_sink_receives_completed_outputs_in_wire_order() {
     let store = store();
     let transport = Arc::new(EngineTransport::new(

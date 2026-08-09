@@ -447,6 +447,7 @@ connections:
     kind: usb
     platforms: [macos, android, linux]
     establishment: usb-claim-open
+    commandFraming: usb
     session: { ownership: initiatorOwned }
     events: { delivery: reliable }
     discovery:
@@ -454,6 +455,13 @@ connections:
       announces: attachment
       platforms: [android, linux]
       vid: 0x04cb
+    actions:
+      readDeviceInfo:
+        mode: ""
+        initiator:
+          steps:
+            - { sendOp: "0x1001", params: [] }
+        evidence: [wireUsbDeviceInfo]
 
   # ImageCapture owns the device, framing, session, and transaction IDs. This
   # connection attaches to that session and sends no claim or OpenSession.
