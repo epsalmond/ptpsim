@@ -61,7 +61,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `ConfigStore.from_bundle(body, manufacturer?)` | the loaded store (single-body) |
 | `ConfigStore.from_tiers(body, manufacturer?, fw_overlays)` | as above, with firmware-tier overlays merged onto the body |
 | `ConfigStore.model_store(modelId)` | a direct-query view whose body is the selected model from a manufacturer-index store. Use this after recognition before calling body-scoped APIs; otherwise those APIs intentionally retain the index's primary (first-declared) body. |
-| `connections(platform)` | connections valid on *this* platform + firmware (USB/tether hidden on iOS — data-driven) |
+| `connections(platform)` | connections valid on this platform and firmware. iOS exposes daemon-owned USB pass-through while raw USB stays hidden. |
 | `ConnectionInfo.command_listener_volatile` | whether closing the active PTP/IP transport may remove the command listener, so a consumer must not assume it can immediately redial the same endpoint as generic recovery. A manifest-authored outer connection re-establishment may create a new listener. |
 | `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
 | `connection_transition(fromConnection, targetConnection, targetMode?)` | a mode-qualified connection edge plus fixed establishment bindings. legacy manufacturer app uses this to expose each feature's `launchMode` without app-side vendor literals. When the manifest gates the edge, `ConnectionEstablishmentInfo.requires` carries the predicate; evaluate it with `await_until_satisfied` over props you observed and take the edge only when it holds. `connection_establishment(connection)` returns the same record with `requires` empty — only mode-qualified transitions are gated. |
@@ -403,11 +403,12 @@ YAML at any layer → `IndexParse` / `BodyParse`; unresolved or malformed transp
 identity values → `Contract`. The defaults-free `fromManufacturerIndex` remains
 available for manufacturers whose indexed bodies are entirely self-contained.
 
-### 9.2 The four pull-model calls
+### 9.2 Pull-model calls
 
 | call | gives you |
 |---|---|
-| `recognize(observation)` | `Recognition::Candidate{model, connection, confidence, runtimeScope}` / `Disambiguate{family, candidates, runtimeScope, hint}` / `NoMatch`. `runtimeScope` is `Vec<KeyValue>` carrying the signature's derived facts (`style: "legacy"`, `pairingKeyBytes: "44732a80"`, …). |
+| `recognize(observation)` | `Recognition::Candidate{model, connection, confidence, runtimeScope}` / `Disambiguate{family, candidates, runtimeScope, hint}` / `NoMatch`. `runtimeScope` is `Vec<KeyValue>` carrying facts derived from the observation. |
+| `confirmDeviceInfo(model, deviceInfo)` | Confirms parsed PTP manufacturer and model against the selected manifest body after normalization. Use this before persisting a vendor-level USB candidate. |
 | `reconnectPolicy(model)` | The manifest-authored saved-camera scan window. `None` means the model has no automatic BLE reconnect contract. |
 | `reconnectDecision(model, observation, persistedScope)` | Classifies a fresh advert for one saved camera as `Wake{plan, runtimeScope}`, `Ready{plan, runtimeScope}`, or `NoMatch`. The manifest owns advert-state recognition, identity keys, and plan selection; callers must not infer readiness from a cached peripheral. |
 
@@ -420,6 +421,13 @@ is the bytes AFTER the 2-byte company id: split iOS
 `CBAdvertisementDataManufacturerDataKey` into `(companyId LE, payload)`;
 Android `getManufacturerSpecificData(id)` is already the payload.
 CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
+
+`ScanObservation::UsbAttachment` carries `{ platform, vendorId, productId }`.
+The engine matches the raw IDs against each connection's USB discovery data
+and its automatic-recognition platform list. Product ID matching applies only
+when the manifest declares an evidenced PID. The current GFX100 II row is a
+vendor-level candidate, so run its `readDeviceInfo` action and require
+`confirmDeviceInfo` before saving the model identity.
 | `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, postExitReadiness: [Step], steps: [Step], activities: [ConnectionActivityDescriptor] }`. Activities contain the plan's executor spans followed by the selected connection's host activities (§11.23). A typed host establishment is executable contract: `networkIdentityExact` requires the observed identity to exactly match its runtime-scope key, and `retainedSessionOpen` opens and keeps the real session as reachability proof. Each descriptor's `optional` presentation marker distinguishes a conditionally inapplicable activity from one that is still upcoming; it never controls whether the executor runs that activity. `initialScope` is typically the `runtimeScope` from a `Candidate`. After an orderly feature exit, walk the optional `postExitReadiness` sequence before replaying `steps`; do not infer readiness by negating a launch predicate. |
 | `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | validates the plan handle and returns `NoChange` or `ReplaceTail{steps, activities}` per §11.5/§11.23; replacement activity spans are relative to the returned tail. Invalid handles/indices are errors. Current manifests return `NoChange` because no establishment overlays exist yet. |
 | `connectionEstablishment(connection)` | Single-body connection bring-up, including the connection's host-owned activity descriptors. Descriptive work uses `hostCheckpoint`; executable gates use typed `hostEstablishment` actions (§11.23). |
@@ -572,6 +580,10 @@ their normal consumers, the same contract as `next_event_frame` above),
 `NotAuthorized`, `Failed`). Rust owns the same grammar, retry, tolerance,
 capture, predicate, and aggregate-deadline semantics as the frame-based
 executor; only the transport seam differs.
+
+The daemon-attached GFX100 II connection currently declares only the
+`readDeviceInfo` action. This contract does not establish ImageCapture catalog,
+transfer, or USB live-view behavior.
 
 | call | walks |
 |---|---|

@@ -25,6 +25,7 @@ evidence:
   wireAutoImageTransfer: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
   wireAutoImageTransferQueued: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
   wireBleAutoTransfer: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
+  wireUsbDeviceInfo: { kind: wire-capture, path: "evidence/probe/2026-05-27-ptp-evidence-usb-tether-auto.jsonl", date: "2026-05-27" }
   wireTether: { kind: wire-capture, path: "evidence/PCSS_SHOOT_DOWNLOAD_OBSERVATIONS.md", date: "2026-05-23" }
   wirePCSSShootDownload20260523: { kind: wire-capture, path: "evidence/PCSS_SHOOT_DOWNLOAD_OBSERVATIONS.md", date: "2026-05-23" }
   wireTetherCaps20260527: { kind: wire-capture, path: "evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl", date: "2026-05-27" }
@@ -440,6 +441,39 @@ connections:
         mechanism: ble-establish-wifi-ap
     evidence: [wireBleAutoTransfer]
 
+  # Raw USB remains available to explicit host adapters on desktop and Android.
+  # Automatic macOS attachment recognition uses the daemon-owned row below.
+  usb:
+    kind: usb
+    platforms: [macos, android, linux]
+    establishment: usb-claim-open
+    session: { ownership: initiatorOwned }
+    events: { delivery: reliable }
+    discovery:
+      mechanism: usb
+      announces: attachment
+      platforms: [android, linux]
+      vid: 0x04cb
+
+  # ImageCapture owns the device, framing, session, and transaction IDs. This
+  # connection attaches to that session and sends no claim or OpenSession.
+  usb-passthrough:
+    kind: usb-passthrough
+    platforms: [ios, macos]
+    session: { ownership: daemonAttached }
+    events: { delivery: bestEffort }
+    discovery:
+      mechanism: usb
+      announces: attachment
+      platforms: [ios, macos]
+      vid: 0x04cb
+    actions:
+      readDeviceInfo:
+        mode: ""
+        initiator:
+          steps:
+            - { sendOp: "0x1001", params: [] }
+        evidence: [wireUsbDeviceInfo]
 
   wireless-tether:
     kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference-app family)

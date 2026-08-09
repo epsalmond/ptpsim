@@ -77,6 +77,10 @@ The initiator-side model is manifest schema, specified in
 Per-connection trait fields (`session.ownership`, `events.delivery`) tell the
 consumer which behavior to select, following the #81 pattern. Platform
 availability of each kind stays manifest data through `connections(platform)`.
+USB attachment callbacks enter the same recognition surface as BLE and PCSS.
+The host supplies platform plus raw vendor and product IDs. Connection
+discovery data selects the automatic route. A vendor-level match requires
+parsed DeviceInfo confirmation before the model becomes durable identity.
 
 ### Responder (paper: simulating USB to a host)
 

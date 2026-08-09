@@ -97,6 +97,10 @@ evidence:
     kind: wire-capture
     path: evidence/probe/2026-05-27-ptp-evidence-wireless-stills.jsonl
     date: 2026-05-27
+  wireUsbDeviceInfo:
+    kind: wire-capture
+    path: evidence/probe/2026-05-27-ptp-evidence-usb-tether-auto.jsonl
+    date: 2026-05-27
 semanticAssertions:
   properties:
     '0xd02a':
@@ -15339,6 +15343,9 @@ connections:
     requiresHardware: null
     kind: ptpip-app
     establishment: ble-establish-wifi-ap
+    discovery:
+      mechanism: ble
+      announces: camera
     activities:
     - id: camera.network.join-confirmation
       version: 1
@@ -16439,15 +16446,15 @@ connections:
         - docImageTransfer
         - docLargeMovObjectInfo
     enables: []
-    discovery:
-      mechanism: ble
-      announces: camera
   ble:
     ref: null
     availableWhen: null
     requiresHardware: null
     kind: ble
     establishment: ble-pair
+    discovery:
+      mechanism: ble
+      announces: camera
     activities: []
     init: null
     initShape: null
@@ -16474,9 +16481,6 @@ connections:
       mode: null
       params: {}
       requires: null
-    discovery:
-      mechanism: ble
-      announces: camera
     evidence:
     - wireBleAutoTransfer
     gatt:
@@ -16488,12 +16492,112 @@ connections:
       cameraSSIDName: BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4
       cameraWiFiPassphrase: E809256A-915C-4967-92E8-53B7D4CAD213
       fileTransferXHalfService: 462426E1-D712-4A28-BE62-61A786DAA866
+  usb:
+    ref: null
+    availableWhen: null
+    requiresHardware: null
+    kind: usb
+    establishment: usb-claim-open
+    discovery:
+      mechanism: usb
+      announces: attachment
+      platforms:
+      - android
+      - linux
+      vid: 1227
+    activities: []
+    init: null
+    initShape: null
+    liveViewDelivery: null
+    shutterRecipe: null
+    session:
+      ownership: initiatorOwned
+    events:
+      delivery: reliable
+    commandFraming: null
+    eventFraming: null
+    commandListenerVolatile: false
+    bindings: null
+    transportClose: null
+    knock: null
+    initRetries: null
+    objectTransfer: null
+    controlSurfaces: {}
+    modes: []
+    entries: []
+    actions: {}
+    enables: []
+    platforms:
+    - macos
+    - android
+    - linux
+  usb-passthrough:
+    ref: null
+    availableWhen: null
+    requiresHardware: null
+    kind: usb-passthrough
+    establishment: null
+    discovery:
+      mechanism: usb
+      announces: attachment
+      platforms:
+      - ios
+      - macos
+      vid: 1227
+    activities: []
+    init: null
+    initShape: null
+    liveViewDelivery: null
+    shutterRecipe: null
+    session:
+      ownership: daemonAttached
+    events:
+      delivery: bestEffort
+    commandFraming: null
+    eventFraming: null
+    commandListenerVolatile: false
+    bindings: null
+    transportClose: null
+    knock: null
+    initRetries: null
+    objectTransfer: null
+    controlSurfaces: {}
+    modes: []
+    entries: []
+    actions:
+      readDeviceInfo:
+        mode: ''
+        initiator:
+          params: []
+          steps:
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x1001'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          activities: []
+        triggers: []
+        evidence:
+        - wireUsbDeviceInfo
+    enables: []
+    platforms:
+    - ios
+    - macos
   wireless-tether:
     ref: null
     availableWhen: null
     requiresHardware: null
     kind: ptpip-direct
     establishment: pcss-knock
+    discovery:
+      mechanism: pcss-knock
+      announces: callback
     activities:
     - id: camera.session.open.direct
       version: 2
@@ -17182,10 +17286,6 @@ connections:
         evidence:
         - wirePCSSShootDownload20260523
     enables: []
-    discovery:
-      mechanism: pcss-knock
-      announces: callback
-      autoDiscoverable: true
     evidence:
     - wireTether
   xlv:
@@ -17194,6 +17294,10 @@ connections:
     requiresHardware: null
     kind: http-xlv
     establishment: null
+    discovery:
+      mechanism: http-probe
+      announces: none
+      autoDiscoverable: false
     activities: []
     init: null
     initShape: null
@@ -17219,10 +17323,6 @@ connections:
       scheme: bearer
       header: XLV_Auth
       tokenSource: private-overlay
-    discovery:
-      mechanism: http-probe
-      announces: none
-      autoDiscoverable: false
     evidence:
     - docXlv
     - captureXlv

@@ -1098,6 +1098,11 @@ pub struct Connection {
     pub kind: Option<String>,
     #[serde(default)]
     pub establishment: Option<String>,
+    /// How the host discovers this connection. USB attachment matching stays
+    /// in manifest data so consumers pass raw platform/descriptor facts to the
+    /// engine instead of branching on camera or connection names.
+    #[serde(default)]
+    pub discovery: Option<ConnectionDiscovery>,
     /// Host-owned semantic checkpoints that complete this connection after
     /// the manufacturer-index executor plan (schema §11.23).
     #[serde(default)]
@@ -1192,6 +1197,33 @@ pub struct Connection {
     /// UUIDs) until those are modeled / split to a private overlay.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// Host discovery facts for one connection. `platforms` is the automatic
+/// recognition surface and may be narrower than the connection's availability
+/// list. For example, macOS can expose raw USB while ImageCapture attachment
+/// recognition selects the daemon-owned pass-through connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectionDiscovery {
+    pub mechanism: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announces: Option<String>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub auto_discoverable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
+    /// USB vendor ID. A USB attachment matcher requires this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vid: Option<u16>,
+    /// USB product ID. Absent means the vendor-level match must be confirmed
+    /// against parsed PTP DeviceInfo before it becomes durable identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u16>,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 /// A PTP/IP socket role a consumer binds. `Command` is the control channel;

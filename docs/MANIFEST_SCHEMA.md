@@ -1804,6 +1804,30 @@ existing kinds. A `platforms:` list gates a connection per host OS against
 the closed token set `ios|macos|android|linux`; the loader rejects an
 unknown token with an error naming the token and the connection.
 
+USB attachment recognition uses typed connection discovery data (#462):
+
+```yaml
+discovery:
+  mechanism: usb
+  announces: attachment
+  platforms: [ios, macos]
+  vid: 0x04cb
+  # pid: 0x1234  # optional, only when descriptor evidence establishes it
+```
+
+`discovery.platforms` controls automatic recognition and must be a subset of
+the connection's `platforms` list. It may be narrower than connection
+availability. macOS can therefore expose raw `usb` for an explicit adapter
+while its ImageCapture attachment selects `usb-passthrough`.
+
+`vid` is required and nonzero for `mechanism: usb`. `pid` is optional and
+nonzero when declared. An absent PID is a vendor-level candidate, not durable
+camera identity. The consumer runs the manifest `readDeviceInfo` action over
+the selected transport, parses the result with `parse_device_info`, and calls
+`confirm_device_info(model, deviceInfo)`. The engine normalizes and compares
+the parsed manufacturer and model to the selected body's manifest identity.
+A mismatch fails confirmation.
+
 **Connection trait fields.** Two per-connection trait fields in the #81
 pattern (declarative data the consumer selects behavior from, never an
 `id` branch):
@@ -1960,3 +1984,6 @@ The transaction entry points run the same grammar, retry, tolerance,
 capture, predicate, loop, and deadline semantics as their frame-based
 counterparts (§11.24); only the transport seam differs. The existing
 frame-based entry points are unchanged.
+
+The GFX100 II pass-through row exposes only `readDeviceInfo` in this contract.
+It does not claim ImageCapture catalog behavior, transfer, or USB live view.

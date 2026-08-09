@@ -126,6 +126,113 @@ fn pcss_notify_recognition_carries_dynamic_endpoint_scope() {
         .any(|entry| entry.key == "commandPort" && entry.value == "17555"));
 }
 
+#[test]
+fn usb_attachment_recognition_selects_the_manifest_platform_route() {
+    let store = store();
+    for (platform, expected_connection) in [
+        (Platform::Ios, "usb-passthrough"),
+        (Platform::Macos, "usb-passthrough"),
+        (Platform::Android, "usb"),
+        (Platform::Linux, "usb"),
+    ] {
+        let recognition = store.recognize(ScanObservation::UsbAttachment {
+            platform,
+            vendor_id: 0x04cb,
+            product_id: 0x4321,
+        });
+        let Recognition::Candidate {
+            model,
+            connection,
+            runtime_scope,
+            ..
+        } = recognition
+        else {
+            panic!("expected USB candidate for {platform:?}");
+        };
+        assert_eq!(model, "gfx100ii");
+        assert_eq!(connection, expected_connection);
+        assert!(runtime_scope
+            .iter()
+            .any(|entry| entry.key == "usbVendorId" && entry.value == "1227"));
+        assert!(runtime_scope
+            .iter()
+            .any(|entry| entry.key == "usbProductId" && entry.value == "17185"));
+    }
+}
+
+#[test]
+fn unmatched_usb_attachment_returns_no_match() {
+    assert!(matches!(
+        store().recognize(ScanObservation::UsbAttachment {
+            platform: Platform::Ios,
+            vendor_id: 0xffff,
+            product_id: 0x4321,
+        }),
+        Recognition::NoMatch
+    ));
+}
+
+#[test]
+fn authored_usb_product_id_is_matched_exactly() {
+    let body = data("fuji/gfx100ii/gfx100ii.yaml").replace(
+        "      vid: 0x04cb\n",
+        "      vid: 0x04cb\n      pid: 0x3105\n",
+    );
+    let store = ConfigStore::from_manufacturer_index_with_defaults(
+        data("fuji/index.yaml"),
+        data("fuji/fuji.yaml"),
+        common::real_fuji_bodies_with("gfx100ii", body),
+    )
+    .expect("manifest with an evidenced product ID loads");
+
+    assert!(matches!(
+        store.recognize(ScanObservation::UsbAttachment {
+            platform: Platform::Ios,
+            vendor_id: 0x04cb,
+            product_id: 0x3105,
+        }),
+        Recognition::Candidate { .. }
+    ));
+    assert!(matches!(
+        store.recognize(ScanObservation::UsbAttachment {
+            platform: Platform::Ios,
+            vendor_id: 0x04cb,
+            product_id: 0x9999,
+        }),
+        Recognition::NoMatch
+    ));
+}
+
+fn device_info(manufacturer: &str, model: &str) -> PtpDeviceInfo {
+    PtpDeviceInfo {
+        standard_version: 100,
+        vendor_extension_id: 0,
+        vendor_extension_version: 0,
+        vendor_extension_desc: String::new(),
+        functional_mode: 0,
+        operations_supported: Vec::new(),
+        events_supported: Vec::new(),
+        device_properties_supported: Vec::new(),
+        capture_formats: Vec::new(),
+        image_formats: Vec::new(),
+        manufacturer: manufacturer.into(),
+        model: model.into(),
+        device_version: "2.30".into(),
+        serial_number: "TEST-SERIAL".into(),
+    }
+}
+
+#[test]
+fn parsed_device_info_confirms_the_recognized_model_inside_the_engine() {
+    let store = store();
+    assert!(store.confirm_device_info(
+        "gfx100ii".into(),
+        device_info("  fujifilm\0", "GFX100   II"),
+    ));
+    assert!(!store.confirm_device_info("gfx100ii".into(), device_info("FUJIFILM", "X-T5"),));
+    assert!(!store.confirm_device_info("not-a-model".into(), device_info("FUJIFILM", "GFX100 II"),));
+}
+
 // ---------------------------------------------------------------------------
 // from_manufacturer_index loader
 // ---------------------------------------------------------------------------

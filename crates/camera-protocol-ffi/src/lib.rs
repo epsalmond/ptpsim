@@ -799,7 +799,7 @@ pub enum TransportCloseError {
 }
 
 /// The calling platform — used to hide connections it can't host (USB/tether on iOS).
-#[derive(uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum Platform {
     Ios,
     Macos,
@@ -2594,7 +2594,41 @@ impl ConfigStore {
             } => {
                 mfg_index::recognize_pcss(index, &camera_ipv4, &camera_name, command_port, &service)
             }
+            ScanObservation::UsbAttachment {
+                platform,
+                vendor_id,
+                product_id,
+            } => mfg_index::recognize_usb_attachment(
+                &self.inner,
+                platform.as_str(),
+                vendor_id,
+                product_id,
+            ),
         }
+    }
+
+    /// Confirm a recognized model against parsed PTP DeviceInfo before a
+    /// vendor-level USB attachment candidate becomes durable camera identity.
+    /// Manufacturer and model comparison is normalized inside the engine; the
+    /// consumer never branches on camera names.
+    pub fn confirm_device_info(&self, model: String, device_info: PtpDeviceInfo) -> bool {
+        let manifest = self.inner.body(&model).or_else(|| {
+            (self.inner.manifest.camera.model == model).then_some(&self.inner.manifest)
+        });
+        let Some(manifest) = manifest else {
+            return false;
+        };
+        let expected_manufacturer = normalize_device_identity(&manifest.camera.manufacturer);
+        let expected_model = manifest
+            .camera
+            .identities
+            .get("ptpDeviceName")
+            .unwrap_or(&manifest.camera.model);
+        !expected_manufacturer.is_empty()
+            && !normalize_device_identity(expected_model).is_empty()
+            && normalize_device_identity(&device_info.manufacturer) == expected_manufacturer
+            && normalize_device_identity(&device_info.model)
+                == normalize_device_identity(expected_model)
     }
 
     /// Manifest-authored timeout for scanning one known saved camera.
@@ -2721,9 +2755,15 @@ impl ConfigStore {
             .map(|(id, c)| ConnectionInfo {
                 id: id.clone(),
                 kind: c.kind.clone().unwrap_or_default(),
-                discovery: yaml_path_str(&c.extra, &["discovery", "mechanism"]).unwrap_or_default(),
-                auto_discoverable: yaml_path_bool(&c.extra, &["discovery", "autoDiscoverable"])
-                    .unwrap_or(true),
+                discovery: c
+                    .discovery
+                    .as_ref()
+                    .map(|discovery| discovery.mechanism.clone())
+                    .unwrap_or_default(),
+                auto_discoverable: c
+                    .discovery
+                    .as_ref()
+                    .is_none_or(|discovery| discovery.auto_discoverable),
                 command_listener_volatile: c.command_listener_volatile,
                 init_shape: c.init_shape.clone(),
                 live_view_delivery: c.live_view_delivery.as_ref().map(Into::into),
@@ -5009,6 +5049,15 @@ fn platform_ok(c: &cc::Connection, p: &Platform) -> bool {
     }
 }
 
+fn normalize_device_identity(value: &str) -> String {
+    value
+        .trim_matches(|character: char| character == '\0' || character.is_whitespace())
+        .split_whitespace()
+        .flat_map(str::chars)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// Decode an even-length hex string (optionally `0x`-prefixed) to bytes —
 /// matches `index::eval::yaml_literal_to_bytes`'s hex path, for the init GUID
 /// and responder identity.
@@ -5054,32 +5103,6 @@ fn value_with_runtime(
         cc::ValuePolicy::ClientDerived { runtime } => runtime_scope.get(runtime).cloned(),
         _ => None,
     }
-}
-
-fn yaml_path_str(
-    extra: &std::collections::BTreeMap<String, serde_yaml::Value>,
-    path: &[&str],
-) -> Option<String> {
-    yaml_path(extra, path).and_then(|v| v.as_str().map(String::from))
-}
-
-fn yaml_path_bool(
-    extra: &std::collections::BTreeMap<String, serde_yaml::Value>,
-    path: &[&str],
-) -> Option<bool> {
-    yaml_path(extra, path).and_then(|v| v.as_bool())
-}
-
-fn yaml_path<'a>(
-    extra: &'a std::collections::BTreeMap<String, serde_yaml::Value>,
-    path: &[&str],
-) -> Option<&'a serde_yaml::Value> {
-    let (first, rest) = path.split_first()?;
-    let mut cur = extra.get(*first)?;
-    for key in rest {
-        cur = cur.get(*key)?;
-    }
-    Some(cur)
 }
 
 #[cfg(test)]
