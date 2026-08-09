@@ -930,6 +930,10 @@ separate:
   single-mask slot; `masks` adds zero or more peer mask descriptors. The schema
   is shape-based (`mask`, optional `equals`, optional `meaning`, `labelPrefix`)
   and carries no manufacturer code.
+- `valueEncoding.decoder`: an optional numeric fallback after exact labels.
+  `integer` formats a bounded integer directly. `shutterSpeed` formats a flagged
+  scaled denominator as `1/N` and an unflagged scaled value as seconds followed
+  by `"`. Exact `valueRows` and `labels` remain authoritative.
 - `structuredText`: an optional grammar for a PTP `STR` property with a
   delimiter and ordered named fields. The first scalar kind is
   `signedInteger`; the FFI encoder validates field count and shape but does not

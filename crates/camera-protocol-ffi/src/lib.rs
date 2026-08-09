@@ -1335,6 +1335,13 @@ pub struct PropertyValueProfileRowInfo {
 pub struct PropertyValueEncodingInfo {
     pub sentinel: Option<SentinelMaskInfo>,
     pub masks: Vec<SentinelMaskInfo>,
+    pub decoder: Option<PropertyValueDecoderInfo>,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum PropertyValueDecoderInfo {
+    Integer { min: Option<i64>, max: Option<i64> },
+    ShutterSpeed { fraction_mask: i64, scale: i64 },
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1500,6 +1507,25 @@ impl From<&cc::PropertyValueEncoding> for PropertyValueEncodingInfo {
         PropertyValueEncodingInfo {
             sentinel: enc.sentinel.as_ref().map(SentinelMaskInfo::from),
             masks: enc.masks.iter().map(SentinelMaskInfo::from).collect(),
+            decoder: enc.decoder.as_ref().map(PropertyValueDecoderInfo::from),
+        }
+    }
+}
+
+impl From<&cc::PropertyValueDecoder> for PropertyValueDecoderInfo {
+    fn from(decoder: &cc::PropertyValueDecoder) -> Self {
+        match decoder {
+            cc::PropertyValueDecoder::Integer { min, max } => Self::Integer {
+                min: *min,
+                max: *max,
+            },
+            cc::PropertyValueDecoder::ShutterSpeed {
+                fraction_mask,
+                scale,
+            } => Self::ShutterSpeed {
+                fraction_mask: *fraction_mask,
+                scale: *scale,
+            },
         }
     }
 }

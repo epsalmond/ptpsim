@@ -1477,6 +1477,13 @@ fn property_value_codec_crosses_the_ffi_seam() {
             && mask.meaning.as_deref() == Some("extendedSensitivity")),
         "extended-sensitivity mask must cross the FFI seam"
     );
+    assert!(matches!(
+        encoding.decoder,
+        Some(PropertyValueDecoderInfo::Integer {
+            min: Some(40),
+            max: Some(102400)
+        })
+    ));
     let profile = iso
         .value_profiles
         .iter()
@@ -1487,6 +1494,44 @@ fn property_value_codec_crosses_the_ffi_seam() {
         .rows
         .iter()
         .any(|row| row.raw == 50 && !row.legal && row.write_store_raw == Some(80)));
+
+    let shutter = s
+        .properties()
+        .into_iter()
+        .find(|p| p.code == 0xd240)
+        .expect("extended shutter in catalog");
+    assert!(matches!(
+        shutter.value_encoding.and_then(|encoding| encoding.decoder),
+        Some(PropertyValueDecoderInfo::ShutterSpeed {
+            fraction_mask: 0x8000_0000,
+            scale: 1000
+        })
+    ));
+}
+
+#[test]
+fn algorithmic_value_decode_crosses_the_ffi_seam() {
+    let s = store();
+    assert_eq!(s.value_label(0xd02a, 0x4000_0028), None);
+    for (prop, raw, expected) in [
+        (0xd02a, 0x4000_0028, "EXT 40"),
+        (0xd02a, 0x8000_00c8, "AUTO 200"),
+        (0xd240, 0x8000_0000 | 250_000, "1/250"),
+        (0xd240, 2_500, "2.5\""),
+    ] {
+        let decoded = s
+            .decode_property(prop, raw)
+            .unwrap_or_else(|| panic!("0x{prop:04x} raw 0x{raw:08x} decodes"));
+        assert_eq!(decoded.label, expected);
+        assert_eq!(decoded.raw, raw);
+    }
+
+    assert_eq!(
+        s.decode_property(0xd02a, 0x4000_6400)
+            .expect("authored EXT row decodes")
+            .label,
+        "25600"
+    );
 }
 
 #[test]

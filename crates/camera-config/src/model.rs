@@ -575,6 +575,28 @@ pub struct PropertyValueEncoding {
     pub sentinel: Option<SentinelMask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masks: Vec<SentinelMask>,
+    /// Optional numeric fallback used after exact authored labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decoder: Option<PropertyValueDecoder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PropertyValueDecoder {
+    /// Format an integer directly. Optional bounds reject values outside the
+    /// documented range.
+    Integer {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<i64>,
+    },
+    /// Format a high-bit reciprocal or an unflagged decimal number of seconds.
+    ShutterSpeed {
+        #[serde(rename = "fractionMask")]
+        fraction_mask: i64,
+        scale: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
