@@ -2,6 +2,7 @@
 # Pure-Rust workspace (no openssl/ring/native deps), so rust:1-slim suffices.
 # Release artifacts publish only after a protected main push.
 # Credentials come from Woodpecker repository secrets, never tracked files.
+# Release credentials are available only to protected main push steps.
 #
 # Portable labels keep this workflow on an unprivileged Docker Linux lane; a
 # deployment can satisfy them with ephemeral or explicitly enabled agents.

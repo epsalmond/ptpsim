@@ -1,5 +1,6 @@
 # Explicit Apple FFI promotion. Push an `apple-ffi-<sha8>` tag at a commit
 # already merged to main. Ordinary main pushes never occupy the macOS runner.
+# Release credentials come from Woodpecker repository secrets, never tracked files.
 
 labels:
   platform: darwin/amd64

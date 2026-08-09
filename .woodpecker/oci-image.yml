@@ -1,6 +1,7 @@
 # OCI image workflow — builds and publishes the deployable camera-sim-service
 # container image. Runs on the privileged Docker-backend Linux lane, unlike the
 # unprivileged portable lane in linux.yml.
+# Credentials come from Woodpecker repository secrets, never tracked files.
 #
 # The registry hostname and repo path never appear in this file: they arrive
 # through the oci_registry / oci_repo repo secrets so this public repo stays
