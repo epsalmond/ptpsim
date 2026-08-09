@@ -1,6 +1,6 @@
 # Linux workflow — runs on Docker-backend Linux agents.
 # Pure-Rust workspace (no openssl/ring/native deps), so rust:1-slim suffices.
-# Release artifact publication is gated on main+push.
+# Release artifacts publish only after a protected main push.
 #
 # Portable labels keep this workflow on an unprivileged Docker Linux lane; a
 # deployment can satisfy them with ephemeral or explicitly enabled agents.
