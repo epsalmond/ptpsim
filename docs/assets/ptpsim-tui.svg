@@ -169,7 +169,7 @@
             </clipPath>
     </defs>
 
-    <rect fill="#000000" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1480" height="1024" rx="8"/><text class="terminal-2481464229-title" fill="#e5e5e5" text-anchor="middle" x="740" y="27">ptpsim&#160;operator&#160;TUI&#160;—&#160;camera-sim-tui</text>
+    <rect fill="#000000" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1480" height="1024" rx="8"/><text class="terminal-2481464229-title" fill="#e5e5e5" text-anchor="middle" x="740" y="27">ptpsim&#160;operator&#160;TUI:&#160;camera-sim-tui</text>
             <g transform="translate(26,22)">
             <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
             <circle cx="22" cy="0" r="7" fill="#febc2e"/>
