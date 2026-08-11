@@ -459,6 +459,12 @@ fn gfx_usb_passthrough_prepares_a_selected_object_and_retains_object_info() {
     assert_eq!(info.parent_object, 0x22);
     assert_eq!(info.association_type, 1);
     assert_eq!(info.association_desc, 0x30);
+    let chunk_size = outcome
+        .scope
+        .iter()
+        .find(|value| value.key == "chunkSize")
+        .expect("successful D235 capture binds chunkSize");
+    assert_eq!(chunk_size.value, ActionValue::U64 { value: 0x0020_0000 });
     assert_eq!(
         outcome
             .outputs
@@ -489,6 +495,54 @@ fn gfx_usb_passthrough_prepares_a_selected_object_and_retains_object_info() {
                 timeout_ms: 10_000,
             },
         ]
+    );
+}
+
+#[test]
+fn gfx_usb_passthrough_uses_the_authored_chunk_fallback_on_0x200a() {
+    let store = gfx_passthrough_store();
+    let handle = 0x43;
+    let responder = UsbResponder::new()
+        .reply_transaction(0x1016, &[0xd226], UsbTxnReply::ok(None))
+        .reply_transaction(
+            0x1008,
+            &[handle],
+            UsbTxnReply::ok(Some(object_info_dataset())),
+        )
+        .reply_transaction(
+            0x1015,
+            &[0xd235],
+            UsbTxnReply::response(0x200a, vec![], None),
+        );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+
+    let outcome = block_on(run_selected_object_preparation_txn(
+        store,
+        "usb-passthrough".into(),
+        transport,
+        Arc::new(StepRecorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![PtpRuntimeValue {
+            key: "handle".into(),
+            value: u64::from(handle),
+        }],
+    ))
+    .expect("StoreNotAvailable selects the authored USB chunk fallback");
+
+    let chunk_size = outcome
+        .scope
+        .iter()
+        .find(|value| value.key == "chunkSize")
+        .expect("fallback binds chunkSize");
+    assert_eq!(chunk_size.value, ActionValue::U64 { value: 0x0020_0000 });
+    assert_eq!(
+        outcome
+            .outputs
+            .iter()
+            .map(|output| output.operation)
+            .collect::<Vec<_>>(),
+        [0x1008],
+        "the selected non-OK property response has no data output",
     );
 }
 

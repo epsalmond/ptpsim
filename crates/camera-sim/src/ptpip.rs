@@ -270,9 +270,27 @@ impl Ctx<'_> {
                 self.capture_collection(&step.captures, &values)
                     .map_err(err)?;
             } else {
-                let Some(v) = self.poll_prop(code, step.tolerant).map_err(err)? else {
-                    // Tolerated non-OK advisory read: skip, capture nothing.
-                    return Ok(());
+                let has_fallback = step
+                    .captures
+                    .iter()
+                    .any(|capture| capture.fallback.is_some());
+                let Some(v) = self
+                    .poll_prop(code, step.tolerant || has_fallback)
+                    .map_err(err)?
+                else {
+                    let response_code = self.last_response_code;
+                    if response_code.is_some_and(|response_code| {
+                        self.bind_capture_fallbacks(&step.captures, response_code)
+                    }) {
+                        return Ok(());
+                    }
+                    if step.tolerant {
+                        return Ok(());
+                    }
+                    return Err(err(format!(
+                        "GetDevicePropValue({code:#06x}) -> response {:#06x}",
+                        response_code.unwrap_or_default()
+                    )));
                 };
                 self.observed.set(code, v);
                 self.capture_prop_value(&step.captures, v).map_err(err)?;
@@ -907,6 +925,32 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    fn bind_capture_fallbacks(&mut self, captures: &[Capture], response_code: u16) -> bool {
+        let selected = captures
+            .iter()
+            .map(|capture| {
+                capture
+                    .fallback
+                    .as_ref()
+                    .filter(|fallback| {
+                        fallback
+                            .when_response_codes
+                            .iter()
+                            .filter_map(|code| parse_hex_code(code))
+                            .any(|code| code == response_code)
+                    })
+                    .map(|fallback| (capture.bind.clone(), fallback.value))
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(selected) = selected.filter(|values| !values.is_empty()) else {
+            return false;
+        };
+        for (bind, value) in selected {
+            self.bindings.insert(bind, value);
+        }
+        true
+    }
+
     fn capture_collection(&mut self, captures: &[Capture], values: &[u64]) -> Result<(), String> {
         for capture in captures {
             if capture.source != CaptureSource::PtpU32Array {
@@ -1352,6 +1396,7 @@ media:
                 captures: vec![Capture {
                     bind: "items".into(),
                     source: CaptureSource::PtpU32Array,
+                    fallback: None,
                 }],
                 ..Default::default()
             }],
@@ -1473,6 +1518,7 @@ properties: {}
                     captures: vec![Capture {
                         bind: "objectHandles".into(),
                         source: CaptureSource::PtpU32Array,
+                        fallback: None,
                     }],
                     ..Default::default()
                 },
@@ -1568,6 +1614,7 @@ properties: {}
                 captures: vec![Capture {
                     bind: "tooWide".into(),
                     source: CaptureSource::U64Le,
+                    fallback: None,
                 }],
                 tolerant: true,
                 ..Default::default()
@@ -1603,6 +1650,7 @@ properties: {}
             captures: vec![Capture {
                 bind: "tooWide".into(),
                 source: CaptureSource::U64Le,
+                fallback: None,
             }],
             ..Default::default()
         }];
@@ -1632,10 +1680,12 @@ properties: {}
                     Capture {
                         bind: "firstCapture".into(),
                         source: CaptureSource::U32Le,
+                        fallback: None,
                     },
                     Capture {
                         bind: "secondCapture".into(),
                         source: CaptureSource::U64Le,
+                        fallback: None,
                     },
                 ],
                 tolerant: true,
@@ -1681,6 +1731,7 @@ properties: {}
                 captures: vec![Capture {
                     bind: "missingObjectHead".into(),
                     source: CaptureSource::U32Le,
+                    fallback: None,
                 }],
                 tolerant: true,
                 ..Default::default()
@@ -1748,6 +1799,107 @@ properties: {}
         assert_eq!(err.response_code, Some(resp::DEVICE_PROP_NOT_SUPPORTED));
     }
 
+    #[test]
+    fn prop_value_fallback_selects_only_its_authored_response() {
+        let fallback = camera_config::model::CaptureResponseFallback {
+            value: 0x0020_0000,
+            when_response_codes: vec!["0x200a".into()],
+        };
+        let capture = Capture {
+            bind: "chunkSize".into(),
+            source: CaptureSource::PropValue,
+            fallback: Some(fallback),
+        };
+
+        let mut success = engine(MANIFEST);
+        let out = walk_ptpip(
+            &mut success,
+            &[
+                Step {
+                    get_prop: Some("0xdf00".into()),
+                    captures: vec![capture.clone()],
+                    ..Default::default()
+                },
+                Step {
+                    if_step: Some(camera_config::model::IfStep {
+                        slot: "chunkSize".into(),
+                        equals: 0,
+                        then_steps: vec![Step {
+                            set_prop: Some("0xdf00".into()),
+                            value: Some(13.into()),
+                            ..Default::default()
+                        }],
+                        else_steps: Vec::new(),
+                    }),
+                    ..Default::default()
+                },
+                Step {
+                    get_prop: Some("0xdf00".into()),
+                    ..Default::default()
+                },
+            ],
+            &BTreeMap::new(),
+        )
+        .expect("successful property capture wins over the fallback");
+        assert_eq!(out.observed.get(0xdf00), Some(13));
+
+        let mut selected = engine(MANIFEST);
+        let out = walk_ptpip(
+            &mut selected,
+            &[
+                Step {
+                    get_prop: Some("0x4321".into()),
+                    captures: vec![capture.clone()],
+                    ..Default::default()
+                },
+                Step {
+                    if_step: Some(camera_config::model::IfStep {
+                        slot: "chunkSize".into(),
+                        equals: 0x0020_0000,
+                        then_steps: vec![Step {
+                            set_prop: Some("0xdf00".into()),
+                            value: Some(17.into()),
+                            ..Default::default()
+                        }],
+                        else_steps: Vec::new(),
+                    }),
+                    ..Default::default()
+                },
+                Step {
+                    get_prop: Some("0xdf00".into()),
+                    ..Default::default()
+                },
+            ],
+            &BTreeMap::new(),
+        )
+        .expect("selected response binds the authored fallback");
+        assert_eq!(out.observed.get(0xdf00), Some(17));
+
+        let mut unselected = engine(MANIFEST);
+        unselected
+            .install_fault(FaultSpec {
+                selector: FaultSelector {
+                    operation: op::GET_DEVICE_PROP_VALUE,
+                    params: Some(vec![0x4321]),
+                    skip: 0,
+                    count: None,
+                },
+                mutation: FaultMutation::FailResponse { response: 0x2002 },
+            })
+            .unwrap();
+        let error = walk_ptpip(
+            &mut unselected,
+            &[Step {
+                get_prop: Some("0x4321".into()),
+                captures: vec![capture],
+                ..Default::default()
+            }],
+            &BTreeMap::new(),
+        )
+        .expect_err("unselected response remains terminal");
+        assert_eq!(error.response_code, Some(0x2002));
+    }
+
     /// #455 review: a tolerant read skips coded non-OK responses, but a
     /// dropped socket (`Reply::Close`) stays fatal, matching `check_ok`.
     #[test]
@@ -1795,6 +1947,7 @@ properties: {}
                 captures: vec![Capture {
                     bind: "streamHead".into(),
                     source: CaptureSource::U64Le,
+                    fallback: None,
                 }],
                 ..Default::default()
             },

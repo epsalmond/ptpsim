@@ -1754,6 +1754,28 @@ An `awaitUntil` step may carry the enclosing `captures` field described in
 that satisfied a `poll` or an event source's `thenPoll`; it never causes an
 additional `GetDevicePropValue`.
 
+A `getProp` `propValue` capture may declare a response-selected literal
+fallback:
+
+```yaml
+captures:
+  - bind: chunkSize
+    as: propValue
+    fallback:
+      value: 0x00200000
+      whenResponseCodes: ["0x200a"]
+```
+
+An OK response always decodes and binds the returned property value. A listed
+non-OK response binds the authored literal and completes the step. When one
+step has multiple captures, every capture must select that response before any
+fallback is bound. An unlisted response remains terminal. Transport and decode
+failures remain terminal. The fallback is valid only on a strict `getProp`
+`propValue` capture. Its response list must be non-empty, contain valid non-OK
+PTP response codes, and contain no duplicates. The executor never reads a
+property catalog `initialValue` for this purpose. The FFI mirrors the literal
+and parsed response-code list on `CaptureInfo`.
+
 A deterministic catalog exposes catalog revision, action id, connection, mode,
 supported roles, exact parameter declarations, triggers, and availability. An
 invocation carries the revision, id, role, mode, and an ordered parameter map.

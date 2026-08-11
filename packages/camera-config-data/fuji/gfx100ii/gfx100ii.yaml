@@ -561,7 +561,11 @@ connections:
                               - { bind: objectTransferSize, as: u64Le }
                     - getProp: "0xd235"
                       captures:
-                        - { bind: chunkSize, as: propValue }
+                        - bind: chunkSize
+                          as: propValue
+                          fallback:
+                            value: 0x00200000
+                            whenResponseCodes: ["0x200a"]
                     - loop:
                         chunk:
                           total: objectTransferSize

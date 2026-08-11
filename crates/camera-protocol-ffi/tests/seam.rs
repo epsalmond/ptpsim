@@ -1946,6 +1946,7 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
             [CaptureInfo {
                 bind,
                 source: CaptureSourceInfo::PtpU32Array,
+                ..
             }] if bind == "objectHandles"
         )
     ));
@@ -2119,7 +2120,7 @@ fn action_import_objects_surfaces_the_nested_transfer_loop() {
         step,
         EntryStep::Retry { steps, .. }
             if matches!(steps.as_slice(), [EntryStep::GetProp { prop: 0xd621, captures, .. }]
-                if matches!(captures.as_slice(), [CaptureInfo { bind, source: CaptureSourceInfo::PtpU32Array }]
+                if matches!(captures.as_slice(), [CaptureInfo { bind, source: CaptureSourceInfo::PtpU32Array, .. }]
                     if bind == "objectHandles"))
     )));
 

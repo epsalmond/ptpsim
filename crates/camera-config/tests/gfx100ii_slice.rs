@@ -1072,6 +1072,7 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
         [camera_config::model::Capture {
             bind,
             source: camera_config::CaptureSource::PtpU32Array,
+            ..
         }] if bind == "objectHandles"
     ));
     assert!(enumerate.triggers.is_empty());
@@ -1206,6 +1207,7 @@ fn ios_usb_passthrough_resolves_the_image_transfer_contract() {
         [camera_config::model::Capture {
             bind,
             source: CaptureSource::PtpU32Array,
+            ..
         }] if bind == "objectHandles"
     ));
     for (verb, operation) in [
@@ -1238,6 +1240,7 @@ fn ios_usb_passthrough_resolves_the_image_transfer_contract() {
         [camera_config::model::Capture {
             bind,
             source: CaptureSource::PtpU32Array,
+            ..
         }] if bind == "objectHandles"
     ));
     let body = import_steps
@@ -1257,6 +1260,26 @@ fn ios_usb_passthrough_resolves_the_image_transfer_contract() {
         .any(|capture| capture.source == CaptureSource::ObjectInfoCompressedSize));
     assert!(body[2].if_step.is_some());
     assert_eq!(body[3].get_prop.as_deref(), Some("0xd235"));
+    let chunk_fallback = body[3].captures[0]
+        .fallback
+        .as_ref()
+        .expect("USB pass-through selects the D235 fallback");
+    assert_eq!(chunk_fallback.value, 0x0020_0000);
+    assert_eq!(chunk_fallback.when_response_codes, ["0x200a"]);
+    let app_import = manifest
+        .action("app", ActionVerb::ImportObjects)
+        .expect("app import action");
+    let app_body = app_import
+        .initiator()
+        .unwrap()
+        .steps
+        .iter()
+        .find_map(|step| match step.r#loop.as_ref() {
+            Some(camera_config::Loop::ForEach { body, .. }) => Some(body),
+            _ => None,
+        })
+        .expect("app per-object import body");
+    assert!(app_body[2].captures[0].fallback.is_none());
     assert!(matches!(
         body[4].r#loop,
         Some(camera_config::Loop::Chunk { .. })

@@ -16832,6 +16832,10 @@ connections:
                   captures:
                   - bind: chunkSize
                     as: propValue
+                    fallback:
+                      value: 2097152
+                      whenResponseCodes:
+                      - '0x200a'
                   tolerant: false
                   repeat: 1
                   awaitUntil: null
