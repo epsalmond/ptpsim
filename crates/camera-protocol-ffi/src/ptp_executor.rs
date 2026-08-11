@@ -538,6 +538,41 @@ pub async fn run_selected_object_preparation(
     .await
 }
 
+/// The selected-object preparation grammar over a daemon-owned transaction
+/// session. The projected steps and execution policy match the frame entry
+/// point; only the transport adapter differs.
+#[uniffi::export]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_selected_object_preparation_txn(
+    store: Arc<ConfigStore>,
+    connection: String,
+    transport: Arc<dyn PtpTransactionTransport>,
+    observer: Arc<dyn StepObserver>,
+    activity_observer: Arc<dyn ConnectionActivityObserver>,
+    runtime_params: Vec<PtpRuntimeValue>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    let plan = store
+        .selected_object_transfer(connection.clone())
+        .map_err(|error| PtpExecutorError::UnknownPlan {
+            detail: error.to_string(),
+        })?
+        .ok_or_else(|| PtpExecutorError::UnknownPlan {
+            detail: format!("{connection}: selected-object preparation not found"),
+        })?;
+    run_steps(
+        store,
+        connection,
+        plan.preparation_steps,
+        Vec::new(),
+        TxnBackend::Transaction(transport),
+        observer,
+        activity_observer,
+        numeric_runtime_params(runtime_params),
+        None,
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_steps(
     store: Arc<ConfigStore>,
@@ -1260,6 +1295,7 @@ impl PtpCtx {
                 }
                 EntryStep::Retry {
                     steps,
+                    fallback_steps,
                     when_response_codes,
                     when_failure_classes,
                     max_attempts,
@@ -1301,6 +1337,15 @@ impl PtpCtx {
                             }
                             Err(error) => {
                                 self.control_attempts = Some(attempt - 1);
+                                if selects(&error) && !fallback_steps.is_empty() {
+                                    return self
+                                        .walk_steps(
+                                            fallback_steps,
+                                            &format!("{here}.fallback"),
+                                            false,
+                                        )
+                                        .await;
+                                }
                                 return Err(error);
                             }
                         }
@@ -2260,8 +2305,18 @@ fn preflight_runtime_set_props(
                 EntryStep::AwaitUntil { on_each, .. } => {
                     walk(store, on_each, runtime_params, &format!("{here}.onEach"))?;
                 }
-                EntryStep::Retry { steps, .. } => {
+                EntryStep::Retry {
+                    steps,
+                    fallback_steps,
+                    ..
+                } => {
                     walk(store, steps, runtime_params, &format!("{here}.steps"))?;
+                    walk(
+                        store,
+                        fallback_steps,
+                        runtime_params,
+                        &format!("{here}.fallback"),
+                    )?;
                 }
                 EntryStep::Loop { kind, .. } => {
                     let body = match kind {

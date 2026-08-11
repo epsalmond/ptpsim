@@ -1713,6 +1713,8 @@ pub enum ActionVerb {
     GetObject,
     /// Delete an object by handle.
     DeleteObject,
+    /// Mark a selected-object transfer idle after the local copy commits.
+    CompleteObjectTransfer,
     /// Tap-to-AF: `0x9026 LockS1Lock(packed area)` then await the lock result
     /// (#35). The packed focus-area u32 is an app-supplied runtime slot.
     AutofocusLock,
@@ -1750,6 +1752,7 @@ impl ActionVerb {
             Self::GetThumb => "getThumb",
             Self::GetObject => "getObject",
             Self::DeleteObject => "deleteObject",
+            Self::CompleteObjectTransfer => "completeObjectTransfer",
             Self::AutofocusLock => "autofocusLock",
             Self::AutofocusRelease => "autofocusRelease",
             Self::ImportObjects => "importObjects",
@@ -1773,6 +1776,7 @@ impl std::str::FromStr for ActionVerb {
             "getThumb" => Ok(Self::GetThumb),
             "getObject" => Ok(Self::GetObject),
             "deleteObject" => Ok(Self::DeleteObject),
+            "completeObjectTransfer" => Ok(Self::CompleteObjectTransfer),
             "autofocusLock" => Ok(Self::AutofocusLock),
             "autofocusRelease" => Ok(Self::AutofocusRelease),
             "importObjects" => Ok(Self::ImportObjects),
@@ -2294,6 +2298,11 @@ pub struct IfStep {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StepRetry {
     pub steps: Vec<Step>,
+    /// Run after the selected failure remains after the final primary attempt.
+    /// The fallback is a manifest-authored alternate wire sequence, not another
+    /// retry loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<Vec<Step>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub when_response_codes: Vec<HexCode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3315,6 +3324,7 @@ values:
             ActionVerb::GetThumb,
             ActionVerb::GetObject,
             ActionVerb::DeleteObject,
+            ActionVerb::CompleteObjectTransfer,
             ActionVerb::AutofocusLock,
             ActionVerb::AutofocusRelease,
             ActionVerb::ImportObjects,

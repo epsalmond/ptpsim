@@ -415,6 +415,20 @@ impl Ctx<'_> {
                         return Err(error);
                     }
                     if attempt + 1 == max_attempts {
+                        if (response_selected || decode_selected)
+                            && retry
+                                .fallback
+                                .as_ref()
+                                .is_some_and(|steps| !steps.is_empty())
+                        {
+                            return match self.walk_steps(
+                                retry.fallback.as_deref().unwrap_or_default(),
+                                &format!("{here}.fallback"),
+                            ) {
+                                Err(error) if tolerant && error.response_code.is_some() => Ok(()),
+                                result => result,
+                            };
+                        }
                         return if tolerant && response_selected {
                             Ok(())
                         } else {

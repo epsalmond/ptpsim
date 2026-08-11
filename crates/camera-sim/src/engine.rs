@@ -2085,6 +2085,9 @@ fn collect_gate_sequences(steps: &[Step], out: &mut Vec<GateSequence>) {
     for step in steps {
         if let Some(retry) = &step.retry {
             collect_gate_sequences(&retry.steps, out);
+            if let Some(fallback) = &retry.fallback {
+                collect_gate_sequences(fallback, out);
+            }
         }
         let matcher = matcher_for_step(step);
         let starts = step.starts_gate.clone();
@@ -2155,6 +2158,9 @@ fn matcher_sequence_for_steps(steps: &[Step]) -> Option<Vec<GateMatcher>> {
             return None;
         }
         if let Some(retry) = &step.retry {
+            if retry.fallback.is_some() {
+                return None;
+            }
             sequence.extend(matcher_sequence_for_steps(&retry.steps)?);
         } else {
             sequence.push(matcher_for_step(step)?);

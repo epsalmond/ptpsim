@@ -470,11 +470,30 @@ connections:
     platforms: [ios, macos]
     session: { ownership: daemonAttached }
     events: { delivery: bestEffort }
+    modes: [image-transfer]
+    objectTransfer:
+      strategy: chunked
+      resumePolicy: byteOffset
+      readAction: getObject
+      completion: { action: completeObjectTransfer, after: localCommit }
+      formats: { "0x3801": confirmed, "0xb103": confirmed, "0xb105": confirmed, "0x300d": confirmed }
     discovery:
       mechanism: usb
       announces: attachment
       platforms: [ios, macos]
       vid: 0x04cb
+    entries:
+      - to: image-transfer
+        steps:
+          - { getProp: "0xd212", tolerant: true }
+          - { setProp: "0xdf01", value: 0x14 }
+          - { getProp: "0xdf28", tolerant: true }
+          - { setProp: "0xdf28", value: 3, tolerant: true }
+          - { setProp: "0xd226", value: 0, tolerant: true }
+          - { setProp: "0xd227", value: 0, tolerant: true }
+          - { getProp: "0xd244", tolerant: true }
+          - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
+          - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
     actions:
       readDeviceInfo:
         mode: ""
@@ -482,6 +501,123 @@ connections:
           steps:
             - { sendOp: "0x1001", params: [] }
         evidence: [wireUsbDeviceInfo]
+      enumerateObjects:
+        mode: image-transfer
+        initiator:
+          steps:
+            - retry: *imageImportPrimeRetry
+            - retry:
+                whenResponseCodes: ["0x2002", "0x2005", "0x2013", "0x2019"]
+                whenFailureClasses: ["decode"]
+                maxAttempts: 3
+                retryDelayMs: 1000
+                steps:
+                  - { getProp: "0xd620" }
+                  - getProp: "0xd621"
+                    captures: [{ bind: objectHandles, as: ptpU32Array }]
+                fallback:
+                  - sendOp: "0x1007"
+                    params: [0xffffffff, 0]
+                    captures: [{ bind: objectHandles, as: ptpU32Array }]
+        evidence: [docImageTransfer, wireUsbDeviceInfo]
+      getObjectInfo:
+        mode: image-transfer
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x1008", params: [{ runtime: handle }] }
+        evidence: [docImageTransfer, wireUsbDeviceInfo]
+      getThumb:
+        mode: image-transfer
+        initiator:
+          params: [handle]
+          steps:
+            - { sendOp: "0x100a", params: [{ runtime: handle }] }
+        evidence: [docImageTransfer, wireUsbDeviceInfo]
+      getObject:
+        mode: image-transfer
+        initiator:
+          params: [handle, offset, length]
+          steps:
+            - sendOp: "0x101b"
+              params:
+                - { runtime: handle }
+                - { runtime: offset, mask: 0xffffffff }
+                - { runtime: length }
+                - { runtime: offset, shift: 32 }
+        evidence: [docImageTransfer, docLargeMovObjectInfo, wireUsbDeviceInfo]
+      completeObjectTransfer:
+        mode: image-transfer
+        initiator:
+          params: [handle]
+          steps:
+            - { setProp: "0xd226", value: 0, tolerant: true }
+        evidence: [docImageTransfer, wireUsbDeviceInfo]
+      importObjects:
+        mode: image-transfer
+        initiator:
+          steps:
+            - { getProp: "0xd212", tolerant: true }
+            - { setProp: "0xdf01", value: 0x14 }
+            - { getProp: "0xdf28", tolerant: true }
+            - { setProp: "0xdf28", value: 3, tolerant: true }
+            - { setProp: "0xd226", value: 0, tolerant: true }
+            - { setProp: "0xd227", value: 0, tolerant: true }
+            - { getProp: "0xd244", tolerant: true }
+            - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
+            - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
+            - retry: *imageImportPrimeRetry
+            - retry:
+                whenResponseCodes: ["0x2002", "0x2005", "0x2013", "0x2019"]
+                whenFailureClasses: ["decode"]
+                maxAttempts: 3
+                retryDelayMs: 1000
+                steps:
+                  - { getProp: "0xd620" }
+                  - getProp: "0xd621"
+                    captures: [{ bind: objectHandles, as: ptpU32Array }]
+                fallback:
+                  - sendOp: "0x1007"
+                    params: [0xffffffff, 0]
+                    captures: [{ bind: objectHandles, as: ptpU32Array }]
+            - loop:
+                forEach:
+                  in: objectHandles
+                  bind: handle
+                  body:
+                    - { setProp: "0xd226", value: 1, tolerant: true }
+                    - sendOp: "0x1008"
+                      params: [{ runtime: handle }]
+                      captures:
+                        - { bind: objectReportedSize, as: objectInfoCompressedSize }
+                        - { bind: objectTransferSize, as: objectInfoCompressedSize }
+                    - if:
+                        slot: objectReportedSize
+                        equals: 0xffffffff
+                        then:
+                          - sendOp: "0x9803"
+                            params: [{ runtime: handle }, 0xdc04]
+                            captures:
+                              - { bind: objectTransferSize, as: u64Le }
+                    - getProp: "0xd235"
+                      captures:
+                        - { bind: chunkSize, as: propValue }
+                    - loop:
+                        chunk:
+                          total: objectTransferSize
+                          size: { runtime: chunkSize }
+                          offsetBind: offset
+                          lengthBind: length
+                          body:
+                            - sendOp: "0x101b"
+                              params:
+                                - { runtime: handle }
+                                - { runtime: offset, mask: 0xffffffff }
+                                - { runtime: length }
+                                - { runtime: offset, shift: 32 }
+                    - { setProp: "0xd226", value: 0, tolerant: true }
+        triggers: []
+        evidence: [docImageTransfer, docLargeMovObjectInfo, wireUsbDeviceInfo]
 
   wireless-tether:
     kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference-app family)
