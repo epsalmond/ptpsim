@@ -1221,6 +1221,7 @@ non-OK PTP responses, and optionally whole failure classes:
 ```yaml
 - retry:
     steps: [ <PTP step>, ... ]
+    fallback: [ <alternate PTP step>, ... ]
     whenResponseCodes: ["0x2019"]
     whenFailureClasses: ["decode"]
     maxAttempts: 5
@@ -1230,13 +1231,21 @@ non-OK PTP responses, and optionally whole failure classes:
 `maxAttempts` includes the initial attempt. A matching failure reruns the
 complete nested `steps` after `retryDelayMs`; transport failures and unselected
 failures escape immediately. After the budget is exhausted, the final failure
-escapes. The outer step's ordinary `tolerant` flag may accept that final
-failure, but it does not broaden which failures select a retry. `steps` must be
-non-empty, at least one of `whenResponseCodes`/`whenFailureClasses` must be
-non-empty, and `maxAttempts` must be at least one. `retry.steps` MUST NOT
-contain a `loop`, including through nested control flow; failure-selected retry
-belongs inside the per-element body. This keeps a failure on a later element
-from replaying already-completed elements.
+escapes unless `fallback` is present. A fallback runs once after the final
+selected failure and replaces that failure when it succeeds. Unselected and
+transport failures never enter it. The outer step's ordinary `tolerant` flag
+may accept a final response failure, but it does not broaden which failures
+select retry or fallback. `steps` must be non-empty, a present `fallback` must
+be non-empty, at least one of `whenResponseCodes`/`whenFailureClasses` must be
+non-empty, and `maxAttempts` must be at least one. Neither branch may contain a
+`loop`, including through nested control flow. Failure-selected retry belongs
+inside the per-element body. This keeps a failure on a later element from
+replaying already-completed elements.
+
+Bindings used after the retry must be produced by both the primary and fallback
+branches. This permits response-selected acquisition, such as a vendor handle
+list with a standard `GetObjectHandles` fallback, without making later steps
+branch-aware.
 
 `whenFailureClasses` is a closed vocabulary with a single member today:
 `decode` — the step's PTP response was OK but its data payload failed to

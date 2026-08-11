@@ -27,11 +27,11 @@ pub mod ptp_executor;
 pub use ptp_executor::{
     run_initiator_action, run_initiator_action_to_sink, run_initiator_action_txn,
     run_initiator_action_txn_to_sink, run_mode_entry, run_mode_entry_txn,
-    run_mode_reestablishment_exit, run_selected_object_preparation, PtpCollectionValue,
-    PtpDataOutput, PtpDataOutputSink, PtpDataOutputSinkError, PtpExecutionOutcome,
-    PtpExecutorError, PtpExecutorTransport, PtpRuntimeValue, PtpScopeValue, PtpSessionOpenResult,
-    PtpTransactionError, PtpTransactionEvent, PtpTransactionResult, PtpTransactionTransport,
-    PtpTransportError,
+    run_mode_reestablishment_exit, run_selected_object_preparation,
+    run_selected_object_preparation_txn, PtpCollectionValue, PtpDataOutput, PtpDataOutputSink,
+    PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
+    PtpRuntimeValue, PtpScopeValue, PtpSessionOpenResult, PtpTransactionError, PtpTransactionEvent,
+    PtpTransactionResult, PtpTransactionTransport, PtpTransportError,
 };
 pub mod pcss_executor;
 pub use pcss_executor::{
@@ -1783,6 +1783,7 @@ pub enum EntryStep {
     /// manifest-declared non-OK response code or failure class (§11.21).
     Retry {
         steps: Vec<EntryStep>,
+        fallback_steps: Vec<EntryStep>,
         when_response_codes: Vec<u16>,
         when_failure_classes: Vec<FfiRetryFailureClass>,
         max_attempts: u32,
@@ -1909,6 +1910,7 @@ pub enum ActionVerb {
     GetThumb,
     GetObject,
     DeleteObject,
+    CompleteObjectTransfer,
     AutofocusLock,
     AutofocusRelease,
     ImportObjects,
@@ -4420,6 +4422,13 @@ fn map_step(s: &cc::Step) -> Option<EntryStep> {
     if let Some(retry) = &s.retry {
         return Some(EntryStep::Retry {
             steps: retry.steps.iter().map(map_step).collect::<Option<_>>()?,
+            fallback_steps: retry
+                .fallback
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(map_step)
+                .collect::<Option<_>>()?,
             when_response_codes: retry
                 .when_response_codes
                 .iter()
@@ -4544,6 +4553,7 @@ fn ffi_to_cc_verb(v: ActionVerb) -> cc::ActionVerb {
         ActionVerb::GetThumb => cc::ActionVerb::GetThumb,
         ActionVerb::GetObject => cc::ActionVerb::GetObject,
         ActionVerb::DeleteObject => cc::ActionVerb::DeleteObject,
+        ActionVerb::CompleteObjectTransfer => cc::ActionVerb::CompleteObjectTransfer,
         ActionVerb::AutofocusLock => cc::ActionVerb::AutofocusLock,
         ActionVerb::AutofocusRelease => cc::ActionVerb::AutofocusRelease,
         ActionVerb::ImportObjects => cc::ActionVerb::ImportObjects,
@@ -4563,6 +4573,7 @@ fn cc_to_ffi_verb(v: cc::ActionVerb) -> ActionVerb {
         cc::ActionVerb::GetThumb => ActionVerb::GetThumb,
         cc::ActionVerb::GetObject => ActionVerb::GetObject,
         cc::ActionVerb::DeleteObject => ActionVerb::DeleteObject,
+        cc::ActionVerb::CompleteObjectTransfer => ActionVerb::CompleteObjectTransfer,
         cc::ActionVerb::AutofocusLock => ActionVerb::AutofocusLock,
         cc::ActionVerb::AutofocusRelease => ActionVerb::AutofocusRelease,
         cc::ActionVerb::ImportObjects => ActionVerb::ImportObjects,
@@ -4887,10 +4898,13 @@ fn steps_capture(steps: &[cc::Step], bind: &str, source: cc::model::CaptureSourc
                 .await_until
                 .as_ref()
                 .is_some_and(|await_until| steps_capture(&await_until.on_each, bind, source))
-            || step
-                .retry
-                .as_ref()
-                .is_some_and(|retry| steps_capture(&retry.steps, bind, source))
+            || step.retry.as_ref().is_some_and(|retry| {
+                steps_capture(&retry.steps, bind, source)
+                    || retry
+                        .fallback
+                        .as_ref()
+                        .is_some_and(|fallback| steps_capture(fallback, bind, source))
+            })
             || step.r#loop.as_ref().is_some_and(|r#loop| match r#loop {
                 cc::Loop::ForEach { body, .. } | cc::Loop::Chunk { body, .. } => {
                     steps_capture(body, bind, source)
@@ -4989,6 +5003,11 @@ fn validate_step_mapping(step: &cc::Step, context: &str) -> Result<(), ConfigErr
     if let Some(retry) = &step.retry {
         for nested in &retry.steps {
             validate_step_mapping(nested, context)?;
+        }
+        if let Some(fallback) = &retry.fallback {
+            for nested in fallback {
+                validate_step_mapping(nested, context)?;
+            }
         }
     }
     if let Some(r#loop) = &step.r#loop {

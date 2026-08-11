@@ -1141,6 +1141,152 @@ fn app_transfer_actions_use_app_specific_wire_shape() {
 }
 
 #[test]
+fn ios_usb_passthrough_resolves_the_image_transfer_contract() {
+    let manifest = gfx();
+    let connection = &manifest.connections["usb-passthrough"];
+    assert_eq!(connection.kind.as_deref(), Some("usb-passthrough"));
+    assert_eq!(connection.modes, ["image-transfer"]);
+    let platforms = connection.extra["platforms"]
+        .as_sequence()
+        .expect("USB pass-through platforms");
+    assert!(platforms
+        .iter()
+        .any(|platform| platform.as_str() == Some("ios")));
+
+    let transfer = connection
+        .object_transfer
+        .as_ref()
+        .expect("USB pass-through object transfer");
+    assert_eq!(transfer.strategy, ObjectTransferStrategy::Chunked);
+    assert_eq!(
+        transfer.resume_policy,
+        ObjectTransferResumePolicy::ByteOffset
+    );
+    assert_eq!(transfer.read_action, ActionVerb::GetObject);
+    let completion = transfer.completion.as_ref().expect("completion policy");
+    assert_eq!(completion.action, ActionVerb::CompleteObjectTransfer);
+    assert_eq!(
+        completion.after,
+        ObjectTransferCompletionTiming::LocalCommit
+    );
+
+    let entry = connection
+        .entries
+        .iter()
+        .find(|entry| entry.to == "image-transfer")
+        .expect("USB image-transfer entry");
+    let entry_steps = entry.ptp_steps().expect("USB image-transfer PTP entry");
+    let app_entry = manifest.connections["app"]
+        .entries
+        .iter()
+        .find(|entry| entry.to == "image-transfer" && entry.from.is_none())
+        .expect("app image-transfer entry")
+        .ptp_steps()
+        .unwrap();
+    assert_eq!(entry_steps.len(), app_entry.len());
+    for (usb, app) in entry_steps.iter().zip(app_entry) {
+        assert_eq!(usb.set_prop, app.set_prop);
+        assert_eq!(usb.get_prop, app.get_prop);
+        assert_eq!(usb.send_op, app.send_op);
+        assert_eq!(usb.value, app.value);
+        assert_eq!(usb.params, app.params);
+        assert_eq!(usb.tolerant, app.tolerant);
+    }
+
+    let enumerate = manifest
+        .action("usb-passthrough", ActionVerb::EnumerateObjects)
+        .expect("USB enumeration action");
+    let retry = enumerate.initiator().unwrap().steps[1]
+        .retry
+        .as_ref()
+        .expect("response-selected enumeration");
+    assert_eq!(retry.steps[0].get_prop.as_deref(), Some("0xd620"));
+    assert_eq!(retry.steps[1].get_prop.as_deref(), Some("0xd621"));
+    assert!(retry
+        .when_response_codes
+        .iter()
+        .any(|code| code == "0x2005"));
+    let fallback = retry
+        .fallback
+        .as_ref()
+        .expect("standard enumeration fallback");
+    assert_eq!(fallback.len(), 1);
+    assert_eq!(fallback[0].send_op.as_deref(), Some("0x1007"));
+    assert_eq!(
+        fallback[0].params,
+        [StepParam::Literal(0xffff_ffff), StepParam::Literal(0)]
+    );
+    assert!(matches!(
+        fallback[0].captures.as_slice(),
+        [camera_config::model::Capture {
+            bind,
+            source: CaptureSource::PtpU32Array,
+        }] if bind == "objectHandles"
+    ));
+    for (verb, operation) in [
+        (ActionVerb::GetObjectInfo, "0x1008"),
+        (ActionVerb::GetThumb, "0x100a"),
+    ] {
+        let action = manifest
+            .action("usb-passthrough", verb)
+            .unwrap_or_else(|| panic!("missing USB action {verb:?}"));
+        assert_eq!(action.mode, "image-transfer");
+        assert_eq!(action.initiator().unwrap().params, ["handle"]);
+        assert_eq!(
+            action.initiator().unwrap().steps[0].send_op.as_deref(),
+            Some(operation)
+        );
+    }
+
+    let import = manifest
+        .action("usb-passthrough", ActionVerb::ImportObjects)
+        .expect("USB import action");
+    let body = import
+        .initiator()
+        .unwrap()
+        .steps
+        .iter()
+        .find_map(|step| match step.r#loop.as_ref() {
+            Some(camera_config::Loop::ForEach { body, .. }) => Some(body),
+            _ => None,
+        })
+        .expect("per-object import body");
+    assert_eq!(body[0].set_prop.as_deref(), Some("0xd226"));
+    assert_eq!(body[0].value, Some(1.into()));
+    assert_eq!(body[1].send_op.as_deref(), Some("0x1008"));
+    assert!(body[1]
+        .captures
+        .iter()
+        .any(|capture| capture.source == CaptureSource::ObjectInfoCompressedSize));
+    assert!(body
+        .iter()
+        .any(|step| step.get_prop.as_deref() == Some("0xd235")));
+    assert!(body
+        .iter()
+        .any(|step| matches!(step.r#loop, Some(camera_config::Loop::Chunk { .. }))));
+    let idle = body.last().expect("transfer idle step");
+    assert_eq!(idle.set_prop.as_deref(), Some("0xd226"));
+    assert_eq!(idle.value, Some(0.into()));
+
+    let partial = manifest
+        .action("usb-passthrough", ActionVerb::GetObject)
+        .expect("USB partial-read action");
+    assert_eq!(
+        partial.initiator().unwrap().steps[0].send_op.as_deref(),
+        Some("0x101b")
+    );
+    let complete = manifest
+        .action("usb-passthrough", ActionVerb::CompleteObjectTransfer)
+        .expect("USB completion action");
+    assert_eq!(complete.initiator().unwrap().params, ["handle"]);
+    assert_eq!(
+        complete.initiator().unwrap().steps[0].set_prop.as_deref(),
+        Some("0xd226")
+    );
+    assert_eq!(complete.initiator().unwrap().steps[0].value, Some(0.into()));
+}
+
+#[test]
 fn getobject_params_differ_per_connection_same_verb() {
     // The closed ActionVerb vocabulary supports same-verb-different-shape
     // across transports: PCSS getObject is whole-object (`[handle]`),
@@ -1973,12 +2119,26 @@ fn response_retry_requires_a_finite_selected_body() {
         "              whenFailureClasses: [\"decode\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
     );
     assert!(CameraManifest::from_yaml(&classes_only).is_ok());
+    let fallback = manifest(
+        "              whenResponseCodes: [\"0x2005\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd621\" }]\n              fallback:\n                - sendOp: \"0x1007\"\n                  params: [0xffffffff, 0]\n                  captures: [{ bind: objectHandles, as: ptpU32Array }]",
+    );
+    let fallback = CameraManifest::from_yaml(&fallback).expect("selected fallback loads");
+    let retry = fallback.connections["app"].entries[0].ptp_steps().unwrap()[0]
+        .retry
+        .as_ref()
+        .expect("retry step");
+    assert_eq!(retry.fallback.as_ref().expect("fallback").len(), 1);
+    assert_eq!(
+        retry.fallback.as_ref().unwrap()[0].send_op.as_deref(),
+        Some("0x1007")
+    );
     for invalid in [
         "              whenResponseCodes: []\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenFailureClasses: [\"transport\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenResponseCodes: [\"not-hex\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 0\n              steps: [{ getProp: \"0xd620\" }]",
         "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              steps: []",
+        "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              steps: [{ getProp: \"0xd620\" }]\n              fallback: []",
         "              whenResponseCodes: [\"0x2019\"]\n              maxAttempts: 2\n              steps:\n                - loop:\n                    chunk:\n                      total: total\n                      size: { literal: 1 }\n                      offsetBind: offset\n                      lengthBind: length\n                      body: [{ sendOp: \"0x101b\" }]",
     ] {
         assert!(CameraManifest::from_yaml(&manifest(invalid)).is_err());

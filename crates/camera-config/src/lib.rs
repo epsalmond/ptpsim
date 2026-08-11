@@ -1057,6 +1057,13 @@ fn require_valid_event_awaits(
         }
         if let Some(retry) = &step.retry {
             require_valid_event_awaits(&retry.steps, &format!("{step_path}.retry"), delivery)?;
+            if let Some(fallback) = &retry.fallback {
+                require_valid_event_awaits(
+                    fallback,
+                    &format!("{step_path}.retry.fallback"),
+                    delivery,
+                )?;
+            }
         }
         if let Some(loop_step) = &step.r#loop {
             let body = match loop_step {
@@ -1537,6 +1544,14 @@ fn require_valid_action_runtime_values(
                     &retry.steps,
                     &format!("{step_path}.retry"),
                 )?;
+                if let Some(fallback) = &retry.fallback {
+                    walk(
+                        manifest,
+                        declarations,
+                        fallback,
+                        &format!("{step_path}.retry.fallback"),
+                    )?;
+                }
             }
             if let Some(loop_step) = &step.r#loop {
                 let body = match loop_step {
@@ -1578,6 +1593,9 @@ fn require_no_runtime_set_props(steps: &[Step], path: &str) -> Result<(), Manife
         }
         if let Some(retry) = &step.retry {
             require_no_runtime_set_props(&retry.steps, &format!("{step_path}.retry"))?;
+            if let Some(fallback) = &retry.fallback {
+                require_no_runtime_set_props(fallback, &format!("{step_path}.retry.fallback"))?;
+            }
         }
         if let Some(loop_step) = &step.r#loop {
             let body = match loop_step {
@@ -2024,6 +2042,11 @@ fn require_valid_ptp_steps_with_collections(
                     "{step_path}.retry steps must not be empty"
                 )));
             }
+            if retry.fallback.as_ref().is_some_and(Vec::is_empty) {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.retry fallback must not be empty"
+                )));
+            }
             if retry.when_response_codes.is_empty() && retry.when_failure_classes.is_empty() {
                 return Err(ManifestError::Contract(format!(
                     "{step_path}.retry must select at least one of \
@@ -2040,6 +2063,15 @@ fn require_valid_ptp_steps_with_collections(
                     "{step_path}.retry must not contain loop; put retry inside the per-element body"
                 )));
             }
+            if retry
+                .fallback
+                .as_ref()
+                .is_some_and(|fallback| contains_ptp_loop(fallback))
+            {
+                return Err(ManifestError::Contract(format!(
+                    "{step_path}.retry fallback must not contain loop"
+                )));
+            }
             for code in &retry.when_response_codes {
                 if parse_hex_code(code).is_none() {
                     return Err(ManifestError::Contract(format!(
@@ -2054,6 +2086,15 @@ fn require_valid_ptp_steps_with_collections(
                 &format!("{step_path}.retry"),
                 &mut after_retry,
             )?;
+            if let Some(fallback) = &retry.fallback {
+                let mut after_fallback = before_retry.clone();
+                require_valid_ptp_steps_with_collections(
+                    fallback,
+                    &format!("{step_path}.retry.fallback"),
+                    &mut after_fallback,
+                )?;
+                after_retry.retain(|binding| after_fallback.contains(binding));
+            }
             if step.tolerant && after_retry != before_retry {
                 return Err(ManifestError::Contract(format!(
                     "{step_path}.retry captures a collection and must not be tolerant"
@@ -2152,6 +2193,14 @@ fn require_valid_open_channels(
                 &format!("{step_path}.retry"),
                 false,
             )?;
+            if let Some(fallback) = &retry.fallback {
+                require_valid_open_channels(
+                    fallback,
+                    bindings,
+                    &format!("{step_path}.retry.fallback"),
+                    false,
+                )?;
+            }
         }
         if let Some(await_until) = &step.await_until {
             require_valid_open_channels(
@@ -2189,10 +2238,13 @@ fn require_valid_open_channels(
 fn contains_ptp_loop(steps: &[Step]) -> bool {
     steps.iter().any(|step| {
         step.r#loop.is_some()
-            || step
-                .retry
-                .as_ref()
-                .is_some_and(|retry| contains_ptp_loop(&retry.steps))
+            || step.retry.as_ref().is_some_and(|retry| {
+                contains_ptp_loop(&retry.steps)
+                    || retry
+                        .fallback
+                        .as_ref()
+                        .is_some_and(|fallback| contains_ptp_loop(fallback))
+            })
             || step
                 .await_until
                 .as_ref()
@@ -2267,6 +2319,14 @@ fn check_gate_steps(
                 defined_gates,
                 lints,
             );
+            if let Some(fallback) = &retry.fallback {
+                check_gate_steps(
+                    fallback,
+                    &format!("{ctx}.steps[{i}].retry.fallback"),
+                    defined_gates,
+                    lints,
+                );
+            }
         }
         if let Some(gate) = &step.starts_gate {
             if !defined_gates.contains(gate.as_str()) {

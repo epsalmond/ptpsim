@@ -16580,11 +16580,770 @@ connections:
     transportClose: null
     knock: null
     initRetries: null
-    objectTransfer: null
+    objectTransfer:
+      strategy: chunked
+      resumePolicy: byteOffset
+      readAction: getObject
+      completion:
+        action: completeObjectTransfer
+        after: localCommit
+      formats:
+        '0x300d': confirmed
+        '0x3801': confirmed
+        '0xb103': confirmed
+        '0xb105': confirmed
     controlSurfaces: {}
-    modes: []
-    entries: []
+    modes:
+    - image-transfer
+    entries:
+    - to: image-transfer
+      steps:
+      - setProp: null
+        getProp: '0xd212'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: '0xdf01'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 20
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: '0xdf28'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: '0xdf28'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 3
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: '0xd226'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 0
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: '0xd227'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 0
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: '0xd244'
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9054'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params:
+        - 268435457
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x9055'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params:
+        - 268435457
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
     actions:
+      enumerateObjects:
+        mode: image-transfer
+        initiator:
+          params: []
+          steps:
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+            retry:
+              steps:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x9050'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                startsGate: imageImportBootstrap
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: '0xd212'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                tolerant: true
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: '0xd22b'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                tolerant: true
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x9053'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - 0
+                - 30000
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: '0xd212'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                completesGate: imageImportBootstrap
+                tolerant: true
+                repeat: 1
+                awaitUntil: null
+              whenResponseCodes:
+              - '0x2013'
+              - '0x2019'
+              whenFailureClasses:
+              - decode
+              maxAttempts: 5
+              retryDelayMs: 100
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+            retry:
+              steps:
+              - setProp: null
+                getProp: '0xd620'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: '0xd621'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                captures:
+                - bind: objectHandles
+                  as: ptpU32Array
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              fallback:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x1007'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - 4294967295
+                - 0
+                captures:
+                - bind: objectHandles
+                  as: ptpU32Array
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              whenResponseCodes:
+              - '0x2002'
+              - '0x2005'
+              - '0x2013'
+              - '0x2019'
+              whenFailureClasses:
+              - decode
+              maxAttempts: 3
+              retryDelayMs: 1000
+          activities: []
+        triggers: []
+        evidence:
+        - docImageTransfer
+        - wireUsbDeviceInfo
+      getObjectInfo:
+        mode: image-transfer
+        initiator:
+          params:
+          - handle
+          steps:
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x1008'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params:
+            - runtime: handle
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          activities: []
+        triggers: []
+        evidence:
+        - docImageTransfer
+        - wireUsbDeviceInfo
+      getThumb:
+        mode: image-transfer
+        initiator:
+          params:
+          - handle
+          steps:
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x100a'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params:
+            - runtime: handle
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          activities: []
+        triggers: []
+        evidence:
+        - docImageTransfer
+        - wireUsbDeviceInfo
+      getObject:
+        mode: image-transfer
+        initiator:
+          params:
+          - handle
+          - offset
+          - length
+          steps:
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x101b'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params:
+            - runtime: handle
+            - runtime: offset
+              mask: 4294967295
+            - runtime: length
+            - runtime: offset
+              shift: 32
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          activities: []
+        triggers: []
+        evidence:
+        - docImageTransfer
+        - docLargeMovObjectInfo
+        - wireUsbDeviceInfo
+      completeObjectTransfer:
+        mode: image-transfer
+        initiator:
+          params:
+          - handle
+          steps:
+          - setProp: '0xd226'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 0
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          activities: []
+        triggers: []
+        evidence:
+        - docImageTransfer
+        - wireUsbDeviceInfo
+      importObjects:
+        mode: image-transfer
+        initiator:
+          params: []
+          steps:
+          - setProp: null
+            getProp: '0xd212'
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: '0xdf01'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 20
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+          - setProp: null
+            getProp: '0xdf28'
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: '0xdf28'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 3
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: '0xd226'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 0
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: '0xd227'
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: 0
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: null
+            getProp: '0xd244'
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x9054'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params:
+            - 268435457
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: '0x9055'
+            reopenSession: null
+            closeSession: null
+            value: null
+            params:
+            - 268435457
+            tolerant: true
+            repeat: 1
+            awaitUntil: null
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+            retry:
+              steps:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x9050'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                startsGate: imageImportBootstrap
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: '0xd212'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                tolerant: true
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: '0xd22b'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                tolerant: true
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x9053'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - 0
+                - 30000
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: '0xd212'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                completesGate: imageImportBootstrap
+                tolerant: true
+                repeat: 1
+                awaitUntil: null
+              whenResponseCodes:
+              - '0x2013'
+              - '0x2019'
+              whenFailureClasses:
+              - decode
+              maxAttempts: 5
+              retryDelayMs: 100
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+            retry:
+              steps:
+              - setProp: null
+                getProp: '0xd620'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              - setProp: null
+                getProp: '0xd621'
+                readEcho: null
+                sendOp: null
+                reopenSession: null
+                closeSession: null
+                value: null
+                params: []
+                captures:
+                - bind: objectHandles
+                  as: ptpU32Array
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              fallback:
+              - setProp: null
+                getProp: null
+                readEcho: null
+                sendOp: '0x1007'
+                reopenSession: null
+                closeSession: null
+                value: null
+                params:
+                - 4294967295
+                - 0
+                captures:
+                - bind: objectHandles
+                  as: ptpU32Array
+                tolerant: false
+                repeat: 1
+                awaitUntil: null
+              whenResponseCodes:
+              - '0x2002'
+              - '0x2005'
+              - '0x2013'
+              - '0x2019'
+              whenFailureClasses:
+              - decode
+              maxAttempts: 3
+              retryDelayMs: 1000
+          - setProp: null
+            getProp: null
+            readEcho: null
+            sendOp: null
+            reopenSession: null
+            closeSession: null
+            value: null
+            params: []
+            tolerant: false
+            repeat: 1
+            awaitUntil: null
+            loop:
+              forEach:
+                in: objectHandles
+                bind: handle
+                body:
+                - setProp: '0xd226'
+                  getProp: null
+                  readEcho: null
+                  sendOp: null
+                  reopenSession: null
+                  closeSession: null
+                  value: 1
+                  params: []
+                  tolerant: true
+                  repeat: 1
+                  awaitUntil: null
+                - setProp: null
+                  getProp: null
+                  readEcho: null
+                  sendOp: '0x1008'
+                  reopenSession: null
+                  closeSession: null
+                  value: null
+                  params:
+                  - runtime: handle
+                  captures:
+                  - bind: objectReportedSize
+                    as: objectInfoCompressedSize
+                  - bind: objectTransferSize
+                    as: objectInfoCompressedSize
+                  tolerant: false
+                  repeat: 1
+                  awaitUntil: null
+                - setProp: null
+                  getProp: null
+                  readEcho: null
+                  sendOp: null
+                  reopenSession: null
+                  closeSession: null
+                  value: null
+                  params: []
+                  tolerant: false
+                  repeat: 1
+                  awaitUntil: null
+                  if:
+                    slot: objectReportedSize
+                    equals: 4294967295
+                    then:
+                    - setProp: null
+                      getProp: null
+                      readEcho: null
+                      sendOp: '0x9803'
+                      reopenSession: null
+                      closeSession: null
+                      value: null
+                      params:
+                      - runtime: handle
+                      - 56324
+                      captures:
+                      - bind: objectTransferSize
+                        as: u64Le
+                      tolerant: false
+                      repeat: 1
+                      awaitUntil: null
+                    else: []
+                - setProp: null
+                  getProp: '0xd235'
+                  readEcho: null
+                  sendOp: null
+                  reopenSession: null
+                  closeSession: null
+                  value: null
+                  params: []
+                  captures:
+                  - bind: chunkSize
+                    as: propValue
+                  tolerant: false
+                  repeat: 1
+                  awaitUntil: null
+                - setProp: null
+                  getProp: null
+                  readEcho: null
+                  sendOp: null
+                  reopenSession: null
+                  closeSession: null
+                  value: null
+                  params: []
+                  tolerant: false
+                  repeat: 1
+                  awaitUntil: null
+                  loop:
+                    chunk:
+                      total: objectTransferSize
+                      size:
+                        runtime: chunkSize
+                      offsetBind: offset
+                      lengthBind: length
+                      body:
+                      - setProp: null
+                        getProp: null
+                        readEcho: null
+                        sendOp: '0x101b'
+                        reopenSession: null
+                        closeSession: null
+                        value: null
+                        params:
+                        - runtime: handle
+                        - runtime: offset
+                          mask: 4294967295
+                        - runtime: length
+                        - runtime: offset
+                          shift: 32
+                        tolerant: false
+                        repeat: 1
+                        awaitUntil: null
+                - setProp: '0xd226'
+                  getProp: null
+                  readEcho: null
+                  sendOp: null
+                  reopenSession: null
+                  closeSession: null
+                  value: 0
+                  params: []
+                  tolerant: true
+                  repeat: 1
+                  awaitUntil: null
+          activities: []
+        triggers: []
+        evidence:
+        - docImageTransfer
+        - docLargeMovObjectInfo
+        - wireUsbDeviceInfo
       readDeviceInfo:
         mode: ''
         initiator:

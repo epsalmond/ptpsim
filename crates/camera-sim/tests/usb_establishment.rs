@@ -7,13 +7,15 @@
 use std::sync::{Arc, Mutex};
 
 use camera_protocol_ffi::{
-    run_initiator_action_txn, ActionInvocationRequest, ActionRole, ConfigStore,
-    ConnectionActivityEvent, ConnectionActivityObserver, PtpTransactionError, PtpTransactionEvent,
-    PtpTransactionResult, PtpTransactionTransport, StepObserver, StepReport,
+    parse_object_info, run_initiator_action_txn, run_selected_object_preparation_txn,
+    ActionArgument, ActionInvocationRequest, ActionRole, ActionValue, ConfigStore,
+    ConnectionActivityEvent, ConnectionActivityObserver, Platform, PtpRuntimeValue,
+    PtpTransactionError, PtpTransactionEvent, PtpTransactionResult, PtpTransactionTransport,
+    StepObserver, StepReport,
 };
 use camera_sim::usb::{UsbError, UsbEvent, UsbResponder, UsbTxnReply};
 use futures::executor::block_on;
-use ptp_core::Writer;
+use ptp_core::{ObjectInfo, Writer};
 
 /// PTP-over-USB OpenSession command container (session id 1, transaction 0).
 const OPEN_SESSION_CONTAINER: [u8; 16] = [
@@ -100,6 +102,61 @@ fn action_request(store: &ConfigStore, action_id: &str) -> ActionInvocationReque
         role: ActionRole::Initiator,
         parameters: Vec::new(),
     }
+}
+
+fn action_request_with_values(
+    store: &ConfigStore,
+    action_id: &str,
+    parameters: &[(&str, u64)],
+) -> ActionInvocationRequest {
+    ActionInvocationRequest {
+        catalog_revision: store.action_catalog().revision,
+        action_id: action_id.into(),
+        connection: "usb-passthrough".into(),
+        mode: "image-transfer".into(),
+        role: ActionRole::Initiator,
+        parameters: parameters
+            .iter()
+            .map(|(name, value)| ActionArgument {
+                name: (*name).into(),
+                value: ActionValue::U64 { value: *value },
+            })
+            .collect(),
+    }
+}
+
+fn gfx_passthrough_store() -> Arc<ConfigStore> {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml");
+    let yaml = std::fs::read_to_string(&manifest)
+        .unwrap_or_else(|error| panic!("read {}: {error}", manifest.display()));
+    ConfigStore::from_bundle(yaml, None).expect("consolidated GFX100 II manifest loads")
+}
+
+fn u32_array(values: &[u32]) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.u32(values.len() as u32);
+    for value in values {
+        writer.u32(*value);
+    }
+    writer.into_vec()
+}
+
+fn object_info_dataset() -> Vec<u8> {
+    let mut writer = Writer::new();
+    ObjectInfo {
+        storage_id: 0x0002_0001,
+        object_format: 0xb103,
+        object_compressed_size: 0x0040_0000,
+        parent_object: 0x22,
+        association_type: 1,
+        association_desc: 0x30,
+        filename: "DSCF0123.RAF".into(),
+        ..Default::default()
+    }
+    .encode(&mut writer)
+    .expect("ObjectInfo encodes");
+    writer.into_vec()
 }
 
 #[derive(Default)]
@@ -313,6 +370,234 @@ fn best_effort_event_loss_falls_back_to_then_poll_over_the_responder() {
             },
         ]
     );
+}
+
+#[test]
+fn gfx_usb_passthrough_executes_d620_d621_as_the_primary_enumeration() {
+    let store = gfx_passthrough_store();
+    assert!(store
+        .connections(Platform::Ios)
+        .iter()
+        .any(|connection| connection.id == "usb-passthrough"));
+    assert!(store
+        .modes("usb-passthrough".into())
+        .iter()
+        .any(|mode| mode.path == "image-transfer"));
+    let handles = [0x41, 0x42, 0x43];
+    let responder = UsbResponder::new()
+        .reply_transaction(0x9050, &[], UsbTxnReply::ok(None))
+        .reply_transaction(0x1015, &[0xd212], UsbTxnReply::ok(Some(vec![0, 0])))
+        .reply_transaction(0x1015, &[0xd22b], UsbTxnReply::ok(Some(vec![0, 0])))
+        .reply_transaction(0x9053, &[0, 0x7530], UsbTxnReply::ok(None))
+        .reply_transaction(
+            0x1015,
+            &[0xd620],
+            UsbTxnReply::ok(Some((handles.len() as u32).to_le_bytes().to_vec())),
+        )
+        .reply_transaction(
+            0x1015,
+            &[0xd621],
+            UsbTxnReply::ok(Some(u32_array(&handles))),
+        );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+
+    let outcome = block_on(run_initiator_action_txn(
+        store.clone(),
+        action_request_with_values(&store, "enumerateObjects", &[]),
+        transport.clone(),
+        Arc::new(StepRecorder::default()),
+        Arc::new(ActivityRecorder::default()),
+    ))
+    .expect("vendor enumeration succeeds");
+
+    assert!(outcome.collections.iter().any(|collection| {
+        collection.key == "objectHandles" && collection.values == handles.map(u64::from).to_vec()
+    }));
+    let log = transport.log();
+    let d620 = log
+        .iter()
+        .position(|event| matches!(event, UsbEvent::Transaction { opcode: 0x1015, params, .. } if params == &[0xd620]))
+        .expect("D620 executes");
+    let d621 = log
+        .iter()
+        .position(|event| matches!(event, UsbEvent::Transaction { opcode: 0x1015, params, .. } if params == &[0xd621]))
+        .expect("D621 executes");
+    assert!(d620 < d621);
+    assert!(!log
+        .iter()
+        .any(|event| matches!(event, UsbEvent::Transaction { opcode: 0x1007, .. })));
+}
+
+#[test]
+fn gfx_usb_passthrough_falls_back_to_association_capable_standard_enumeration() {
+    let store = gfx_passthrough_store();
+    let association_handles = [0x10, 0x20, 0x30, 0x40];
+    let responder = UsbResponder::new()
+        .reply_transaction(0x9050, &[], UsbTxnReply::ok(None))
+        .reply_transaction(0x1015, &[0xd212], UsbTxnReply::ok(Some(vec![0, 0])))
+        .reply_transaction(0x1015, &[0xd22b], UsbTxnReply::ok(Some(vec![0, 0])))
+        .reply_transaction(0x9053, &[0, 0x7530], UsbTxnReply::ok(None))
+        .reply_transaction(
+            0x1015,
+            &[0xd620],
+            UsbTxnReply::response(0x2005, vec![], None),
+        )
+        .reply_transaction(
+            0x1007,
+            &[0xffff_ffff, 0],
+            UsbTxnReply::ok(Some(u32_array(&association_handles))),
+        );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+
+    let outcome = block_on(run_initiator_action_txn(
+        store.clone(),
+        action_request_with_values(&store, "enumerateObjects", &[]),
+        transport.clone(),
+        Arc::new(StepRecorder::default()),
+        Arc::new(ActivityRecorder::default()),
+    ))
+    .expect("standard enumeration replaces the selected vendor failure");
+
+    assert!(outcome.collections.iter().any(|collection| {
+        collection.key == "objectHandles"
+            && collection.values == association_handles.map(u64::from).to_vec()
+    }));
+    assert!(transport.log().iter().any(|event| matches!(
+        event,
+        UsbEvent::Transaction {
+            opcode: 0x1007,
+            params,
+            ..
+        } if params == &[0xffff_ffff, 0]
+    )));
+}
+
+#[test]
+fn gfx_usb_passthrough_prepares_a_selected_object_and_retains_object_info() {
+    let store = gfx_passthrough_store();
+    let handle = 0x43;
+    let responder = UsbResponder::new()
+        .reply_transaction(0x1016, &[0xd226], UsbTxnReply::ok(None))
+        .reply_transaction(
+            0x1008,
+            &[handle],
+            UsbTxnReply::ok(Some(object_info_dataset())),
+        )
+        .reply_transaction(
+            0x1015,
+            &[0xd235],
+            UsbTxnReply::ok(Some(0x0020_0000_u32.to_le_bytes().to_vec())),
+        );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+
+    let outcome = block_on(run_selected_object_preparation_txn(
+        store,
+        "usb-passthrough".into(),
+        transport.clone(),
+        Arc::new(StepRecorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![PtpRuntimeValue {
+            key: "handle".into(),
+            value: u64::from(handle),
+        }],
+    ))
+    .expect("selected object preparation succeeds");
+
+    let output = outcome
+        .outputs
+        .iter()
+        .find(|output| output.operation == 0x1008)
+        .expect("ObjectInfo output is retained");
+    let info = parse_object_info(output.payload.clone()).expect("ObjectInfo decodes");
+    assert_eq!(info.storage_id, 0x0002_0001);
+    assert_eq!(info.parent_object, 0x22);
+    assert_eq!(info.association_type, 1);
+    assert_eq!(info.association_desc, 0x30);
+    assert_eq!(
+        outcome
+            .outputs
+            .iter()
+            .map(|output| output.operation)
+            .collect::<Vec<_>>(),
+        [0x1008, 0x1015],
+    );
+    assert!(matches!(
+        transport.log().first(),
+        Some(UsbEvent::Transaction {
+            opcode: 0x1016,
+            params,
+            data_out: Some(data),
+            ..
+        }) if params == &[0xd226] && data == &[1, 0]
+    ));
+}
+
+#[test]
+fn gfx_usb_passthrough_runs_partial_read_and_local_commit_completion() {
+    let store = gfx_passthrough_store();
+    let handle = 0x43;
+    let offset = 0x0000_0001_0000_0020_u64;
+    let length = 0x0020_0000_u64;
+    let partial_transport = Arc::new(ResponderTxnTransport::new(
+        UsbResponder::new().reply_transaction(
+            0x101b,
+            &[handle, 0x20, length as u32, 1],
+            UsbTxnReply::ok(Some(vec![0xaa, 0xbb])),
+        ),
+        &[60_000],
+    ));
+
+    let partial = block_on(run_initiator_action_txn(
+        store.clone(),
+        action_request_with_values(
+            &store,
+            "getObject",
+            &[
+                ("handle", u64::from(handle)),
+                ("offset", offset),
+                ("length", length),
+            ],
+        ),
+        partial_transport.clone(),
+        Arc::new(StepRecorder::default()),
+        Arc::new(ActivityRecorder::default()),
+    ))
+    .expect("partial object read succeeds");
+    assert_eq!(partial.outputs[0].payload, [0xaa, 0xbb]);
+    assert!(matches!(
+        partial_transport.log().as_slice(),
+        [UsbEvent::Transaction {
+            opcode: 0x101b,
+            params,
+            ..
+        }] if params == &[handle, 0x20, length as u32, 1]
+    ));
+
+    let completion_transport = Arc::new(ResponderTxnTransport::new(
+        UsbResponder::new().reply_transaction(0x1016, &[0xd226], UsbTxnReply::ok(None)),
+        &[60_000],
+    ));
+    block_on(run_initiator_action_txn(
+        store.clone(),
+        action_request_with_values(
+            &store,
+            "completeObjectTransfer",
+            &[("handle", u64::from(handle))],
+        ),
+        completion_transport.clone(),
+        Arc::new(StepRecorder::default()),
+        Arc::new(ActivityRecorder::default()),
+    ))
+    .expect("local-commit completion marks transfer idle");
+    assert!(matches!(
+        completion_transport.log().as_slice(),
+        [UsbEvent::Transaction {
+            opcode: 0x1016,
+            params,
+            data_out: Some(data),
+            ..
+        }] if params == &[0xd226] && data == &[0, 0]
+    ));
 }
 
 // ---------------------------------------------------------------------------

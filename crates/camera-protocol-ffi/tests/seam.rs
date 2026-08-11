@@ -1830,6 +1830,7 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
         [
             EntryStep::Retry {
                 steps: terminate_steps,
+                fallback_steps: terminate_fallback_steps,
                 when_response_codes: terminate_response_codes,
                 when_failure_classes: terminate_failure_classes,
                 max_attempts: 10,
@@ -1850,6 +1851,7 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
             }
         ] if terminate_response_codes.as_slice() == [0x2019]
             && terminate_failure_classes.is_empty()
+            && terminate_fallback_steps.is_empty()
             && matches!(
                 terminate_steps.as_slice(),
                 [EntryStep::SendOp {
@@ -1881,6 +1883,7 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
         poll.initiator.as_ref().unwrap().steps.as_slice(),
         [EntryStep::Retry {
             steps,
+            fallback_steps,
             when_response_codes,
             when_failure_classes,
             max_attempts: 10,
@@ -1888,6 +1891,7 @@ fn pcss_live_view_verbs_are_exact_and_preserve_connection_specific_shapes() {
             tolerant: false,
         }] if when_response_codes.as_slice() == [0x2002]
             && when_failure_classes.is_empty()
+            && fallback_steps.is_empty()
             && matches!(
                 steps.as_slice(),
                 [EntryStep::SendOp {
@@ -2216,6 +2220,7 @@ fn enumerate_objects_surfaces_response_selected_retries() {
     assert_eq!(plan.initiator.as_ref().unwrap().steps.len(), 3);
     let EntryStep::Retry {
         steps,
+        fallback_steps,
         when_response_codes,
         when_failure_classes,
         max_attempts,
@@ -2230,6 +2235,7 @@ fn enumerate_objects_surfaces_response_selected_retries() {
     assert_eq!(*max_attempts, 5);
     assert_eq!(*retry_delay_ms, 100);
     assert!(!tolerant);
+    assert!(fallback_steps.is_empty());
     assert_bootstrap_tail_surfaces(steps);
 
     for (step, prop) in plan.initiator.as_ref().unwrap().steps[1..]
