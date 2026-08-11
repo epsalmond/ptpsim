@@ -1584,6 +1584,13 @@ pub enum EntryParam {
 pub struct CaptureInfo {
     pub bind: String,
     pub source: CaptureSourceInfo,
+    pub fallback: Option<CaptureResponseFallbackInfo>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct CaptureResponseFallbackInfo {
+    pub value: u64,
+    pub when_response_codes: Vec<u16>,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -4533,6 +4540,20 @@ fn map_capture(c: &cc::model::Capture) -> CaptureInfo {
             cc::model::CaptureSource::PtpU32Array => CaptureSourceInfo::PtpU32Array,
             cc::model::CaptureSource::TransactionId => CaptureSourceInfo::TransactionId,
         },
+        fallback: c
+            .fallback
+            .as_ref()
+            .map(|fallback| CaptureResponseFallbackInfo {
+                value: fallback.value,
+                when_response_codes: fallback
+                    .when_response_codes
+                    .iter()
+                    .map(|code| {
+                        cc::parse_hex_code(code)
+                            .expect("capture fallback response codes are validated at load")
+                    })
+                    .collect(),
+            }),
     }
 }
 
@@ -5146,10 +5167,12 @@ mod tests {
                 cc::model::Capture {
                     bind: "objectReportedSize".into(),
                     source: cc::model::CaptureSource::ObjectInfoCompressedSize,
+                    fallback: None,
                 },
                 cc::model::Capture {
                     bind: "objectTransferSize".into(),
                     source: cc::model::CaptureSource::ObjectInfoCompressedSize,
+                    fallback: None,
                 },
             ],
             ..Default::default()
@@ -5163,6 +5186,7 @@ mod tests {
                     captures: vec![cc::model::Capture {
                         bind: "objectTransferSize".into(),
                         source: cc::model::CaptureSource::U64Le,
+                        fallback: None,
                     }],
                     ..Default::default()
                 }],
@@ -5175,6 +5199,7 @@ mod tests {
             captures: vec![cc::model::Capture {
                 bind: "chunkSize".into(),
                 source: cc::model::CaptureSource::PropValue,
+                fallback: None,
             }],
             ..Default::default()
         };
@@ -5198,6 +5223,7 @@ mod tests {
                         captures: vec![cc::model::Capture {
                             bind: "objectHandles".into(),
                             source: cc::model::CaptureSource::PtpU32Array,
+                            fallback: None,
                         }],
                         ..Default::default()
                     },

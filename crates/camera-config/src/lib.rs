@@ -1988,6 +1988,41 @@ fn require_valid_ptp_steps_with_collections(
         }
         let mut array_binds = std::collections::BTreeSet::new();
         for capture in &step.captures {
+            if let Some(fallback) = &capture.fallback {
+                if step.get_prop.is_none() || capture.source != CaptureSource::PropValue {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path}.captures fallback requires getProp propValue"
+                    )));
+                }
+                if step.tolerant {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path}.captures fallback must not be tolerant"
+                    )));
+                }
+                if fallback.when_response_codes.is_empty() {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path}.captures fallback whenResponseCodes must not be empty"
+                    )));
+                }
+                let mut response_codes = std::collections::BTreeSet::new();
+                for code in &fallback.when_response_codes {
+                    let Some(code_value) = parse_hex_code(code) else {
+                        return Err(ManifestError::Contract(format!(
+                            "{step_path}.captures fallback has invalid response code '{code}'"
+                        )));
+                    };
+                    if code_value == 0x2001 {
+                        return Err(ManifestError::Contract(format!(
+                            "{step_path}.captures fallback cannot select the OK response"
+                        )));
+                    }
+                    if !response_codes.insert(code_value) {
+                        return Err(ManifestError::Contract(format!(
+                            "{step_path}.captures fallback repeats response code '{code}'"
+                        )));
+                    }
+                }
+            }
             if capture.source == CaptureSource::TransactionId {
                 if step.send_op.is_none() {
                     return Err(ManifestError::Contract(format!(

@@ -1132,7 +1132,12 @@ impl PtpCtx {
                             Some(*prop),
                         )
                         .await?;
-                    let reply = self.require_ok_reply(here, reply)?;
+                    if reply.meta.response_code != resp::OK {
+                        if self.bind_capture_fallbacks(captures, reply.meta.response_code) {
+                            return Ok(Some(reply.meta));
+                        }
+                        return Err(self.response_error(here, reply.meta));
+                    }
                     self.capture_property(here, *prop, captures, &reply.payload)?;
                     Ok(Some(reply.meta))
                 }
@@ -2019,6 +2024,26 @@ impl PtpCtx {
             self.bindings.insert(capture.bind.clone(), value.clone());
         }
         Ok(())
+    }
+
+    fn bind_capture_fallbacks(&mut self, captures: &[CaptureInfo], response_code: u16) -> bool {
+        let selected = captures
+            .iter()
+            .map(|capture| {
+                capture
+                    .fallback
+                    .as_ref()
+                    .filter(|fallback| fallback.when_response_codes.contains(&response_code))
+                    .map(|fallback| (capture.bind.clone(), fallback.value))
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(selected) = selected.filter(|values| !values.is_empty()) else {
+            return false;
+        };
+        for (bind, value) in selected {
+            self.bindings.insert(bind, ActionValue::U64 { value });
+        }
+        true
     }
 
     fn observe_property(&mut self, here: &str, prop: u16, payload: &[u8]) -> Result<(), StepError> {

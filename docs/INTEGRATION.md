@@ -581,9 +581,11 @@ their normal consumers, the same contract as `next_event_frame` above),
 capture, predicate, and aggregate-deadline semantics as the frame-based
 executor; only the transport seam differs.
 
-The daemon-attached GFX100 II connection currently declares only the
-`readDeviceInfo` action. This contract does not establish ImageCapture catalog,
-transfer, or USB live-view behavior.
+The daemon-attached GFX100 II connection declares `readDeviceInfo` and
+image-transfer actions. Its image-transfer entry sends no PTP transactions,
+and standard `GetObjectHandles` is the authoritative enumeration path. This
+contract does not use ImageCapture catalog or download APIs and does not claim
+USB live-view behavior.
 
 | call | walks |
 |---|---|

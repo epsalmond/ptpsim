@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use camera_protocol_ffi::{
-    run_initiator_action_txn, run_mode_entry, run_selected_object_preparation_txn,
-    ActionInvocationRequest, ActionRole, ConfigStore, ConnectionActivityEvent,
-    ConnectionActivityObserver, ExecutorStepFailureKind, PtpExecutorError, PtpExecutorTransport,
-    PtpRuntimeValue, PtpSessionOpenResult, PtpTransactionError, PtpTransactionEvent,
-    PtpTransactionResult, PtpTransactionTransport, PtpTransportError, SocketRole, StepObserver,
-    StepReport,
+    run_initiator_action_txn, run_mode_entry, run_mode_entry_txn,
+    run_selected_object_preparation_txn, ActionInvocationRequest, ActionRole, ConfigStore,
+    ConnectionActivityEvent, ConnectionActivityObserver, ExecutorStepFailureKind, PtpExecutorError,
+    PtpExecutorTransport, PtpRuntimeValue, PtpSessionOpenResult, PtpTransactionError,
+    PtpTransactionEvent, PtpTransactionResult, PtpTransactionTransport, PtpTransportError,
+    SocketRole, StepObserver, StepReport,
 };
 use camera_sim::usb::{UsbEvent, UsbResponder, UsbTxnReply};
 use futures::executor::block_on;
@@ -98,7 +98,12 @@ connections:
                   body:
 {preparation_prefix}
                     - getProp: "0xd235"
-                      captures: [{{ bind: chunkSize, as: propValue }}]
+                      captures:
+                        - bind: chunkSize
+                          as: propValue
+                          fallback:
+                            value: 0x00200000
+                            whenResponseCodes: ["0x200a"]
                     - loop:
                         chunk:
                           total: objectTransferSize
@@ -171,6 +176,7 @@ struct ResponderTxnTransport {
     responder: Mutex<UsbResponder>,
     pends_at: Vec<u32>,
     pending_execute: Option<(u16, Arc<AtomicBool>)>,
+    failed_execute: Option<u16>,
 }
 
 impl ResponderTxnTransport {
@@ -179,11 +185,17 @@ impl ResponderTxnTransport {
             responder: Mutex::new(responder),
             pends_at: pends_at.to_vec(),
             pending_execute: None,
+            failed_execute: None,
         }
     }
 
     fn with_pending_execute(mut self, opcode: u16, cancelled: Arc<AtomicBool>) -> Self {
         self.pending_execute = Some((opcode, cancelled));
+        self
+    }
+
+    fn with_failed_execute(mut self, opcode: u16) -> Self {
+        self.failed_execute = Some(opcode);
         self
     }
 
@@ -201,6 +213,11 @@ impl PtpTransactionTransport for ResponderTxnTransport {
         data_out: Option<Vec<u8>>,
         timeout_ms: u32,
     ) -> Result<PtpTransactionResult, PtpTransactionError> {
+        if self.failed_execute == Some(opcode) {
+            return Err(PtpTransactionError::Failed {
+                detail: "scripted transport failure".into(),
+            });
+        }
         let reply = self.responder.lock().expect("responder").execute(
             opcode,
             &params,
@@ -369,9 +386,31 @@ fn real_pass_through_device_info_action_uses_the_transaction_seam() {
 }
 
 #[test]
+fn real_pass_through_image_transfer_entry_runs_no_transactions() {
+    let store = common::real_fuji_store();
+    let transport = Arc::new(ResponderTxnTransport::new(UsbResponder::new(), &[60_000]));
+
+    let outcome = block_on(run_mode_entry_txn(
+        store,
+        "usb-passthrough".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        Vec::new(),
+    ))
+    .expect("the daemon-owned image-transfer entry needs no preparation transaction");
+
+    assert_eq!(outcome.steps_run, 0);
+    assert_eq!(transport.log(), Vec::<UsbEvent>::new());
+}
+
+#[test]
 fn selected_object_preparation_runs_over_typed_transactions() {
     let store = selected_object_store(
-        r#"                    - { setProp: "0xd226", value: 1, tolerant: true }
+        r#"                    - { getProp: "0xd209", tolerant: true }
+                    - { setProp: "0xd226", value: 1, tolerant: true }
                     - sendOp: "0x1008"
                       params: [{ runtime: handle }]
                       captures:
@@ -387,6 +426,11 @@ fn selected_object_preparation_runs_over_typed_transactions() {
     );
     let handle = 0x41;
     let responder = UsbResponder::new()
+        .reply_transaction(
+            0x1015,
+            &[0xd209],
+            UsbTxnReply::response(0x200a, vec![], None),
+        )
         .reply_transaction(
             0x1016,
             &[0xd226],
@@ -417,7 +461,7 @@ fn selected_object_preparation_runs_over_typed_transactions() {
     ))
     .expect("selected-object preparation uses the transaction seam");
 
-    assert_eq!(outcome.steps_run, 4);
+    assert_eq!(outcome.steps_run, 5);
     for (key, expected) in [
         ("objectReportedSize", 0x1234_5678_u64),
         ("objectTransferSize", 0x1234_5678),
@@ -447,6 +491,12 @@ fn selected_object_preparation_runs_over_typed_transactions() {
         transport.log(),
         vec![
             UsbEvent::Transaction {
+                opcode: 0x1015,
+                params: vec![0xd209],
+                data_out: None,
+                timeout_ms: 10_000,
+            },
+            UsbEvent::Transaction {
                 opcode: 0x1016,
                 params: vec![0xd226],
                 data_out: Some(vec![1, 0]),
@@ -465,6 +515,176 @@ fn selected_object_preparation_runs_over_typed_transactions() {
                 timeout_ms: 10_000,
             },
         ]
+    );
+}
+
+#[test]
+fn selected_object_preparation_binds_selected_prop_fallback() {
+    let preparation = r#"                    - sendOp: "0x1008"
+                      params: [{ runtime: handle }]
+                      captures:
+                        - { bind: objectReportedSize, as: objectInfoCompressedSize }
+                        - { bind: objectTransferSize, as: objectInfoCompressedSize }
+                    - if:
+                        slot: objectReportedSize
+                        equals: 0xffffffff
+                        then:
+                          - sendOp: "0x9803"
+                            params: [{ runtime: handle }, 0xdc04]
+                            captures: [{ bind: objectTransferSize, as: u64Le }]"#;
+    let handle = 0x44;
+    let responder = UsbResponder::new()
+        .reply_transaction(
+            0x1008,
+            &[handle],
+            UsbTxnReply::ok(Some(object_info_payload(0x0760_0000))),
+        )
+        .reply_transaction(
+            0x1015,
+            &[0xd235],
+            UsbTxnReply::response(0x200a, vec![], None),
+        );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+
+    let outcome = block_on(run_selected_object_preparation_txn(
+        selected_object_store(preparation),
+        "usbTether".into(),
+        transport,
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        vec![PtpRuntimeValue {
+            key: "handle".into(),
+            value: handle as u64,
+        }],
+    ))
+    .expect("selected response binds the authored fallback");
+
+    let chunk_size = outcome
+        .scope
+        .iter()
+        .find(|value| value.key == "chunkSize")
+        .expect("fallback binds chunkSize");
+    assert_eq!(chunk_size.value.as_u64(), Some(0x0020_0000));
+    assert_eq!(outcome.steps_run, 3);
+}
+
+#[test]
+fn selected_object_preparation_prop_fallback_does_not_select_other_failures() {
+    let preparation = r#"                    - sendOp: "0x1008"
+                      params: [{ runtime: handle }]
+                      captures:
+                        - { bind: objectReportedSize, as: objectInfoCompressedSize }
+                        - { bind: objectTransferSize, as: objectInfoCompressedSize }
+                    - if:
+                        slot: objectReportedSize
+                        equals: 0xffffffff
+                        then:
+                          - sendOp: "0x9803"
+                            params: [{ runtime: handle }, 0xdc04]
+                            captures: [{ bind: objectTransferSize, as: u64Le }]"#;
+    let handle = 0x45;
+    let response_transport = Arc::new(ResponderTxnTransport::new(
+        UsbResponder::new()
+            .reply_transaction(
+                0x1008,
+                &[handle],
+                UsbTxnReply::ok(Some(object_info_payload(0x0760_0000))),
+            )
+            .reply_transaction(
+                0x1015,
+                &[0xd235],
+                UsbTxnReply::response(0x2002, vec![], None),
+            ),
+        &[60_000],
+    ));
+    let response_error = block_on(run_selected_object_preparation_txn(
+        selected_object_store(preparation),
+        "usbTether".into(),
+        response_transport,
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        vec![PtpRuntimeValue {
+            key: "handle".into(),
+            value: handle as u64,
+        }],
+    ))
+    .expect_err("an unselected response remains terminal");
+    assert!(response_error.to_string().contains("0x2002"));
+
+    let transport_error = block_on(run_selected_object_preparation_txn(
+        selected_object_store(preparation),
+        "usbTether".into(),
+        Arc::new(
+            ResponderTxnTransport::new(
+                UsbResponder::new().reply_transaction(
+                    0x1008,
+                    &[handle],
+                    UsbTxnReply::ok(Some(object_info_payload(0x0760_0000))),
+                ),
+                &[60_000],
+            )
+            .with_failed_execute(0x1015),
+        ),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        vec![PtpRuntimeValue {
+            key: "handle".into(),
+            value: handle as u64,
+        }],
+    ))
+    .expect_err("a transport error remains terminal");
+    assert!(transport_error
+        .to_string()
+        .contains("scripted transport failure"));
+}
+
+#[test]
+fn selected_object_preparation_propagates_strict_get_prop_response_error() {
+    let store = selected_object_store(
+        r#"                    - { getProp: "0xd209" }
+                    - sendOp: "0x1008"
+                      params: [{ runtime: handle }]
+                      captures:
+                        - { bind: objectReportedSize, as: objectInfoCompressedSize }
+                        - { bind: objectTransferSize, as: objectInfoCompressedSize }
+                    - if:
+                        slot: objectReportedSize
+                        equals: 0xffffffff
+                        then:
+                          - sendOp: "0x9803"
+                            params: [{ runtime: handle }, 0xdc04]
+                            captures: [{ bind: objectTransferSize, as: u64Le }]"#,
+    );
+    let handle = 0x42;
+    let responder = UsbResponder::new().reply_transaction(
+        0x1015,
+        &[0xd209],
+        UsbTxnReply::response(0x200a, vec![], None),
+    );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+
+    let error = block_on(run_selected_object_preparation_txn(
+        store,
+        "usbTether".into(),
+        transport.clone(),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        vec![PtpRuntimeValue {
+            key: "handle".into(),
+            value: handle as u64,
+        }],
+    ))
+    .expect_err("strict property rejection remains terminal");
+
+    assert!(error.to_string().contains("0x200a"), "{error}");
+    assert_eq!(
+        transport.log(),
+        vec![UsbEvent::Transaction {
+            opcode: 0x1015,
+            params: vec![0xd209],
+            data_out: None,
+            timeout_ms: 10_000,
+        }]
     );
 }
 

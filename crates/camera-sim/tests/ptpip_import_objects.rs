@@ -120,6 +120,7 @@ fn import_steps(window: u32, chunk_tolerant: bool) -> Vec<Step> {
             captures: vec![camera_config::model::Capture {
                 bind: "objectHandles".into(),
                 source: camera_config::CaptureSource::PtpU32Array,
+                fallback: None,
             }],
             ..Default::default()
         },

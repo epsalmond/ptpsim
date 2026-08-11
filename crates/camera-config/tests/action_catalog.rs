@@ -515,3 +515,93 @@ fn invalid_runtime_skip_and_await_capture_shapes_fail_schema_validation() {
         .to_string()
         .contains("support only propValue"));
 }
+
+#[test]
+fn prop_value_response_fallback_is_closed_and_get_prop_only() {
+    let valid = typed_action_manifest(
+        "{ runtime: focusArea, ifMissing: skip }",
+        r#"- getProp: "0xd001"
+              captures:
+                - bind: result
+                  as: propValue
+                  fallback:
+                    value: 0x00200000
+                    whenResponseCodes: ["0x200a"]"#,
+    );
+    CameraManifest::from_yaml(&valid).expect("response-selected propValue fallback loads");
+
+    let wrong_verb = typed_action_manifest(
+        "{ runtime: focusArea, ifMissing: skip }",
+        r#"- sendOp: "0x1008"
+              captures:
+                - bind: result
+                  as: u32Le
+                  fallback:
+                    value: 1
+                    whenResponseCodes: ["0x200a"]"#,
+    );
+    assert!(CameraManifest::from_yaml(&wrong_verb)
+        .unwrap_err()
+        .to_string()
+        .contains("fallback requires getProp propValue"));
+
+    let empty_selection = typed_action_manifest(
+        "{ runtime: focusArea, ifMissing: skip }",
+        r#"- getProp: "0xd001"
+              captures:
+                - bind: result
+                  as: propValue
+                  fallback: { value: 1, whenResponseCodes: [] }"#,
+    );
+    assert!(CameraManifest::from_yaml(&empty_selection)
+        .unwrap_err()
+        .to_string()
+        .contains("whenResponseCodes must not be empty"));
+
+    for (fallback, expected) in [
+        (
+            r#"{ value: 1, whenResponseCodes: [not-a-code] }"#,
+            "invalid response code",
+        ),
+        (
+            r#"{ value: 1, whenResponseCodes: ["0x2001"] }"#,
+            "cannot select the OK response",
+        ),
+        (
+            r#"{ value: 1, whenResponseCodes: ["0x200a", "0x200a"] }"#,
+            "repeats response code",
+        ),
+    ] {
+        let invalid = typed_action_manifest(
+            "{ runtime: focusArea, ifMissing: skip }",
+            &format!(
+                r#"- getProp: "0xd001"
+              captures:
+                - bind: result
+                  as: propValue
+                  fallback: {fallback}"#
+            ),
+        );
+        assert!(
+            CameraManifest::from_yaml(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains(expected),
+            "fallback {fallback} must fail with {expected:?}"
+        );
+    }
+
+    let tolerant = typed_action_manifest(
+        "{ runtime: focusArea, ifMissing: skip }",
+        r#"- getProp: "0xd001"
+              tolerant: true
+              captures:
+                - bind: result
+                  as: propValue
+                  fallback: { value: 1, whenResponseCodes: ["0x200a"] }"#,
+    );
+    assert!(CameraManifest::from_yaml(&tolerant)
+        .unwrap_err()
+        .to_string()
+        .contains("fallback must not be tolerant"));
+}

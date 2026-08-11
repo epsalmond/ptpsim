@@ -484,16 +484,7 @@ connections:
       vid: 0x04cb
     entries:
       - to: image-transfer
-        steps:
-          - { getProp: "0xd212", tolerant: true }
-          - { setProp: "0xdf01", value: 0x14 }
-          - { getProp: "0xdf28", tolerant: true }
-          - { setProp: "0xdf28", value: 3, tolerant: true }
-          - { setProp: "0xd226", value: 0, tolerant: true }
-          - { setProp: "0xd227", value: 0, tolerant: true }
-          - { getProp: "0xd244", tolerant: true }
-          - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
-          - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
+        steps: []
     actions:
       readDeviceInfo:
         mode: ""
@@ -505,20 +496,9 @@ connections:
         mode: image-transfer
         initiator:
           steps:
-            - retry: *imageImportPrimeRetry
-            - retry:
-                whenResponseCodes: ["0x2002", "0x2005", "0x2013", "0x2019"]
-                whenFailureClasses: ["decode"]
-                maxAttempts: 3
-                retryDelayMs: 1000
-                steps:
-                  - { getProp: "0xd620" }
-                  - getProp: "0xd621"
-                    captures: [{ bind: objectHandles, as: ptpU32Array }]
-                fallback:
-                  - sendOp: "0x1007"
-                    params: [0xffffffff, 0]
-                    captures: [{ bind: objectHandles, as: ptpU32Array }]
+            - sendOp: "0x1007"
+              params: [0xffffffff, 0]
+              captures: [{ bind: objectHandles, as: ptpU32Array }]
         evidence: [docImageTransfer, wireUsbDeviceInfo]
       getObjectInfo:
         mode: image-transfer
@@ -557,29 +537,9 @@ connections:
         mode: image-transfer
         initiator:
           steps:
-            - { getProp: "0xd212", tolerant: true }
-            - { setProp: "0xdf01", value: 0x14 }
-            - { getProp: "0xdf28", tolerant: true }
-            - { setProp: "0xdf28", value: 3, tolerant: true }
-            - { setProp: "0xd226", value: 0, tolerant: true }
-            - { setProp: "0xd227", value: 0, tolerant: true }
-            - { getProp: "0xd244", tolerant: true }
-            - { sendOp: "0x9054", params: [0x10000001], tolerant: true }
-            - { sendOp: "0x9055", params: [0x10000001], tolerant: true }
-            - retry: *imageImportPrimeRetry
-            - retry:
-                whenResponseCodes: ["0x2002", "0x2005", "0x2013", "0x2019"]
-                whenFailureClasses: ["decode"]
-                maxAttempts: 3
-                retryDelayMs: 1000
-                steps:
-                  - { getProp: "0xd620" }
-                  - getProp: "0xd621"
-                    captures: [{ bind: objectHandles, as: ptpU32Array }]
-                fallback:
-                  - sendOp: "0x1007"
-                    params: [0xffffffff, 0]
-                    captures: [{ bind: objectHandles, as: ptpU32Array }]
+            - sendOp: "0x1007"
+              params: [0xffffffff, 0]
+              captures: [{ bind: objectHandles, as: ptpU32Array }]
             - loop:
                 forEach:
                   in: objectHandles
@@ -601,7 +561,11 @@ connections:
                               - { bind: objectTransferSize, as: u64Le }
                     - getProp: "0xd235"
                       captures:
-                        - { bind: chunkSize, as: propValue }
+                        - bind: chunkSize
+                          as: propValue
+                          fallback:
+                            value: 0x00200000
+                            whenResponseCodes: ["0x200a"]
                     - loop:
                         chunk:
                           total: objectTransferSize

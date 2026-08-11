@@ -2253,11 +2253,22 @@ impl Step {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Capture {
     pub bind: String,
     #[serde(rename = "as")]
     pub source: CaptureSource,
+    /// Bind this literal only when a `getProp` receives an explicitly selected
+    /// non-OK response. An OK response always binds the decoded property value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<CaptureResponseFallback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureResponseFallback {
+    pub value: u64,
+    pub when_response_codes: Vec<HexCode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
