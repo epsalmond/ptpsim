@@ -392,7 +392,8 @@ fn real_pass_through_image_transfer_entry_runs_no_transactions() {
 #[test]
 fn selected_object_preparation_runs_over_typed_transactions() {
     let store = selected_object_store(
-        r#"                    - { setProp: "0xd226", value: 1, tolerant: true }
+        r#"                    - { getProp: "0xd209", tolerant: true }
+                    - { setProp: "0xd226", value: 1, tolerant: true }
                     - sendOp: "0x1008"
                       params: [{ runtime: handle }]
                       captures:
@@ -408,6 +409,11 @@ fn selected_object_preparation_runs_over_typed_transactions() {
     );
     let handle = 0x41;
     let responder = UsbResponder::new()
+        .reply_transaction(
+            0x1015,
+            &[0xd209],
+            UsbTxnReply::response(0x200a, vec![], None),
+        )
         .reply_transaction(
             0x1016,
             &[0xd226],
@@ -438,7 +444,7 @@ fn selected_object_preparation_runs_over_typed_transactions() {
     ))
     .expect("selected-object preparation uses the transaction seam");
 
-    assert_eq!(outcome.steps_run, 4);
+    assert_eq!(outcome.steps_run, 5);
     for (key, expected) in [
         ("objectReportedSize", 0x1234_5678_u64),
         ("objectTransferSize", 0x1234_5678),
@@ -468,6 +474,12 @@ fn selected_object_preparation_runs_over_typed_transactions() {
         transport.log(),
         vec![
             UsbEvent::Transaction {
+                opcode: 0x1015,
+                params: vec![0xd209],
+                data_out: None,
+                timeout_ms: 10_000,
+            },
+            UsbEvent::Transaction {
                 opcode: 0x1016,
                 params: vec![0xd226],
                 data_out: Some(vec![1, 0]),
@@ -486,6 +498,56 @@ fn selected_object_preparation_runs_over_typed_transactions() {
                 timeout_ms: 10_000,
             },
         ]
+    );
+}
+
+#[test]
+fn selected_object_preparation_propagates_strict_get_prop_response_error() {
+    let store = selected_object_store(
+        r#"                    - { getProp: "0xd209" }
+                    - sendOp: "0x1008"
+                      params: [{ runtime: handle }]
+                      captures:
+                        - { bind: objectReportedSize, as: objectInfoCompressedSize }
+                        - { bind: objectTransferSize, as: objectInfoCompressedSize }
+                    - if:
+                        slot: objectReportedSize
+                        equals: 0xffffffff
+                        then:
+                          - sendOp: "0x9803"
+                            params: [{ runtime: handle }, 0xdc04]
+                            captures: [{ bind: objectTransferSize, as: u64Le }]"#,
+    );
+    let handle = 0x42;
+    let responder = UsbResponder::new().reply_transaction(
+        0x1015,
+        &[0xd209],
+        UsbTxnReply::response(0x200a, vec![], None),
+    );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+
+    let error = block_on(run_selected_object_preparation_txn(
+        store,
+        "usbTether".into(),
+        transport.clone(),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        vec![PtpRuntimeValue {
+            key: "handle".into(),
+            value: handle as u64,
+        }],
+    ))
+    .expect_err("strict property rejection remains terminal");
+
+    assert!(error.to_string().contains("0x200a"), "{error}");
+    assert_eq!(
+        transport.log(),
+        vec![UsbEvent::Transaction {
+            opcode: 0x1015,
+            params: vec![0xd209],
+            data_out: None,
+            timeout_ms: 10_000,
+        }]
     );
 }
 
