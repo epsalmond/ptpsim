@@ -11,12 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use camera_protocol_ffi::{
-    run_initiator_action_txn, run_mode_entry, run_selected_object_preparation_txn,
-    ActionInvocationRequest, ActionRole, ConfigStore, ConnectionActivityEvent,
-    ConnectionActivityObserver, ExecutorStepFailureKind, PtpExecutorError, PtpExecutorTransport,
-    PtpRuntimeValue, PtpSessionOpenResult, PtpTransactionError, PtpTransactionEvent,
-    PtpTransactionResult, PtpTransactionTransport, PtpTransportError, SocketRole, StepObserver,
-    StepReport,
+    run_initiator_action_txn, run_mode_entry, run_mode_entry_txn,
+    run_selected_object_preparation_txn, ActionInvocationRequest, ActionRole, ConfigStore,
+    ConnectionActivityEvent, ConnectionActivityObserver, ExecutorStepFailureKind, PtpExecutorError,
+    PtpExecutorTransport, PtpRuntimeValue, PtpSessionOpenResult, PtpTransactionError,
+    PtpTransactionEvent, PtpTransactionResult, PtpTransactionTransport, PtpTransportError,
+    SocketRole, StepObserver, StepReport,
 };
 use camera_sim::usb::{UsbEvent, UsbResponder, UsbTxnReply};
 use futures::executor::block_on;
@@ -366,6 +366,27 @@ fn real_pass_through_device_info_action_uses_the_transaction_seam() {
             timeout_ms: 10_000,
         }]
     );
+}
+
+#[test]
+fn real_pass_through_image_transfer_entry_runs_no_transactions() {
+    let store = common::real_fuji_store();
+    let transport = Arc::new(ResponderTxnTransport::new(UsbResponder::new(), &[60_000]));
+
+    let outcome = block_on(run_mode_entry_txn(
+        store,
+        "usb-passthrough".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        Vec::new(),
+    ))
+    .expect("the daemon-owned image-transfer entry needs no preparation transaction");
+
+    assert_eq!(outcome.steps_run, 0);
+    assert_eq!(transport.log(), Vec::<UsbEvent>::new());
 }
 
 #[test]

@@ -373,7 +373,7 @@ fn best_effort_event_loss_falls_back_to_then_poll_over_the_responder() {
 }
 
 #[test]
-fn gfx_usb_passthrough_executes_d620_d621_as_the_primary_enumeration() {
+fn gfx_usb_passthrough_uses_standard_enumeration_and_preserves_capture_order() {
     let store = gfx_passthrough_store();
     assert!(store
         .connections(Platform::Ios)
@@ -383,22 +383,12 @@ fn gfx_usb_passthrough_executes_d620_d621_as_the_primary_enumeration() {
         .modes("usb-passthrough".into())
         .iter()
         .any(|mode| mode.path == "image-transfer"));
-    let handles = [0x41, 0x42, 0x43];
-    let responder = UsbResponder::new()
-        .reply_transaction(0x9050, &[], UsbTxnReply::ok(None))
-        .reply_transaction(0x1015, &[0xd212], UsbTxnReply::ok(Some(vec![0, 0])))
-        .reply_transaction(0x1015, &[0xd22b], UsbTxnReply::ok(Some(vec![0, 0])))
-        .reply_transaction(0x9053, &[0, 0x7530], UsbTxnReply::ok(None))
-        .reply_transaction(
-            0x1015,
-            &[0xd620],
-            UsbTxnReply::ok(Some((handles.len() as u32).to_le_bytes().to_vec())),
-        )
-        .reply_transaction(
-            0x1015,
-            &[0xd621],
-            UsbTxnReply::ok(Some(u32_array(&handles))),
-        );
+    let handles = [0x40, 0x10, 0x30, 0x20];
+    let responder = UsbResponder::new().reply_transaction(
+        0x1007,
+        &[0xffff_ffff, 0],
+        UsbTxnReply::ok(Some(u32_array(&handles))),
+    );
     let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
 
     let outcome = block_on(run_initiator_action_txn(
@@ -408,68 +398,24 @@ fn gfx_usb_passthrough_executes_d620_d621_as_the_primary_enumeration() {
         Arc::new(StepRecorder::default()),
         Arc::new(ActivityRecorder::default()),
     ))
-    .expect("vendor enumeration succeeds");
+    .expect("standard enumeration succeeds");
 
-    assert!(outcome.collections.iter().any(|collection| {
-        collection.key == "objectHandles" && collection.values == handles.map(u64::from).to_vec()
-    }));
-    let log = transport.log();
-    let d620 = log
-        .iter()
-        .position(|event| matches!(event, UsbEvent::Transaction { opcode: 0x1015, params, .. } if params == &[0xd620]))
-        .expect("D620 executes");
-    let d621 = log
-        .iter()
-        .position(|event| matches!(event, UsbEvent::Transaction { opcode: 0x1015, params, .. } if params == &[0xd621]))
-        .expect("D621 executes");
-    assert!(d620 < d621);
-    assert!(!log
-        .iter()
-        .any(|event| matches!(event, UsbEvent::Transaction { opcode: 0x1007, .. })));
-}
-
-#[test]
-fn gfx_usb_passthrough_falls_back_to_association_capable_standard_enumeration() {
-    let store = gfx_passthrough_store();
-    let association_handles = [0x10, 0x20, 0x30, 0x40];
-    let responder = UsbResponder::new()
-        .reply_transaction(0x9050, &[], UsbTxnReply::ok(None))
-        .reply_transaction(0x1015, &[0xd212], UsbTxnReply::ok(Some(vec![0, 0])))
-        .reply_transaction(0x1015, &[0xd22b], UsbTxnReply::ok(Some(vec![0, 0])))
-        .reply_transaction(0x9053, &[0, 0x7530], UsbTxnReply::ok(None))
-        .reply_transaction(
-            0x1015,
-            &[0xd620],
-            UsbTxnReply::response(0x2005, vec![], None),
-        )
-        .reply_transaction(
-            0x1007,
-            &[0xffff_ffff, 0],
-            UsbTxnReply::ok(Some(u32_array(&association_handles))),
-        );
-    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
-
-    let outcome = block_on(run_initiator_action_txn(
-        store.clone(),
-        action_request_with_values(&store, "enumerateObjects", &[]),
-        transport.clone(),
-        Arc::new(StepRecorder::default()),
-        Arc::new(ActivityRecorder::default()),
-    ))
-    .expect("standard enumeration replaces the selected vendor failure");
-
-    assert!(outcome.collections.iter().any(|collection| {
-        collection.key == "objectHandles"
-            && collection.values == association_handles.map(u64::from).to_vec()
-    }));
-    assert!(transport.log().iter().any(|event| matches!(
-        event,
-        UsbEvent::Transaction {
+    assert_eq!(outcome.collections.len(), 1);
+    assert_eq!(outcome.collections[0].key, "objectHandles");
+    assert_eq!(
+        outcome.collections[0].values,
+        handles.map(u64::from).to_vec(),
+        "association and media handles retain the camera's traversal order"
+    );
+    assert_eq!(
+        transport.log(),
+        vec![UsbEvent::Transaction {
             opcode: 0x1007,
-            params,
-            ..
-        } if params == &[0xffff_ffff, 0]
-    )));
+            params: vec![0xffff_ffff, 0],
+            data_out: None,
+            timeout_ms: 10_000,
+        }]
+    );
 }
 
 #[test]
@@ -521,15 +467,29 @@ fn gfx_usb_passthrough_prepares_a_selected_object_and_retains_object_info() {
             .collect::<Vec<_>>(),
         [0x1008, 0x1015],
     );
-    assert!(matches!(
-        transport.log().first(),
-        Some(UsbEvent::Transaction {
-            opcode: 0x1016,
-            params,
-            data_out: Some(data),
-            ..
-        }) if params == &[0xd226] && data == &[1, 0]
-    ));
+    assert_eq!(
+        transport.log(),
+        vec![
+            UsbEvent::Transaction {
+                opcode: 0x1016,
+                params: vec![0xd226],
+                data_out: Some(vec![1, 0]),
+                timeout_ms: 10_000,
+            },
+            UsbEvent::Transaction {
+                opcode: 0x1008,
+                params: vec![handle],
+                data_out: None,
+                timeout_ms: 10_000,
+            },
+            UsbEvent::Transaction {
+                opcode: 0x1015,
+                params: vec![0xd235],
+                data_out: None,
+                timeout_ms: 10_000,
+            },
+        ]
+    );
 }
 
 #[test]

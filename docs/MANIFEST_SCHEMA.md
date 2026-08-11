@@ -1996,5 +1996,8 @@ capture, predicate, loop, and deadline semantics as their frame-based
 counterparts (§11.24); only the transport seam differs. The existing
 frame-based entry points are unchanged.
 
-The GFX100 II pass-through row exposes only `readDeviceInfo` in this contract.
-It does not claim ImageCapture catalog behavior, transfer, or USB live view.
+The GFX100 II pass-through row exposes `readDeviceInfo` and image-transfer
+actions over typed transactions. Its image-transfer entry sends no PTP
+transactions. Standard `GetObjectHandles` is the authoritative enumeration
+path, and its returned handle order is preserved. The row uses no ImageCapture
+catalog or download APIs. It does not claim USB live view.

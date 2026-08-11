@@ -1176,6 +1176,10 @@ fn ios_usb_passthrough_resolves_the_image_transfer_contract() {
         .find(|entry| entry.to == "image-transfer")
         .expect("USB image-transfer entry");
     let entry_steps = entry.ptp_steps().expect("USB image-transfer PTP entry");
+    assert!(
+        entry_steps.is_empty(),
+        "the daemon-owned USB session needs no PTP/IP persona transition"
+    );
     let app_entry = manifest.connections["app"]
         .entries
         .iter()
@@ -1183,41 +1187,22 @@ fn ios_usb_passthrough_resolves_the_image_transfer_contract() {
         .expect("app image-transfer entry")
         .ptp_steps()
         .unwrap();
-    assert_eq!(entry_steps.len(), app_entry.len());
-    for (usb, app) in entry_steps.iter().zip(app_entry) {
-        assert_eq!(usb.set_prop, app.set_prop);
-        assert_eq!(usb.get_prop, app.get_prop);
-        assert_eq!(usb.send_op, app.send_op);
-        assert_eq!(usb.value, app.value);
-        assert_eq!(usb.params, app.params);
-        assert_eq!(usb.tolerant, app.tolerant);
-    }
+    assert!(app_entry
+        .iter()
+        .any(|step| step.set_prop.as_deref() == Some("0xdf01")));
 
     let enumerate = manifest
         .action("usb-passthrough", ActionVerb::EnumerateObjects)
         .expect("USB enumeration action");
-    let retry = enumerate.initiator().unwrap().steps[1]
-        .retry
-        .as_ref()
-        .expect("response-selected enumeration");
-    assert_eq!(retry.steps[0].get_prop.as_deref(), Some("0xd620"));
-    assert_eq!(retry.steps[1].get_prop.as_deref(), Some("0xd621"));
-    assert!(retry
-        .when_response_codes
-        .iter()
-        .any(|code| code == "0x2005"));
-    let fallback = retry
-        .fallback
-        .as_ref()
-        .expect("standard enumeration fallback");
-    assert_eq!(fallback.len(), 1);
-    assert_eq!(fallback[0].send_op.as_deref(), Some("0x1007"));
+    let enumerate_steps = &enumerate.initiator().unwrap().steps;
+    assert_eq!(enumerate_steps.len(), 1);
+    assert_eq!(enumerate_steps[0].send_op.as_deref(), Some("0x1007"));
     assert_eq!(
-        fallback[0].params,
+        enumerate_steps[0].params,
         [StepParam::Literal(0xffff_ffff), StepParam::Literal(0)]
     );
     assert!(matches!(
-        fallback[0].captures.as_slice(),
+        enumerate_steps[0].captures.as_slice(),
         [camera_config::model::Capture {
             bind,
             source: CaptureSource::PtpU32Array,
@@ -1241,16 +1226,28 @@ fn ios_usb_passthrough_resolves_the_image_transfer_contract() {
     let import = manifest
         .action("usb-passthrough", ActionVerb::ImportObjects)
         .expect("USB import action");
-    let body = import
-        .initiator()
-        .unwrap()
-        .steps
+    let import_steps = &import.initiator().unwrap().steps;
+    assert_eq!(import_steps.len(), 2);
+    assert_eq!(import_steps[0].send_op.as_deref(), Some("0x1007"));
+    assert_eq!(
+        import_steps[0].params,
+        [StepParam::Literal(0xffff_ffff), StepParam::Literal(0)]
+    );
+    assert!(matches!(
+        import_steps[0].captures.as_slice(),
+        [camera_config::model::Capture {
+            bind,
+            source: CaptureSource::PtpU32Array,
+        }] if bind == "objectHandles"
+    ));
+    let body = import_steps
         .iter()
         .find_map(|step| match step.r#loop.as_ref() {
             Some(camera_config::Loop::ForEach { body, .. }) => Some(body),
             _ => None,
         })
         .expect("per-object import body");
+    assert_eq!(body.len(), 6);
     assert_eq!(body[0].set_prop.as_deref(), Some("0xd226"));
     assert_eq!(body[0].value, Some(1.into()));
     assert_eq!(body[1].send_op.as_deref(), Some("0x1008"));
@@ -1258,12 +1255,12 @@ fn ios_usb_passthrough_resolves_the_image_transfer_contract() {
         .captures
         .iter()
         .any(|capture| capture.source == CaptureSource::ObjectInfoCompressedSize));
-    assert!(body
-        .iter()
-        .any(|step| step.get_prop.as_deref() == Some("0xd235")));
-    assert!(body
-        .iter()
-        .any(|step| matches!(step.r#loop, Some(camera_config::Loop::Chunk { .. }))));
+    assert!(body[2].if_step.is_some());
+    assert_eq!(body[3].get_prop.as_deref(), Some("0xd235"));
+    assert!(matches!(
+        body[4].r#loop,
+        Some(camera_config::Loop::Chunk { .. })
+    ));
     let idle = body.last().expect("transfer idle step");
     assert_eq!(idle.set_prop.as_deref(), Some("0xd226"));
     assert_eq!(idle.value, Some(0.into()));
