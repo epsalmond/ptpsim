@@ -591,14 +591,8 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn tmpdir() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let d = std::env::temp_dir().join(format!("ptpsim-media-{nanos}"));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmpdir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     fn write(path: &Path, bytes: &[u8]) {
@@ -656,15 +650,16 @@ mod tests {
 
     #[test]
     fn scan_assigns_stable_handles_and_filters() {
-        let root = tmpdir();
+        let _dir = tmpdir();
+        let root = _dir.path();
         write(
             &root.join("DCIM/100_FUJI/DSCF0001.JPG"),
             b"\xFF\xD8stuff\xFF\xD9",
         );
         write(&root.join("DCIM/100_FUJI/DSCF0002.RAF"), b"raf");
-        let mut s1 = MediaStore::open(&root).unwrap();
+        let mut s1 = MediaStore::open(root).unwrap();
         s1.scan().unwrap();
-        let mut s2 = MediaStore::open(&root).unwrap();
+        let mut s2 = MediaStore::open(root).unwrap();
         s2.scan().unwrap();
         // Stable across independent scans.
         assert_eq!(
@@ -677,13 +672,14 @@ mod tests {
             format: Some(format::EXIF_JPEG),
         });
         assert_eq!(jpgs.len(), 1);
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn symlink_escape_is_rejected_in_root_link_works() {
-        let root = tmpdir();
-        let outside = tmpdir();
+        let _outside = tmpdir();
+        let outside = _outside.path();
+        let _root = tmpdir();
+        let root = _root.path();
         write(&outside.join("secret.JPG"), b"\xFF\xD8x\xFF\xD9");
         write(&root.join("DCIM/100_FUJI/real.JPG"), b"\xFF\xD8y\xFF\xD9");
         // Escaping symlink.
@@ -701,7 +697,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut store = MediaStore::open(&root).unwrap();
+        let mut store = MediaStore::open(root).unwrap();
         store.scan().unwrap();
         let names: Vec<String> = store
             .handles(ObjectQuery::default())
@@ -722,20 +718,19 @@ mod tests {
         assert!(store
             .assert_within_root(&outside.join("secret.JPG"))
             .is_err());
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::remove_dir_all(&outside).ok();
     }
 
     #[test]
     fn raf_thumbnail_uses_exif_thumbnail_not_header_preview() {
-        let root = tmpdir();
+        let _dir = tmpdir();
+        let root = _dir.path();
         let thumbnail = b"\xff\xd8TINY-THUMB\xff\xd9";
         let full_marker = b"FULL-HEADER-PREVIEW";
         let preview = jpeg_with_exif_thumbnail(thumbnail, full_marker);
         let raf = raf_with_header_preview(&preview);
         write(&root.join("DCIM/100_FUJI/DSCF9.RAF"), &raf);
 
-        let mut store = MediaStore::open(&root).unwrap();
+        let mut store = MediaStore::open(root).unwrap();
         store.scan().unwrap();
         let h = store.handles(ObjectQuery {
             parent: None,
@@ -756,12 +751,12 @@ mod tests {
         }
         let bytes = src.read().unwrap();
         assert_eq!(bytes, thumbnail);
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn oversize_mov_is_ceilinged_without_allocation() {
-        let root = tmpdir();
+        let _dir = tmpdir();
+        let root = _dir.path();
         let p = root.join("DCIM/100_FUJI/BIG.MOV");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         // 5 GiB sparse file: set_len does not allocate blocks.
@@ -770,7 +765,7 @@ mod tests {
         f.set_len(five_gib).unwrap();
         drop(f);
 
-        let mut store = MediaStore::open(&root).unwrap();
+        let mut store = MediaStore::open(root).unwrap();
         store.scan().unwrap();
         let h = store.handles(ObjectQuery {
             parent: None,
@@ -789,12 +784,12 @@ mod tests {
         let src = store.read_range(h, five_gib - 8, 16).unwrap();
         assert_eq!(src.len(), 8); // clamped to remaining
         assert_eq!(src.read().unwrap().len(), 8);
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn read_chunk_streams_without_realizing_full_window() {
-        let root = tmpdir();
+        let _dir = tmpdir();
+        let root = _dir.path();
         let p = root.join("DCIM/100_FUJI/BIG.MOV");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         // 5 GiB sparse file. The whole-window allocation would OOM the test;
@@ -818,7 +813,6 @@ mod tests {
         assert_eq!(tail.len(), 100);
         // Past-the-end is empty, not an error.
         assert!(src.read_chunk(five_gib, 256 * 1024).unwrap().is_empty());
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
