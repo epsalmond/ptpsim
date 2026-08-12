@@ -290,6 +290,7 @@ name = "camera-media-store"
 version = "0.0.0"
 dependencies = [
  "ptp-core",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
