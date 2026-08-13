@@ -4125,3 +4125,82 @@ fn observation_cursor_survives_service_restart() {
     rt.block_on(handle).unwrap();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn live_exposure_property_changes_mid_session() {
+    let root = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
+        let config = Config {
+            instance_id: "live-exposure".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: root,
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        };
+        let server = Server::bind(config).await.unwrap();
+        let command = server.command_addr();
+        let control = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(server.run(rx));
+        (command, control, tx, task)
+    });
+
+    // Pin deterministic start value while session is not yet open. The props-only
+    // overlay preserves session state when later reapplied, so we can also pin
+    // after entering live view if needed.
+    let pinned = http_patch(control_addr, "/state", r#"{"props":{"0x500d":125000}}"#);
+    assert!(pinned.contains("\"ok\":true"), "pin shutterSpeed: {pinned}");
+
+    let mut s = connect_ptpip(command_addr, "live-exposure");
+    open_session(&mut s);
+
+    fn read_shutter_speed(s: &mut TcpStream, tid: u32) -> u32 {
+        write_frame(s, &op(0x1015, tid, vec![0x500d]));
+        let bytes = read_data_reply(s);
+        let mut r = ptp_core::Reader::new(&bytes);
+        r.u32().unwrap()
+    }
+
+    let first = read_shutter_speed(&mut s, 2);
+    assert_eq!(first, 125000, "deterministic start value");
+
+    // Advance via control plane while the same PTP session stays open.
+    let advanced = http_post_json(
+        control_addr,
+        "/control/advance-property",
+        r#"{"code":"0x500D"}"#,
+    );
+    assert!(advanced.contains("\"ok\":true"), "advance: {advanced}");
+    assert!(
+        advanced.contains("0x500d"),
+        "advance response code: {advanced}"
+    );
+
+    let second = read_shutter_speed(&mut s, 3);
+    assert_ne!(second, first, "shutter speed must change mid-session");
+    assert_eq!(second, 157490, "second must be next enum after 125000");
+
+    // Session remains open: another read succeeds without reconnect.
+    let third = read_shutter_speed(&mut s, 4);
+    assert_eq!(third, second, "value is stable until next advance");
+
+    // Health check confirms session still counted.
+    let health = http_get(control_addr, "/healthz");
+    assert!(
+        health.contains("\"sessions\":1"),
+        "session still open: {health}"
+    );
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
+}
