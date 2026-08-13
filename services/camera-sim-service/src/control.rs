@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use camera_config::{
-    ActionInvocationRequest, ActionOutcome, ActionRole, ExecutionContext, ObservationRecorder,
-    SocketRole,
+    parse_hex_code, ActionInvocationRequest, ActionOutcome, ActionRole, ExecutionContext,
+    ObservationRecorder, SocketRole,
 };
 use camera_sim::{Engine, FaultSpec, PreparedResponderMutation, StateOverlay};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -153,6 +153,16 @@ pub async fn handle(mut stream: TcpStream, context: Context) {
             match serde_json::to_string(&catalog) {
                 Ok(body) => Response::ok(body),
                 Err(error) => Response::server_error(error.to_string()),
+            }
+        }
+        ("POST", "/control/advance-property") => {
+            match advance_property(&context, &req.body).await {
+                Ok(body) => {
+                    context.state_notify.notify_one();
+                    context.metrics.touch();
+                    Response::ok(body)
+                }
+                Err(error) => Response::bad_request(error),
             }
         }
         ("POST", path) if path.starts_with("/actions/") => {
@@ -329,6 +339,33 @@ fn execution_context(connection: &str, mode: &str, engine: &Engine) -> Execution
         mode: mode.to_string(),
         state: engine.phase().state_name().to_string(),
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdvancePropertyRequest {
+    code: String,
+}
+
+async fn advance_property(context: &Context, body: &[u8]) -> Result<String, String> {
+    let request: AdvancePropertyRequest = serde_json::from_slice(body)
+        .map_err(|error| format!("invalid JSON advance-property request: {error}"))?;
+    let code = parse_hex_code(&request.code).ok_or_else(|| {
+        format!(
+            "invalid property code '{}' in advance-property request",
+            request.code
+        )
+    })?;
+    context
+        .engine
+        .lock()
+        .await
+        .advance_property_to_next_enum(code)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "code": format!("{code:#06x}"),
+    })
+    .to_string())
 }
 
 async fn apply_state_patch(context: &Context, body: &[u8]) -> Result<String, String> {

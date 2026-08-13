@@ -408,6 +408,59 @@ impl Engine {
         Ok(applied)
     }
 
+    /// Advance a property to the next value in its manifest enum descriptor.
+    /// The final value wraps to the first value.
+    pub fn advance_property_to_next_enum(&mut self, code: u16) -> Result<PropValue, String> {
+        let property = self
+            .manifest
+            .property(code)
+            .ok_or_else(|| format!("property {code:#06x} is not in the loaded manifest"))?;
+        let descriptor = property
+            .descriptor
+            .as_ref()
+            .filter(|descriptor| descriptor.form == "enum")
+            .ok_or_else(|| format!("property {code:#06x} does not have an enum descriptor"))?;
+        let datatype = datatype_of(property.ptype.as_deref());
+        let values = descriptor
+            .values
+            .iter()
+            .map(|value| {
+                typed_descriptor_value(datatype, value).ok_or_else(|| {
+                    format!(
+                        "property {code:#06x} enum value {value:?} does not match declared datatype {datatype:#06x}"
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if values.is_empty() {
+            return Err(format!(
+                "property {code:#06x} enum descriptor has no values"
+            ));
+        }
+
+        let current = self
+            .state
+            .props
+            .get(&code)
+            .ok_or_else(|| format!("property {code:#06x} has no current value"))?;
+        if current.datatype_code() != datatype {
+            return Err(format!(
+                "property {code:#06x} current value {current:?} does not match declared datatype {datatype:#06x}"
+            ));
+        }
+        let current_index = values
+            .iter()
+            .position(|value| value == current)
+            .ok_or_else(|| {
+                format!(
+                    "property {code:#06x} current value {current:?} is not present in its enum descriptor"
+                )
+            })?;
+        let next = values[(current_index + 1) % values.len()].clone();
+        self.state.arm_effect(code, next.clone(), 0);
+        Ok(next)
+    }
+
     pub fn camera_initiated_transfer_active(&self) -> bool {
         self.camera_initiated_transfer_active
     }
@@ -2381,6 +2434,26 @@ properties:
         engine
     }
 
+    fn enum_control_engine() -> Engine {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x500d":
+    name: shutterSpeed
+    type: u32
+    descriptor: { form: enum, values: [125000, 250000, 500000] }
+  "0x500f":
+    name: exposureIndex
+    type: u32
+    descriptor: { form: range, values: [100, 12800, 1] }
+"#,
+        )
+        .unwrap();
+        Engine::new(manifest, empty_store())
+    }
+
     fn transition(terminal: i64, settle_after_polls: u32) -> ResponderMutation {
         ResponderMutation::PropertyTransition {
             target: "0xd001".into(),
@@ -2388,6 +2461,85 @@ properties:
             terminal: PropertyTransitionTerminal::Fixed { value: terminal },
             settle_after_polls,
         }
+    }
+
+    #[test]
+    fn advance_property_to_next_enum_advances_and_wraps() {
+        let mut engine = enum_control_engine();
+
+        assert_eq!(
+            engine.advance_property_to_next_enum(0x500d).unwrap(),
+            PropValue::U32(250000)
+        );
+        assert_eq!(
+            engine.advance_property_to_next_enum(0x500d).unwrap(),
+            PropValue::U32(500000)
+        );
+        assert_eq!(
+            engine.advance_property_to_next_enum(0x500d).unwrap(),
+            PropValue::U32(125000)
+        );
+        assert_eq!(
+            engine.state.props.get(&0x500d),
+            Some(&PropValue::U32(125000))
+        );
+    }
+
+    #[test]
+    fn advance_property_to_next_enum_rejects_invalid_targets() {
+        let mut engine = enum_control_engine();
+
+        let missing = engine.advance_property_to_next_enum(0xffff).unwrap_err();
+        assert!(missing.contains("not in the loaded manifest"), "{missing}");
+
+        let range = engine.advance_property_to_next_enum(0x500f).unwrap_err();
+        assert!(
+            range.contains("does not have an enum descriptor"),
+            "{range}"
+        );
+    }
+
+    #[test]
+    fn advance_property_to_next_enum_rejects_invalid_current_value() {
+        let mut engine = enum_control_engine();
+        engine.state.props.insert(0x500d, PropValue::U32(100000));
+
+        let absent = engine.advance_property_to_next_enum(0x500d).unwrap_err();
+        assert!(
+            absent.contains("is not present in its enum descriptor"),
+            "{absent}"
+        );
+
+        engine.state.props.insert(0x500d, PropValue::U16(100));
+        let mismatch = engine.advance_property_to_next_enum(0x500d).unwrap_err();
+        assert!(
+            mismatch.contains("does not match declared datatype"),
+            "{mismatch}"
+        );
+    }
+
+    #[test]
+    fn props_only_overlay_preserves_session_workflow_state() {
+        let mut engine = enum_control_engine();
+        engine.state.session_open = true;
+        engine.state.phase = Phase::LiveView;
+        engine.state.active_mode = Some("shooting/stills".into());
+        engine.state.satisfy_gate("liveViewBootstrap");
+        let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
+            "props": { "0x500d": 250000 }
+        }))
+        .unwrap();
+
+        engine.apply_state_overlay(&overlay).unwrap();
+
+        assert!(engine.state.session_open);
+        assert_eq!(engine.state.phase, Phase::LiveView);
+        assert_eq!(engine.state.active_mode.as_deref(), Some("shooting/stills"));
+        assert!(engine.state.gate_satisfied("liveViewBootstrap"));
+        assert_eq!(
+            engine.state.props.get(&0x500d),
+            Some(&PropValue::U32(250000))
+        );
     }
 
     #[test]
