@@ -376,6 +376,16 @@ The occurrence-scoped `GET`/`POST`/`DELETE /faults` contract and trace evidence
 are defined in `DESIGN.md`; consumers should use that registry rather than add
 camera-specific simulator branches.
 
+A startup `StateOverlay` can pin property values before `Server::run`. A props-only
+overlay changes only the listed properties. It preserves the current phase, session
+state, active mode, and gate progress. The same overlay shape is available at runtime
+through `PATCH /state`.
+
+`POST /control/advance-property` accepts a property code such as
+`{"code":"0x500D"}`. It advances the current value by one position in the loaded
+manifest descriptor enumeration and wraps the final value to the first. Existing
+property reads return the new value on the active session.
+
 ## 9. Pull-model surface — manufacturer index (BLE-MVP)
 
 The seam the **greenfield iOS rewrite** consumes. Same `ConfigStore`, different
