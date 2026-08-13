@@ -4188,9 +4188,7 @@ fn live_exposure_property_changes_mid_session() {
 
     let second = read_shutter_speed(&mut s, 3);
     assert_ne!(second, first, "shutter speed must change mid-session");
-    // The descriptor enum for 0x500D wraps; second must still be a valid enum value.
-    // On gfx100ii fw0230 the sequence after 125000 is 157490.
-    assert!(second != 0, "second read is valid");
+    assert_eq!(second, 157490, "second must be next enum after 125000");
 
     // Session remains open: another read succeeds without reconnect.
     let third = read_shutter_speed(&mut s, 4);
