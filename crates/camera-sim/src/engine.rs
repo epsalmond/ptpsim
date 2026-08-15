@@ -1994,6 +1994,12 @@ impl Engine {
             .operations
             .keys()
             .filter_map(|k| parse_hex_code(k))
+            .filter(|code| {
+                matches!(
+                    *code,
+                    op::OPEN_SESSION | op::CLOSE_SESSION | op::GET_DEVICE_INFO
+                ) || self.operation_availability_error(*code).is_none()
+            })
             .collect();
         let props: Vec<u16> = self
             .manifest
