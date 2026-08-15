@@ -1732,6 +1732,9 @@ impl Engine {
     /// successful no-op. Handler values are a closed set validated at manifest
     /// load (#407), so no fallthrough can swallow a typo.
     fn dispatch_manifest_op(&mut self, tid: u32, code: u16, params: &[u32]) -> Reply {
+        if let Some(err) = self.operation_availability_error(code) {
+            return Self::err(tid, err);
+        }
         let Some(opdef) = self.manifest.operation(code) else {
             return Self::err(tid, resp::OPERATION_NOT_SUPPORTED);
         };
