@@ -1013,6 +1013,9 @@ impl Engine {
                 if let Some(reply) = self.property_gate_reply(code) {
                     return reply;
                 }
+                if self.operation_availability_error(code).is_some() {
+                    return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
+                }
                 match build_prop_desc(&self.manifest, &self.state, code) {
                     Some(desc) => {
                         let mut w = Writer::new();
