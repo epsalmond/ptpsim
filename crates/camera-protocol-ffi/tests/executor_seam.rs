@@ -2026,18 +2026,21 @@ models:
 camera: { manufacturer: FUJIFILM, model: X-A7 }";
     let store = ConfigStore::from_manufacturer_index(
         index.into(),
-        vec![KeyValue { key: "xa7".into(), value: body.into() }],
+        vec![KeyValue {
+            key: "xa7".into(),
+            value: body.into(),
+        }],
     )
     .expect("xa7 legacy store loads");
-    let ble = store.model("xa7").unwrap().ble.as_ref().unwrap().clone();
-    let ap_state = ble.gatt.get("apState").unwrap().clone();
-    let launch = ble.gatt.get("functionLaunchRequest").unwrap().clone();
+    let ap_state = "A68E3F66-0FCC-4395-8D4C-AA980B5877FA".to_string();
+    let launch = "600655E6-3637-42F1-8FB2-44EFC5C63B13".to_string();
+    let ssid_uuid = "BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4".to_string();
     let plan_handle = "xa7:legacy-app-establish-wifi-ap".to_string();
     // Success case: 02 then 01
-    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ble.gatt.get("cameraSSIDNameString").unwrap().clone()])
+    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ssid_uuid.clone()])
         .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x02, 0x00])
         .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x01, 0x00])
-        .serve_read(ble.gatt.get("cameraSSIDNameString").unwrap(), b"MY-AP");
+        .serve_read(&ssid_uuid, b"MY-AP");
     let transport = Arc::new(ResponderTransport::new(responder));
     let outcome = block_on(run_establishment(
         store.clone(),
@@ -2047,19 +2050,34 @@ camera: { manufacturer: FUJIFILM, model: X-A7 }";
         Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
-        vec![KeyValue { key: "launchMode".into(), value: "4".into() }],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
     ))
     .expect("legacy app walk completes on 01");
     assert_eq!(outcome.steps_run, 6);
-    let log = Arc::try_unwrap(transport).unwrap().into_log();
-    assert!(!log.iter().any(|e| matches!(e, BleEvent::Read { uuid } if uuid == &ap_state)), "no pre-launch read");
-    let writes: Vec<_> = log.iter().filter_map(|e| match e { BleEvent::Write { uuid, value } if uuid == &launch => Some(value.clone()), _ => None }).collect();
+    let log = Arc::try_unwrap(transport)
+        .unwrap_or_else(|_| panic!("sole owner"))
+        .into_log();
+    assert!(
+        !log.iter()
+            .any(|e| matches!(e, BleEvent::Read { uuid } if uuid == &ap_state)),
+        "no pre-launch read"
+    );
+    let writes: Vec<_> = log
+        .iter()
+        .filter_map(|e| match e {
+            BleEvent::Write { uuid, value } if uuid == &launch => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(writes, vec![vec![0x04, 0x00]]);
 
     // Failure case: 00 trips conditionRejected
-    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ble.gatt.get("cameraSSIDNameString").unwrap().clone()])
+    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ssid_uuid.clone()])
         .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00, 0x00])
-        .serve_read(ble.gatt.get("cameraSSIDNameString").unwrap(), b"MY-AP");
+        .serve_read(&ssid_uuid, b"MY-AP");
     let transport = Arc::new(ResponderTransport::new(responder));
     let err = block_on(run_establishment(
         store.clone(),
@@ -2069,15 +2087,24 @@ camera: { manufacturer: FUJIFILM, model: X-A7 }";
         Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
-        vec![KeyValue { key: "launchMode".into(), value: "4".into() }],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
     ))
     .expect_err("00 must fail");
-    assert!(matches!(err, ExecutorError::Step { kind: ExecutorStepFailureKind::ConditionRejected, .. }));
+    assert!(matches!(
+        err,
+        ExecutorError::StepFailed {
+            kind: ExecutorStepFailureKind::ConditionRejected,
+            ..
+        }
+    ));
 
     // Transitional case: 02 alone does not satisfy
-    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ble.gatt.get("cameraSSIDNameString").unwrap().clone()])
+    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ssid_uuid.clone()])
         .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x02, 0x00])
-        .serve_read(ble.gatt.get("cameraSSIDNameString").unwrap(), b"MY-AP");
+        .serve_read(&ssid_uuid, b"MY-AP");
     let transport = Arc::new(ResponderTransport::new(responder));
     let err = block_on(run_establishment(
         store.clone(),
@@ -2087,8 +2114,17 @@ camera: { manufacturer: FUJIFILM, model: X-A7 }";
         Arc::new(ActivityRecorder::default()),
         vec![],
         vec![],
-        vec![KeyValue { key: "launchMode".into(), value: "4".into() }],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
     ))
     .expect_err("02 alone must deadline");
-    assert!(matches!(err, ExecutorError::Step { kind: ExecutorStepFailureKind::DeadlineExceeded, .. }));
+    assert!(matches!(
+        err,
+        ExecutorError::StepFailed {
+            kind: ExecutorStepFailureKind::DeadlineExceeded,
+            ..
+        }
+    ));
 }

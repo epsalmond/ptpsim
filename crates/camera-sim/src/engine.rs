@@ -460,11 +460,14 @@ impl Engine {
     }
 
     pub fn aux_available(&self) -> Option<u32> {
-        self.aux_descriptor_budget.map(|b| b.saturating_sub(self.aux_descriptor_used))
+        self.aux_descriptor_budget
+            .map(|b| b.saturating_sub(self.aux_descriptor_used))
     }
 
     pub fn aux_orphan_leak(&mut self) -> Result<(), String> {
-        let budget = self.aux_descriptor_budget.ok_or_else(|| "aux budget not configured".to_string())?;
+        let budget = self
+            .aux_descriptor_budget
+            .ok_or_else(|| "aux budget not configured".to_string())?;
         if self.aux_descriptor_used >= budget {
             return Err("EMFILE".to_string());
         }
@@ -473,7 +476,9 @@ impl Engine {
     }
 
     pub fn aux_managed_open(&mut self) -> Result<u64, String> {
-        let budget = self.aux_descriptor_budget.ok_or_else(|| "aux budget not configured".to_string())?;
+        let budget = self
+            .aux_descriptor_budget
+            .ok_or_else(|| "aux budget not configured".to_string())?;
         if self.aux_descriptor_used >= budget {
             return Err("EMFILE".to_string());
         }

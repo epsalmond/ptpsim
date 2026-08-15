@@ -109,10 +109,6 @@ struct StagedOverlay {
     phase: Option<Phase>,
     session_open: Option<bool>,
     camera_initiated_transfer_active: Option<bool>,
-    ap_act_short_latch: Option<bool>,
-    ap_held_term: Option<bool>,
-    aux_descriptor_budget: Option<u32>,
-    aux_reset: Option<bool>,
     props: Vec<(u16, PropValue)>,
     applied: AppliedStateOverlay,
 }
@@ -142,10 +138,6 @@ impl StagedOverlay {
             phase,
             session_open: overlay.session_open,
             camera_initiated_transfer_active: overlay.camera_initiated_transfer_active,
-            ap_act_short_latch: overlay.ap_act_short_latch,
-            ap_held_term: overlay.ap_held_term,
-            aux_descriptor_budget: overlay.aux_descriptor_budget,
-            aux_reset: overlay.aux_reset,
             applied: AppliedStateOverlay {
                 props: props.len(),
                 phase: phase.is_some(),

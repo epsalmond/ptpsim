@@ -2571,11 +2571,10 @@ connections:
             "expectedScope: nestedSsid",
             &format!("expectedScope: {success_scope}"),
         );
-        ConfigStore::from_manufacturer_index(
-            index,
-            BTreeMap::from([("tm1".to_string(), valid)]),
-        )
-        .unwrap_or_else(|e| panic!("{success_scope} is a successful producer and must be accepted: {e}"));
+        ConfigStore::from_manufacturer_index(index, BTreeMap::from([("tm1".to_string(), valid)]))
+            .unwrap_or_else(|e| {
+                panic!("{success_scope} is a successful producer and must be accepted: {e}")
+            });
     }
 
     let invalid = body.replace("expectedScope: nestedSsid", "expectedScope: nestedSsidTypo");

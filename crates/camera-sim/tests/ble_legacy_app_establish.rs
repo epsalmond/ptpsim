@@ -64,7 +64,7 @@ models:
     manifest: xa7.yaml
 "#,
     );
-    let body = r#"
+    let _body = r#"
 schema: camera-config/v1
 camera: {{ manufacturer: FUJIFILM, model: X-A7 }}
 "#;
@@ -73,7 +73,12 @@ camera: {{ manufacturer: FUJIFILM, model: X-A7 }}
     // ResolvedManufacturerIndex::from_yaml merges families but does not validate body; we
     // embed the establishment in the index itself, so we can walk it directly.
     let idx = ResolvedManufacturerIndex::from_yaml(&yaml).expect("legacy index loads");
-    (idx, ap_state.to_string(), launch.to_string(), ssid.to_string())
+    (
+        idx,
+        ap_state.to_string(),
+        launch.to_string(),
+        ssid.to_string(),
+    )
 }
 
 fn steps_of(idx: &ResolvedManufacturerIndex) -> Vec<Step> {
@@ -118,7 +123,10 @@ fn legacy_app_establish_awaits_indications_and_completes_on_state_1() {
         .iter()
         .filter(|e| matches!(e, BleEvent::Read { uuid } if uuid == &ap_state))
         .collect();
-    assert!(reads.is_empty(), "no pre-launch AP-state read, got {reads:?}");
+    assert!(
+        reads.is_empty(),
+        "no pre-launch AP-state read, got {reads:?}"
+    );
     // Launch write carries u16-le launch mode
     let writes = responder.written(&launch);
     assert_eq!(writes.len(), 1);
@@ -137,14 +145,16 @@ fn legacy_app_establish_ignores_state_2_and_does_not_satisfy() {
         .serve_read(&ssid, b"MY-AP");
     let mut runtime = BTreeMap::new();
     runtime.insert("launchMode".to_string(), "4".to_string());
-    let err = walk_establishment(
+    let err = match walk_establishment(
         &mut responder,
         &steps,
         &BTreeMap::new(),
         &BTreeMap::new(),
         &runtime,
-    )
-    .expect_err("02 alone must not satisfy until");
+    ) {
+        Ok(_) => panic!("02 alone must deadline"),
+        Err(e) => e,
+    };
     // Timeout / deadline, not conditionRejected
     assert_eq!(err.kind, RetryFailureKind::DeadlineExceeded);
 }
@@ -158,14 +168,16 @@ fn legacy_app_establish_state_0_yields_typed_failure() {
         .serve_read(&ssid, b"MY-AP");
     let mut runtime = BTreeMap::new();
     runtime.insert("launchMode".to_string(), "4".to_string());
-    let err = walk_establishment(
+    let err = match walk_establishment(
         &mut responder,
         &steps,
         &BTreeMap::new(),
         &BTreeMap::new(),
         &runtime,
-    )
-    .expect_err("00 must trip failWhen");
+    ) {
+        Ok(_) => panic!("00 must trip failWhen"),
+        Err(e) => e,
+    };
     assert_eq!(err.kind, RetryFailureKind::ConditionRejected);
     // Registration tail order is not exercised here, but ensure the legacy-app-pair
     // shape asserts transferState after apState (see manufacturer_index test).
@@ -192,7 +204,7 @@ families:
         legacy-app-pair:
           mechanism: legacy-app-pair
           activities:
-            - { id: camera.remote.registration, version: 1, displayRole: confirmingPairing, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 30 } }
+            - { id: camera.remote.registration, version: 1, displayRole: confirmingPairing, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 5 } }
           steps:
             - bleConnect: {}
             - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
@@ -206,11 +218,22 @@ models:
     manifest: xa7.yaml
 "#;
     let idx = ResolvedManufacturerIndex::from_yaml(yaml).expect("legacy pair index loads");
-    let steps = idx.models.iter().find(|m| m.id == "xa7").unwrap().ble.as_ref().unwrap().establishment("legacy-app-pair").unwrap().steps.clone();
+    let steps = idx
+        .models
+        .iter()
+        .find(|m| m.id == "xa7")
+        .unwrap()
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("legacy-app-pair")
+        .unwrap()
+        .steps
+        .clone();
     // Last two steps must be apState then transferState reads
     assert!(steps.len() >= 2);
-    let last = &steps[steps.len()-1];
-    let prev = &steps[steps.len()-2];
+    let last = &steps[steps.len() - 1];
+    let prev = &steps[steps.len() - 2];
     match (prev, last) {
         (Step::BleRead(a), Step::BleRead(b)) => {
             assert_eq!(a.capture_as, "apState");
