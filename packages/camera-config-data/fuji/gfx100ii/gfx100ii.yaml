@@ -1265,7 +1265,17 @@ properties:
       "64000150": "30m"
       "64000180": "60m"
     evidence: [wireTether]
-  "0x500e": { name: exposureProgram, ptpName: ExposureProgram, type: u16, access: readWrite, evidence: [wireTether] }   # PASM / body dial
+  "0x500e":
+    name: exposureProgram
+    type: u16
+    access: readWrite
+    descriptor: { form: enum, values: [1, 2, 3, 4] }
+    valueRows:
+      - { label: M, raw: 1, evidence: [wireTether] }
+      - { label: P, raw: 2, evidence: [wireTether] }
+      - { label: A, raw: 3, evidence: [wireTether] }
+      - { label: S, raw: 4, evidence: [wireTether] }
+    evidence: [wireTether]
   # Camera-side simultaneous card recording policy. Rows 1/2 are controlled
   # capture results; rows 3/4 retain their vendor-definition provenance.
   "0xd20c":
