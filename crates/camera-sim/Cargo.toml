@@ -21,3 +21,4 @@ serde_json = { workspace = true }
 camera-protocol-ffi = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+tempfile = "3"

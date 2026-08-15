@@ -326,6 +326,7 @@ dependencies = [
  "ptp-core",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -342,6 +343,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -175,34 +175,37 @@ fn start_standard_fault_server(
     })
 }
 
-fn tmp_card() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-svc-{nanos}"));
-    let dir = root.join("DCIM/100_FUJI");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("DSCF0001.JPG"), b"\xFF\xD8HELLOJPEG\xFF\xD9").unwrap();
-    root
+fn tmp_card() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("DCIM/100_FUJI");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("DSCF0001.JPG"), b"\xFF\xD8HELLOJPEG\xFF\xD9").unwrap();
+    dir
 }
 
-fn tmp_card_with_jpegs(count: usize) -> PathBuf {
-    let root = tmp_card();
-    let dir = root.join("DCIM/100_FUJI");
+fn tmp_card_with_jpegs(count: usize) -> tempfile::TempDir {
+    let dir = tmp_card();
     for i in 2..=count {
         let mut bytes = b"\xFF\xD8HELLO".to_vec();
         bytes.extend_from_slice(format!("{i:04}").as_bytes());
         bytes.extend_from_slice(b"\xFF\xD9");
-        std::fs::write(dir.join(format!("DSCF{i:04}.JPG")), bytes).unwrap();
+        std::fs::write(
+            dir.path().join(format!("DCIM/100_FUJI/DSCF{i:04}.JPG")),
+            bytes,
+        )
+        .unwrap();
     }
-    root
+    dir
 }
 
-fn tmp_card_with_movie() -> PathBuf {
-    let root = tmp_card();
-    std::fs::write(root.join("DCIM/100_FUJI/DSCF0002.MOV"), b"ftypqt  mov").unwrap();
-    root
+fn tmp_card_with_movie() -> tempfile::TempDir {
+    let dir = tmp_card();
+    std::fs::write(
+        dir.path().join("DCIM/100_FUJI/DSCF0002.MOV"),
+        b"ftypqt  mov",
+    )
+    .unwrap();
+    dir
 }
 
 fn write_frame(s: &mut TcpStream, bytes: &[u8]) {
@@ -268,7 +271,8 @@ fn pcss_init_frame(hostname: &str) -> Vec<u8> {
 
 #[test]
 fn simulator_rejects_unsupported_init_shape_before_listening() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let manifest = MANIFEST.replacen("initShape: app82", "initShape: unknown82", 1);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let result = runtime.block_on(Server::bind(Config {
@@ -321,7 +325,8 @@ operations:
 properties: {}
 "#;
 
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (address, shutdown_tx, handle) = runtime.block_on(async {
         let server = Server::bind(Config {
@@ -480,7 +485,8 @@ operations:
   "0x1002": { name: OpenSession, connections: [app] }
 properties: {}
 "#;
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let ephemeral = "127.0.0.1:0".parse().unwrap();
     let server = Server::bind(Config {
         instance_id: "standard-explicit-ephemeral".into(),
@@ -537,7 +543,8 @@ operations:
 properties: {}
 "#;
 
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let server = Server::bind(Config {
@@ -636,7 +643,6 @@ properties: {}
 
     let _ = shutdown_tx.send(());
     rt.block_on(handle).unwrap();
-    std::fs::remove_dir_all(&root).ok();
 }
 
 fn connect_pcss(command_addr: std::net::SocketAddr, hostname: &str) -> TcpStream {
@@ -778,7 +784,8 @@ fn pcss_shutter(s: &mut TcpStream, first_tid: u32) {
 
 #[test]
 fn service_drives_image_import_over_tcp() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, liveview_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -896,12 +903,12 @@ fn service_drives_image_import_over_tcp() {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
-    let root = tmp_card_with_jpegs(2);
+    let _tmp_card = tmp_card_with_jpegs(2);
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -994,7 +1001,8 @@ fn service_acknowledges_camera_initiated_queue_after_tcp_delivery() {
 
 #[test]
 fn service_times_out_d620_until_image_import_bootstrap_completes() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -1097,7 +1105,6 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
 
     let _ = shutdown_tx.send(());
     rt.block_on(handle).unwrap();
-    std::fs::remove_dir_all(&root).ok();
 }
 
 /// Completion events from the production GFX100 II manifest reach the real
@@ -1105,7 +1112,8 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
 /// timeout ceilings.
 #[test]
 fn service_pushes_gfx_shutter_and_autofocus_events_on_event_socket() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, event_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -1214,7 +1222,6 @@ fn service_pushes_gfx_shutter_and_autofocus_events_on_event_socket() {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -1222,22 +1229,16 @@ fn service_serves_a_large_object_in_a_single_frame() {
     // A 2 MiB JPEG exceeds the sim's 1 MiB internal read chunk, so the body is
     // streamed from disk in multiple reads — yet it arrives as one type-2 frame,
     // matching real Fuji (a whole GetObject is a single frame, even at 14.5 MB).
-    let root = {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let r = std::env::temp_dir().join(format!("ptpsim-bigobj-{nanos}"));
-        std::fs::create_dir_all(r.join("DCIM/100_FUJI")).unwrap();
-        let mut body = vec![0u8; 2 * 1024 * 1024];
-        body[0] = 0xFF;
-        body[1] = 0xD8;
-        let n = body.len();
-        body[n - 2] = 0xFF;
-        body[n - 1] = 0xD9;
-        std::fs::write(r.join("DCIM/100_FUJI/BIG.JPG"), &body).unwrap();
-        r
-    };
+    let _tmp_bigobj = tempfile::tempdir().unwrap();
+    let root = _tmp_bigobj.path().to_path_buf();
+    std::fs::create_dir_all(root.join("DCIM/100_FUJI")).unwrap();
+    let mut body = vec![0u8; 2 * 1024 * 1024];
+    body[0] = 0xFF;
+    body[1] = 0xD8;
+    let n = body.len();
+    body[n - 2] = 0xFF;
+    body[n - 1] = 0xD9;
+    std::fs::write(root.join("DCIM/100_FUJI/BIG.JPG"), &body).unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
@@ -1312,7 +1313,6 @@ fn service_serves_a_large_object_in_a_single_frame() {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 struct LiveViewPacket {
@@ -1423,7 +1423,8 @@ fn http_body(response: &str) -> &str {
 
 #[test]
 fn fault_registry_crud_round_trips_every_mutation_and_rejects_invalid_specs() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (_, control, shutdown, handle) = start_fault_server(&runtime, &root);
     let mutations = [
@@ -1506,7 +1507,8 @@ fn fault_registry_crud_round_trips_every_mutation_and_rejects_invalid_specs() {
 
 #[test]
 fn occurrence_windows_cross_reconnects_and_fault_trace_is_structured() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (command, control, shutdown, handle) = start_fault_server(&runtime, &root);
     let spec = r#"{"operation":"0x1002","skip":2,"count":1,"mutation":{"type":"failResponse","response":"0x2019"}}"#;
@@ -1577,7 +1579,8 @@ fn occurrence_windows_cross_reconnects_and_fault_trace_is_structured() {
 
 #[test]
 fn deleting_an_unapplied_fault_restores_reference_bytes_and_emits_no_fault_trace() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (command, control, shutdown, handle) = start_fault_server(&runtime, &root);
 
@@ -1614,7 +1617,8 @@ fn deleting_an_unapplied_fault_restores_reference_bytes_and_emits_no_fault_trace
 }
 
 fn with_fault_service(test: impl FnOnce(std::net::SocketAddr, std::net::SocketAddr)) {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (command, control, shutdown, handle) = start_fault_server(&runtime, &root);
     test(command, control);
@@ -1624,7 +1628,8 @@ fn with_fault_service(test: impl FnOnce(std::net::SocketAddr, std::net::SocketAd
 }
 
 fn with_standard_fault_service(test: impl FnOnce(std::net::SocketAddr, std::net::SocketAddr)) {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (command, control, shutdown, handle) = start_standard_fault_server(&runtime, &root);
     test(command, control);
@@ -1952,16 +1957,10 @@ fn service_rejects_oversized_data_in() {
     // client that declares an 8-byte data phase but keeps sending Data frames
     // is shut down rather than accumulated forever. The fix must close the
     // connection cleanly (TCP RST or EOF) — never accept the runaway payload.
-    let root = {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let r = std::env::temp_dir().join(format!("ptpsim-overflow-{nanos}"));
-        std::fs::create_dir_all(r.join("DCIM/100_FUJI")).unwrap();
-        std::fs::write(r.join("DCIM/100_FUJI/X.JPG"), b"\xFF\xD8\xFF\xD9").unwrap();
-        r
-    };
+    let _tmp_overflow = tempfile::tempdir().unwrap();
+    let root = _tmp_overflow.path().to_path_buf();
+    std::fs::create_dir_all(root.join("DCIM/100_FUJI")).unwrap();
+    std::fs::write(root.join("DCIM/100_FUJI/X.JPG"), b"\xFF\xD8\xFF\xD9").unwrap();
 
     let manifest = r#"
 schema: camera-config/v1
@@ -2037,7 +2036,6 @@ properties:
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 /// Write the single-frame data-in for a SetDevicePropValue(0x1016) payload.
@@ -2050,7 +2048,8 @@ fn write_set_prop_data(s: &mut TcpStream, tid: u32, payload: &[u8]) {
 /// in a Fuji compressed data frame.
 #[test]
 fn service_serves_poll_liveview_on_command_socket() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let lv_dir = root.join("liveview");
     std::fs::create_dir_all(&lv_dir).unwrap();
     let lv_jpeg = b"\xFF\xD8\xFF\xE0POLLFRAME\xFF\xD9";
@@ -2115,12 +2114,12 @@ properties: {}
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn pcss_init_fail_retries_then_accepts() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let manifest = r#"
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
@@ -2206,12 +2205,12 @@ properties: {}
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn pcss_startup_queue_downloads_and_delete_drains() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -2291,12 +2290,12 @@ fn pcss_startup_queue_downloads_and_delete_drains() {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn pcss_startup_queue_excludes_movies_until_pcss_mov_transfer_is_captured() {
-    let root = tmp_card_with_movie();
+    let _tmp_card = tmp_card_with_movie();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -2339,12 +2338,12 @@ fn pcss_startup_queue_excludes_movies_until_pcss_mov_transfer_is_captured() {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn pcss_shutter_fed_queue_enqueues_next_media_handles() {
-    let root = tmp_card_with_jpegs(3);
+    let _tmp_card = tmp_card_with_jpegs(3);
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -2395,12 +2394,12 @@ fn pcss_shutter_fed_queue_enqueues_next_media_handles() {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[tokio::test]
 async fn bind_rejects_pcss_shutter_enqueue_count_above_manifest_max() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let config = Config {
         instance_id: "test".into(),
         profile: "fuji/gfx100ii/fw0230".into(),
@@ -2425,12 +2424,12 @@ async fn bind_rejects_pcss_shutter_enqueue_count_above_manifest_max() {
         err.to_string().contains("objectsAvailable max 3"),
         "unexpected error: {err}"
     );
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn pcss_rejects_app_init_shape() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let manifest = r#"
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
@@ -2484,12 +2483,12 @@ properties: {}
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn pcss_knock_notifies_callback_with_command_port() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let callback = TcpListener::bind("127.0.0.1:0").unwrap();
     let callback_port = callback.local_addr().unwrap().port();
     let manifest = format!(
@@ -2615,11 +2614,11 @@ properties: {{}}
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 fn assert_pcss_discovery_host_rejected(host: &str) {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let callback = TcpListener::bind("127.0.0.1:0").unwrap();
     let callback_port = callback.local_addr().unwrap().port();
     let manifest = format!(
@@ -2706,7 +2705,6 @@ properties: {{}}
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -2721,7 +2719,8 @@ fn pcss_knock_rejects_non_ip_discovery_host() {
 
 #[test]
 fn app_persona_does_not_serve_wireless_tether_poll_liveview() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let lv_dir = root.join("liveview");
     std::fs::create_dir_all(&lv_dir).unwrap();
     std::fs::write(lv_dir.join("frame_001.jpg"), b"\xFF\xD8PCSS\xFF\xD9").unwrap();
@@ -2794,12 +2793,12 @@ properties: {}
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[tokio::test]
 async fn bind_rejects_absent_role_override_for_selected_connection() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let manifest = r#"
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
@@ -2843,7 +2842,8 @@ properties: {}
 /// observes a real TCP refusal at the same step.
 #[test]
 fn service_refuses_aux_channels_before_declared_operation() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let manifest = r#"
 schema: camera-config/v1
 camera:
@@ -2972,14 +2972,14 @@ properties:
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 /// Live-view smoke: the declared operation controls TCP availability, then
 /// frames flow once the initiator reaches Phase::Streaming.
 #[test]
 fn service_streams_liveview_after_open_capture() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let lv_dir = root.join("liveview");
     std::fs::create_dir_all(&lv_dir).unwrap();
     let lv_jpeg = b"\xFF\xD8\xFF\xE0FRAME\xFF\xD9";
@@ -3111,14 +3111,14 @@ properties:
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
-    std::fs::remove_dir_all(&root).ok();
 }
 
 /// #26(1): a manifest authored against a schema this build doesn't support
 /// must fail at bind, not misbehave at request time.
 #[tokio::test]
 async fn bind_rejects_unsupported_manifest_schema() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let config = Config {
         instance_id: "test".into(),
         profile: "fuji/gfx100ii".into(),
@@ -3151,7 +3151,8 @@ async fn bind_rejects_unsupported_manifest_schema() {
 /// completes while the first sits idle.
 #[tokio::test]
 async fn idle_control_connection_does_not_block_healthz() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let config = Config {
         instance_id: "test".into(),
         profile: "fuji/gfx100ii".into(),
@@ -3209,7 +3210,8 @@ async fn idle_control_connection_does_not_block_healthz() {
 #[tokio::test]
 async fn bind_teardown_loop_with_live_connections_is_clean() {
     for cycle in 0..5 {
-        let root = tmp_card();
+        let _tmp_card = tmp_card();
+        let root = _tmp_card.path().to_path_buf();
         let config = Config {
             instance_id: format!("cycle-{cycle}"),
             profile: "fuji/gfx100ii".into(),
@@ -3274,7 +3276,8 @@ async fn bind_teardown_loop_with_live_connections_is_clean() {
 /// connect/disconnect cycles with no frame ever written.
 #[tokio::test]
 async fn idle_liveview_disconnects_are_reaped() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let config = Config {
         instance_id: "test".into(),
         profile: "fuji/gfx100ii".into(),
@@ -3319,7 +3322,8 @@ fn unarmed_engine_drops_init_command_request() {
     // prep write leaves the engine unarmed — the service must drop InitCommandRequest
     // with NO ack (the camera accepts the TCP, then silently hangs up). The default
     // (standalone, armed) path is covered by `service_drives_image_import_over_tcp`.
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -3371,7 +3375,8 @@ fn mismatched_friendly_name_is_dropped_a_matching_one_is_acked() {
     // silently dropped (no ack); the matching name is acked. Standalone init (no BLE
     // registration, name None) stays ungated — that path is covered by
     // `service_drives_image_import_over_tcp` (friendly_name "smoke" → ack).
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -3478,7 +3483,8 @@ async fn state_observer(
 /// serving when the observer is the only HTTP party (fire-and-forget).
 #[test]
 fn state_callback_posts_camera_state_on_change() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, shutdown_tx, handle, body_rx) = rt.block_on(async {
         let (recv_addr, body_rx) = state_observer(2).await;
@@ -3542,7 +3548,8 @@ fn state_callback_posts_camera_state_on_change() {
 
 #[test]
 fn runtime_callback_subscribe_posts_initial_and_later_state() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (control_addr, shutdown_tx, handle, body_rx, recv_addr) = rt.block_on(async {
         let (recv_addr, body_rx) = state_observer(2).await;
@@ -3601,7 +3608,8 @@ fn runtime_callback_subscribe_posts_initial_and_later_state() {
 
 #[test]
 fn control_patch_state_updates_shared_snapshot() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -3656,7 +3664,8 @@ fn control_patch_state_updates_shared_snapshot() {
 
 #[test]
 fn failed_control_patch_state_is_atomic() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -3713,7 +3722,8 @@ fn failed_control_patch_state_is_atomic() {
 
 #[test]
 fn control_patch_state_notifies_callback_observer() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (control_addr, shutdown_tx, handle, body_rx) = rt.block_on(async {
         let (recv_addr, body_rx) = state_observer(2).await;
@@ -3765,7 +3775,8 @@ fn control_patch_state_notifies_callback_observer() {
 
 #[test]
 fn action_catalog_preflights_responder_mutation_and_exports_observation() {
-    let root = tmp_card_with_jpegs(3);
+    let _tmp_card = tmp_card_with_jpegs(3);
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -3866,7 +3877,8 @@ fn action_catalog_preflights_responder_mutation_and_exports_observation() {
 
 #[test]
 fn responder_action_has_no_side_effect_when_observation_append_fails() {
-    let root = tmp_card_with_jpegs(2);
+    let _tmp_card = tmp_card_with_jpegs(2);
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
@@ -3932,7 +3944,8 @@ fn responder_action_has_no_side_effect_when_observation_append_fails() {
 
 #[test]
 fn property_transition_is_atomic_and_state_reads_do_not_advance_it() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let server = Server::bind(Config {
@@ -4039,7 +4052,8 @@ fn property_transition_is_atomic_and_state_reads_do_not_advance_it() {
 
 #[test]
 fn observation_cursor_survives_service_restart() {
-    let root = tmp_card_with_jpegs(2);
+    let _tmp_card = tmp_card_with_jpegs(2);
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let config = Config {
         instance_id: "observation-restart".into(),
@@ -4128,7 +4142,8 @@ fn observation_cursor_survives_service_restart() {
 
 #[test]
 fn live_exposure_property_changes_mid_session() {
-    let root = tmp_card();
+    let _tmp_card = tmp_card();
+    let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (command_addr, control_addr, shutdown_tx, handle) = rt.block_on(async {
         let config = Config {
