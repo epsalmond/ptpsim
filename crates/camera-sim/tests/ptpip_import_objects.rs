@@ -57,20 +57,17 @@ fn jpeg(size: usize) -> Vec<u8> {
 
 /// An engine whose card holds `files` (name, size-in-bytes). Each file's size
 /// drives the chunk math.
-fn engine_with(files: &[(&str, usize)]) -> Engine {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-import-{nanos}"));
+fn engine_with(files: &[(&str, usize)]) -> (Engine, tempfile::TempDir) {
+    let dir_handle = tempfile::tempdir().unwrap();
+    let root = dir_handle.path();
     let dir = root.join("DCIM/100_FUJI");
     std::fs::create_dir_all(&dir).unwrap();
     for (name, size) in files {
         std::fs::write(dir.join(name), jpeg(*size)).unwrap();
     }
-    let mut store = MediaStore::open(&root).unwrap();
+    let mut store = MediaStore::open(root).unwrap();
     store.scan().unwrap();
-    Engine::new(loop_mechanics_manifest(), store)
+    (Engine::new(loop_mechanics_manifest(), store), dir_handle)
 }
 
 fn rt(slot: &str) -> StepParam {
@@ -146,7 +143,7 @@ fn walks_each_handle_and_chunks_each_object() {
     // Three identical objects, window 4 → each takes ceil(10/4)=3 chunks. Order-
     // independent: the per-handle chunk counts are pushed first (inside forEach),
     // then the forEach element count last.
-    let mut e = engine_with(&[("A.JPG", 10), ("B.JPG", 10), ("C.JPG", 10)]);
+    let (mut e, _tmp) = engine_with(&[("A.JPG", 10), ("B.JPG", 10), ("C.JPG", 10)]);
     let iters = walk(&mut e, &import_steps(4, false)).expect("the import walks");
     assert_eq!(
         iters,
@@ -158,7 +155,7 @@ fn walks_each_handle_and_chunks_each_object() {
 #[test]
 fn chunk_loop_short_last_window_terminates_exactly_at_size() {
     // 10 bytes in 4-byte windows → 4 + 4 + 2: ceil(10/4) = 3, the last window short.
-    let mut e = engine_with(&[("A.JPG", 10)]);
+    let (mut e, _tmp) = engine_with(&[("A.JPG", 10)]);
     let iters = walk(&mut e, &import_steps(4, false)).expect("walks");
     assert_eq!(iters, vec![3, 1], "3 chunks (last short), 1 handle");
 }
@@ -166,7 +163,7 @@ fn chunk_loop_short_last_window_terminates_exactly_at_size() {
 #[test]
 fn chunk_loop_exact_multiple_has_no_trailing_empty_window() {
     // 8 bytes in 4-byte windows → exactly 2, never a spurious 3rd zero-byte read.
-    let mut e = engine_with(&[("A.JPG", 8)]);
+    let (mut e, _tmp) = engine_with(&[("A.JPG", 8)]);
     let iters = walk(&mut e, &import_steps(4, false)).expect("walks");
     assert_eq!(iters, vec![2, 1]);
 }
@@ -174,7 +171,7 @@ fn chunk_loop_exact_multiple_has_no_trailing_empty_window() {
 #[test]
 fn object_smaller_than_window_is_one_chunk() {
     // 2 bytes, window 4 → a single full-object window (length clamps to 2).
-    let mut e = engine_with(&[("A.JPG", 4)]);
+    let (mut e, _tmp) = engine_with(&[("A.JPG", 4)]);
     let iters = walk(&mut e, &import_steps(16, false)).expect("walks");
     assert_eq!(iters, vec![1, 1]);
 }
@@ -183,7 +180,7 @@ fn object_smaller_than_window_is_one_chunk() {
 fn empty_card_downloads_nothing() {
     // No transferable objects → the forEach over an empty 0xd621 is a no-op; no
     // chunk loop runs, nothing is downloaded.
-    let mut e = engine_with(&[]);
+    let (mut e, _tmp) = engine_with(&[]);
     let iters = walk(&mut e, &import_steps(4, false)).expect("walks");
     assert_eq!(iters, vec![0], "forEach ran zero iterations");
 }
@@ -192,7 +189,7 @@ fn empty_card_downloads_nothing() {
 fn chunk_cap_is_a_hard_error_when_not_tolerant() {
     // MAX_CHUNK_ITERS = 4096: a 4097-byte object in 1-byte windows exceeds the cap.
     // Non-tolerant → the walk fails deterministically rather than spinning.
-    let mut e = engine_with(&[("BIG.JPG", 4097)]);
+    let (mut e, _tmp) = engine_with(&[("BIG.JPG", 4097)]);
     let err = walk(&mut e, &import_steps(1, false)).expect_err("over-cap must fail");
     assert!(err.contains("chunk loop exceeded"), "cap error, got: {err}",);
 }
@@ -200,7 +197,7 @@ fn chunk_cap_is_a_hard_error_when_not_tolerant() {
 #[test]
 fn chunk_cap_bails_when_tolerant() {
     // Same object, tolerant chunk → bails at the cap (4096) instead of erroring.
-    let mut e = engine_with(&[("BIG.JPG", 4097)]);
+    let (mut e, _tmp) = engine_with(&[("BIG.JPG", 4097)]);
     let iters = walk(&mut e, &import_steps(1, true)).expect("tolerant cap bails");
     assert_eq!(
         iters,
