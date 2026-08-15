@@ -70,13 +70,19 @@ if [ "${1:-}" = "--self-test" ]; then
     exit 0
 fi
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <revision-range> | --self-test" >&2
+    echo "usage: $0 <revision|revision-range> | --self-test" >&2
     exit 2
 fi
 
 range=$1
 failed=0
-for commit in $(git rev-list "$range"); do
+# Merge commits carry GitHub's generated message, so only authored commits
+# are linted. A bare revision lints exactly that commit, not its ancestry.
+case "$range" in
+    *..*) commits=$(git rev-list --no-merges "$range") ;;
+    *) commits=$(git rev-list --no-merges "$range^!") ;;
+esac
+for commit in $commits; do
     message=$(git show -s --format=%B "$commit")
     if ! check_message "$message" "$commit"; then
         failed=1
