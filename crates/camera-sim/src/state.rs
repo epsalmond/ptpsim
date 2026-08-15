@@ -87,13 +87,19 @@ pub struct CameraState {
     /// [`push_event`]: CameraState::push_event
     /// [`take_event`]: CameraState::take_event
     /// [`drain_events`]: CameraState::drain_events
-    events: VecDeque<u16>,
+    events: VecDeque<QueuedEvent>,
     /// Sequence gates satisfied in the current session. These are manifest-named
     /// ordered bootstrap preconditions, not camera properties.
     satisfied_gates: BTreeSet<String>,
     /// Progress through each manifest-declared gate sequence, keyed by
     /// `(gate_name, sequence_index)`.
     gate_progress: BTreeMap<(String, usize), usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedEvent {
+    pub code: u16,
+    pub params: Vec<u32>,
 }
 
 /// A scheduled op-effect: the value `set_prop` settles to, and how many more
@@ -180,7 +186,14 @@ impl CameraState {
 
     /// Queue a completion/lifecycle event (an operation `emits` code). FIFO.
     pub fn push_event(&mut self, code: u16) {
-        self.events.push_back(code);
+        self.events.push_back(QueuedEvent {
+            code,
+            params: Vec::new(),
+        });
+    }
+
+    pub fn push_event_with_params(&mut self, code: u16, params: Vec<u32>) {
+        self.events.push_back(QueuedEvent { code, params });
     }
 
     /// Remove the first queued copy of `code` and return whether it was there.
@@ -189,7 +202,7 @@ impl CameraState {
     /// real client reading the socket sees events in wire order.) The event-source
     /// `awaitUntil` drains here — the counterpart of BLE `take_notification`.
     pub fn take_event(&mut self, code: u16) -> bool {
-        if let Some(i) = self.events.iter().position(|&c| c == code) {
+        if let Some(i) = self.events.iter().position(|e| e.code == code) {
             self.events.remove(i);
             true
         } else {
@@ -199,7 +212,7 @@ impl CameraState {
 
     /// Drain all queued events in FIFO order — the event socket forwards these
     /// to connected clients after each operation.
-    pub fn drain_events(&mut self) -> Vec<u16> {
+    pub fn drain_events(&mut self) -> Vec<QueuedEvent> {
         self.events.drain(..).collect()
     }
 

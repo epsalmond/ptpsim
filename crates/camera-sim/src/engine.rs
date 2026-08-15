@@ -562,6 +562,20 @@ impl Engine {
             PreparedResponderMutation::EnqueueObjects { count, affected } => {
                 let applied = self.enqueue_standard_objects(*count)?;
                 debug_assert_eq!(applied, *affected, "preflighted responder mutation drifted");
+                if applied > 0
+                    && self
+                        .manifest
+                        .events
+                        .keys()
+                        .any(|k| k.eq_ignore_ascii_case("0x4002"))
+                {
+                    if let Some(queue) = &self.transfer_queue {
+                        let start = queue.next_index.saturating_sub(applied);
+                        for &handle in &queue.handles[start..queue.next_index] {
+                            self.state.push_event_with_params(0x4002, vec![handle]);
+                        }
+                    }
+                }
             }
             PreparedResponderMutation::PropertyTransition(transition) => {
                 let ptype = self
@@ -1140,7 +1154,7 @@ impl Engine {
         }
         self.advance_sequence_gates(req, data_in);
         self.apply_op_effects(req.code, &req.params);
-        self.apply_op_emits(req.code);
+        self.apply_op_emits(req.code, &req.params);
         self.advance_transfer_queue(req, data_in);
     }
 
@@ -1232,7 +1246,21 @@ impl Engine {
         }
         if queue.shutter_progress >= sequence.len() {
             queue.shutter_progress = 0;
+            let before = queue.available.len();
             queue.enqueue_next();
+            let added = queue.available.len() - before;
+            if added > 0
+                && self
+                    .manifest
+                    .events
+                    .keys()
+                    .any(|k| k.eq_ignore_ascii_case("0x4002"))
+            {
+                let start = queue.next_index.saturating_sub(added);
+                for &handle in &queue.handles[start..queue.next_index] {
+                    self.state.push_event_with_params(0x4002, vec![handle]);
+                }
+            }
         }
     }
 
@@ -1701,20 +1729,54 @@ impl Engine {
     /// sibling to [`apply_op_effects`](Self::apply_op_effects) — kept separate
     /// because an event is a signal, not a value mutation, and an op may emit
     /// without arming any effect. Both fire only on an OK response.
-    fn apply_op_emits(&mut self, code: u16) {
+    fn apply_op_emits(&mut self, code: u16, params: &[u32]) {
         let Some(opdef) = self.manifest.operation(code) else {
             return;
         };
         if opdef.emits.is_empty() {
             return;
         }
-        let codes: Vec<u16> = opdef
-            .emits
-            .iter()
-            .filter_map(|c| parse_hex_code(c))
-            .collect();
-        for c in codes {
-            self.state.push_event(c);
+        for emit in &opdef.emits {
+            match emit {
+                camera_config::OperationEmit::Bare(hex) => {
+                    if let Some(c) = parse_hex_code(hex) {
+                        self.state.push_event(c);
+                    }
+                }
+                camera_config::OperationEmit::Detailed {
+                    code,
+                    params: emit_params,
+                } => {
+                    let Some(c) = parse_hex_code(code) else {
+                        continue;
+                    };
+                    let mut resolved = Vec::new();
+                    let mut skip = false;
+                    for p in emit_params {
+                        match p {
+                            camera_config::EmitParam::RequestParam { request_param } => {
+                                if let Some(&v) = params.get(*request_param) {
+                                    resolved.push(v);
+                                } else {
+                                    skip = true;
+                                    break;
+                                }
+                            }
+                            camera_config::EmitParam::Literal { literal } => {
+                                resolved.push(*literal)
+                            }
+                        }
+                    }
+                    if skip {
+                        continue;
+                    }
+                    if resolved.is_empty() {
+                        self.state.push_event(c);
+                    } else {
+                        self.state.push_event_with_params(c, resolved);
+                    }
+                }
+            }
         }
     }
 
@@ -1726,7 +1788,7 @@ impl Engine {
 
     /// Drain all queued completion events in FIFO order — the event socket
     /// forwards these to connected clients (see [`CameraState::drain_events`]).
-    pub fn drain_events(&mut self) -> Vec<u16> {
+    pub fn drain_events(&mut self) -> Vec<crate::state::QueuedEvent> {
         self.state.drain_events()
     }
 
