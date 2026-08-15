@@ -28,7 +28,7 @@ pub use fault::{
 pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
 pub use link::{CameraLink, SharedLink};
 pub use ptpip::{walk_ptpip, walk_ptpip_in, PtpIpError, PtpIpOutcome};
-pub use state::{CameraState, Phase};
+pub use state::{CameraState, Phase, QueuedEvent};
 pub use state_overlay::{AppliedStateOverlay, StateOverlay};
 pub use usb::{UsbError, UsbEvent, UsbResponder, UsbTxnReply};
 

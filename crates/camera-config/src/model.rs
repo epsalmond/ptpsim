@@ -289,13 +289,55 @@ pub struct Operation {
     /// Curated sim-behavior; not mirrored to the app FFI (the app sends ops, the
     /// camera emits).
     #[serde(default)]
-    pub emits: Vec<HexCode>,
+    pub emits: Vec<OperationEmit>,
     #[serde(default)]
     pub evidence: Vec<String>,
     /// Exact observation tuples backing generated availability. Kept atomic so
     /// independent connection/mode sets cannot invent a Cartesian product.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub observed_scopes: Vec<ObservedScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OperationEmit {
+    Bare(HexCode),
+    Detailed {
+        code: HexCode,
+        #[serde(default)]
+        params: Vec<EmitParam>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EmitParam {
+    RequestParam {
+        #[serde(rename = "requestParam")]
+        request_param: usize,
+    },
+    Literal {
+        literal: u32,
+    },
+}
+
+impl PartialEq<str> for OperationEmit {
+    fn eq(&self, other: &str) -> bool {
+        match self {
+            Self::Bare(s) => s == other,
+            Self::Detailed { code, .. } => code == other,
+        }
+    }
+}
+impl PartialEq<&str> for OperationEmit {
+    fn eq(&self, other: &&str) -> bool {
+        self == *other
+    }
+}
+impl PartialEq<String> for OperationEmit {
+    fn eq(&self, other: &String) -> bool {
+        self == other.as_str()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

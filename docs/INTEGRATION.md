@@ -386,6 +386,13 @@ through `PATCH /state`.
 manifest descriptor enumeration and wraps the final value to the first. Existing
 property reads return the new value on the active session.
 
+`PUT /control/event-delivery` selects simulator event fidelity. The default
+`{"mode":"complete"}` forwards every event. `{"mode":"batched","size":5}`
+holds five events and forwards them together. `{"mode":"dropFraction",
+"numerator":1,"denominator":5}` drops one event from each five-event window.
+Use the incomplete mode to verify that object discovery reconciles with
+`GetObjectHandles` instead of trusting `ObjectAdded` alone.
+
 ## 9. Pull-model surface — manufacturer index (BLE-MVP)
 
 The seam the **greenfield iOS rewrite** consumes. Same `ConfigStore`, different

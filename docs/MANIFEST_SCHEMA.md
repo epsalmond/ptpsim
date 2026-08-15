@@ -738,9 +738,32 @@ without it. A connection with `events.delivery: none` forbids event-source
 awaits outright. `reliable` keeps the current semantics.
 
 **Emission and settle (authoring note).** An op declares the events it pushes
-via `Operation.emits: [<code>]` (parallel to `effects`; the engine queues them
-on an OK response, and the `app` event socket forwards them — see below). The
-former "event-coupled effects MUST settle ≤1" invariant is **retired** (#185):
+via `Operation.emits`. A bare code keeps the existing parameterless form. A
+detailed emission carries a code plus ordered parameters:
+
+```yaml
+emits:
+  - "0xc004"
+  - code: "0xc005"
+    params:
+      - { requestParam: 0 }
+      - { literal: 1 }
+```
+
+`requestParam` is a zero-based operation-request parameter index. A missing
+request parameter omits that emission. `literal` is a `u32`. The engine queues
+the code and resolved parameters on an OK response, and the event transport
+forwards both fields. Event parameters stay ordered and are never interpreted
+by the engine.
+
+Media availability has one additional generic emission rule. When the standard
+object queue makes a handle available, the engine emits standard PTP
+`ObjectAdded` (`0x4002`) with that handle as its first parameter if the event is
+present in the manifest event catalog. A manifest without `0x4002` keeps the
+previous no-event behavior.
+
+The former "event-coupled effects MUST settle ≤1" invariant is **retired**
+(#185):
 it assumed the single post-event read, and the client application#157 wire capture showed
 real fw settles the value *after* the event. Author `settleAfterPolls` to the
 measured latency (gfx100ii `0x9026` → `0xD209` uses `settle: 2`) — the
@@ -750,8 +773,9 @@ settles exactly like direct member reads, so container-observing consumers see
 the same behavior.
 
 **Live event socket.** `camera-sim-service` pushes these for real: the command
-loop drains the engine's queued `emits` after each operation and broadcasts the
-codes; each connected event-socket client writes them with the connection's
+loop drains the engine's queued events after each operation and broadcasts the
+code plus parameters. Each connected event-socket client writes them with the
+connection's
 declared `eventFraming` (`standard` PTP/IP or USB/PIMA) and a zero transaction
 ID. Fire-and-forget to currently-connected clients — the real app opens the
 event socket during session setup, before triggering a capture. Reference test:
@@ -769,9 +793,8 @@ connections simply keep authoring `{ poll: }` and the engine needs no branch.
 **Out of scope (deferred follow-ups).** The real gfx100ii data authoring —
 `0x9026 emits: ["0xc005"]` and switching the `app` AF/capture entry steps to
 `{ event: }` — is curated protocol-mapper/data-owner work; this change ships only
-a synthetic round-trip fixture. Event **param payloads** (the AF event's
-`(counter, …)`) are a later `emits` refinement; the consumer keys on the event
-*code*. Confirm `0xC005`/apState values against a rig capture (#52).
+a synthetic round-trip fixture. Confirm `0xC005` parameter meanings and
+`apState` values against a rig capture (#52).
 
 ### 11.17 Nikon LSS named primitives
 
@@ -1944,6 +1967,25 @@ mirroring the BLE verb design (§11.4, §11.4a):
   connection declaring `events.delivery: none` has no event channel, so the
   loader rejects its establishment plan when the plan awaits an interrupt
   frame.
+
+The connection trait describes camera capability. Simulator delivery faults are
+runtime controls and do not change it. `camera-sim-service` starts in
+`complete` fidelity and exposes `PUT /control/event-delivery` with one of these
+closed request shapes:
+
+```json
+{"mode":"complete"}
+{"mode":"batched","size":5}
+{"mode":"dropFraction","numerator":1,"denominator":5}
+```
+
+`complete` forwards each event immediately. `batched` holds events until
+`size` are pending, then forwards that batch in order. `dropFraction` drops the
+first `numerator` events in each consecutive `denominator`-event window and
+forwards the rest. Batch size, numerator, and denominator must be positive;
+the numerator must be smaller than the denominator. Replacing the control
+flushes any pending batch before installing the new mode. The service restart
+default remains `complete`.
 
 USB verbs are valid only inside `families.<fam>.usb.establishments` plans;
 the loader rejects them anywhere else. BLE verbs keep their existing

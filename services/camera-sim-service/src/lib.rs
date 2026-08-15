@@ -480,7 +480,7 @@ struct CommandResources {
     engine: Arc<Mutex<Engine>>,
     session_owner: Arc<Mutex<Option<u64>>>,
     frames: Arc<Mutex<LoopingFrameSource>>,
-    event_tx: broadcast::Sender<u16>,
+    event_tx: broadcast::Sender<camera_sim::QueuedEvent>,
     state_dirty: Arc<Notify>,
     context: CommandContext,
     trace: TraceLog,
@@ -933,7 +933,7 @@ impl Server {
         // Fire-and-forget to currently-connected clients (broadcast) — the real
         // app opens the event socket during session setup, before triggering a
         // capture, so the subscriber is live when the completion fires.
-        let (event_tx, _) = broadcast::channel::<u16>(16);
+        let (event_tx, _) = broadcast::channel::<camera_sim::QueuedEvent>(16);
         let standard_connections = Arc::new(StandardConnections::default());
         let session_owner = Arc::new(Mutex::new(None));
         let declared_aux = [
@@ -1362,7 +1362,7 @@ async fn handle_standard_listener_conn(
 async fn handle_standard_event_conn(
     mut stream: TcpStream,
     first_frame: Option<Vec<u8>>,
-    mut events: broadcast::Receiver<u16>,
+    mut events: broadcast::Receiver<camera_sim::QueuedEvent>,
     connections: Arc<StandardConnections>,
     metrics: Metrics,
 ) -> std::io::Result<()> {
@@ -1385,11 +1385,11 @@ async fn handle_standard_event_conn(
     loop {
         tokio::select! {
             event = events.recv() => {
-                let Ok(code) = event else { break };
+                let Ok(event) = event else { break };
                 let packet = PtpIpPacket::Event(EventPacket {
-                    code,
+                    code: event.code,
                     transaction_id: 0,
-                    params: vec![],
+                    params: event.params.clone(),
                 });
                 let bytes = ptp_core::encode(&packet).map_err(to_io)?;
                 if writer.write_all(&bytes).await.is_err() {
@@ -1868,7 +1868,7 @@ async fn handle_command_conn_inner(
             })
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let transaction_record_id = format!("record-{transaction_record:016x}");
-        for code in &events {
+        for event in &events {
             observations
                 .append(observation_context.clone(), |common| {
                     ObservationLine::PtpEvent(PtpEventRecord {
@@ -1881,8 +1881,8 @@ async fn handle_command_conn_inner(
                         // independently known causal transaction.
                         transaction_id: 0,
                         transaction_record_id: Some(transaction_record_id.clone()),
-                        event: format!("0x{code:04x}"),
-                        parameters: Vec::new(),
+                        event: format!("0x{:04x}", event.code),
+                        parameters: event.params.clone(),
                         payload: None,
                     })
                 })
@@ -1891,10 +1891,10 @@ async fn handle_command_conn_inner(
         // #126: the one hook — nudge the state-callback task that the camera
         // state may have changed. Cheap; a no-op when no push task is running.
         state_dirty.notify_one();
-        for code in events {
+        for event in events {
             // Err = no event-socket client connected; the push is dropped (the
             // completion is only meaningful to a listening client).
-            let _ = event_tx.send(code);
+            let _ = event_tx.send(event);
         }
         if let Some(error) = write_error {
             return Err(error);
@@ -2157,7 +2157,7 @@ async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSourc
 /// gone, and without watching it a never-emitting session would hang the task.
 async fn handle_event_conn(
     mut stream: TcpStream,
-    mut events: broadcast::Receiver<u16>,
+    mut events: broadcast::Receiver<camera_sim::QueuedEvent>,
     framing: WireFraming,
     metrics: Metrics,
 ) {
@@ -2167,11 +2167,11 @@ async fn handle_event_conn(
         tokio::select! {
             recv = events.recv() => {
                 match recv {
-                    Ok(code) => {
+                    Ok(event) => {
                         let packet = PtpIpPacket::Event(EventPacket {
-                            code,
+                            code: event.code,
                             transaction_id: 0,
-                            params: vec![],
+                            params: event.params.clone(),
                         });
                         let bytes = match framing {
                             WireFraming::Standard => ptp_core::encode(&packet).ok(),
