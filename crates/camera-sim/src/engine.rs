@@ -265,6 +265,13 @@ pub struct Engine {
     /// Cross-transport arming link (#102): the BLE `IMAGE_TRANSFER_SETTING` write
     /// arms the session that function-launch brings up. Default armed (standalone).
     link: crate::link::SharedLink,
+    /// Generic AP ACT_SHORT refusal state (#357)
+    ap_one_shot_latch: bool,
+    ap_held_term: bool,
+    /// Bounded auxiliary descriptor state (#375)
+    aux_descriptor_budget: Option<u32>,
+    aux_descriptor_used: u32,
+    aux_managed_used: u32,
 }
 
 impl Engine {
@@ -288,6 +295,11 @@ impl Engine {
             faults: FaultSet::default(),
             applied_fault: None,
             link: crate::link::SharedLink::default(),
+            ap_one_shot_latch: false,
+            ap_held_term: false,
+            aux_descriptor_budget: None,
+            aux_descriptor_used: 0,
+            aux_managed_used: 0,
         };
         let handles = engine.camera_initiated_media_handles();
         if engine.manifest.camera_initiated_transfer.is_some() {
@@ -405,7 +417,83 @@ impl Engine {
         if !self.camera_initiated_transfer_active {
             self.camera_initiated_pre_mode_probe_armed = false;
         }
+        if let Some(v) = overlay.ap_act_short_latch {
+            self.ap_one_shot_latch = v;
+        }
+        if let Some(v) = overlay.ap_held_term {
+            self.ap_held_term = v;
+        }
+        if let Some(budget) = overlay.aux_descriptor_budget {
+            self.aux_descriptor_budget = Some(budget);
+            // Clamp used to budget if budget shrinks
+            if self.aux_descriptor_used > budget {
+                self.aux_descriptor_used = budget;
+            }
+        }
+        if overlay.aux_reset.unwrap_or(false) {
+            self.aux_descriptor_used = 0;
+            self.aux_managed_used = 0;
+        }
         Ok(applied)
+    }
+
+    // #357 ACT_SHORT refusal state
+    pub fn ap_should_refuse(&mut self) -> Option<(u16, u16)> {
+        // Higher-priority held term wins; one-shot latch is consumed on refusal.
+        if self.ap_held_term {
+            return Some((0x0080, 2));
+        }
+        if self.ap_one_shot_latch {
+            self.ap_one_shot_latch = false;
+            return Some((0x0080, 2));
+        }
+        None
+    }
+
+    pub fn ap_refusal_active(&self) -> bool {
+        self.ap_held_term || self.ap_one_shot_latch
+    }
+
+    // #375 auxiliary descriptor budget
+    pub fn aux_budget(&self) -> Option<u32> {
+        self.aux_descriptor_budget
+    }
+
+    pub fn aux_available(&self) -> Option<u32> {
+        self.aux_descriptor_budget.map(|b| b.saturating_sub(self.aux_descriptor_used))
+    }
+
+    pub fn aux_orphan_leak(&mut self) -> Result<(), String> {
+        let budget = self.aux_descriptor_budget.ok_or_else(|| "aux budget not configured".to_string())?;
+        if self.aux_descriptor_used >= budget {
+            return Err("EMFILE".to_string());
+        }
+        self.aux_descriptor_used += 1;
+        Ok(())
+    }
+
+    pub fn aux_managed_open(&mut self) -> Result<u64, String> {
+        let budget = self.aux_descriptor_budget.ok_or_else(|| "aux budget not configured".to_string())?;
+        if self.aux_descriptor_used >= budget {
+            return Err("EMFILE".to_string());
+        }
+        self.aux_descriptor_used += 1;
+        self.aux_managed_used += 1;
+        Ok(self.aux_descriptor_used as u64)
+    }
+
+    pub fn aux_managed_close(&mut self) -> Result<(), String> {
+        if self.aux_managed_used == 0 {
+            return Err("no managed connection to close".to_string());
+        }
+        self.aux_managed_used -= 1;
+        self.aux_descriptor_used = self.aux_descriptor_used.saturating_sub(1);
+        Ok(())
+    }
+
+    pub fn aux_reset_state(&mut self) {
+        self.aux_descriptor_used = 0;
+        self.aux_managed_used = 0;
     }
 
     /// Advance a property to the next value in its manifest enum descriptor.

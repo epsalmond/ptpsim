@@ -26,6 +26,18 @@ pub struct StateOverlay {
     pub camera_initiated_transfer_active: Option<bool>,
     #[serde(default)]
     pub props: BTreeMap<String, serde_json::Value>,
+    /// Generic AP-launch refusal state (#357): one-shot latch for ACT_SHORT.
+    #[serde(default)]
+    pub ap_act_short_latch: Option<bool>,
+    /// Held action term that keeps AP launch refused until cleared (#357).
+    #[serde(default)]
+    pub ap_held_term: Option<bool>,
+    /// Bounded auxiliary descriptor budget for #375 (small test budget).
+    #[serde(default)]
+    pub aux_descriptor_budget: Option<u32>,
+    /// Reset auxiliary descriptor exhaustion state (#375).
+    #[serde(default)]
+    pub aux_reset: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -34,6 +46,10 @@ pub struct AppliedStateOverlay {
     pub phase: bool,
     pub session_open: bool,
     pub camera_initiated_transfer_active: bool,
+    pub ap_act_short_latch: bool,
+    pub ap_held_term: bool,
+    pub aux_descriptor_budget: bool,
+    pub aux_reset: bool,
 }
 
 impl StateOverlay {
@@ -93,6 +109,10 @@ struct StagedOverlay {
     phase: Option<Phase>,
     session_open: Option<bool>,
     camera_initiated_transfer_active: Option<bool>,
+    ap_act_short_latch: Option<bool>,
+    ap_held_term: Option<bool>,
+    aux_descriptor_budget: Option<u32>,
+    aux_reset: Option<bool>,
     props: Vec<(u16, PropValue)>,
     applied: AppliedStateOverlay,
 }
@@ -122,6 +142,10 @@ impl StagedOverlay {
             phase,
             session_open: overlay.session_open,
             camera_initiated_transfer_active: overlay.camera_initiated_transfer_active,
+            ap_act_short_latch: overlay.ap_act_short_latch,
+            ap_held_term: overlay.ap_held_term,
+            aux_descriptor_budget: overlay.aux_descriptor_budget,
+            aux_reset: overlay.aux_reset,
             applied: AppliedStateOverlay {
                 props: props.len(),
                 phase: phase.is_some(),
@@ -129,6 +153,10 @@ impl StagedOverlay {
                 camera_initiated_transfer_active: overlay
                     .camera_initiated_transfer_active
                     .is_some(),
+                ap_act_short_latch: overlay.ap_act_short_latch.is_some(),
+                ap_held_term: overlay.ap_held_term.is_some(),
+                aux_descriptor_budget: overlay.aux_descriptor_budget.is_some(),
+                aux_reset: overlay.aux_reset.is_some(),
             },
             props,
         })
