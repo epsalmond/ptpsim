@@ -78,11 +78,20 @@ range=$1
 failed=0
 # Merge commits carry GitHub's generated message, so only authored commits
 # are linted. A bare revision lints exactly that commit, not its ancestry.
+# Parents are read from the commit object rather than rev-list --no-merges:
+# CI clones are shallow, so a merge at the shallow boundary has no parents
+# for traversal purposes but still records them in the object.
 case "$range" in
-    *..*) commits=$(git rev-list --no-merges "$range") ;;
-    *) commits=$(git rev-list --no-merges "$range^!") ;;
+    *..*) commits=$(git rev-list "$range") ;;
+    *) commits=$(git rev-list "$range^!") ;;
 esac
+is_merge_commit() {
+    [ "$(git cat-file -p "$1" | sed '/^$/q' | grep -c '^parent ')" -ge 2 ]
+}
 for commit in $commits; do
+    if is_merge_commit "$commit"; then
+        continue
+    fi
     message=$(git show -s --format=%B "$commit")
     if ! check_message "$message" "$commit"; then
         failed=1
