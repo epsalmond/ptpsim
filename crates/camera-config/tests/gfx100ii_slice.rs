@@ -291,21 +291,28 @@ fn live_view_entry_is_the_ground_truth_sequence() {
         .find(|e| e.to == "shooting/stills" && e.from.is_none())
         .unwrap();
     let steps = lv.ptp_steps().expect("cold live-view PTP entry");
-    assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf01"));
-    assert_eq!(steps[0].value, Some(0x16.into()));
-    assert_eq!(steps[1].send_op.as_deref(), Some("0x101c"));
-    assert_eq!(steps[1].captures.len(), 1);
-    assert_eq!(steps[1].captures[0].bind, "openCaptureTxId");
+    assert_eq!(steps.len(), 7);
+    assert_eq!(steps[0].set_prop.as_deref(), Some("0xdf00"));
+    assert_eq!(steps[0].value, Some(6.into()));
+    assert!(steps[0].tolerant);
+    assert_eq!(steps[1].set_prop.as_deref(), Some("0xdf01"));
+    assert_eq!(steps[1].value, Some(0x16.into()));
+    assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
+    assert_eq!(steps[3].send_op.as_deref(), Some("0x902b"));
+    assert_eq!(steps[3].repeat, 4);
+    assert_eq!(steps[4].send_op.as_deref(), Some("0x101c"));
+    assert_eq!(steps[4].captures.len(), 1);
+    assert_eq!(steps[4].captures[0].bind, "openCaptureTxId");
     assert_eq!(
-        steps[1].captures[0].source,
+        steps[4].captures[0].source,
         camera_config::CaptureSource::TransactionId
     );
     assert_eq!(
-        steps[2].open_channel,
+        steps[5].open_channel,
         Some(camera_config::SocketRole::Event)
     );
     assert_eq!(
-        steps[3].open_channel,
+        steps[6].open_channel,
         Some(camera_config::SocketRole::LiveView)
     );
     assert!(steps.iter().all(camera_config::Step::is_well_formed));
@@ -317,6 +324,13 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     assert!(reverse_steps
         .iter()
         .all(|step| step.reopen_session.is_none()));
+    assert_eq!(reverse_steps.len(), 7);
+    assert_eq!(reverse_steps[0].set_prop.as_deref(), Some("0xdf00"));
+    assert_eq!(reverse_steps[1].set_prop.as_deref(), Some("0xdf01"));
+    assert_eq!(reverse_steps[2].set_prop.as_deref(), Some("0xdf2a"));
+    assert_eq!(reverse_steps[2].value, Some(2.into()));
+    assert_eq!(reverse_steps[3].send_op.as_deref(), Some("0x902b"));
+    assert_eq!(reverse_steps[3].repeat, 4);
     let reverse_tail = &reverse_steps[reverse_steps.len() - 3..];
     let reverse_open = &reverse_tail[0];
     assert_eq!(reverse_open.send_op.as_deref(), Some("0x101c"));
@@ -345,6 +359,25 @@ fn live_view_entry_is_the_ground_truth_sequence() {
     assert!(entries
         .iter()
         .any(|e| e.to == "image-transfer" && e.from.as_deref() == Some("shooting/stills")));
+}
+
+#[test]
+fn app_control_surface_keeps_the_five_named_properties() {
+    let manifest = gfx();
+    for (code, name) in [
+        ("0x5005", "whiteBalance"),
+        ("0x500a", "focusMode"),
+        ("0x500c", "flashMode"),
+        ("0x5012", "selfTimer"),
+        ("0xd001", "filmSimulation"),
+    ] {
+        let property = manifest
+            .properties
+            .get(code)
+            .unwrap_or_else(|| panic!("missing property {code}"));
+        assert_eq!(property.name, name);
+        assert_eq!(property.access, Some(PropertyAccess::ReadWrite));
+    }
 }
 
 #[test]

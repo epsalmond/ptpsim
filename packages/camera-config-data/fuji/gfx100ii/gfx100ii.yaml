@@ -22,6 +22,7 @@ evidence:
   docIsoModel20260707: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
   docLargeMovObjectInfo: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW230.md" }
   wireReopenTrace: { kind: wire-capture, path: "evidence/APP_PTPIP_OBSERVATIONS.md", date: "2026-07-31" }
+  reviewedAppStartup: { kind: doc, path: "evidence/APP_PTPIP_OBSERVATIONS.md" }
   wireAutoImageTransfer: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
   wireAutoImageTransferQueued: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
   wireBleAutoTransfer: { kind: wire-capture, path: "evidence/AUTO_TRANSFER_OBSERVATIONS.md" }
@@ -158,10 +159,12 @@ connections:
     entries:
       - to: shooting/stills          # enter live-view from a cold App connection
         steps:
-          # tolerant: the GFX100 II rejects this advisory write with 0x201d
-          # on hardware — mode entry must continue past it. Device-validated
-          # in client application (their #4; previously a local vendor patch there).
+          # The advisory write is tolerant because rejection must not stop mode
+          # entry.
+          - { setProp: "0xdf00", value: 6, tolerant: true }
           - { setProp: "0xdf01", value: 0x16 }   # functionMode = 22 (live-view)
+          - { readEcho: "0xdf2a" }
+          - { sendOp: "0x902b", repeat: 4 }
           # fw 2.30 accepts the event/live-view TCP connections only after
           # InitiateOpenCapture succeeds (device-validated 2026-07-31).
           - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
@@ -173,7 +176,10 @@ connections:
         # the manifest executor's reconnect on this edge. The canonical entry
         # switches FunctionMode in-session (device-validated 2026-07-31).
         steps:
+          - { setProp: "0xdf00", value: 6, tolerant: true }
           - { setProp: "0xdf01", value: 0x16 }               # functionMode = 22 (live-view)
+          - { setProp: "0xdf2a", value: 2 }
+          - { sendOp: "0x902b", repeat: 4 }
           # The same fw 2.30 aux-port gate requires successful open capture first.
           - { sendOp: "0x101c", captures: [{ bind: openCaptureTxId, as: transactionId }] } # InitiateOpenCapture; waits for success and binds its transaction ID
           - { openChannel: event }
@@ -972,6 +978,7 @@ operations:
     effects:
       - { setProp: "0xd209", value: 0 }
     evidence: [docLiveControls]
+  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [shooting/stills, shooting/video], connections: [app], evidence: [reviewedAppStartup] }
   "0x902c": { name: StepShutterspeed,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0xd240", evidence: [docLiveControls] }
   "0x902d": { name: StepFnumber,          owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5007", evidence: [docLiveControls] }
   "0x902e": { name: StepExposureBias,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5010", evidence: [docLiveControls] }
@@ -1023,7 +1030,9 @@ operations:
   "0x9018": { name: PcssPollLiveViewData,    owner: fuji-vendor,  modes: [shooting/stills], connections: [wireless-tether], evidence: [wireTether] }
 
 properties:
+  "0xdf00": { name: functionModeMajor, type: u16, access: readWrite, evidence: [reviewedAppStartup] }
   "0xdf01": { name: functionMode, type: u16, access: readWrite, evidence: [docLiveControls, docImageTransfer] }
+  "0xdf2a": { name: liveDf2a, type: u32, access: readWrite, evidence: [reviewedAppStartup] }
   "0xdf28": { name: featureVersion,    type: u32, access: readWrite, evidence: [docImageTransfer] }
   # Live-status snapshot (app connection). A self-describing record stream with
   # a u16 count and u16 member codes. Numeric members default to u32; D22F is a
@@ -1101,6 +1110,8 @@ properties:
   # Current reference-app/AP controls. ISO/direct-list controls use SetDevicePropValue; ring/body controls
   # remain step-only or body-driven. WirelessTether exposes absolute big-three variants on the
   # 15740 PCSS connection, so controls are keyed by connection id.
+  "0x5005": { name: whiteBalance, ptpName: WhiteBalance, type: u16, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [docLiveControls] }
   "0x5007":
     name: aperture
     ptpName: FNumber
@@ -1111,6 +1122,9 @@ properties:
     initialValue: 400
     controls: { app: { setMethod: vendorStep, operation: "0x902d", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }
     evidence: [docLiveControls, wireTether]
+  "0x500a": { name: focusMode, ptpName: FocusMode, type: u16, access: readWrite, evidence: [docLiveControls] }
+  "0x500c": { name: flashMode, ptpName: FlashMode, type: u16, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [docLiveControls] }
   # Exposure bias is SIGNED: probe GetDevicePropDesc declares i16, descriptor enum
   # runs -5000..5000 milliEV (negative EV writes two's-complement, e.g. -0.3 → 0xFEB3) (#88).
   "0x5010":
@@ -1121,6 +1135,10 @@ properties:
     initialValue: 0
     controls: { app: { setMethod: vendorStep, operation: "0x902e", readback: "0xd212" }, wireless-tether: { setMethod: absolute, operation: "0x1016" } }
     evidence: [docLiveControls, wireTether]
+  "0x5012": { name: selfTimer, ptpName: SelfTimer, type: u16, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [docLiveControls] }
+  "0xd001": { name: filmSimulation, type: u16, access: readWrite,
+              controls: { app: { setMethod: absolute, operation: "0x1016" } }, evidence: [docLiveControls] }
   # 0xD212 live-status member; wire-decoded label DepthOfField, probe type u16 (#50).
   "0xd028": { name: depthOfField, type: u16, access: readWrite, evidence: [docD212TightFormat] }
   # Live-view still ISO is u32, NOT the u16 GetDevicePropDesc returns — fw2.30

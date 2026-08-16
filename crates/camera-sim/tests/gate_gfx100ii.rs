@@ -1489,6 +1489,27 @@ fn autofocus_transitions_do_not_change_shared_initiate_capture_behavior() {
 }
 
 #[test]
+fn cold_live_view_entry_executes_the_restored_preamble() {
+    let manifest = consolidated();
+    let live = manifest.connections["app"]
+        .entries
+        .iter()
+        .find(|entry| entry.to == "shooting/stills" && entry.from.is_none())
+        .expect("cold live-view entry");
+    let steps = entry_steps(live);
+    assert_eq!(steps[2].read_echo.as_deref(), Some("0xdf2a"));
+    assert_eq!(steps[3].send_op.as_deref(), Some("0x902b"));
+    assert_eq!(steps[3].repeat, 4);
+
+    let mut engine = engine();
+    walk_ptpip_in(&mut engine, steps, &BTreeMap::new(), Some("app"))
+        .expect("cold live-view preamble reaches streaming");
+    assert!(matches!(engine.phase(), Phase::Streaming));
+    assert_eq!(read_u16(&mut engine, 100, 0xdf00), 6);
+    assert_eq!(read_u32(&mut engine, 101, 0xdf2a), 0);
+}
+
+#[test]
 fn reopen_session_is_refused_over_a_volatile_listener_connection() {
     // #103 negative oracle: the GFX100 II `app` Wi-Fi-AP path tears down the :55740
     // command-port listener on a live-view transport-close, so a reopenSession's
@@ -1669,6 +1690,8 @@ fn image_transfer_to_live_view_switches_in_session_then_streams() {
     walk_ptpip_in(&mut e, entry_steps(live), &BTreeMap::new(), Some("app"))
         .expect("image-transfer → live-view edge runs");
     assert!(matches!(e.phase(), Phase::Streaming));
+    assert_eq!(read_u16(&mut e, 100, 0xdf00), 6);
+    assert_eq!(read_u32(&mut e, 101, 0xdf2a), 2);
 }
 
 #[test]

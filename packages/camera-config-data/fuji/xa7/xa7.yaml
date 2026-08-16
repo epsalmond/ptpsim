@@ -1,0 +1,302 @@
+schema: camera-config/v1
+
+# FUJIFILM X-A7 protocol surface for the legacy mobile app version 4.10.2.
+camera:
+  manufacturer: FUJIFILM
+  model: X-A7
+  identities:
+    ptpDeviceName: X-A7
+    serialNumber: PTPSIM-XA7-0001
+
+evidence:
+  legacyApp4102:
+    kind: doc
+    path: "evidence/LEGACY_APP_4_10_2.md"
+
+values:
+  legacyAppClientIpv4:
+    type: client-derived
+    runtime: clientIpv4
+  legacyAppResponderGuid:
+    type: fixed
+    value: "0870b0610a8b4593b2e79357dd36e050"
+
+sentinels:
+  legacyAppClose: { bytes: "08000000ffffffff", evidence: [legacyApp4102] }
+
+connections:
+  ble:
+    kind: ble-legacy-app
+    establishment: legacy-app-pair
+    discovery: { mechanism: ble, announces: camera }
+    modes: [remote-trigger]
+    enables:
+      - to: legacy-app
+        mechanism: legacy-app-establish-wifi-ap
+        mode: photo-receiver
+        params: { launchMode: "1" }
+      - to: legacy-app
+        mechanism: legacy-app-establish-wifi-ap
+        mode: gps-assist
+        params: { launchMode: "2" }
+      - to: legacy-app
+        mechanism: legacy-app-establish-wifi-ap
+        mode: photo-viewer
+        params: { launchMode: "3" }
+      - to: legacy-app
+        mechanism: legacy-app-establish-wifi-ap
+        mode: remote-shooting
+        params: { launchMode: "4" }
+      - to: legacy-app
+        mechanism: legacy-app-establish-wifi-ap
+        mode: firmware-update
+        params: { launchMode: "5" }
+    evidence: [legacyApp4102]
+
+  legacy-app:
+    kind: ptpip-legacy-app
+    establishment: legacy-app-establish-wifi-ap
+    activities:
+      - id: camera.network.join-confirmation
+        version: 1
+        displayRole: joiningNetwork
+        defaultExpectedDurationMs: 15000
+        interactionRequired: true
+        hostCheckpoint: { name: networkJoinConfirmation }
+      - id: camera.network.associate
+        version: 1
+        displayRole: joiningNetwork
+        defaultExpectedDurationMs: 12000
+        interactionRequired: false
+        hostCheckpoint: { name: networkAssociation }
+      - id: camera.session.open.ap
+        version: 1
+        displayRole: openingSession
+        defaultExpectedDurationMs: 10000
+        interactionRequired: false
+        hostCheckpoint: { name: sessionOpen }
+    initShape: legacyApp82
+    initRetries:
+      max: 5
+      backoffMs: 500
+      whenReasons: ["0x2019"]
+    commandFraming: usb
+    eventFraming: usb
+    objectTransfer:
+      strategy: wholeObject
+      resumePolicy: restartFromZero
+      readAction: getObject
+      formats: { "0x3801": experimental }
+    liveViewDelivery: { kind: stream }
+    commandListenerVolatile: true
+    discovery: { mechanism: ble, announces: camera }
+    bindings:
+      host: 192.168.0.1
+      command: 55740
+      event: 55741
+      liveView: 55742
+    transportClose: { sentinel: legacyAppClose, when: feature-exit }
+    init:
+      identity:
+        guid: initiatorGuid
+        friendlyName: initFriendlyName
+        clientIpv4: legacyAppClientIpv4
+      nameFieldByteCount: 54
+      expectedResponderGuid: legacyAppResponderGuid
+      evidence: [legacyApp4102]
+    modes:
+      - photo-receiver
+      - gps-assist
+      - photo-viewer
+      - remote-shooting
+      - remote-photo-view
+      - reserved-photo-receive
+      - firmware-update
+      - mode-mismatch-cleanup
+    entries:
+      # The legacy app selects the direct feature value normally. Neutral major
+      # mode 4 or 6 selects the alternate value.
+      - to: photo-receiver
+        steps:
+          - getProp: "0xdf00"
+            captures: [{ bind: cameraFunctionMode, as: propValue }]
+          - if:
+              slot: cameraFunctionMode
+              equals: 4
+              then: [{ setProp: "0xdf01", value: 8 }]
+              else:
+                - if:
+                    slot: cameraFunctionMode
+                    equals: 6
+                    then: [{ setProp: "0xdf01", value: 8 }]
+                    else: [{ setProp: "0xdf01", value: 1 }]
+          - { getProp: "0xdf21" }
+          - { setProp: "0xdf21", value: 4 }
+
+      - to: photo-viewer
+        steps:
+          - getProp: "0xdf00"
+            captures: [{ bind: cameraFunctionMode, as: propValue }]
+          - if:
+              slot: cameraFunctionMode
+              equals: 4
+              then: [{ setProp: "0xdf01", value: 9 }]
+              else:
+                - if:
+                    slot: cameraFunctionMode
+                    equals: 6
+                    then: [{ setProp: "0xdf01", value: 9 }]
+                    else: [{ setProp: "0xdf01", value: 2 }]
+          - { getProp: "0xdf22" }
+          - { setProp: "0xdf22", value: 5 }
+
+      - to: gps-assist
+        steps:
+          - getProp: "0xdf00"
+            captures: [{ bind: cameraFunctionMode, as: propValue }]
+          - if:
+              slot: cameraFunctionMode
+              equals: 4
+              then: [{ setProp: "0xdf01", value: 10 }]
+              else:
+                - if:
+                    slot: cameraFunctionMode
+                    equals: 6
+                    then: [{ setProp: "0xdf01", value: 10 }]
+                    else: [{ setProp: "0xdf01", value: 17 }]
+          - { getProp: "0xdf31" }
+          - { setProp: "0xdf31", value: 2 }
+
+      - to: remote-shooting
+        steps:
+          - { setProp: "0xdf01", value: 5 }
+          - { getProp: "0xdf24" }
+          - { setProp: "0xdf24", value: 0x0002000c }
+          - { sendOp: "0x101c", params: [0, 0], captures: [{ bind: openCaptureTxId, as: transactionId }] }
+          - { openChannel: event }
+          - { openChannel: liveView }
+
+      - to: remote-photo-view
+        steps:
+          - { setProp: "0xdf00", value: 6 }
+          - { setProp: "0xdf01", value: 11 }
+          - { getProp: "0xdf25" }
+          - { setProp: "0xdf25", value: 5 }
+
+      - to: reserved-photo-receive
+        steps:
+          - { setProp: "0xdf01", value: 18 }
+          - { getProp: "0xdf26" }
+          - { setProp: "0xdf26", value: 1 }
+
+      - to: firmware-update
+        steps:
+          - { setProp: "0xdf01", value: 19 }
+          - { getProp: "0xdf27" }
+          - { setProp: "0xdf27", value: 1 }
+
+      - to: mode-mismatch-cleanup
+        steps:
+          - { setProp: "0xdf01", value: 7 }
+
+    actions:
+      enumerateObjects:
+        mode: photo-viewer
+        initiator:
+          steps:
+            - sendOp: "0x1007"
+              params: [0xffffffff, 0]
+              captures: [{ bind: objectHandles, as: ptpU32Array }]
+        evidence: [legacyApp4102]
+      getObjectInfo:
+        mode: photo-viewer
+        initiator:
+          params: [handle]
+          steps: [{ sendOp: "0x1008", params: [{ runtime: handle }] }]
+        evidence: [legacyApp4102]
+      getThumb:
+        mode: photo-viewer
+        initiator:
+          params: [handle]
+          steps: [{ sendOp: "0x100a", params: [{ runtime: handle }] }]
+        evidence: [legacyApp4102]
+      getObject:
+        mode: photo-viewer
+        initiator:
+          params: [handle]
+          steps: [{ sendOp: "0x1009", params: [{ runtime: handle }] }]
+        evidence: [legacyApp4102]
+      stopLiveView:
+        mode: remote-shooting
+        initiator:
+          params: [openCaptureTxId]
+          steps: [{ sendOp: "0x1018", params: [{ runtime: openCaptureTxId }] }]
+        evidence: [legacyApp4102]
+    evidence: [legacyApp4102]
+
+modes:
+  remote-trigger:
+    capabilities: [shutterControl, movieRecord, screenOn]
+  photo-receiver:
+    capabilities: [download]
+    detect:
+      any:
+        - { prop: "0xdf01", eq: 1 }
+        - { prop: "0xdf01", eq: 8 }
+  gps-assist:
+    capabilities: [gpsPersistence]
+    detect:
+      any:
+        - { prop: "0xdf01", eq: 17 }
+        - { prop: "0xdf01", eq: 10 }
+  photo-viewer:
+    capabilities: [browse, download]
+    detect:
+      any:
+        - { prop: "0xdf01", eq: 2 }
+        - { prop: "0xdf01", eq: 9 }
+  remote-shooting:
+    capabilities: [liveView, remoteControl, screenTakeover]
+    detect: { prop: "0xdf01", eq: 5 }
+  remote-photo-view:
+    capabilities: [browse, download, remoteControl]
+    detect: { prop: "0xdf01", eq: 11 }
+  reserved-photo-receive:
+    capabilities: [download]
+    detect: { prop: "0xdf01", eq: 18 }
+  firmware-update:
+    capabilities: [firmwareUpdate]
+    detect: { prop: "0xdf01", eq: 19 }
+  mode-mismatch-cleanup:
+    capabilities: []
+    detect: { prop: "0xdf01", eq: 7 }
+
+operations:
+  "0x1002": { name: OpenSession, owner: standard-ptp, connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x1003": { name: CloseSession, owner: standard-ptp, connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x1007": { name: GetObjectHandles, owner: standard-ptp, modes: [photo-viewer], connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x1008": { name: GetObjectInfo, owner: standard-ptp, modes: [photo-viewer], connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x1009": { name: GetObject, owner: standard-ptp, modes: [photo-viewer], connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x100a": { name: GetThumb, owner: standard-ptp, modes: [photo-viewer], connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [remote-shooting], connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x101c": { name: InitiateOpenCapture, owner: standard-ptp, modes: [remote-shooting], connections: [legacy-app], evidence: [legacyApp4102] }
+
+media:
+  formats:
+    "0x3801": { name: exifJpeg, vendor: standard, isPhotosCompatible: true }
+
+properties:
+  "0xdf00": { name: cameraFunctionMode, type: u16, access: readWrite, initialValue: 4, evidence: [legacyApp4102] }
+  "0xdf01": { name: functionMode, type: u16, access: readWrite, initialValue: 0, evidence: [legacyApp4102] }
+  "0xdf21": { name: photoReceiverVersion, type: u32, access: readWrite, initialValue: 0, evidence: [legacyApp4102] }
+  "0xdf22": { name: photoViewerVersion, type: u32, access: readWrite, initialValue: 0, evidence: [legacyApp4102] }
+  "0xdf24": { name: remoteShootingVersion, type: u32, access: readWrite, initialValue: 0, evidence: [legacyApp4102] }
+  "0xdf25": { name: remotePhotoViewerVersion, type: u32, access: readWrite, initialValue: 0, evidence: [legacyApp4102] }
+  "0xdf26": { name: reservedPhotoReceiverVersion, type: u32, access: readWrite, initialValue: 0, evidence: [legacyApp4102] }
+  "0xdf27": { name: firmwareUpdateVersion, type: u32, access: readWrite, initialValue: 0, evidence: [legacyApp4102] }
+  "0xdf31": { name: gpsAssistVersion, type: u32, access: readWrite, initialValue: 0, evidence: [legacyApp4102] }
+  "0xd220": { name: receiverAvailability, type: u32, access: readOnly, initialValue: 0, evidence: [legacyApp4102] }
+  "0xd222": { name: viewerObjectCount, type: u32, access: readOnly, initialValue: 0, evidence: [legacyApp4102] }
+  "0xd400": { name: remoteRequestState, type: u32, access: readOnly, initialValue: 0, evidence: [legacyApp4102] }
+  "0xd52f": { name: gpsRequestState, type: u32, access: readOnly, initialValue: 0, evidence: [legacyApp4102] }
+  "0xdf41": { name: reservedPhotoCount, type: u32, access: readOnly, initialValue: 0, evidence: [legacyApp4102] }

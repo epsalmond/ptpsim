@@ -857,18 +857,38 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
         .mode_entry("app".into(), None, "shooting/stills".into())
         .expect("live-view entry");
     let steps = ptp_steps(&plan);
-    assert_eq!(steps.len(), 4);
+    assert_eq!(steps.len(), 7);
     assert!(matches!(
         &steps[0],
+        EntryStep::SetProp {
+            prop: 0xdf00,
+            value: 6,
+            tolerant: true,
+        }
+    ));
+    assert!(matches!(
+        &steps[1],
         EntryStep::SetProp {
             prop: 0xdf01,
             value: 0x16,
             ..
         }
     ));
-    assert!(matches!(&steps[1], EntryStep::SendOp { op: 0x101c, .. }));
     assert!(matches!(
-        &steps[2..],
+        &steps[2],
+        EntryStep::ReadEcho { prop: 0xdf2a, .. }
+    ));
+    assert!(matches!(
+        &steps[3],
+        EntryStep::SendOp {
+            op: 0x902b,
+            repeat: 4,
+            ..
+        }
+    ));
+    assert!(matches!(&steps[4], EntryStep::SendOp { op: 0x101c, .. }));
+    assert!(matches!(
+        &steps[5..],
         [
             EntryStep::OpenChannel {
                 role: SocketRole::Event,
@@ -880,6 +900,22 @@ fn mode_entry_returns_the_ground_truth_wire_steps() {
             }
         ]
     ));
+}
+
+#[test]
+fn restored_gfx100ii_properties_surface_through_ffi() {
+    let properties = store().properties();
+    for (code, name) in [
+        (0x5005, "whiteBalance"),
+        (0x500a, "focusMode"),
+        (0x500c, "flashMode"),
+        (0x5012, "selfTimer"),
+        (0xd001, "filmSimulation"),
+    ] {
+        assert!(properties
+            .iter()
+            .any(|property| property.code == code && property.name == name));
+    }
 }
 
 #[test]
@@ -1689,18 +1725,42 @@ fn get_to_take_entry_switches_in_session_then_starts_live_view() {
         )
         .expect("from-image-transfer live-view entry");
     let steps = ptp_steps(&plan);
-    assert_eq!(steps.len(), 4);
+    assert_eq!(steps.len(), 7);
     assert!(!steps
         .iter()
         .any(|step| matches!(step, EntryStep::ReopenSession { .. })));
-    assert!(steps.iter().any(|st| matches!(
-        st,
+    assert!(matches!(
+        &steps[0],
+        EntryStep::SetProp {
+            prop: 0xdf00,
+            value: 6,
+            tolerant: true,
+        }
+    ));
+    assert!(matches!(
+        &steps[1],
         EntryStep::SetProp {
             prop: 0xdf01,
             value: 0x16,
             ..
         }
-    )));
+    ));
+    assert!(matches!(
+        &steps[2],
+        EntryStep::SetProp {
+            prop: 0xdf2a,
+            value: 2,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &steps[3],
+        EntryStep::SendOp {
+            op: 0x902b,
+            repeat: 4,
+            ..
+        }
+    ));
     assert!(matches!(
         &steps[steps.len() - 3..],
         [

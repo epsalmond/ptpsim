@@ -96,13 +96,13 @@ fn body_with_cold_entry_activities() -> String {
             displayRole: preparingConnection
             defaultExpectedDurationMs: 10
             interactionRequired: false
-            executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
+            executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 5 }
           - id: camera.test.stream
             version: 1
             displayRole: openingSession
             defaultExpectedDurationMs: 10
             interactionRequired: false
-            executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 4 }
+            executorSpan: { sequence: steps, startStep: 5, endStepExclusive: 7 }
         steps:"#,
         1,
     )
@@ -1294,7 +1294,10 @@ fn real_gfx_cold_entry_runs_in_manifest_wire_order() {
     ))
     .expect("cold entry succeeds");
 
-    assert_eq!(transport.operations(), vec![0x1016, 0x101c]);
+    assert_eq!(
+        transport.operations(),
+        vec![0x1016, 0x1016, 0x1015, 0x1016, 0x902b, 0x902b, 0x902b, 0x902b, 0x101c,]
+    );
     assert_eq!(
         transport.opened_channels(),
         vec![SocketRole::Event, SocketRole::LiveView]
@@ -1309,8 +1312,8 @@ fn real_gfx_cold_entry_runs_in_manifest_wire_order() {
             ExecutorCall::OpenChannel(SocketRole::LiveView)
         ]
     ));
-    assert_eq!(outcome.steps_run, 4);
-    assert_eq!(reports.0.lock().expect("reports").len(), 8);
+    assert_eq!(outcome.steps_run, 7);
+    assert_eq!(reports.0.lock().expect("reports").len(), 14);
     assert!(activities.0.lock().expect("activities").is_empty());
 }
 
@@ -1700,7 +1703,7 @@ fn real_image_transfer_to_live_view_transition_stays_in_session() {
         }],
     ))
     .expect("in-session transition succeeds");
-    assert_eq!(outcome.steps_run, 4);
+    assert_eq!(outcome.steps_run, 7);
     assert_eq!(transport.close_calls(), 0);
     assert_eq!(transport.reopen_calls(), 0);
 }
@@ -2527,8 +2530,8 @@ fn standard_framing_runs_the_same_real_plan() {
     ))
     .expect("standard-framed cold entry succeeds");
 
-    assert_eq!(outcome.steps_run, 4);
-    assert_eq!(transport.operations().len(), 2);
+    assert_eq!(outcome.steps_run, 7);
+    assert_eq!(transport.operations().len(), 9);
 }
 
 #[test]
@@ -2735,8 +2738,12 @@ fn ptp_spans_emit_the_shared_activity_stream() {
         reports[0].activity_id.as_deref(),
         Some("camera.test.bootstrap")
     );
+    let stream_report = reports
+        .iter()
+        .find(|report| report.step_path.starts_with("steps[5]."))
+        .expect("first stream-channel step is reported");
     assert_eq!(
-        reports[4].activity_id.as_deref(),
+        stream_report.activity_id.as_deref(),
         Some("camera.test.stream")
     );
 }

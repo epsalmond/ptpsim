@@ -772,6 +772,100 @@ fn red_advert_recognised_as_gfx100ii_with_red_style_and_short_serial() {
     }
 }
 
+fn xa7_pairing_advert(local_name: &str) -> ScanObservation {
+    ble_advert(
+        &["117C4142-EDD4-4C77-8696-DD18EEBB770A"],
+        0x04D8,
+        &[0x02, 0x09, 0x5E, 0xE9, 0x04],
+        Some(local_name),
+    )
+}
+
+#[test]
+fn xa7_signature_selects_the_dedicated_legacy_app_manifest() {
+    let recognition = store().recognize(xa7_pairing_advert("1361X-A7-1361"));
+    let Recognition::Candidate {
+        model,
+        connection,
+        runtime_scope,
+        ..
+    } = recognition
+    else {
+        panic!("expected X-A7 candidate");
+    };
+    assert_eq!(model, "xa7");
+    assert_eq!(connection, "ble");
+    assert!(runtime_scope
+        .iter()
+        .any(|entry| entry.key == "style" && entry.value == "legacy-app"));
+    assert!(runtime_scope
+        .iter()
+        .any(|entry| entry.key == "pairingKeyBytes" && entry.value == "095ee904"));
+
+    let plan = store()
+        .establishment("xa7".into(), "ble".into(), runtime_scope)
+        .expect("legacy app registration plan");
+    assert_eq!(plan.plan_handle, "xa7:ble");
+    assert_eq!(plan.mechanism, "legacy-app-pair");
+    assert_eq!(plan.steps.len(), 30);
+    assert!(matches!(
+        plan.steps.get(2),
+        Some(Step::BleRequestMtu {
+            requested_mtu: 515,
+            minimum_mtu: None,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn xa7_alternate_pairing_and_keyless_reconnect_signatures_are_preserved() {
+    let prefixed = ble_advert(
+        &["117C4142-EDD4-4C77-8696-DD18EEBB770A"],
+        0x04D8,
+        &[0x03, 0, 0, 0, 0, 0x09, 0x5E, 0xE9, 0x04],
+        Some("1361X-A7-1361"),
+    );
+    let Recognition::Candidate {
+        model,
+        runtime_scope,
+        ..
+    } = store().recognize(prefixed)
+    else {
+        panic!("expected prefixed X-A7 candidate");
+    };
+    assert_eq!(model, "xa7");
+    assert!(runtime_scope
+        .iter()
+        .any(|entry| entry.key == "pairingKeyBytes" && entry.value == "095ee904"));
+
+    let keyless = ble_advert(
+        &["117C4142-EDD4-4C77-8696-DD18EEBB770A"],
+        0x04D8,
+        &[0],
+        Some("1361X-A7-1361"),
+    );
+    let saved_scope = vec![KeyValue {
+        key: "shortSerial".into(),
+        value: "1361".into(),
+    }];
+    match store().reconnect_decision("xa7".into(), keyless, saved_scope) {
+        ReconnectDecision::Ready { plan, .. } => {
+            assert_eq!(plan.plan_handle, "xa7:legacy-app-reconnect");
+            assert_eq!(plan.mechanism, "legacy-app-reconnect");
+        }
+        other => panic!("expected ready X-A7 reconnect, got {other:?}"),
+    }
+}
+
+#[test]
+fn unknown_camera_information_body_still_uses_the_generic_fallback() {
+    match store().recognize(xa7_pairing_advert("1234X-T20-1234")) {
+        Recognition::Candidate { model, .. } => assert_eq!(model, "fuji-generic"),
+        other => panic!("expected generic fallback candidate, got {other:?}"),
+    }
+}
+
 #[test]
 fn unknown_legacy_body_with_file_transfer_service_stays_a_single_candidate() {
     let s = store();
@@ -1316,6 +1410,89 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
     assert!(
         reads.contains(&("passphrase", "utf8-cstring", true)),
         "passphrase: tolerant utf8-cstring read; got {reads:?}",
+    );
+}
+
+#[test]
+fn xa7_legacy_app_ap_plan_surfaces_read_polling_contract() {
+    let plan = store()
+        .establishment("xa7".into(), "legacy-app".into(), vec![])
+        .expect("X-A7 legacy app AP plan");
+    assert_eq!(plan.mechanism, "legacy-app-establish-wifi-ap");
+    assert_eq!(plan.prerequisite.as_deref(), Some("legacy-app-pair"));
+    let await_step = plan
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            Step::BleAwaitUntil {
+                source,
+                until,
+                fail_when,
+                timeout_ms,
+                interval_ms,
+                ..
+            } => Some((source, until, fail_when, timeout_ms, interval_ms)),
+            _ => None,
+        })
+        .expect("AP state await step");
+    assert!(matches!(await_step.0, AwaitSource::Read { .. }));
+    assert_eq!(await_step.1.field, "apState");
+    assert_eq!(await_step.1.value, "1");
+    assert_eq!(
+        await_step
+            .2
+            .as_ref()
+            .map(|predicate| predicate.value.as_str()),
+        Some("3")
+    );
+    assert_eq!(*await_step.3, 45_000);
+    assert_eq!(*await_step.4, 1_000);
+}
+
+#[test]
+fn family_ble_actions_cross_the_ffi_seam() {
+    let store = store();
+    for action in [
+        "remote-shutter",
+        "write-time",
+        "write-gps",
+        "auto-transfer-size-original",
+        "auto-transfer-size-s",
+        "auto-transfer-size-xs",
+        "legacy-app-movie-record",
+        "settings-backup",
+        "settings-restore",
+    ] {
+        let plan = store
+            .ble_action("gfx100ii".into(), action.into())
+            .unwrap_or_else(|| panic!("missing FFI action {action}"));
+        assert_eq!(plan.action, action);
+        assert!(!plan.steps.is_empty());
+    }
+
+    let remote = store
+        .ble_action("gfx100ii".into(), "remote-shutter".into())
+        .unwrap();
+    let writes = remote
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::BleWrite {
+                gatt,
+                value: StepValue::Literal { bytes },
+                ..
+            } => Some((gatt.as_str(), bytes.as_slice())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        writes,
+        vec![
+            ("7FCF49C6-4FF0-4777-A03D-1A79166AF7A8", &[1, 0][..]),
+            ("7FCF49C6-4FF0-4777-A03D-1A79166AF7A8", &[2, 0][..]),
+            ("7FCF49C6-4FF0-4777-A03D-1A79166AF7A8", &[1, 0][..]),
+            ("7FCF49C6-4FF0-4777-A03D-1A79166AF7A8", &[0, 0][..]),
+        ]
     );
 }
 
@@ -2411,6 +2588,7 @@ fn index_model_refs_enumerates_declared_models_in_order() {
         pairs,
         vec![
             ("gfx100ii".to_string(), "gfx100ii/gfx100ii.yaml".to_string()),
+            ("xa7".to_string(), "xa7/xa7.yaml".to_string()),
             (
                 "fuji-generic".to_string(),
                 "fuji-generic/fuji-generic.yaml".to_string(),

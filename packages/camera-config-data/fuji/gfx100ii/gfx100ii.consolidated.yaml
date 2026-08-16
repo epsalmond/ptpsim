@@ -45,6 +45,10 @@ evidence:
     kind: doc
     path: docs/TRANSPORTS.md#xlv
     date: ''
+  reviewedAppStartup:
+    kind: doc
+    path: evidence/APP_PTPIP_OBSERVATIONS.md
+    date: ''
   sdkPcssAutofocus20260718:
     kind: vendor-sdk
     path: evidence/PCSS_PARITY_20260714.md
@@ -3037,6 +3041,24 @@ operations:
     emits: []
     evidence:
     - docLiveControls
+  '0x902b':
+    name: FujiVendor902B
+    owner: fuji-vendor
+    dataPhase: null
+    params: []
+    workflows: []
+    handler: null
+    property: null
+    modes:
+    - shooting/stills
+    - shooting/video
+    connections:
+    - app
+    requires: null
+    effects: []
+    emits: []
+    evidence:
+    - reviewedAppStartup
   '0x902c':
     name: StepShutterspeed
     owner: fuji-vendor
@@ -3407,11 +3429,10 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0x5005':
-    name: WhiteBalance
-    ptpName: null
+    name: whiteBalance
+    ptpName: WhiteBalance
     type: u16
     access: readWrite
-    kind: catalogOnly
     descriptor:
       form: enum
       values:
@@ -3430,10 +3451,14 @@ properties:
       - 32800
       - 32801
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
     evidence:
-    - canonicalObservation
+    - docLiveControls
     observedScopes:
     - connection: usb
       mode: raw-conv-backup-restore
@@ -3528,11 +3553,10 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0x500a':
-    name: FocusMode
-    ptpName: null
+    name: focusMode
+    ptpName: FocusMode
     type: u16
     access: readWrite
-    kind: catalogOnly
     descriptor:
       form: enum
       values:
@@ -3541,7 +3565,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - canonicalObservation
+    - docLiveControls
     observedScopes:
     - connection: usb
       mode: shooting/stills
@@ -3589,6 +3613,20 @@ properties:
     - connection: wireless-tether
       mode: shooting/video
       state: descriptor-enumeration
+  '0x500c':
+    name: flashMode
+    ptpName: FlashMode
+    type: u16
+    access: readWrite
+    descriptor: null
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
+    labels: {}
+    evidence:
+    - docLiveControls
   '0x500d':
     name: shutterSpeed
     ptpName: ExposureTime
@@ -4004,11 +4042,10 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0x5012':
-    name: CaptureDelay
-    ptpName: null
+    name: selfTimer
+    ptpName: SelfTimer
     type: u16
     access: readWrite
-    kind: catalogOnly
     descriptor:
       form: enum
       values:
@@ -4016,10 +4053,14 @@ properties:
       - 2000
       - 0
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
     evidence:
-    - canonicalObservation
+    - docLiveControls
     observedScopes:
     - connection: usb
       mode: shooting/stills
@@ -4103,11 +4144,10 @@ properties:
       mode: shooting/video
       state: descriptor-enumeration
   '0xd001':
-    name: raw_0xd001
+    name: filmSimulation
     ptpName: null
     type: u16
     access: readWrite
-    kind: catalogOnly
     descriptor:
       form: enum
       values:
@@ -4132,10 +4172,14 @@ properties:
       - 18
       - 19
       source: camera
-    controls: {}
+    controls:
+      app:
+        setMethod: absolute
+        operation: '0x1016'
+        readback: null
     labels: {}
     evidence:
-    - canonicalObservation
+    - docLiveControls
     observedScopes:
     - connection: usb
       mode: raw-conv-backup-restore
@@ -15177,6 +15221,16 @@ properties:
       failure: noResponse
     evidence:
     - docImageTransfer
+  '0xdf00':
+    name: functionModeMajor
+    ptpName: null
+    type: u16
+    access: readWrite
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - reviewedAppStartup
   '0xdf01':
     name: functionMode
     ptpName: null
@@ -15208,6 +15262,16 @@ properties:
     labels: {}
     evidence:
     - wireAutoImageTransfer
+  '0xdf2a':
+    name: liveDf2a
+    ptpName: null
+    type: u32
+    access: readWrite
+    descriptor: null
+    controls: {}
+    labels: {}
+    evidence:
+    - reviewedAppStartup
   '0xdf41':
     name: reservedPhotoObjectCount
     ptpName: null
@@ -15426,6 +15490,17 @@ connections:
     entries:
     - to: shooting/stills
       steps:
+      - setProp: '0xdf00'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 6
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
       - setProp: '0xdf01'
         getProp: null
         readEcho: null
@@ -15436,6 +15511,28 @@ connections:
         params: []
         tolerant: false
         repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: '0xdf2a'
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x902b'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: false
+        repeat: 4
         awaitUntil: null
       - setProp: null
         getProp: null
@@ -15478,6 +15575,17 @@ connections:
     - to: shooting/stills
       from: image-transfer
       steps:
+      - setProp: '0xdf00'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 6
+        params: []
+        tolerant: true
+        repeat: 1
+        awaitUntil: null
       - setProp: '0xdf01'
         getProp: null
         readEcho: null
@@ -15488,6 +15596,28 @@ connections:
         params: []
         tolerant: false
         repeat: 1
+        awaitUntil: null
+      - setProp: '0xdf2a'
+        getProp: null
+        readEcho: null
+        sendOp: null
+        reopenSession: null
+        closeSession: null
+        value: 2
+        params: []
+        tolerant: false
+        repeat: 1
+        awaitUntil: null
+      - setProp: null
+        getProp: null
+        readEcho: null
+        sendOp: '0x902b'
+        reopenSession: null
+        closeSession: null
+        value: null
+        params: []
+        tolerant: false
+        repeat: 4
         awaitUntil: null
       - setProp: null
         getProp: null

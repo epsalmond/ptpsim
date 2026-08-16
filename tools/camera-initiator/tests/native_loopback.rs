@@ -1014,7 +1014,7 @@ async fn native_transport_runs_real_gfx_entry_over_tcp() {
     .await
     .expect("execute cold shooting entry through FFI executor");
 
-    assert_eq!(outcome.steps_run, 4);
+    assert_eq!(outcome.steps_run, 7);
     assert!(outcome.scope.iter().any(|value| {
         value.key == "openCaptureTxId" && value.value > opened.transaction_id as u64
     }));
