@@ -62,6 +62,10 @@ const DEFAULT_POLL_INTERVAL_MS: u32 = 200;
 /// notification stream both misbehave.
 const MAX_LOOP_ITERS: usize = 65_536;
 
+/// Keep await diagnostics small enough for error and telemetry surfaces.
+const MAX_AWAIT_OBSERVATION_KINDS: usize = 8;
+const MAX_AWAIT_OBSERVATION_LENGTH: usize = 64;
+
 // ---------------------------------------------------------------------------
 // Foreign-implemented traits
 // ---------------------------------------------------------------------------
@@ -2103,6 +2107,7 @@ async fn run_await_until(
             };
             let mut budget = transport.sleep(s.timeout_ms).fuse();
             let mut tail = None;
+            let mut observations = BoundedAwaitObservations::default();
             for _ in 0..MAX_LOOP_ITERS {
                 let read = transport.read(gatt.clone());
                 futures_util::pin_mut!(read);
@@ -2111,21 +2116,11 @@ async fn run_await_until(
                         res.map_err(|error| StepError::transport(here, error))?
                     }
                     Either::Right((clock, _)) => match clock {
-                        Ok(()) => {
-                            return Err(StepError::deadline(
-                                here,
-                                format!(
-                                    "`until` ({} {} {}) not satisfied within {}ms",
-                                    s.until.field,
-                                    s.until.op.as_token(),
-                                    s.until.value,
-                                    s.timeout_ms
-                                ),
-                            ));
-                        }
+                        Ok(()) => return Err(read_await_timeout_err(here, s, &observations)),
                         Err(error) => return Err(StepError::transport(here, error)),
                     },
                 };
+                observations.record(&value);
                 apply_value_captures(ctx, &value, &s.capture_as, &s.capture);
                 let satisfied = match ctx.scope.get(&s.until.field) {
                     Some(actual) => predicate_holds(actual, s.until.op, &s.until.value),
@@ -2148,16 +2143,7 @@ async fn run_await_until(
                                 match select(evidence_walk, &mut budget).await {
                                     Either::Left((result, _)) => result,
                                     Either::Right((Ok(()), _)) => {
-                                        return Err(StepError::deadline(
-                                            here,
-                                            format!(
-                                                "`until` ({} {} {}) not satisfied within {}ms",
-                                                s.until.field,
-                                                s.until.op.as_token(),
-                                                s.until.value,
-                                                s.timeout_ms
-                                            ),
-                                        ));
+                                        return Err(read_await_timeout_err(here, s, &observations));
                                     }
                                     Either::Right((Err(error), _)) => {
                                         return Err(StepError::transport(here, error));
@@ -2186,16 +2172,7 @@ async fn run_await_until(
                             }
                         }
                         Either::Right((Ok(()), _)) => {
-                            return Err(StepError::deadline(
-                                here,
-                                format!(
-                                    "`until` ({} {} {}) not satisfied within {}ms",
-                                    s.until.field,
-                                    s.until.op.as_token(),
-                                    s.until.value,
-                                    s.timeout_ms
-                                ),
-                            ));
+                            return Err(read_await_timeout_err(here, s, &observations));
                         }
                         Either::Right((Err(error), _)) => {
                             return Err(StepError::transport(here, error));
@@ -2210,16 +2187,7 @@ async fn run_await_until(
                         return Err(StepError::transport(here, error));
                     }
                     Either::Right((Ok(()), _)) => {
-                        return Err(StepError::deadline(
-                            here,
-                            format!(
-                                "`until` ({} {} {}) not satisfied within {}ms",
-                                s.until.field,
-                                s.until.op.as_token(),
-                                s.until.value,
-                                s.timeout_ms
-                            ),
-                        ));
+                        return Err(read_await_timeout_err(here, s, &observations));
                     }
                     Either::Right((Err(error), _)) => {
                         return Err(StepError::transport(here, error));
@@ -2274,17 +2242,43 @@ fn condition_rejected_err(here: &str, s: &BleAwaitUntilStep) -> StepError {
 }
 
 fn await_timeout_err(here: &str, s: &BleAwaitUntilStep, observations: &[String]) -> StepError {
-    StepError::deadline(
+    await_timeout_err_with_summary(
+        here,
+        s,
+        "notification",
+        summarize_observations(observations),
+    )
+}
+
+fn read_await_timeout_err(
+    here: &str,
+    s: &BleAwaitUntilStep,
+    observations: &BoundedAwaitObservations,
+) -> StepError {
+    await_timeout_err_with_summary(here, s, "read", observations.summary())
+}
+
+fn await_timeout_err_with_summary(
+    here: &str,
+    s: &BleAwaitUntilStep,
+    source: &str,
+    observed: String,
+) -> StepError {
+    let mut error = StepError::deadline(
         here,
         format!(
-            "awaited notification did not satisfy `until` ({} {} {}) within {}ms (observed: {})",
+            "awaited {source} did not satisfy `until` ({} {} {}) within {}ms (observed: {observed})",
             s.until.field,
             s.until.op.as_token(),
             s.until.value,
             s.timeout_ms,
-            summarize_observations(observations)
         ),
-    )
+    );
+    error.context.push(KeyValue {
+        key: "observed".to_string(),
+        value: observed,
+    });
+    error
 }
 
 /// Why the shared wall-clock budget completed before the I/O resolved.
@@ -2641,6 +2635,48 @@ fn regex_matches(pattern: &str, payload: &[u8]) -> Result<bool, String> {
     Ok(std::str::from_utf8(payload)
         .map(|s| re.is_match(s))
         .unwrap_or(false))
+}
+
+#[derive(Default)]
+struct BoundedAwaitObservations {
+    entries: Vec<(String, usize)>,
+    overflow: usize,
+}
+
+impl BoundedAwaitObservations {
+    fn record(&mut self, payload: &[u8]) {
+        let mut observation = eval::hex_lower(payload);
+        if observation.len() > MAX_AWAIT_OBSERVATION_LENGTH {
+            observation.truncate(MAX_AWAIT_OBSERVATION_LENGTH - 1);
+            observation.push('…');
+        }
+        if let Some((_, count)) = self
+            .entries
+            .iter_mut()
+            .find(|(value, _)| *value == observation)
+        {
+            *count = count.saturating_add(1);
+        } else if self.entries.len() < MAX_AWAIT_OBSERVATION_KINDS - 1 {
+            self.entries.push((observation, 1));
+        } else {
+            self.overflow = self.overflow.saturating_add(1);
+        }
+    }
+
+    fn summary(&self) -> String {
+        if self.entries.is_empty() && self.overflow == 0 {
+            return "none".to_string();
+        }
+        let mut parts: Vec<String> = self
+            .entries
+            .iter()
+            .map(|(value, count)| format!("{value}×{count}"))
+            .collect();
+        if self.overflow > 0 {
+            parts.push(format!("other×{}", self.overflow));
+        }
+        parts.join(",")
+    }
 }
 
 /// Distinct observed payloads with counts, first-seen order: `"0140×2,0100×1"`
@@ -4110,6 +4146,43 @@ mod tests {
             .map(|report| report.outcome)
             .collect();
         assert_eq!(nested, [StepOutcome::Started, StepOutcome::Failed]);
+    }
+
+    #[test]
+    fn read_budget_lapse_reports_bounded_observed_payloads() {
+        let mut step = match rejection_await() {
+            Step::BleAwaitUntil(step) => step,
+            _ => unreachable!(),
+        };
+        step.source = AwaitSource::Read {
+            gatt: "APSTATE".into(),
+        };
+        step.fail_when = None;
+        let transport = MockTransport {
+            reads: Mutex::new(VecDeque::from([
+                Io::Value(vec![0x02, 0x80]),
+                Io::Value(vec![0x02, 0x80]),
+                Io::Value(vec![0x03, 0x80]),
+                Io::Stall,
+            ])),
+            sleeps_fire: true,
+            ..Default::default()
+        };
+        let (transport, _recorder, observer) = harness(transport);
+        let mut ctx = ctx(&transport, &observer);
+
+        let error = block_on(walk_plan(&mut ctx, vec![Step::BleAwaitUntil(step)]))
+            .expect_err("the enclosing await budget lapses");
+        assert_eq!(error.kind, ExecutorStepFailureKind::DeadlineExceeded);
+        assert!(
+            error.message.contains("awaited read")
+                && error.message.contains("observed: 0280×2,0380×1"),
+            "got: {}",
+            error.message
+        );
+        assert_eq!(error.context.len(), 1);
+        assert_eq!(error.context[0].key, "observed");
+        assert_eq!(error.context[0].value, "0280×2,0380×1");
     }
 
     #[test]
