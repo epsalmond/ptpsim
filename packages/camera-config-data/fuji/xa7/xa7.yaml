@@ -278,6 +278,9 @@ operations:
   "0x1008": { name: GetObjectInfo, owner: standard-ptp, modes: [photo-viewer], connections: [legacy-app], evidence: [legacyApp4102] }
   "0x1009": { name: GetObject, owner: standard-ptp, modes: [photo-viewer], connections: [legacy-app], evidence: [legacyApp4102] }
   "0x100a": { name: GetThumb, owner: standard-ptp, modes: [photo-viewer], connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x1014": { name: GetDevicePropDesc, owner: standard-ptp, connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x1015": { name: GetDevicePropValue, owner: standard-ptp, connections: [legacy-app], evidence: [legacyApp4102] }
+  "0x1016": { name: SetDevicePropValue, owner: standard-ptp, connections: [legacy-app], evidence: [legacyApp4102] }
   "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [remote-shooting], connections: [legacy-app], evidence: [legacyApp4102] }
   "0x101c": { name: InitiateOpenCapture, owner: standard-ptp, modes: [remote-shooting], connections: [legacy-app], evidence: [legacyApp4102] }
 

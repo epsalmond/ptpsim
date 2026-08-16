@@ -91,6 +91,16 @@ fn d212_declares_heterogeneous_member_encoding() {
         exposure_bias.encoding(4),
         RecordValueEncoding::Signed { width: 4 }
     );
+    assert_eq!(manifest.properties["0xdf00"].ptype.as_deref(), Some("u16"));
+    let function_mode_major = payload
+        .members
+        .iter()
+        .find(|member| member.code() == "0xdf00")
+        .expect("function-mode-major payload member");
+    assert_eq!(
+        function_mode_major.encoding(payload.record_widths().2),
+        RecordValueEncoding::Fixed { width: 4 }
+    );
 }
 
 #[test]

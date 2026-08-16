@@ -74,7 +74,9 @@ fn xa7_viewer_and_remote_paths_keep_the_declared_operations() {
     assert_eq!(steps[2].get_prop.as_deref(), Some("0xdf22"));
     assert_eq!(steps[3].value, Some(5.into()));
 
-    for code in ["0x1007", "0x1008", "0x1009", "0x100a", "0x1018", "0x101c"] {
+    for code in [
+        "0x1007", "0x1008", "0x1009", "0x100a", "0x1014", "0x1015", "0x1016", "0x1018", "0x101c",
+    ] {
         assert!(manifest.operations.contains_key(code), "missing {code}");
     }
 }

@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use camera_config::index::{
     FamilyBleBlock, ModelView, ResolvedManufacturerIndex, RetryFailureKind,
 };
-use camera_sim::{walk_establishment, BleEvent, BleResponder, WalkError};
-
+use camera_config::CameraManifest;
+use camera_media_store::MediaStore;
+use camera_sim::{walk_establishment, BleEvent, BleResponder, Engine, Reply, WalkError};
+use ptp_core::{DeviceInfo, OperationRequest};
 fn data(rel: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/camera-config-data")
@@ -21,6 +23,39 @@ fn xa7() -> ModelView {
         .into_iter()
         .find(|model| model.id == "xa7")
         .expect("X-A7 model")
+}
+
+fn engine() -> Engine {
+    let manifest =
+        CameraManifest::from_yaml(&data("fuji/xa7/xa7.yaml")).expect("X-A7 manifest loads");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("ptpsim-xa7-device-info-{nanos}"));
+    std::fs::create_dir_all(&root).expect("create X-A7 media root");
+    let mut store = MediaStore::open(&root).expect("open X-A7 media store");
+    store.scan().expect("scan X-A7 media store");
+    Engine::new(manifest, store)
+}
+
+fn request(code: u16, transaction_id: u32, params: Vec<u32>) -> OperationRequest {
+    OperationRequest {
+        data_phase_info: 1,
+        code,
+        transaction_id,
+        params,
+    }
+}
+
+fn data_reply(reply: Reply) -> Vec<u8> {
+    match reply {
+        Reply::Data { data, response } => {
+            assert_eq!(response.code, 0x2001, "OK expected");
+            data
+        }
+        other => panic!("expected data reply, got {other:?}"),
+    }
 }
 
 fn uuid(ble: &FamilyBleBlock, name: &str) -> String {
@@ -51,6 +86,24 @@ fn walk(
         &BTreeMap::new(),
         &params,
     )
+}
+
+#[test]
+fn device_info_advertises_property_operations_used_by_the_manifest() {
+    let mut engine = engine();
+    engine.bind_connection("legacy-app");
+    let open = engine.on_operation(&request(0x1002, 1, vec![1]), None);
+    assert!(matches!(open, Reply::Response(response) if response.code == 0x2001));
+    let device_info = DeviceInfo::decode(&data_reply(
+        engine.on_operation(&request(0x1001, 2, vec![]), None),
+    ))
+    .expect("decode X-A7 DeviceInfo");
+    for operation in [0x1014, 0x1015, 0x1016] {
+        assert!(
+            device_info.operations_supported.contains(&operation),
+            "DeviceInfo omits 0x{operation:04x}"
+        );
+    }
 }
 
 #[test]

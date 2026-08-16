@@ -45,7 +45,7 @@ evidence:
     kind: doc
     path: docs/TRANSPORTS.md#xlv
     date: ''
-  reviewedAppStartup:
+  restoredStartupPendingHardware:
     kind: doc
     path: evidence/APP_PTPIP_OBSERVATIONS.md
     date: ''
@@ -3058,7 +3058,7 @@ operations:
     effects: []
     emits: []
     evidence:
-    - reviewedAppStartup
+    - restoredStartupPendingHardware
   '0x902c':
     name: StepShutterspeed
     owner: fuji-vendor
@@ -15230,7 +15230,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - reviewedAppStartup
+    - restoredStartupPendingHardware
   '0xdf01':
     name: functionMode
     ptpName: null
@@ -15271,7 +15271,7 @@ properties:
     controls: {}
     labels: {}
     evidence:
-    - reviewedAppStartup
+    - restoredStartupPendingHardware
   '0xdf41':
     name: reservedPhotoObjectCount
     ptpName: null
