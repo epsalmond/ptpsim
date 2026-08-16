@@ -1476,8 +1476,12 @@ activities:
 that value and passes only when its observed network identity equals it exactly;
 missing, undisclosed, or mismatched identity is a failed gate. It does not
 permit route equality as a substitute. On an indexed load, the selected
-establishment must declare that key in `persist` or produce it from its step
-tree. `retainedSessionOpen.socketRole` opens
+establishment must declare that key in `persist` or produce it from a
+successful establishment step tree. Only outputs available after successful
+establishment satisfy the gate: captures from `failureEvidence.steps` and
+`retry.onFailure` are diagnostics of a failed path and do not qualify, while
+nested success producers such as `bleAwaitUntil.onEach` and `retry.steps`
+do. `retainedSessionOpen.socketRole` opens
 the real protocol session and retains it as the endpoint-reachability proof; it
 is not a TCP connect-and-close or other disposable preflight probe. The host
 must execute typed host-establishment activities in declared order.

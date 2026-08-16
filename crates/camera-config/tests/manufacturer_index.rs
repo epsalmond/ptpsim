@@ -2529,9 +2529,17 @@ families:
                           - bleRead: { gatt: wifi, encoding: utf8, captureAs: failureEvidenceOnly }
                         when: { failureEvidenceOnly: { eq: confirmed } }
                       timeoutMs: 100
+                  - bleAwaitUntil:
+                      source: { read: wifi }
+                      capture: { at: 0, length: 1, encoding: u8, name: awaitState2 }
+                      captureAs: awaitState2Raw
+                      until: { awaitState2: { eq: "1" } }
+                      timeoutMs: 100
+                      onEach:
+                        - bleRead: { gatt: wifi, encoding: utf8, captureAs: onEachSsid }
                   - retry:
                       steps:
-                        - bleConnect: {}
+                        - bleRead: { gatt: wifi, encoding: utf8, captureAs: retrySuccessSsid }
                       whenFailure: other
                       onFailure:
                         - bleRead: { gatt: wifi, encoding: utf8, captureAs: retryFailureOnly }
@@ -2557,6 +2565,17 @@ connections:
         BTreeMap::from([("tm1".to_string(), body.to_string())]),
     )
     .expect("a nested establishment step can produce the exact-network scope");
+
+    for success_scope in ["onEachSsid", "retrySuccessSsid"] {
+        let valid = body.replace(
+            "expectedScope: nestedSsid",
+            &format!("expectedScope: {success_scope}"),
+        );
+        ConfigStore::from_manufacturer_index(index, BTreeMap::from([("tm1".to_string(), valid)]))
+            .unwrap_or_else(|e| {
+                panic!("{success_scope} is a successful producer and must be accepted: {e}")
+            });
+    }
 
     let invalid = body.replace("expectedScope: nestedSsid", "expectedScope: nestedSsidTypo");
     let error =
