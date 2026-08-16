@@ -4,7 +4,6 @@
 use camera_config::CameraManifest;
 use camera_media_store::MediaStore;
 use camera_sim::{Engine, StateOverlay};
-use tempfile;
 
 fn minimal_manifest() -> CameraManifest {
     CameraManifest::from_yaml(
