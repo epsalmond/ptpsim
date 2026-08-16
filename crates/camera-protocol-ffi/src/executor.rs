@@ -1448,7 +1448,7 @@ async fn run_retry_control(
                 };
                 let attempts_used = retries_consumed + 1;
                 if !should_retry || attempts_used >= retry.max_attempts {
-                    body_error.context = failure.context;
+                    body_error.context.extend(failure.context);
                     return Err((body_error, retries_consumed));
                 }
 
@@ -1946,7 +1946,7 @@ async fn run_notify(
         .map_err(|failure| StepError::operation(here, failure))?;
 
     let mut budget = transport.sleep(s.timeout_ms).fuse();
-    let mut observations: Vec<String> = Vec::new();
+    let mut observations = BoundedAwaitObservations::default();
     for _ in 0..MAX_LOOP_ITERS {
         let payload = next_or_budget(transport, &s.gatt, &mut budget)
             .await
@@ -1956,13 +1956,13 @@ async fn run_notify(
                     format!(
                         "no accepted notification within {}ms (observed: {})",
                         s.timeout_ms,
-                        summarize_observations(&observations)
+                        observations.summary()
                     ),
                 ),
                 BudgetFailure::Clock(error) => StepError::transport(here, error),
             })?
             .map_err(|error| StepError::transport(here, error))?;
-        observations.push(eval::hex_lower(&payload));
+        observations.record(&payload);
         let accepted = match &s.until {
             BleNotifyUntil::Any => true,
             BleNotifyUntil::Equals { value, encoding } => {
@@ -2006,7 +2006,7 @@ async fn run_await_until(
                 .map_err(|failure| StepError::operation(here, failure))?;
 
             let mut budget = transport.sleep(s.timeout_ms).fuse();
-            let mut observations: Vec<String> = Vec::new();
+            let mut observations = BoundedAwaitObservations::default();
             let mut seed_pending = *seed_read;
             let mut tail = None;
             for _ in 0..MAX_LOOP_ITERS {
@@ -2036,7 +2036,7 @@ async fn run_await_until(
                         }
                     }
                 };
-                observations.push(eval::hex_lower(&value));
+                observations.record(&value);
                 apply_value_captures(ctx, &value, &s.capture_as, &s.capture);
                 let satisfied = match ctx.scope.get(&s.until.field) {
                     Some(actual) => predicate_holds(actual, s.until.op, &s.until.value),
@@ -2241,13 +2241,12 @@ fn condition_rejected_err(here: &str, s: &BleAwaitUntilStep) -> StepError {
     )
 }
 
-fn await_timeout_err(here: &str, s: &BleAwaitUntilStep, observations: &[String]) -> StepError {
-    await_timeout_err_with_summary(
-        here,
-        s,
-        "notification",
-        summarize_observations(observations),
-    )
+fn await_timeout_err(
+    here: &str,
+    s: &BleAwaitUntilStep,
+    observations: &BoundedAwaitObservations,
+) -> StepError {
+    await_timeout_err_with_summary(here, s, "notification", observations.summary())
 }
 
 fn read_await_timeout_err(
@@ -2645,9 +2644,10 @@ struct BoundedAwaitObservations {
 
 impl BoundedAwaitObservations {
     fn record(&mut self, payload: &[u8]) {
-        let mut observation = eval::hex_lower(payload);
-        if observation.len() > MAX_AWAIT_OBSERVATION_LENGTH {
-            observation.truncate(MAX_AWAIT_OBSERVATION_LENGTH - 1);
+        let max_displayed_bytes = (MAX_AWAIT_OBSERVATION_LENGTH - 1) / 2;
+        let displayed_bytes = payload.len().min(max_displayed_bytes);
+        let mut observation = eval::hex_lower(&payload[..displayed_bytes]);
+        if displayed_bytes < payload.len() {
             observation.push('…');
         }
         if let Some((_, count)) = self
@@ -2656,6 +2656,7 @@ impl BoundedAwaitObservations {
             .find(|(value, _)| *value == observation)
         {
             *count = count.saturating_add(1);
+        // Reserve the final summary part for the overflow count.
         } else if self.entries.len() < MAX_AWAIT_OBSERVATION_KINDS - 1 {
             self.entries.push((observation, 1));
         } else {
@@ -2677,27 +2678,6 @@ impl BoundedAwaitObservations {
         }
         parts.join(",")
     }
-}
-
-/// Distinct observed payloads with counts, first-seen order: `"0140×2,0100×1"`
-/// or `"none"` — the diagnostic tail of an await/notify timeout.
-fn summarize_observations(observations: &[String]) -> String {
-    if observations.is_empty() {
-        return "none".to_string();
-    }
-    let mut order: Vec<&String> = Vec::new();
-    let mut counts: BTreeMap<&String, usize> = BTreeMap::new();
-    for o in observations {
-        if !counts.contains_key(o) {
-            order.push(o);
-        }
-        *counts.entry(o).or_insert(0) += 1;
-    }
-    order
-        .iter()
-        .map(|o| format!("{o}×{}", counts[*o]))
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 // ---------------------------------------------------------------------------
@@ -4185,6 +4165,23 @@ mod tests {
         assert_eq!(error.context[0].value, "0280×2,0380×1");
     }
 
+    #[test]
+    fn bounded_await_observations_caps_kinds_and_payload_length() {
+        let mut observations = BoundedAwaitObservations::default();
+        for value in 0_u8..9 {
+            observations.record(&[value]);
+        }
+        assert_eq!(
+            observations.summary(),
+            "00×1,01×1,02×1,03×1,04×1,05×1,06×1,other×2"
+        );
+
+        let mut long_observation = BoundedAwaitObservations::default();
+        long_observation.record(&[0xab; (MAX_AWAIT_OBSERVATION_LENGTH / 2) + 1]);
+        let rendered = &long_observation.entries[0].0;
+        assert!(rendered.chars().count() <= MAX_AWAIT_OBSERVATION_LENGTH);
+        assert!(rendered.ends_with('…'));
+    }
     #[test]
     fn read_source_remains_eligible_for_fail_when() {
         let mut step = match rejection_await() {
