@@ -1267,6 +1267,7 @@ properties:
     evidence: [wireTether]
   "0x500e":
     name: exposureProgram
+    ptpName: ExposureProgram
     type: u16
     access: readWrite
     descriptor: { form: enum, values: [1, 2, 3, 4] }
