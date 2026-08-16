@@ -12,6 +12,21 @@ use camera_config::index::{FamilyBleBlock, ModelView, ResolvedManufacturerIndex}
 use camera_config::CameraManifest;
 use camera_media_store::MediaStore;
 use camera_sim::{walk_establishment, BleResponder, Engine};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn unique_temp_root(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{prefix}-{nanos}-{count}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
 
 fn data(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -43,11 +58,7 @@ fn engine_and_link() -> (Engine, camera_sim::SharedLink) {
         "schema: camera-config/v1\ncamera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: \"2.30\" }\n",
     )
     .expect("minimal manifest loads");
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-arm-{nanos}"));
+    let root = unique_temp_root("ptpsim-arm");
     std::fs::create_dir_all(root.join("DCIM")).unwrap();
     let mut store = MediaStore::open(&root).unwrap();
     store.scan().unwrap();

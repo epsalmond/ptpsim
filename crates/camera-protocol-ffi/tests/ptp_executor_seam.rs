@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -26,6 +26,20 @@ use futures::executor::block_on;
 use ptp_core::{OperationRequest, PtpCodec, PtpIpPacket};
 
 mod common;
+
+fn unique_temp_root(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{prefix}-{nanos}-{count}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
 
 fn fault(
     operation: u16,
@@ -655,13 +669,7 @@ fn bundled_pcss_autofocus_release_tolerates_d230_cleanup_response() {
 fn engine(connection: &str) -> (Engine, u32) {
     let manifest = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml"))
         .expect("consolidated manifest loads");
-    let root = std::env::temp_dir().join(format!(
-        "ptpsim-ffi-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    ));
+    let root = unique_temp_root("ptpsim-ffi");
     let dcim = root.join("DCIM/100_FUJI");
     std::fs::create_dir_all(&dcim).expect("temp media root");
     std::fs::write(dcim.join("DSCF0001.JPG"), b"\xff\xd8ffi-test\xff\xd9").expect("test jpeg");

@@ -5,6 +5,21 @@ use std::collections::BTreeMap;
 use camera_config::{CameraManifest, SetPropValue, Step, StepRetry};
 use camera_media_store::MediaStore;
 use camera_sim::{walk_ptpip_in, Engine, FaultMutation, FaultSelector, FaultSpec};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn unique_temp_root(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{prefix}-{nanos}-{count}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
 
 const PRIMARY_OP: u16 = 0x9001;
 const FALLBACK_OP: u16 = 0x9002;
@@ -33,11 +48,7 @@ connections:
 }
 
 fn engine() -> Engine {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time follows the Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-retry-fallback-{unique}"));
+    let root = unique_temp_root("ptpsim-retry-fallback");
     std::fs::create_dir_all(&root).expect("create media root");
     let store = MediaStore::open(&root).expect("open empty media store");
     Engine::new(manifest(), store)
