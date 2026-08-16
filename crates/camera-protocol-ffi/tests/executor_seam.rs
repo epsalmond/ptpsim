@@ -1969,3 +1969,162 @@ fn nikon_lss_executor_rejects_malformed_configuration_lengths() {
         ));
     }
 }
+
+#[test]
+fn legacy_app_establish_awaits_indications_and_completes_on_state_1_through_ffi() {
+    // Synthetic xa7 legacy-app-establish-wifi-ap via the FFI seam.
+    let index = r#"
+manufacturer: FUJIFILM
+families:
+  fuji:
+    ble:
+      gatt:
+        apState: "A68E3F66-0FCC-4395-8D4C-AA980B5877FA"
+        functionLaunchRequest: "600655E6-3637-42F1-8FB2-44EFC5C63B13"
+        cameraSSIDNameString: "BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4"
+        transferState: "BD17BA04-B76B-4892-A545-B73BA1F74DAE"
+      advert: {}
+      establishments:
+        legacy-app-pair:
+          mechanism: legacy-app-pair
+          activities:
+            - { id: camera.remote.registration, version: 1, displayRole: confirmingPairing, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 } }
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+        legacy-app-establish-wifi-ap:
+          mechanism: legacy-app-establish-wifi-ap
+          prerequisite: legacy-app-pair
+          onDemand: true
+          params: [launchMode]
+          persist: [ssid]
+          activities:
+            - { id: camera.remote.ap-launch, version: 1, displayRole: startingNetwork, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 6 } }
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
+            - bleWrite:
+                gatt: functionLaunchRequest
+                value: { runtime: launchMode, encoding: u16-le }
+                notificationFence: apState
+            - bleAwaitUntil:
+                source: { notify: { gatt: apState, mode: indicate } }
+                capture: { at: 0, length: 2, encoding: u16-le, name: apState }
+                captureAs: apStateRaw
+                until: { apState: { eq: "1" } }
+                failWhen: { apState: { eq: "0" } }
+                timeoutMs: 20000
+            - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
+models:
+  - id: xa7
+    displayName: "X-A7"
+    inherits: [fuji]
+    manifest: xa7.yaml
+"#;
+    let body = "schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: X-A7 }";
+    let store = ConfigStore::from_manufacturer_index(
+        index.into(),
+        vec![KeyValue {
+            key: "xa7".into(),
+            value: body.into(),
+        }],
+    )
+    .expect("xa7 legacy store loads");
+    let ap_state = "A68E3F66-0FCC-4395-8D4C-AA980B5877FA".to_string();
+    let launch = "600655E6-3637-42F1-8FB2-44EFC5C63B13".to_string();
+    let ssid_uuid = "BF6DC9CF-3606-4EC9-A4C8-D77576E93EA4".to_string();
+    let plan_handle = "xa7:legacy-app-establish-wifi-ap".to_string();
+    // Success case: 02 then 01
+    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ssid_uuid.clone()])
+        .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x02, 0x00])
+        .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x01, 0x00])
+        .serve_read(&ssid_uuid, b"MY-AP");
+    let transport = Arc::new(ResponderTransport::new(responder));
+    let outcome = block_on(run_establishment(
+        store.clone(),
+        plan_handle.clone(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect("legacy app walk completes on 01");
+    assert_eq!(outcome.steps_run, 6);
+    let log = Arc::try_unwrap(transport)
+        .unwrap_or_else(|_| panic!("sole owner"))
+        .into_log();
+    assert!(
+        !log.iter()
+            .any(|e| matches!(e, BleEvent::Read { uuid } if uuid == &ap_state)),
+        "no pre-launch read"
+    );
+    let writes: Vec<_> = log
+        .iter()
+        .filter_map(|e| match e {
+            BleEvent::Write { uuid, value } if uuid == &launch => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, vec![vec![0x04, 0x00]]);
+
+    // Failure case: 00 trips conditionRejected
+    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ssid_uuid.clone()])
+        .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x00, 0x00])
+        .serve_read(&ssid_uuid, b"MY-AP");
+    let transport = Arc::new(ResponderTransport::new(responder));
+    let err = block_on(run_establishment(
+        store.clone(),
+        plan_handle.clone(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect_err("00 must fail");
+    assert!(matches!(
+        err,
+        ExecutorError::StepFailed {
+            kind: ExecutorStepFailureKind::ConditionRejected,
+            ..
+        }
+    ));
+
+    // Transitional case: 02 alone does not satisfy
+    let responder = BleResponder::new([ap_state.clone(), launch.clone(), ssid_uuid.clone()])
+        .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x02, 0x00])
+        .serve_read(&ssid_uuid, b"MY-AP");
+    let transport = Arc::new(ResponderTransport::new(responder));
+    let err = block_on(run_establishment(
+        store.clone(),
+        plan_handle,
+        transport,
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ))
+    .expect_err("02 alone must deadline");
+    assert!(matches!(
+        err,
+        ExecutorError::StepFailed {
+            kind: ExecutorStepFailureKind::DeadlineExceeded,
+            ..
+        }
+    ));
+}

@@ -3794,6 +3794,23 @@ properties:
       source: camera
     controls: {}
     labels: {}
+    valueRows:
+    - label: M
+      raw: 1
+      evidence:
+      - wireTether
+    - label: P
+      raw: 2
+      evidence:
+      - wireTether
+    - label: A
+      raw: 3
+      evidence:
+      - wireTether
+    - label: S
+      raw: 4
+      evidence:
+      - wireTether
     evidence:
     - wireTether
     observedScopes:
