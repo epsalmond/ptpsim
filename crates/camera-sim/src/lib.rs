@@ -41,7 +41,7 @@ mod tests {
     use ptp_core::{OperationRequest, Reader, Writer};
     use std::fs::File;
     use std::io::Write;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     const RAF_THUMBNAIL: &[u8] = b"\xff\xd8TINY-THUMB\xff\xd9";
 
@@ -144,21 +144,17 @@ properties:
         w.into_vec()
     }
 
-    fn tmp_card() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("ptpsim-sim-{nanos}"));
-        let dir = root.join("DCIM/100_FUJI");
-        std::fs::create_dir_all(&dir).unwrap();
-        write(&dir.join("DSCF0001.JPG"), b"\xFF\xD8JPEGBODY\xFF\xD9");
+    fn tmp_card() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("DCIM/100_FUJI");
+        std::fs::create_dir_all(&root).unwrap();
+        write(&root.join("DSCF0001.JPG"), b"\xFF\xD8JPEGBODY\xFF\xD9");
         let raf = raf_with_header_preview(&jpeg_with_exif_thumbnail(
             RAF_THUMBNAIL,
             b"FULL-HEADER-PREVIEW",
         ));
-        write(&dir.join("DSCF0002.RAF"), &raf);
-        root
+        write(&root.join("DSCF0002.RAF"), &raf);
+        dir
     }
 
     fn jpeg_with_exif_thumbnail(thumbnail: &[u8], full_preview_marker: &[u8]) -> Vec<u8> {
@@ -220,16 +216,12 @@ properties:
         Engine::new(manifest, store)
     }
 
-    fn empty_engine(manifest_yaml: &str) -> (Engine, PathBuf) {
+    fn empty_engine(manifest_yaml: &str) -> (Engine, tempfile::TempDir) {
         let manifest = CameraManifest::from_yaml(manifest_yaml).unwrap();
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("ptpsim-empty-{nanos}"));
-        std::fs::create_dir_all(root.join("DCIM/100_FUJI")).unwrap();
-        let store = MediaStore::open(&root).unwrap();
-        (Engine::new(manifest, store), root)
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("DCIM/100_FUJI")).unwrap();
+        let store = MediaStore::open(dir.path()).unwrap();
+        (Engine::new(manifest, store), dir)
     }
 
     fn expect_data(reply: Reply) -> Vec<u8> {
@@ -259,8 +251,8 @@ properties:
     /// partial download -> close, driven entirely by the manifest + media store.
     #[test]
     fn gate3_image_import_flow() {
-        let root = tmp_card();
-        let mut e = engine(&root);
+        let _tmp = tmp_card();
+        let mut e = engine(_tmp.path());
 
         expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None)); // OpenSession
         expect_ok(e.on_operation(&op(0x1016, 2, vec![0xdf01]), Some(&u16_data(20)))); // df01=20 -> ImageImport
@@ -308,7 +300,6 @@ properties:
 
         expect_ok(e.on_operation(&op(0x1003, 7, vec![]), None)); // CloseSession
         assert_eq!(e.state().phase, Phase::Closed);
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// Gate #4 (engine level): live view opens, frames keep coming, and ISO /
@@ -316,8 +307,8 @@ properties:
     /// three-socket TCP wiring is exercised at the service level.
     #[test]
     fn gate4_liveview_control_while_streaming() {
-        let root = tmp_card();
-        let mut e = engine(&root);
+        let _tmp = tmp_card();
+        let mut e = engine(_tmp.path());
         let mut frames = StaticFrameSource::new(vec![0xFF, 0xD8, 0x42, 0xFF, 0xD9]);
 
         expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None)); // OpenSession
@@ -346,12 +337,11 @@ properties:
 
         // Frames still flowing after the control ops.
         assert!(frames.next_frame().is_some());
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn state_overlay_seeded_iso_can_diverge_to_manifest_write_store_raw() {
-        let (mut e, root) = empty_engine(ISO_SLAM_MANIFEST);
+        let (mut e, _tmp) = empty_engine(ISO_SLAM_MANIFEST);
         let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
             "props": { "0xd02a": 2000 }
         }))
@@ -366,12 +356,11 @@ properties:
         let readback = expect_data(e.on_operation(&op(0x1015, 3, vec![0xd02a]), None));
         let mut r = Reader::new(&readback);
         assert_eq!(r.u32().unwrap(), 80);
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn invalid_state_overlay_does_not_partially_mutate_state() {
-        let (mut e, root) = empty_engine(ISO_SLAM_MANIFEST);
+        let (mut e, _tmp) = empty_engine(ISO_SLAM_MANIFEST);
         assert_eq!(e.state().phase, Phase::Disconnected);
         assert_eq!(e.state().props.get(&0xd02a), Some(&PropValue::U32(32769)));
 
@@ -393,12 +382,11 @@ properties:
         assert_eq!(e.state().phase, Phase::Disconnected);
         assert!(!e.state().session_open);
         assert_eq!(e.state().props.get(&0xd02a), Some(&PropValue::U32(32769)));
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn state_overlay_accepts_signed_property_types() {
-        let (mut e, root) = empty_engine(SIGNED_PROP_MANIFEST);
+        let (mut e, _tmp) = empty_engine(SIGNED_PROP_MANIFEST);
         let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
             "props": { "0x5010": -333 }
         }))
@@ -407,12 +395,11 @@ properties:
         let applied = e.apply_state_overlay(&overlay).unwrap();
         assert_eq!(applied.props, 1);
         assert_eq!(e.state().props.get(&0x5010), Some(&PropValue::I16(-333)));
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn state_overlay_rejects_out_of_range_signed_values() {
-        let (mut e, root) = empty_engine(SIGNED_PROP_MANIFEST);
+        let (mut e, _tmp) = empty_engine(SIGNED_PROP_MANIFEST);
         let overlay: StateOverlay = serde_json::from_value(serde_json::json!({
             "props": { "0x5010": -40000 }
         }))
@@ -424,25 +411,23 @@ properties:
             "err: {err}"
         );
         assert!(!e.state().props.contains_key(&0x5010));
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn unsupported_op_is_rejected() {
-        let root = tmp_card();
-        let mut e = engine(&root);
+        let _tmp = tmp_card();
+        let mut e = engine(_tmp.path());
         expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None));
         match e.on_operation(&op(0x9fff, 2, vec![]), None) {
             Reply::Response(r) => assert_eq!(r.code, 0x2005), // OperationNotSupported
             other => panic!("expected unsupported, got {other:?}"),
         }
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn injected_faults_override_dispatch() {
-        let root = tmp_card();
-        let mut e = engine(&root);
+        let _tmp = tmp_card();
+        let mut e = engine(_tmp.path());
         expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None));
 
         // Fail GetObjectHandles with DeviceBusy.
@@ -485,13 +470,12 @@ properties:
             e.on_operation(&op(0x1007, 4, vec![]), None),
             Reply::Data { .. } | Reply::DataStream { .. }
         ));
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn data_faults_mutate_manifest_typed_readback_and_record_wire_plan() {
-        let root = tmp_card();
-        let mut engine = engine(&root);
+        let _tmp = tmp_card();
+        let mut engine = engine(_tmp.path());
         expect_ok(engine.on_operation(&op(0x1002, 1, vec![1]), None));
 
         engine
@@ -554,17 +538,15 @@ properties:
             engine.take_applied_fault().unwrap().wire,
             WirePlan::DataFraming(camera_config::WireFraming::Standard)
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn ops_before_session_are_refused() {
-        let root = tmp_card();
-        let mut e = engine(&root);
+        let _tmp = tmp_card();
+        let mut e = engine(_tmp.path());
         match e.on_operation(&op(0x1007, 1, vec![]), None) {
             Reply::Response(r) => assert_eq!(r.code, 0x2003), // SessionNotOpen
             other => panic!("expected session-not-open, got {other:?}"),
         }
-        std::fs::remove_dir_all(&root).ok();
     }
 }

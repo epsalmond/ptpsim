@@ -33,6 +33,24 @@ use ptp_core::{ObjectInfo, OperationRequest, Reader, Writer};
 use crate::engine::{Engine, Reply};
 use crate::state::{datatype_of, typed, Phase};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(test)]
+fn unique_temp_root(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{prefix}-{nanos}-{count}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
+
 /// Reference-executor bound on an `awaitUntil` loop: the deterministic analogue
 /// of the dispatcher's wall-clock `timeout_ms` (§11.15). A condition that never
 /// holds hits this and fails like a real timeout rather than spinning forever.
@@ -1276,11 +1294,7 @@ mod tests {
 
     /// An empty media card — these tests exercise property state, not media.
     fn empty_store() -> MediaStore {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("ptpsim-ptpip-{nanos}"));
+        let root = unique_temp_root("ptpsim-ptpip");
         std::fs::create_dir_all(&root).unwrap();
         MediaStore::open(&root).unwrap()
     }
@@ -1292,11 +1306,7 @@ mod tests {
 
     fn engine_with_file(yaml: &str, bytes: &[u8]) -> (Engine, u32) {
         let manifest = CameraManifest::from_yaml(yaml).expect("manifest loads");
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("ptpsim-ptpip-media-{nanos}"));
+        let root = unique_temp_root("ptpsim-ptpip-media");
         let path = root.join("DCIM/100_FUJI/DSCF0001.JPG");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, bytes).unwrap();
@@ -1550,11 +1560,7 @@ properties: {}
     #[test]
     fn completion_stream_read_failure_leaves_reserved_head_queued() {
         let manifest = CameraManifest::from_yaml(RESERVED_MANIFEST).expect("manifest loads");
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("ptpsim-ptpip-missing-{nanos}"));
+        let root = unique_temp_root("ptpsim-ptpip-missing");
         let path = root.join("DCIM/100_FUJI/DSCF0001.JPG");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"jpeg-body").unwrap();

@@ -38,6 +38,21 @@ use ptp_core::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
+
+#[cfg(test)]
+fn unique_temp_root(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{prefix}-{nanos}-{count}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
 
@@ -3179,13 +3194,9 @@ mod tests {
 
     #[tokio::test]
     async fn failed_stream_source_cannot_return_success_or_completion() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let missing = std::env::temp_dir().join(format!(
-            "ptpsim-missing-stream-source-{}-{nonce}",
-            std::process::id(),
+        let missing = unique_temp_root(&format!(
+            "ptpsim-missing-stream-source-{}",
+            std::process::id()
         ));
         let req = OperationRequest {
             data_phase_info: 1,

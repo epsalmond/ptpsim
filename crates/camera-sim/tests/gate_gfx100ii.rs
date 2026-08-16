@@ -18,6 +18,21 @@ use camera_sim::{
 use ptp_core::{DeviceInfo, ObjectInfo, OperationRequest, PropValue, Reader};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn unique_temp_root(prefix: &str) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{prefix}-{nanos}-{count}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
 
 fn fault(
     operation: u16,
@@ -60,11 +75,7 @@ fn entry_steps(entry: &ModeEntry) -> &[Step] {
 }
 
 fn engine_with_manifest(manifest: CameraManifest) -> Engine {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-gate-{nanos}"));
+    let root = unique_temp_root("ptpsim-gate");
     let dir = root.join("DCIM/100_FUJI");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("DSCF0001.JPG"), b"\xFF\xD8HELLOJPEG\xFF\xD9").unwrap();
@@ -101,11 +112,7 @@ fn image_import_ready() -> (Engine, camera_config::Action) {
 }
 
 fn engine_with_two_jpegs() -> Engine {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-reserved-{nanos}"));
+    let root = unique_temp_root("ptpsim-reserved");
     let dir = root.join("DCIM/100_FUJI");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("DSCF0001.JPG"), b"\xFF\xD8FIRST-JPEG\xFF\xD9").unwrap();
@@ -122,11 +129,7 @@ fn engine_with_non_aliasing_reserved_head() -> Engine {
 }
 
 fn non_aliasing_reserved_store() -> MediaStore {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-reserved-alias-{nanos}"));
+    let root = unique_temp_root("ptpsim-reserved-alias");
     let dir = root.join("DCIM/100_FUJI");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("AAAA0001.MOV"), b"NOT-A-RESERVED-PHOTO").unwrap();
@@ -137,11 +140,7 @@ fn non_aliasing_reserved_store() -> MediaStore {
 }
 
 fn engine_with_sparse_mov(size: u64) -> (Engine, u32) {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-large-mov-{nanos}"));
+    let root = unique_temp_root("ptpsim-large-mov");
     let path = root.join("DCIM/100_FUJI/DSCF8476.MOV");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let file = std::fs::File::create(&path).unwrap();
@@ -1751,11 +1750,7 @@ fn engine_with_jpegs(count: usize) -> Engine {
 }
 
 fn engine_with_jpegs_and_handles(count: usize) -> (Engine, Vec<u32>) {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-gate-import-{nanos}"));
+    let root = unique_temp_root("ptpsim-gate-import");
     let dir = root.join("DCIM/100_FUJI");
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..count {
