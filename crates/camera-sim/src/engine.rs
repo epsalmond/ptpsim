@@ -22,6 +22,24 @@ use crate::fault::{
 use crate::state::{build_prop_desc, datatype_of, typed_descriptor_value, CameraState, Phase};
 use crate::state_overlay::{AppliedStateOverlay, StateOverlay};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(test)]
+fn unique_temp_root(prefix: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "{prefix}-{nanos}-{count}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ))
+}
+
 const STORAGE_ID: u32 = 0x0001_0001;
 // GFX100 II firmware 2.30 returns this vendor response when PCSS live-view
 // arming is blocked by a pending object queue or an unterminated prior stream.
@@ -2545,11 +2563,7 @@ mod tests {
     use camera_media_store::MediaStore;
 
     fn empty_store() -> MediaStore {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("ptpsim-engine-{nanos}"));
+        let root = unique_temp_root("ptpsim-engine");
         std::fs::create_dir_all(&root).unwrap();
         MediaStore::open(&root).unwrap()
     }
