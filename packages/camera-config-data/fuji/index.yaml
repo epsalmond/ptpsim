@@ -109,6 +109,39 @@ families:
         locationSyncCycle: "C95D91AE-B247-4D6D-8661-7DD5D6A0F85B"
         cameraWiFiPassphraseString: "E809256A-915C-4967-92E8-53B7D4CAD213"
 
+        # BLE control characteristics used by the family action catalog.
+        shootingRequest: "7FCF49C6-4FF0-4777-A03D-1A79166AF7A8"
+        movieRecordRequest: "861442AB-B94E-4935-90D9-41E291D91374"
+        utcAndTimezone: "C52EDBCE-1FE2-4ECC-9483-907E6592BE9E"
+        locationAndSpeed: "0F36EC14-29E5-411A-A1B6-64EE8383F090"
+
+        # Legacy mobile app registration characteristics used by the X-A7.
+        reservationAfterShooting: "BD45F887-A6BE-4CB7-8565-390DF38BF5BF"
+        pairedSmartDeviceCount: "8814441B-1D7B-4046-891D-D8F80864CC8E"
+        lensProductName: "68887A7A-10A7-4A4A-AADD-6F9DB1ABAA0E"
+        lensFirmwareVersion: "621A98D8-6314-4C3E-A683-EEA1D6166606"
+        wakeupMode: "9C72C205-5740-4F17-9949-0D3FADF2F67A"
+        startupValue: "4BF16F6D-7264-4E76-B0D2-52CDE16D2C7D"
+        disconnectedReason: "7EDE1988-B27E-43FC-80F4-6FEC994F0552"
+        cardState: "34D8C8DE-E2A9-43FF-822C-7D945DD8D8E1"
+        movieButton: "CAE8C738-4BB6-4605-98C1-58331C87F3B6"
+        cameraBleProtocolVersion: "389363E4-712E-4CF2-A72E-BFCF7FB6ADC1"
+        firmwareUpdateState: "049EC406-EF75-4205-A390-08FE209C51F0"
+        firmwareUpdateRequest: "B1307521-7AC5-4199-AAEE-9D094781CE69"
+
+        # Settings backup and restore use framed BLE chunks.
+        backupRequest: "F14E7A88-6F57-4872-A69B-B47EF3295C9B"
+        restoreRequest: "F1897EB9-A9AA-40F0-8CE6-2FA7915BC459"
+        fileTransactionState: "2E27ED9F-5506-41CD-BA48-DAC06669AD95"
+        backupState: "11438C83-CFB0-4511-841B-759E0D2321C8"
+        restoreState: "4B3A413C-230F-42BC-B3ED-B1DB2EADEE82"
+        fileInformation: "C922AC69-9480-4348-8F4B-9EE29BC30D1D"
+        filePartialSize: "7F3400FE-17E7-4B80-8A0E-81B0343C1B49"
+        fileTransferIndex: "051DD980-DF9D-4472-A2E1-35811DD24EE1"
+        filePartialData: "AC0C799A-FA6C-4DF5-BBC5-BB95CCE7E6EA"
+        fileTransferResult: "68052E8A-FB91-404F-8847-0EB4BE24308C"
+        settingsKeepAlive: "AD06C7B7-F41A-46F4-A29A-712055319122"
+
       # Advertisement-format constants signatures reference via
       # {ble.advert.…} template refs. Family-wide. Note: RED-style cameras
       # still advertise under the Fujifilm company ID — the constant marks
@@ -503,6 +536,190 @@ families:
             - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
             - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
 
+        # Legacy mobile app 4.10.2 registration for the X-A7. Its queue, MTU
+        # pacing, CCCD modes, and AP states differ from the family path above.
+        legacy-app-pair:
+          mechanism: legacy-app-pair
+          persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
+          activities:
+            - id: legacy.app.registration
+              version: 1
+              displayRole: confirmingPairing
+              defaultExpectedDurationMs: 12000
+              interactionRequired: true
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 30 }
+          steps: &legacyAppRegistrationSteps
+            - bleConnect: {}
+            - bleDelay: { durationMs: 600 }
+            - bleRequestMtu: { requestedMtu: 515, tolerant: true }
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: pairingKey, value: { captured: pairingKeyBytes } }
+            - bleWrite:
+                gatt: deviceNameString
+                value: { runtime: terminalName, encoding: utf8, transform: { appendNul: {} } }
+            - bleWrite:
+                gatt: connectedDeviceBleProtocolVersion
+                value: { literal: "0200" }
+                tolerant: true
+            - blePeripheralName: { captureAs: cameraName }
+            - bleWrite:
+                gatt: deviceNameString
+                value: { runtime: terminalName, encoding: utf8, transform: { appendNul: {} } }
+            - bleRead: { gatt: protectedSerialString, encoding: utf8-cstring, captureAs: cameraSerial }
+            - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
+            - bleRead: { gatt: reservationAfterShooting, encoding: bytes, captureAs: reservationAfterShooting }
+            - bleRead: { gatt: pairedSmartDeviceCount, encoding: bytes, captureAs: pairedSmartDeviceCount }
+            - bleRead: { gatt: firmwareRevisionString, encoding: utf8-cstring, captureAs: firmware }
+            - bleRead: { gatt: lensProductName, encoding: utf8-cstring, captureAs: lensProductName, tolerant: true }
+            - bleRead: { gatt: lensFirmwareVersion, encoding: utf8-cstring, captureAs: lensFirmware, tolerant: true }
+            - bleRead: { gatt: wakeupMode, encoding: bytes, captureAs: wakeupMode, tolerant: true }
+            - bleRead: { gatt: startupValue, encoding: bytes, captureAs: startupValue, tolerant: true }
+            - bleRead: { gatt: disconnectedReason, encoding: bytes, captureAs: disconnectedReason, tolerant: true }
+            - bleRead: { gatt: cardState, encoding: bytes, captureAs: cardState, tolerant: true }
+            - bleRead: { gatt: movieButton, encoding: bytes, captureAs: movieButton, tolerant: true }
+            - bleRead: { gatt: cameraBleProtocolVersion, encoding: u16-le, captureAs: cameraBleProtocolVersion, tolerant: true }
+            - bleSubscribe: { gatt: cameraSSIDNameString, timeoutMs: 3000, mode: indicate, tolerant: true }
+            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
+            - bleSubscribe: { gatt: transferState, timeoutMs: 3000, mode: indicate, tolerant: true }
+            - bleSubscribe: { gatt: dateSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
+            - bleSubscribe: { gatt: locationSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
+            - bleSubscribe: { gatt: firmwareUpdateState, timeoutMs: 3000, mode: indicate, tolerant: true }
+            - bleRead: { gatt: apState, encoding: u16-le, captureAs: apState }
+            - bleRead: { gatt: transferState, encoding: u16-le, captureAs: transferState, tolerant: true }
+
+        legacy-app-reconnect:
+          mechanism: legacy-app-reconnect
+          persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
+          activities:
+            - id: legacy.app.reconnect
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 12000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 30 }
+          steps: *legacyAppRegistrationSteps
+
+        legacy-app-establish-wifi-ap:
+          mechanism: legacy-app-establish-wifi-ap
+          prerequisite: legacy-app-pair
+          onDemand: true
+          params: [launchMode]
+          persist: [ssid]
+          activities:
+            - id: legacy.app.ap-launch
+              version: 1
+              displayRole: startingNetwork
+              defaultExpectedDurationMs: 20000
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 6 }
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
+            - bleWrite:
+                gatt: functionLaunchRequest
+                value: { runtime: launchMode, encoding: u16-le }
+            - bleAwaitUntil:
+                source: { read: apState }
+                capture: { at: 0, length: 2, encoding: u16-le, name: apState }
+                captureAs: apStateRaw
+                until: { apState: { eq: "1" } }
+                failWhen: { apState: { eq: "3" } }
+                timeoutMs: 45000
+                intervalMs: 1000
+            - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
+
+      actions:
+        auto-transfer-size-original:
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: imageResizeSetting, value: { literal: "00" } }
+
+        auto-transfer-size-s:
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: imageResizeRate, value: { literal: "0100" } }
+            - bleWrite: { gatt: imageResizeSetting, value: { literal: "01" } }
+
+        auto-transfer-size-xs:
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: imageResizeRate, value: { literal: "0000" } }
+            - bleWrite: { gatt: imageResizeSetting, value: { literal: "01" } }
+
+        remote-shutter:
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: shootingRequest, value: { literal: "0100" } }
+            - bleWrite: { gatt: shootingRequest, value: { literal: "0200" } }
+            - bleWrite: { gatt: shootingRequest, value: { literal: "0100" } }
+            - bleWrite: { gatt: shootingRequest, value: { literal: "0000" } }
+
+        legacy-app-movie-record:
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: movieRecordRequest, value: { literal: "0100" } }
+
+        write-time:
+          params: [utcTimezonePayload]
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: utcAndTimezone, value: { runtime: utcTimezonePayload, encoding: bytes-raw } }
+
+        write-gps:
+          params: [locationSpeedPayload]
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWrite: { gatt: locationAndSpeed, value: { runtime: locationSpeedPayload, encoding: bytes-raw } }
+
+        settings-backup:
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleSubscribe: { gatt: settingsKeepAlive, timeoutMs: 3000, mode: notify, tolerant: true }
+            - bleWrite: { gatt: backupRequest, value: { literal: "0100" } }
+            - bleAwaitUntil:
+                source: { notify: { gatt: fileTransactionState, mode: indicate } }
+                capture:
+                  - { at: 0, length: 2, encoding: u16-le, name: txOpcode }
+                  - { at: 2, length: 2, encoding: u16-le, name: chunkIdx }
+                until: { txOpcode: { eq: "3" } }
+                onEach:
+                  - bleRead: { gatt: filePartialData, encoding: bytes-raw, captureAs: chunkFrame }
+                timeoutMs: 30000
+
+        settings-restore:
+          params: [settingsBlob]
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleSubscribe: { gatt: settingsKeepAlive, timeoutMs: 3000, mode: indicate, tolerant: true }
+            - bleWrite: { gatt: restoreRequest, value: { literal: "0100" } }
+            - bleAwaitUntil:
+                source: { notify: { gatt: fileTransactionState, mode: notify } }
+                capture:
+                  - { at: 0, length: 2, encoding: u16-le, name: txOpcode }
+                  - { at: 2, length: 2, encoding: u16-le, name: chunkIdx }
+                until: { txOpcode: { eq: "3" } }
+                onEach:
+                  - bleWriteChunk:
+                      source: settingsBlob
+                      index: chunkIdx
+                      size: 120
+                      gatt: filePartialData
+                      frame:
+                        - { field: index, encoding: u16-le }
+                        - { field: length, encoding: u32-le }
+                      sentinelIndex: 65535
+                timeoutMs: 30000
+
 
 models:
   - id: gfx100ii
@@ -649,6 +866,69 @@ models:
         scope:
           style: "red"
         suggests: { connection: ble, confidence: high }
+
+  # X-A7 signatures precede the family fallback. Existing saved fallback
+  # records remain valid because the fallback model and routes are unchanged.
+  - id: xa7
+    displayName: "X-A7"
+    inherits: [fuji]
+    manifest: xa7/xa7.yaml
+    signatures:
+      bleXa7PairingAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 5
+                assertBits: { offset: 0, mask: 0x03, equals: 0x02 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
+            - localName: { contains: "X-A7-" }
+        capture:
+          - { source: manufacturerData, at: 1, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope: { style: legacy-app }
+        suggests: { connection: ble, confidence: high }
+
+      bleXa7PrefixedPairingAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - manufacturerData:
+                companyId: "{ble.advert.manufacturerCompanyId}"
+                minLength: 9
+                assertBits: { offset: 0, mask: 0x03, equals: 0x03 }
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
+            - localName: { contains: "X-A7-" }
+        capture:
+          - { source: manufacturerData, at: 5, length: 4, encoding: bytes-le, name: pairingKeyBytes }
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope: { style: legacy-app }
+        suggests: { connection: ble, confidence: high }
+
+      bleXa7KeylessReconnectAdvert:
+        kind: bleAdvert
+        require:
+          all:
+            - serviceUuids: { contains: "{ble.advert.serviceUuids.cameraInformation}" }
+            - localName: { contains: "X-A7-" }
+            - any:
+                - not:
+                    manufacturerData:
+                      companyId: "{ble.advert.manufacturerCompanyId}"
+                - manufacturerData:
+                    companyId: "{ble.advert.manufacturerCompanyId}"
+                    minLength: 1
+                    assertBits: { offset: 0, mask: 0x02, equals: 0x00 }
+        capture:
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope: { style: legacy-app }
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: ready
+          mechanism: legacy-app-reconnect
+          identity: [shortSerial]
 
 
   # FAMILY-BASELINE model (ptpsim#311). Declared LAST so file-declaration-order

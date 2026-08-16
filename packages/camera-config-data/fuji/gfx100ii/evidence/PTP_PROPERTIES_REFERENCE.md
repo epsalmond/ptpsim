@@ -72,6 +72,16 @@ The observed stream was approximately 60 frames per second. Gaps of about 1.2 se
 
 ## Properties supported by checked evidence
 
+The reviewed control declarations use these user-facing names:
+
+| Code | Control name |
+|---|---|
+| `0x5005` | White balance |
+| `0x500A` | Focus mode |
+| `0x500C` | Flash mode |
+| `0x5012` | Self timer |
+| `0xD001` | Film simulation |
+
 Standard PTP property codes retain their PTP 1.1 meanings. The following Fuji vendor properties were observed in checked wire material used by the current manifest:
 
 | Code | Observed role |
@@ -99,13 +109,15 @@ This table states wire roles only. It does not imply that every field is safe to
 
 ## Live-view session outline
 
-The captured live-view flow used this order:
+The restored declaration uses this order:
 
 ```text
 InitCommandRequest
 OpenSession
+SetDevicePropValue(0xDF00, 6), tolerated when rejected
 SetDevicePropValue(0xDF01, live-view mode)
-SetDevicePropValue(0xDF28, supported function version)
+ReadDevicePropValue(0xDF2A), then echo the value
+0x902B four times
 InitiateOpenCapture
 read frames on 55742
 read events on 55741
@@ -113,6 +125,10 @@ poll declared status properties on 55740
 TerminateOpenCapture
 CloseSession
 ```
+
+The retained public wire capture independently confirms the `0xDF01` mode
+write, successful `0x101C`, and the auxiliary channel ordering. It does not
+independently reproduce the restored `0xDF00`, `0xDF2A`, or `0x902B` steps.
 
 A direct `SetDevicePropValue` can return OK without changing camera behavior. Callers must confirm a visible or wire-level state transition when the manifest requires confirmation.
 

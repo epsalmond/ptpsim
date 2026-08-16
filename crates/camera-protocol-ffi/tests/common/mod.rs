@@ -26,6 +26,10 @@ pub fn real_fuji_bodies() -> Vec<KeyValue> {
             value: data("fuji/gfx100ii/gfx100ii.yaml"),
         },
         KeyValue {
+            key: "xa7".to_string(),
+            value: data("fuji/xa7/xa7.yaml"),
+        },
+        KeyValue {
             key: "fuji-generic".to_string(),
             value: data("fuji/fuji-generic/fuji-generic.yaml"),
         },

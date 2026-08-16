@@ -64,11 +64,11 @@ fn corpus_parity_is_byte_deterministic() {
         "proposal bytes must be deterministic"
     );
 
-    // Census at 4a5b8000: 46 ops, 327 props, 680 candidates.
+    // Census after restoring the app startup 0x902b operation and property slice.
     let manifest =
         CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml")).unwrap();
-    assert_eq!(manifest.operations.len(), 46, "operation census");
-    assert_eq!(manifest.properties.len(), 327, "property census");
+    assert_eq!(manifest.operations.len(), 47, "operation census");
+    assert_eq!(manifest.properties.len(), 330, "property census");
     assert_eq!(proposal.candidates.len(), 680, "candidate census");
 
     // Representative value rows survive loader.

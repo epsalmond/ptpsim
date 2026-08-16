@@ -32,6 +32,7 @@ fn real_index() -> ResolvedManufacturerIndex {
 fn real_fuji_bodies() -> BTreeMap<String, String> {
     BTreeMap::from([
         ("gfx100ii".to_string(), data("fuji/gfx100ii/gfx100ii.yaml")),
+        ("xa7".to_string(), data("fuji/xa7/xa7.yaml")),
         (
             "fuji-generic".to_string(),
             data("fuji/fuji-generic/fuji-generic.yaml"),
@@ -103,6 +104,73 @@ fn family_ble_block_merges_into_gfx100ii_view() {
         ble.establishment("ble-pair").unwrap().steps.len() >= 4,
         "establishment carries the multi-step pair flow"
     );
+}
+
+#[test]
+fn xa7_loads_before_the_unchanged_family_fallback() {
+    let idx = real_index();
+    let ids = idx
+        .models
+        .iter()
+        .map(|model| model.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, ["gfx100ii", "xa7", "fuji-generic"]);
+
+    let xa7 = idx.models.iter().find(|model| model.id == "xa7").unwrap();
+    let ble = xa7.ble.as_ref().expect("X-A7 inherits the Fuji BLE block");
+    assert_eq!(
+        ble.establishment("legacy-app-pair")
+            .expect("legacy app registration")
+            .steps
+            .len(),
+        30
+    );
+    assert!(
+        idx.models
+            .iter()
+            .find(|model| model.id == "fuji-generic")
+            .expect("family fallback remains present")
+            .fallback
+    );
+}
+
+#[test]
+fn family_ble_actions_and_gatt_catalog_load() {
+    let idx = real_index();
+    let ble = idx.models[0].ble.as_ref().expect("Fuji family BLE block");
+    for action in [
+        "remote-shutter",
+        "write-time",
+        "write-gps",
+        "auto-transfer-size-original",
+        "auto-transfer-size-s",
+        "auto-transfer-size-xs",
+        "legacy-app-movie-record",
+        "settings-backup",
+        "settings-restore",
+    ] {
+        assert!(ble.action(action).is_some(), "missing action {action}");
+    }
+    for gatt in [
+        "shootingRequest",
+        "movieRecordRequest",
+        "utcAndTimezone",
+        "locationAndSpeed",
+        "backupRequest",
+        "restoreRequest",
+        "fileTransactionState",
+        "backupState",
+        "restoreState",
+        "fileInformation",
+        "filePartialSize",
+        "fileTransferIndex",
+        "filePartialData",
+        "fileTransferResult",
+        "settingsKeepAlive",
+    ] {
+        assert!(ble.gatt.contains_key(gatt), "missing GATT key {gatt}");
+    }
+    assert!(!ble.gatt.contains_key("dateSyncRequest"));
 }
 
 #[test]
@@ -895,16 +963,22 @@ fn config_store_loads_real_fuji_index_with_real_body() {
         .expect("loads");
     let index = store.index.as_ref().expect("index populated");
     assert_eq!(index.manufacturer, "FUJIFILM");
-    assert_eq!(index.models.len(), 2);
+    assert_eq!(index.models.len(), 3);
     assert_eq!(index.models[0].id, "gfx100ii");
-    assert_eq!(index.models[1].id, "fuji-generic");
+    assert_eq!(index.models[1].id, "xa7");
+    assert_eq!(index.models[2].id, "fuji-generic");
     // The family-baseline model carries the fallback marker; the specific model
     // does not (#311).
     assert!(!index.models[0].fallback);
-    assert!(index.models[1].fallback);
+    assert!(!index.models[1].fallback);
+    assert!(index.models[2].fallback);
     // Body lookup works.
     let body = store.body("gfx100ii").expect("body present");
     assert_eq!(body.camera.model, "GFX100 II");
+    assert_eq!(
+        store.body("xa7").expect("body present").camera.model,
+        "X-A7"
+    );
     assert_eq!(
         store
             .body("fuji-generic")
