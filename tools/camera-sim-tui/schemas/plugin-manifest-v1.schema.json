@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ptpsim.dev/schemas/camera-sim-tui/plugin-manifest-v1.schema.json",
+  "title": "camera-sim-tui external plugin manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "id", "version", "displayName", "panels", "actions"],
+  "properties": {
+    "protocolVersion": { "type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$" },
+    "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "httpEndpoint": { "type": "string", "pattern": "^http://(127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}$" },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program", "endpoint"],
+      "properties": {
+        "program": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" }, "maxItems": 32 },
+        "endpoint": { "type": "string", "pattern": "^http://(127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}$" }
+      }
+    },
+    "panels": { "type": "array", "items": { "$ref": "#/$defs/panel" }, "maxItems": 32 },
+    "actions": { "type": "array", "items": { "$ref": "#/$defs/action" }, "maxItems": 64 }
+  },
+  "oneOf": [
+    { "required": ["httpEndpoint"], "not": { "required": ["command"] } },
+    { "required": ["command"], "not": { "required": ["httpEndpoint"] } }
+  ],
+  "$defs": {
+    "panel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "priority", "rows"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "priority": { "type": "integer", "minimum": -1000000, "maximum": 1000000 },
+        "rows": { "type": "array", "items": { "type": "array", "items": { "$ref": "#/$defs/span" }, "maxItems": 32 }, "maxItems": 64 }
+      }
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "maxLength": 4096 },
+        "style": { "type": "string", "enum": ["plain", "muted", "info", "success", "warning", "error"] }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "http"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "hotkey": { "type": "string", "pattern": "^[A-Za-z0-9]$" },
+        "http": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "path"],
+          "properties": {
+            "method": { "type": "string", "enum": ["POST"] },
+            "path": { "type": "string", "pattern": "^/[A-Za-z0-9._~/%-]*$", "maxLength": 256 }
+          }
+        }
+      }
+    }
+  }
+}
