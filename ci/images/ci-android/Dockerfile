@@ -3,6 +3,8 @@
 # rustup + cargo-ndk on every pipeline). This repo defines only the portable
 # recipe; building and publishing it is the deployment owner's CI, which
 # supplies the result to .woodpecker/linux.yml via ANDROID_TOOLCHAIN_IMAGE.
+# Build from the repository root so rust-toolchain.toml is in context:
+#   docker build -f ci/images/ci-android/Dockerfile .
 FROM cimg/android:2026.03.1-ndk
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -20,10 +22,19 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 
+# rust-toolchain.toml is the canonical toolchain declaration; copy it before
+# the toolchain install so the toolchain layer invalidates when it changes.
+# The file's Apple targets are intentionally kept in this image so entering
+# the repository does not trigger a rustup sync before ci/build-android.sh.
+COPY rust-toolchain.toml /tmp/toolchain/rust-toolchain.toml
+
+# hadolint ignore=DL3003
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain stable \
- && rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android \
- && cargo install --locked cargo-ndk --version 3.5.4
+      | sh -s -- -y --profile minimal --default-toolchain none \
+ && (cd /tmp/toolchain && rustup toolchain install) \
+ && rustup default "$(cd /tmp/toolchain && rustup show active-toolchain | awk '{print $1}')" \
+ && cargo install --locked cargo-ndk --version 3.5.4 \
+ && rm -rf /tmp/toolchain
 
 # Stable NDK path (cimg buries it under a versioned dir).
 RUN ln -s "$(find /home/circleci/android-sdk/ndk -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)" /opt/ndk
