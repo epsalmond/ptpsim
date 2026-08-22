@@ -1187,6 +1187,7 @@ pub struct OperationInfo {
     pub kind: OperationKind,
     pub observed_scopes: Vec<ObservedScopeInfo>,
     pub evidence: Vec<String>,
+    pub dispositions: Vec<OperationDispositionInfo>,
     pub canonical_name_provenance: Vec<ObservationAssertionProvenance>,
 }
 
@@ -1229,6 +1230,7 @@ pub struct PropertyInfo {
     pub value_profiles: Vec<PropertyValueProfileInfo>,
     pub value_encoding: Option<PropertyValueEncodingInfo>,
     pub structured_text: Option<StructuredTextLayoutInfo>,
+    pub dispositions: Vec<PropertyDispositionInfo>,
     pub canonical_name_provenance: Vec<ObservationAssertionProvenance>,
     pub source_native_name_provenance: Vec<ObservationAssertionProvenance>,
     pub semantic_value_rows: Vec<SemanticPropertyValueInfo>,
@@ -1716,6 +1718,84 @@ impl From<&FfiPredicate> for cc::Predicate {
 pub fn await_until_satisfied(until: FfiPredicate, observed: Vec<PropObservation>) -> bool {
     let pred: cc::Predicate = (&until).into();
     pred.eval(&prop_view(&observed))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PropertyDispositionKind {
+    Valueless,
+    SilentRefusal,
+}
+
+impl From<cc::PropertyDispositionKind> for PropertyDispositionKind {
+    fn from(kind: cc::PropertyDispositionKind) -> Self {
+        match kind {
+            cc::PropertyDispositionKind::Valueless => Self::Valueless,
+            cc::PropertyDispositionKind::SilentRefusal => Self::SilentRefusal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PropertyDispositionInfo {
+    pub connections: Vec<String>,
+    pub modes: Vec<String>,
+    pub when: Option<FfiPredicate>,
+    pub disposition: PropertyDispositionKind,
+}
+
+impl PropertyDispositionInfo {
+    /// `None` when a present `when` predicate fails to convert. Dropping the
+    /// whole disposition is the only safe answer: `when: None` on the wire means
+    /// *unconditional*, so surfacing a failed predicate as `None` would widen a
+    /// narrow scope into an always-on one.
+    fn try_map(value: &cc::PropertyDisposition) -> Option<Self> {
+        Some(Self {
+            connections: value.connections.clone(),
+            modes: value.modes.clone(),
+            when: match &value.when {
+                Some(p) => Some(FfiPredicate::try_from(p).ok()?),
+                None => None,
+            },
+            disposition: value.disposition.into(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum OperationDispositionKind {
+    SilentRefusal,
+}
+
+impl From<cc::OperationDispositionKind> for OperationDispositionKind {
+    fn from(kind: cc::OperationDispositionKind) -> Self {
+        match kind {
+            cc::OperationDispositionKind::SilentRefusal => Self::SilentRefusal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct OperationDispositionInfo {
+    pub connections: Vec<String>,
+    pub modes: Vec<String>,
+    pub when: Option<FfiPredicate>,
+    pub disposition: OperationDispositionKind,
+}
+
+impl OperationDispositionInfo {
+    /// `None` when a present `when` predicate fails to convert — same widening
+    /// hazard as [`PropertyDispositionInfo::try_map`].
+    fn try_map(value: &cc::OperationDisposition) -> Option<Self> {
+        Some(Self {
+            connections: value.connections.clone(),
+            modes: value.modes.clone(),
+            when: match &value.when {
+                Some(p) => Some(FfiPredicate::try_from(p).ok()?),
+                None => None,
+            },
+            disposition: value.disposition.into(),
+        })
+    }
 }
 
 /// One wire action in a mode-entry sequence (closed vocabulary, no branches).
@@ -3790,6 +3870,11 @@ impl ConfigStore {
                         .structured_text
                         .as_ref()
                         .map(StructuredTextLayoutInfo::from),
+                    dispositions: p
+                        .dispositions
+                        .iter()
+                        .filter_map(PropertyDispositionInfo::try_map)
+                        .collect(),
                     canonical_name_provenance: semantic
                         .and_then(|assertions| assertions.canonical_name.as_ref())
                         .map(|name| name.provenance.iter().map(Into::into).collect())
@@ -3837,6 +3922,11 @@ impl ConfigStore {
                     kind: operation.kind.into(),
                     observed_scopes: operation.observed_scopes.iter().map(Into::into).collect(),
                     evidence: operation.evidence.clone(),
+                    dispositions: operation
+                        .dispositions
+                        .iter()
+                        .filter_map(OperationDispositionInfo::try_map)
+                        .collect(),
                     canonical_name_provenance: semantic
                         .and_then(|assertions| assertions.canonical_name.as_ref())
                         .map(|name| name.provenance.iter().map(Into::into).collect())

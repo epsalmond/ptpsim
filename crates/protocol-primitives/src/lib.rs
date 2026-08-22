@@ -4,6 +4,11 @@
 //! captures; a new entry here is needed only for a genuinely new wire format or
 //! computed quirk, and it lands as a shared peer — never a per-manufacturer
 //! crate. This is what keeps ptpsim from becoming "vcam in `crates/`".
+//!
+//! Value dispositions (#464/#465) are manifest-declared and observed by the
+//! simulator engine and FFI, not by transport codecs here. This crate holds no
+//! per-property silent-refusal or valueless logic — the codecs remain
+//! generic and data-driven.
 
 pub mod client_identity;
 pub mod error;

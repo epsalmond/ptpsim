@@ -227,6 +227,42 @@ impl Property {
         masks
     }
 
+    /// Whether this property has no current value in the given scope (#464).
+    /// Evaluates each `valueless` disposition's connection/mode/predicate.
+    pub fn is_valueless(&self, connection: &str, mode: Option<&str>, observed: &PropView) -> bool {
+        self.dispositions.iter().any(|d| {
+            d.disposition == crate::model::PropertyDispositionKind::Valueless
+                && disposition_scope_matches(
+                    &d.connections,
+                    &d.modes,
+                    &d.when,
+                    connection,
+                    mode,
+                    observed,
+                )
+        })
+    }
+
+    /// Whether writes to this property are silently refused in the given scope (#465).
+    pub fn is_write_silent_refusal(
+        &self,
+        connection: &str,
+        mode: Option<&str>,
+        observed: &PropView,
+    ) -> bool {
+        self.dispositions.iter().any(|d| {
+            d.disposition == crate::model::PropertyDispositionKind::SilentRefusal
+                && disposition_scope_matches(
+                    &d.connections,
+                    &d.modes,
+                    &d.when,
+                    connection,
+                    mode,
+                    observed,
+                )
+        })
+    }
+
     fn static_value_label(&self, value: i64) -> Option<&str> {
         self.value_rows
             .iter()
@@ -294,6 +330,58 @@ fn format_scaled_decimal(raw: i64, scale: i64) -> Option<String> {
         fraction.pop();
     }
     Some(format!("{whole}.{fraction}"))
+}
+
+/// Does a disposition's scope cover the current connection, mode, and observed
+/// state? All three axes are intersected; an empty `connections` or `modes` set
+/// means "all". `mode` is `None` before any mode has been detected: a
+/// disposition that names modes cannot be shown to apply yet, so it does not
+/// match, mirroring the predetect split in operation availability (#407).
+fn disposition_scope_matches(
+    connections: &[String],
+    modes: &[String],
+    when: &Option<crate::predicate::Predicate>,
+    connection: &str,
+    mode: Option<&str>,
+    observed: &PropView,
+) -> bool {
+    if !connections.is_empty() && !connections.iter().any(|c| c == connection) {
+        return false;
+    }
+    match mode {
+        Some(mode) if !mode_matches(modes, mode) => return false,
+        None if !modes.is_empty() => return false,
+        _ => {}
+    }
+    if let Some(pred) = when {
+        if !pred.eval(observed) {
+            return false;
+        }
+    }
+    true
+}
+
+impl Operation {
+    /// Whether this operation's effects and emits are silently suppressed in the
+    /// given scope (#465). Evaluates each `silentRefusal` disposition.
+    pub fn is_silent_refusal(
+        &self,
+        connection: &str,
+        mode: Option<&str>,
+        observed: &PropView,
+    ) -> bool {
+        self.dispositions.iter().any(|d| {
+            d.disposition == crate::model::OperationDispositionKind::SilentRefusal
+                && disposition_scope_matches(
+                    &d.connections,
+                    &d.modes,
+                    &d.when,
+                    connection,
+                    mode,
+                    observed,
+                )
+        })
+    }
 }
 
 /// Orthogonal-axis queries (decisions #4–#8): gating intersects connection × mode
@@ -543,6 +631,70 @@ connections:
             m.operation_available_explained("xlv-http", "Shooting/Stills", 0x9000, &any);
         assert_eq!(availability, Availability::Unavailable);
         assert!(trace.reason.contains("advertisedOnly"));
+    }
+
+    fn disposition_manifest() -> CameraManifest {
+        CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x5010":
+    name: exposureBias
+    type: i16
+    dispositions:
+      - disposition: valueless
+        connections: [usb]
+        modes: ["shooting/stills"]
+        when: { prop: "0x500e", eq: 1 }
+  "0x500a":
+    name: focusMode
+    type: u16
+    dispositions: [{ disposition: silentRefusal }]
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn disposition_scope_intersects_connection_mode_and_predicate() {
+        let m = disposition_manifest();
+        let bias = m.property(0x5010).unwrap();
+        let focus = m.property(0x500a).unwrap();
+        let manual = PropView::new().with(0x500e, 1);
+        let aperture = PropView::new().with(0x500e, 3);
+
+        // An empty scope matches everything, including before mode detection.
+        assert!(focus.is_write_silent_refusal("usb", Some("shooting/stills"), &manual));
+        assert!(focus.is_write_silent_refusal("xlv-http", None, &PropView::new()));
+
+        // All three axes must hold.
+        assert!(bias.is_valueless("usb", Some("shooting/stills"), &manual));
+        assert!(
+            !bias.is_valueless("xlv-http", Some("shooting/stills"), &manual),
+            "non-matching connection"
+        );
+        assert!(
+            !bias.is_valueless("usb", Some("imageImport"), &manual),
+            "non-matching mode"
+        );
+        assert!(
+            !bias.is_valueless("usb", Some("shooting/stills"), &aperture),
+            "predicate false"
+        );
+
+        // Mode paths match by path segment, not string prefix.
+        assert!(bias.is_valueless("usb", Some("shooting/stills/manual"), &manual));
+        assert!(
+            !bias.is_valueless("usb", Some("shooting/still"), &manual),
+            "a near-miss segment is not a prefix match"
+        );
+
+        // Before detection a mode-scoped disposition cannot be shown to apply.
+        assert!(
+            !bias.is_valueless("usb", None, &manual),
+            "mode-scoped disposition must not match off a guessed mode"
+        );
     }
 
     #[test]
