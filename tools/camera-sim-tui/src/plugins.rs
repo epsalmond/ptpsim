@@ -106,6 +106,12 @@ pub struct PluginPanelState {
     pub rows: Vec<Vec<PluginSpan>>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PluginPanelPush {
+    pub id: String,
+    pub rows: Vec<Vec<PluginSpan>>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginSummary {
     pub id: String,
@@ -309,20 +315,38 @@ impl PluginRegistry {
     }
 
     /// Fetch panel updates from each plugin endpoint with bounded payloads.
+    /// Wire pushes are `{id, rows}` only; `title` and `priority` remain manifest-owned.
     pub fn refresh_panels(&mut self) {
         for inst in self.plugins.values_mut() {
             let endpoint = inst.valid.endpoint.clone();
-            let panels_url = endpoint.trim_end_matches('/');
-            let path = format!("{panels_url}/panels");
-            // Extract addr+path for our minimal http client
             match fetch_plugin_panels(&endpoint) {
-                Ok(panels) => {
-                    inst.panel_state = panels;
-                    inst.last_error = None;
+                Ok(pushes) => {
+                    // Merge rows into existing panel_state by id, preserving title/priority.
+                    for push in pushes {
+                        if let Some(existing) =
+                            inst.panel_state.iter_mut().find(|p| p.id == push.id)
+                        {
+                            existing.rows = push.rows;
+                        } else {
+                            // Unknown panel id in push is ignored (manifest owns panel set).
+                            // Log as error for visibility but do not add it.
+                            inst.last_error = Some(format!("unknown panel id {}", push.id));
+                        }
+                    }
+                    // If push succeeded without unknown ids, clear error
+                    if inst
+                        .last_error
+                        .as_deref()
+                        .map(|e| e.starts_with("unknown panel"))
+                        .unwrap_or(false)
+                    {
+                        // keep error if unknown id, otherwise clear
+                    } else {
+                        inst.last_error = None;
+                    }
                 }
                 Err(e) => {
                     inst.last_error = Some(e.to_string());
-                    let _ = path; // keep for debugging
                 }
             }
         }
@@ -631,7 +655,7 @@ fn split_endpoint(url: &str) -> Result<(String, String)> {
     Ok((host_port.to_string(), path.to_string()))
 }
 
-fn fetch_plugin_panels(endpoint: &str) -> Result<Vec<PluginPanelState>> {
+fn fetch_plugin_panels(endpoint: &str) -> Result<Vec<PluginPanelPush>> {
     let url = format!("{}/panels", endpoint.trim_end_matches('/'));
     let (addr, path) = split_endpoint(&url)?;
     let resp = http_request_with_limits(&addr, "GET", &path, None)?;
@@ -646,7 +670,7 @@ fn fetch_plugin_panels(endpoint: &str) -> Result<Vec<PluginPanelState>> {
     let panels = value
         .get("panels")
         .ok_or_else(|| anyhow::anyhow!("plugin panels missing panels field"))?;
-    let parsed: Vec<PluginPanelState> =
+    let parsed: Vec<PluginPanelPush> =
         serde_json::from_value(panels.clone()).context("parse panels array")?;
     for panel in &parsed {
         if panel.rows.len() > MAX_ROWS {
@@ -655,6 +679,11 @@ fn fetch_plugin_panels(endpoint: &str) -> Result<Vec<PluginPanelState>> {
         for row in &panel.rows {
             if row.len() > MAX_SPANS_PER_ROW {
                 bail!("plugin panel {} row exceeds bounds", panel.id);
+            }
+            for span in row {
+                if span.text.len() > MAX_TEXT_LEN {
+                    bail!("plugin panel {} span text exceeds {MAX_TEXT_LEN}", panel.id);
+                }
             }
         }
     }
@@ -928,6 +957,15 @@ mod e2e_tests {
         let panels = registry.panel_states_sorted();
         assert_eq!(panels.len(), 1);
         assert_eq!(panels[0].id, "p1");
+        assert_eq!(panels[0].title, "P");
+        assert_eq!(panels[0].priority, 5);
+        // Verify fake_plugin.py payload shape is accepted: {id, rows} only
+        let fake_body =
+            r#"{"panels":[{"id":"fake-panel","rows":[[{"text":"hello","style":"info"}]]}]}"#;
+        let v: serde_json::Value = serde_json::from_str(fake_body).unwrap();
+        let pushes: Vec<super::PluginPanelPush> =
+            serde_json::from_value(v["panels"].clone()).unwrap();
+        assert_eq!(pushes[0].id, "fake-panel");
         let result = registry
             .proxy_action("e2e-plugin", "act1", None)
             .expect("proxy");

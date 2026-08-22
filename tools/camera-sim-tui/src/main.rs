@@ -590,6 +590,13 @@ fn run_headless(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        // Keep headless parity: refresh plugins at same cadence as tui (1 s).
+        if app.last_plugin_refresh.elapsed() >= PLUGIN_REFRESH_INTERVAL {
+            refresh_plugins(&mut app, &shared);
+        }
+        if app.last_health_refresh.elapsed() >= HEALTH_REFRESH_INTERVAL {
+            refresh_health(&mut app);
+        }
     }
     Ok(())
 }
