@@ -1138,6 +1138,9 @@ impl Engine {
                 if let Some(reply) = self.property_gate_reply(code) {
                     return reply;
                 }
+                if self.property_is_valueless(code) {
+                    return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
+                }
                 if self.operation_availability_error(code).is_some() {
                     return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
                 }
@@ -1152,6 +1155,9 @@ impl Engine {
             }
             op::GET_DEVICE_PROP_VALUE => {
                 let code = p(0) as u16;
+                if self.property_is_valueless(code) {
+                    return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
+                }
                 if self.transfer_queue.is_some() {
                     // Computed sources serve queue-scoped enumeration while a
                     // camera-initiated transfer queue owns visibility (#407).
@@ -1724,6 +1730,41 @@ impl Engine {
         Some(Self::data(tid, w.into_vec()))
     }
 
+    fn observed_view(&self) -> camera_config::PropView {
+        self.state
+            .props
+            .iter()
+            .filter_map(|(code, value)| value_to_i64(value).map(|value| (*code, value)))
+            .collect()
+    }
+
+    fn property_is_valueless(&self, code: u16) -> bool {
+        let Some(prop) = self.manifest.property(code) else {
+            return false;
+        };
+        let observed = self.observed_view();
+        let mode = self.state.manifest_mode_path();
+        prop.is_valueless(&self.connection, mode, &observed)
+    }
+
+    fn property_is_write_silent(&self, code: u16) -> bool {
+        let Some(prop) = self.manifest.property(code) else {
+            return false;
+        };
+        let observed = self.observed_view();
+        let mode = self.state.manifest_mode_path();
+        prop.is_write_silent_refusal(&self.connection, mode, &observed)
+    }
+
+    fn operation_is_silent(&self, code: u16) -> bool {
+        let Some(op) = self.manifest.operation(code) else {
+            return false;
+        };
+        let observed = self.observed_view();
+        let mode = self.state.manifest_mode_path();
+        op.is_silent_refusal(&self.connection, mode, &observed)
+    }
+
     /// The response refusing a cataloged operation that is unavailable in the
     /// current connection/mode/state, or `None` when it may proceed (#407).
     /// Operations absent from the catalog are not gated. The mode axis applies
@@ -1736,12 +1777,7 @@ impl Engine {
     /// camera refusals.
     fn operation_availability_error(&self, code: u16) -> Option<u16> {
         self.manifest.operation(code)?;
-        let observed: camera_config::PropView = self
-            .state
-            .props
-            .iter()
-            .filter_map(|(code, value)| value_to_i64(value).map(|value| (*code, value)))
-            .collect();
+        let observed = self.observed_view();
         let property_access_op = matches!(
             code,
             op::GET_DEVICE_PROP_DESC | op::GET_DEVICE_PROP_VALUE | op::SET_DEVICE_PROP_VALUE
@@ -1800,6 +1836,9 @@ impl Engine {
     }
 
     fn apply_op_effects(&mut self, code: u16, params: &[u32]) {
+        if self.operation_is_silent(code) {
+            return;
+        }
         let Some(opdef) = self.manifest.operation(code) else {
             return;
         };
@@ -1841,6 +1880,9 @@ impl Engine {
     /// because an event is a signal, not a value mutation, and an op may emit
     /// without arming any effect. Both fire only on an OK response.
     fn apply_op_emits(&mut self, code: u16, params: &[u32]) {
+        if self.operation_is_silent(code) {
+            return;
+        }
         let Some(opdef) = self.manifest.operation(code) else {
             return;
         };
@@ -1914,11 +1956,23 @@ impl Engine {
         let Some(opdef) = self.manifest.operation(code) else {
             return Self::err(tid, resp::OPERATION_NOT_SUPPORTED);
         };
+        // Silent-refusal operations ACK without applying their handler (#465).
+        if self.operation_is_silent(code) {
+            return Self::ok(tid);
+        }
         match opdef.handler {
             Some(camera_config::OperationHandler::PropertyStep) => {
                 let Some(prop_code) = opdef.property.as_deref().and_then(parse_hex_code) else {
                     return Self::err(tid, resp::GENERAL_ERROR);
                 };
+                // If the stepped property is silently refused, the step has no effect
+                // but still returns OK (property-level silentRefusal, #465).
+                if self.property_is_write_silent(prop_code) {
+                    return Self::ok(tid);
+                }
+                if self.property_is_valueless(prop_code) {
+                    return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
+                }
                 let direction = params.first().copied().unwrap_or(0);
                 self.vendor_step(prop_code, direction);
                 Self::ok(tid)
@@ -2019,6 +2073,10 @@ impl Engine {
                     || self.stale_stream_blocks_live_view_arming())
         }) {
             return Self::err(tid, LIVE_VIEW_ARMING_BLOCKED);
+        }
+        // Silent-refusal disposition (#465): ACK without changing stored state.
+        if self.property_is_write_silent(code) {
+            return Self::ok(tid);
         }
         let value = self.normalized_property_write(code, prop, datatype, value);
         self.state.props.insert(code, value);
@@ -2129,6 +2187,10 @@ impl Engine {
             .iter()
             .filter_map(|member| {
                 let code = parse_hex_code(member.code())?;
+                // Valueless members are omitted from the stream (#464).
+                if self.property_is_valueless(code) {
+                    return None;
+                }
                 let encoding = match member.encoding(value_w) {
                     camera_config::RecordValueEncoding::Fixed { width } => {
                         RecordValueEncoding::Fixed { width }
@@ -2182,6 +2244,7 @@ impl Engine {
             .properties
             .keys()
             .filter_map(|k| parse_hex_code(k))
+            .filter(|code| !self.property_is_valueless(*code))
             .collect();
         let di = DeviceInfo {
             standard_version: 100,
@@ -3659,5 +3722,167 @@ properties:
         assert!(reply_is_ok(
             &e.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None)
         ));
+    }
+
+    fn valueless_engine() -> Engine {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x500e": { name: exposureProgram, type: u16, access: readWrite, descriptor: { form: enum, values: [1, 2, 3] }, initialValue: 1 }
+  "0x5010":
+    name: exposureBias
+    type: i16
+    access: readWrite
+    initialValue: 0
+    dispositions: [{ disposition: valueless, when: { prop: "0x500e", eq: 1 } }]
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        engine
+    }
+
+    #[test]
+    fn valueless_property_returns_not_supported_and_omits_from_device_info() {
+        let mut engine = valueless_engine();
+        // In M (0x500e == 1) exposureBias is valueless.
+        assert_eq!(
+            response_code_of(
+                engine.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 2, vec![0x5010]), None)
+            ),
+            resp::DEVICE_PROP_NOT_SUPPORTED
+        );
+        assert_eq!(
+            response_code_of(
+                engine.on_operation(&req(op::GET_DEVICE_PROP_DESC, 3, vec![0x5010]), None)
+            ),
+            resp::DEVICE_PROP_NOT_SUPPORTED
+        );
+        let di_bytes = engine.device_info_bytes();
+        let di = ptp_core::DeviceInfo::decode(&di_bytes).unwrap();
+        assert!(
+            !di.device_properties_supported.contains(&0x5010),
+            "valueless property omitted from DeviceInfo"
+        );
+        // Switching out of M makes value readable again.
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::U16(2).encode(&mut w).unwrap();
+        let payload = w.into_vec();
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0x500e]),
+            Some(&payload)
+        )));
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::GET_DEVICE_PROP_VALUE, 5, vec![0x5010]),
+            None
+        )));
+    }
+
+    #[test]
+    fn valueless_member_omitted_from_record_stream() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x500e": { name: exposureProgram, type: u16, access: readWrite, initialValue: 1 }
+  "0x5010":
+    name: exposureBias
+    type: i16
+    dispositions: [{ disposition: valueless, when: { prop: "0x500e", eq: 1 } }]
+  "0xd212":
+    name: liveStatus
+    type: u16
+    payload:
+      form: recordStream
+      countWidth: 2
+      record: { codeWidth: 2, valueWidth: 4 }
+      members:
+        - "0x500e"
+        - code: "0x5010"
+          encoding: { kind: signed, width: 4 }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        // With 0x500e == 1, stream has only the 0x500e record (count 1).
+        let reply = engine.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 2, vec![0xd212]), None);
+        let Reply::Data { data, .. } = reply else {
+            panic!("expected data");
+        };
+        // Count is u16 LE.
+        assert_eq!(u16::from_le_bytes([data[0], data[1]]), 1);
+    }
+
+    #[test]
+    fn property_silent_refusal_ack_without_store_change() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x500a":
+    name: focusMode
+    type: u16
+    access: readWrite
+    initialValue: 1
+    dispositions: [{ disposition: silentRefusal }]
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::U16(2).encode(&mut w).unwrap();
+        let payload = w.into_vec();
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0x500a]),
+            Some(&payload)
+        )));
+        // Readback unchanged.
+        assert_eq!(poll(&mut engine, 0x500a, 3), 1);
+    }
+
+    #[test]
+    fn operation_silent_refusal_suppresses_effects_and_emits() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x500a": { name: focusMode, type: u16, access: readWrite, initialValue: 1 }
+  "0xd209": { name: afResult, type: u16, access: readWrite, initialValue: 0 }
+operations:
+  "0x9026":
+    name: afLock
+    effects: [{ setProp: "0xd209", value: 1 }]
+    emits: ["0xc005"]
+    dispositions: [{ disposition: silentRefusal, when: { prop: "0x500a", eq: 1 } }]
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        engine.on_operation(&req(op::OPEN_SESSION, 1, vec![1]), None);
+        // focusMode ==1 triggers silent refusal.
+        let reply = engine.on_operation(&req(0x9026, 2, vec![]), None);
+        assert!(reply_is_ok(&reply));
+        assert_eq!(poll(&mut engine, 0xd209, 3), 0, "effect suppressed");
+        assert!(!engine.take_event(0xc005), "emit suppressed");
+        // Switch mode, operation now applies.
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::U16(2).encode(&mut w).unwrap();
+        let payload = w.into_vec();
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0x500a]),
+            Some(&payload)
+        )));
+        let reply = engine.on_operation(&req(0x9026, 5, vec![]), None);
+        assert!(reply_is_ok(&reply));
+        assert_eq!(poll(&mut engine, 0xd209, 6), 1);
+        assert!(engine.take_event(0xc005));
     }
 }

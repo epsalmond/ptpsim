@@ -1187,6 +1187,7 @@ pub struct OperationInfo {
     pub kind: OperationKind,
     pub observed_scopes: Vec<ObservedScopeInfo>,
     pub evidence: Vec<String>,
+    pub dispositions: Vec<OperationDispositionInfo>,
     pub canonical_name_provenance: Vec<ObservationAssertionProvenance>,
 }
 
@@ -1229,6 +1230,7 @@ pub struct PropertyInfo {
     pub value_profiles: Vec<PropertyValueProfileInfo>,
     pub value_encoding: Option<PropertyValueEncodingInfo>,
     pub structured_text: Option<StructuredTextLayoutInfo>,
+    pub dispositions: Vec<PropertyDispositionInfo>,
     pub canonical_name_provenance: Vec<ObservationAssertionProvenance>,
     pub source_native_name_provenance: Vec<ObservationAssertionProvenance>,
     pub semantic_value_rows: Vec<SemanticPropertyValueInfo>,
@@ -1716,6 +1718,78 @@ impl From<&FfiPredicate> for cc::Predicate {
 pub fn await_until_satisfied(until: FfiPredicate, observed: Vec<PropObservation>) -> bool {
     let pred: cc::Predicate = (&until).into();
     pred.eval(&prop_view(&observed))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PropertyDispositionKind {
+    Valueless,
+    SilentRefusal,
+}
+
+impl From<cc::PropertyDispositionKind> for PropertyDispositionKind {
+    fn from(kind: cc::PropertyDispositionKind) -> Self {
+        match kind {
+            cc::PropertyDispositionKind::Valueless => Self::Valueless,
+            cc::PropertyDispositionKind::SilentRefusal => Self::SilentRefusal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PropertyDispositionInfo {
+    pub connections: Vec<String>,
+    pub modes: Vec<String>,
+    pub when: Option<FfiPredicate>,
+    pub disposition: PropertyDispositionKind,
+}
+
+impl From<&cc::PropertyDisposition> for PropertyDispositionInfo {
+    fn from(value: &cc::PropertyDisposition) -> Self {
+        Self {
+            connections: value.connections.clone(),
+            modes: value.modes.clone(),
+            when: value
+                .when
+                .as_ref()
+                .and_then(|p| FfiPredicate::try_from(p).ok()),
+            disposition: value.disposition.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum OperationDispositionKind {
+    SilentRefusal,
+}
+
+impl From<cc::OperationDispositionKind> for OperationDispositionKind {
+    fn from(kind: cc::OperationDispositionKind) -> Self {
+        match kind {
+            cc::OperationDispositionKind::SilentRefusal => Self::SilentRefusal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct OperationDispositionInfo {
+    pub connections: Vec<String>,
+    pub modes: Vec<String>,
+    pub when: Option<FfiPredicate>,
+    pub disposition: OperationDispositionKind,
+}
+
+impl From<&cc::OperationDisposition> for OperationDispositionInfo {
+    fn from(value: &cc::OperationDisposition) -> Self {
+        Self {
+            connections: value.connections.clone(),
+            modes: value.modes.clone(),
+            when: value
+                .when
+                .as_ref()
+                .and_then(|p| FfiPredicate::try_from(p).ok()),
+            disposition: value.disposition.into(),
+        }
+    }
 }
 
 /// One wire action in a mode-entry sequence (closed vocabulary, no branches).
@@ -3790,6 +3864,11 @@ impl ConfigStore {
                         .structured_text
                         .as_ref()
                         .map(StructuredTextLayoutInfo::from),
+                    dispositions: p
+                        .dispositions
+                        .iter()
+                        .map(PropertyDispositionInfo::from)
+                        .collect(),
                     canonical_name_provenance: semantic
                         .and_then(|assertions| assertions.canonical_name.as_ref())
                         .map(|name| name.provenance.iter().map(Into::into).collect())
@@ -3837,6 +3916,11 @@ impl ConfigStore {
                     kind: operation.kind.into(),
                     observed_scopes: operation.observed_scopes.iter().map(Into::into).collect(),
                     evidence: operation.evidence.clone(),
+                    dispositions: operation
+                        .dispositions
+                        .iter()
+                        .map(OperationDispositionInfo::from)
+                        .collect(),
                     canonical_name_provenance: semantic
                         .and_then(|assertions| assertions.canonical_name.as_ref())
                         .map(|name| name.provenance.iter().map(Into::into).collect())

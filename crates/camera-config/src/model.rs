@@ -292,6 +292,11 @@ pub struct Operation {
     pub emits: Vec<OperationEmit>,
     #[serde(default)]
     pub evidence: Vec<String>,
+    /// Dispositions controlling silent-refusal behavior for this operation
+    /// (#465). When a disposition's scope matches the current engine state,
+    /// the operation returns OK but suppresses its effects and emits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispositions: Vec<OperationDisposition>,
     /// Exact observation tuples backing generated availability. Kept atomic so
     /// independent connection/mode sets cannot invent a Cartesian product.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -375,6 +380,64 @@ pub struct ObservedScope {
     pub connection: String,
     pub mode: String,
     pub state: String,
+}
+
+/// A property-level disposition controlling simulator fidelity for valueless
+/// and silent-refusal behavior (#464, #465). A disposition applies when its
+/// optional connection/mode/predicate scope matches the current engine state.
+/// Empty disposition list = no special behavior.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropertyDisposition {
+    /// Connection ids this disposition applies to. Empty = all connections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<String>,
+    /// Mode paths this disposition applies to (prefix-matched). Empty = all modes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<String>,
+    /// Runtime predicate over observed property values. None = unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Predicate>,
+    pub disposition: PropertyDispositionKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PropertyDispositionKind {
+    /// The property has no current value in this scope (e.g. exposureBias
+    /// 0x5010 in M where the physical dial owns it, #464). GetDevicePropValue
+    /// and GetDevicePropDesc return DevicePropNotSupported, DeviceInfo omits
+    /// the code, and the 0xD212 record stream omits the member.
+    #[serde(rename = "valueless")]
+    Valueless,
+    /// SetDevicePropValue returns OK but the stored value does not change
+    /// (e.g. focusMode 0x500A latched at session start, #465). Scoped the same
+    /// way as valueless so ring-position gating can be modeled via predicate.
+    #[serde(rename = "silentRefusal")]
+    SilentRefusal,
+}
+
+/// An operation-level disposition controlling silent-refusal behavior (#465).
+/// When the scope matches, the operation returns OK but suppresses its
+/// declared effects and emits (e.g. autofocusLock 0x9026 in MF never emits
+/// 0xC005).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationDisposition {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Predicate>,
+    pub disposition: OperationDispositionKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationDispositionKind {
+    #[serde(rename = "silentRefusal")]
+    SilentRefusal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -508,6 +571,12 @@ pub struct Property {
     pub requires_gate: Option<GateRequirement>,
     #[serde(default)]
     pub evidence: Vec<String>,
+    /// Value-level dispositions for this property (#464, #465). When a
+    /// disposition's scope matches the current connection/mode/predicate, the
+    /// engine applies its kind (valueless or silentRefusal) instead of the
+    /// default value semantics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispositions: Vec<PropertyDisposition>,
     /// Exact observation tuples that supplied generated property facts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub observed_scopes: Vec<ObservedScope>,

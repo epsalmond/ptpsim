@@ -227,6 +227,42 @@ impl Property {
         masks
     }
 
+    /// Whether this property has no current value in the given scope (#464).
+    /// Evaluates each `valueless` disposition's connection/mode/predicate.
+    pub fn is_valueless(&self, connection: &str, mode: &str, observed: &PropView) -> bool {
+        self.dispositions.iter().any(|d| {
+            d.disposition == crate::model::PropertyDispositionKind::Valueless
+                && disposition_scope_matches(
+                    &d.connections,
+                    &d.modes,
+                    &d.when,
+                    connection,
+                    mode,
+                    observed,
+                )
+        })
+    }
+
+    /// Whether writes to this property are silently refused in the given scope (#465).
+    pub fn is_write_silent_refusal(
+        &self,
+        connection: &str,
+        mode: &str,
+        observed: &PropView,
+    ) -> bool {
+        self.dispositions.iter().any(|d| {
+            d.disposition == crate::model::PropertyDispositionKind::SilentRefusal
+                && disposition_scope_matches(
+                    &d.connections,
+                    &d.modes,
+                    &d.when,
+                    connection,
+                    mode,
+                    observed,
+                )
+        })
+    }
+
     fn static_value_label(&self, value: i64) -> Option<&str> {
         self.value_rows
             .iter()
@@ -294,6 +330,50 @@ fn format_scaled_decimal(raw: i64, scale: i64) -> Option<String> {
         fraction.pop();
     }
     Some(format!("{whole}.{fraction}"))
+}
+
+fn disposition_scope_matches(
+    connections: &[String],
+    modes: &[String],
+    when: &Option<crate::predicate::Predicate>,
+    connection: &str,
+    mode: &str,
+    observed: &PropView,
+) -> bool {
+    if !connections.is_empty() && !connections.iter().any(|c| c == connection) {
+        return false;
+    }
+    if !modes.is_empty()
+        && !modes
+            .iter()
+            .any(|m| mode == m || mode.starts_with(&format!("{m}/")))
+    {
+        return false;
+    }
+    if let Some(pred) = when {
+        if !pred.eval(observed) {
+            return false;
+        }
+    }
+    true
+}
+
+impl Operation {
+    /// Whether this operation's effects and emits are silently suppressed in the
+    /// given scope (#465). Evaluates each `silentRefusal` disposition.
+    pub fn is_silent_refusal(&self, connection: &str, mode: &str, observed: &PropView) -> bool {
+        self.dispositions.iter().any(|d| {
+            d.disposition == crate::model::OperationDispositionKind::SilentRefusal
+                && disposition_scope_matches(
+                    &d.connections,
+                    &d.modes,
+                    &d.when,
+                    connection,
+                    mode,
+                    observed,
+                )
+        })
+    }
 }
 
 /// Orthogonal-axis queries (decisions #4–#8): gating intersects connection × mode
