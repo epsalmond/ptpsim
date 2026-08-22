@@ -1,3 +1,5 @@
+pub mod plugins;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};

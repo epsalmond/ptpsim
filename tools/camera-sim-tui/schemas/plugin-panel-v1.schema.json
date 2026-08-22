@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ptpsim.dev/schemas/camera-sim-tui/plugin-panel-v1.schema.json",
+  "title": "camera-sim-tui plugin panel update v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["panels"],
+  "properties": {
+    "panels": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "rows"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9\\-]{1,63}$" },
+          "rows": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["text"],
+                "properties": {
+                  "text": { "type": "string", "maxLength": 2048 },
+                  "style": { "type": "string", "enum": ["plain", "muted", "info", "success", "warning", "error"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

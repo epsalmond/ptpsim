@@ -1,0 +1,25 @@
+{
+  "protocolVersion": "1.0.0",
+  "id": "fake-tui-plugin",
+  "version": "0.1.0",
+  "displayName": "Fake TUI Plugin",
+  "description": "Attached manifest for fake plugin",
+  "panels": [
+    {
+      "id": "fake-panel",
+      "title": "Fake Panel",
+      "priority": 50,
+      "rows": [[{"text": "hello from fake", "style": "info"}]]
+    }
+  ],
+  "actions": [
+    {
+      "id": "fake-action",
+      "label": "Fake Action",
+      "path": "/do",
+      "method": "POST",
+      "hotkey": "f"
+    }
+  ],
+  "endpoint": "http://127.0.0.1:8765"
+}
