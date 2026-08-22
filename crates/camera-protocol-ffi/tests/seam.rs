@@ -2988,6 +2988,36 @@ operations:
     );
 }
 
+#[test]
+fn a_disposition_with_an_unconvertible_when_is_dropped_whole() {
+    // `when: null` on the FFI record means *unconditional*, so a predicate that
+    // fails to cross must take its disposition with it — never widen a scoped
+    // absence or refusal into an always-on one.
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x5010":
+    name: exposureBias
+    type: i16
+    dispositions: [{ disposition: valueless, when: { prop: "0xzz", eq: 1 } }]
+operations:
+  "0x9026":
+    name: afLock
+    dispositions: [{ disposition: silentRefusal, when: { prop: "0xzz", eq: 1 } }]
+"#;
+    let store = ConfigStore::from_bundle(body.into(), None).expect("manifest loads");
+    let props = store.properties();
+    let bias = props.iter().find(|p| p.code == 0x5010).expect("0x5010");
+    assert!(
+        bias.dispositions.is_empty(),
+        "a disposition with an unconvertible `when` is dropped, not surfaced unconditional"
+    );
+    let ops = store.operations();
+    let op = ops.iter().find(|o| o.code == 0x9026).expect("0x9026");
+    assert!(op.dispositions.is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // G3 codec seam (#133) — PTP/IP framing + dataset codecs. Fixtures are built
 // with the same ptp-core / protocol-primitives primitives the FFI wraps, so

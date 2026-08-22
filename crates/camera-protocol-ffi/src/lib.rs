@@ -1743,17 +1743,21 @@ pub struct PropertyDispositionInfo {
     pub disposition: PropertyDispositionKind,
 }
 
-impl From<&cc::PropertyDisposition> for PropertyDispositionInfo {
-    fn from(value: &cc::PropertyDisposition) -> Self {
-        Self {
+impl PropertyDispositionInfo {
+    /// `None` when a present `when` predicate fails to convert. Dropping the
+    /// whole disposition is the only safe answer: `when: None` on the wire means
+    /// *unconditional*, so surfacing a failed predicate as `None` would widen a
+    /// narrow scope into an always-on one.
+    fn try_map(value: &cc::PropertyDisposition) -> Option<Self> {
+        Some(Self {
             connections: value.connections.clone(),
             modes: value.modes.clone(),
-            when: value
-                .when
-                .as_ref()
-                .and_then(|p| FfiPredicate::try_from(p).ok()),
+            when: match &value.when {
+                Some(p) => Some(FfiPredicate::try_from(p).ok()?),
+                None => None,
+            },
             disposition: value.disposition.into(),
-        }
+        })
     }
 }
 
@@ -1778,17 +1782,19 @@ pub struct OperationDispositionInfo {
     pub disposition: OperationDispositionKind,
 }
 
-impl From<&cc::OperationDisposition> for OperationDispositionInfo {
-    fn from(value: &cc::OperationDisposition) -> Self {
-        Self {
+impl OperationDispositionInfo {
+    /// `None` when a present `when` predicate fails to convert — same widening
+    /// hazard as [`PropertyDispositionInfo::try_map`].
+    fn try_map(value: &cc::OperationDisposition) -> Option<Self> {
+        Some(Self {
             connections: value.connections.clone(),
             modes: value.modes.clone(),
-            when: value
-                .when
-                .as_ref()
-                .and_then(|p| FfiPredicate::try_from(p).ok()),
+            when: match &value.when {
+                Some(p) => Some(FfiPredicate::try_from(p).ok()?),
+                None => None,
+            },
             disposition: value.disposition.into(),
-        }
+        })
     }
 }
 
@@ -3867,7 +3873,7 @@ impl ConfigStore {
                     dispositions: p
                         .dispositions
                         .iter()
-                        .map(PropertyDispositionInfo::from)
+                        .filter_map(PropertyDispositionInfo::try_map)
                         .collect(),
                     canonical_name_provenance: semantic
                         .and_then(|assertions| assertions.canonical_name.as_ref())
@@ -3919,7 +3925,7 @@ impl ConfigStore {
                     dispositions: operation
                         .dispositions
                         .iter()
-                        .map(OperationDispositionInfo::from)
+                        .filter_map(OperationDispositionInfo::try_map)
                         .collect(),
                     canonical_name_provenance: semantic
                         .and_then(|assertions| assertions.canonical_name.as_ref())

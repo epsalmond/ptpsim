@@ -2106,14 +2106,28 @@ operations:
         when: { prop: "0x500a", eq: 1 }  # MF never emits 0xC005
 ```
 
+The `modes` filter is matched against the *detected* mode only. Before the
+simulator has detected one, a disposition that names modes does not apply — the
+same predetect split operation availability uses (§11.18). Absence or refusal
+scoped to a persona the session hasn't entered would be invented behavior, not
+observed behavior. A disposition with no `modes` still applies before detection.
+
 `valueless` means the property has no current value in that scope. The engine
-returns `DevicePropNotSupported` for `GetDevicePropValue` and `GetDevicePropDesc`,
-omits the code from `GetDeviceInfo`, and omits the member from the `0xD212`
-record stream. The FFI surfaces the declaration through `PropertyInfo.dispositions`.
+returns `DevicePropNotSupported` for `GetDevicePropValue`, `GetDevicePropDesc`,
+and `SetDevicePropValue`, omits the code from `GetDeviceInfo`, and omits the
+member from the `0xD212` record stream. A write is refused rather than silently
+swallowed: there is no value there to change. An unsatisfied `requiresGate`
+outranks the disposition on both reads — the camera answers with silence,
+having never reached the point of refusing.
 
 `silentRefusal` on a property means `SetDevicePropValue` returns OK without
 changing stored state. On an operation it means the operation returns OK but
 suppresses its declared `effects`, `emits`, and handler side effects
-(property-step). Both are exposed through `PropertyInfo.dispositions` and
+(property-step), for standard and vendor operations alike. The decision is taken
+once per request, before any effect runs, so an operation whose effect writes the
+property its own `when` predicate reads is either wholly applied or wholly
+suppressed, never half. Both are exposed through `PropertyInfo.dispositions` and
 `OperationInfo.dispositions` respectively; the kinds are closed sets and an
-unknown value is a load error.
+unknown value is a load error. A disposition whose `when` predicate fails to
+cross the FFI is dropped whole rather than surfaced with `when: null`, which
+would read as unconditional.

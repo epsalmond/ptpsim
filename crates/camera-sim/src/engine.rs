@@ -989,6 +989,13 @@ impl Engine {
         let tid = req.transaction_id;
         let p = |i: usize| req.params.get(i).copied().unwrap_or(0);
 
+        // Resolve the silent-refusal disposition once per request, before
+        // anything mutates the state its `when` predicate reads (#465). An
+        // effect that writes the very property the predicate tests (an
+        // immediate `settleAfterPolls: 0` arm) must not flip the decision
+        // half-way through the request and half-apply the operation.
+        let silent = self.operation_is_silent(req.code);
+
         self.prepare_camera_initiated_pre_mode_probe(req);
 
         // OpenSession is the only thing allowed before a session exists.
@@ -1009,7 +1016,7 @@ impl Engine {
 
         if let Some(reply) = self.camera_initiated_operation_reply(req) {
             if reply_is_ok(&reply) {
-                self.apply_successful_operation(req, data_in);
+                self.apply_successful_operation(req, data_in, silent);
             }
             return reply;
         }
@@ -1026,6 +1033,12 @@ impl Engine {
             if let Some(response) = self.operation_availability_error(req.code) {
                 return Self::err(tid, response);
             }
+        }
+
+        // Applied above the whole match so standard ops are refused the same way
+        // manifest-dispatched ones are: no handler, no effects, no emits (#465).
+        if silent {
+            return Self::ok(tid);
         }
 
         let reply = match req.code {
@@ -1155,8 +1168,11 @@ impl Engine {
             }
             op::GET_DEVICE_PROP_VALUE => {
                 let code = p(0) as u16;
-                if self.property_is_valueless(code) {
-                    return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
+                // Same order as GetDevicePropDesc: an unsatisfied wire gate is
+                // silence, and silence outranks the valueless refusal — the
+                // camera never reached the point of answering at all (#464).
+                if let Some(reply) = self.property_gate_reply(code) {
+                    return reply;
                 }
                 if self.transfer_queue.is_some() {
                     // Computed sources serve queue-scoped enumeration while a
@@ -1165,8 +1181,8 @@ impl Engine {
                         return reply;
                     }
                 }
-                if let Some(reply) = self.property_gate_reply(code) {
-                    return reply;
+                if self.property_is_valueless(code) {
+                    return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
                 }
                 // A deferred op-effect transition settles on its scheduled poll.
                 self.state.resolve_pending(code);
@@ -1260,18 +1276,28 @@ impl Engine {
         // arming immediate writes or deferred (poll-settled) transitions (§5.5
         // AF stub). Generic: the behavior is manifest data, not a brand branch.
         if reply_is_ok(&reply) {
-            self.apply_successful_operation(req, data_in);
+            self.apply_successful_operation(req, data_in, silent);
         }
         reply
     }
 
-    fn apply_successful_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) {
+    /// `silent` is the operation's silent-refusal decision, taken once at
+    /// dispatch. Effects and emits move together under it: an operation is
+    /// never half-applied (#465).
+    fn apply_successful_operation(
+        &mut self,
+        req: &OperationRequest,
+        data_in: Option<&[u8]>,
+        silent: bool,
+    ) {
         if self.is_camera_initiated_count_read(req) {
             self.camera_initiated_pre_mode_probe_armed = true;
         }
         self.advance_sequence_gates(req, data_in);
-        self.apply_op_effects(req.code, &req.params);
-        self.apply_op_emits(req.code, &req.params);
+        if !silent {
+            self.apply_op_effects(req.code, &req.params);
+            self.apply_op_emits(req.code, &req.params);
+        }
         self.advance_transfer_queue(req, data_in);
     }
 
@@ -1738,31 +1764,48 @@ impl Engine {
             .collect()
     }
 
+    /// The mode a disposition's `modes` filter is matched against: the detected
+    /// mode, or `None` before detection (#464, #465). Dispositions do not fall
+    /// back to `manifest_mode_path`'s guess — applying a mode-scoped absence or
+    /// refusal off a guessed persona would invent camera behavior the evidence
+    /// doesn't assert. Same predetect split as `operation_availability_error`.
+    fn disposition_mode(&self) -> Option<&str> {
+        self.state.active_mode.as_deref()
+    }
+
     fn property_is_valueless(&self, code: u16) -> bool {
         let Some(prop) = self.manifest.property(code) else {
             return false;
         };
+        // The common case is no dispositions at all — skip building the
+        // observed view, which is O(properties) and runs per checked code.
+        if prop.dispositions.is_empty() {
+            return false;
+        }
         let observed = self.observed_view();
-        let mode = self.state.manifest_mode_path();
-        prop.is_valueless(&self.connection, mode, &observed)
+        prop.is_valueless(&self.connection, self.disposition_mode(), &observed)
     }
 
     fn property_is_write_silent(&self, code: u16) -> bool {
         let Some(prop) = self.manifest.property(code) else {
             return false;
         };
+        if prop.dispositions.is_empty() {
+            return false;
+        }
         let observed = self.observed_view();
-        let mode = self.state.manifest_mode_path();
-        prop.is_write_silent_refusal(&self.connection, mode, &observed)
+        prop.is_write_silent_refusal(&self.connection, self.disposition_mode(), &observed)
     }
 
     fn operation_is_silent(&self, code: u16) -> bool {
         let Some(op) = self.manifest.operation(code) else {
             return false;
         };
+        if op.dispositions.is_empty() {
+            return false;
+        }
         let observed = self.observed_view();
-        let mode = self.state.manifest_mode_path();
-        op.is_silent_refusal(&self.connection, mode, &observed)
+        op.is_silent_refusal(&self.connection, self.disposition_mode(), &observed)
     }
 
     /// The response refusing a cataloged operation that is unavailable in the
@@ -1836,9 +1879,6 @@ impl Engine {
     }
 
     fn apply_op_effects(&mut self, code: u16, params: &[u32]) {
-        if self.operation_is_silent(code) {
-            return;
-        }
         let Some(opdef) = self.manifest.operation(code) else {
             return;
         };
@@ -1880,9 +1920,6 @@ impl Engine {
     /// because an event is a signal, not a value mutation, and an op may emit
     /// without arming any effect. Both fire only on an OK response.
     fn apply_op_emits(&mut self, code: u16, params: &[u32]) {
-        if self.operation_is_silent(code) {
-            return;
-        }
         let Some(opdef) = self.manifest.operation(code) else {
             return;
         };
@@ -1956,10 +1993,6 @@ impl Engine {
         let Some(opdef) = self.manifest.operation(code) else {
             return Self::err(tid, resp::OPERATION_NOT_SUPPORTED);
         };
-        // Silent-refusal operations ACK without applying their handler (#465).
-        if self.operation_is_silent(code) {
-            return Self::ok(tid);
-        }
         match opdef.handler {
             Some(camera_config::OperationHandler::PropertyStep) => {
                 let Some(prop_code) = opdef.property.as_deref().and_then(parse_hex_code) else {
@@ -2058,6 +2091,13 @@ impl Engine {
         // get-only, matching the DevicePropDesc the camera reports (#407).
         if prop.access != Some(camera_config::PropertyAccess::ReadWrite) {
             return Self::err(tid, resp::ACCESS_DENIED);
+        }
+        // A valueless property has no value to write in this scope, so the write
+        // is refused the same way the two reads are — not silently swallowed
+        // (#464). Checked ahead of the silentRefusal disposition: absence
+        // outranks a latched-but-present value.
+        if self.property_is_valueless(code) {
+            return Self::err(tid, resp::DEVICE_PROP_NOT_SUPPORTED);
         }
         let datatype = datatype_of(prop.ptype.as_deref());
         let Some(bytes) = data_in else {
@@ -3767,18 +3807,35 @@ properties:
             !di.device_properties_supported.contains(&0x5010),
             "valueless property omitted from DeviceInfo"
         );
+        // A write is refused too — there is no value there to change (#464).
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::I16(3).encode(&mut w).unwrap();
+        let bias_payload = w.into_vec();
+        assert_eq!(
+            response_code_of(engine.on_operation(
+                &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0x5010]),
+                Some(&bias_payload)
+            )),
+            resp::DEVICE_PROP_NOT_SUPPORTED
+        );
         // Switching out of M makes value readable again.
         let mut w = ptp_core::Writer::new();
         ptp_core::dataset::PropValue::U16(2).encode(&mut w).unwrap();
         let payload = w.into_vec();
         assert!(reply_is_ok(&engine.on_operation(
-            &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0x500e]),
+            &req(op::SET_DEVICE_PROP_VALUE, 5, vec![0x500e]),
             Some(&payload)
         )));
-        assert!(reply_is_ok(&engine.on_operation(
-            &req(op::GET_DEVICE_PROP_VALUE, 5, vec![0x5010]),
-            None
-        )));
+        let Reply::Data { data, .. } =
+            engine.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 6, vec![0x5010]), None)
+        else {
+            panic!("expected exposureBias data once it is no longer valueless");
+        };
+        assert_eq!(
+            i16::from_le_bytes([data[0], data[1]]),
+            0,
+            "the refused write left the stored value untouched"
+        );
     }
 
     #[test]
@@ -3884,5 +3941,229 @@ operations:
         assert!(reply_is_ok(&reply));
         assert_eq!(poll(&mut engine, 0xd209, 6), 1);
         assert!(engine.take_event(0xc005));
+    }
+    #[test]
+    fn mode_scoped_disposition_does_not_apply_before_mode_detection() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite, initialValue: 0 }
+  "0x5010":
+    name: exposureBias
+    type: i16
+    access: readWrite
+    initialValue: 0
+    dispositions: [{ disposition: valueless, modes: ["shooting/stills"] }]
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut engine);
+        // No mode detected yet: the disposition names a mode, so it cannot be
+        // shown to apply and the property reads normally (#464).
+        assert!(engine.state.active_mode.is_none());
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::GET_DEVICE_PROP_VALUE, 2, vec![0x5010]),
+            None
+        )));
+        // Once the mode is detected, the disposition engages.
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::U16(22)
+            .encode(&mut w)
+            .unwrap();
+        let payload = w.into_vec();
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 3, vec![0xdf01]),
+            Some(&payload)
+        )));
+        assert_eq!(engine.state.active_mode.as_deref(), Some("shooting/stills"));
+        assert_eq!(
+            response_code_of(
+                engine.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 4, vec![0x5010]), None)
+            ),
+            resp::DEVICE_PROP_NOT_SUPPORTED
+        );
+    }
+
+    #[test]
+    fn unsatisfied_gate_outranks_valueless_on_both_reads() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+sequenceGates:
+  importBootstrap: {}
+properties:
+  "0xd620":
+    name: gatedAndValueless
+    type: u32
+    access: readOnly
+    initialValue: 0
+    requiresGate: { name: importBootstrap, failure: noResponse }
+    dispositions: [{ disposition: valueless }]
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut engine);
+        // The gate is unsatisfied, so the camera never answers at all — silence
+        // outranks the valueless refusal, and both reads agree (#464).
+        assert!(matches!(
+            engine.on_operation(&req(op::GET_DEVICE_PROP_VALUE, 2, vec![0xd620]), None),
+            Reply::NoResponse
+        ));
+        assert!(matches!(
+            engine.on_operation(&req(op::GET_DEVICE_PROP_DESC, 3, vec![0xd620]), None),
+            Reply::NoResponse
+        ));
+    }
+
+    #[test]
+    fn self_referential_silent_refusal_never_half_applies() {
+        // The op's own effect writes the property its `when` predicate reads,
+        // and settles immediately. The decision is taken once up front, so
+        // effect and emit move together (#465).
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd209": { name: afResult, type: u16, access: readWrite, initialValue: 1 }
+operations:
+  "0x9026":
+    name: afLock
+    effects: [{ setProp: "0xd209", value: 1, settleAfterPolls: 0 }]
+    emits: ["0xc005"]
+    dispositions: [{ disposition: silentRefusal, when: { prop: "0xd209", eq: 1 } }]
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut engine);
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(0x9026, 2, vec![]), None)
+        ));
+        assert!(
+            !engine.take_event(0xc005),
+            "emit suppressed with the effect"
+        );
+        // Clearing the predicate lets the whole operation through.
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::U16(0).encode(&mut w).unwrap();
+        let payload = w.into_vec();
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 3, vec![0xd209]),
+            Some(&payload)
+        )));
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(0x9026, 4, vec![]), None)
+        ));
+        assert_eq!(poll(&mut engine, 0xd209, 5), 1, "effect applied");
+        assert!(engine.take_event(0xc005), "emit applied with the effect");
+    }
+
+    #[test]
+    fn silent_refusal_on_a_standard_op_suppresses_its_builtin_handler() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x500a": { name: focusMode, type: u16, access: readWrite, initialValue: 1 }
+operations:
+  "0x101c":
+    name: InitiateOpenCapture
+    dispositions: [{ disposition: silentRefusal, when: { prop: "0x500a", eq: 1 } }]
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut engine);
+        engine.state.phase = Phase::LiveView;
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 2, vec![]), None)
+        ));
+        assert_eq!(
+            engine.state.phase,
+            Phase::LiveView,
+            "the built-in handler is suppressed too, not just effects and emits"
+        );
+        // Clearing the predicate lets the standard handler run.
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::U16(2).encode(&mut w).unwrap();
+        let payload = w.into_vec();
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 3, vec![0x500a]),
+            Some(&payload)
+        )));
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 4, vec![]), None)
+        ));
+        assert_eq!(engine.state.phase, Phase::Streaming);
+    }
+
+    #[test]
+    fn property_step_honors_dispositions() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0x500e": { name: exposureProgram, type: u16, access: readWrite, initialValue: 1 }
+  "0x5007":
+    name: aperture
+    type: u16
+    access: readWrite
+    initialValue: 4
+    descriptor: { form: enum, values: [4, 5, 6] }
+    dispositions:
+      - disposition: silentRefusal
+        when: { prop: "0x500e", eq: 1 }
+      - disposition: valueless
+        when: { prop: "0x500e", eq: 3 }
+operations:
+  "0x9050":
+    name: stepAperture
+    handler: property.step
+    property: "0x5007"
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        assert_ok_open(&mut engine);
+        // 0x500e == 1 selects the silentRefusal disposition: OK, value unmoved.
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(0x9050, 2, vec![1]), None)
+        ));
+        assert_eq!(poll(&mut engine, 0x5007, 3), 4);
+        // 0x500e == 3 selects the overlapping valueless one: the step is refused.
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::U16(3).encode(&mut w).unwrap();
+        let payload = w.into_vec();
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 4, vec![0x500e]),
+            Some(&payload)
+        )));
+        assert_eq!(
+            response_code_of(engine.on_operation(&req(0x9050, 5, vec![1]), None)),
+            resp::DEVICE_PROP_NOT_SUPPORTED
+        );
+        // Neither disposition matches at 0x500e == 2: the step lands.
+        let mut w = ptp_core::Writer::new();
+        ptp_core::dataset::PropValue::U16(2).encode(&mut w).unwrap();
+        let payload = w.into_vec();
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, 6, vec![0x500e]),
+            Some(&payload)
+        )));
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(0x9050, 7, vec![1]), None)
+        ));
+        assert_eq!(poll(&mut engine, 0x5007, 8), 5);
     }
 }
