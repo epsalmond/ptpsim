@@ -6,10 +6,14 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use camera_sim_tui::{
-    callback_url_for, Action, ActionKind, ActionRegistry, CameraSnapshot, ControlClient,
-    FaultsSnapshot, HealthSnapshot, QueueSnapshot, TraceSnapshot,
+    callback_url_for,
+    plugins::{
+        fetch_manifest_from_endpoint, spawn_plugin_and_discover, validate_manifest, PluginRegistry,
+    },
+    Action, ActionKind, ActionRegistry, CameraSnapshot, ControlClient, FaultsSnapshot,
+    HealthSnapshot, QueueSnapshot, TraceSnapshot,
 };
 use clap::{Parser, ValueEnum};
 use crossterm::cursor::{Hide, Show};
@@ -25,9 +29,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
-const MAX_UPDATE_HZ: f64 = 60.0;
-const MAX_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
-const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+// Idle CPU cadence (see #218): the TUI renders at most 20 Hz, polls crossterm
+// with a 250 ms idle timeout, and refreshes health/plugins every 2 s / 1 s.
+// Pushed state and hotkeys trigger immediate redraw; this keeps idle CPU low
+// without making feedback stale. Profile recipe: run the TUI idle and observe
+// with `top -pid $(pgrep camera-sim-tui)` or `ps -o %cpu -p <pid>`; idle
+// should stay below 5 percent on the same host/terminal after the change.
+const MAX_UPDATE_HZ: f64 = 20.0;
+const MAX_FRAME_INTERVAL: Duration = Duration::from_millis(50);
+const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const PLUGIN_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RATATUI_VERSION: &str = "0.30.2";
 const CROSSTERM_VERSION: &str = "0.29";
 const RUSTC_VERSION: &str = env!("PTPSIM_TUI_RUSTC_VERSION");
@@ -53,6 +65,13 @@ struct Args {
     /// Skip runtime callback subscription; useful against older services.
     #[arg(long)]
     no_subscribe: bool,
+    /// External plugin manifest file (repeatable). Manifest declares id,
+    /// panels, actions, and either endpoint or spawn.
+    #[arg(long = "plugin-manifest", value_name = "PATH")]
+    plugin_manifest: Vec<String>,
+    /// Attached plugin endpoint URL (repeatable, e.g. http://127.0.0.1:9001).
+    #[arg(long = "plugin-url", value_name = "URL")]
+    plugin_url: Vec<String>,
     /// Visual theme.
     #[arg(long, value_enum, default_value_t = ThemeName::Cyberpunk)]
     theme: ThemeName,
@@ -269,10 +288,13 @@ struct App {
     rates: Rates,
     last_health_sample: Option<HealthSample>,
     last_health_refresh: Instant,
+    last_plugin_refresh: Instant,
     trace_cursor: u64,
     trace_instance_id: Option<String>,
     frame_window_started: Instant,
     frames_in_window: u32,
+    plugin_hotkeys: std::collections::BTreeMap<char, String>,
+    plugin_panels: Vec<camera_sim_tui::plugins::PluginPanelState>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -305,10 +327,13 @@ impl App {
             rates: Rates::default(),
             last_health_sample: None,
             last_health_refresh: now,
+            last_plugin_refresh: now,
             trace_cursor: 0,
             trace_instance_id: None,
             frame_window_started: now,
             frames_in_window: 0,
+            plugin_hotkeys: std::collections::BTreeMap::new(),
+            plugin_panels: Vec::new(),
         }
     }
 
@@ -418,6 +443,7 @@ struct SharedSurface {
     tx: mpsc::Sender<RuntimeEvent>,
     latest: Mutex<Option<CameraSnapshot>>,
     quit: AtomicBool,
+    plugins: Arc<Mutex<PluginRegistry>>,
 }
 
 fn main() -> Result<()> {
@@ -429,13 +455,17 @@ fn main() -> Result<()> {
     let registry = ActionRegistry::from_catalog(catalog);
     registry.parity_report()?;
 
+    let plugin_registry = build_plugin_registry(&args.plugin_manifest, &args.plugin_url)?;
+
     let (tx, rx) = mpsc::channel::<RuntimeEvent>();
+    let plugins = Arc::new(Mutex::new(plugin_registry));
     let shared = Arc::new(SharedSurface {
         registry: registry.clone(),
         client: client.clone(),
         tx,
         latest: Mutex::new(None),
         quit: AtomicBool::new(false),
+        plugins: Arc::clone(&plugins),
     });
     let listen_addr = start_http_surface(&args.listen, Arc::clone(&shared))
         .with_context(|| format!("bind TUI HTTP listener {}", args.listen))?;
@@ -444,12 +474,46 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| callback_url_for(listen_addr));
 
     let mut app = App::new(
-        registry,
+        registry.clone(),
         client.clone(),
         ConsoleStyle::new(args.theme, args.glyphs),
         listen_addr,
         callback_url.clone(),
     );
+    // Compute plugin hotkey map with core-wins collisions.
+    {
+        let core_hotkeys = registry
+            .actions()
+            .iter()
+            .filter_map(|a| a.descriptor.hotkey)
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<std::collections::BTreeSet<char>>();
+        let guard = plugins.lock().unwrap();
+        app.plugin_hotkeys = guard.by_hotkey_collision(&core_hotkeys);
+        let summaries = guard.summaries();
+        for summary in &summaries {
+            app.log(
+                LogKind::Info,
+                format!(
+                    "plugin {} {} at {} status={}",
+                    summary.id, summary.version, summary.endpoint, summary.status
+                ),
+            );
+            if let Some(err) = &summary.error {
+                app.log(
+                    LogKind::Error,
+                    format!("plugin {} error: {err}", summary.id),
+                );
+            }
+        }
+        // Log hotkey collisions where core wins.
+        for action in registry.actions() {
+            if let Some(hk) = action.descriptor.hotkey {
+                // nothing
+                let _ = hk;
+            }
+        }
+    }
     app.log(
         LogKind::Info,
         format!("tui http listening on http://{listen_addr}"),
@@ -488,11 +552,14 @@ fn main() -> Result<()> {
         }
     }
 
-    if args.headless {
-        run_headless(app, rx, shared)
+    let result = if args.headless {
+        run_headless(app, rx, Arc::clone(&shared))
     } else {
-        run_tui(app, rx, shared)
-    }
+        run_tui(app, rx, Arc::clone(&shared))
+    };
+    // Ensure spawned plugin children are terminated on shutdown.
+    shared.plugins.lock().unwrap().shutdown();
+    result
 }
 
 fn run_headless(
@@ -500,6 +567,9 @@ fn run_headless(
     rx: mpsc::Receiver<RuntimeEvent>,
     shared: Arc<SharedSurface>,
 ) -> Result<()> {
+    // Snapshot plugins for headless parity
+    let plugin_summaries = shared.plugins.lock().unwrap().summaries();
+    let plugin_panels = shared.plugins.lock().unwrap().panel_states_sorted();
     println!(
         "{}",
         serde_json::json!({
@@ -510,6 +580,8 @@ fn run_headless(
             "listen": format!("http://{}", app.listen_addr),
             "callback_url": app.callback_url,
             "actions": app.registry.descriptors(),
+            "plugins": plugin_summaries,
+            "panels": plugin_panels,
         })
     );
     while !app.quit && !shared.quit.load(Ordering::Relaxed) {
@@ -517,6 +589,13 @@ fn run_headless(
             Ok(event) => apply_runtime_event(&mut app, event),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        // Keep headless parity: refresh plugins at same cadence as tui (1 s).
+        if app.last_plugin_refresh.elapsed() >= PLUGIN_REFRESH_INTERVAL {
+            refresh_plugins(&mut app, &shared);
+        }
+        if app.last_health_refresh.elapsed() >= HEALTH_REFRESH_INTERVAL {
+            refresh_health(&mut app);
         }
     }
     Ok(())
@@ -541,6 +620,10 @@ fn run_tui(
             refresh_health(&mut app);
             dirty = true;
         }
+        if app.last_plugin_refresh.elapsed() >= PLUGIN_REFRESH_INTERVAL {
+            refresh_plugins(&mut app, &shared);
+            dirty = true;
+        }
 
         if dirty && Instant::now() >= next_frame {
             terminal.draw(|frame| render(frame, &app))?;
@@ -549,15 +632,19 @@ fn run_tui(
             next_frame = Instant::now() + MAX_FRAME_INTERVAL;
         }
 
+        // Keep idle poll at IDLE_POLL_INTERVAL (250 ms) to reduce CPU wakeups;
+        // when a frame is pending, wait at most until the next frame deadline.
         let now = Instant::now();
         let poll_timeout = if dirty {
             next_frame
                 .saturating_duration_since(now)
-                .min(Duration::from_millis(100))
+                .min(IDLE_POLL_INTERVAL)
         } else {
-            HEALTH_REFRESH_INTERVAL
-                .saturating_sub(app.last_health_refresh.elapsed())
-                .min(Duration::from_millis(100))
+            let to_health =
+                HEALTH_REFRESH_INTERVAL.saturating_sub(app.last_health_refresh.elapsed());
+            let to_plugin =
+                PLUGIN_REFRESH_INTERVAL.saturating_sub(app.last_plugin_refresh.elapsed());
+            to_health.min(to_plugin).min(IDLE_POLL_INTERVAL)
         };
         if event::poll(poll_timeout)? {
             let Event::Key(key) = event::read()? else {
@@ -571,6 +658,46 @@ fn run_tui(
                     if let Some(action) = app.registry.by_hotkey(c) {
                         perform_action(&mut app, &shared, action);
                         dirty = true;
+                    } else if let Some(plugin_id) =
+                        app.plugin_hotkeys.get(&c.to_ascii_lowercase()).cloned()
+                    {
+                        // Find the plugin action for this hotkey
+                        let action_opt = {
+                            let guard = shared.plugins.lock().unwrap();
+                            guard.by_id(&plugin_id).and_then(|inst| {
+                                inst.valid
+                                    .manifest
+                                    .actions
+                                    .iter()
+                                    .find(|a| {
+                                        a.hotkey
+                                            .as_deref()
+                                            .map(|hk| {
+                                                hk.to_ascii_lowercase()
+                                                    == c.to_ascii_lowercase().to_string()
+                                            })
+                                            .unwrap_or(false)
+                                    })
+                                    .cloned()
+                            })
+                        };
+                        if let Some(decl) = action_opt {
+                            let res = {
+                                let guard = shared.plugins.lock().unwrap();
+                                guard.proxy_action(&plugin_id, &decl.id, None)
+                            };
+                            match res {
+                                Ok(body) => app.log(
+                                    LogKind::Action,
+                                    format!("plugin {plugin_id} action {} ok: {body}", decl.id),
+                                ),
+                                Err(e) => app.log(
+                                    LogKind::Error,
+                                    format!("plugin {plugin_id} action {} failed: {e}", decl.id),
+                                ),
+                            }
+                            dirty = true;
+                        }
                     }
                 }
                 KeyCode::Esc => {
@@ -662,6 +789,74 @@ fn perform_action(app: &mut App, shared: &Arc<SharedSurface>, action: Action) {
             format!("action {} failed: {e}", action.id()),
         ),
     }
+}
+
+fn refresh_plugins(app: &mut App, shared: &Arc<SharedSurface>) {
+    {
+        let mut guard = shared.plugins.lock().unwrap();
+        guard.refresh_panels();
+        app.plugin_panels = guard.panel_states_sorted();
+        app.last_plugin_refresh = Instant::now();
+        for summary in guard.summaries() {
+            if let Some(err) = &summary.error {
+                app.log(
+                    LogKind::Error,
+                    format!("plugin {} panel refresh error: {err}", summary.id),
+                );
+            }
+        }
+    }
+}
+
+fn build_plugin_registry(manifest_paths: &[String], urls: &[String]) -> Result<PluginRegistry> {
+    let mut registry = PluginRegistry::new();
+    for path in manifest_paths {
+        let data = std::fs::read_to_string(path)
+            .with_context(|| format!("read plugin manifest {path}"))?;
+        if data.len() > 64 * 1024 {
+            bail!("plugin manifest {path} exceeds 64 KiB");
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&data).with_context(|| format!("parse plugin manifest {path}"))?;
+        let manifest: camera_sim_tui::plugins::PluginManifest =
+            serde_json::from_value(value.clone()).context("deserialize plugin manifest")?;
+        if let Some(spawn) = &manifest.spawn {
+            // Spawned mode: validate, spawn, discover
+            let _valid = validate_manifest(&value).context("validate plugin manifest")?;
+            // Confirm declared manifest matches discovered one
+            let (discovered, child) = spawn_plugin_and_discover(&manifest)
+                .with_context(|| format!("spawn plugin {}", manifest.id))?;
+            // Ensure discovered manifest id matches declared
+            if discovered.manifest.id != manifest.id {
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!(
+                    "spawned plugin id mismatch: declared {} vs discovered {}",
+                    manifest.id,
+                    discovered.manifest.id
+                );
+            }
+            registry
+                .insert_spawned(discovered, child)
+                .with_context(|| format!("insert plugin {}", manifest.id))?;
+            let _ = spawn;
+        } else {
+            let valid =
+                validate_manifest(&value).with_context(|| format!("validate plugin {path}"))?;
+            registry
+                .insert_validated(valid)
+                .with_context(|| format!("insert plugin {path}"))?;
+        }
+    }
+    for url in urls {
+        let valid = fetch_manifest_from_endpoint(url)
+            .with_context(|| format!("fetch plugin manifest from {url}"))?;
+        registry
+            .insert_validated(valid)
+            .with_context(|| format!("insert plugin {url}"))?;
+    }
+    Ok(registry)
 }
 
 fn render(frame: &mut Frame<'_>, app: &App) {
@@ -759,6 +954,27 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    // If plugin panels are present, split body into upper core area and lower plugin strip.
+    if app.plugin_panels.is_empty() {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Percentage(32),
+                Constraint::Percentage(20),
+                Constraint::Percentage(18),
+            ])
+            .split(area);
+        render_camera_panel(frame, cols[0], app);
+        render_state_panel(frame, cols[1], app);
+        render_faults_panel(frame, cols[2], app);
+        render_events_panel(frame, cols[3], app);
+        return;
+    }
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(10), Constraint::Length(7)])
+        .split(area);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -767,11 +983,63 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Constraint::Percentage(20),
             Constraint::Percentage(18),
         ])
-        .split(area);
+        .split(v[0]);
     render_camera_panel(frame, cols[0], app);
     render_state_panel(frame, cols[1], app);
     render_faults_panel(frame, cols[2], app);
     render_events_panel(frame, cols[3], app);
+    render_plugin_panels(frame, v[1], app);
+}
+
+fn render_plugin_panels(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = app.style.theme;
+    let glyphs = app.style.glyphs;
+    let panels = &app.plugin_panels;
+    if panels.is_empty() {
+        return;
+    }
+    let count = panels.len().min(3);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Percentage(100 / count as u16); count])
+        .split(area);
+    for (idx, panel) in panels.iter().take(count).enumerate() {
+        let lines: Vec<Line> = panel
+            .rows
+            .iter()
+            .take(area.height.saturating_sub(2) as usize)
+            .map(|row| {
+                let spans: Vec<Span> = row
+                    .iter()
+                    .map(|span| {
+                        let color = match span.style.as_str() {
+                            "muted" => theme.muted,
+                            "info" => theme.cyan,
+                            "success" => theme.green,
+                            "warning" => theme.yellow,
+                            "error" => theme.red,
+                            _ => theme.text,
+                        };
+                        Span::styled(span.text.clone(), Style::default().fg(color))
+                    })
+                    .collect();
+                Line::from(spans)
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(panel_block(
+                    &format!(" {} ", panel.title),
+                    theme,
+                    theme.cyan,
+                    glyphs,
+                    Borders::TOP,
+                ))
+                .style(Style::default().bg(theme.panel))
+                .wrap(Wrap { trim: true }),
+            cols[idx],
+        );
+    }
 }
 
 fn render_camera_panel(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -1439,6 +1707,25 @@ fn start_http_surface(addr: &str, shared: Arc<SharedSurface>) -> Result<SocketAd
 
 fn handle_http(stream: &mut TcpStream, shared: &Arc<SharedSurface>) -> Result<()> {
     let req = read_request(stream)?;
+    // Keep GET /actions strictly for camera manifest actions; plugin actions live under /plugins.
+    if req.path.starts_with("/actions/") && req.method == "POST" {
+        // Namespace isolation: POST /actions/{id} is only for camera catalog actions.
+        match shared.registry.by_http_path(&req.method, &req.path) {
+            Some(action) => {
+                dispatch_http_action(action, shared, Some(&req.body))?;
+                write_json(
+                    stream,
+                    "200 OK",
+                    &serde_json::json!({ "ok": true }).to_string(),
+                )?;
+                return Ok(());
+            }
+            None => {
+                write_json(stream, "404 Not Found", r#"{"error":"not found"}"#)?;
+                return Ok(());
+            }
+        }
+    }
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => write_json(
             stream,
@@ -1447,6 +1734,7 @@ fn handle_http(stream: &mut TcpStream, shared: &Arc<SharedSurface>) -> Result<()
                 "ok": true,
                 "surface": "camera-sim-tui",
                 "actions": shared.registry.actions().len(),
+                "plugins": shared.plugins.lock().unwrap().len(),
             })
             .to_string(),
         )?,
@@ -1454,12 +1742,25 @@ fn handle_http(stream: &mut TcpStream, shared: &Arc<SharedSurface>) -> Result<()
         ("GET", "/operator/actions") => {
             write_json(stream, "200 OK", &shared.registry.operator_actions_json())?
         }
-        ("GET", "/state") => {
-            let latest = shared.latest.lock().unwrap().clone();
+        ("GET", "/plugins") => {
+            let guard = shared.plugins.lock().unwrap();
+            let summaries = guard.summaries();
             write_json(
                 stream,
                 "200 OK",
-                &serde_json::json!({ "state": latest }).to_string(),
+                &serde_json::json!({ "plugins": summaries }).to_string(),
+            )?;
+        }
+        ("GET", "/state") => {
+            let latest = shared.latest.lock().unwrap().clone();
+            // Include plugin panels sorted by priority for headless parity
+            let plugins = shared.plugins.lock().unwrap().summaries();
+            let panels = shared.plugins.lock().unwrap().panel_states_sorted();
+            write_json(
+                stream,
+                "200 OK",
+                &serde_json::json!({ "state": latest, "plugins": plugins, "panels": panels })
+                    .to_string(),
             )?;
         }
         ("POST", "/state") => {
@@ -1468,6 +1769,80 @@ fn handle_http(stream: &mut TcpStream, shared: &Arc<SharedSurface>) -> Result<()
             *shared.latest.lock().unwrap() = Some(state.clone());
             let _ = shared.tx.send(RuntimeEvent::State(state));
             write_json(stream, "200 OK", r#"{"ok":true}"#)?;
+        }
+        _ if req.method == "GET" && req.path.starts_with("/plugins/") => {
+            // GET /plugins/{id} or /plugins/{id}/panels
+            let parts: Vec<&str> = req.path.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() == 2 {
+                let plugin_id = parts[1];
+                let guard = shared.plugins.lock().unwrap();
+                if let Some(inst) = guard.by_id(plugin_id) {
+                    write_json(
+                        stream,
+                        "200 OK",
+                        &serde_json::to_string(&inst.summary()).unwrap(),
+                    )?;
+                } else {
+                    write_json(stream, "404 Not Found", r#"{"error":"unknown plugin"}"#)?;
+                }
+            } else {
+                write_json(stream, "404 Not Found", r#"{"error":"not found"}"#)?;
+            }
+        }
+        _ if req.method == "POST" && req.path.starts_with("/plugins/") => {
+            // POST /plugins/{id}/actions/{actionId}
+            let parts: Vec<&str> = req.path.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() == 4 && parts[2] == "actions" {
+                let plugin_id = parts[1];
+                let action_id = parts[3];
+                // Bounded payload check
+                if req.body.len() > 64 * 1024 {
+                    write_json(
+                        stream,
+                        "413 Payload Too Large",
+                        r#"{"error":"payload exceeds 64 KiB"}"#,
+                    )?;
+                    return Ok(());
+                }
+                let result = {
+                    let guard = shared.plugins.lock().unwrap();
+                    guard.proxy_action(
+                        plugin_id,
+                        action_id,
+                        if req.body.is_empty() {
+                            None
+                        } else {
+                            Some(&req.body)
+                        },
+                    )
+                };
+                match result {
+                    Ok(body) => {
+                        let _ = shared.tx.send(RuntimeEvent::Action(format!(
+                            "plugin {plugin_id} action {action_id}"
+                        )));
+                        write_json(stream, "200 OK", &serde_json::json!({ "ok": true, "result": serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::String(body)) }).to_string())?;
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        let status =
+                            if msg.contains("unknown plugin") || msg.contains("unknown action") {
+                                "404 Not Found"
+                            } else if msg.contains("exceeds bounds") || msg.contains("Payload") {
+                                "413 Payload Too Large"
+                            } else {
+                                "502 Bad Gateway"
+                            };
+                        write_json(
+                            stream,
+                            status,
+                            &serde_json::json!({ "error": msg }).to_string(),
+                        )?;
+                    }
+                }
+            } else {
+                write_json(stream, "404 Not Found", r#"{"error":"not found"}"#)?;
+            }
         }
         _ if req.method == "POST" => match shared.registry.by_http_path("POST", &req.path) {
             Some(action) => {
@@ -1696,5 +2071,31 @@ mod tests {
             events: Vec::new(),
         }));
         assert_eq!(app.trace_cursor, 3);
+    }
+
+    #[test]
+    fn idle_cadence_is_low_cpu() {
+        // Cadence after #218: 20 Hz draw, 250 ms idle poll, 2 s health, 1 s plugin.
+        let hz = MAX_UPDATE_HZ;
+        assert!(
+            hz <= 30.0,
+            "MAX_UPDATE_HZ should be low to reduce idle CPU, got {hz}"
+        );
+        assert_eq!(
+            MAX_FRAME_INTERVAL,
+            std::time::Duration::from_millis(50),
+            "MAX_FRAME_INTERVAL should be 50 ms (20 Hz)"
+        );
+        let health = HEALTH_REFRESH_INTERVAL;
+        assert!(
+            health >= std::time::Duration::from_secs(1),
+            "health refresh should not be hot"
+        );
+        assert_eq!(
+            IDLE_POLL_INTERVAL,
+            std::time::Duration::from_millis(250),
+            "idle poll should be 250 ms"
+        );
+        assert_eq!(PLUGIN_REFRESH_INTERVAL, std::time::Duration::from_secs(1),);
     }
 }

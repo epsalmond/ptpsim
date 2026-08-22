@@ -39,8 +39,13 @@ remain available.
 The dashboard shows process memory, transferred bytes, transfer rate,
 live-view FPS, standard and camera-initiated queue depth/completions, update
 rate, uptime, idle time, Rust/toolchain versions, and manifest-backed property
-names as `label (0xcode)`. The draw loop caps visible updates at 60 Hz; idle CPU
-profiling/optimization is tracked separately in ptpsim #218.
+names as `label (0xcode)`.
+
+The draw loop caps visible updates at 20 Hz, crossterm polls at 250 ms idle,
+and health/plugin refresh at 2 s / 1 s; pushed state and hotkeys still trigger
+immediate redraw. Idle CPU should stay below 5 percent; profile with
+`top -pid $(pgrep camera-sim-tui)` or `ps -o %cpu -p <pid>` on the same
+host/terminal (see `scripts/profile-tui-idle.sh` recipe).
 
 `--headless` does not render the visual theme; it serves the action/state HTTP
 surface and prints the selected `theme`/`glyphs` in its startup JSON so smoke
@@ -52,3 +57,17 @@ curses:
 ```sh
 cargo run -p camera-sim-tui -- --headless
 ```
+
+Plugins are external processes or attached loopback HTTP services.
+
+```sh
+cargo run -p camera-sim-tui -- \
+  --plugin-manifest tools/camera-sim-tui/fake-plugin/manifest-attached.json \
+  --plugin-url http://127.0.0.1:8765
+```
+
+See `docs/INTEGRATION.md` §10 and `tools/camera-sim-tui/fake-plugin/` for the
+versioned discovery, rows/spans panel payload, plugin/operator namespace
+(`POST /plugins/{id}/actions/{id}` distinct from `POST /actions/{id}`),
+hotkey collision (core wins), bounded payloads, lifecycle/shutdown, and
+headless parity.
