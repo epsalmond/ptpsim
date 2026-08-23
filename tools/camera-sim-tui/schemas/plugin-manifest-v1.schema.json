@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ptpsim.dev/schemas/camera-sim-tui/plugin-manifest-v1.schema.json",
+  "$comment": "External process plugin manifest for camera-sim-tui. Major version 1 is the only accepted lineage; unknown majors fail closed.",
+  "title": "camera-sim-tui external plugin manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "id", "version", "displayName", "panels", "actions"],
+  "properties": {
+    "protocolVersion": {
+      "title": "Plugin protocol version",
+      "description": "Semver with major 1. Minor/patch are compatible; major !=1 is rejected.",
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+([\\-+][0-9A-Za-z.]+)*$"
+    },
+    "id": {
+      "title": "Plugin identifier",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9\\-]{1,63}$"
+    },
+    "version": {
+      "title": "Plugin semantic version",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.\\-]+)?(\\+[0-9A-Za-z.\\-]+)?$"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "panels": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/panel" }
+    },
+    "actions": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "endpoint": {
+      "title": "Attached local HTTP endpoint",
+      "description": "Already-running plugin HTTP base URL. Loopback only.",
+      "type": "string",
+      "pattern": "^http://(127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}(/.*)?$"
+    },
+    "spawn": {
+      "title": "Spawned plugin command",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program", "endpoint"],
+      "properties": {
+        "program": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "args": {
+          "type": "array",
+          "maxItems": 24,
+          "items": { "type": "string", "maxLength": 512 }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "maxLength": 1024 },
+          "maxProperties": 16
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^http://(127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}(/.*)?$"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    { "required": ["endpoint"], "not": { "required": ["spawn"] } },
+    { "required": ["spawn"], "not": { "required": ["endpoint"] } }
+  ],
+  "$defs": {
+    "panel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "priority", "rows"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9\\-]{1,63}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "priority": { "type": "integer", "minimum": -1000000, "maximum": 1000000 },
+        "rows": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "array",
+            "maxItems": 16,
+            "items": { "$ref": "#/$defs/span" }
+          }
+        }
+      }
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "maxLength": 2048 },
+        "style": {
+          "type": "string",
+          "enum": ["plain", "muted", "info", "success", "warning", "error"]
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "path"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9\\-]{1,63}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 256 },
+        "hotkey": { "type": "string", "pattern": "^[A-Za-z0-9]$" },
+        "path": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9._~/%\\-]*$",
+          "maxLength": 200
+        },
+        "method": {
+          "type": "string",
+          "enum": ["POST"],
+          "default": "POST"
+        }
+      }
+    }
+  }
+}

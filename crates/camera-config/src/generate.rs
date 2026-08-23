@@ -1830,6 +1830,7 @@ fn apply_candidate(
                     requires_gate: None,
                     effects: Vec::new(),
                     emits: Vec::new(),
+                    dispositions: Vec::new(),
                     evidence: vec!["canonicalObservation".to_string()],
                     observed_scopes: Vec::new(),
                 });
@@ -1948,6 +1949,7 @@ fn apply_candidate(
                     value_encoding: None,
                     structured_text: None,
                     requires_gate: None,
+                    dispositions: Vec::new(),
                     evidence: vec!["canonicalObservation".to_string()],
                     observed_scopes: Vec::new(),
                 });

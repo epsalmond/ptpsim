@@ -862,3 +862,83 @@ layer / live-view socket. BLE plans can expose credentials and request camera
 AP establishment, but OS network association, DHCP, and AP management remain
 host-owned. Adding another I/O primitive is one schema verb + one dispatcher
 case — no other layer changes.
+
+## 10. camera-sim-tui external plugin protocol v1
+
+`camera-sim-tui` supports external operator plugins as spawned commands or attached
+loopback HTTP services. Plugins are never Rust traits, dylibs, or feature-gated
+consumer code; they are separate processes the TUI discovers, validates, and
+proxies.
+
+### 10.1 Discovery and versioning
+
+A plugin declares a JSON manifest matching
+`tools/camera-sim-tui/schemas/plugin-manifest-v1.schema.json` with required
+`protocolVersion`, `id`, `version`, `displayName`, `panels`, and `actions`, and
+exactly one of `endpoint` (attached) or `spawn` (spawned). `spawn` carries
+`program`, optional `args`/`env`, and the expected `endpoint`.
+
+* Discovery is fail-closed. Malformed JSON, missing required fields, or unknown
+  major `protocolVersion` rejects the plugin. Only major `1` is accepted; minor
+  and patch are compatible.
+* Endpoints must be loopback (`http://127.0.0.1:<port>` or `http://[::1]:<port>`).
+* Panel and action counts and payload sizes are bounded (manifest and all HTTP
+  bodies under 64 KiB, panels under 16, actions under 32, rows under 32, spans
+  under 16, text under 2048). Exceeding a bound rejects the plugin or the
+  request with `413 Payload Too Large`.
+
+Lifecycle:
+
+* `--plugin-manifest <path>` loads a manifest file. If it contains `spawn`, the
+  TUI spawns `program` and polls `GET <endpoint>/manifest` until it returns a
+  valid manifest (timeout 3 s, poll 100 ms) or kills the child and reports the
+  error.
+* `--plugin-url <url>` attaches to an already-running service by fetching
+  `GET <url>/manifest`.
+* On shutdown the TUI terminates spawned children via `SIGTERM`/`kill` and waits.
+
+Versioning: bump `protocolVersion` major for wire-incompatible changes; minor
+for compatible additions. The TUI rejects any manifest whose major is not `1`.
+
+### 10.2 Panel and action contract
+
+Panels are purely data. Each panel has `id`, `title`, `priority`, and `rows` of
+generic `rows: string[][]` as `span[]` with `text` and `style` (`plain`, `muted`,
+`info`, `success`, `warning`, `error`). The TUI sorts panels by `priority`
+descending and renders the top few; plugins never inject widgets or control
+layout beyond priority.
+
+Actions are generic POST proxies. Each action declares `id`, `label`, `path`,
+and optional `hotkey`/`description`. The plugin serves `GET /manifest`,
+`GET /panels`, and `POST <path>` for each action. The TUI exposes plugin actions
+under `POST /plugins/{pluginId}/actions/{actionId}` and never through
+`POST /actions/{id}`, which remains the manifest-backed camera catalog
+(`GET /actions`).
+
+Headless parity: `GET /healthz`, `GET /state`, `GET /plugins`, and
+`GET /plugins/{id}` return the same JSON in headless and curses modes.
+`GET /state` includes `panels` sorted by priority.
+
+Hotkeys: core hotkeys win deterministic collisions; a plugin hotkey that
+collides with a core binding is ignored and not proxied.
+
+Connection errors and timeouts are observable: unreachable endpoints surface as
+`502 Bad Gateway` with the underlying error, timeouts after 5 s read timeout,
+and log lines prefixed with `plugin <id>`. Spawn failures are reported at
+startup and do not crash the TUI.
+
+Manufacturer-neutral: the plugin surface carries no camera or brand constants;
+plugins are generic operator extensions.
+
+### 10.3 Schemas
+
+* `tools/camera-sim-tui/schemas/plugin-manifest-v1.schema.json` — plugin
+  identity, panels, actions, and endpoint/spawn.
+* `tools/camera-sim-tui/schemas/plugin-panel-v1.schema.json` — `GET /panels`
+  response shape.
+
+See also `tools/camera-sim-tui/fake-plugin/` for a minimal in-repo fake plugin
+proving discovery, pushed panel content, one proxied operator action, and clean
+shutdown for both spawned and attached modes.
+
+

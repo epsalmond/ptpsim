@@ -1,0 +1,28 @@
+{
+  "protocolVersion": "1.0.0",
+  "id": "fake-tui-plugin",
+  "version": "0.1.0",
+  "displayName": "Fake TUI Plugin",
+  "panels": [
+    {
+      "id": "fake-panel",
+      "title": "Fake Panel",
+      "priority": 50,
+      "rows": [[{"text": "spawned panel", "style": "success"}]]
+    }
+  ],
+  "actions": [
+    {
+      "id": "fake-action",
+      "label": "Fake Action",
+      "path": "/do",
+      "method": "POST",
+      "hotkey": "f"
+    }
+  ],
+  "spawn": {
+    "program": "python3",
+    "args": ["tools/camera-sim-tui/fake-plugin/fake_plugin.py", "--port", "8766"],
+    "endpoint": "http://127.0.0.1:8766"
+  }
+}
