@@ -1498,12 +1498,14 @@ host-owned, but their action and parameters are part of the manifest contract.
 Within a connection, exact-network gates cannot repeat the same expected scope
 and retained-session gates cannot repeat the same socket role.
 Activity ids are unique within a plan or connection. Repeated `(id, version)`
-pairs across a loaded store MUST have identical role, expected duration,
+pairs across a loaded store MUST have identical role, title, expected duration,
 interaction, optional metadata, and semantic binding. Executor span coordinates
 are plan-local, so only the `executorSpan` binding kind participates in that
 identity; host-checkpoint names and typed host-establishment actions and
 parameters participate in full. Changing an activity boundary or meaning
-requires a version bump. Tuning only the display-duration seed does not;
+requires a version bump. Rewording a `title` also requires a version bump:
+title participates in identity, so two loaded copies of one `(id, version)`
+may not carry different copy. Tuning only the display-duration seed does not;
 consumers may replace that seed with their own learned value for the same
 activity identity and version.
 
