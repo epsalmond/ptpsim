@@ -1422,7 +1422,7 @@ are deliberately conservative display estimates, not measured guarantees or a
 contract to copy an unreliable reference application exactly.
 
 Each activity descriptor contains a dot-delimited stable `id`, a positive
-`version` (initially `1`), a `displayRole`, a positive
+`version` (initially `1`), a `displayRole`, an optional non-empty `title`, a positive
 `defaultExpectedDurationMs`, `interactionRequired`, an `optional` marker, and
 exactly one binding:
 
@@ -1431,11 +1431,16 @@ activities:
   - id: camera.link.connect
     version: 1
     displayRole: connecting
+    title: Connecting over Bluetooth
     defaultExpectedDurationMs: 4000
     interactionRequired: false
     optional: false
     executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
 ```
+
+Consumers prefer `title` over `displayRole` copy for per-activity rows.
+`displayRole` remains the connection headline and the fallback when `title` is
+absent.
 
 `optional` is presentation metadata only. It lets a consumer distinguish an
 activity that is not applicable on a particular walk from one that is still
