@@ -289,6 +289,7 @@ fn validate_activity_metadata_consistency(
 
     type ActivityMetadata = (
         crate::ConnectionActivityDisplayRole,
+        Option<String>,
         u32,
         bool,
         bool,
@@ -301,15 +302,23 @@ fn validate_activity_metadata_consistency(
         let key = (descriptor.id.clone(), descriptor.version);
         let metadata = (
             descriptor.display_role.clone(),
+            descriptor.title.clone(),
             descriptor.default_expected_duration_ms,
             descriptor.interaction_required,
             descriptor.optional,
             descriptor.identity(),
         );
-        if let Some((role, duration, interaction, optional, identity, first_path)) = seen.get(&key)
+        if let Some((role, title, duration, interaction, optional, identity, first_path)) =
+            seen.get(&key)
         {
-            if (&metadata.0, metadata.1, metadata.2, metadata.3, &metadata.4)
-                != (role, *duration, *interaction, *optional, identity)
+            if (
+                &metadata.0,
+                &metadata.1,
+                metadata.2,
+                metadata.3,
+                metadata.4,
+                &metadata.5,
+            ) != (role, title, *duration, *interaction, *optional, identity)
             {
                 return Err(ConfigError::Validation {
                     path,
@@ -323,7 +332,7 @@ fn validate_activity_metadata_consistency(
             seen.insert(
                 key,
                 (
-                    metadata.0, metadata.1, metadata.2, metadata.3, metadata.4, path,
+                    metadata.0, metadata.1, metadata.2, metadata.3, metadata.4, metadata.5, path,
                 ),
             );
         }

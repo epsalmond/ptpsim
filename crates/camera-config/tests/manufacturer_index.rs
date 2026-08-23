@@ -2805,6 +2805,72 @@ connections:
 }
 
 #[test]
+fn activity_title_participates_in_metadata_identity() {
+    let mut index = data("fuji/index.yaml");
+    let repeated_title = "title: Connecting over Bluetooth";
+    let second = index
+        .rfind(repeated_title)
+        .expect("the repeated camera.link.connect title exists");
+    index.replace_range(second..second + repeated_title.len(), "title: Reconnecting");
+    let error = ResolvedManufacturerIndex::from_yaml(&index)
+        .expect_err("index descriptors with different titles must fail");
+    assert!(error.to_string().contains("metadata differs"));
+
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  first:
+    activities:
+      - { id: camera.test.same, version: 1, displayRole: connecting, title: First title, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: first } }
+  second:
+    activities:
+      - { id: camera.test.same, version: 1, displayRole: connecting, title: Second title, defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: first } }
+"#;
+    let error = camera_config::CameraManifest::from_yaml(body)
+        .expect_err("body descriptors with different titles must fail");
+    assert!(error.to_string().contains("metadata differs"));
+
+    let mut bodies = real_fuji_bodies();
+    let xa7 = bodies["xa7"].replacen(
+        "title: Tap Join to connect to the camera",
+        "title: Different title",
+        1,
+    );
+    assert_ne!(
+        xa7, bodies["xa7"],
+        "fixture replacement must find the title"
+    );
+    bodies.insert("xa7".to_string(), xa7);
+    let error = ConfigStore::from_manufacturer_index(&data("fuji/index.yaml"), bodies)
+        .expect_err("store descriptors with different titles must fail");
+    assert!(error.to_string().contains("metadata differs"));
+}
+
+#[test]
+fn activity_titles_must_not_be_empty() {
+    let activities = "            - { id: camera.test.empty, version: 1, displayRole: connecting, title: '   ', defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }";
+    let error = ResolvedManufacturerIndex::from_yaml(&activity_index(
+        activities,
+        "            - bleConnect: {}",
+    ))
+    .expect_err("establishment activity titles must contain display text");
+    assert!(error.to_string().contains("title must not be empty"));
+
+    let body = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1 }
+connections:
+  app:
+    activities:
+      - { id: camera.test.empty, version: 1, displayRole: connecting, title: '', defaultExpectedDurationMs: 1, interactionRequired: false, hostCheckpoint: { name: empty } }
+"#;
+    let error = camera_config::CameraManifest::from_yaml(body)
+        .expect_err("host activity titles must contain display text");
+    assert!(error.to_string().contains("title must not be empty"));
+}
+
+#[test]
 fn merged_establishment_and_connection_activity_ids_must_be_unique() {
     let activities = "            - { id: camera.test.shared, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }";
     let body = r#"

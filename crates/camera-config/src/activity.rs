@@ -9,6 +9,8 @@ pub struct ConnectionActivityDescriptor {
     pub id: String,
     pub version: u32,
     pub display_role: ConnectionActivityDisplayRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub default_expected_duration_ms: u32,
     pub interaction_required: bool,
     #[serde(default)]
@@ -225,4 +227,33 @@ fn valid_id_segment(segment: &str) -> bool {
         && segment
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConnectionActivityDescriptor;
+
+    #[test]
+    fn activity_title_round_trips_yaml() {
+        let source = r#"
+id: camera.test.titled
+version: 1
+displayRole: connecting
+title: Connecting to the camera
+defaultExpectedDurationMs: 1000
+interactionRequired: false
+hostCheckpoint: { name: titled }
+"#;
+        let descriptor: ConnectionActivityDescriptor =
+            serde_yaml::from_str(source).expect("titled descriptor parses");
+        assert_eq!(
+            descriptor.title.as_deref(),
+            Some("Connecting to the camera")
+        );
+
+        let rendered = serde_yaml::to_string(&descriptor).expect("titled descriptor serializes");
+        let reparsed: ConnectionActivityDescriptor =
+            serde_yaml::from_str(&rendered).expect("serialized descriptor parses");
+        assert_eq!(reparsed, descriptor);
+    }
 }

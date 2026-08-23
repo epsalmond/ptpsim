@@ -1123,9 +1123,37 @@ fn connection_establishment_is_returned_as_data() {
         .params
         .iter()
         .any(|kv| kv.key == "initRetriesMax" && kv.value == "3"));
+    assert_eq!(
+        wt.activities
+            .iter()
+            .map(|activity| (activity.id.as_str(), activity.title.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "camera.network.discover",
+                Some("Looking for the camera on the network")
+            ),
+            (
+                "camera.network.callback",
+                Some("Camera answered, verifying identity")
+            ),
+            ("camera.session.init", Some("Negotiating with the camera")),
+            ("camera.session.open.direct", Some("Opening camera session")),
+        ]
+    );
+    for (activity, checkpoint) in
+        wt.activities[..3]
+            .iter()
+            .zip(["pcssDiscovery", "pcssCallback", "pcssInitHandshake"])
+    {
+        assert!(matches!(
+            &activity.binding,
+            ConnectionActivityBinding::HostCheckpoint { name } if name == checkpoint
+        ));
+    }
     assert!(matches!(
-        wt.activities.as_slice(),
-        [ConnectionActivityDescriptor {
+        wt.activities.last(),
+        Some(ConnectionActivityDescriptor {
             id,
             version: 2,
             display_role: ConnectionActivityDisplayRole::OpeningSession,
@@ -1136,7 +1164,7 @@ fn connection_establishment_is_returned_as_data() {
                 },
             },
             ..
-        }] if id == "camera.session.open.direct"
+        }) if id == "camera.session.open.direct"
     ));
     // app is brought up via the BLE→WiFi handover.
     let app = s.connection_establishment("app".into()).unwrap();

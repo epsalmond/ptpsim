@@ -1422,7 +1422,7 @@ are deliberately conservative display estimates, not measured guarantees or a
 contract to copy an unreliable reference application exactly.
 
 Each activity descriptor contains a dot-delimited stable `id`, a positive
-`version` (initially `1`), a `displayRole`, a positive
+`version` (initially `1`), a `displayRole`, an optional non-empty `title`, a positive
 `defaultExpectedDurationMs`, `interactionRequired`, an `optional` marker, and
 exactly one binding:
 
@@ -1431,11 +1431,16 @@ activities:
   - id: camera.link.connect
     version: 1
     displayRole: connecting
+    title: Connecting over Bluetooth
     defaultExpectedDurationMs: 4000
     interactionRequired: false
     optional: false
     executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
 ```
+
+Consumers prefer `title` over `displayRole` copy for per-activity rows.
+`displayRole` remains the connection headline and the fallback when `title` is
+absent.
 
 `optional` is presentation metadata only. It lets a consumer distinguish an
 activity that is not applicable on a particular walk from one that is still
@@ -1493,12 +1498,14 @@ host-owned, but their action and parameters are part of the manifest contract.
 Within a connection, exact-network gates cannot repeat the same expected scope
 and retained-session gates cannot repeat the same socket role.
 Activity ids are unique within a plan or connection. Repeated `(id, version)`
-pairs across a loaded store MUST have identical role, expected duration,
+pairs across a loaded store MUST have identical role, title, expected duration,
 interaction, optional metadata, and semantic binding. Executor span coordinates
 are plan-local, so only the `executorSpan` binding kind participates in that
 identity; host-checkpoint names and typed host-establishment actions and
 parameters participate in full. Changing an activity boundary or meaning
-requires a version bump. Tuning only the display-duration seed does not;
+requires a version bump. Rewording a `title` also requires a version bump:
+title participates in identity, so two loaded copies of one `(id, version)`
+may not carry different copy. Tuning only the display-duration seed does not;
 consumers may replace that seed with their own learned value for the same
 activity identity and version.
 

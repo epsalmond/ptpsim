@@ -31,6 +31,49 @@ fn loader_round_trips_consolidated_without_loss() {
 }
 
 #[test]
+fn consolidated_connection_activities_carry_titles() {
+    let manifest = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml"))
+        .expect("consolidated loads");
+    let titles = |connection: &str| {
+        manifest.connections[connection]
+            .activities
+            .iter()
+            .map(|activity| (activity.id.as_str(), activity.title.as_deref()))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        titles("app"),
+        vec![
+            (
+                "camera.network.join-confirmation",
+                Some("Tap Join to connect to the camera")
+            ),
+            (
+                "camera.network.associate",
+                Some("Connecting to camera Wi-Fi")
+            ),
+            ("camera.session.open.ap", Some("Opening camera session")),
+        ]
+    );
+    assert_eq!(
+        titles("wireless-tether"),
+        vec![
+            (
+                "camera.network.discover",
+                Some("Looking for the camera on the network")
+            ),
+            (
+                "camera.network.callback",
+                Some("Camera answered, verifying identity")
+            ),
+            ("camera.session.init", Some("Negotiating with the camera")),
+            ("camera.session.open.direct", Some("Opening camera session")),
+        ]
+    );
+}
+
+#[test]
 fn corpus_parity_is_byte_deterministic() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/camera-config-data/fuji/gfx100ii/evidence");

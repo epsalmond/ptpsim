@@ -515,7 +515,14 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 Activity display roles are consumer-neutral hints: `connecting`,
 `waitingForCamera`, `confirmingPairing`, `preparingConnection`,
 `startingNetwork`, `joiningNetwork`, and `openingSession`. Unknown future role
-tokens cross the FFI as `Unknown { raw }`. `defaultExpectedDurationMs` is a
+tokens cross the FFI as `Unknown { raw }`. An activity may also carry an
+optional `title`: consumers prefer `title` over `displayRole` copy for
+per-activity rows, while `displayRole` remains the connection headline and the
+fallback when `title` is absent. `title` is authored per activity and is absent
+by design outside the activities that have curated copy (the shipped
+`camera.session.open.usb` and `camera.reconnect.restore` activities are
+untitled); a missing `title` is not a data bug, so the fallback path stays
+live. `defaultExpectedDurationMs` is a
 curated p75-like initial display seed only; it is a conservative estimate, not
 a measured guarantee, and MUST NOT be used as an execution deadline. The
 executor emits retry ordinals as total-attempt positions (`2` of `3`), keeps an
