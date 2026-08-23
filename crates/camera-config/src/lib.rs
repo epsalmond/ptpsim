@@ -395,6 +395,7 @@ impl CameraManifest {
                 let key = (descriptor.id.clone(), descriptor.version);
                 let value = (
                     descriptor.display_role.clone(),
+                    descriptor.title.clone(),
                     descriptor.default_expected_duration_ms,
                     descriptor.interaction_required,
                     descriptor.optional,
@@ -1769,6 +1770,7 @@ fn require_valid_control_surfaces(
 
 type ActivityContract = (
     ConnectionActivityDisplayRole,
+    Option<String>,
     u32,
     bool,
     bool,
@@ -1783,6 +1785,7 @@ fn require_consistent_activity_metadata(
     let key = (descriptor.id.clone(), descriptor.version);
     let value = (
         descriptor.display_role.clone(),
+        descriptor.title.clone(),
         descriptor.default_expected_duration_ms,
         descriptor.interaction_required,
         descriptor.optional,
@@ -1818,6 +1821,15 @@ fn require_valid_executor_activities(
         if descriptor.version == 0 || descriptor.default_expected_duration_ms == 0 {
             return Err(ManifestError::Contract(format!(
                 "{here} version and defaultExpectedDurationMs must be > 0"
+            )));
+        }
+        if descriptor
+            .title
+            .as_ref()
+            .is_some_and(|title| title.trim().is_empty())
+        {
+            return Err(ManifestError::Contract(format!(
+                "{here}.title must not be empty"
             )));
         }
         let ConnectionActivityBinding::ExecutorSpan(binding) = &descriptor.binding else {
@@ -1879,6 +1891,15 @@ fn require_valid_host_activities(
         if descriptor.default_expected_duration_ms == 0 {
             return Err(ManifestError::Contract(format!(
                 "{path}.defaultExpectedDurationMs must be > 0"
+            )));
+        }
+        if descriptor
+            .title
+            .as_ref()
+            .is_some_and(|title| title.trim().is_empty())
+        {
+            return Err(ManifestError::Contract(format!(
+                "{path}.title must not be empty"
             )));
         }
         match &descriptor.binding {

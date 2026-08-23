@@ -1195,6 +1195,7 @@ fn same_activity_metadata(
     left.id == right.id
         && left.version == right.version
         && left.display_role == right.display_role
+        && left.title == right.title
         && left.default_expected_duration_ms == right.default_expected_duration_ms
         && left.interaction_required == right.interaction_required
 }
@@ -2844,6 +2845,7 @@ mod tests {
             id: id.into(),
             version: 1,
             display_role: camera_config::ConnectionActivityDisplayRole::Connecting,
+            title: None,
             default_expected_duration_ms: 1000,
             interaction_required: false,
             optional: false,
@@ -2855,6 +2857,15 @@ mod tests {
                 },
             }),
         }
+    }
+
+    #[test]
+    fn activity_title_participates_in_refinement_metadata() {
+        let left = activity_descriptor("camera.test.same", 1);
+        let mut right = left.clone();
+        right.title = Some("Different title".into());
+
+        assert!(!same_activity_metadata(&left, &right));
     }
 
     fn no_retry_summary() -> ConnectionActivityTerminalSummary {

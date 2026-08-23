@@ -221,6 +221,7 @@ pub struct ConnectionActivityDescriptor {
     pub id: String,
     pub version: u32,
     pub display_role: ConnectionActivityDisplayRole,
+    pub title: Option<String>,
     pub default_expected_duration_ms: u32,
     pub interaction_required: bool,
     pub optional: bool,
@@ -278,6 +279,7 @@ impl From<&camera_config::ConnectionActivityDescriptor> for ConnectionActivityDe
             id: value.id.clone(),
             version: value.version,
             display_role: (&value.display_role).into(),
+            title: value.title.clone(),
             default_expected_duration_ms: value.default_expected_duration_ms,
             interaction_required: value.interaction_required,
             optional: value.optional,
@@ -1827,5 +1829,23 @@ hostCheckpoint: { name: future }
                 raw: "futureRole".into()
             }
         );
+    }
+
+    #[test]
+    fn activity_title_survives_the_ffi_mirror() {
+        let source: camera_config::ConnectionActivityDescriptor = serde_yaml::from_str(
+            r#"
+id: camera.test.titled
+version: 1
+displayRole: connecting
+title: Opening camera session
+defaultExpectedDurationMs: 1
+interactionRequired: false
+hostCheckpoint: { name: titled }
+"#,
+        )
+        .expect("titled activity remains parseable");
+        let ffi = ConnectionActivityDescriptor::from(&source);
+        assert_eq!(ffi.title.as_deref(), Some("Opening camera session"));
     }
 }

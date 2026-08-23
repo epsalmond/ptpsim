@@ -65,6 +65,7 @@ impl ResolvedManufacturerIndex {
                     let key = (activity.id.clone(), activity.version);
                     let value = (
                         activity.display_role.clone(),
+                        activity.title.clone(),
                         activity.default_expected_duration_ms,
                         activity.interaction_required,
                         activity.optional,
@@ -849,6 +850,16 @@ fn validate_establishment_activities(
             return Err(ConfigError::Validation {
                 path: format!("{path}.defaultExpectedDurationMs"),
                 message: "activity defaultExpectedDurationMs must be > 0".to_string(),
+            });
+        }
+        if activity
+            .title
+            .as_ref()
+            .is_some_and(|title| title.trim().is_empty())
+        {
+            return Err(ConfigError::Validation {
+                path: format!("{path}.title"),
+                message: "activity title must not be empty".to_string(),
             });
         }
         if !matches!(activity.binding, ConnectionActivityBinding::ExecutorSpan(_)) {
