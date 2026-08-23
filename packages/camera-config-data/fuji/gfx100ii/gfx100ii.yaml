@@ -93,12 +93,14 @@ connections:
       - id: camera.network.join-confirmation
         version: 1
         displayRole: joiningNetwork
+        title: Tap Join to connect to the camera
         defaultExpectedDurationMs: 15000
         interactionRequired: true
         hostCheckpoint: { name: networkJoinConfirmation }
       - id: camera.network.associate
         version: 2
         displayRole: joiningNetwork
+        title: Connecting to camera Wi-Fi
         defaultExpectedDurationMs: 12000
         interactionRequired: false
         hostEstablishment:
@@ -106,6 +108,7 @@ connections:
       - id: camera.session.open.ap
         version: 2
         displayRole: openingSession
+        title: Opening camera session
         defaultExpectedDurationMs: 10000
         interactionRequired: false
         hostEstablishment:
@@ -595,9 +598,31 @@ connections:
     kind: ptpip-direct               # standard PTP-IP on 15740 (NOT the 55740 reference-app family)
     establishment: pcss-knock     # camera joins LAN (Wi-Fi/Ethernet), then PCSS port-knock
     activities:
+      - id: camera.network.discover
+        version: 1
+        displayRole: connecting
+        title: Looking for the camera on the network
+        defaultExpectedDurationMs: 15000
+        interactionRequired: false
+        hostCheckpoint: { name: pcssDiscovery }
+      - id: camera.network.callback
+        version: 1
+        displayRole: connecting
+        title: Camera answered, verifying identity
+        defaultExpectedDurationMs: 5000
+        interactionRequired: false
+        hostCheckpoint: { name: pcssCallback }
+      - id: camera.session.init
+        version: 1
+        displayRole: openingSession
+        title: Negotiating with the camera
+        defaultExpectedDurationMs: 5000
+        interactionRequired: false
+        hostCheckpoint: { name: pcssInitHandshake }
       - id: camera.session.open.direct
         version: 2
         displayRole: openingSession
+        title: Opening camera session
         defaultExpectedDurationMs: 5000
         interactionRequired: false
         hostEstablishment:

@@ -184,18 +184,21 @@ families:
             - id: camera.link.connect
               version: 1
               displayRole: connecting
+              title: Connecting over Bluetooth
               defaultExpectedDurationMs: 4000
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
             - id: camera.pair.confirm
               version: 1
               displayRole: confirmingPairing
+              title: Confirm the pairing code on the camera
               defaultExpectedDurationMs: 15000
               interactionRequired: true
               executorSpan: { sequence: steps, startStep: 2, endStepExclusive: 3 }
             - id: camera.pair.configure
               version: 1
               displayRole: preparingConnection
+              title: Registering with the camera
               defaultExpectedDurationMs: 8000
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 3, endStepExclusive: 20 }
@@ -313,6 +316,7 @@ families:
             - id: camera.wake
               version: 1
               displayRole: waitingForCamera
+              title: Waking the camera
               defaultExpectedDurationMs: 10000
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }
@@ -344,6 +348,7 @@ families:
             - id: camera.ap.reset
               version: 1
               displayRole: waitingForCamera
+              title: Finishing previous session
               defaultExpectedDurationMs: 8000
               interactionRequired: false
               optional: true
@@ -351,18 +356,21 @@ families:
             - id: camera.ap.prepare
               version: 2
               displayRole: preparingConnection
+              title: Requesting camera Wi-Fi
               defaultExpectedDurationMs: 2000
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 5 }
             - id: camera.ap.launch
               version: 2
               displayRole: startingNetwork
+              title: Camera is starting its Wi-Fi
               defaultExpectedDurationMs: 12000
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 5, endStepExclusive: 6 }
             - id: camera.ap.credentials
               version: 1
               displayRole: preparingConnection
+              title: Reading network details
               defaultExpectedDurationMs: 2000
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 6, endStepExclusive: 8 }
@@ -487,6 +495,7 @@ families:
             - id: camera.link.connect
               version: 1
               displayRole: connecting
+              title: Connecting over Bluetooth
               defaultExpectedDurationMs: 4000
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 2 }

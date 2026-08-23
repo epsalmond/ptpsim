@@ -60,18 +60,21 @@ connections:
       - id: camera.network.join-confirmation
         version: 1
         displayRole: joiningNetwork
+        title: Tap Join to connect to the camera
         defaultExpectedDurationMs: 15000
         interactionRequired: true
         hostCheckpoint: { name: networkJoinConfirmation }
       - id: camera.network.associate
         version: 1
         displayRole: joiningNetwork
+        title: Connecting to camera Wi-Fi
         defaultExpectedDurationMs: 12000
         interactionRequired: false
         hostCheckpoint: { name: networkAssociation }
       - id: camera.session.open.ap
         version: 1
         displayRole: openingSession
+        title: Opening camera session
         defaultExpectedDurationMs: 10000
         interactionRequired: false
         hostCheckpoint: { name: sessionOpen }
