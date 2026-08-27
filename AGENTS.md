@@ -96,8 +96,8 @@ both labels.
    *Work tracking*); footer the PR `Closes #N`. A self-evident doc fix may
    skip the issue.
 3. **Delegate implementation to Codex (GPT-5.6 Sol) subagents at high
-   effort, regardless of orchestrating harness, unless explicitly
-   overridden.** Open a draft PR from
+   effort by default, or to Kimi (K3) subagents in a Kimi-led session,
+   unless explicitly overridden.** Open a draft PR from
    the first commit; the draft is the work's visible home while in flight, so
    don't wait for polish to push. Before marking it ready: run the workspace
    checks (*Build + test*), then run exactly one independent `/code-review`
