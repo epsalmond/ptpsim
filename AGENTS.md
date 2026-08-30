@@ -280,11 +280,12 @@ When sources disagree about a protocol fact:
 
 ## Build + test
 
-Run the full check sequence the CI linux lane gates on, in this order —
-`fmt --check` runs first and fails the lane before clippy/test, so a green
-`cargo test` alone is not enough to keep `main` building:
+Run the full CI linux check sequence in this order. The wrapper test runs
+first. `fmt --check` then runs before clippy and tests, so a green `cargo test`
+alone is not enough to keep `main` building:
 
 ```sh
+scripts/test-rustc-wrapper.sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets
 cargo test --workspace

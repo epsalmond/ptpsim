@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+if command -v sccache >/dev/null 2>&1; then
+    rustc_args=()
+    while (( $# > 0 )); do
+        case "$1" in
+            -Cincremental=*)
+                shift
+                ;;
+            -C)
+                if (( $# > 1 )) && [[ "$2" == incremental=* ]]; then
+                    shift 2
+                else
+                    rustc_args+=("$1")
+                    shift
+                fi
+                ;;
+            *)
+                rustc_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    exec sccache "${rustc_args[@]}"
+fi
+
+rustc=$1
+shift
+exec "$rustc" "$@"
