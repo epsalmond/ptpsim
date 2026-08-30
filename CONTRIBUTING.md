@@ -53,6 +53,9 @@ the result.
 
 ## Pull requests
 
+Cargo uses `sccache` automatically when it is available on `PATH`. Builds call
+`rustc` directly when `sccache` is unavailable.
+
 - If CI is red, diagnose it with [`docs/CI.md`](docs/CI.md): an `error`
   status means the pipeline never ran your code.
 - Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before

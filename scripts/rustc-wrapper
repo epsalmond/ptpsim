@@ -1,0 +1,9 @@
+#!/bin/sh
+
+if command -v sccache >/dev/null 2>&1; then
+    exec sccache "$@"
+fi
+
+rustc=$1
+shift
+exec "$rustc" "$@"
