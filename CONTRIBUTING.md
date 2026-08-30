@@ -53,14 +53,18 @@ the result.
 
 ## Pull requests
 
-Cargo uses `sccache` automatically when it is available on `PATH`. Builds call
-`rustc` directly when `sccache` is unavailable.
+Cargo uses `sccache` automatically when it is available on `PATH`. The wrapper
+removes Cargo's incremental compiler option on this path so workspace crates
+can be cached. Builds call `rustc` directly with Cargo's original arguments
+when `sccache` is unavailable.
 
+- Run `scripts/test-rustc-wrapper.sh` before pushing.
+- Run `cargo fmt --all --check`.
+- Run `cargo clippy --workspace --all-targets`.
+- Run `cargo test --workspace` and make sure it passes.
 - If CI is red, diagnose it with [`docs/CI.md`](docs/CI.md): an `error`
   status means the pipeline never ran your code.
-- Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before
-  pushing. Workspace warnings are denied through `.cargo/config.toml`.
-- Run `cargo test --workspace` and make sure it passes.
+- Workspace warnings are denied through `.cargo/config.toml`.
 - Keep commits focused. A bug fix doesn't need surrounding cleanup; a one-shot
   doesn't need a helper. Three similar lines is better than a premature
   abstraction.
