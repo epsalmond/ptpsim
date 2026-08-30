@@ -71,7 +71,8 @@ steps:
     # Always re-pull: a rebuilt toolchain :latest must not be shadowed by a
     # stale locally-cached tag (Woodpecker only pulls absent images by default).
     pull: true
-    # Path filter: rust sources + the data/fixture packages the tests read.
+    # Path filter: Rust sources, Cargo settings, compiler wrapper, and the
+    # data/fixture packages the tests read.
     # Doc-only changes skip the whole build+test.
     # Must trigger whenever ANY step that `depends_on: [workspace]` triggers
     # (android-libs / kotlin-bindings / python-wheel) — else that step references a
@@ -88,6 +89,9 @@ steps:
           - 'packages/camera-config-data/**'
           - 'packages/camera-protocol-python/**'
           - 'packages/fixtures/**'
+          - '.cargo/**'
+          - 'scripts/rustc-wrapper'
+          - 'scripts/test-rustc-wrapper.sh'
           - 'Cargo.toml'
           - 'Cargo.lock'
           - 'rust-toolchain.toml'
@@ -101,6 +105,7 @@ steps:
       CARGO_TARGET_DIR: /ci-cache/target
       CARGO_INCREMENTAL: "0"
     commands:
+      - scripts/test-rustc-wrapper.sh
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets
       - cargo test --workspace
