@@ -185,6 +185,10 @@ records include a performed source entry when applicable, exit, checkpoint,
 target entry, and the session indexes before and after replacement.
 Expectation failures record the expected and actual values. The report also
 records the terminal error, cleanup warning, and artifact references.
+An action failure retains payload records created before the error. A
+best-effort `stopLiveView` attempt is recorded on that failed step with its
+status, transaction identifiers, outcome, payloads, and error. Cleanup
+transactions are excluded from the failed action's transaction identifiers.
 
 This is the exact report shape. Nullable fields remain present. `switch` is
 non-null only for a switch step. Its `checkpoint` is null when execution stops
@@ -212,6 +216,7 @@ before the external handoff.
         "outputs": []
       },
       "payloads": [],
+      "cleanupAttempt": null,
       "switch": null,
       "expectationMismatch": null,
       "error": null
@@ -233,6 +238,8 @@ Each normalized output has `stepPath`, `transactionId`, `payloadBytes`, and
 `stepPath`, `transactionId`, and `responseParams`. A switch step sets `outcome`
 to null and fills `switch` with nullable `sourceEntry`, `exit`, `checkpoint`,
 and `targetEntry`, plus `beforeSessionIndex` and `afterSessionIndex`.
+`cleanupAttempt` is non-null only when the runner attempts a best-effort
+`stopLiveView` after an action failure.
 
 After execution starts, the runner stops at the first executor or expectation
 failure. It omits later steps, attempts a safe session close, publishes the

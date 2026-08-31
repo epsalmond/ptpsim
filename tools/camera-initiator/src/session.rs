@@ -605,8 +605,20 @@ pub struct SessionStepReport {
     pub transaction_ids: Vec<u32>,
     pub outcome: Option<NormalizedOutcome>,
     pub payloads: Vec<PayloadReport>,
+    pub cleanup_attempt: Option<CleanupAttemptReport>,
     pub switch: Option<SwitchReport>,
     pub expectation_mismatch: Option<ExpectationMismatch>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupAttemptReport {
+    pub action: String,
+    pub status: RunStatus,
+    pub transaction_ids: Vec<u32>,
+    pub outcome: Option<NormalizedOutcome>,
+    pub payloads: Vec<PayloadReport>,
     pub error: Option<String>,
 }
 
@@ -947,6 +959,9 @@ pub async fn run_session_plan(
 
     for (step_index, step) in prepared.steps.iter().enumerate() {
         observer.reset();
+        let mut failed_payloads = Vec::new();
+        let mut failed_transaction_ids = None;
+        let mut cleanup_attempt = None;
         let result = match step {
             PreparedStep::Entry(entry) => {
                 async {
@@ -964,7 +979,7 @@ pub async fn run_session_plan(
                         raw,
                         observer.clone(),
                         Arc::clone(&activity),
-                        entry_runtime_values(&options.runtime_params, &retained_scope),
+                        entry_runtime_values(&options.runtime_params, &retained_scope)?,
                     )
                     .await
                     .map_err(|error| anyhow::anyhow!(error.to_string()))
@@ -987,6 +1002,7 @@ pub async fn run_session_plan(
                             transaction_ids: observer.transaction_ids(),
                             outcome: Some(normalized),
                             payloads: Vec::new(),
+                            cleanup_attempt: None,
                             switch: None,
                             expectation_mismatch: mismatch,
                             error: None,
@@ -1016,6 +1032,13 @@ pub async fn run_session_plan(
                         &step_dir,
                     )
                     .await;
+                    let mut transaction_ids = execution.transaction_ids;
+                    transaction_ids.extend(observer.transaction_ids());
+                    dedupe_adjacent(&mut transaction_ids);
+                    if execution.outcome.is_err() {
+                        failed_transaction_ids = Some(transaction_ids.clone());
+                        failed_payloads = execution.payloads.clone();
+                    }
                     let action_parameters = action
                         .parameters
                         .iter()
@@ -1031,15 +1054,13 @@ pub async fn run_session_plan(
                         action.request.catalog_revision.clone(),
                         action.name.clone(),
                         action_parameters,
-                        if execution.is_ok() {
+                        if execution.outcome.is_ok() {
                             ActionOutcome::Succeeded
                         } else {
                             ActionOutcome::Failed
                         },
                     )?;
-                    let result = execution.map(|(outcome, payloads, mut transaction_ids)| {
-                        transaction_ids.extend(observer.transaction_ids());
-                        dedupe_adjacent(&mut transaction_ids);
+                    let result = execution.outcome.map(|outcome| {
                         match action.verb {
                             camera_protocol_ffi::ActionVerb::StartLiveView => {
                                 live_view_started = true
@@ -1064,7 +1085,8 @@ pub async fn run_session_plan(
                             session_index: Some(session_index),
                             transaction_ids,
                             outcome: Some(outcome),
-                            payloads,
+                            payloads: execution.payloads,
+                            cleanup_attempt: None,
                             switch: None,
                             expectation_mismatch: mismatch,
                             error: None,
@@ -1080,18 +1102,41 @@ pub async fn run_session_plan(
                         if let Some(cleanup) = find_stop_cleanup(&prepared.steps[step_index + 1..])
                         {
                             trace.set_mode(cleanup.request.mode.clone());
+                            observer.reset();
+                            let cleanup_sink = OrdinarySessionSink::new(
+                                step_dir.clone(),
+                                options.output_dir.clone(),
+                            );
                             let cleanup_result = run_initiator_action_to_sink(
                                 Arc::clone(&store),
                                 cleanup.request.clone(),
                                 lifecycle.executor_transport(),
                                 observer.clone(),
                                 Arc::clone(&activity),
-                                OrdinarySessionSink::new(
-                                    step_dir.clone(),
-                                    options.output_dir.clone(),
-                                ),
+                                cleanup_sink.clone(),
                             )
                             .await;
+                            let cleanup_transaction_ids = observer.transaction_ids();
+                            let cleanup_payloads = cleanup_sink.payloads();
+                            let cleanup_succeeded = cleanup_result.is_ok();
+                            let (cleanup_outcome, cleanup_error) = match cleanup_result {
+                                Ok(outcome) => {
+                                    (Some(normalize_outcome(outcome, &cleanup_payloads)), None)
+                                }
+                                Err(error) => (None, Some(error.to_string())),
+                            };
+                            cleanup_attempt = Some(CleanupAttemptReport {
+                                action: cleanup.name.clone(),
+                                status: if cleanup_succeeded {
+                                    RunStatus::Succeeded
+                                } else {
+                                    RunStatus::Failed
+                                },
+                                transaction_ids: cleanup_transaction_ids,
+                                outcome: cleanup_outcome,
+                                payloads: cleanup_payloads,
+                                error: cleanup_error,
+                            });
                             let cleanup_parameters = cleanup
                                 .parameters
                                 .iter()
@@ -1107,7 +1152,7 @@ pub async fn run_session_plan(
                                 cleanup.request.catalog_revision.clone(),
                                 cleanup.name.clone(),
                                 cleanup_parameters,
-                                if cleanup_result.is_ok() {
+                                if cleanup_succeeded {
                                     ActionOutcome::Succeeded
                                 } else {
                                     ActionOutcome::Failed
@@ -1130,6 +1175,7 @@ pub async fn run_session_plan(
                     &options,
                     &mut session_index,
                     &mut retained_scope,
+                    &mut live_view_started,
                 )
                 .await
             }
@@ -1152,9 +1198,14 @@ pub async fn run_session_plan(
             Err(error) => {
                 report.status = RunStatus::Failed;
                 report.terminal_error = Some(error.to_string());
-                report
-                    .steps
-                    .push(failed_step_report(step, session_index, &observer, &error));
+                report.steps.push(failed_step_report(
+                    step,
+                    session_index,
+                    failed_transaction_ids.unwrap_or_else(|| observer.transaction_ids()),
+                    failed_payloads,
+                    cleanup_attempt,
+                    &error,
+                ));
                 break;
             }
         }
@@ -1181,7 +1232,9 @@ pub async fn run_session_plan(
 fn failed_step_report(
     step: &PreparedStep,
     session_index: u32,
-    observer: &SessionStepObserver,
+    transaction_ids: Vec<u32>,
+    payloads: Vec<PayloadReport>,
+    cleanup_attempt: Option<CleanupAttemptReport>,
     error: &anyhow::Error,
 ) -> SessionStepReport {
     let (id, kind) = match step {
@@ -1194,9 +1247,10 @@ fn failed_step_report(
         kind,
         status: RunStatus::Failed,
         session_index: (session_index != 0).then_some(session_index),
-        transaction_ids: observer.transaction_ids(),
+        transaction_ids,
         outcome: None,
-        payloads: Vec::new(),
+        payloads,
+        cleanup_attempt,
         switch: None,
         expectation_mismatch: None,
         error: Some(error.to_string()),
@@ -1206,20 +1260,21 @@ fn failed_step_report(
 fn entry_runtime_values(
     global: &[PtpRuntimeValue],
     retained: &BTreeMap<String, SessionValue>,
-) -> Vec<PtpRuntimeValue> {
+) -> Result<Vec<PtpRuntimeValue>> {
     let mut values: BTreeMap<String, u64> = global
         .iter()
         .map(|value| (value.key.clone(), value.value))
         .collect();
     for (key, value) in retained {
-        if let SessionValue::U64(value) = value {
-            values.insert(key.clone(), *value);
-        }
+        let SessionValue::U64(value) = value else {
+            bail!("mode-entry scope '{key}' is not numeric")
+        };
+        values.insert(key.clone(), *value);
     }
-    values
+    Ok(values
         .into_iter()
         .map(|(key, value)| PtpRuntimeValue { key, value })
-        .collect()
+        .collect())
 }
 
 fn merge_retained_scope(
@@ -1237,6 +1292,12 @@ fn merge_retained_scope(
     }
 }
 
+struct ActionExecution {
+    outcome: Result<NormalizedOutcome>,
+    payloads: Vec<PayloadReport>,
+    transaction_ids: Vec<u32>,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_action(
     action: &PreparedAction,
@@ -1247,52 +1308,67 @@ async fn execute_action(
     trace: Arc<TraceWriter>,
     output_dir: &Path,
     step_dir: &Path,
-) -> Result<(NormalizedOutcome, Vec<PayloadReport>, Vec<u32>)> {
+) -> ActionExecution {
     if action.streaming {
-        let destination = step_dir.join("0000_stream.bin");
-        let sink = Arc::new(StreamingFileSink::new(destination.clone())?);
-        let outcome = run_streaming_action(
-            Arc::clone(&store),
-            action.request.clone(),
-            lifecycle.streaming_transport(),
-            sink.clone(),
-            action.expected_bytes,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        let metadata = sink.payload_metadata().await;
-        trace.complete_streaming_transaction(
-            outcome.transaction_id,
-            outcome.response_params.clone(),
-            metadata.clone(),
-        )?;
-        sink.commit().await?;
-        let relative = destination
-            .strip_prefix(output_dir)
-            .expect("streaming payload remains under output directory")
-            .to_string_lossy()
-            .into_owned();
-        let payload = PayloadReport {
-            path: relative,
-            length: metadata.length,
-            sha256: metadata.sha256,
-            step_path: "streamingAction".into(),
-            transaction_id: outcome.transaction_id,
-            response_params: outcome.response_params.clone(),
+        let result: Result<(NormalizedOutcome, PayloadReport, u32)> = async {
+            let destination = step_dir.join("0000_stream.bin");
+            let sink = Arc::new(StreamingFileSink::new(destination.clone())?);
+            let outcome = run_streaming_action(
+                Arc::clone(&store),
+                action.request.clone(),
+                lifecycle.streaming_transport(),
+                sink.clone(),
+                action.expected_bytes,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let metadata = sink.payload_metadata().await;
+            trace.complete_streaming_transaction(
+                outcome.transaction_id,
+                outcome.response_params.clone(),
+                metadata.clone(),
+            )?;
+            sink.commit().await?;
+            let relative = destination
+                .strip_prefix(output_dir)
+                .expect("streaming payload remains under output directory")
+                .to_string_lossy()
+                .into_owned();
+            let payload = PayloadReport {
+                path: relative,
+                length: metadata.length,
+                sha256: metadata.sha256,
+                step_path: "streamingAction".into(),
+                transaction_id: outcome.transaction_id,
+                response_params: outcome.response_params.clone(),
+            };
+            let normalized = NormalizedOutcome {
+                steps_run: 1,
+                scope: BTreeMap::new(),
+                collections: BTreeMap::new(),
+                output_count: 1,
+                outputs: vec![NormalizedOutput {
+                    step_path: payload.step_path.clone(),
+                    transaction_id: payload.transaction_id,
+                    payload_bytes: payload.length,
+                    response_params: payload.response_params.clone(),
+                }],
+            };
+            Ok((normalized, payload, outcome.transaction_id))
+        }
+        .await;
+        return match result {
+            Ok((outcome, payload, transaction_id)) => ActionExecution {
+                outcome: Ok(outcome),
+                payloads: vec![payload],
+                transaction_ids: vec![transaction_id],
+            },
+            Err(error) => ActionExecution {
+                outcome: Err(error),
+                payloads: Vec::new(),
+                transaction_ids: Vec::new(),
+            },
         };
-        let normalized = NormalizedOutcome {
-            steps_run: 1,
-            scope: BTreeMap::new(),
-            collections: BTreeMap::new(),
-            output_count: 1,
-            outputs: vec![NormalizedOutput {
-                step_path: payload.step_path.clone(),
-                transaction_id: payload.transaction_id,
-                payload_bytes: payload.length,
-                response_params: payload.response_params.clone(),
-            }],
-        };
-        return Ok((normalized, vec![payload], vec![outcome.transaction_id]));
     }
 
     let sink = OrdinarySessionSink::new(step_dir.to_path_buf(), output_dir.to_path_buf());
@@ -1305,10 +1381,13 @@ async fn execute_action(
         sink.clone(),
     )
     .await
-    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    .map_err(|error| anyhow::anyhow!(error.to_string()));
     let payloads = sink.payloads();
-    let normalized = normalize_outcome(outcome, &payloads);
-    Ok((normalized, payloads, Vec::new()))
+    ActionExecution {
+        outcome: outcome.map(|outcome| normalize_outcome(outcome, &payloads)),
+        payloads,
+        transaction_ids: Vec::new(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1322,6 +1401,7 @@ async fn run_switch_step(
     options: &SessionRunOptions,
     session_index: &mut u32,
     retained_scope: &mut BTreeMap<String, SessionValue>,
+    live_view_started: &mut bool,
 ) -> Result<SessionStepReport> {
     trace.set_mode(switch.from.clone());
     if *session_index == 0 {
@@ -1341,7 +1421,7 @@ async fn run_switch_step(
             lifecycle.executor_transport(),
             observer.clone(),
             Arc::clone(&activity),
-            entry_runtime_values(&options.runtime_params, retained_scope),
+            entry_runtime_values(&options.runtime_params, retained_scope)?,
         )
         .await;
         let outcome = match outcome {
@@ -1389,7 +1469,7 @@ async fn run_switch_step(
         lifecycle.executor_transport(),
         observer.clone(),
         Arc::clone(&activity),
-        entry_runtime_values(&[], retained_scope),
+        entry_runtime_values(&[], retained_scope)?,
     )
     .await;
     transaction_ids.extend(observer.transaction_ids());
@@ -1452,6 +1532,7 @@ async fn run_switch_step(
             error.to_string(),
         ));
     }
+    *live_view_started = false;
     *session_index += 1;
 
     observer.reset();
@@ -1522,6 +1603,7 @@ async fn run_switch_step(
         transaction_ids,
         outcome: None,
         payloads: Vec::new(),
+        cleanup_attempt: None,
         switch: Some(SwitchReport {
             source_entry,
             exit: Some(exit),
@@ -1554,6 +1636,7 @@ fn failed_switch_report(
         transaction_ids,
         outcome: None,
         payloads: Vec::new(),
+        cleanup_attempt: None,
         switch: Some(SwitchReport {
             source_entry,
             exit,
@@ -1731,26 +1814,81 @@ fn find_stop_cleanup(remaining: &[PreparedStep]) -> Option<&PreparedAction> {
         })
 }
 
+#[async_trait]
+trait ReportFileSystem: Send + Sync {
+    async fn hard_link(&self, source: &Path, destination: &Path) -> std::io::Result<()>;
+    async fn remove_file(&self, path: &Path) -> std::io::Result<()>;
+}
+
+struct TokioReportFileSystem;
+
+#[async_trait]
+impl ReportFileSystem for TokioReportFileSystem {
+    async fn hard_link(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
+        tokio::fs::hard_link(source, destination).await
+    }
+
+    async fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        tokio::fs::remove_file(path).await
+    }
+}
+
 async fn publish_report(path: &Path, report: &SessionReport) -> Result<()> {
+    publish_report_with_fs(path, report, &TokioReportFileSystem).await
+}
+
+async fn publish_report_with_fs(
+    path: &Path,
+    report: &SessionReport,
+    file_system: &dyn ReportFileSystem,
+) -> Result<()> {
     let mut temporary = path.as_os_str().to_os_string();
     temporary.push(format!(".partial-{}", std::process::id()));
     let temporary = PathBuf::from(temporary);
     let mut bytes = serde_json::to_vec_pretty(report)?;
     bytes.push(b'\n');
+    write_new_report_file(&temporary, &bytes)
+        .await
+        .with_context(|| format!("create new report staging file {}", temporary.display()))?;
+    match file_system.hard_link(&temporary, path).await {
+        Ok(()) => {}
+        Err(error) if hard_link_is_unsupported(&error) => {
+            if tokio::fs::try_exists(path)
+                .await
+                .with_context(|| format!("inspect session report path {}", path.display()))?
+            {
+                bail!("refuse to overwrite session report {}", path.display())
+            }
+            tokio::fs::rename(&temporary, path)
+                .await
+                .with_context(|| format!("publish new session report {}", path.display()))?;
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("publish new session report {}", path.display()));
+        }
+    }
+    let _ = file_system.remove_file(&temporary).await;
+    Ok(())
+}
+
+async fn write_new_report_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&temporary)
-        .await
-        .with_context(|| format!("create new report staging file {}", temporary.display()))?;
-    file.write_all(&bytes).await?;
+        .open(path)
+        .await?;
+    file.write_all(bytes).await?;
     file.sync_all().await?;
     drop(file);
-    tokio::fs::hard_link(&temporary, path)
-        .await
-        .with_context(|| format!("publish new session report {}", path.display()))?;
-    tokio::fs::remove_file(&temporary).await?;
     Ok(())
+}
+
+fn hard_link_is_unsupported(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+    ) || matches!(error.raw_os_error(), Some(45 | 50 | 95 | 1314))
 }
 
 #[cfg(test)]
@@ -1947,6 +2085,8 @@ steps:
     struct FakeTransport {
         next_tid: AtomicU32,
         replies: Mutex<VecDeque<Vec<u8>>>,
+        response_codes: Mutex<BTreeMap<u16, u16>>,
+        data_replies: Mutex<BTreeMap<u16, Vec<u8>>>,
         calls: Arc<Mutex<Vec<String>>>,
         trace: Arc<TraceWriter>,
     }
@@ -1956,9 +2096,22 @@ steps:
             Arc::new(Self {
                 next_tid: AtomicU32::new(2),
                 replies: Mutex::new(VecDeque::new()),
+                response_codes: Mutex::new(BTreeMap::new()),
+                data_replies: Mutex::new(BTreeMap::new()),
                 calls,
                 trace,
             })
+        }
+
+        fn respond_with(&self, operation: u16, response_code: u16) {
+            self.response_codes
+                .lock()
+                .unwrap()
+                .insert(operation, response_code);
+        }
+
+        fn respond_with_data(&self, operation: u16, payload: Vec<u8>) {
+            self.data_replies.lock().unwrap().insert(operation, payload);
         }
 
         fn reset(&self) {
@@ -2000,8 +2153,30 @@ steps:
                 "op:{:04x}:{}:{:?}",
                 request.code, request.transaction_id, request.params
             ));
+            if let Some(payload) = self
+                .data_replies
+                .lock()
+                .unwrap()
+                .get(&request.code)
+                .cloned()
+            {
+                self.replies.lock().unwrap().push_back(
+                    protocol_primitives::fuji_framing::encode_data(
+                        request.code,
+                        request.transaction_id,
+                        &payload,
+                    ),
+                );
+            }
+            let response_code = self
+                .response_codes
+                .lock()
+                .unwrap()
+                .get(&request.code)
+                .copied()
+                .unwrap_or(0x2001);
             let response = Self::encode(&PtpIpPacket::OperationResponse(OperationResponse {
-                code: 0x2001,
+                code: response_code,
                 transaction_id: request.transaction_id,
                 params: Vec::new(),
             }))?;
@@ -2053,7 +2228,8 @@ steps:
             })
         }
 
-        async fn sleep(&self, _ms: u32) -> Result<(), PtpTransportError> {
+        async fn sleep(&self, ms: u32) -> Result<(), PtpTransportError> {
+            tokio::time::sleep(Duration::from_millis(u64::from(ms))).await;
             Ok(())
         }
     }
@@ -2077,7 +2253,8 @@ steps:
             })
         }
 
-        async fn sleep(&self, _ms: u32) -> Result<(), PtpTransportError> {
+        async fn sleep(&self, ms: u32) -> Result<(), PtpTransportError> {
+            tokio::time::sleep(Duration::from_millis(u64::from(ms))).await;
             Ok(())
         }
 
@@ -2208,6 +2385,21 @@ connections:
             - { closeSession: { transportClose: false } }
       - to: target
         steps: [{ sendOp: "0x9003" }]
+    actions:
+      startLiveView:
+        mode: ""
+        initiator:
+          steps: [{ sendOp: "0x9100" }]
+      shutter:
+        mode: ""
+        initiator:
+          steps:
+            - { sendOp: "0x9101" }
+            - { sendOp: "0x9102" }
+      stopLiveView:
+        mode: ""
+        initiator:
+          steps: [{ sendOp: "0x9103" }]
 "#
             .into(),
             None,
@@ -2258,6 +2450,251 @@ connections:
             },
         )
         .unwrap()
+    }
+
+    async fn run_fake_session(
+        yaml: &str,
+        response_codes: &[(u16, u16)],
+        data_replies: &[(u16, &[u8])],
+    ) -> (
+        Result<SessionReport>,
+        PathBuf,
+        PathBuf,
+        Arc<Mutex<Vec<String>>>,
+    ) {
+        let store = fake_switch_store();
+        let plan = SessionPlan::from_yaml(yaml).unwrap();
+        let prepared = prepare_session_plan(plan, &store, "app").unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "camera-initiator-fake-session-{}-{nonce}",
+            std::process::id()
+        ));
+        let observation = root.with_extension("jsonl");
+        let trace = Arc::new(TraceWriter::with_observations(
+            crate::TraceFormat::Jsonl,
+            Box::new(TestTraceBuffer::default()),
+            observation_recorder(observation.clone()),
+            "app".into(),
+            "session".into(),
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let transport = FakeTransport::new(Arc::clone(&calls), Arc::clone(&trace));
+        for (operation, response_code) in response_codes {
+            transport.respond_with(*operation, *response_code);
+        }
+        for (operation, payload) in data_replies {
+            transport.respond_with_data(*operation, payload.to_vec());
+        }
+        let lifecycle: Arc<dyn SessionLifecycle> = Arc::new(FakeLifecycle {
+            transport,
+            trace: Arc::clone(&trace),
+            calls: Arc::clone(&calls),
+            generation: AtomicU32::new(0),
+        });
+        let result = run_session_plan(
+            &prepared,
+            store,
+            lifecycle,
+            trace,
+            SessionRunOptions {
+                output_dir: root.clone(),
+                run_id: "fake-session".into(),
+                connection: "app".into(),
+                trace_path: "-".into(),
+                observation_path: observation.clone(),
+                runtime_params: Vec::new(),
+                handoff_timeout: Duration::from_secs(1),
+            },
+        )
+        .await;
+        (result, root, observation, calls)
+    }
+
+    #[tokio::test]
+    async fn failed_action_reports_payloads_and_rejected_cleanup_separately() {
+        let (result, root, observation, _) = run_fake_session(
+            r#"
+schema: camera-initiator-session/v1
+steps:
+  - { id: start, kind: action, action: startLiveView }
+  - { id: fail, kind: action, action: shutter }
+  - { id: stop, kind: action, action: stopLiveView }
+"#,
+            &[(0x9102, 0x2002), (0x9103, 0x2002)],
+            &[(0x9101, b"action-payload"), (0x9103, b"cleanup-payload")],
+        )
+        .await;
+        result.expect_err("action failure must fail the session");
+
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                .unwrap();
+        let failed = &report["steps"][1];
+        let cleanup = &failed["cleanupAttempt"];
+        let payloads: Vec<_> = failed["payloads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(cleanup["payloads"].as_array().unwrap())
+            .collect();
+        let files: Vec<_> = std::fs::read_dir(root.join("payloads/0001-fail"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(payloads.len(), files.len());
+        for payload in payloads {
+            let bytes = std::fs::read(root.join(payload["path"].as_str().unwrap())).unwrap();
+            let mut metadata = PayloadMetadataBuilder::new();
+            metadata.update(&bytes);
+            let metadata = metadata.metadata();
+            assert_eq!(payload["length"], metadata.length);
+            assert_eq!(payload["sha256"], metadata.sha256);
+        }
+        let action_ids = failed["transactionIds"].as_array().unwrap();
+        assert_eq!(cleanup["action"], "stopLiveView");
+        assert_eq!(cleanup["status"], "failed");
+        assert!(cleanup["error"].as_str().unwrap().contains("0x2002"));
+        let cleanup_ids = cleanup["transactionIds"].as_array().unwrap();
+        assert_eq!(action_ids.len(), 2);
+        assert_eq!(cleanup_ids.len(), 1);
+        assert!(action_ids
+            .iter()
+            .all(|transaction_id| !cleanup_ids.contains(transaction_id)));
+        assert_eq!(cleanup["payloads"].as_array().unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(observation);
+    }
+
+    #[tokio::test]
+    async fn replacement_session_clears_live_view_cleanup_state() {
+        let (result, root, observation, calls) = run_fake_session(
+            r#"
+schema: camera-initiator-session/v1
+steps:
+  - { id: start, kind: action, action: startLiveView }
+  - { id: switch, kind: switch, from: source, to: target }
+  - { id: fail, kind: action, action: shutter }
+  - { id: stop, kind: action, action: stopLiveView }
+"#,
+            &[(0x9102, 0x2002)],
+            &[],
+        )
+        .await;
+        result.expect_err("action failure must fail the session");
+        let calls = calls.lock().unwrap();
+        let replacement = calls.iter().position(|call| call == "open:2").unwrap();
+        assert!(!calls[replacement..]
+            .iter()
+            .any(|call| call.starts_with("op:9103:")));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(observation);
+    }
+
+    #[test]
+    fn entry_runtime_values_rejects_retained_string_scope() {
+        let retained =
+            BTreeMap::from([("sessionToken".into(), SessionValue::String("opaque".into()))]);
+        let error = entry_runtime_values(&[], &retained).unwrap_err();
+        assert!(error.to_string().contains("sessionToken"));
+    }
+
+    struct FaultInjectingReportFileSystem {
+        hard_link_error: Option<io::ErrorKind>,
+        remove_error: Option<io::ErrorKind>,
+    }
+
+    #[async_trait]
+    impl ReportFileSystem for FaultInjectingReportFileSystem {
+        async fn hard_link(&self, source: &Path, destination: &Path) -> io::Result<()> {
+            if let Some(kind) = self.hard_link_error {
+                return Err(io::Error::new(kind, "injected hard-link failure"));
+            }
+            tokio::fs::hard_link(source, destination).await
+        }
+
+        async fn remove_file(&self, path: &Path) -> io::Result<()> {
+            if let Some(kind) = self.remove_error {
+                return Err(io::Error::new(kind, "injected removal failure"));
+            }
+            tokio::fs::remove_file(path).await
+        }
+    }
+
+    fn publication_report(run_id: &str) -> SessionReport {
+        SessionReport {
+            schema: SESSION_REPORT_SCHEMA.into(),
+            plan_schema: SESSION_PLAN_SCHEMA.into(),
+            run_id: run_id.into(),
+            connection: "app".into(),
+            status: RunStatus::Succeeded,
+            steps: Vec::new(),
+            terminal_error: None,
+            cleanup_warning: None,
+            artifacts: SessionArtifacts {
+                report: "session-report.json".into(),
+                trace: "-".into(),
+                observation: "observation.jsonl".into(),
+                payloads: "payloads".into(),
+            },
+        }
+    }
+
+    fn publication_root(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "camera-initiator-report-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        root
+    }
+
+    #[tokio::test]
+    async fn report_publication_falls_back_without_overwriting() {
+        let root = publication_root("fallback");
+        let path = root.join("session-report.json");
+        let file_system = FaultInjectingReportFileSystem {
+            hard_link_error: Some(io::ErrorKind::Unsupported),
+            remove_error: None,
+        };
+        publish_report_with_fs(&path, &publication_report("first"), &file_system)
+            .await
+            .unwrap();
+        let first = std::fs::read(&path).unwrap();
+
+        publish_report_with_fs(&path, &publication_report("second"), &file_system)
+            .await
+            .expect_err("existing report must not be overwritten");
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn published_report_ignores_staging_cleanup_failure() {
+        let root = publication_root("cleanup");
+        let path = root.join("session-report.json");
+        let file_system = FaultInjectingReportFileSystem {
+            hard_link_error: None,
+            remove_error: Some(io::ErrorKind::PermissionDenied),
+        };
+        publish_report_with_fs(&path, &publication_report("published"), &file_system)
+            .await
+            .unwrap();
+        assert!(path.is_file());
+        let staging = PathBuf::from(format!("{}.partial-{}", path.display(), std::process::id()));
+        assert!(staging.is_file());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
