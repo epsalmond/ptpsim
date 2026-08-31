@@ -90,7 +90,8 @@ both labels.
    checkout. `git worktree remove` when done. Do this **before your first
    edit**, not at commit time — never work in `~/git/ptpsim` itself.
    Enforced by `scripts/git-hooks/pre-commit` (blocks commits on `main`
-   and in the primary checkout); activate once per clone with
+   and in the primary checkout) and `scripts/git-hooks/commit-msg` (checks the
+   finalized commit message). Activate both once per clone with
    `git config core.hooksPath scripts/git-hooks`.
 2. **Close issues with Pull Requests.** An issue SHOULD precede the PR (see
    *Work tracking*); footer the PR `Closes #N`. A self-evident doc fix may

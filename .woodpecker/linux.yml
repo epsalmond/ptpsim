@@ -46,6 +46,7 @@ steps:
     image: alpine
     commands:
       - apk add --no-cache git >/dev/null
+      - scripts/lint-commit-messages.sh --self-test
       - scripts/lint-commit-messages.sh "${CI_COMMIT_SHA}"
   # Docs discipline is enforced here because the pre-commit hook is opt-in
   # per clone. A bare alpine step (plus apk git) keeps the doc-only lane cheap.

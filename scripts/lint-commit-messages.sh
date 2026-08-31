@@ -39,38 +39,140 @@ check_message() {
     [ "$message_failed" -eq 0 ]
 }
 
+check_message_file() {
+    message_file=$1
+    if [ ! -f "$message_file" ] || [ ! -r "$message_file" ]; then
+        echo "$message_file: commit message file must be a readable regular file" >&2
+        return 2
+    fi
+    message=$(
+        awk 'substr($0, 2) == " ------------------------ >8 ------------------------" { exit } { print }' "$message_file" |
+            git stripspace --strip-comments
+    )
+    if [ -z "$message" ]; then
+        return 0
+    fi
+    check_message "$message" "$message_file"
+}
+
 self_test() {
-    if check_message 'Update one thing
-with a body' multiline >/dev/null 2>&1; then
-        echo "lint-commit-messages self-test: multiline fixture passed" >&2
-        exit 1
-    fi
+    fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/lint-commit-messages.XXXXXX")
+    trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
+
+    multiline_file="$fixture_dir/multiline"
+    printf '%s\n' 'Update one thing' 'with a body' >"$multiline_file"
     overlength='Update the camera protocol implementation with an intentionally excessive subject length'
-    if check_message "$overlength" overlength >/dev/null 2>&1; then
-        echo "lint-commit-messages self-test: overlength fixture passed" >&2
-        exit 1
-    fi
+    overlength_file="$fixture_dir/overlength"
+    printf '%s\n' "$overlength" >"$overlength_file"
+    conjunction_file="$fixture_dir/conjunction"
+    printf '%s\n' 'Update protocol data and fixtures' >"$conjunction_file"
     trailer='Update protocol data Co-'"authored-by: Example <example@example.com>"
-    if check_message "$trailer" trailer >/dev/null 2>&1; then
-        echo "lint-commit-messages self-test: trailer fixture passed" >&2
-        exit 1
-    fi
+    trailer_file="$fixture_dir/trailer"
+    printf '%s\n' "$trailer" >"$trailer_file"
     closing_fixture='Fix'
     closing_fixture="${closing_fixture}es #12"
-    if check_message "$closing_fixture" closing >/dev/null 2>&1; then
-        echo "lint-commit-messages self-test: closing fixture passed" >&2
-        exit 1
-    fi
-    check_message 'Update protocol data Refs #12' valid >/dev/null
+    closing_file="$fixture_dir/closing"
+    printf '%s\n' "$closing_fixture" >"$closing_file"
+    valid_file="$fixture_dir/valid message"
+    printf '%s\n' 'Update protocol data Refs #12' >"$valid_file"
+    comment_only_file="$fixture_dir/comment only"
+    printf '%s\n' '# Please enter the commit message for your changes.' >"$comment_only_file"
+
+    for fixture in "$multiline_file" "$overlength_file" "$conjunction_file" "$trailer_file" "$closing_file"; do
+        if "$0" --message-file "$fixture" >/dev/null 2>&1; then
+            echo "lint-commit-messages self-test: invalid file fixture passed: $fixture" >&2
+            exit 1
+        fi
+    done
+    "$0" --message-file "$valid_file" >/dev/null
+    "$0" --message-file "$comment_only_file" >/dev/null
+
+    scratch_repo="$fixture_dir/repo"
+    git init -q -b main "$scratch_repo"
+    mkdir -p "$scratch_repo/scripts/git-hooks"
+    cp "$0" "$scratch_repo/scripts/lint-commit-messages.sh"
+    cp "$(dirname "$0")/git-hooks/commit-msg" "$scratch_repo/scripts/git-hooks/commit-msg"
+    editor="$fixture_dir/editor"
+    # shellcheck disable=SC2016
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'message_file=$1' \
+        'new_message="${message_file}.new"' \
+        '{ printf "%s\n" "Add editor commit"; cat "$message_file"; } >"$new_message"' \
+        'mv "$new_message" "$message_file"' >"$editor"
+    chmod +x "$editor"
+
+    (
+        cd "$scratch_repo"
+        git config user.name 'Commit hook test'
+        git config user.email 'commit-hook@example.invalid'
+        git config core.hooksPath scripts/git-hooks
+
+        printf '%s\n' seed >seed
+        git add seed
+        git commit -q -m 'Seed repository'
+
+        printf '%s\n' editor >editor-change
+        git add editor-change
+        GIT_EDITOR="$editor" git commit -q
+
+        printf '%s\n' verbose >verbose-change
+        git add verbose-change
+        GIT_EDITOR="$editor" git commit -q --verbose
+
+        git checkout -q -b fix/454-usb-seam-hardening
+        printf '%s\n' feature >feature-change
+        git add feature-change
+        git commit -q -m 'Add feature commit'
+
+        git checkout -q main
+        printf '%s\n' main >main-change
+        git add main-change
+        git commit -q -m 'Add main commit'
+        git update-ref refs/remotes/origin/main "$(git rev-parse main)"
+
+        git checkout -q fix/454-usb-seam-hardening
+        GIT_MERGE_AUTOEDIT=no git merge -q --no-ff origin/main
+        merge_subject=$(git show -s --format=%s HEAD)
+        merge_length=$(printf '%s' "$merge_subject" | wc -m | tr -d ' ')
+        if [ "$merge_length" -le 72 ]; then
+            echo "lint-commit-messages self-test: generated merge subject is not overlength" >&2
+            exit 1
+        fi
+        "$scratch_repo/scripts/lint-commit-messages.sh" HEAD >/dev/null
+
+        printf '%s\n' invalid >invalid-change
+        git add invalid-change
+        if git commit -q -m 'Add thing and other thing' >/dev/null 2>&1; then
+            echo "lint-commit-messages self-test: invalid authored commit passed" >&2
+            exit 1
+        fi
+    )
+
+    rm -rf "$fixture_dir"
+    trap - EXIT HUP INT TERM
     echo "lint-commit-messages self-test: ok"
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+    if [ "$#" -ne 1 ]; then
+        echo "usage: $0 <revision|revision-range> | --message-file <path> | --self-test" >&2
+        exit 2
+    fi
     self_test
     exit 0
 fi
+if [ "${1:-}" = "--message-file" ]; then
+    if [ "$#" -ne 2 ]; then
+        echo "usage: $0 <revision|revision-range> | --message-file <path> | --self-test" >&2
+        exit 2
+    fi
+    check_message_file "$2"
+    echo "lint-commit-messages: ok"
+    exit 0
+fi
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <revision|revision-range> | --self-test" >&2
+    echo "usage: $0 <revision|revision-range> | --message-file <path> | --self-test" >&2
     exit 2
 fi
 
