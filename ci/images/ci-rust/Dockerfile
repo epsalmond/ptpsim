@@ -63,7 +63,11 @@ COPY scripts/rustc-wrapper scripts/rustc-wrapper
 # RUSTUP_HOME, and the cook layer bakes that toolchain for CI. Without it
 # the cook compiles on the image default and CI rejects every artifact.
 COPY rust-toolchain.toml rust-toolchain.toml
+# The plain cook warms cargo build/test dependencies. The clippy cook adds
+# the clippy-flavored artifacts for the proc-macro closure, which cargo
+# clippy compiles differently and would otherwise rebuild every CI run.
 RUN cargo chef cook --all-targets --recipe-path /recipe.json \
+ && cargo chef cook --all-targets --clippy --recipe-path /recipe.json \
  && rm -rf /ci-cache/target/debug/incremental \
  && rm -rf /opt/ptpsim-cook /recipe.json
 
