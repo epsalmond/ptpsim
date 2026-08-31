@@ -210,6 +210,115 @@ fn non_sequence_platforms_fails_load() {
 }
 
 #[test]
+fn non_string_platform_entry_fails_load() {
+    let error = CameraManifest::from_yaml(&manifest("  usbTether:\n    platforms: [macos, 1]"))
+        .expect_err("a non-string platforms entry is a load error");
+    let message = error.to_string();
+    assert!(message.contains("usbTether"), "got: {message}");
+    assert!(
+        message.contains("entries must be platform tokens"),
+        "got: {message}"
+    );
+}
+
+#[test]
+fn daemon_attached_rejects_transaction_id_captures_recursively() {
+    let manifest_with_steps = |ownership: &str, steps: &str| {
+        format!(
+            r#"
+schema: camera-config/v1
+camera: {{ manufacturer: TESTCO, model: Test, firmware: "1" }}
+connections:
+  usbTether:
+    kind: usb-passthrough
+    session: {{ ownership: {ownership} }}
+    entries:
+      - to: test
+        steps:
+{steps}
+"#,
+        )
+    };
+    let capture_body = "- sendOp: \"0x1001\"\n  captures: [{ bind: tx, as: transactionId }]";
+    let indent_capture = |spaces: usize| {
+        capture_body
+            .lines()
+            .map(|line| format!("{}{line}", " ".repeat(spaces)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let capture = indent_capture(10);
+
+    CameraManifest::from_yaml(&manifest_with_steps("initiatorOwned", &capture))
+        .expect("an initiator-owned session allocates transaction ids");
+
+    let nested = [
+        capture.to_string(),
+        format!(
+            "          - retry:\n              whenResponseCodes: [\"0x2002\"]\n              maxAttempts: 2\n              steps:\n{}",
+            indent_capture(16)
+        ),
+        format!(
+            "          - awaitUntil:\n              source: {{ poll: \"0xd001\" }}\n              until: {{ prop: \"0xd001\", eq: 1 }}\n              timeoutMs: 10\n              onEach:\n{}",
+            indent_capture(16)
+        ),
+        format!(
+            "          - if:\n              slot: selector\n              equals: 1\n              then:\n{}",
+            indent_capture(16)
+        ),
+        format!(
+            "          - sendOp: \"0x1007\"\n            captures: [{{ bind: handles, as: ptpU32Array }}]\n          - loop:\n              forEach:\n                in: handles\n                bind: handle\n                body:\n{}",
+            indent_capture(18)
+        ),
+    ];
+
+    for steps in nested {
+        let error = CameraManifest::from_yaml(&manifest_with_steps("daemonAttached", &steps))
+            .expect_err("daemon-owned sessions cannot expose transaction ids");
+        let message = error.to_string();
+        assert!(message.contains("daemonAttached"), "got: {message}");
+        assert!(message.contains("transactionId"), "got: {message}");
+    }
+}
+
+#[test]
+fn daemon_attached_rejects_transaction_id_captures_in_actions_and_exit_steps() {
+    let action = manifest(
+        r#"  usbTether:
+    kind: usb-passthrough
+    session: { ownership: daemonAttached }
+    actions:
+      autofocusLock:
+        mode: ""
+        initiator:
+          steps:
+            - sendOp: "0x1001"
+              captures: [{ bind: tx, as: transactionId }]"#,
+    );
+    let error = CameraManifest::from_yaml(&action)
+        .expect_err("daemon-owned action cannot capture a transaction id");
+    assert!(error.to_string().contains("daemonAttached"), "got: {error}");
+
+    let exit = manifest(
+        r#"  usbTether:
+    kind: usb-passthrough
+    establishment: usb-claim-session
+    session: { ownership: daemonAttached }
+    entries:
+      - { to: test, steps: [] }
+      - to: test
+        from: prior
+        reestablishConnection:
+          exitSteps:
+            - sendOp: "0x1001"
+              captures: [{ bind: tx, as: transactionId }]"#,
+    );
+    let error = CameraManifest::from_yaml(&exit)
+        .expect_err("daemon-owned exit steps cannot capture a transaction id");
+    assert!(error.to_string().contains("daemonAttached"), "got: {error}");
+}
+
+#[test]
 fn usb_discovery_is_typed_and_pid_is_optional() {
     let manifest = CameraManifest::from_yaml(&manifest(
         r#"  usbPassthrough:

@@ -648,7 +648,23 @@ fn resolve_usb_interface_names_in_steps(
                     *inner = single.into_iter().next().unwrap_or(Value::Null);
                 }
             }
-            "acquireFirmware" => {}
+            "acquireFirmware" => {
+                if let Some(Value::Mapping(source)) = body
+                    .as_mapping()
+                    .and_then(|mapping| mapping.get(Value::String("from".into())))
+                {
+                    for name in ["bleRead", "bleAdvert"] {
+                        if source.contains_key(Value::String(name.into())) {
+                            return Err(ConfigError::Validation {
+                                path: format!("{here}.from.{name}"),
+                                message: format!(
+                                    "BLE acquireFirmware source '{name}' is not valid in a USB establishment plan"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
             "retry" => {
                 if let Some(body_map) = body.as_mapping_mut() {
                     for key in ["steps", "onFailure"] {

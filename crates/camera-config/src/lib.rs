@@ -414,7 +414,11 @@ impl CameraManifest {
                 let path = format!("connections.{connection_id}.entries[{index}]");
                 match &entry.execution {
                     ModeEntryExecution::Ptp { steps } => {
-                        require_valid_ptp_steps(steps, &path)?;
+                        require_valid_ptp_steps(
+                            steps,
+                            &path,
+                            connection.session.map(|session| session.ownership),
+                        )?;
                         require_no_runtime_set_props(steps, &path)?;
                         require_valid_open_channels(
                             steps,
@@ -432,6 +436,7 @@ impl CameraManifest {
                         require_valid_ptp_steps(
                             &reestablish.exit_steps,
                             &format!("{path}.reestablishConnection.exitSteps"),
+                            connection.session.map(|session| session.ownership),
                         )?;
                         require_no_runtime_set_props(
                             &reestablish.exit_steps,
@@ -493,7 +498,11 @@ impl CameraManifest {
                 let path = format!("connections.{connection_id}.actions.{verb:?}");
                 require_valid_action_roles(self, action, &path)?;
                 if let Some(initiator) = &action.initiator {
-                    require_valid_ptp_steps(&initiator.steps, &path)?;
+                    require_valid_ptp_steps(
+                        &initiator.steps,
+                        &path,
+                        connection.session.map(|session| session.ownership),
+                    )?;
                     require_valid_action_runtime_values(self, initiator, &path)?;
                     require_valid_open_channels(
                         &initiator.steps,
@@ -1965,14 +1974,19 @@ fn require_valid_host_activities(
     Ok(())
 }
 
-fn require_valid_ptp_steps(steps: &[Step], path: &str) -> Result<(), ManifestError> {
+fn require_valid_ptp_steps(
+    steps: &[Step],
+    path: &str,
+    ownership: Option<SessionOwnership>,
+) -> Result<(), ManifestError> {
     let mut collections = std::collections::BTreeSet::new();
-    require_valid_ptp_steps_with_collections(steps, path, &mut collections)
+    require_valid_ptp_steps_with_collections(steps, path, ownership, &mut collections)
 }
 
 fn require_valid_ptp_steps_with_collections(
     steps: &[Step],
     path: &str,
+    ownership: Option<SessionOwnership>,
     collections: &mut std::collections::BTreeSet<String>,
 ) -> Result<(), ManifestError> {
     for (index, step) in steps.iter().enumerate() {
@@ -2046,6 +2060,11 @@ fn require_valid_ptp_steps_with_collections(
                 }
             }
             if capture.source == CaptureSource::TransactionId {
+                if ownership == Some(SessionOwnership::DaemonAttached) {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path} transactionId capture is invalid when session.ownership is daemonAttached"
+                    )));
+                }
                 if step.send_op.is_none() {
                     return Err(ManifestError::Contract(format!(
                         "{step_path} transactionId capture requires sendOp"
@@ -2141,6 +2160,7 @@ fn require_valid_ptp_steps_with_collections(
             require_valid_ptp_steps_with_collections(
                 &retry.steps,
                 &format!("{step_path}.retry"),
+                ownership,
                 &mut after_retry,
             )?;
             if let Some(fallback) = &retry.fallback {
@@ -2148,6 +2168,7 @@ fn require_valid_ptp_steps_with_collections(
                 require_valid_ptp_steps_with_collections(
                     fallback,
                     &format!("{step_path}.retry.fallback"),
+                    ownership,
                     &mut after_fallback,
                 )?;
                 after_retry.retain(|binding| after_fallback.contains(binding));
@@ -2164,6 +2185,7 @@ fn require_valid_ptp_steps_with_collections(
             require_valid_ptp_steps_with_collections(
                 &await_until.on_each,
                 &format!("{step_path}.awaitUntil"),
+                ownership,
                 &mut nested,
             )?;
         }
@@ -2185,6 +2207,7 @@ fn require_valid_ptp_steps_with_collections(
             require_valid_ptp_steps_with_collections(
                 body,
                 &format!("{step_path}.loop"),
+                ownership,
                 &mut nested,
             )?;
         }
@@ -2194,12 +2217,14 @@ fn require_valid_ptp_steps_with_collections(
             require_valid_ptp_steps_with_collections(
                 &condition.then_steps,
                 &format!("{step_path}.if.then"),
+                ownership,
                 &mut then_collections,
             )?;
             let mut else_collections = before;
             require_valid_ptp_steps_with_collections(
                 &condition.else_steps,
                 &format!("{step_path}.if.else"),
+                ownership,
                 &mut else_collections,
             )?;
             // A collection is definitely bound after the conditional only if
