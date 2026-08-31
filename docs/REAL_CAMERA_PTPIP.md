@@ -77,11 +77,7 @@ steps:
     kind: entry
     to: shooting/stills
     expect:
-      stepsRun: 8
-      scope:
-        liveViewTransactionId: 12
-      collections:
-        objectHandles: [268435457, 268435458]
+      stepsRun: 7
       outputCount: 0
   - id: focus-lock
     kind: action
@@ -89,9 +85,7 @@ steps:
     parameters:
       afArea: 1402507338
     expect:
-      stepsRun: 3
-      scope:
-        focusResult: 2
+      stepsRun: 2
   - id: focus-release
     kind: action
     action: autofocusRelease
@@ -103,11 +97,7 @@ steps:
       exit:
         stepsRun: 2
       targetEntry:
-        outputCount: 1
-        outputs:
-          - index: 0
-            payloadBytes: 64
-            responseParams: [1, 2]
+        stepsRun: 9
 ```
 
 An `entry` step has required `to`, optional `from`, and optional `expect`.
@@ -195,6 +185,54 @@ records include a performed source entry when applicable, exit, checkpoint,
 target entry, and the session indexes before and after replacement.
 Expectation failures record the expected and actual values. The report also
 records the terminal error, cleanup warning, and artifact references.
+
+This is the exact report shape. Nullable fields remain present. `switch` is
+non-null only for a switch step. Its `checkpoint` is null when execution stops
+before the external handoff.
+
+```json
+{
+  "schema": "camera-initiator-session-report/v1",
+  "planSchema": "camera-initiator-session/v1",
+  "runId": "local-initiator",
+  "connection": "app",
+  "status": "succeeded",
+  "steps": [
+    {
+      "id": "focus-release",
+      "kind": "action",
+      "status": "succeeded",
+      "sessionIndex": 1,
+      "transactionIds": [13],
+      "outcome": {
+        "stepsRun": 1,
+        "scope": {},
+        "collections": {},
+        "outputCount": 0,
+        "outputs": []
+      },
+      "payloads": [],
+      "switch": null,
+      "expectationMismatch": null,
+      "error": null
+    }
+  ],
+  "terminalError": null,
+  "cleanupWarning": null,
+  "artifacts": {
+    "report": "session-report.json",
+    "trace": "/tmp/session-trace.jsonl",
+    "observation": "/tmp/session-observation.jsonl",
+    "payloads": "payloads"
+  }
+}
+```
+
+Each normalized output has `stepPath`, `transactionId`, `payloadBytes`, and
+`responseParams`. Each retained payload has `path`, `length`, `sha256`,
+`stepPath`, `transactionId`, and `responseParams`. A switch step sets `outcome`
+to null and fills `switch` with nullable `sourceEntry`, `exit`, `checkpoint`,
+and `targetEntry`, plus `beforeSessionIndex` and `afterSessionIndex`.
 
 After execution starts, the runner stops at the first executor or expectation
 failure. It omits later steps, attempts a safe session close, publishes the

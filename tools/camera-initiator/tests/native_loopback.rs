@@ -7,9 +7,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use camera_config::{
     direct_epistemic, no_loss, validate_bundles, BundleHeader, CameraContext, CaptureClock,
     CaptureContext, CaptureInterface, CaptureInterfaceType, ClientContext, ClockType, ClockUnit,
-    ObservationLine, ObservationRecorder,
+    ObservationLine, ObservationRecorder, PayloadMetadataBuilder,
 };
-use camera_initiator::{NativePtpTransport, TraceFormat, TraceWriter, TransportConfig};
+use camera_initiator::{
+    prepare_session_plan, run_session_plan, NativePtpTransport, NativeSessionLifecycle,
+    SessionPlan, SessionRunOptions, TraceFormat, TraceWriter, TransportConfig,
+};
 use camera_protocol_ffi::{
     run_initiator_action, run_mode_entry, ActionInvocationRequest, ActionRole, ConfigStore,
     ConnectionActivityEvent, ConnectionActivityObserver, PtpExecutorTransport, StepObserver,
@@ -1035,6 +1038,233 @@ async fn native_transport_runs_real_gfx_entry_over_tcp() {
 }
 
 #[tokio::test]
+async fn session_runner_retains_gfx_entry_and_autofocus_actions() {
+    let body = data("fuji/gfx100ii/gfx100ii.yaml");
+    let media = TempMediaRoot::new();
+    let live_view = media.path().join("session-liveview");
+    std::fs::create_dir_all(&live_view).expect("create session live-view fixtures");
+    std::fs::write(
+        live_view.join("frame.jpg"),
+        b"\xFF\xD8\xFF\xE0SESSION\xFF\xD9",
+    )
+    .expect("write session live-view fixture");
+    let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let server = Server::bind(Config {
+        instance_id: "camera-initiator-session-loopback".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "app".into(),
+        manifest_yaml: body.clone(),
+        media_root: media.path().to_path_buf(),
+        command_bind: Some(loopback),
+        liveview_bind: Some(loopback),
+        event_bind: Some(loopback),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: loopback,
+        liveview_dir: Some(live_view),
+        state_callback: None,
+    })
+    .await
+    .expect("bind session simulator service");
+
+    let command = server.command_addr();
+    let event = server.event_addr_opt().expect("session event listener");
+    let live_view = server
+        .liveview_addr_opt()
+        .expect("session live-view listener");
+    let body = with_loopback_ports(body, command, event, live_view);
+    let store = ConfigStore::from_tiers(body, Some(data("fuji/fuji.yaml")), Vec::new())
+        .expect("load session manifest tiers");
+    let plan = SessionPlan::from_yaml(
+        r#"
+schema: camera-initiator-session/v1
+steps:
+  - { id: enter-stills, kind: entry, to: shooting/stills }
+  - id: focus-lock
+    kind: action
+    action: autofocusLock
+    parameters: { afArea: 7 }
+  - { id: focus-release, kind: action, action: autofocusRelease }
+"#,
+    )
+    .expect("parse session plan");
+    let prepared = prepare_session_plan(plan, &store, "app").expect("prepare session plan");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+    let observation_path = media.path().join("session-observation.jsonl");
+    let trace = Arc::new(TraceWriter::with_observations(
+        TraceFormat::Jsonl,
+        Box::new(io::sink()),
+        observation_recorder(observation_path.clone(), "session-loopback"),
+        "app".into(),
+        "session".into(),
+    ));
+    let transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::clone(&trace),
+    )
+    .expect("construct session transport");
+    let output_dir = media.path().join("session-output");
+    let report = run_session_plan(
+        &prepared,
+        Arc::clone(&store),
+        NativeSessionLifecycle::new(transport),
+        trace,
+        SessionRunOptions {
+            output_dir: output_dir.clone(),
+            run_id: "session-loopback".into(),
+            connection: "app".into(),
+            trace_path: "-".into(),
+            observation_path: observation_path.clone(),
+            runtime_params: Vec::new(),
+            handoff_timeout: Duration::from_secs(2),
+        },
+    )
+    .await
+    .expect("run retained session plan");
+
+    assert_eq!(report.steps.len(), 3);
+    assert_eq!(
+        report
+            .steps
+            .iter()
+            .map(|step| step.id.as_str())
+            .collect::<Vec<_>>(),
+        ["enter-stills", "focus-lock", "focus-release"]
+    );
+    assert!(report
+        .steps
+        .iter()
+        .all(|step| step.session_index == Some(1)));
+    let lock_ids = &report.steps[1].transaction_ids;
+    let release_ids = &report.steps[2].transaction_ids;
+    assert!(!lock_ids.is_empty());
+    assert!(!release_ids.is_empty());
+    assert!(lock_ids.windows(2).all(|ids| ids[0] < ids[1]));
+    assert!(release_ids.windows(2).all(|ids| ids[0] < ids[1]));
+    assert!(lock_ids.last().unwrap() < release_ids.first().unwrap());
+    assert!(output_dir.join("session-report.json").is_file());
+
+    let observation_bundle = std::fs::read_to_string(observation_path).unwrap();
+    let validated = validate_bundles(&[&observation_bundle]).expect("validate session bundle");
+    let actions: Vec<_> = validated
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::ActionInvocation(action) => Some(action),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0].common.run_id, "session-loopback");
+    assert_eq!(actions[0].action_id, "autofocusLock");
+    assert_eq!(
+        actions[0].parameters.get("afArea"),
+        Some(&serde_json::json!(7))
+    );
+    assert_eq!(actions[1].action_id, "autofocusRelease");
+    assert_eq!(actions[1].common.run_id, "session-loopback");
+
+    let failure_plan = SessionPlan::from_yaml(
+        r#"
+schema: camera-initiator-session/v1
+steps:
+  - { id: enter, kind: entry, to: shooting/stills }
+  - id: mismatch
+    kind: action
+    action: autofocusRelease
+    expect: { stepsRun: 999 }
+  - { id: omitted, kind: action, action: autofocusRelease }
+"#,
+    )
+    .expect("parse expectation failure plan");
+    let failure_plan =
+        prepare_session_plan(failure_plan, &store, "app").expect("prepare failure plan");
+    let failure_trace_buffer = TraceBuffer::default();
+    let failure_observation_path = media.path().join("failure-observation.jsonl");
+    let failure_trace = Arc::new(TraceWriter::with_observations(
+        TraceFormat::Jsonl,
+        Box::new(failure_trace_buffer.clone()),
+        observation_recorder(failure_observation_path.clone(), "session-failure"),
+        "app".into(),
+        "session".into(),
+    ));
+    let failure_transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::clone(&failure_trace),
+    )
+    .expect("construct expectation failure transport");
+    let failure_output = media.path().join("session-failure-output");
+    run_session_plan(
+        &failure_plan,
+        Arc::clone(&store),
+        NativeSessionLifecycle::new(failure_transport),
+        failure_trace,
+        SessionRunOptions {
+            output_dir: failure_output.clone(),
+            run_id: "session-failure".into(),
+            connection: "app".into(),
+            trace_path: "-".into(),
+            observation_path: failure_observation_path.clone(),
+            runtime_params: Vec::new(),
+            handoff_timeout: Duration::from_secs(2),
+        },
+    )
+    .await
+    .expect_err("expectation mismatch fails the session");
+    let failure_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(failure_output.join("session-report.json")).unwrap())
+            .unwrap();
+    assert_eq!(failure_report["status"], "failed");
+    assert_eq!(failure_report["steps"].as_array().unwrap().len(), 2);
+    assert_eq!(failure_report["steps"][1]["id"], "mismatch");
+    assert_eq!(
+        failure_report["steps"][1]["expectationMismatch"]["expected"],
+        999
+    );
+    assert!(failure_trace_buffer.records().iter().any(|record| {
+        record.get("state").and_then(serde_json::Value::as_str) == Some("closed")
+    }));
+    let failure_bundle = std::fs::read_to_string(failure_observation_path).unwrap();
+    let failure_bundle = validate_bundles(&[&failure_bundle]).unwrap();
+    let recorded_actions: Vec<_> = failure_bundle
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::ActionInvocation(action) => Some(action),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(recorded_actions.len(), 1);
+    assert_eq!(recorded_actions[0].action_id, "autofocusRelease");
+    assert_eq!(
+        recorded_actions[0].outcome,
+        camera_config::ActionOutcome::Succeeded
+    );
+
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("join session simulator service");
+}
+
+#[tokio::test]
 async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
     let media = TempMediaRoot::new();
@@ -1220,6 +1450,162 @@ async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
 
     let _ = shutdown_tx.send(());
     server_task.await.expect("join PCSS simulator service");
+}
+
+#[tokio::test]
+async fn session_runner_retains_ordinary_and_streaming_payload_metadata() {
+    let body = data("fuji/gfx100ii/gfx100ii.yaml");
+    let media = TempMediaRoot::new();
+    let object = b"\xFF\xD8SESSION-PAYLOAD\xFF\xD9";
+    let dcim = media.path().join("DCIM/100_FUJI");
+    std::fs::create_dir_all(&dcim).expect("create session media directory");
+    std::fs::write(dcim.join("SESSION.JPG"), object).expect("write session object");
+    let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let callback_reservation =
+        std::net::TcpListener::bind(loopback).expect("reserve session callback port");
+    let callback_port = callback_reservation
+        .local_addr()
+        .expect("session callback address")
+        .port();
+    let server_body = replace_once(
+        body,
+        "callbackPort: 51560",
+        format!("callbackPort: {callback_port}"),
+    );
+    let server = Server::bind(Config {
+        instance_id: "camera-initiator-session-payloads".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "wireless-tether".into(),
+        manifest_yaml: server_body.clone(),
+        media_root: media.path().to_path_buf(),
+        command_bind: Some(loopback),
+        liveview_bind: None,
+        event_bind: None,
+        knock_bind: Some(loopback),
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: loopback,
+        liveview_dir: None,
+        state_callback: None,
+    })
+    .await
+    .expect("bind session payload simulator");
+    let command = server.command_addr();
+    let knock = server.knock_addr_opt().expect("session knock listener");
+    let nominal_command_port = if command.port() == u16::MAX {
+        command.port() - 1
+    } else {
+        command.port() + 1
+    };
+    let store_body = replace_once(
+        server_body,
+        "knockPort: 51562",
+        format!("knockPort: {}", knock.port()),
+    );
+    let store_body = replace_once(
+        store_body,
+        "bindings: { command: 15740 }",
+        format!("bindings: {{ command: {nominal_command_port} }}"),
+    );
+    let store = ConfigStore::from_tiers(
+        store_body,
+        Some(data("fuji/fuji.yaml")),
+        Vec::<String>::new(),
+    )
+    .expect("load session payload manifest tiers");
+    let plan = SessionPlan::from_yaml(&format!(
+        r#"
+schema: camera-initiator-session/v1
+steps:
+  - {{ id: device-info, kind: action, action: readDeviceInfo }}
+  - id: object
+    kind: action
+    action: getObject
+    parameters: {{ handle: 3 }}
+    expectedBytes: {}
+    expect:
+      outputCount: 1
+      outputs: [{{ index: 0, payloadBytes: {} }}]
+"#,
+        object.len(),
+        object.len()
+    ))
+    .expect("parse session payload plan");
+    let prepared = prepare_session_plan(plan, &store, "wireless-tether")
+        .expect("prepare session payload plan");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+    let trace = Arc::new(TraceWriter::new(TraceFormat::Jsonl, Box::new(io::sink())));
+    let transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "wireless-tether".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::clone(&trace),
+    )
+    .expect("construct session payload transport");
+    drop(callback_reservation);
+
+    let output_dir = media.path().join("payload-session-output");
+    let report = run_session_plan(
+        &prepared,
+        Arc::clone(&store),
+        NativeSessionLifecycle::new(transport),
+        trace,
+        SessionRunOptions {
+            output_dir: output_dir.clone(),
+            run_id: "payload-session".into(),
+            connection: "wireless-tether".into(),
+            trace_path: "-".into(),
+            observation_path: media.path().join("unused-observation.jsonl"),
+            runtime_params: Vec::new(),
+            handoff_timeout: Duration::from_secs(2),
+        },
+    )
+    .await
+    .expect("run session payload plan");
+
+    assert_eq!(report.steps[0].payloads.len(), 1);
+    assert_eq!(report.steps[1].payloads.len(), 1);
+    let ordinary = &report.steps[0].payloads[0];
+    assert!(ordinary.path.starts_with("payloads/0000-device-info/"));
+    assert_eq!(
+        std::fs::metadata(output_dir.join(&ordinary.path))
+            .unwrap()
+            .len(),
+        ordinary.length
+    );
+    let streamed = &report.steps[1].payloads[0];
+    assert_eq!(streamed.path, "payloads/0001-object/0000_stream.bin");
+    assert_eq!(
+        std::fs::read(output_dir.join(&streamed.path)).unwrap(),
+        object
+    );
+    let mut expected = PayloadMetadataBuilder::new();
+    expected.update(object);
+    let expected = expected.metadata();
+    assert_eq!(streamed.length, expected.length);
+    assert_eq!(streamed.sha256, expected.sha256);
+    assert!(
+        report.steps[0].transaction_ids.last().unwrap()
+            < report.steps[1].transaction_ids.first().unwrap()
+    );
+    let report_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output_dir.join("session-report.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        report_json.pointer("/steps/1/payloads/0/sha256"),
+        Some(&serde_json::json!(expected.sha256))
+    );
+
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("join session payload simulator");
 }
 
 #[cfg(target_os = "linux")]

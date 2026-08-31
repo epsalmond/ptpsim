@@ -29,7 +29,7 @@ pub struct TraceWriter {
     failure: Mutex<Option<String>>,
     observations: Option<ObservationRecorder>,
     connection: String,
-    mode: String,
+    mode: Mutex<String>,
     ptp: Mutex<PtpObservationState>,
 }
 
@@ -69,7 +69,7 @@ impl TraceWriter {
             failure: Mutex::new(None),
             observations: None,
             connection: "unspecified".into(),
-            mode: "unspecified".into(),
+            mode: Mutex::new("unspecified".into()),
             ptp: Mutex::new(PtpObservationState::default()),
         }
     }
@@ -84,8 +84,15 @@ impl TraceWriter {
         let mut writer = Self::new(format, output);
         writer.observations = Some(observations);
         writer.connection = connection;
-        writer.mode = mode;
+        writer.mode = Mutex::new(mode);
         writer
+    }
+
+    pub fn set_mode(&self, mode: impl Into<String>) {
+        *self
+            .mode
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode.into();
     }
 
     /// Start a fresh physical PTP session before any transaction frame is
@@ -634,7 +641,11 @@ impl TraceWriter {
     fn context(&self, state: &str) -> ExecutionContext {
         ExecutionContext {
             connection: self.connection.clone(),
-            mode: self.mode.clone(),
+            mode: self
+                .mode
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
             state: state.into(),
         }
     }
