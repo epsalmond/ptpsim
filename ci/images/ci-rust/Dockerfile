@@ -1,10 +1,12 @@
-# CI toolchain image for the rust workspace + python-wheel steps.
-# Bakes everything those steps previously installed per-run (rustfmt/clippy
-# components, gh, git, python venv with wheel build deps) so a pipeline step
-# starts compiling immediately. This repo defines only the portable recipe;
-# building and publishing it is the deployment owner's CI, which supplies the
-# result to .woodpecker/linux.yml via RUST_TOOLCHAIN_IMAGE.
-FROM rust:1-slim
+# CI toolchain image for the Rust workspace and python-wheel steps.
+# The final stage bakes Cargo registry sources and dependency-only artifacts for
+# the whole workspace. Consumers must use CARGO_HOME=/ci-cache/cargo-home,
+# CARGO_TARGET_DIR=/ci-cache/target, and CARGO_INCREMENTAL=0 to reuse them.
+# The chef skeleton copies .cargo/config.toml, so scripts/rustc-wrapper is
+# required during cook. The deployment owner's CI builds and publishes this
+# image and supplies it to .woodpecker/linux.yml via RUST_TOOLCHAIN_IMAGE.
+
+FROM rust:1-slim AS base
 
 RUN rustup component add rustfmt clippy
 
@@ -22,7 +24,39 @@ RUN apt-get update -qq \
  && apt-get install -qq -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
-# Wheel build deps in a venv (PEP 668 — system python is externally managed).
+# Wheel build deps live in a venv. PEP 668 marks system Python as externally
+# managed.
 # Steps prepend /opt/wheelvenv/bin to PATH.
 RUN python3 -m venv /opt/wheelvenv \
  && /opt/wheelvenv/bin/pip install -q build setuptools wheel
+
+RUN cargo install --locked cargo-chef --version 0.1.77
+
+FROM base AS planner
+
+WORKDIR /woodpecker/src/ptpsim
+
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo ./.cargo
+COPY crates ./crates
+COPY services ./services
+COPY packages ./packages
+COPY tools ./tools
+RUN cargo chef prepare --recipe-path /recipe.json
+
+FROM base
+
+WORKDIR /woodpecker/src/ptpsim
+
+ENV CARGO_HOME=/ci-cache/cargo-home \
+    CARGO_TARGET_DIR=/ci-cache/target \
+    CARGO_INCREMENTAL=0
+
+COPY --from=planner /recipe.json /recipe.json
+COPY scripts/rustc-wrapper scripts/rustc-wrapper
+RUN cargo chef cook --all-targets --recipe-path /recipe.json \
+ && rm -rf /ci-cache/target/debug/incremental \
+ && rm -rf /woodpecker/src/ptpsim/* \
+      /woodpecker/src/ptpsim/.[!.]* \
+      /woodpecker/src/ptpsim/..?* \
+      /recipe.json

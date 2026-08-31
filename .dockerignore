@@ -20,8 +20,7 @@ README.md
 LICENSE*
 *.md
 
-# Tests don't go into release artifacts
-**/tests
+# Integration tests stay in the context because ci-rust cooks all targets.
 
 # CI lives outside the build context
 .woodpecker.yml
