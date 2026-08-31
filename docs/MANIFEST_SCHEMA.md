@@ -1329,7 +1329,9 @@ old-session exit to reference it through an ordinary runtime parameter. This
 capture is invalid on another verb or unless `sendOp.repeat` is exactly one
 (including its default), because any other authored count makes the intended
 transaction ambiguous. The FFI mirrors it as
-`CaptureSourceInfo::TransactionId`.
+`CaptureSourceInfo::TransactionId`. It is also invalid on a connection whose
+`session.ownership` is `daemonAttached`, because that seam does not allocate or
+report transaction ids.
 
 A connection may select retries for PTP/IP initialization with
 `initRetries: { max, backoffMs, whenReasons }`. `whenReasons` is a non-empty
@@ -1905,7 +1907,7 @@ connections:
     kind: usb
     establishment: usb-claim-session
     session: { ownership: initiatorOwned }
-    events: { delivery: bestEffort }
+    events: { delivery: reliable }
 ```
 
 - `session.ownership` is `initiatorOwned` (the executor opens and owns the
@@ -1950,7 +1952,7 @@ families:
   exactly like §11.3 GATT-name resolution. The Step variant returned over
   the uniffi boundary carries the resolved triple, not the name. A step
   naming an undeclared interface is a load-time error.
-- `establishments` are named plans keyed by mechanism. A body connection's
+- `establishments` are named plans keyed by mechanism. A model connection's
   `establishment:` field selects one. The plans reuse the §11
   `EstablishmentBlock` shape (`params`, `persist`, `activities`,
   `postExitReadiness`, `steps`).
@@ -2004,6 +2006,10 @@ scoping. A `usb-passthrough` connection runs no USB verbs: its mode entries
 and actions execute the existing `EntryStep` transaction grammar over
 `PtpTransactionTransport` instead.
 
+`acquireFirmware.from` is source-scoped with its enclosing establishment.
+Raw USB plans accept `userPrompt`; they reject the BLE-derived `bleRead` and
+`bleAdvert` sources.
+
 **Raw executor transport.** `UsbExecutorTransport` is the foreign
 (`with_foreign`) async trait a host implements for raw `usb`
 establishments, the USB counterpart to §9.3's BLE executor. It is raw I/O
@@ -2035,7 +2041,9 @@ Every method is fallible with `UsbTransportError`:
 Deadlines are executor-owned: the executor races each pending transport
 call against `sleep`, the same contract as the BLE trait. A lost or
 cancelled race drops the foreign future, so every method must be
-cancellation-safe.
+cancellation-safe. Failure cleanup races `release_and_close` against the same
+10-second per-call backstop and preserves the original step failure if cleanup
+fails or times out.
 
 **Transaction transport.** `PtpTransactionTransport` is the foreign async
 trait a host implements for `daemonAttached` connections. The daemon owns
