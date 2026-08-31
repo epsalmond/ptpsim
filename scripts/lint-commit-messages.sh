@@ -39,38 +39,69 @@ check_message() {
     [ "$message_failed" -eq 0 ]
 }
 
+check_message_file() {
+    message_file=$1
+    if [ ! -f "$message_file" ] || [ ! -r "$message_file" ]; then
+        echo "$message_file: commit message file must be a readable regular file" >&2
+        return 2
+    fi
+    message=$(cat -- "$message_file")
+    check_message "$message" "$message_file"
+}
+
 self_test() {
-    if check_message 'Update one thing
-with a body' multiline >/dev/null 2>&1; then
-        echo "lint-commit-messages self-test: multiline fixture passed" >&2
-        exit 1
-    fi
+    fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/lint-commit-messages.XXXXXX")
+    trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
+
+    multiline_file="$fixture_dir/multiline"
+    printf '%s\n' 'Update one thing' 'with a body' >"$multiline_file"
     overlength='Update the camera protocol implementation with an intentionally excessive subject length'
-    if check_message "$overlength" overlength >/dev/null 2>&1; then
-        echo "lint-commit-messages self-test: overlength fixture passed" >&2
-        exit 1
-    fi
+    overlength_file="$fixture_dir/overlength"
+    printf '%s\n' "$overlength" >"$overlength_file"
+    conjunction_file="$fixture_dir/conjunction"
+    printf '%s\n' 'Update protocol data and fixtures' >"$conjunction_file"
     trailer='Update protocol data Co-'"authored-by: Example <example@example.com>"
-    if check_message "$trailer" trailer >/dev/null 2>&1; then
-        echo "lint-commit-messages self-test: trailer fixture passed" >&2
-        exit 1
-    fi
+    trailer_file="$fixture_dir/trailer"
+    printf '%s\n' "$trailer" >"$trailer_file"
     closing_fixture='Fix'
     closing_fixture="${closing_fixture}es #12"
-    if check_message "$closing_fixture" closing >/dev/null 2>&1; then
-        echo "lint-commit-messages self-test: closing fixture passed" >&2
-        exit 1
-    fi
-    check_message 'Update protocol data Refs #12' valid >/dev/null
+    closing_file="$fixture_dir/closing"
+    printf '%s\n' "$closing_fixture" >"$closing_file"
+    valid_file="$fixture_dir/valid message"
+    printf '%s\n' 'Update protocol data Refs #12' >"$valid_file"
+
+    for fixture in "$multiline_file" "$overlength_file" "$conjunction_file" "$trailer_file" "$closing_file"; do
+        if "$0" --message-file "$fixture" >/dev/null 2>&1; then
+            echo "lint-commit-messages self-test: invalid file fixture passed: $fixture" >&2
+            exit 1
+        fi
+    done
+    "$0" --message-file "$valid_file" >/dev/null
+
+    rm -rf "$fixture_dir"
+    trap - EXIT HUP INT TERM
     echo "lint-commit-messages self-test: ok"
 }
 
 if [ "${1:-}" = "--self-test" ]; then
+    if [ "$#" -ne 1 ]; then
+        echo "usage: $0 <revision|revision-range> | --message-file <path> | --self-test" >&2
+        exit 2
+    fi
     self_test
     exit 0
 fi
+if [ "${1:-}" = "--message-file" ]; then
+    if [ "$#" -ne 2 ]; then
+        echo "usage: $0 <revision|revision-range> | --message-file <path> | --self-test" >&2
+        exit 2
+    fi
+    check_message_file "$2"
+    echo "lint-commit-messages: ok"
+    exit 0
+fi
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 <revision|revision-range> | --self-test" >&2
+    echo "usage: $0 <revision|revision-range> | --message-file <path> | --self-test" >&2
     exit 2
 fi
 

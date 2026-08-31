@@ -1,5 +1,6 @@
 #!/bin/sh
 # SDLC worktree discipline (AGENTS.md "SDLC — worktree → branch → PR").
+# This hooks path also installs the commit message check.
 # Activate once per clone (cannot be committed as config):
 #   git config core.hooksPath scripts/git-hooks
 

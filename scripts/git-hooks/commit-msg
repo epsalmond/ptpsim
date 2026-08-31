@@ -1,0 +1,11 @@
+#!/bin/sh
+# Commit message discipline (AGENTS.md "SDLC").
+# Activate once per clone (cannot be committed as config):
+#   git config core.hooksPath scripts/git-hooks
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: commit-msg <message-file>" >&2
+    exit 2
+fi
+
+exec ./scripts/lint-commit-messages.sh --message-file "$1"
