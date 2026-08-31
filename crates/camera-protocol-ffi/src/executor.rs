@@ -1007,7 +1007,7 @@ impl From<StepError> for ExecutorError {
     }
 }
 
-struct OperationFailure {
+pub(crate) struct OperationFailure {
     kind: ExecutorStepFailureKind,
     message: String,
 }
@@ -2417,7 +2417,7 @@ async fn deadline<T>(
 /// USB analog of [`deadline`] (§11.29): race one USB transfer against the
 /// host clock. `UsbTransportError` folds into the shared vocabulary via its
 /// `From` impl, which keeps the timeout → deadline-exceeded classification.
-async fn usb_deadline<T>(
+pub(crate) async fn usb_deadline<T>(
     transport: &Arc<dyn UsbExecutorTransport>,
     ms: u32,
     what: &str,

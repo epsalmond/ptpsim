@@ -14,10 +14,9 @@ use std::sync::Arc;
 
 use camera_config::index::{Encoding, EstablishmentBlock, UsbInterfaceTriple};
 use camera_config::ConnectionActivitySequence as ConfigActivitySequence;
-use futures_util::future::select;
 
 use crate::executor::{
-    outcome, resolve_plan_ref, walk_plan_with_activities, ExecCtx, ExecTransport,
+    outcome, resolve_plan_ref, usb_deadline, walk_plan_with_activities, ExecCtx, ExecTransport,
     NativeEstablishmentWalkSummary, RefineCtx, RefinementSource, StepError, DEFAULT_OP_TIMEOUT_MS,
 };
 use crate::{
@@ -252,11 +251,13 @@ pub async fn run_usb_establishment(
             // claimed; the release is best-effort cleanup, never the reported
             // error.
             if ctx.usb_interface_claimed {
-                let cleanup = transport.release_and_close();
-                futures_util::pin_mut!(cleanup);
-                let clock = transport.sleep(DEFAULT_OP_TIMEOUT_MS);
-                futures_util::pin_mut!(clock);
-                let _ = select(cleanup, clock).await;
+                let _ = usb_deadline(
+                    &transport,
+                    DEFAULT_OP_TIMEOUT_MS,
+                    "usbRelease",
+                    transport.release_and_close(),
+                )
+                .await;
             }
             Err(error.into())
         }
