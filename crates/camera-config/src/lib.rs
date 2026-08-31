@@ -879,10 +879,9 @@ fn require_valid_init_shape(
     Ok(())
 }
 
-/// The platform vocabulary a `platforms:` list gates a connection against.
-/// Mirrors the FFI `Platform` tokens (`Platform::as_str`); a consumer maps
-/// its host OS to one of these.
-const PLATFORMS: [&str; 4] = ["ios", "macos", "android", "linux"];
+/// The authoritative platform vocabulary for connection availability.
+/// The hand-written FFI `Platform` mapping is tested against this exact set.
+pub const PLATFORM_TOKENS: [&str; 4] = ["ios", "macos", "android", "linux"];
 
 /// `platforms:` hides a connection on the platforms it excludes (the FFI
 /// `connections(platform)` filter). The token set is closed and validated at
@@ -898,22 +897,22 @@ fn require_valid_platforms(
     let Some(sequence) = value.as_sequence() else {
         return Err(ManifestError::Contract(format!(
             "{path} must be a sequence of platform tokens ({})",
-            PLATFORMS.join(", ")
+            PLATFORM_TOKENS.join(", ")
         )));
     };
     for item in sequence {
         match item.as_str() {
-            Some(token) if PLATFORMS.contains(&token) => {}
+            Some(token) if PLATFORM_TOKENS.contains(&token) => {}
             Some(token) => {
                 return Err(ManifestError::Contract(format!(
                     "{path} names unknown platform '{token}' (expected one of: {})",
-                    PLATFORMS.join(", ")
+                    PLATFORM_TOKENS.join(", ")
                 )));
             }
             None => {
                 return Err(ManifestError::Contract(format!(
                     "{path} entries must be platform tokens ({})",
-                    PLATFORMS.join(", ")
+                    PLATFORM_TOKENS.join(", ")
                 )));
             }
         }
@@ -939,10 +938,10 @@ fn require_valid_discovery(
         )));
     }
     for token in &discovery.platforms {
-        if !PLATFORMS.contains(&token.as_str()) {
+        if !PLATFORM_TOKENS.contains(&token.as_str()) {
             return Err(ManifestError::Contract(format!(
                 "{path}.platforms names unknown platform '{token}' (expected one of: {})",
-                PLATFORMS.join(", ")
+                PLATFORM_TOKENS.join(", ")
             )));
         }
     }
