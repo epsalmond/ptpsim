@@ -44,6 +44,170 @@ observation destination is `camera-observation.jsonl` in canonical
 bundle path. The trace defaults to standard output, remains a bounded operator
 projection, and is not generator input.
 
+## Retained session plans
+
+The `session` command runs mode entries, mode switches, and named actions from
+one strict YAML plan. It prepares the complete plan before opening a transport
+or creating an artifact. Preparation resolves every mode edge and action
+through the selected manifest. It also checks mode progression, action mode,
+initiator role, parameters, output policy, and expectations. A rejected plan
+does not create the output directory, trace, observation bundle, report, or
+payload files.
+
+```sh
+cargo run -p camera-initiator -- \
+  --camera CAMERA_IP \
+  --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml \
+  --manufacturer packages/camera-config-data/fuji/fuji.yaml \
+  --connection app \
+  --param terminalName='probe-host' \
+  --trace /tmp/session-trace.jsonl \
+  --observation /tmp/session-observation.jsonl \
+  session --plan /tmp/session.yaml --output-dir /tmp/session-output
+```
+
+The plan schema is `camera-initiator-session/v1`. Unknown fields are rejected
+at every level. `steps` must contain at least one item. Each `id` is unique and
+matches `[A-Za-z0-9][A-Za-z0-9_-]*`. Step order is execution order.
+
+```yaml
+schema: camera-initiator-session/v1
+steps:
+  - id: enter-stills
+    kind: entry
+    to: shooting/stills
+    expect:
+      stepsRun: 8
+      scope:
+        liveViewTransactionId: 12
+      collections:
+        objectHandles: [268435457, 268435458]
+      outputCount: 0
+  - id: focus-lock
+    kind: action
+    action: autofocusLock
+    parameters:
+      afArea: 1402507338
+    expect:
+      stepsRun: 3
+      scope:
+        focusResult: 2
+  - id: focus-release
+    kind: action
+    action: autofocusRelease
+  - id: transfer
+    kind: switch
+    from: shooting/stills
+    to: image-transfer
+    expect:
+      exit:
+        stepsRun: 2
+      targetEntry:
+        outputCount: 1
+        outputs:
+          - index: 0
+            payloadBytes: 64
+            responseParams: [1, 2]
+```
+
+An `entry` step has required `to`, optional `from`, and optional `expect`.
+Cold entry omits `from` and is valid only when no mode is retained. An
+in-session entry must name the retained mode in `from`. Its declared edge must
+use the PTP execution variant.
+
+A `switch` step has required `from` and `to`. Its declared edge must use the
+re-establishment execution variant. A first switch cold-enters its source. A
+later switch reuses retained source state when `from` matches the active mode.
+Any other source mode is rejected during preparation. Its optional `expect`
+object has only `sourceEntry`, `exit`, and `targetEntry`. `sourceEntry` is valid
+only when the runner must cold-enter the source.
+
+An `action` step has required `action`, optional `parameters`, optional
+`expectedBytes`, and optional `expect`. `action` is the exact camelCase action
+name from the manifest catalog. `parameters` is local to that invocation. Each
+value is a YAML unsigned integer or string and must match the manifest's exact
+parameter declaration. Quote numeric-looking strings. Required parameters
+must be present and extra parameters are rejected. Top-level `--param` values
+remain available only to transport identity and mode-entry execution.
+`expectedBytes` is valid only for the connection's whole-object streaming read
+action.
+
+Entry and action expectations use this exact subset schema:
+
+```yaml
+expect:
+  stepsRun: 3
+  scope:
+    numericValue: 7
+    textValue: "ready"
+  collections:
+    exactHandles: [1, 2, 3]
+  outputCount: 1
+  outputs:
+    - index: 0
+      payloadBytes: 4096
+      responseParams: [1, 2]
+```
+
+Every field is optional. Present fields compare exactly. `scope` preserves the
+YAML scalar type. `collections` values and `responseParams` are exact ordered
+unsigned-integer arrays. `outputs` selects results by zero-based `index`.
+Output checks accept only `index`, `payloadBytes`, and `responseParams`.
+Expectations do not accept operation codes, manifest step names, arbitrary
+field paths, or a separate assertion step.
+
+The runner keeps one native transport, trace writer, and observation recorder.
+It opens one PTP session lazily. Compatible entries merge their captured scope,
+while action scope stays local to the invocation. Transaction identifiers are
+transport-owned and increase across retained steps. A re-establishment clears
+the retained scope, closes the old session, records `externalEstablishment`,
+waits for endpoint replacement, and opens the target as a fresh PTP session.
+The replacement session starts its transaction sequence again. The observation
+bundle keeps one run identity and records a distinct session identity for each
+physical session.
+
+The output directory must not exist. The runner creates it with these reserved
+paths:
+
+```text
+session-output/
+  session-report.json
+  payloads/
+    0001-focus-lock/
+      0000_steps_1__sendOp_tid0000000d.bin
+```
+
+Each action receives `payloads/{step-index}-{step-id}/`, using a zero-padded
+four-digit step index. Ordinary outputs are written with create-new semantics.
+Their names include output order, sanitized manifest step path, and transaction
+identifier. Whole-object reads use the existing streaming sink in that step
+directory. A failed stream retains its `.partial` file. Import and other
+multi-output actions also use the step directory. Preparation rejects path
+collisions with `session-report.json` and `payloads`.
+
+The report schema is `camera-initiator-session-report/v1`. The fixed path is
+`session-report.json`. It contains `planSchema`, `runId`, `connection`, overall
+`status`, and ordered attempted `steps`. Each step records `id`, `kind`,
+`status`, session index, deduplicated transaction identifiers, and a normalized
+outcome. Payload records contain the relative path, byte length, SHA-256,
+manifest step path, transaction identifier, and response parameters. Switch
+records include a performed source entry when applicable, exit, checkpoint,
+target entry, and the session indexes before and after replacement.
+Expectation failures record the expected and actual values. The report also
+records the terminal error, cleanup warning, and artifact references.
+
+After execution starts, the runner stops at the first executor or expectation
+failure. It omits later steps, attempts a safe session close, publishes the
+report atomically with create-new semantics, then exits with failure. An
+expectation mismatch does not change the successful action invocation record
+in the observation bundle. The existing `--trace`, `--observation`, and
+`--run-id` defaults and overrides apply to the complete session run.
+
+BLE pairing, Wi-Fi configuration, and host network changes remain external.
+At a switch checkpoint, use the same external establishment mechanism required
+by the standalone `switch` command. The runner only reports the manifest's
+handoff parameters and waits for the replacement endpoint.
+
 ## Named actions and payloads
 
 Action names are discovered from the manifest catalog and use their stable
