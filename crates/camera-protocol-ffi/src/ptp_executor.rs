@@ -614,6 +614,9 @@ async fn run_steps(
         }
         _ => {}
     }
+    if matches!(&backend, TxnBackend::Transaction(_)) {
+        preflight_transaction_id_captures(&steps)?;
+    }
     let command_framing: PtpFraming = match connection_config.command_framing {
         Some(framing) => framing.into(),
         None if matches!(backend, TxnBackend::Frame(_)) => {
@@ -2367,6 +2370,65 @@ fn preflight_runtime_set_props(
     }
 
     walk(store, steps, runtime_params, "steps")
+}
+
+fn preflight_transaction_id_captures(steps: &[EntryStep]) -> Result<(), PtpExecutorError> {
+    fn walk(steps: &[EntryStep], path: &str) -> Result<(), PtpExecutorError> {
+        for (index, step) in steps.iter().enumerate() {
+            let here = format!("{path}[{index}].{}", step_verb(step));
+            let captures: &[CaptureInfo] = match step {
+                EntryStep::GetProp { captures, .. }
+                | EntryStep::ReadEcho { captures, .. }
+                | EntryStep::SendOp { captures, .. }
+                | EntryStep::AwaitUntil { captures, .. } => captures,
+                _ => &[],
+            };
+            for (capture_index, capture) in captures.iter().enumerate() {
+                if matches!(capture.source, CaptureSourceInfo::TransactionId) {
+                    return Err(PtpExecutorError::UnsupportedPlan {
+                        detail: format!(
+                            "{here}.captures[{capture_index}]: transactionId capture {:?} requires the host-owned frame transport (§11.29)",
+                            capture.bind
+                        ),
+                    });
+                }
+            }
+            match step {
+                EntryStep::AwaitUntil { on_each, .. } => {
+                    walk(on_each, &format!("{here}.onEach"))?;
+                }
+                EntryStep::Retry {
+                    steps,
+                    fallback_steps,
+                    ..
+                } => {
+                    walk(steps, &format!("{here}.steps"))?;
+                    walk(fallback_steps, &format!("{here}.fallback"))?;
+                }
+                EntryStep::Loop { kind, .. } => {
+                    let body = match kind {
+                        FfiLoopKind::ForEach { body, .. } | FfiLoopKind::Chunk { body, .. } => body,
+                    };
+                    walk(body, &format!("{here}.body"))?;
+                }
+                EntryStep::If { then_steps, .. } => {
+                    walk(then_steps, &format!("{here}.then"))?;
+                }
+                EntryStep::IfElse {
+                    then_steps,
+                    else_steps,
+                    ..
+                } => {
+                    walk(then_steps, &format!("{here}.then"))?;
+                    walk(else_steps, &format!("{here}.else"))?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    walk(steps, "steps")
 }
 
 fn preflight_error(step: &str, detail: String) -> PtpExecutorError {

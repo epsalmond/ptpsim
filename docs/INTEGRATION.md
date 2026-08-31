@@ -597,7 +597,8 @@ transaction ids (§11.29). The host supplies `execute` (one typed PTP
 transaction with a per-call daemon timeout, returning the response code,
 response parameters, and optional data-in), `readPartialObject` (one object
 range), code-selective `nextEvent` (the host retains unrelated events for
-their normal consumers, the same contract as `next_event_frame` above),
+their normal consumers, the same contract as
+`PtpExecutorTransport::next_event_frame`),
 `close`-equivalent `shutdown` (named to avoid the Kotlin
 `AutoCloseable.close()` clash), and the host `sleep` clock. Every method fails with
 `PtpTransactionError` (`NotConnected`, `DeviceGone`, `Stall`, `Timeout`,
@@ -795,7 +796,7 @@ called out above.
 | `bleNotify` | subscribe (`mode` as above) AND wait for `until` (Any / Equals / Matches); bind whole payload via `captureAs` and/or extract fields via `capture` (window → transform chain → encoding → scope; a failing capture is skipped, not a step failure). |
 | `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same captures and predicates, then remain notification-only. `seedRead` cannot be combined with `failWhen`, because callback transports cannot reliably distinguish a read response from a racing notification; use an explicit pre-command read plus a notification-only rejection await. Each observation applies `capture`/`captureAs`; `until` wins, otherwise a matching `failWhen` fails as `ConditionRejected`. When `failureEvidence` is present, its `steps` run inside the await budget and rejection is terminal only if its `when` predicate matches fresh evidence; otherwise observation continues. For a notify source, evidence steps cannot read that same characteristic, including through nested control flow; use a separate evidence characteristic so racing callbacks retain unambiguous provenance. If no rejection is confirmed, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
 | `acquire` | run inner step (`from[0]` — `Vec<Step>` of length 1; uniffi 0.31 doesn't accept `Box<Step>` for recursive enums), bind result to `name`. |
-| `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. |
+| `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. Raw USB plans accept `userPrompt`; BLE-derived `bleRead` and `bleAdvert` sources are invalid there. |
 | `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |
 | `retry` | run `steps`; when a failure's stable kind equals `whenFailure`, run `onFailure` in the same scope and evaluate `retryWhen`. Retry only when it is true and `maxAttempts` is not exhausted, sleeping `retryDelayMs` first. Unselected failures escape unchanged. Terminal selected failures include only the named `failureContext` values. Repeated subscriptions to the same GATT characteristic and mode are reused within the walk. |
 | `nikonLssAuthenticate` | resolve `clientDeviceId` and fresh runtime `nonce` to exactly 8 bytes each; enable indications on `gatt`; perform the exact four 17-byte LSS stages. Retain the resulting opaque cipher session only inside the walk. Bind nothing to scope or FFI. Optional `timeoutMs` is the per-stage budget (default 10 seconds). |
@@ -947,5 +948,4 @@ plugins are generic operator extensions.
 See also `tools/camera-sim-tui/fake-plugin/` for a minimal in-repo fake plugin
 proving discovery, pushed panel content, one proxied operator action, and clean
 shutdown for both spawned and attached modes.
-
 

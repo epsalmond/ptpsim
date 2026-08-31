@@ -129,11 +129,11 @@ impl UsbTxnReply {
     }
 }
 
-/// One scripted bulk-out expectation. The queue is consumed in arrival
-/// order; an empty queue accepts any transfer (the permissive default, the
-/// BLE scripted-GATT empty-script precedent).
+/// One scripted bulk OUT result. Builder call order determines whether the
+/// next transfer is checked or stalled. An empty queue accepts any transfer
+/// (the permissive default, the BLE scripted-GATT empty-script precedent).
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum BulkOutExpectation {
+enum BulkOutScript {
     /// A command container with this code, transaction id, and parameters,
     /// compared after decoding with the `usb-ptp` codec.
     Command {
@@ -143,6 +143,8 @@ enum BulkOutExpectation {
     },
     /// Exact bytes, for transfers that are not command containers.
     Bytes(Vec<u8>),
+    /// Answer the transfer with an endpoint STALL.
+    Stall(String),
 }
 
 /// A scripted interrupt IN frame (raw side). A `lost` frame is never
@@ -172,8 +174,7 @@ struct ScriptedTxnEvent {
 pub struct UsbResponder {
     claimed: Option<(u8, u8, u8)>,
     claim_refusal: Option<Option<String>>,
-    bulk_out_script: VecDeque<BulkOutExpectation>,
-    bulk_out_stalls: VecDeque<String>,
+    bulk_out_script: VecDeque<BulkOutScript>,
     bulk_in_replies: VecDeque<Vec<u8>>,
     interrupts: VecDeque<ScriptedInterrupt>,
     txn_replies: BTreeMap<(u16, Vec<u32>), UsbTxnReply>,
@@ -201,7 +202,7 @@ impl UsbResponder {
         transaction_id: u32,
         params: &[u32],
     ) -> Self {
-        self.bulk_out_script.push_back(BulkOutExpectation::Command {
+        self.bulk_out_script.push_back(BulkOutScript::Command {
             code,
             transaction_id,
             params: params.to_vec(),
@@ -212,13 +213,15 @@ impl UsbResponder {
     /// Require the next scripted bulk OUT transfer to be exactly these bytes.
     pub fn expect_bulk_out_bytes(mut self, data: &[u8]) -> Self {
         self.bulk_out_script
-            .push_back(BulkOutExpectation::Bytes(data.to_vec()));
+            .push_back(BulkOutScript::Bytes(data.to_vec()));
         self
     }
 
-    /// Script the next bulk OUT transfer answering STALL.
+    /// Append a STALL at this bulk OUT script position. Builder order selects
+    /// which transfer receives it.
     pub fn queue_bulk_out_stall(mut self, detail: &str) -> Self {
-        self.bulk_out_stalls.push_back(detail.to_string());
+        self.bulk_out_script
+            .push_back(BulkOutScript::Stall(detail.to_string()));
         self
     }
 
@@ -273,8 +276,8 @@ impl UsbResponder {
         Ok(())
     }
 
-    /// Write one bulk OUT transfer (raw side). A scripted expectation is
-    /// consumed and checked; scripted STALLs fire in arrival order.
+    /// Write one bulk OUT transfer (raw side). The next declared script item
+    /// is consumed, so mixed expectations and STALLs preserve builder order.
     pub fn bulk_out(&mut self, data: &[u8]) -> Result<(), UsbError> {
         self.log.push(UsbEvent::BulkOut {
             data: data.to_vec(),
@@ -282,12 +285,10 @@ impl UsbResponder {
         if self.claimed.is_none() {
             return Err(UsbError::NotClaimed);
         }
-        if let Some(detail) = self.bulk_out_stalls.pop_front() {
-            return Err(UsbError::Stall { detail });
-        }
         match self.bulk_out_script.pop_front() {
             None => Ok(()),
-            Some(BulkOutExpectation::Bytes(expected)) => {
+            Some(BulkOutScript::Stall(detail)) => Err(UsbError::Stall { detail }),
+            Some(BulkOutScript::Bytes(expected)) => {
                 if expected == data {
                     Ok(())
                 } else {
@@ -297,7 +298,7 @@ impl UsbResponder {
                     })
                 }
             }
-            Some(BulkOutExpectation::Command {
+            Some(BulkOutScript::Command {
                 code,
                 transaction_id,
                 params,

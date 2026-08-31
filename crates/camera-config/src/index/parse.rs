@@ -648,7 +648,27 @@ fn resolve_usb_interface_names_in_steps(
                     *inner = single.into_iter().next().unwrap_or(Value::Null);
                 }
             }
-            "acquireFirmware" => {}
+            "acquireFirmware" => {
+                if let Some(Value::Mapping(source)) = body
+                    .as_mapping()
+                    .and_then(|mapping| mapping.get(Value::String("from".into())))
+                {
+                    let user_prompt = Value::String("userPrompt".into());
+                    if source.len() != 1 || !source.contains_key(&user_prompt) {
+                        let name = source
+                            .keys()
+                            .filter_map(Value::as_str)
+                            .find(|name| *name != "userPrompt")
+                            .unwrap_or("unknown");
+                        return Err(ConfigError::Validation {
+                            path: format!("{here}.from.{name}"),
+                            message: format!(
+                                "acquireFirmware source '{name}' is not valid in a USB establishment plan"
+                            ),
+                        });
+                    }
+                }
+            }
             "retry" => {
                 if let Some(body_map) = body.as_mapping_mut() {
                     for key in ["steps", "onFailure"] {

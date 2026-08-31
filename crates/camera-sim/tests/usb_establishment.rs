@@ -667,3 +667,60 @@ fn responder_enforces_its_script() {
     assert_eq!(responder.poll_event(0xc005), None);
     assert_eq!(responder.poll_event(0x4002), Some((0x4002, vec![9])));
 }
+
+#[test]
+fn responder_exercises_raw_usb_error_paths() {
+    let mut responder = UsbResponder::new().expect_bulk_out_bytes(&[0xaa, 0xbb]);
+    responder.claim(6, 1, 1).expect("first claim");
+    assert_eq!(responder.claim(6, 1, 1), Err(UsbError::AlreadyClaimed));
+    responder
+        .bulk_out(&[0xaa, 0xbb])
+        .expect("exact bulk OUT bytes match");
+
+    let mut responder = UsbResponder::new().expect_bulk_out_bytes(&[0xaa]);
+    responder.claim(6, 1, 1).expect("claim");
+    assert!(matches!(
+        responder.bulk_out(&[0xbb]),
+        Err(UsbError::UnexpectedBulkOut { .. })
+    ));
+    assert_eq!(responder.bulk_in(64), Err(UsbError::NoScriptedBulkIn));
+}
+
+#[test]
+fn responder_preserves_bulk_out_builder_order() {
+    let mut expectation_then_stall = UsbResponder::new()
+        .expect_bulk_out_bytes(&[0x01])
+        .queue_bulk_out_stall("second transfer");
+    expectation_then_stall.claim(6, 1, 1).expect("claim");
+    expectation_then_stall
+        .bulk_out(&[0x01])
+        .expect("the first declared expectation runs first");
+    assert_eq!(
+        expectation_then_stall.bulk_out(&[0x02]),
+        Err(UsbError::Stall {
+            detail: "second transfer".into()
+        })
+    );
+
+    let mut stall_then_expectation = UsbResponder::new()
+        .queue_bulk_out_stall("first transfer")
+        .expect_bulk_out_bytes(&[0x02]);
+    stall_then_expectation.claim(6, 1, 1).expect("claim");
+    assert_eq!(
+        stall_then_expectation.bulk_out(&[0x01]),
+        Err(UsbError::Stall {
+            detail: "first transfer".into()
+        })
+    );
+    stall_then_expectation
+        .bulk_out(&[0x02])
+        .expect("the expectation follows the declared stall");
+}
+
+#[test]
+fn transaction_response_preserves_all_fields() {
+    let expected = UsbTxnReply::response(0x201d, vec![3, 5], Some(vec![0xaa, 0xbb]));
+    let mut responder = UsbResponder::new().reply_transaction(0x9999, &[7], expected.clone());
+
+    assert_eq!(responder.execute(0x9999, &[7], None, 1_000), expected);
+}

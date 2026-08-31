@@ -5239,6 +5239,31 @@ fn value_with_runtime(
 mod tests {
     use super::*;
 
+    fn pinned_platform_token(platform: Platform) -> &'static str {
+        match platform {
+            Platform::Ios | Platform::Macos | Platform::Android | Platform::Linux => {
+                platform.as_str()
+            }
+        }
+    }
+
+    #[test]
+    fn platform_tokens_match_camera_config() {
+        let ffi_tokens: std::collections::BTreeSet<_> = [
+            Platform::Ios,
+            Platform::Macos,
+            Platform::Android,
+            Platform::Linux,
+        ]
+        .into_iter()
+        .map(pinned_platform_token)
+        .collect();
+        let config_tokens: std::collections::BTreeSet<_> =
+            cc::PLATFORM_TOKENS.into_iter().collect();
+
+        assert_eq!(ffi_tokens, config_tokens);
+    }
+
     fn leaf(prop: &str, eq: i64) -> cc::Predicate {
         cc::Predicate::Leaf(cc::Leaf {
             prop: prop.into(),

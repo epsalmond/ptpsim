@@ -66,6 +66,54 @@ models:
     )
 }
 
+fn ble_action_index(steps: &str) -> String {
+    format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt:
+        status: "00002A25-0000-1000-8000-00805F9B34FB"
+      actions:
+        test:
+          steps:
+{steps}
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+    )
+}
+
+fn usb_post_exit_index(steps: &str, count: usize) -> String {
+    format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    usb:
+      interfaces:
+        stillImage: {{ class: 6, subclass: 1, protocol: 1 }}
+      establishments:
+        usb-claim-session:
+          mechanism: usb-claim-session
+          activities:
+            - {{ id: camera.test.readiness, version: 1, displayRole: waitingForCamera, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: {{ sequence: postExitReadiness, startStep: 0, endStepExclusive: {count} }} }}
+          postExitReadiness:
+{steps}
+          steps: []
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+    )
+}
+
 #[test]
 fn usb_verbs_parse_from_one_entry_mappings() {
     let index = ResolvedManufacturerIndex::from_yaml(&usb_index(
@@ -238,6 +286,42 @@ fn ble_verb_rejected_inside_usb_plan() {
 }
 
 #[test]
+fn ble_verb_rejected_inside_usb_acquire_source() {
+    let error = ResolvedManufacturerIndex::from_yaml(&usb_index(
+        "            - acquire: { name: status, from: { bleRead: { gatt: status, encoding: bytes, captureAs: status } } }",
+        1,
+    ))
+    .expect_err("BLE verbs do not run inside a USB acquire delegate");
+    assert!(
+        error
+            .to_string()
+            .contains("not valid in a USB establishment plan"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn ble_firmware_sources_are_rejected_inside_usb_plans() {
+    for source in [
+        "{ bleRead: { gatt: status, encoding: utf8 } }",
+        "{ bleAdvert: { offset: 0, length: 4, encoding: utf8 } }",
+        "{ futureSource: {} }",
+    ] {
+        let error = ResolvedManufacturerIndex::from_yaml(&usb_index(
+            &format!("            - acquireFirmware: {{ from: {source} }}"),
+            1,
+        ))
+        .expect_err("BLE-derived firmware sources do not run in raw USB plans");
+        let message = error.to_string();
+        assert!(message.contains("acquireFirmware"), "got: {message}");
+        assert!(
+            message.contains("not valid in a USB establishment plan"),
+            "got: {message}"
+        );
+    }
+}
+
+#[test]
 fn usb_verb_rejected_inside_ble_plan() {
     let error = ResolvedManufacturerIndex::from_yaml(&ble_index(
         "            - usbClaim: { interface: stillImage }",
@@ -259,6 +343,35 @@ fn usb_verb_rejected_inside_ble_plan() {
             .to_string()
             .contains("not valid in a BLE establishment plan"),
         "got: {nested}",
+    );
+}
+
+#[test]
+fn usb_verb_rejected_inside_ble_action() {
+    let error = ResolvedManufacturerIndex::from_yaml(&ble_action_index(
+        "            - usbBulkOut: { data: { captured: payload } }",
+    ))
+    .expect_err("USB verbs do not run in BLE actions");
+    assert!(
+        error
+            .to_string()
+            .contains("not valid in a BLE establishment plan"),
+        "got: {error}",
+    );
+}
+
+#[test]
+fn ble_verb_rejected_inside_usb_post_exit_readiness() {
+    let error = ResolvedManufacturerIndex::from_yaml(&usb_post_exit_index(
+        "            - bleRead: { gatt: status, encoding: bytes, captureAs: status }",
+        1,
+    ))
+    .expect_err("postExitReadiness keeps USB verb scoping");
+    assert!(
+        error
+            .to_string()
+            .contains("not valid in a USB establishment plan"),
+        "got: {error}",
     );
 }
 

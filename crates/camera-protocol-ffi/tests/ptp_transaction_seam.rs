@@ -1078,6 +1078,46 @@ fn initiator_owned_connection_cannot_enter_a_transaction_entry_point() {
 }
 
 #[test]
+fn transaction_id_capture_cannot_enter_a_transaction_entry_point() {
+    let store = connection_store(
+        r#"  usbTether:
+    kind: usb-passthrough
+    events: { delivery: reliable }
+    entries:
+      - to: shooting
+        steps:
+          - sendOp: "0x9026"
+            captures: [{ bind: tx, as: transactionId }]"#,
+    );
+    let responder =
+        UsbResponder::new().reply_transaction(0x9026, &[], UsbTxnReply::ok(Some(Vec::new())));
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[]));
+
+    let error = block_on(run_mode_entry_txn(
+        store,
+        "usbTether".into(),
+        None,
+        "shooting".into(),
+        transport.clone(),
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+        vec![],
+    ))
+    .expect_err("a transactionId capture cannot walk the transaction seam");
+    assert!(matches!(
+        error,
+        PtpExecutorError::UnsupportedPlan { ref detail }
+            if detail.contains("steps[0].sendOp.captures[0]")
+                && detail.contains("transactionId capture")
+                && detail.contains("tx")
+    ));
+    assert!(
+        transport.log().is_empty(),
+        "no transaction reached the daemon seam",
+    );
+}
+
+#[test]
 fn reliable_event_miss_still_fails_deadline_exceeded() {
     let store = store(
         "reliable",

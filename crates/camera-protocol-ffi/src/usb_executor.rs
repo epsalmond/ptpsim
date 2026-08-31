@@ -16,8 +16,8 @@ use camera_config::index::{Encoding, EstablishmentBlock, UsbInterfaceTriple};
 use camera_config::ConnectionActivitySequence as ConfigActivitySequence;
 
 use crate::executor::{
-    outcome, resolve_plan_ref, walk_plan_with_activities, ExecCtx, ExecTransport,
-    NativeEstablishmentWalkSummary, RefineCtx, RefinementSource, StepError,
+    outcome, resolve_plan_ref, usb_deadline, walk_plan_with_activities, ExecCtx, ExecTransport,
+    NativeEstablishmentWalkSummary, RefineCtx, RefinementSource, StepError, DEFAULT_OP_TIMEOUT_MS,
 };
 use crate::{
     ConfigStore, ConnectionActivityObserver, ExecutionOutcome, ExecutorStepFailureKind, KeyValue,
@@ -251,7 +251,13 @@ pub async fn run_usb_establishment(
             // claimed; the release is best-effort cleanup, never the reported
             // error.
             if ctx.usb_interface_claimed {
-                let _ = transport.release_and_close().await;
+                let _ = usb_deadline(
+                    &transport,
+                    DEFAULT_OP_TIMEOUT_MS,
+                    "usbRelease",
+                    transport.release_and_close(),
+                )
+                .await;
             }
             Err(error.into())
         }

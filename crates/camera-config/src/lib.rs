@@ -414,7 +414,11 @@ impl CameraManifest {
                 let path = format!("connections.{connection_id}.entries[{index}]");
                 match &entry.execution {
                     ModeEntryExecution::Ptp { steps } => {
-                        require_valid_ptp_steps(steps, &path)?;
+                        require_valid_ptp_steps(
+                            steps,
+                            &path,
+                            connection.session.map(|session| session.ownership),
+                        )?;
                         require_no_runtime_set_props(steps, &path)?;
                         require_valid_open_channels(
                             steps,
@@ -432,6 +436,7 @@ impl CameraManifest {
                         require_valid_ptp_steps(
                             &reestablish.exit_steps,
                             &format!("{path}.reestablishConnection.exitSteps"),
+                            connection.session.map(|session| session.ownership),
                         )?;
                         require_no_runtime_set_props(
                             &reestablish.exit_steps,
@@ -493,7 +498,11 @@ impl CameraManifest {
                 let path = format!("connections.{connection_id}.actions.{verb:?}");
                 require_valid_action_roles(self, action, &path)?;
                 if let Some(initiator) = &action.initiator {
-                    require_valid_ptp_steps(&initiator.steps, &path)?;
+                    require_valid_ptp_steps(
+                        &initiator.steps,
+                        &path,
+                        connection.session.map(|session| session.ownership),
+                    )?;
                     require_valid_action_runtime_values(self, initiator, &path)?;
                     require_valid_open_channels(
                         &initiator.steps,
@@ -870,10 +879,9 @@ fn require_valid_init_shape(
     Ok(())
 }
 
-/// The platform vocabulary a `platforms:` list gates a connection against.
-/// Mirrors the FFI `Platform` tokens (`Platform::as_str`); a consumer maps
-/// its host OS to one of these.
-const PLATFORMS: [&str; 4] = ["ios", "macos", "android", "linux"];
+/// The authoritative platform vocabulary for connection availability.
+/// The hand-written FFI `Platform` mapping is tested against this exact set.
+pub const PLATFORM_TOKENS: [&str; 4] = ["ios", "macos", "android", "linux"];
 
 /// `platforms:` hides a connection on the platforms it excludes (the FFI
 /// `connections(platform)` filter). The token set is closed and validated at
@@ -889,22 +897,22 @@ fn require_valid_platforms(
     let Some(sequence) = value.as_sequence() else {
         return Err(ManifestError::Contract(format!(
             "{path} must be a sequence of platform tokens ({})",
-            PLATFORMS.join(", ")
+            PLATFORM_TOKENS.join(", ")
         )));
     };
     for item in sequence {
         match item.as_str() {
-            Some(token) if PLATFORMS.contains(&token) => {}
+            Some(token) if PLATFORM_TOKENS.contains(&token) => {}
             Some(token) => {
                 return Err(ManifestError::Contract(format!(
                     "{path} names unknown platform '{token}' (expected one of: {})",
-                    PLATFORMS.join(", ")
+                    PLATFORM_TOKENS.join(", ")
                 )));
             }
             None => {
                 return Err(ManifestError::Contract(format!(
                     "{path} entries must be platform tokens ({})",
-                    PLATFORMS.join(", ")
+                    PLATFORM_TOKENS.join(", ")
                 )));
             }
         }
@@ -930,10 +938,10 @@ fn require_valid_discovery(
         )));
     }
     for token in &discovery.platforms {
-        if !PLATFORMS.contains(&token.as_str()) {
+        if !PLATFORM_TOKENS.contains(&token.as_str()) {
             return Err(ManifestError::Contract(format!(
                 "{path}.platforms names unknown platform '{token}' (expected one of: {})",
-                PLATFORMS.join(", ")
+                PLATFORM_TOKENS.join(", ")
             )));
         }
     }
@@ -1965,14 +1973,19 @@ fn require_valid_host_activities(
     Ok(())
 }
 
-fn require_valid_ptp_steps(steps: &[Step], path: &str) -> Result<(), ManifestError> {
+fn require_valid_ptp_steps(
+    steps: &[Step],
+    path: &str,
+    ownership: Option<SessionOwnership>,
+) -> Result<(), ManifestError> {
     let mut collections = std::collections::BTreeSet::new();
-    require_valid_ptp_steps_with_collections(steps, path, &mut collections)
+    require_valid_ptp_steps_with_collections(steps, path, ownership, &mut collections)
 }
 
 fn require_valid_ptp_steps_with_collections(
     steps: &[Step],
     path: &str,
+    ownership: Option<SessionOwnership>,
     collections: &mut std::collections::BTreeSet<String>,
 ) -> Result<(), ManifestError> {
     for (index, step) in steps.iter().enumerate() {
@@ -2046,6 +2059,11 @@ fn require_valid_ptp_steps_with_collections(
                 }
             }
             if capture.source == CaptureSource::TransactionId {
+                if ownership == Some(SessionOwnership::DaemonAttached) {
+                    return Err(ManifestError::Contract(format!(
+                        "{step_path} transactionId capture is invalid when session.ownership is daemonAttached"
+                    )));
+                }
                 if step.send_op.is_none() {
                     return Err(ManifestError::Contract(format!(
                         "{step_path} transactionId capture requires sendOp"
@@ -2141,6 +2159,7 @@ fn require_valid_ptp_steps_with_collections(
             require_valid_ptp_steps_with_collections(
                 &retry.steps,
                 &format!("{step_path}.retry"),
+                ownership,
                 &mut after_retry,
             )?;
             if let Some(fallback) = &retry.fallback {
@@ -2148,6 +2167,7 @@ fn require_valid_ptp_steps_with_collections(
                 require_valid_ptp_steps_with_collections(
                     fallback,
                     &format!("{step_path}.retry.fallback"),
+                    ownership,
                     &mut after_fallback,
                 )?;
                 after_retry.retain(|binding| after_fallback.contains(binding));
@@ -2164,6 +2184,7 @@ fn require_valid_ptp_steps_with_collections(
             require_valid_ptp_steps_with_collections(
                 &await_until.on_each,
                 &format!("{step_path}.awaitUntil"),
+                ownership,
                 &mut nested,
             )?;
         }
@@ -2185,6 +2206,7 @@ fn require_valid_ptp_steps_with_collections(
             require_valid_ptp_steps_with_collections(
                 body,
                 &format!("{step_path}.loop"),
+                ownership,
                 &mut nested,
             )?;
         }
@@ -2194,12 +2216,14 @@ fn require_valid_ptp_steps_with_collections(
             require_valid_ptp_steps_with_collections(
                 &condition.then_steps,
                 &format!("{step_path}.if.then"),
+                ownership,
                 &mut then_collections,
             )?;
             let mut else_collections = before;
             require_valid_ptp_steps_with_collections(
                 &condition.else_steps,
                 &format!("{step_path}.if.else"),
+                ownership,
                 &mut else_collections,
             )?;
             // A collection is definitely bound after the conditional only if
