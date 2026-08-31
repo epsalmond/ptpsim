@@ -5239,6 +5239,14 @@ fn value_with_runtime(
 mod tests {
     use super::*;
 
+    fn pinned_platform_token(platform: Platform) -> &'static str {
+        match platform {
+            Platform::Ios | Platform::Macos | Platform::Android | Platform::Linux => {
+                platform.as_str()
+            }
+        }
+    }
+
     #[test]
     fn platform_tokens_match_camera_config() {
         let ffi_tokens: std::collections::BTreeSet<_> = [
@@ -5248,7 +5256,7 @@ mod tests {
             Platform::Linux,
         ]
         .into_iter()
-        .map(|platform| platform.as_str())
+        .map(pinned_platform_token)
         .collect();
         let config_tokens: std::collections::BTreeSet<_> =
             cc::PLATFORM_TOKENS.into_iter().collect();
