@@ -48,7 +48,7 @@ use crate::{ConfigStore, KeyValue};
 /// discover) — the backstop that converts a silently-stalled transport into a
 /// step failure the retry ladder can act on. Verbs with an explicit
 /// `timeout_ms` (notify/awaitUntil/subscribe) use that instead.
-const DEFAULT_OP_TIMEOUT_MS: u32 = 10_000;
+pub(crate) const DEFAULT_OP_TIMEOUT_MS: u32 = 10_000;
 
 /// Deadline on `bleConnect` — connects legitimately take longer than GATT ops.
 const CONNECT_TIMEOUT_MS: u32 = 30_000;

@@ -15,6 +15,7 @@ use camera_protocol_ffi::{
 };
 use camera_sim::usb::{UsbError, UsbEvent, UsbResponder};
 use futures::executor::block_on;
+use futures::FutureExt;
 
 /// PTP-over-USB OpenSession command container (session id 1, transaction 0).
 const OPEN_SESSION_CONTAINER: [u8; 16] = [
@@ -420,6 +421,125 @@ fn bulk_out_failure_releases_the_claimed_interface() {
             UsbEvent::ReleaseAndClose,
         ],
         "a failed walk releases the claimed interface"
+    );
+}
+
+struct PendingCleanupTransport {
+    cleanup_dropped: Arc<std::sync::atomic::AtomicBool>,
+    cleanup_pending: bool,
+}
+
+struct MarkDropped(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for MarkDropped {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl UsbExecutorTransport for PendingCleanupTransport {
+    async fn claim_interface(
+        &self,
+        _class: u8,
+        _subclass: u8,
+        _protocol: u8,
+    ) -> Result<(), UsbTransportError> {
+        Ok(())
+    }
+
+    async fn bulk_out(&self, _data: Vec<u8>) -> Result<(), UsbTransportError> {
+        Err(UsbTransportError::Stall {
+            detail: "original bulk OUT failure".into(),
+        })
+    }
+
+    async fn bulk_in(&self, _max_length: u32) -> Result<Vec<u8>, UsbTransportError> {
+        unreachable!("the walk stops at bulk OUT")
+    }
+
+    async fn next_interrupt_event(&self) -> Result<Vec<u8>, UsbTransportError> {
+        unreachable!("the walk stops at bulk OUT")
+    }
+
+    async fn release_and_close(&self) -> Result<(), UsbTransportError> {
+        if !self.cleanup_pending {
+            return Err(UsbTransportError::Failed {
+                detail: "cleanup failure".into(),
+            });
+        }
+        let _mark_dropped = MarkDropped(self.cleanup_dropped.clone());
+        futures::future::pending().await
+    }
+
+    async fn sleep(&self, ms: u32) -> Result<(), UsbTransportError> {
+        assert_eq!(ms, 10_000, "cleanup uses the standard USB call backstop");
+        Ok(())
+    }
+}
+
+#[test]
+fn pending_failure_cleanup_is_bounded_and_preserves_the_walk_error() {
+    let cleanup_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let transport = Arc::new(PendingCleanupTransport {
+        cleanup_dropped: cleanup_dropped.clone(),
+        cleanup_pending: true,
+    });
+    let result = run_usb_establishment(
+        store(),
+        "tu1:usbTether".into(),
+        transport,
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        initial_scope(),
+        initial_encodings(),
+        vec![],
+    )
+    .now_or_never()
+    .expect("the host clock bounds pending cleanup");
+    let error = result.expect_err("the original bulk OUT failure still escapes");
+
+    assert!(
+        matches!(
+            &error,
+            UsbExecutorError::StepFailed { step, detail, .. }
+                if step == "steps[1].usbBulkOut"
+                    && detail.contains("original bulk OUT failure")
+        ),
+        "cleanup does not replace the walk error: {error:?}"
+    );
+    assert!(
+        cleanup_dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "the losing foreign cleanup future is cancelled"
+    );
+}
+
+#[test]
+fn failed_cleanup_preserves_the_walk_error() {
+    let transport = Arc::new(PendingCleanupTransport {
+        cleanup_dropped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        cleanup_pending: false,
+    });
+    let error = block_on(run_usb_establishment(
+        store(),
+        "tu1:usbTether".into(),
+        transport,
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        initial_scope(),
+        initial_encodings(),
+        vec![],
+    ))
+    .expect_err("the original bulk OUT failure still escapes");
+
+    assert!(
+        matches!(
+            &error,
+            UsbExecutorError::StepFailed { step, detail, .. }
+                if step == "steps[1].usbBulkOut"
+                    && detail.contains("original bulk OUT failure")
+        ),
+        "cleanup does not replace the walk error: {error:?}"
     );
 }
 
