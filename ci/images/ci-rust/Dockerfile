@@ -58,6 +58,11 @@ ENV CARGO_HOME=/ci-cache/cargo-home \
 
 COPY --from=planner /recipe.json /recipe.json
 COPY scripts/rustc-wrapper scripts/rustc-wrapper
+# The pinned channel must drive the cook: rustup reads rust-toolchain.toml
+# from the working directory, installs 1.97.0 with its components into
+# RUSTUP_HOME, and the cook layer bakes that toolchain for CI. Without it
+# the cook compiles on the image default and CI rejects every artifact.
+COPY rust-toolchain.toml rust-toolchain.toml
 RUN cargo chef cook --all-targets --recipe-path /recipe.json \
  && rm -rf /ci-cache/target/debug/incremental \
  && rm -rf /opt/ptpsim-cook /recipe.json
