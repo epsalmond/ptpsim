@@ -3,7 +3,11 @@
 # the whole workspace. Consumers must use CARGO_HOME=/ci-cache/cargo-home,
 # CARGO_TARGET_DIR=/ci-cache/target, and CARGO_INCREMENTAL=0 to reuse them.
 # The chef skeleton copies .cargo/config.toml, so scripts/rustc-wrapper is
-# required during cook. The deployment owner's CI builds and publishes this
+# required during cook. The cook runs under /opt/ptpsim-cook, not under
+# /woodpecker: the CI workspace volume mounts over /woodpecker at step
+# runtime, and Kaniko skips mounted paths when it snapshots layers. Cargo
+# 1.97 does not hash the workspace directory for registry dependencies, so
+# only the /ci-cache paths must match CI. The deployment owner's CI builds and publishes this
 # image and supplies it to .woodpecker/linux.yml via RUST_TOOLCHAIN_IMAGE.
 
 FROM rust:1-slim AS base
@@ -34,7 +38,7 @@ RUN cargo install --locked cargo-chef --version 0.1.77
 
 FROM base AS planner
 
-WORKDIR /woodpecker/src/ptpsim
+WORKDIR /opt/ptpsim-cook
 
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY .cargo ./.cargo
@@ -46,7 +50,7 @@ RUN cargo chef prepare --recipe-path /recipe.json
 
 FROM base
 
-WORKDIR /woodpecker/src/ptpsim
+WORKDIR /opt/ptpsim-cook
 
 ENV CARGO_HOME=/ci-cache/cargo-home \
     CARGO_TARGET_DIR=/ci-cache/target \
@@ -56,7 +60,6 @@ COPY --from=planner /recipe.json /recipe.json
 COPY scripts/rustc-wrapper scripts/rustc-wrapper
 RUN cargo chef cook --all-targets --recipe-path /recipe.json \
  && rm -rf /ci-cache/target/debug/incremental \
- && rm -rf /woodpecker/src/ptpsim/* \
-      /woodpecker/src/ptpsim/.[!.]* \
-      /woodpecker/src/ptpsim/..?* \
-      /recipe.json
+ && rm -rf /opt/ptpsim-cook /recipe.json
+
+WORKDIR /
