@@ -8,4 +8,8 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 
+if [ -e "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+    exit 0
+fi
+
 exec ./scripts/lint-commit-messages.sh --message-file "$1"
