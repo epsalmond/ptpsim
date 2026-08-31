@@ -279,6 +279,7 @@ dependencies = [
  "if-addrs",
  "protocol-primitives",
  "ptp-core",
+ "rustix",
  "serde",
  "serde_json",
  "serde_yaml",

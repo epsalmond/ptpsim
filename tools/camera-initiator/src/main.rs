@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, Write};
 use std::net::IpAddr;
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,17 +17,18 @@ use camera_config::{
     ObservationRecorder, Redaction, RedactionMethod,
 };
 use camera_initiator::{
-    run_probe_plan, NativePtpTransport, ProbePlan, StreamingFileSink, TraceFormat, TraceWriter,
-    TransportConfig,
+    prepare_action_request, prepare_session_plan, resolve_reestablishment_checkpoint,
+    run_probe_plan, run_session_plan, validate_ptp_entry, validate_session_artifact_paths,
+    NativePtpTransport, NativeSessionLifecycle, PreparedSessionPlan, ProbePlan, SessionPlan,
+    SessionRunOptions, StreamingFileSink, TraceFormat, TraceWriter, TransportConfig,
 };
 use camera_protocol_ffi::{
     parse_action_verb, run_initiator_action, run_initiator_action_to_sink, run_mode_entry,
     run_mode_reestablishment_exit, run_streaming_action, ActionArgument,
-    ActionCatalogParameterKind, ActionInitiatorParameter, ActionInvocationRequest, ActionRole,
-    ActionValue, ActionVerb, ConfigStore, ConnectionActivityEvent, ConnectionActivityObserver,
-    ModeEntryExecution, ObjectTransferStrategy, PtpDataOutput, PtpDataOutputSink,
-    PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorTransport, PtpRuntimeValue,
-    PtpStreamingTransport, StepObserver, StepReport,
+    ActionCatalogParameterKind, ActionInitiatorParameter, ActionValue, ActionVerb, ConfigStore,
+    ConnectionActivityEvent, ConnectionActivityObserver, ObjectTransferStrategy, PtpDataOutput,
+    PtpDataOutputSink, PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorTransport,
+    PtpRuntimeValue, PtpStreamingTransport, StepObserver, StepReport,
 };
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
@@ -118,12 +121,23 @@ enum Command {
         #[arg(long)]
         output_dir: PathBuf,
     },
+    /// Execute a strict retained-session plan.
+    Session {
+        /// Strict camera-initiator-session/v1 YAML plan.
+        #[arg(long)]
+        plan: PathBuf,
+        /// New directory for retained payloads and the machine-readable report.
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let store = load_store(&cli)?;
+    let params = RuntimeParams::parse(&cli.params)?;
+    let prepared_session = prepare_cli_session(&cli, &store)?;
     let observation_mode = match &cli.command {
         Command::Entry { to, .. } | Command::Switch { to, .. } => to.clone(),
         Command::Action { action, .. } => parse_action_verb(action.clone())
@@ -131,6 +145,7 @@ async fn main() -> Result<()> {
             .map(|action| action.mode)
             .unwrap_or_else(|| "unknown".into()),
         Command::Probe { .. } => "probe".into(),
+        Command::Session { .. } => "session".into(),
     };
     let trace = Arc::new(TraceWriter::with_observations(
         cli.trace_format,
@@ -139,7 +154,6 @@ async fn main() -> Result<()> {
         cli.connection.clone(),
         observation_mode,
     ));
-    let params = RuntimeParams::parse(&cli.params)?;
     let transport = NativePtpTransport::new(
         Arc::clone(&store),
         TransportConfig {
@@ -161,8 +175,16 @@ async fn main() -> Result<()> {
 
     let observed_action = match &cli.command {
         Command::Action { action, .. } => Some(action.clone()),
-        Command::Entry { .. } | Command::Switch { .. } | Command::Probe { .. } => None,
+        Command::Entry { .. }
+        | Command::Switch { .. }
+        | Command::Probe { .. }
+        | Command::Session { .. } => None,
     };
+    let session_run_id = cli.run_id.clone();
+    let session_connection = cli.connection.clone();
+    let session_trace_path = cli.trace.clone();
+    let session_observation_path = cli.observation.clone();
+    let session_handoff_timeout = Duration::from_millis(cli.handoff_timeout_ms);
     let result = match cli.command {
         Command::Entry { to, from } => {
             run_entry(
@@ -224,6 +246,25 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Command::Session {
+            plan: _,
+            output_dir,
+        } => {
+            run_session(
+                prepared_session.expect("session command was prepared before artifacts"),
+                Arc::clone(&store),
+                Arc::clone(&transport),
+                output_dir,
+                session_run_id,
+                session_connection,
+                session_trace_path,
+                session_observation_path,
+                session_handoff_timeout,
+                &params,
+                Arc::clone(&trace),
+            )
+            .await
+        }
     };
 
     if let Some(action_id) = observed_action {
@@ -272,6 +313,57 @@ async fn main() -> Result<()> {
     }
 }
 
+fn prepare_cli_session(cli: &Cli, store: &ConfigStore) -> Result<Option<PreparedSessionPlan>> {
+    let Command::Session { plan, output_dir } = &cli.command else {
+        return Ok(None);
+    };
+    let yaml = std::fs::read_to_string(plan)
+        .with_context(|| format!("read session plan {}", plan.display()))?;
+    let plan_document = SessionPlan::from_yaml(&yaml)?;
+    let prepared = prepare_session_plan(plan_document, store, &cli.connection)?;
+    validate_session_artifact_paths(plan, output_dir, &cli.trace, &cli.observation)?;
+    if output_dir.exists() {
+        bail!(
+            "session output directory already exists: {}",
+            output_dir.display()
+        )
+    }
+    Ok(Some(prepared))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_session(
+    prepared: PreparedSessionPlan,
+    store: Arc<ConfigStore>,
+    transport: Arc<NativePtpTransport>,
+    output_dir: PathBuf,
+    run_id: String,
+    connection: String,
+    trace_path: String,
+    observation_path: PathBuf,
+    handoff_timeout: Duration,
+    params: &RuntimeParams,
+    trace: Arc<TraceWriter>,
+) -> Result<Value> {
+    let report = run_session_plan(
+        &prepared,
+        store,
+        NativeSessionLifecycle::new(transport),
+        trace,
+        SessionRunOptions {
+            output_dir,
+            run_id,
+            connection,
+            trace_path,
+            observation_path,
+            runtime_params: params.numeric_values(),
+            handoff_timeout,
+        },
+    )
+    .await?;
+    serde_json::to_value(report).context("serialize session report")
+}
+
 async fn run_probe(
     transport: Arc<NativePtpTransport>,
     plan_path: &PathBuf,
@@ -304,18 +396,7 @@ async fn run_entry(
     from: Option<String>,
     to: String,
 ) -> Result<Value> {
-    let plan = store
-        .mode_entry(connection.to_string(), from.clone(), to.clone())
-        .with_context(|| format!("mode entry {from:?} -> {to} is not declared"))?;
-    match plan.execution {
-        ModeEntryExecution::Ptp { .. } => {}
-        ModeEntryExecution::UserInstruction { instruction } => {
-            bail!("mode entry requires user instruction: {instruction}")
-        }
-        ModeEntryExecution::ReestablishConnection { .. } => {
-            bail!("mode entry requires outer re-establishment; use 'switch'")
-        }
-    }
+    validate_ptp_entry(&store, connection, from.clone(), to.clone())?;
     transport.open_command_session().await?;
     let raw: Arc<dyn PtpExecutorTransport> = transport;
     let outcome = run_mode_entry(
@@ -345,28 +426,9 @@ async fn run_switch(
     handoff_timeout: Duration,
     trace: Arc<TraceWriter>,
 ) -> Result<Value> {
-    let source = store
-        .mode_entry(connection.to_string(), None, from.clone())
-        .with_context(|| format!("cold source entry '{from}' is not declared"))?;
-    if !matches!(source.execution, ModeEntryExecution::Ptp { .. }) {
-        bail!("cold source entry '{from}' is not a PTP plan")
-    }
-    let edge = store
-        .mode_entry(connection.to_string(), Some(from.clone()), to.clone())
-        .with_context(|| format!("switch edge '{from}' -> '{to}' is not declared"))?;
-    let establishment_params = match edge.execution {
-        ModeEntryExecution::ReestablishConnection {
-            establishment_params,
-            ..
-        } => establishment_params,
-        _ => bail!("switch edge '{from}' -> '{to}' is not a re-establishment"),
-    };
-    let target = store
-        .mode_entry(connection.to_string(), None, to.clone())
-        .with_context(|| format!("cold target entry '{to}' is not declared"))?;
-    if !matches!(target.execution, ModeEntryExecution::Ptp { .. }) {
-        bail!("cold target entry '{to}' is not a PTP plan")
-    }
+    validate_ptp_entry(&store, connection, None, from.clone())?;
+    let checkpoint = resolve_reestablishment_checkpoint(&store, connection, &from, &to)?;
+    validate_ptp_entry(&store, connection, None, to.clone())?;
 
     transport.open_command_session().await?;
     let raw: Arc<dyn PtpExecutorTransport> = transport.clone();
@@ -410,10 +472,6 @@ async fn run_switch(
     )
     .await?;
 
-    let checkpoint: BTreeMap<_, _> = establishment_params
-        .into_iter()
-        .map(|param| (param.key, param.value))
-        .collect();
     trace.checkpoint("externalEstablishment", json!(checkpoint))?;
     eprintln!(
         "external BLE/Wi-Fi establishment required; params={} (waiting up to {}s)",
@@ -496,7 +554,7 @@ async fn run_named_action(
         .map(|parameter| parameter.name.clone())
         .collect();
     params.reject_undeclared_numeric(&declared_action_params)?;
-    let request = preflight_action_request(
+    let request = prepare_action_request(
         &store,
         connection,
         action,
@@ -591,7 +649,7 @@ async fn run_action_sequence(
             .ok_or_else(|| anyhow::anyhow!("action has no initiator binding"))?
             .params;
         declared_action_params.extend(action_params.iter().map(|parameter| parameter.name.clone()));
-        let request = preflight_action_request(
+        let request = prepare_action_request(
             &store,
             connection,
             action,
@@ -898,37 +956,6 @@ impl RuntimeParams {
     }
 }
 
-fn preflight_action_request(
-    store: &ConfigStore,
-    connection: &str,
-    action: ActionVerb,
-    mode: &str,
-    parameters: Vec<ActionArgument>,
-) -> Result<ActionInvocationRequest> {
-    let catalog = store.action_catalog();
-    let action_id = catalog
-        .actions
-        .iter()
-        .find(|entry| {
-            entry.connection == connection
-                && parse_action_verb(entry.action_id.clone()) == Some(action)
-        })
-        .map(|entry| entry.action_id.clone())
-        .with_context(|| format!("connection '{connection}' has no cataloged action"))?;
-    let request = ActionInvocationRequest {
-        catalog_revision: catalog.revision,
-        action_id,
-        connection: connection.to_string(),
-        mode: mode.to_string(),
-        role: ActionRole::Initiator,
-        parameters,
-    };
-    store
-        .resolve_action_invocation(request.clone())
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    Ok(request)
-}
-
 fn parse_u64(value: &str) -> Option<u64> {
     value
         .strip_prefix("0x")
@@ -1030,6 +1057,7 @@ fn sanitize(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_numeric_runtime_values_exactly() {
@@ -1154,6 +1182,79 @@ mod tests {
             }
             _ => panic!("unexpected command variant"),
         }
+    }
+
+    #[test]
+    fn parses_session_command_paths() {
+        let cli = Cli::try_parse_from([
+            "camera-initiator",
+            "--camera",
+            "127.0.0.1",
+            "--manifest",
+            "camera.yaml",
+            "session",
+            "--plan",
+            "session.yaml",
+            "--output-dir",
+            "session-output",
+        ])
+        .expect("session CLI parses");
+
+        match cli.command {
+            Command::Session { plan, output_dir } => {
+                assert_eq!(plan, PathBuf::from("session.yaml"));
+                assert_eq!(output_dir, PathBuf::from("session-output"));
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn invalid_session_plan_creates_no_artifacts() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "camera-initiator-invalid-session-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let plan = root.join("plan.yaml");
+        let output = root.join("output");
+        let trace = root.join("trace.jsonl");
+        let observation = root.join("observation.jsonl");
+        std::fs::write(
+            &plan,
+            "schema: camera-initiator-session/v1\nsteps: [{ id: bad/path, kind: entry, to: shooting/stills }]\n",
+        )
+        .unwrap();
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/camera-config-data");
+        let cli = Cli::try_parse_from([
+            "camera-initiator".into(),
+            "--camera".into(),
+            "127.0.0.1".into(),
+            "--manifest".into(),
+            data.join("fuji/gfx100ii/gfx100ii.yaml").into_os_string(),
+            "--manufacturer".into(),
+            data.join("fuji/fuji.yaml").into_os_string(),
+            "--trace".into(),
+            trace.clone().into_os_string(),
+            "--observation".into(),
+            observation.clone().into_os_string(),
+            "session".into(),
+            "--plan".into(),
+            plan.clone().into_os_string(),
+            "--output-dir".into(),
+            output.clone().into_os_string(),
+        ])
+        .unwrap();
+        let store = load_store(&cli).unwrap();
+        assert!(prepare_cli_session(&cli, &store).is_err());
+        assert!(!output.exists());
+        assert!(!trace.exists());
+        assert!(!observation.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

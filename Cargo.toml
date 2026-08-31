@@ -52,6 +52,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ratatui = "0.30.2"
 crossterm = "0.29"
+rustix = { version = "1", features = ["fs"] }
 
 [profile.release]
 strip = true

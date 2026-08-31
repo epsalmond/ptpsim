@@ -295,13 +295,13 @@ cargo test --workspace
 the clippy and test commands enforce warning-free local crates without denying
 warnings emitted by dependencies.
 
-CI: Woodpecker, `.woodpecker/`. Steps are path-filtered and heavily
-cached (#41): docs-only pushes run almost nothing; toolchain images come
-prebuilt from the local registry (`ci/images/`, rebuilt by a manual
-trigger of the ci-images workflow — do that to pick up a new rustc, and
-budget one cold cache run after); the macOS agent keeps a persistent
-cargo target dir. A commit message containing `[ALL]` bypasses every
-path filter when you need a full run.
+CI: Woodpecker, `.woodpecker/`. Steps are path-filtered and heavily cached
+(#41), so docs-only pushes run almost nothing. Toolchain images come prebuilt
+from the local registry (`ci/images/`). The deployment owner's CI rebuilds
+them by manual trigger; `ci-rust` carries the locked workspace dependency
+cache, so budget one cold run after a `Cargo.lock` change until it is rebuilt.
+The macOS agent keeps a persistent cargo target dir. A commit message containing
+`[ALL]` bypasses every path filter when you need a full run.
 
 When a pipeline is red, diagnose it with [`docs/CI.md`](docs/CI.md) before
 touching code: an `error` status with no steps is a config-fetch/infra
