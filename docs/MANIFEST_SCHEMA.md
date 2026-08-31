@@ -1952,7 +1952,7 @@ families:
   exactly like §11.3 GATT-name resolution. The Step variant returned over
   the uniffi boundary carries the resolved triple, not the name. A step
   naming an undeclared interface is a load-time error.
-- `establishments` are named plans keyed by mechanism. A model connection's
+- `establishments` are named plans keyed by mechanism. A connection's
   `establishment:` field selects one. The plans reuse the §11
   `EstablishmentBlock` shape (`params`, `persist`, `activities`,
   `postExitReadiness`, `steps`).

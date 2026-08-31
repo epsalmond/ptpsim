@@ -217,7 +217,8 @@ impl UsbResponder {
         self
     }
 
-    /// Script the next bulk OUT transfer answering STALL.
+    /// Append a STALL at this bulk OUT script position. Builder order selects
+    /// which transfer receives it.
     pub fn queue_bulk_out_stall(mut self, detail: &str) -> Self {
         self.bulk_out_script
             .push_back(BulkOutScript::Stall(detail.to_string()));

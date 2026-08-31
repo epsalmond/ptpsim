@@ -305,6 +305,7 @@ fn ble_firmware_sources_are_rejected_inside_usb_plans() {
     for source in [
         "{ bleRead: { gatt: status, encoding: utf8 } }",
         "{ bleAdvert: { offset: 0, length: 4, encoding: utf8 } }",
+        "{ futureSource: {} }",
     ] {
         let error = ResolvedManufacturerIndex::from_yaml(&usb_index(
             &format!("            - acquireFirmware: {{ from: {source} }}"),

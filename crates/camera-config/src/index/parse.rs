@@ -653,15 +653,19 @@ fn resolve_usb_interface_names_in_steps(
                     .as_mapping()
                     .and_then(|mapping| mapping.get(Value::String("from".into())))
                 {
-                    for name in ["bleRead", "bleAdvert"] {
-                        if source.contains_key(Value::String(name.into())) {
-                            return Err(ConfigError::Validation {
-                                path: format!("{here}.from.{name}"),
-                                message: format!(
-                                    "BLE acquireFirmware source '{name}' is not valid in a USB establishment plan"
-                                ),
-                            });
-                        }
+                    let user_prompt = Value::String("userPrompt".into());
+                    if source.len() != 1 || !source.contains_key(&user_prompt) {
+                        let name = source
+                            .keys()
+                            .filter_map(Value::as_str)
+                            .find(|name| *name != "userPrompt")
+                            .unwrap_or("unknown");
+                        return Err(ConfigError::Validation {
+                            path: format!("{here}.from.{name}"),
+                            message: format!(
+                                "acquireFirmware source '{name}' is not valid in a USB establishment plan"
+                            ),
+                        });
                     }
                 }
             }
