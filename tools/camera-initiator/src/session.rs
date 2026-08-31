@@ -1413,6 +1413,21 @@ async fn run_switch_step(
     let source_entry = if switch.cold_source {
         trace.set_mode(switch.from.clone());
         observer.reset();
+        let runtime_values = match entry_runtime_values(&options.runtime_params, retained_scope) {
+            Ok(values) => values,
+            Err(error) => {
+                return Ok(failed_switch_report(
+                    switch,
+                    before_session_index,
+                    None,
+                    None,
+                    None,
+                    None,
+                    transaction_ids,
+                    error.to_string(),
+                ));
+            }
+        };
         let outcome = run_mode_entry(
             Arc::clone(&store),
             options.connection.clone(),
@@ -1421,7 +1436,7 @@ async fn run_switch_step(
             lifecycle.executor_transport(),
             observer.clone(),
             Arc::clone(&activity),
-            entry_runtime_values(&options.runtime_params, retained_scope)?,
+            runtime_values,
         )
         .await;
         let outcome = match outcome {
@@ -1461,6 +1476,21 @@ async fn run_switch_step(
     }
     trace.set_mode(switch.from.clone());
     observer.reset();
+    let runtime_values = match entry_runtime_values(&[], retained_scope) {
+        Ok(values) => values,
+        Err(error) => {
+            return Ok(failed_switch_report(
+                switch,
+                before_session_index,
+                source_entry,
+                None,
+                None,
+                None,
+                transaction_ids,
+                error.to_string(),
+            ));
+        }
+    };
     let exit = run_mode_reestablishment_exit(
         Arc::clone(&store),
         options.connection.clone(),
@@ -1469,7 +1499,7 @@ async fn run_switch_step(
         lifecycle.executor_transport(),
         observer.clone(),
         Arc::clone(&activity),
-        entry_runtime_values(&[], retained_scope)?,
+        runtime_values,
     )
     .await;
     transaction_ids.extend(observer.transaction_ids());
@@ -1816,7 +1846,14 @@ fn find_stop_cleanup(remaining: &[PreparedStep]) -> Option<&PreparedAction> {
 
 #[async_trait]
 trait ReportFileSystem: Send + Sync {
+    async fn rename_noreplace(&self, source: &Path, destination: &Path) -> std::io::Result<()>;
     async fn hard_link(&self, source: &Path, destination: &Path) -> std::io::Result<()>;
+    async fn create_new_synced_copy(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> std::io::Result<()>;
+    async fn sync_parent(&self, path: &Path) -> std::io::Result<()>;
     async fn remove_file(&self, path: &Path) -> std::io::Result<()>;
 }
 
@@ -1824,8 +1861,25 @@ struct TokioReportFileSystem;
 
 #[async_trait]
 impl ReportFileSystem for TokioReportFileSystem {
+    async fn rename_noreplace(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
+        rename_noreplace(source, destination)
+    }
+
     async fn hard_link(&self, source: &Path, destination: &Path) -> std::io::Result<()> {
         tokio::fs::hard_link(source, destination).await
+    }
+
+    async fn create_new_synced_copy(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> std::io::Result<()> {
+        copy_new_report_file(source, destination).await
+    }
+
+    async fn sync_parent(&self, path: &Path) -> std::io::Result<()> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        tokio::fs::File::open(parent).await?.sync_all().await
     }
 
     async fn remove_file(&self, path: &Path) -> std::io::Result<()> {
@@ -1850,25 +1904,36 @@ async fn publish_report_with_fs(
     write_new_report_file(&temporary, &bytes)
         .await
         .with_context(|| format!("create new report staging file {}", temporary.display()))?;
-    match file_system.hard_link(&temporary, path).await {
-        Ok(()) => {}
-        Err(error) if hard_link_is_unsupported(&error) => {
-            if tokio::fs::try_exists(path)
-                .await
-                .with_context(|| format!("inspect session report path {}", path.display()))?
-            {
-                bail!("refuse to overwrite session report {}", path.display())
+    let staging_remains = match file_system.rename_noreplace(&temporary, path).await {
+        Ok(()) => false,
+        Err(error) if rename_noreplace_is_unsupported(&error) => {
+            match file_system.hard_link(&temporary, path).await {
+                Ok(()) => true,
+                Err(error) if hard_link_is_unsupported(&error) => {
+                    file_system
+                        .create_new_synced_copy(&temporary, path)
+                        .await
+                        .with_context(|| format!("copy new session report {}", path.display()))?;
+                    true
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("link new session report {}", path.display()));
+                }
             }
-            tokio::fs::rename(&temporary, path)
-                .await
-                .with_context(|| format!("publish new session report {}", path.display()))?;
         }
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("publish new session report {}", path.display()));
         }
+    };
+    file_system
+        .sync_parent(path)
+        .await
+        .with_context(|| format!("sync session report directory for {}", path.display()))?;
+    if staging_remains {
+        let _ = file_system.remove_file(&temporary).await;
     }
-    let _ = file_system.remove_file(&temporary).await;
     Ok(())
 }
 
@@ -1882,6 +1947,64 @@ async fn write_new_report_file(path: &Path, bytes: &[u8]) -> std::io::Result<()>
     file.sync_all().await?;
     drop(file);
     Ok(())
+}
+
+async fn copy_new_report_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let mut source = tokio::fs::File::open(source).await?;
+    let mut destination_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .await?;
+    let result = async {
+        tokio::io::copy(&mut source, &mut destination_file).await?;
+        destination_file.sync_all().await
+    }
+    .await;
+    drop(destination_file);
+    if let Err(error) = result {
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos",
+    target_os = "redox",
+))]
+fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use rustix::fs::{renameat_with, RenameFlags, CWD};
+
+    renameat_with(CWD, source, CWD, destination, RenameFlags::NOREPLACE)
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos",
+    target_os = "redox",
+)))]
+fn rename_noreplace(_source: &Path, _destination: &Path) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+fn rename_noreplace_is_unsupported(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported
+    ) || matches!(error.raw_os_error(), Some(22 | 38 | 45 | 95))
 }
 
 fn hard_link_is_unsupported(error: &std::io::Error) -> bool {
@@ -2407,6 +2530,44 @@ connections:
         .unwrap()
     }
 
+    fn fake_string_switch_store() -> Arc<ConfigStore> {
+        ConfigStore::from_bundle(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Session, firmware: "1" }
+properties:
+  "0xd001": { name: sourceLabel, type: str, access: readOnly }
+connections:
+  app:
+    commandFraming: compressed
+    establishment: fake-handoff
+    modes: [source, target]
+    entries:
+      - to: source
+        steps:
+          - { sendOp: "0x9001", captures: [{ bind: sourceTid, as: transactionId }] }
+          - { getProp: "0xd001", captures: [{ bind: sourceLabel, as: propValue }] }
+      - from: source
+        to: target
+        reestablishConnection:
+          params: { launchMode: "3" }
+          exitSteps:
+            - { sendOp: "0x9002", params: [{ runtime: sourceTid }] }
+            - { closeSession: { transportClose: false } }
+      - to: target
+        steps: [{ sendOp: "0x9003" }]
+    actions:
+      shutter:
+        mode: ""
+        initiator:
+          steps: [{ sendOp: "0x9101" }]
+"#
+            .into(),
+            None,
+        )
+        .unwrap()
+    }
+
     fn observation_recorder(path: PathBuf) -> ObservationRecorder {
         ObservationRecorder::open(
             Some(path),
@@ -2462,7 +2623,20 @@ connections:
         PathBuf,
         Arc<Mutex<Vec<String>>>,
     ) {
-        let store = fake_switch_store();
+        run_fake_session_with_store(fake_switch_store(), yaml, response_codes, data_replies).await
+    }
+
+    async fn run_fake_session_with_store(
+        store: Arc<ConfigStore>,
+        yaml: &str,
+        response_codes: &[(u16, u16)],
+        data_replies: &[(u16, &[u8])],
+    ) -> (
+        Result<SessionReport>,
+        PathBuf,
+        PathBuf,
+        Arc<Mutex<Vec<String>>>,
+    ) {
         let plan = SessionPlan::from_yaml(yaml).unwrap();
         let prepared = prepare_session_plan(plan, &store, "app").unwrap();
         let nonce = SystemTime::now()
@@ -2512,6 +2686,53 @@ connections:
         )
         .await;
         (result, root, observation, calls)
+    }
+
+    #[tokio::test]
+    async fn cold_source_runtime_failure_preserves_completed_switch_phase() {
+        let source_label = [
+            7, b'o', 0, b'p', 0, b'a', 0, b'q', 0, b'u', 0, b'e', 0, 0, 0,
+        ];
+        let (result, root, observation, calls) = run_fake_session_with_store(
+            fake_string_switch_store(),
+            r#"
+schema: camera-initiator-session/v1
+steps:
+  - { id: switch, kind: switch, from: source, to: target }
+  - { id: later, kind: action, action: shutter }
+"#,
+            &[],
+            &[(0x1015, &source_label)],
+        )
+        .await;
+        result.expect_err("retained string scope must fail the switch");
+
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["steps"].as_array().unwrap().len(), 1);
+        let failed = &report["steps"][0];
+        assert!(!failed["transactionIds"].as_array().unwrap().is_empty());
+        assert!(!failed["switch"]["sourceEntry"].is_null());
+        assert_eq!(
+            failed["switch"]["sourceEntry"]["scope"]["sourceLabel"],
+            "opaque"
+        );
+        assert_eq!(failed["sessionIndex"], 1);
+        assert_eq!(failed["switch"]["beforeSessionIndex"], 1);
+        assert!(failed["switch"]["afterSessionIndex"].is_null());
+        assert!(failed["error"].as_str().unwrap().contains("sourceLabel"));
+        assert!(failed["switch"]["exit"].is_null());
+        assert!(failed["switch"]["checkpoint"].is_null());
+        assert!(failed["switch"]["targetEntry"].is_null());
+        assert!(!calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call.starts_with("op:9002:") || call.starts_with("op:9101:")));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(observation);
     }
 
     #[tokio::test]
@@ -2605,20 +2826,55 @@ steps:
     }
 
     struct FaultInjectingReportFileSystem {
+        rename_error: Option<io::ErrorKind>,
         hard_link_error: Option<io::ErrorKind>,
+        concurrent_destination: Option<Vec<u8>>,
+        sync_parent_error: Option<io::ErrorKind>,
         remove_error: Option<io::ErrorKind>,
+        calls: Arc<Mutex<Vec<&'static str>>>,
     }
 
     #[async_trait]
     impl ReportFileSystem for FaultInjectingReportFileSystem {
+        async fn rename_noreplace(&self, source: &Path, destination: &Path) -> io::Result<()> {
+            self.calls.lock().unwrap().push("rename");
+            if let Some(kind) = self.rename_error {
+                return Err(io::Error::new(kind, "injected no-replace rename failure"));
+            }
+            rename_noreplace(source, destination)
+        }
+
         async fn hard_link(&self, source: &Path, destination: &Path) -> io::Result<()> {
+            self.calls.lock().unwrap().push("link");
             if let Some(kind) = self.hard_link_error {
                 return Err(io::Error::new(kind, "injected hard-link failure"));
             }
             tokio::fs::hard_link(source, destination).await
         }
 
+        async fn create_new_synced_copy(
+            &self,
+            source: &Path,
+            destination: &Path,
+        ) -> io::Result<()> {
+            self.calls.lock().unwrap().push("copy");
+            if let Some(bytes) = &self.concurrent_destination {
+                write_new_report_file(destination, bytes).await?;
+            }
+            copy_new_report_file(source, destination).await
+        }
+
+        async fn sync_parent(&self, path: &Path) -> io::Result<()> {
+            self.calls.lock().unwrap().push("sync-parent");
+            if let Some(kind) = self.sync_parent_error {
+                return Err(io::Error::new(kind, "injected parent sync failure"));
+            }
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            tokio::fs::File::open(parent).await?.sync_all().await
+        }
+
         async fn remove_file(&self, path: &Path) -> io::Result<()> {
+            self.calls.lock().unwrap().push("remove");
             if let Some(kind) = self.remove_error {
                 return Err(io::Error::new(kind, "injected removal failure"));
             }
@@ -2659,19 +2915,43 @@ steps:
     }
 
     #[tokio::test]
-    async fn report_publication_falls_back_without_overwriting() {
+    async fn report_publication_copies_complete_bytes_when_links_are_unsupported() {
         let root = publication_root("fallback");
         let path = root.join("session-report.json");
+        let calls = Arc::new(Mutex::new(Vec::new()));
         let file_system = FaultInjectingReportFileSystem {
+            rename_error: Some(io::ErrorKind::Unsupported),
             hard_link_error: Some(io::ErrorKind::Unsupported),
+            concurrent_destination: None,
+            sync_parent_error: None,
             remove_error: None,
+            calls: Arc::clone(&calls),
         };
         publish_report_with_fs(&path, &publication_report("first"), &file_system)
             .await
             .unwrap();
         let first = std::fs::read(&path).unwrap();
+        assert_eq!(first.last(), Some(&b'\n'));
+        let parsed: Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(parsed["runId"], "first");
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            ["rename", "link", "copy", "sync-parent", "remove"]
+        );
 
-        publish_report_with_fs(&path, &publication_report("second"), &file_system)
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn report_publication_refuses_an_existing_destination() {
+        let root = publication_root("existing");
+        let path = root.join("session-report.json");
+        publish_report(&path, &publication_report("first"))
+            .await
+            .unwrap();
+        let first = std::fs::read(&path).unwrap();
+
+        publish_report(&path, &publication_report("second"))
             .await
             .expect_err("existing report must not be overwritten");
         assert_eq!(std::fs::read(&path).unwrap(), first);
@@ -2680,12 +2960,43 @@ steps:
     }
 
     #[tokio::test]
+    async fn report_publication_does_not_overwrite_a_racing_creator() {
+        let root = publication_root("race");
+        let path = root.join("session-report.json");
+        let competing = b"competing report\n".to_vec();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let file_system = FaultInjectingReportFileSystem {
+            rename_error: Some(io::ErrorKind::Unsupported),
+            hard_link_error: Some(io::ErrorKind::Unsupported),
+            concurrent_destination: Some(competing.clone()),
+            sync_parent_error: None,
+            remove_error: None,
+            calls: Arc::clone(&calls),
+        };
+
+        publish_report_with_fs(&path, &publication_report("candidate"), &file_system)
+            .await
+            .expect_err("racing report must not be overwritten");
+        assert_eq!(std::fs::read(&path).unwrap(), competing);
+        assert_eq!(calls.lock().unwrap().as_slice(), ["rename", "link", "copy"]);
+        let staging = PathBuf::from(format!("{}.partial-{}", path.display(), std::process::id()));
+        assert!(staging.is_file());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn published_report_ignores_staging_cleanup_failure() {
         let root = publication_root("cleanup");
         let path = root.join("session-report.json");
+        let calls = Arc::new(Mutex::new(Vec::new()));
         let file_system = FaultInjectingReportFileSystem {
+            rename_error: Some(io::ErrorKind::Unsupported),
             hard_link_error: None,
+            concurrent_destination: None,
+            sync_parent_error: None,
             remove_error: Some(io::ErrorKind::PermissionDenied),
+            calls: Arc::clone(&calls),
         };
         publish_report_with_fs(&path, &publication_report("published"), &file_system)
             .await
@@ -2693,6 +3004,39 @@ steps:
         assert!(path.is_file());
         let staging = PathBuf::from(format!("{}.partial-{}", path.display(), std::process::id()));
         assert!(staging.is_file());
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            ["rename", "link", "sync-parent", "remove"]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn parent_sync_failure_preserves_the_final_and_staging_files() {
+        let root = publication_root("sync-failure");
+        let path = root.join("session-report.json");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let file_system = FaultInjectingReportFileSystem {
+            rename_error: Some(io::ErrorKind::Unsupported),
+            hard_link_error: None,
+            concurrent_destination: None,
+            sync_parent_error: Some(io::ErrorKind::Other),
+            remove_error: None,
+            calls: Arc::clone(&calls),
+        };
+        publish_report_with_fs(&path, &publication_report("published"), &file_system)
+            .await
+            .expect_err("parent sync failure must fail publication");
+        let staging = PathBuf::from(format!("{}.partial-{}", path.display(), std::process::id()));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            std::fs::read(&staging).unwrap()
+        );
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            ["rename", "link", "sync-parent"]
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -242,9 +242,16 @@ and `targetEntry`, plus `beforeSessionIndex` and `afterSessionIndex`.
 `stopLiveView` after an action failure.
 
 After execution starts, the runner stops at the first executor or expectation
-failure. It omits later steps, attempts a safe session close, publishes the
-report atomically with create-new semantics, then exits with failure. An
-expectation mismatch does not change the successful action invocation record
+failure. It omits later steps, attempts a safe session close, then publishes the
+report with create-new semantics. The final path never replaces an existing
+entry. A no-replace rename or hard link makes the complete report visible in
+one filesystem operation. On filesystems that support neither operation, the
+runner opens the final path with create-new semantics, copies the staged report,
+and syncs the final file. This fallback is not atomic: the final path is visible
+while the copy runs, and readers must wait for the command to finish. Successful
+publication syncs the parent directory before the runner exits with failure. A
+stale staging file may remain if its best-effort cleanup fails after publication.
+An expectation mismatch does not change the successful action invocation record
 in the observation bundle. The existing `--trace`, `--observation`, and
 `--run-id` defaults and overrides apply to the complete session run.
 
