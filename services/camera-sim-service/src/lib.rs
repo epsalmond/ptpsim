@@ -525,7 +525,6 @@ impl CommandTraceGuard {
 
     fn mark_new_session(&mut self) {
         self.close_session_acknowledged = false;
-        self.terminal_outcome = None;
     }
 
     fn mark_close_session_acknowledged(&mut self) {
@@ -537,11 +536,13 @@ impl CommandTraceGuard {
     }
 
     fn mark_peer_closed(&mut self) {
-        self.terminal_outcome = Some(if self.close_session_acknowledged {
-            "peerClosedAfterCloseSession"
-        } else {
-            "transportLost"
-        });
+        if self.terminal_outcome.is_none() {
+            self.terminal_outcome = Some(if self.close_session_acknowledged {
+                "peerClosedAfterCloseSession"
+            } else {
+                "transportLost"
+            });
+        }
     }
 }
 
@@ -2029,7 +2030,7 @@ async fn handle_command_conn_inner(
             }
         }
         if closed {
-            command_trace.mark_terminal("transportAbort");
+            command_trace.mark_terminal("serverAborted");
             break;
         }
     }
@@ -2941,6 +2942,52 @@ mod tests {
     use std::task::{Context, Poll};
 
     use super::*;
+
+    fn terminal_trace_outcome(trace: &TraceLog) -> String {
+        let json: serde_json::Value = serde_json::from_str(&trace.json("run", 0)).unwrap();
+        json["events"].as_array().unwrap().last().unwrap()["outcome"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn command_trace_guard_decides_terminal_teardown_from_observed_events() {
+        let trace = TraceLog::default();
+        {
+            let mut guard = CommandTraceGuard::new(trace.clone(), TraceEndpoints::default());
+            guard.mark_close_session_acknowledged();
+            guard.mark_peer_closed();
+        }
+        assert_eq!(
+            terminal_trace_outcome(&trace),
+            "peerClosedAfterCloseSession"
+        );
+
+        let trace = TraceLog::default();
+        {
+            let mut guard = CommandTraceGuard::new(trace.clone(), TraceEndpoints::default());
+            guard.mark_close_session_acknowledged();
+            guard.mark_new_session();
+            guard.mark_peer_closed();
+        }
+        assert_eq!(terminal_trace_outcome(&trace), "transportLost");
+
+        let trace = TraceLog::default();
+        {
+            let mut guard = CommandTraceGuard::new(trace.clone(), TraceEndpoints::default());
+            guard.mark_peer_closed();
+        }
+        assert_eq!(terminal_trace_outcome(&trace), "transportLost");
+
+        let trace = TraceLog::default();
+        {
+            let mut guard = CommandTraceGuard::new(trace.clone(), TraceEndpoints::default());
+            guard.mark_terminal("transportAbort");
+            guard.mark_peer_closed();
+        }
+        assert_eq!(terminal_trace_outcome(&trace), "transportAbort");
+    }
 
     #[test]
     fn declared_aux_socket_enables_reuseaddr() {

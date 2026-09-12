@@ -73,8 +73,8 @@ cargo run -p camera-simctl -- fault list
 ```
 
 Run the bounded transfer teardown acceptance to verify a completed transfer,
-graceful close, typed close failure, response timeout, and abrupt transport
-loss:
+graceful close, typed close failure, response timeout, abrupt transport loss,
+and simulator-requested command abort:
 
 ```sh
 scripts/acceptance-transfer-teardown.sh

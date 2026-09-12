@@ -395,15 +395,21 @@ Use the incomplete mode to verify that object discovery reconciles with
 
 The bounded `scripts/acceptance-transfer-teardown.sh` runner completes an
 image transfer, then exercises orderly `CloseSession`, a typed close response
-failure, a close response timeout, and abrupt command-socket loss. It uses the
-generic `/faults` API for the failure cases and checks `/state` after the
-transfer and after cleanup. The `/trace` response includes a
-`ptpip.close_session` event with the operation transaction and response
-outcome, followed by `ptpip.command.closed`. A successful close ends with
-`peerClosedAfterCloseSession`; a client that loses the transport without a
-successful close ends with `transportLost`. The latter confirms simulator
-session cleanup and does not establish that a physical camera completed its
-own graceful shutdown.
+failure, a close response timeout, abrupt command-socket loss, and a
+simulator-requested command abort. It uses the generic `/faults` API for the
+failure cases and checks `/state` after the transfer and after cleanup. The
+`/trace` response includes a `ptpip.close_session` event with the operation
+transaction and response outcome, followed by `ptpip.command.closed`. The
+closed-event outcomes are:
+
+- `peerClosedAfterCloseSession`: the peer reached EOF after a successful close response;
+- `transportLost`: the peer reached EOF without a successful close response;
+- `transportAbort`: a command read or write failed at the service boundary;
+- `serverAborted`: an injected simulator close fault intentionally dropped the command socket;
+- `serverCancelled`: the service stopped an active standard command connection.
+
+The transport outcomes confirm simulator session cleanup and do not establish
+that a physical camera completed its own graceful shutdown.
 
 ## 9. Pull-model surface — manufacturer index (BLE-MVP)
 

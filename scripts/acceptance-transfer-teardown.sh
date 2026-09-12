@@ -60,10 +60,13 @@ if TRANSFER_TOTAL > 64 * 1024 * 1024 * 1024:
     raise SystemExit("the combined transfer size must not exceed 64 GiB")
 CASE_NAMES = tuple(
     name for name in os.environ.get(
-        "PTPSIM_TRANSFER_CASES", "orderly,rejection,timeout,abrupt"
+        "PTPSIM_TRANSFER_CASES", "orderly,rejection,timeout,abrupt,abort"
     ).split(",") if name
 )
-if not CASE_NAMES or any(name not in {"orderly", "rejection", "timeout", "abrupt"} for name in CASE_NAMES):
+if not CASE_NAMES or any(
+    name not in {"orderly", "rejection", "timeout", "abrupt", "abort"}
+    for name in CASE_NAMES
+):
     raise SystemExit("PTPSIM_TRANSFER_CASES contains an unknown case")
 TRANSFER_OP = 0x101B
 CLOSE_SESSION = 0x1003
@@ -192,6 +195,12 @@ def prepare_media(card):
 
 
 def http_json(control, method, path, body=None):
+    if (
+        method == "POST"
+        and path == "/shutdown"
+        and os.environ.get("PTPSIM_ACCEPTANCE_TEST_SHUTDOWN") == "malformed-json"
+    ):
+        raise json.JSONDecodeError("simulated malformed shutdown response", "", 0)
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(
         f"http://127.0.0.1:{control}{path}",
@@ -374,12 +383,27 @@ def assert_trace(trace, case, close_tid=None):
         assert not close_events, events
         assert end["outcome"] == "transportLost"
         assert not fault_events, fault_events
+    elif case == "abort":
+        assert len(close_events) == 1, events
+        close = close_events[0]
+        assert close.get("response_code") is None
+        assert close["outcome"] == "transportAbort"
+        assert end["outcome"] == "serverAborted"
+        assert len(fault_events) == 1, fault_events
+        assert fault_events[0]["operation"] == "0x1003"
+        assert fault_events[0]["fault_kind"] == "close"
+        assert fault_events[0].get("response_code") is None
     else:
         raise AssertionError(case)
 
 
 def run_case(case):
     case_root = (ARTIFACT_ROOT / case) if ARTIFACT_ROOT else (TMP_ROOT / case)
+    if ARTIFACT_ROOT and case_root.exists():
+        raise SystemExit(
+            f"artifact case directory already exists: {case_root}; "
+            "choose another PTPSIM_TRANSFER_ARTIFACT_ROOT"
+        )
     card = case_root / "card"
     card.mkdir(parents=True)
     prepare_media(card)
@@ -434,6 +458,10 @@ def run_case(case):
                     "operation": "0x1003",
                     "mutation": {"type": "suppress", "stage": "response"},
                 },
+                "abort": {
+                    "operation": "0x1003",
+                    "mutation": {"type": "close", "stage": "command"},
+                },
             }.get(case)
             if expected_fault:
                 fault_result = http_json(control, "POST", "/faults", expected_fault)
@@ -467,6 +495,15 @@ def run_case(case):
                 sock.close()
             elif case == "abrupt":
                 sock.close()
+            elif case == "abort":
+                send_operation(sock, CLOSE_SESSION, close_tid)
+                try:
+                    read_response(sock, close_tid)
+                except EOFError:
+                    pass
+                else:
+                    raise AssertionError("command close fault unexpectedly returned a response")
+                sock.close()
             else:
                 raise AssertionError(case)
             wait_state(control, lambda value: value["session_open"] is False, "transport cleanup")
@@ -492,14 +529,20 @@ def run_case(case):
     finally:
         try:
             http_json(control, "POST", "/shutdown", {})
-        except OSError:
+        except Exception:
             pass
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            process.wait(timeout=3)
-        log_stream.close()
+        finally:
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            finally:
+                log_stream.close()
 
 
 RESULTS = []
