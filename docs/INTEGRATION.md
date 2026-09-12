@@ -393,6 +393,18 @@ holds five events and forwards them together. `{"mode":"dropFraction",
 Use the incomplete mode to verify that object discovery reconciles with
 `GetObjectHandles` instead of trusting `ObjectAdded` alone.
 
+The bounded `scripts/acceptance-transfer-teardown.sh` runner completes an
+image transfer, then exercises orderly `CloseSession`, a typed close response
+failure, a close response timeout, and abrupt command-socket loss. It uses the
+generic `/faults` API for the failure cases and checks `/state` after the
+transfer and after cleanup. The `/trace` response includes a
+`ptpip.close_session` event with the operation transaction and response
+outcome, followed by `ptpip.command.closed`. A successful close ends with
+`peerClosedAfterCloseSession`; a client that loses the transport without a
+successful close ends with `transportLost`. The latter confirms simulator
+session cleanup and does not establish that a physical camera completed its
+own graceful shutdown.
+
 ## 9. Pull-model surface — manufacturer index (BLE-MVP)
 
 The seam the **greenfield iOS rewrite** consumes. Same `ConfigStore`, different
@@ -948,4 +960,3 @@ plugins are generic operator extensions.
 See also `tools/camera-sim-tui/fake-plugin/` for a minimal in-repo fake plugin
 proving discovery, pushed panel content, one proxied operator action, and clean
 shutdown for both spawned and attached modes.
-

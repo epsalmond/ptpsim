@@ -72,6 +72,25 @@ cargo run -p camera-simctl -- trace --after 0
 cargo run -p camera-simctl -- fault list
 ```
 
+Run the bounded transfer teardown acceptance to verify a completed transfer,
+graceful close, typed close failure, response timeout, and abrupt transport
+loss:
+
+```sh
+scripts/acceptance-transfer-teardown.sh
+```
+
+The default fixture transfers about 40 MiB per case. Set
+`PTPSIM_TRANSFER_SIZE` to a sparse logical size up to 64 GiB, or use
+`PTPSIM_TRANSFER_SIZES` for several sparse objects whose combined size is
+bounded at 64 GiB, and
+`PTPSIM_TRANSFER_CASES` to a comma-separated subset when reproducing a
+large-file run. For example, a single large case is
+`PTPSIM_TRANSFER_SIZE=$((40*1024*1024*1024))
+PTPSIM_TRANSFER_CASES=orderly scripts/acceptance-transfer-teardown.sh`.
+Set `PTPSIM_TRANSFER_ARTIFACT_ROOT` to retain service logs, sparse media, and
+a `results.json` summary after the run.
+
 `--startup-state <file>` on the service applies a YAML/JSON state overlay
 (schema `ptpsim-startup-state/v1`) before listeners serve. The fixture at
 `packages/fixtures/startup-state/gfx100ii-iso-2000.yaml` is a runnable

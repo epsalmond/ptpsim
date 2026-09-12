@@ -27,6 +27,15 @@ pub struct FaultTraceEvidence<'a> {
     pub applied: String,
 }
 
+pub(crate) struct OperationTraceEvidence {
+    pub endpoints: TraceEndpoints,
+    pub operation: u16,
+    pub transaction_id: u32,
+    pub response_code: Option<String>,
+    pub outcome: String,
+    pub error: Option<String>,
+}
+
 impl TraceEndpoints {
     pub fn connection(stream: &tokio::net::TcpStream) -> Self {
         Self {
@@ -178,6 +187,87 @@ impl TraceLog {
             }),
             applied: Some(applied),
         });
+        while state.events.len() > MAX_EVENTS {
+            state.events.pop_front();
+            state.dropped_events += 1;
+        }
+    }
+
+    /// Record a protocol operation whose lifecycle matters to a consumer.
+    ///
+    /// The normal observation JSONL contains every transaction. The control
+    /// trace stays intentionally small, but teardown tests need to prove that
+    /// `CloseSession` reached the wire and what happened to its response.
+    pub fn record_operation(&self, kind: impl Into<String>, evidence: OperationTraceEvidence) {
+        let OperationTraceEvidence {
+            endpoints,
+            operation,
+            transaction_id,
+            response_code,
+            outcome,
+            error,
+        } = evidence;
+        let (outcome, outcome_truncated) = bounded_text(Some(outcome));
+        let (error, error_truncated) = bounded_text(error);
+        let mut state = self.state.lock().expect("lifecycle trace lock poisoned");
+        let sequence = state.next_sequence;
+        state.next_sequence = state.next_sequence.saturating_add(1);
+        state.events.push_back(TraceEvent {
+            sequence,
+            elapsed_ms: self.started.elapsed().as_millis() as u64,
+            kind: kind.into(),
+            endpoints,
+            payload_hex: None,
+            payload_length: None,
+            payload_truncated: false,
+            outcome,
+            outcome_truncated,
+            error,
+            error_truncated,
+            operation: Some(format!("0x{operation:04x}")),
+            transaction_id: Some(transaction_id),
+            response_code,
+            fault_id: None,
+            fault_kind: None,
+            payload_summary: None,
+            applied: None,
+        });
+        state.truncated_texts += u64::from(outcome_truncated) + u64::from(error_truncated);
+        while state.events.len() > MAX_EVENTS {
+            state.events.pop_front();
+            state.dropped_events += 1;
+        }
+    }
+
+    /// Record the end of one command transport. A `transportLost` outcome is
+    /// deliberately distinct from a `peerClosedAfterCloseSession` outcome so
+    /// clients can assert which teardown they actually exercised.
+    pub fn record_command_end(&self, endpoints: TraceEndpoints, outcome: impl Into<String>) {
+        let (outcome, outcome_truncated) = bounded_text(Some(outcome.into()));
+        let mut state = self.state.lock().expect("lifecycle trace lock poisoned");
+        let sequence = state.next_sequence;
+        state.next_sequence = state.next_sequence.saturating_add(1);
+        state.events.push_back(TraceEvent {
+            sequence,
+            elapsed_ms: self.started.elapsed().as_millis() as u64,
+            kind: "ptpip.command.closed".into(),
+            endpoints,
+            payload_hex: None,
+            payload_length: None,
+            payload_truncated: false,
+            outcome,
+            outcome_truncated,
+            error: None,
+            error_truncated: false,
+            operation: None,
+            transaction_id: None,
+            response_code: None,
+            fault_id: None,
+            fault_kind: None,
+            payload_summary: None,
+            applied: None,
+        });
+        state.truncated_texts += u64::from(outcome_truncated);
         while state.events.len() > MAX_EVENTS {
             state.events.pop_front();
             state.dropped_events += 1;
@@ -404,5 +494,33 @@ mod tests {
         assert_eq!(event["payload_summary"]["marker"], "faultMutation");
         assert_eq!(event["applied"], "replacedData");
         assert_eq!(event["payload_hex"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn teardown_trace_preserves_close_response_and_transport_end() {
+        let trace = TraceLog::default();
+        trace.record_operation(
+            "ptpip.close_session",
+            OperationTraceEvidence {
+                endpoints: TraceEndpoints::default(),
+                operation: 0x1003,
+                transaction_id: 41,
+                response_code: Some("0x2001".into()),
+                outcome: "ok".into(),
+                error: None,
+            },
+        );
+        trace.record_command_end(TraceEndpoints::default(), "peerClosedAfterCloseSession");
+
+        let json: serde_json::Value = serde_json::from_str(&trace.json("run", 0)).unwrap();
+        let events = json["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["kind"], "ptpip.close_session");
+        assert_eq!(events[0]["operation"], "0x1003");
+        assert_eq!(events[0]["transaction_id"], 41);
+        assert_eq!(events[0]["response_code"], "0x2001");
+        assert_eq!(events[0]["outcome"], "ok");
+        assert_eq!(events[1]["kind"], "ptpip.command.closed");
+        assert_eq!(events[1]["outcome"], "peerClosedAfterCloseSession");
     }
 }
