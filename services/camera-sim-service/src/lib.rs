@@ -63,7 +63,7 @@ mod state_json;
 mod trace;
 
 pub(crate) use metrics::Metrics;
-use trace::{FaultTraceEvidence, TraceEndpoints, TraceLog};
+use trace::{FaultTraceEvidence, OperationTraceEvidence, TraceEndpoints, TraceLog};
 
 #[derive(Clone)]
 pub struct Config {
@@ -504,6 +504,54 @@ struct CommandResources {
     standard_connections: Arc<StandardConnections>,
     declared_aux: Vec<(SocketRole, Arc<DeclaredAuxListener>)>,
     declared_aux_sync: Arc<Mutex<()>>,
+}
+
+struct CommandTraceGuard {
+    trace: TraceLog,
+    endpoints: TraceEndpoints,
+    close_session_acknowledged: bool,
+    terminal_outcome: Option<&'static str>,
+}
+
+impl CommandTraceGuard {
+    fn new(trace: TraceLog, endpoints: TraceEndpoints) -> Self {
+        Self {
+            trace,
+            endpoints,
+            close_session_acknowledged: false,
+            terminal_outcome: None,
+        }
+    }
+
+    fn mark_new_session(&mut self) {
+        self.close_session_acknowledged = false;
+    }
+
+    fn mark_close_session_acknowledged(&mut self) {
+        self.close_session_acknowledged = true;
+    }
+
+    fn mark_terminal(&mut self, outcome: &'static str) {
+        self.terminal_outcome = Some(outcome);
+    }
+
+    fn mark_peer_closed(&mut self) {
+        if self.terminal_outcome.is_none() {
+            self.terminal_outcome = Some(if self.close_session_acknowledged {
+                "peerClosedAfterCloseSession"
+            } else {
+                "transportLost"
+            });
+        }
+    }
+}
+
+impl Drop for CommandTraceGuard {
+    fn drop(&mut self) {
+        let outcome = self.terminal_outcome.unwrap_or("transportLost");
+        self.trace
+            .record_command_end(self.endpoints.clone(), outcome);
+    }
 }
 
 #[derive(Default)]
@@ -1307,6 +1355,16 @@ fn response_outcome(code: u16) -> TransactionOutcome {
     }
 }
 
+fn transaction_outcome_name(outcome: TransactionOutcome) -> &'static str {
+    match outcome {
+        TransactionOutcome::Ok => "ok",
+        TransactionOutcome::NonOk => "nonOk",
+        TransactionOutcome::Timeout => "timeout",
+        TransactionOutcome::TransportAbort => "transportAbort",
+        TransactionOutcome::Incomplete => "incomplete",
+    }
+}
+
 fn reply_is_ok(reply: &Reply) -> bool {
     match reply {
         Reply::Response(response)
@@ -1669,17 +1727,34 @@ async fn handle_command_conn_inner(
     }
 
     // 2. Manifest-framed operation loop.
+    let mut command_trace = CommandTraceGuard::new(trace.clone(), endpoints.clone());
     let mut first_operation_traced = false;
     loop {
-        let next = if let Some(cancel) = standard_cancel.as_mut() {
+        let mut server_cancelled = false;
+        let next_result = if let Some(cancel) = standard_cancel.as_mut() {
             tokio::select! {
-                frame = read_frame(&mut stream, &metrics) => frame?,
-                _ = cancel.recv() => None,
+                frame = read_frame(&mut stream, &metrics) => frame,
+                _ = cancel.recv() => {
+                    server_cancelled = true;
+                    Ok(None)
+                },
             }
         } else {
-            read_frame(&mut stream, &metrics).await?
+            read_frame(&mut stream, &metrics).await
+        };
+        let next = match next_result {
+            Ok(next) => next,
+            Err(error) => {
+                command_trace.mark_terminal("transportAbort");
+                return Err(error);
+            }
         };
         let Some(frame) = next else {
+            if server_cancelled {
+                command_trace.mark_terminal("serverCancelled");
+            } else {
+                command_trace.mark_peer_closed();
+            }
             break;
         };
         let req = match decode_command_frame(context.command_framing, &frame) {
@@ -1747,17 +1822,25 @@ async fn handle_command_conn_inner(
                 &WirePlan::None,
                 &metrics,
             )
-            .await?;
+            .await
+            .inspect_err(|_| command_trace.mark_terminal("transportAbort"))?;
             continue;
         }
         let data_in = if has_data_in(req.code) {
-            collect_data_in(
+            match collect_data_in(
                 &mut stream,
                 req.transaction_id,
                 context.command_framing,
                 &metrics,
             )
-            .await?
+            .await
+            {
+                Ok(data) => data,
+                Err(error) => {
+                    command_trace.mark_terminal("transportAbort");
+                    return Err(error);
+                }
+            }
         } else {
             None
         };
@@ -1766,6 +1849,9 @@ async fn handle_command_conn_inner(
             let mut e = engine.lock().await;
             let is_poll_live_view = context.poll_live_view_op == Some(req.code);
             let reply = e.on_operation(&req, data_in.as_deref());
+            if req.code == op::OPEN_SESSION && reply_is_ok(&reply) {
+                command_trace.mark_new_session();
+            }
             if reply_is_ok(&reply) {
                 let mut owner = session_owner.lock().await;
                 match req.code {
@@ -1795,7 +1881,10 @@ async fn handle_command_conn_inner(
             )
         };
         for (listener, ready) in aux_readiness {
-            listener.set_ready(ready).await?;
+            listener
+                .set_ready(ready)
+                .await
+                .inspect_err(|_| command_trace.mark_terminal("transportAbort"))?;
         }
         drop(_declared_aux_sync);
         let reply = if is_poll_live_view {
@@ -1864,6 +1953,26 @@ async fn handle_command_conn_inner(
                 Some(error),
             ),
         };
+        if req.code == op::CLOSE_SESSION {
+            let response_code = response.as_ref().map(|response| response.code.clone());
+            let acknowledged = response_code.as_deref() == Some("0x2001")
+                && outcome == TransactionOutcome::Ok
+                && !closed;
+            if acknowledged {
+                command_trace.mark_close_session_acknowledged();
+            }
+            trace.record_operation(
+                "ptpip.close_session",
+                OperationTraceEvidence {
+                    endpoints: endpoints.clone(),
+                    operation: req.code,
+                    transaction_id: req.transaction_id,
+                    response_code,
+                    outcome: transaction_outcome_name(outcome).into(),
+                    error: write_error.as_ref().map(ToString::to_string),
+                },
+            );
+        }
         let transaction_record = observations
             .append(observation_context.clone(), |common| {
                 ObservationLine::PtpTransaction(Box::new(PtpTransactionRecord {
@@ -1912,6 +2021,7 @@ async fn handle_command_conn_inner(
             let _ = event_tx.send(event);
         }
         if let Some(error) = write_error {
+            command_trace.mark_terminal("transportAbort");
             return Err(error);
         }
         if let Some(completion) = completion {
@@ -1920,6 +2030,7 @@ async fn handle_command_conn_inner(
             }
         }
         if closed {
+            command_trace.mark_terminal("serverAborted");
             break;
         }
     }
@@ -2831,6 +2942,52 @@ mod tests {
     use std::task::{Context, Poll};
 
     use super::*;
+
+    fn terminal_trace_outcome(trace: &TraceLog) -> String {
+        let json: serde_json::Value = serde_json::from_str(&trace.json("run", 0)).unwrap();
+        json["events"].as_array().unwrap().last().unwrap()["outcome"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn command_trace_guard_decides_terminal_teardown_from_observed_events() {
+        let trace = TraceLog::default();
+        {
+            let mut guard = CommandTraceGuard::new(trace.clone(), TraceEndpoints::default());
+            guard.mark_close_session_acknowledged();
+            guard.mark_peer_closed();
+        }
+        assert_eq!(
+            terminal_trace_outcome(&trace),
+            "peerClosedAfterCloseSession"
+        );
+
+        let trace = TraceLog::default();
+        {
+            let mut guard = CommandTraceGuard::new(trace.clone(), TraceEndpoints::default());
+            guard.mark_close_session_acknowledged();
+            guard.mark_new_session();
+            guard.mark_peer_closed();
+        }
+        assert_eq!(terminal_trace_outcome(&trace), "transportLost");
+
+        let trace = TraceLog::default();
+        {
+            let mut guard = CommandTraceGuard::new(trace.clone(), TraceEndpoints::default());
+            guard.mark_peer_closed();
+        }
+        assert_eq!(terminal_trace_outcome(&trace), "transportLost");
+
+        let trace = TraceLog::default();
+        {
+            let mut guard = CommandTraceGuard::new(trace.clone(), TraceEndpoints::default());
+            guard.mark_terminal("transportAbort");
+            guard.mark_peer_closed();
+        }
+        assert_eq!(terminal_trace_outcome(&trace), "transportAbort");
+    }
 
     #[test]
     fn declared_aux_socket_enables_reuseaddr() {
