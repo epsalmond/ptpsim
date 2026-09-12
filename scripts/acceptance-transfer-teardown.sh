@@ -39,6 +39,9 @@ from pathlib import Path
 ROOT = Path(sys.argv[1])
 PTPSIM_BIN = sys.argv[2]
 TMP_ROOT = Path(sys.argv[3])
+sys.path.insert(0, str(ROOT / "scripts"))
+from transfer_teardown_cleanup import reap_process
+
 MANIFEST = ROOT / "packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml"
 ARTIFACT_ROOT = os.environ.get("PTPSIM_TRANSFER_ARTIFACT_ROOT")
 if ARTIFACT_ROOT:
@@ -534,17 +537,7 @@ def run_case(case):
         except Exception:
             pass
         finally:
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-            finally:
-                log_stream.close()
+            reap_process(process, log_stream)
 
 
 RESULTS = []

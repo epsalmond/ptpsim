@@ -35,17 +35,15 @@ if PTPSIM_TRANSFER_SIZE=30 PTPSIM_TRANSFER_CASES=orderly \
 fi
 grep -F "MOV prefix and tail marker" "$small_log" >/dev/null
 
-stubborn_artifacts="$TMP_ROOT/stubborn"
-stubborn_log="$TMP_ROOT/stubborn.log"
-PTPSIM_REAL_BIN="$ROOT/target/debug/camera-sim-service" \
-PTPSIM_BIN="$ROOT/scripts/test-fixtures/stubborn-camera-sim-service.sh" \
+malformed_artifacts="$TMP_ROOT/malformed"
+malformed_log="$TMP_ROOT/malformed.log"
 PTPSIM_ACCEPTANCE_TEST_SHUTDOWN=malformed-json \
 PTPSIM_TRANSFER_SIZE=1000000 \
 PTPSIM_TRANSFER_CASES=orderly \
-PTPSIM_TRANSFER_ARTIFACT_ROOT="$stubborn_artifacts" \
-  "$ROOT/scripts/acceptance-transfer-teardown.sh" >"$stubborn_log" 2>&1
+PTPSIM_TRANSFER_ARTIFACT_ROOT="$malformed_artifacts" \
+  "$ROOT/scripts/acceptance-transfer-teardown.sh" >"$malformed_log" 2>&1
 
-python3 - "$normal_artifacts/results.json" "$stubborn_artifacts/results.json" <<'PY'
+python3 - "$normal_artifacts/results.json" "$malformed_artifacts/results.json" <<'PY'
 import json
 import sys
 
@@ -55,12 +53,30 @@ for path in sys.argv[1:]:
     assert result["status"] == "passed", result
 PY
 
-if ps ax | grep -E "[c]amera-sim-service.*$stubborn_artifacts/orderly/card" >/dev/null; then
-    echo "stubborn simulator process survived cleanup" >&2
-    exit 1
-fi
-if command -v lsof >/dev/null && lsof -t -- "$stubborn_artifacts/orderly/camera-sim-service.log" >/dev/null 2>&1; then
-    echo "stubborn simulator log remained open after cleanup" >&2
+python3 - "$TMP_ROOT/stubborn-child.log" "$ROOT" <<'PY'
+import signal
+import subprocess
+import sys
+import time
+
+root = sys.argv[2]
+sys.path.insert(0, root + "/scripts")
+from transfer_teardown_cleanup import reap_process
+
+log_path = sys.argv[1]
+with open(log_path, "wb") as log_stream:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"],
+        stdout=log_stream,
+        stderr=subprocess.STDOUT,
+    )
+    reap_process(process, log_stream)
+assert process.returncode == -signal.SIGKILL, process.returncode
+assert process.poll() is not None
+PY
+
+if command -v lsof >/dev/null && lsof -t -- "$malformed_artifacts/orderly/camera-sim-service.log" >/dev/null 2>&1; then
+    echo "malformed-shutdown simulator log remained open after cleanup" >&2
     exit 1
 fi
 
