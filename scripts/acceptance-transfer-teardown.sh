@@ -46,15 +46,17 @@ if ARTIFACT_ROOT:
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
 
 TAIL_MARKER = b"PTPSIM-TEARDOWN-TAIL"
+MOV_PREFIX = b"ftypqt  mov"
+MIN_TRANSFER_SIZE = len(MOV_PREFIX) + len(TAIL_MARKER)
 sizes_text = os.environ.get("PTPSIM_TRANSFER_SIZES")
 if sizes_text:
     TRANSFER_SIZES = tuple(int(value) for value in sizes_text.split(","))
 else:
     TRANSFER_SIZES = (int(os.environ.get("PTPSIM_TRANSFER_SIZE", 40 * 1024 * 1024 + 17)),)
 if not TRANSFER_SIZES or not all(
-    len(TAIL_MARKER) <= size <= 64 * 1024 * 1024 * 1024 for size in TRANSFER_SIZES
+    MIN_TRANSFER_SIZE <= size <= 64 * 1024 * 1024 * 1024 for size in TRANSFER_SIZES
 ):
-    raise SystemExit("each transfer size must be between the tail marker length and 64 GiB")
+    raise SystemExit("each transfer size must leave room for the MOV prefix and tail marker")
 TRANSFER_TOTAL = sum(TRANSFER_SIZES)
 if TRANSFER_TOTAL > 64 * 1024 * 1024 * 1024:
     raise SystemExit("the combined transfer size must not exceed 64 GiB")
@@ -187,7 +189,7 @@ def prepare_media(card):
         path = card / "DCIM/100_FUJI" / f"DSCF847{index}.MOV"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("wb") as stream:
-            stream.write(b"ftypqt  mov")
+            stream.write(MOV_PREFIX)
             stream.truncate(size)
             stream.seek(size - len(TAIL_MARKER))
             stream.write(TAIL_MARKER)

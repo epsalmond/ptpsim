@@ -27,6 +27,14 @@ if grep -F "FileExistsError" "$rerun_log" >/dev/null; then
     exit 1
 fi
 
+small_log="$TMP_ROOT/small-fixture.log"
+if PTPSIM_TRANSFER_SIZE=30 PTPSIM_TRANSFER_CASES=orderly \
+    "$ROOT/scripts/acceptance-transfer-teardown.sh" >"$small_log" 2>&1; then
+    echo "expected a fixture smaller than its prefix and tail to be rejected" >&2
+    exit 1
+fi
+grep -F "MOV prefix and tail marker" "$small_log" >/dev/null
+
 stubborn_artifacts="$TMP_ROOT/stubborn"
 stubborn_log="$TMP_ROOT/stubborn.log"
 PTPSIM_REAL_BIN="$ROOT/target/debug/camera-sim-service" \
