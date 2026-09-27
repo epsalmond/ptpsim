@@ -40,6 +40,10 @@ separate step, generates Swift bindings with the host-only binding tool, and
 publishes the XCFramework archives and checksum to the commit's `sha-<commit>`
 release.
 
+To wait for that existing run, select the pipeline URL from the tag's CI check
+and run `wait-for-status woodpecker-deploy <pipeline-URL>`. This observes the
+selected pipeline and does not create or move a tag.
+
 ## Consumer workflow
 
 1. Select a successful `sha-<commit>` release whose commit is merged to
@@ -115,4 +119,3 @@ application pipeline.
 For a local reproduction, run `ci/build-xcframework.sh all` on a Mac with Xcode
 and the three targets installed (`rustup target add aarch64-apple-ios
 aarch64-apple-ios-sim x86_64-apple-ios`).
-
