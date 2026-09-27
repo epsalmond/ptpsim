@@ -40,9 +40,11 @@ separate step, generates Swift bindings with the host-only binding tool, and
 publishes the XCFramework archives and checksum to the commit's `sha-<commit>`
 release.
 
-To wait for that existing run, select the pipeline URL from the tag's CI check
-and run `wait-for-status woodpecker-deploy <pipeline-URL>`. This observes the
-selected pipeline and does not create or move a tag.
+On a maintainer session with the shared waiter installed, select the pipeline
+URL from the tag's CI check and run
+`wait-for-status woodpecker-deploy <pipeline-URL>`. This observes the selected
+pipeline and does not create or move a tag. The pipeline page remains available
+to other contributors.
 
 ## Consumer workflow
 

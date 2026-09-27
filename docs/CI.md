@@ -29,11 +29,12 @@ bypasses every path filter (see AGENTS.md "Build + test").
 
 ## Rules of thumb
 
-- If a blocking wait is required, select the exact PR or pipeline and run the
-  shared waiter once: `wait-for-status gh-checks <PR-number>` for PR checks or
-  `wait-for-status woodpecker-deploy <pipeline-URL>` for an existing pipeline.
-  A failed wait reports matching log lines and preserves the complete log for
-  diagnosis.
+- If a blocking wait is required and the shared waiter is installed, select the
+  exact PR or pipeline and run it once: `wait-for-status gh-checks <PR-number>`
+  for PR checks or `wait-for-status woodpecker-deploy <pipeline-URL>` for an
+  existing pipeline. A failed wait reports matching log lines and preserves
+  the complete log for diagnosis. The pipeline page remains available to other
+  contributors.
 - A red `main` right after a merge is not automatically the merge's fault.
   Check whether any steps ran before reading code.
 - An `error` pipeline with no steps is **not** something you fix by editing
