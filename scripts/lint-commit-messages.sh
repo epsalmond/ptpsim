@@ -141,6 +141,19 @@ self_test() {
         fi
         "$scratch_repo/scripts/lint-commit-messages.sh" HEAD >/dev/null
 
+        git checkout -q main
+        printf '%s\n' squash >squash-change
+        git add squash-change
+        GIT_AUTHOR_NAME='Commit author' \
+            GIT_AUTHOR_EMAIL='author@example.invalid' \
+            GIT_COMMITTER_NAME='GitHub' \
+            GIT_COMMITTER_EMAIL='noreply@github.com' \
+            git -c core.hooksPath=/dev/null commit -q \
+                -m 'Add squash feature (#12)' \
+                -m '* Add first feature commit' \
+                -m '* Add second feature commit'
+        "$scratch_repo/scripts/lint-commit-messages.sh" HEAD >/dev/null
+
         printf '%s\n' invalid >invalid-change
         git add invalid-change
         if git commit -q -m 'Add thing and other thing' >/dev/null 2>&1; then
@@ -190,8 +203,21 @@ esac
 is_merge_commit() {
     [ "$(git cat-file -p "$1" | sed '/^$/q' | grep -c '^parent ')" -ge 2 ]
 }
+is_github_squash_commit() {
+    commit=$1
+    [ "$(git show -s --format=%cn "$commit")" = GitHub ] || return 1
+    [ "$(git show -s --format=%ce "$commit")" = noreply@github.com ] || return 1
+    printf '%s\n' "$(git show -s --format=%s "$commit")" | grep -E -q ' \(#[0-9]+\)$'
+}
 for commit in $commits; do
     if is_merge_commit "$commit"; then
+        continue
+    fi
+    if is_github_squash_commit "$commit"; then
+        message=$(git show -s --format=%s "$commit")
+        if ! check_message "$message" "$commit"; then
+            failed=1
+        fi
         continue
     fi
     message=$(git show -s --format=%B "$commit")
