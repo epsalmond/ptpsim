@@ -308,3 +308,10 @@ When a pipeline is red, diagnose it with [`docs/CI.md`](docs/CI.md) before
 touching code: an `error` status with no steps is a config-fetch/infra
 failure, not a failing test, and rerunning it reuses the stored (failed)
 config — create a fresh pipeline instead.
+
+For an explicit blocking wait on an existing PR or Woodpecker run, maintainer
+sessions with the shared `wait-for-status` command installed can run it once:
+`wait-for-status gh-checks <PR-number>` or
+`wait-for-status woodpecker-deploy <pipeline-URL>`. The URL selects the
+repository and pipeline. The waiter retains the failed log and prints matching
+failure lines; it does not create or move release tags.
