@@ -149,9 +149,10 @@ self_test() {
             GIT_COMMITTER_NAME='GitHub' \
             GIT_COMMITTER_EMAIL='noreply@github.com' \
             git -c core.hooksPath=/dev/null commit -q \
-                -m 'Add squash feature (#12)' \
+                -m 'Add squash feature' \
                 -m '* Add first feature commit' \
-                -m '* Add second feature commit'
+                -m '* Add second feature commit' \
+                -m 'Closes #12.'
         "$scratch_repo/scripts/lint-commit-messages.sh" HEAD >/dev/null
 
         printf '%s\n' invalid >invalid-change
@@ -203,17 +204,16 @@ esac
 is_merge_commit() {
     [ "$(git cat-file -p "$1" | sed '/^$/q' | grep -c '^parent ')" -ge 2 ]
 }
-is_github_squash_commit() {
+is_github_commit() {
     commit=$1
     [ "$(git show -s --format=%cn "$commit")" = GitHub ] || return 1
     [ "$(git show -s --format=%ce "$commit")" = noreply@github.com ] || return 1
-    printf '%s\n' "$(git show -s --format=%s "$commit")" | grep -E -q ' \(#[0-9]+\)$'
 }
 for commit in $commits; do
     if is_merge_commit "$commit"; then
         continue
     fi
-    if is_github_squash_commit "$commit"; then
+    if is_github_commit "$commit"; then
         message=$(git show -s --format=%s "$commit")
         if ! check_message "$message" "$commit"; then
             failed=1
