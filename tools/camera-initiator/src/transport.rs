@@ -1843,6 +1843,21 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     }
 }
 
+/// Exercise the buffered frame reader with finite in-memory input.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub async fn fuzz_frame_reader(input: &[u8], max: usize) -> Vec<Vec<u8>> {
+    let mut reader = FrameReader::new(input);
+    let mut frames = Vec::new();
+    for _ in 0..32 {
+        match reader.read_frame(max).await {
+            Ok(frame) => frames.push(frame),
+            Err(_) => break,
+        }
+    }
+    frames
+}
+
 struct WritePoison<'a> {
     poisoned: &'a AtomicBool,
     armed: bool,
@@ -2222,10 +2237,10 @@ mod tests {
         malformed.extend_from_slice(&[0, 0, 0, 0]);
         let malformed_len = malformed.len() as u32;
         malformed[0..4].copy_from_slice(&malformed_len.to_le_bytes());
-        assert!(matches!(
+        assert_eq!(
             PtpIpPacket::decode(&malformed),
-            Ok(PtpIpPacket::InitFail(_))
-        ));
+            Err(ptp_core::error::DecodeError::TrailingBytes { remaining: 4 })
+        );
         assert_eq!(canonical_init_fail_reason(&malformed), None);
     }
 }

@@ -109,7 +109,8 @@ pub fn encode_data(op: u16, txn: u32, payload: &[u8]) -> Vec<u8> {
     v
 }
 
-/// Decode one Fuji compressed frame. A type-2 Data frame surfaces as `Data`; its
+/// Decode exactly one Fuji compressed frame. Control parameters must be
+/// complete `u32` values. A type-2 Data frame surfaces as `Data`; its
 /// echoed opcode is dropped (redundant — the consumer correlates by `txn` with
 /// the operation request).
 pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
@@ -124,12 +125,9 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
     let ptype = r.u16()?;
     let code = r.u16()?;
     let tid = r.u32()?;
-    Ok(match ptype {
+    let packet = match ptype {
         ty::OP_REQUEST => {
-            let mut params = Vec::new();
-            while r.remaining() >= 4 {
-                params.push(r.u32()?);
-            }
+            let params = remaining_params(&mut r)?;
             // Compressed framing carries no DataPhaseInfo; default to 1.
             PtpIpPacket::OperationRequest(OperationRequest {
                 data_phase_info: 1,
@@ -139,10 +137,7 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
             })
         }
         ty::OP_RESPONSE => {
-            let mut params = Vec::new();
-            while r.remaining() >= 4 {
-                params.push(r.u32()?);
-            }
+            let params = remaining_params(&mut r)?;
             PtpIpPacket::OperationResponse(OperationResponse {
                 code,
                 transaction_id: tid,
@@ -154,12 +149,65 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
             payload: r.rest(),
         }),
         other => return Err(DecodeError::UnknownPacketType(other as u32)),
-    })
+    };
+    r.finish()?;
+    Ok(packet)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_frames_reject_partial_parameters() {
+        for ptype in [ty::OP_REQUEST, ty::OP_RESPONSE] {
+            for trailing in 1..=3 {
+                let mut bytes = vec![0; 16 + trailing];
+                let length = bytes.len() as u32;
+                bytes[..4].copy_from_slice(&length.to_le_bytes());
+                bytes[4..6].copy_from_slice(&ptype.to_le_bytes());
+                assert!(matches!(
+                    decode(&bytes),
+                    Err(DecodeError::UnexpectedEof { .. })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_headers_and_lengths_are_rejected() {
+        for length in 0..12 {
+            let mut bytes = vec![0; length];
+            if length >= 4 {
+                bytes[..4].copy_from_slice(&(length as u32).to_le_bytes());
+            }
+            assert!(decode(&bytes).is_err());
+        }
+        for length in [0, 4, 11, 13, u32::MAX] {
+            let mut bytes = vec![0; 12];
+            bytes[..4].copy_from_slice(&length.to_le_bytes());
+            bytes[4..6].copy_from_slice(&ty::OP_REQUEST.to_le_bytes());
+            assert!(matches!(
+                decode(&bytes),
+                Err(DecodeError::LengthMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn data_payload_need_not_be_parameter_aligned() {
+        for length in 0..=5 {
+            let payload = vec![0xab; length];
+            let bytes = encode_data(0x1009, 7, &payload);
+            assert_eq!(
+                decode(&bytes).unwrap(),
+                PtpIpPacket::Data(DataBlock {
+                    transaction_id: 7,
+                    payload
+                })
+            );
+        }
+    }
 
     fn rt(pkt: PtpIpPacket) {
         let bytes = encode(&pkt).unwrap();

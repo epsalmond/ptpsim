@@ -82,19 +82,22 @@ fn guid(r: &mut Reader) -> Result<[u8; 16], DecodeError> {
     Ok(g)
 }
 
-fn remaining_params(r: &mut Reader) -> Result<Vec<u32>, DecodeError> {
+/// Read the remaining body as complete little-endian `u32` parameters.
+/// A one-, two-, or three-byte partial parameter is rejected before allocation.
+pub fn remaining_params(r: &mut Reader) -> Result<Vec<u32>, DecodeError> {
+    let remaining = r.remaining();
+    if !remaining.is_multiple_of(4) {
+        return Err(DecodeError::UnexpectedEof {
+            offset: r.position(),
+            needed: 4 - (remaining % 4),
+        });
+    }
     let mut params = Vec::with_capacity(r.remaining() / 4);
     while r.remaining() >= 4 {
         params.push(r.u32()?);
     }
+    r.finish()?;
     Ok(params)
-}
-
-fn require_end(r: &Reader) -> Result<(), DecodeError> {
-    match r.remaining() {
-        0 => Ok(()),
-        remaining => Err(DecodeError::TrailingBytes { remaining }),
-    }
 }
 
 impl InitCommandRequest {
@@ -143,7 +146,7 @@ impl InitEventRequest {
         let decoded = Self {
             connection_number: r.u32()?,
         };
-        require_end(r)?;
+        r.finish()?;
         Ok(decoded)
     }
     pub(crate) fn encode_body(&self, w: &mut Writer) {
@@ -153,7 +156,7 @@ impl InitEventRequest {
 
 impl InitEventAck {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
-        require_end(r)?;
+        r.finish()?;
         Ok(Self)
     }
     pub(crate) fn encode_body(&self, _w: &mut Writer) {}
@@ -170,7 +173,7 @@ impl InitFail {
 
 impl ProbeRequest {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
-        require_end(r)?;
+        r.finish()?;
         Ok(Self)
     }
     pub(crate) fn encode_body(&self, _w: &mut Writer) {}
@@ -178,7 +181,7 @@ impl ProbeRequest {
 
 impl ProbeResponse {
     pub(crate) fn decode_body(r: &mut Reader) -> Result<Self, DecodeError> {
-        require_end(r)?;
+        r.finish()?;
         Ok(Self)
     }
     pub(crate) fn encode_body(&self, _w: &mut Writer) {}

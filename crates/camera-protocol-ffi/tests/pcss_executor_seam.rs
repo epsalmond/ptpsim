@@ -868,10 +868,10 @@ fn init_fail_with_trailing_bytes_is_terminal_without_recovery() {
     malformed.extend_from_slice(&[0, 0, 0, 0]);
     let malformed_len = malformed.len() as u32;
     malformed[0..4].copy_from_slice(&malformed_len.to_le_bytes());
-    assert!(matches!(
+    assert_eq!(
         PtpIpPacket::decode(&malformed),
-        Ok(PtpIpPacket::InitFail(_))
-    ));
+        Err(ptp_core::error::DecodeError::TrailingBytes { remaining: 4 })
+    );
     {
         let mut state = transport.0.lock().unwrap();
         state.callbacks.push_back(notify("192.0.2.44", 17555));

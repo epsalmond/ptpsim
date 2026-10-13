@@ -4,8 +4,8 @@
 
 use crate::error::{DecodeError, EncodeError};
 
-/// Sanity ceiling on a decoded array/string count so a corrupt length field
-/// can't trigger a huge allocation.
+/// Sanity ceiling on a decoded array count. Allocation also depends on
+/// successfully decoded elements, never the advertised count alone.
 const MAX_ELEMENTS: u32 = 1 << 24;
 
 /// Cursor over a byte slice. All multi-byte reads are little-endian (PTP/IP).
@@ -25,6 +25,14 @@ impl<'a> Reader<'a> {
 
     pub fn remaining(&self) -> usize {
         self.buf.len() - self.pos
+    }
+
+    /// Verify that a complete dataset or packet consumed the entire input.
+    pub fn finish(&self) -> Result<(), DecodeError> {
+        match self.remaining() {
+            0 => Ok(()),
+            remaining => Err(DecodeError::TrailingBytes { remaining }),
+        }
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
@@ -106,7 +114,8 @@ impl<'a> Reader<'a> {
     }
 
     /// PTP array: `u32` element count followed by `count` elements decoded by
-    /// `f`.
+    /// `f`. Each wire element occupies at least one byte. Counts that exceed
+    /// the available bytes fail before element decoding or allocation.
     pub fn ptp_array<T, F>(&mut self, mut f: F) -> Result<Vec<T>, DecodeError>
     where
         F: FnMut(&mut Reader<'a>) -> Result<T, DecodeError>,
@@ -115,7 +124,13 @@ impl<'a> Reader<'a> {
         if count > MAX_ELEMENTS {
             return Err(DecodeError::ArrayTooLong(count));
         }
-        let mut out = Vec::with_capacity(count as usize);
+        if count as usize > self.remaining() {
+            return Err(DecodeError::UnexpectedEof {
+                offset: self.pos,
+                needed: count as usize - self.remaining(),
+            });
+        }
+        let mut out = Vec::new();
         for _ in 0..count {
             out.push(f(self)?);
         }
@@ -226,6 +241,22 @@ impl Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn array_count_cannot_exceed_available_bytes() {
+        let bytes = MAX_ELEMENTS.to_le_bytes();
+        let mut r = Reader::new(&bytes);
+        let mut invoked = false;
+        let result = r.ptp_array(|r| {
+            invoked = true;
+            r.u64()
+        });
+        assert!(matches!(result, Err(DecodeError::UnexpectedEof { .. })));
+        assert!(
+            !invoked,
+            "impossible count must fail before decoding elements"
+        );
+    }
 
     #[test]
     fn ints_round_trip_le() {
