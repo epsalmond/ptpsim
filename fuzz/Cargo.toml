@@ -1,0 +1,90 @@
+[package]
+name = "ptpsim-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+camera-config = { path = "../crates/camera-config" }
+ptp-core = { path = "../crates/ptp-core" }
+protocol-primitives = { path = "../crates/protocol-primitives" }
+camera-protocol-ffi = { path = "../crates/camera-protocol-ffi" }
+camera-sim-service = { path = "../services/camera-sim-service" }
+camera-sim-tui = { path = "../tools/camera-sim-tui" }
+tokio = { version = "1", features = ["rt", "time"] }
+
+# libFuzzer targets use nightly sanitizer instrumentation independently of
+# the application's pinned toolchain and ordinary workspace checks.
+[workspace]
+members = ["."]
+
+[profile.release]
+overflow-checks = true
+
+[[bin]]
+name = "http_service"
+path = "fuzz_targets/http_service.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_tui"
+path = "fuzz_targets/http_tui.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "service_frames"
+path = "fuzz_targets/service_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "service_data"
+path = "fuzz_targets/service_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pcss"
+path = "fuzz_targets/pcss.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ptp_packets"
+path = "fuzz_targets/ptp_packets.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ptp_datasets"
+path = "fuzz_targets/ptp_datasets.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vendor_codecs"
+path = "fuzz_targets/vendor_codecs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ffi_codecs"
+path = "fuzz_targets/ffi_codecs.rs"
+test = false
+doc = false
+bench = false

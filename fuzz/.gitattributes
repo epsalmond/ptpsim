@@ -1,0 +1,2 @@
+# Seed files are exact byte inputs, including CRLF and incomplete fields.
+corpus/** -text -diff
