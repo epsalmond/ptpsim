@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+fuzzing = []
+
 [dependencies]
 camera-config = { workspace = true }
 camera-protocol-ffi = { path = "../../crates/camera-protocol-ffi" }
