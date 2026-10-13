@@ -85,7 +85,7 @@ impl PtpCodec for PtpIpPacket {
         }
         let ptype =
             PacketType::from_u32(type_raw).ok_or(DecodeError::UnknownPacketType(type_raw))?;
-        Ok(match ptype {
+        let packet = match ptype {
             PacketType::InitCommandRequest => {
                 PtpIpPacket::InitCommandRequest(InitCommandRequest::decode_body(&mut r)?)
             }
@@ -116,7 +116,9 @@ impl PtpCodec for PtpIpPacket {
                 PtpIpPacket::ProbeResponse(ProbeResponse::decode_body(&mut r)?)
             }
             other => return Err(DecodeError::UnknownPacketType(other as u32)),
-        })
+        };
+        r.finish()?;
+        Ok(packet)
     }
 
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
@@ -142,6 +144,94 @@ pub fn encode(pkt: &PtpIpPacket) -> Result<Vec<u8>, EncodeError> {
 mod tests {
     use super::*;
     use crate::codes::{op, resp};
+
+    #[test]
+    fn parameter_packets_reject_partial_parameters() {
+        for pkt in [
+            PtpIpPacket::OperationRequest(OperationRequest {
+                data_phase_info: 1,
+                code: op::OPEN_SESSION,
+                transaction_id: 1,
+                params: vec![1],
+            }),
+            PtpIpPacket::OperationResponse(OperationResponse {
+                code: resp::OK,
+                transaction_id: 1,
+                params: vec![2],
+            }),
+            PtpIpPacket::Event(EventPacket {
+                code: 0x4002,
+                transaction_id: 1,
+                params: vec![3],
+            }),
+        ] {
+            for trailing in 1..=3 {
+                let mut bytes = encode(&pkt).unwrap();
+                bytes.extend(vec![0xff; trailing]);
+                let length = bytes.len() as u32;
+                bytes[..4].copy_from_slice(&length.to_le_bytes());
+                assert!(matches!(
+                    PtpIpPacket::decode(&bytes),
+                    Err(DecodeError::UnexpectedEof { .. })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_body_packets_reject_suffixes() {
+        for pkt in [
+            PtpIpPacket::InitCommandRequest(InitCommandRequest {
+                initiator_guid: [0; 16],
+                friendly_name: "A".into(),
+                protocol_version: 0x0001_0000,
+            }),
+            PtpIpPacket::InitCommandAck(InitCommandAck {
+                connection_number: 7,
+                responder_guid: [0; 16],
+                friendly_name: "B".into(),
+                protocol_version: 0x0001_0000,
+            }),
+            PtpIpPacket::InitFail(InitFail { reason: 1 }),
+            PtpIpPacket::StartData(StartData {
+                transaction_id: 1,
+                total_length: 5,
+            }),
+        ] {
+            for trailing in 1..=3 {
+                let mut bytes = encode(&pkt).unwrap();
+                bytes.extend(vec![0xff; trailing]);
+                let length = bytes.len() as u32;
+                bytes[..4].copy_from_slice(&length.to_le_bytes());
+                assert_eq!(
+                    PtpIpPacket::decode(&bytes),
+                    Err(DecodeError::TrailingBytes {
+                        remaining: trailing
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_headers_and_lengths_are_rejected() {
+        for length in 0..8 {
+            let mut bytes = vec![0; length];
+            if length >= 4 {
+                bytes[..4].copy_from_slice(&(length as u32).to_le_bytes());
+            }
+            assert!(PtpIpPacket::decode(&bytes).is_err());
+        }
+        for length in [0, 4, 7, 9, u32::MAX] {
+            let mut bytes = vec![0; 8];
+            bytes[..4].copy_from_slice(&length.to_le_bytes());
+            bytes[4..8].copy_from_slice(&(PacketType::ProbeRequest as u32).to_le_bytes());
+            assert!(matches!(
+                PtpIpPacket::decode(&bytes),
+                Err(DecodeError::LengthMismatch { .. })
+            ));
+        }
+    }
 
     fn round_trip(pkt: PtpIpPacket) {
         let bytes = encode(&pkt).unwrap();
