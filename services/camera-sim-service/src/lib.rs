@@ -53,10 +53,14 @@ fn unique_temp_root(prefix: &str) -> std::path::PathBuf {
         std::thread::current().id()
     ))
 }
+use inbound::{Admission, FrameReadPolicy, FrameReader};
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
+use tokio::time::{timeout_at, Instant};
 
 pub mod control;
+#[doc(hidden)]
+pub mod inbound;
 mod metrics;
 mod state_callback;
 mod state_json;
@@ -1053,28 +1057,33 @@ impl Server {
             };
             let mut sub = shutdown_tx.subscribe();
             async move {
+                let admission = Admission::new(
+                    inbound::COMMAND_BUDGET_BYTES / inbound::COMMAND_RESERVATION_BYTES,
+                );
                 let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         accepted = command.accept() => {
                             if let Ok((stream, _)) = accepted {
+                                let handshake_deadline = Instant::now() + inbound::HANDSHAKE_TIMEOUT;
+                                let Some(permit) = admission.try_acquire() else { continue };
                                 if shared_standard_event_listener {
-                                    conns.spawn(handle_standard_listener_conn(
-                                        stream,
-                                        resources.clone(),
-                                    ));
+                                    let resources = resources.clone();
+                                    conns.spawn(async move {
+                                        let _permit = permit;
+                                        handle_standard_listener_conn(stream, resources, handshake_deadline).await
+                                    });
                                 } else {
                                     match reserve_command_session_identity(
                                         &resources.observations,
                                         &resources.context.connection,
                                     ) {
                                         Ok(session_sequence) => {
-                                            conns.spawn(handle_command_conn(
-                                                stream,
-                                                resources.clone(),
-                                                None,
-                                                session_sequence,
-                                            ));
+                                            let resources = resources.clone();
+                                            conns.spawn(async move {
+                                                let _permit = permit;
+                                                handle_command_conn(stream, resources, None, session_sequence, handshake_deadline).await
+                                            });
                                         }
                                         Err(error) => {
                                             tracing::error!(%error, "canonical connection identity recording failed");
@@ -1105,15 +1114,21 @@ impl Server {
             };
             let mut sub = shutdown_tx.subscribe();
             async move {
+                let admission = Admission::new(inbound::CONTROL_CONNECTIONS);
                 let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         accepted = control.accept() => {
                             if let Ok((stream, _)) = accepted {
+                                let Some(permit) = admission.try_acquire() else { continue };
                                 // Per-connection task — a client that connects and
                                 // stalls before its request line must not block the
                                 // accept loop (and with it /healthz + /shutdown).
-                                conns.spawn(control::handle(stream, context.clone()));
+                                let context = context.clone();
+                                conns.spawn(async move {
+                                    let _permit = permit;
+                                    control::handle(stream, context).await
+                                });
                             }
                         }
                         Some(_) = conns.join_next(), if !conns.is_empty() => {}
@@ -1137,12 +1152,14 @@ impl Server {
                     let _ = sub.recv().await;
                     return;
                 };
+                let admission = Admission::new(inbound::LIVEVIEW_CONNECTIONS);
                 let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         accepted = liveview.accept() => {
                             match accepted {
                                 Ok(AuxAccepted::Connection(stream)) => {
+                                    let Some(permit) = admission.try_acquire() else { continue };
                                     if !engine.lock().await.channel_ready(camera_config::SocketRole::LiveView) {
                                         drop(stream);
                                         continue;
@@ -1150,7 +1167,10 @@ impl Server {
                                     let engine = engine.clone();
                                     let frames = frames.clone();
                                     let metrics = metrics.clone();
-                                    conns.spawn(stream_liveview(stream, engine, frames, metrics));
+                                    conns.spawn(async move {
+                                        let _permit = permit;
+                                        stream_liveview(stream, engine, frames, metrics).await;
+                                    });
                                 }
                                 Ok(AuxAccepted::Rearmed) => conns.shutdown().await,
                                 Err(_) => {}
@@ -1179,29 +1199,33 @@ impl Server {
                     let _ = sub.recv().await;
                     return;
                 };
+                let admission = Admission::new(inbound::EVENT_CONNECTIONS);
                 let mut conns = tokio::task::JoinSet::new();
                 loop {
                     tokio::select! {
                         accepted = event.accept() => {
                             match accepted {
                                 Ok(AuxAccepted::Connection(stream)) => {
+                                    let handshake_deadline = Instant::now() + inbound::HANDSHAKE_TIMEOUT;
+                                    let Some(permit) = admission.try_acquire() else { continue };
                                     if !engine.lock().await.channel_ready(camera_config::SocketRole::Event) {
                                         drop(stream);
                                         continue;
                                     }
                                     if standard_events {
-                                        conns.spawn(handle_standard_event_conn(
-                                            stream,
-                                            None,
-                                            event_tx.subscribe(),
-                                            standard_connections.clone(),
-                                            metrics.clone(),
-                                        ));
+                                        let events = event_tx.subscribe();
+                                        let connections = standard_connections.clone();
+                                        let metrics = metrics.clone();
+                                        conns.spawn(async move {
+                                            let _permit = permit;
+                                            handle_standard_event_conn(stream, None, events, connections, metrics, handshake_deadline).await
+                                        });
                                     } else {
                                         let events = event_tx.subscribe();
                                         let framing = event_framing.expect("bound event socket has framing");
                                         let metrics = metrics.clone();
                                         conns.spawn(async move {
+                                            let _permit = permit;
                                             handle_event_conn(stream, events, framing, metrics).await;
                                             Ok::<(), std::io::Error>(())
                                         });
@@ -1300,7 +1324,7 @@ async fn stream_liveview(
                 };
                 let packet = protocol_primitives::liveview::frame_packet(&jpeg, frame_counter);
                 frame_counter = frame_counter.wrapping_add(1);
-                if wr.write_all(&packet).await.is_err() {
+                if write_aux(&mut wr, &packet, None).await.is_err() {
                     break;
                 }
                 metrics.record_liveview_frame(packet.len());
@@ -1315,30 +1339,18 @@ async fn stream_liveview(
     }
 }
 
-/// Read one length-prefixed PTP/IP frame (`u32` total length including itself).
 async fn read_frame<R: AsyncRead + Unpin>(
+    reader: &mut FrameReader,
     stream: &mut R,
     metrics: &Metrics,
+    policy: FrameReadPolicy,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    let mut len_buf = [0u8; 4];
-    match stream.read_exact(&mut len_buf).await {
-        Ok(_) => metrics.record_read(4),
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
+    let frame = reader.read_frame(stream, policy).await?;
+    if let Some(frame) = &frame {
+        metrics.record_read(frame.len());
+        metrics.touch();
     }
-    let len = u32::from_le_bytes(len_buf) as usize;
-    if !(8..=64 * 1024 * 1024).contains(&len) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "implausible frame length",
-        ));
-    }
-    let mut buf = vec![0u8; len];
-    buf[0..4].copy_from_slice(&len_buf);
-    stream.read_exact(&mut buf[4..]).await?;
-    metrics.record_read(len.saturating_sub(4));
-    metrics.touch();
-    Ok(Some(buf))
+    Ok(frame)
 }
 
 /// Ops that carry an initiator (host→camera) data phase we must collect before
@@ -1400,8 +1412,17 @@ fn reserve_command_session_identity(
 async fn handle_standard_listener_conn(
     mut stream: TcpStream,
     resources: CommandResources,
+    handshake_deadline: Instant,
 ) -> std::io::Result<()> {
-    let Some(first) = read_frame(&mut stream, &resources.metrics).await? else {
+    let mut reader = FrameReader::default();
+    let Some(first) = read_frame(
+        &mut reader,
+        &mut stream,
+        &resources.metrics,
+        FrameReadPolicy::until(inbound::HANDSHAKE_BYTES, handshake_deadline),
+    )
+    .await?
+    else {
         return Ok(());
     };
     match PtpIpPacket::decode(&first) {
@@ -1416,7 +1437,14 @@ async fn handle_standard_listener_conn(
                     return Ok(());
                 }
             };
-            handle_command_conn(stream, resources, Some(first), session_sequence).await
+            handle_command_conn(
+                stream,
+                resources,
+                Some(first),
+                session_sequence,
+                handshake_deadline,
+            )
+            .await
         }
         Ok(PtpIpPacket::InitEventRequest(_)) => {
             handle_standard_event_conn(
@@ -1425,6 +1453,7 @@ async fn handle_standard_listener_conn(
                 resources.event_tx.subscribe(),
                 resources.standard_connections,
                 resources.metrics,
+                handshake_deadline,
             )
             .await
         }
@@ -1438,10 +1467,20 @@ async fn handle_standard_event_conn(
     mut events: broadcast::Receiver<camera_sim::QueuedEvent>,
     connections: Arc<StandardConnections>,
     metrics: Metrics,
+    handshake_deadline: Instant,
 ) -> std::io::Result<()> {
+    let mut frame_reader = FrameReader::default();
     let Some(first) = (match first_frame {
         Some(frame) => Some(frame),
-        None => read_frame(&mut stream, &metrics).await?,
+        None => {
+            read_frame(
+                &mut frame_reader,
+                &mut stream,
+                &metrics,
+                FrameReadPolicy::until(inbound::HANDSHAKE_BYTES, handshake_deadline),
+            )
+            .await?
+        }
     }) else {
         return Ok(());
     };
@@ -1452,7 +1491,12 @@ async fn handle_standard_event_conn(
     let Some((mut cancel, mut attach_guard)) = connections.attach(connection_number) else {
         return Ok(());
     };
-    acknowledge_standard_event(&mut stream, &metrics, &mut attach_guard).await?;
+    timeout_at(
+        handshake_deadline,
+        acknowledge_standard_event(&mut stream, &metrics, &mut attach_guard),
+    )
+    .await
+    .map_err(|_| inbound::timed_out())??;
 
     let (mut reader, mut writer) = stream.into_split();
     loop {
@@ -1465,18 +1509,18 @@ async fn handle_standard_event_conn(
                     params: event.params.clone(),
                 });
                 let bytes = ptp_core::encode(&packet).map_err(to_io)?;
-                if writer.write_all(&bytes).await.is_err() {
+                if write_aux(&mut writer, &bytes, frame_reader.started_deadline()).await.is_err() {
                     break;
                 }
                 metrics.record_write(bytes.len());
                 metrics.touch();
             }
-            frame = read_frame(&mut reader, &metrics) => {
+            frame = read_frame(&mut frame_reader, &mut reader, &metrics, FrameReadPolicy::established(inbound::HANDSHAKE_BYTES)) => {
                 let Ok(Some(frame)) = frame else { break };
                 if matches!(PtpIpPacket::decode(&frame), Ok(PtpIpPacket::ProbeRequest(_))) {
                     let response = ptp_core::encode(&PtpIpPacket::ProbeResponse(ProbeResponse))
                         .map_err(to_io)?;
-                    if writer.write_all(&response).await.is_err() {
+                    if write_aux(&mut writer, &response, frame_reader.started_deadline()).await.is_err() {
                         break;
                     }
                     metrics.record_write(response.len());
@@ -1488,6 +1532,20 @@ async fn handle_standard_event_conn(
     connections.close(connection_number);
     let _ = writer.shutdown().await;
     Ok(())
+}
+
+/// An auxiliary write cannot indefinitely postpone a partial inbound frame's
+/// deadline. Otherwise each event or live-view packet has five seconds to send.
+async fn write_aux<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    bytes: &[u8],
+    frame_deadline: Option<Instant>,
+) -> std::io::Result<()> {
+    let deadline = Instant::now() + inbound::FRAME_TIMEOUT;
+    let deadline = frame_deadline.map_or(deadline, |frame| frame.min(deadline));
+    timeout_at(deadline, writer.write_all(bytes))
+        .await
+        .map_err(|_| inbound::timed_out())?
 }
 
 async fn acknowledge_standard_event<W: AsyncWrite + Unpin>(
@@ -1507,10 +1565,18 @@ async fn handle_command_conn(
     resources: CommandResources,
     first_frame: Option<Vec<u8>>,
     session_sequence: u64,
+    handshake_deadline: Instant,
 ) -> std::io::Result<()> {
     let engine = resources.engine.clone();
     let session_owner = resources.session_owner.clone();
-    let result = handle_command_conn_inner(stream, resources, first_frame, session_sequence).await;
+    let result = handle_command_conn_inner(
+        stream,
+        resources,
+        first_frame,
+        session_sequence,
+        handshake_deadline,
+    )
+    .await;
     // Session teardown belongs to the command connection that opened it. A
     // completed older task must not clear a session opened by a newer socket.
     let mut engine = engine.lock().await;
@@ -1527,6 +1593,7 @@ async fn handle_command_conn_inner(
     resources: CommandResources,
     first_frame: Option<Vec<u8>>,
     session_sequence: u64,
+    handshake_deadline: Instant,
 ) -> std::io::Result<()> {
     let CommandResources {
         engine,
@@ -1557,10 +1624,19 @@ async fn handle_command_conn_inner(
         );
     }
 
+    let mut frame_reader = FrameReader::default();
     // 1. Standard-framed init handshake.
     let Some(mut first) = (match first_frame {
         Some(frame) => Some(frame),
-        None => read_frame(&mut stream, &metrics).await?,
+        None => {
+            read_frame(
+                &mut frame_reader,
+                &mut stream,
+                &metrics,
+                FrameReadPolicy::until(inbound::HANDSHAKE_BYTES, handshake_deadline),
+            )
+            .await?
+        }
     }) else {
         if is_pcss {
             trace.record(
@@ -1604,7 +1680,9 @@ async fn handle_command_conn_inner(
                     .ok_or_else(|| invalid_config("configured InitFail has no manifest reason"))?;
                 let fail = PtpIpPacket::InitFail(InitFail { reason });
                 let bytes = ptp_core::encode(&fail).map_err(to_io)?;
-                stream.write_all(&bytes).await?;
+                timeout_at(handshake_deadline, stream.write_all(&bytes))
+                    .await
+                    .map_err(|_| inbound::timed_out())??;
                 metrics.record_write(bytes.len());
                 trace.record(
                     "ptpip.init_fail.sent",
@@ -1613,7 +1691,14 @@ async fn handle_command_conn_inner(
                     Some(format!("attempt={};reason=0x{reason:08x}", attempt + 1)),
                     None,
                 );
-                let Some(next) = read_frame(&mut stream, &metrics).await? else {
+                let Some(next) = read_frame(
+                    &mut frame_reader,
+                    &mut stream,
+                    &metrics,
+                    FrameReadPolicy::until(inbound::HANDSHAKE_BYTES, handshake_deadline),
+                )
+                .await?
+                else {
                     trace.record(
                         "ptpip.init_request.rejected",
                         endpoints.clone(),
@@ -1660,9 +1745,18 @@ async fn handle_command_conn_inner(
                     .ok_or_else(|| invalid_config("configured InitFail has no manifest reason"))?;
                 let fail = PtpIpPacket::InitFail(InitFail { reason });
                 let bytes = ptp_core::encode(&fail).map_err(to_io)?;
-                stream.write_all(&bytes).await?;
+                timeout_at(handshake_deadline, stream.write_all(&bytes))
+                    .await
+                    .map_err(|_| inbound::timed_out())??;
                 metrics.record_write(bytes.len());
-                let Some(next) = read_frame(&mut stream, &metrics).await? else {
+                let Some(next) = read_frame(
+                    &mut frame_reader,
+                    &mut stream,
+                    &metrics,
+                    FrameReadPolicy::until(inbound::HANDSHAKE_BYTES, handshake_deadline),
+                )
+                .await?
+                else {
                     return Ok(());
                 };
                 first = next;
@@ -1714,7 +1808,9 @@ async fn handle_command_conn_inner(
         });
         ptp_core::encode(&ack).map_err(to_io)?
     };
-    stream.write_all(&ack_bytes).await?;
+    timeout_at(handshake_deadline, stream.write_all(&ack_bytes))
+        .await
+        .map_err(|_| inbound::timed_out())??;
     metrics.record_write(ack_bytes.len());
     if is_pcss {
         trace.record(
@@ -1733,14 +1829,20 @@ async fn handle_command_conn_inner(
         let mut server_cancelled = false;
         let next_result = if let Some(cancel) = standard_cancel.as_mut() {
             tokio::select! {
-                frame = read_frame(&mut stream, &metrics) => frame,
+                frame = read_frame(&mut frame_reader, &mut stream, &metrics, FrameReadPolicy::established(inbound::OPERATION_BYTES)) => frame,
                 _ = cancel.recv() => {
                     server_cancelled = true;
                     Ok(None)
                 },
             }
         } else {
-            read_frame(&mut stream, &metrics).await
+            read_frame(
+                &mut frame_reader,
+                &mut stream,
+                &metrics,
+                FrameReadPolicy::established(inbound::OPERATION_BYTES),
+            )
+            .await
         };
         let next = match next_result {
             Ok(next) => next,
@@ -1827,7 +1929,7 @@ async fn handle_command_conn_inner(
             continue;
         }
         let data_in = if has_data_in(req.code) {
-            match collect_data_in(
+            match collect_data_in_with_metrics(
                 &mut stream,
                 req.transaction_id,
                 context.command_framing,
@@ -2046,6 +2148,8 @@ async fn run_knock_loop(
     trace: TraceLog,
     mut shutdown: broadcast::Receiver<()>,
 ) {
+    let admission = Admission::new(inbound::CALLBACK_CONNECTIONS);
+    let mut callbacks = tokio::task::JoinSet::new();
     let mut buf = vec![0u8; 2048];
     let knock_local = knock.local_addr().ok().map(|address| address.to_string());
     loop {
@@ -2068,10 +2172,7 @@ async fn run_knock_loop(
                     );
                     continue;
                 };
-                let host_matches_peer = discovery
-                    .host
-                    .parse::<IpAddr>()
-                    .is_ok_and(|host| host == peer.ip().to_canonical());
+                let host_matches_peer = inbound::pcss_host_matches_peer(&discovery.host, peer.ip());
                 if !host_matches_peer {
                     trace.record(
                         "pcss.discovery.rejected",
@@ -2099,10 +2200,14 @@ async fn run_knock_loop(
                     Some("accepted".into()),
                     None,
                 );
+                let Some(permit) = admission.try_acquire() else { continue };
+                let deadline = Instant::now() + inbound::CALLBACK_TIMEOUT;
                 let camera_name = camera_name.clone();
                 let protocol = knock_config.protocol.clone();
                 let trace = trace.clone();
-                tokio::spawn(async move {
+                callbacks.spawn(async move {
+                    let _permit = permit;
+                    let work = async move {
                     trace.record(
                         "pcss.callback.connect_started",
                         TraceEndpoints {
@@ -2215,11 +2320,15 @@ async fn run_knock_loop(
                             Some(error.to_string()),
                         ),
                     }
+                    };
+                    let _ = timeout_at(deadline, work).await;
                 });
             }
+            Some(_) = callbacks.join_next(), if !callbacks.is_empty() => {}
             _ = shutdown.recv() => break,
         }
     }
+    callbacks.shutdown().await;
 }
 
 fn ptpip_packet_kind(packet: &PtpIpPacket) -> &'static str {
@@ -2305,7 +2414,7 @@ async fn handle_event_conn(
                             WireFraming::Compressed => unreachable!("compressed event framing is rejected at bind"),
                         };
                         let Some(bytes) = bytes else { break };
-                        if wr.write_all(&bytes).await.is_err() {
+                        if write_aux(&mut wr, &bytes, None).await.is_err() {
                             break; // client gone
                         }
                         metrics.record_write(bytes.len());
@@ -2331,7 +2440,7 @@ async fn handle_event_conn(
 /// single property value (≤ 8 bytes for scalars, short strings) so 1 MiB is
 /// generous. A larger declared `total_length` is rejected outright rather than
 /// trusted, so a client cannot use the data-in channel for unbounded growth.
-const MAX_DATA_IN_BYTES: u64 = 1024 * 1024;
+const MAX_DATA_IN_BYTES: u64 = inbound::DATA_BYTES as u64;
 
 fn decode_command_frame(framing: WireFraming, frame: &[u8]) -> Result<PtpIpPacket, String> {
     match framing {
@@ -2398,21 +2507,35 @@ fn data_in_err<S: Into<String>>(msg: S) -> std::io::Error {
 /// phase in one type-2 `Data` container. Standard PTP/IP carries StartData,
 /// zero or more Data packets, and one EndData packet. Every shape is capped at
 /// [`MAX_DATA_IN_BYTES`] and must retain the request transaction id.
-async fn collect_data_in(
-    stream: &mut TcpStream,
+#[doc(hidden)]
+pub async fn collect_data_in<R: AsyncRead + Unpin>(
+    stream: &mut R,
+    tid: u32,
+    framing: WireFraming,
+) -> std::io::Result<Option<Vec<u8>>> {
+    collect_data_in_with_metrics(stream, tid, framing, &Metrics::default()).await
+}
+
+async fn collect_data_in_with_metrics<R: AsyncRead + Unpin>(
+    stream: &mut R,
     tid: u32,
     framing: WireFraming,
     metrics: &Metrics,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    let Some(first) = read_frame(stream, metrics).await? else {
+    let deadline = Instant::now() + inbound::DATA_PHASE_TIMEOUT;
+    let policy = FrameReadPolicy::until(inbound::DATA_FRAME_BYTES, deadline);
+    let mut reader = FrameReader::default();
+    let Some(first_frame) = read_frame(&mut reader, stream, metrics, policy).await? else {
         return Err(data_in_err("data-in: stream closed before the data frame"));
     };
-    let first = decode_command_frame(framing, &first)
+    let first = decode_command_frame(framing, &first_frame)
         .map_err(|error| data_in_err(format!("data-in: decode failed: {error}")))?;
+    drop(first_frame);
     if framing == WireFraming::Standard {
         let PtpIpPacket::StartData(start) = first else {
             return Err(data_in_err(format!(
-                "data-in: expected StartData, got {first:?}"
+                "data-in: expected StartData, got {}",
+                ptpip_packet_kind(&first)
             )));
         };
         if start.transaction_id != tid {
@@ -2429,17 +2552,19 @@ async fn collect_data_in(
         }
         let mut payload = Vec::with_capacity(start.total_length as usize);
         loop {
-            let Some(frame) = read_frame(stream, metrics).await? else {
+            let Some(frame) = read_frame(&mut reader, stream, metrics, policy).await? else {
                 return Err(data_in_err("data-in: stream closed before EndData"));
             };
             let packet = decode_command_frame(framing, &frame)
                 .map_err(|error| data_in_err(format!("data-in: decode failed: {error}")))?;
+            drop(frame);
             let (data, ended) = match packet {
                 PtpIpPacket::Data(data) => (data, false),
                 PtpIpPacket::EndData(data) => (data, true),
                 other => {
                     return Err(data_in_err(format!(
-                        "data-in: expected Data or EndData, got {other:?}"
+                        "data-in: expected Data or EndData, got {}",
+                        ptpip_packet_kind(&other)
                     )))
                 }
             };
@@ -2483,7 +2608,8 @@ async fn collect_data_in(
             Ok(Some(d.payload))
         }
         other => Err(data_in_err(format!(
-            "data-in: expected a data frame, got {other:?}"
+            "data-in: expected a data frame, got {}",
+            ptpip_packet_kind(&other)
         ))),
     }
 }
@@ -2942,6 +3068,287 @@ mod tests {
     use std::task::{Context, Poll};
 
     use super::*;
+
+    #[tokio::test]
+    async fn data_in_accepts_existing_one_mib_payload_for_all_framings() {
+        let payload = vec![0x5a; inbound::DATA_BYTES];
+        for framing in [
+            WireFraming::Standard,
+            WireFraming::Compressed,
+            WireFraming::Usb,
+        ] {
+            let bytes = encode_data_frame(framing, op::SET_DEVICE_PROP_VALUE, 7, &payload).unwrap();
+            let mut input = bytes.as_slice();
+            assert_eq!(
+                collect_data_in(&mut input, 7, framing).await.unwrap(),
+                Some(payload.clone())
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn data_phase_deadline_includes_initial_wait() {
+        let (_writer, mut input) = tokio::io::duplex(64);
+        let started = Instant::now();
+        let error = collect_data_in(&mut input, 7, WireFraming::Standard)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(started.elapsed(), inbound::DATA_PHASE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_frames_cannot_extend_data_phase_deadline() {
+        let (mut writer, mut input) = tokio::io::duplex(64);
+        let start = ptp_core::encode(&PtpIpPacket::StartData(ptp_core::StartData {
+            transaction_id: 7,
+            total_length: 0,
+        }))
+        .unwrap();
+        let empty = ptp_core::encode(&PtpIpPacket::Data(ptp_core::DataBlock {
+            transaction_id: 7,
+            payload: Vec::new(),
+        }))
+        .unwrap();
+        let task = tokio::spawn(async move {
+            writer.write_all(&start).await.unwrap();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if writer.write_all(&empty).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let started = Instant::now();
+        let error = collect_data_in(&mut input, 7, WireFraming::Standard)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(started.elapsed(), inbound::DATA_PHASE_TIMEOUT);
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn data_in_rejects_wrong_transaction_or_length() {
+        for (tid, payload_len) in [(8, 1), (7, inbound::DATA_BYTES + 1)] {
+            let bytes = encode_data_frame(
+                WireFraming::Compressed,
+                op::SET_DEVICE_PROP_VALUE,
+                tid,
+                &vec![0; payload_len],
+            )
+            .unwrap();
+            let mut input = bytes.as_slice();
+            assert_eq!(
+                collect_data_in(&mut input, 7, WireFraming::Compressed)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn standard_event_broadcast_preserves_partial_probe_frame() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let connections = Arc::new(StandardConnections::default());
+        let (connection_number, _command_cancel) = connections.allocate();
+        let init = ptp_core::encode(&PtpIpPacket::InitEventRequest(ptp_core::InitEventRequest {
+            connection_number,
+        }))
+        .unwrap();
+        let (events, _) = broadcast::channel(16);
+        let handler = tokio::spawn(handle_standard_event_conn(
+            stream,
+            Some(init),
+            events.subscribe(),
+            connections,
+            Metrics::default(),
+            Instant::now() + inbound::HANDSHAKE_TIMEOUT,
+        ));
+        let mut reader = FrameReader::default();
+        let policy = FrameReadPolicy::until(
+            inbound::HANDSHAKE_BYTES,
+            Instant::now() + inbound::HANDSHAKE_TIMEOUT,
+        );
+        let ack = reader
+            .read_frame(&mut client, policy)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            PtpIpPacket::decode(&ack).unwrap(),
+            PtpIpPacket::InitEventAck(_)
+        ));
+        let probe = ptp_core::encode(&PtpIpPacket::ProbeRequest(ptp_core::ProbeRequest)).unwrap();
+        // A partial prefix followed by an event exercises cancellation of the
+        // frame read. Repeat with a partial body after the first response.
+        for split in [2, 6] {
+            client.write_all(&probe[..split]).await.unwrap();
+            tokio::task::yield_now().await;
+            events
+                .send(camera_sim::QueuedEvent {
+                    code: 0x4002,
+                    params: Vec::new(),
+                })
+                .unwrap();
+            let event = reader
+                .read_frame(&mut client, policy)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                PtpIpPacket::decode(&event).unwrap(),
+                PtpIpPacket::Event(_)
+            ));
+            client.write_all(&probe[split..]).await.unwrap();
+            let response = reader
+                .read_frame(&mut client, policy)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                PtpIpPacket::decode(&response).unwrap(),
+                PtpIpPacket::ProbeResponse(_)
+            ));
+        }
+        drop(client);
+        handler.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn knock_shutdown_closes_every_pending_callback() {
+        let callbacks = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let knock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let knock_address = knock.local_addr().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let config: PcssKnock = serde_yaml::from_str(&format!(
+            "callbackPort: {}\nknockPort: {}\nprotocol: PCSS/1.0\ndiscoveryTargets: {{ default: explicitUnicast, supported: [explicitUnicast], retryDiscoveredUnicast: false }}\n",
+            callbacks.local_addr().unwrap().port(), knock_address.port()
+        )).unwrap();
+        let (shutdown, _) = broadcast::channel(1);
+        let loop_task = tokio::spawn(run_knock_loop(
+            knock,
+            config,
+            "Test".into(),
+            15740,
+            TraceLog::default(),
+            shutdown.subscribe(),
+        ));
+        let mut pending = Vec::new();
+        for _ in 0..inbound::CALLBACK_CONNECTIONS {
+            client
+                .send_to(
+                    b"DISCOVERY * HTTP/1.1\r\nHOST: 127.0.0.1\r\nMX: 5\r\nSERVICE: PCSS/1.0\r\n\0",
+                    knock_address,
+                )
+                .await
+                .unwrap();
+            let (mut callback, _) = callbacks.accept().await.unwrap();
+            let mut notify = Vec::new();
+            loop {
+                let byte = callback.read_u8().await.unwrap();
+                notify.push(byte);
+                if notify.ends_with(b"SERVICE: PCSS/1.0\r\n") {
+                    break;
+                }
+            }
+            assert!(notify.starts_with(b"NOTIFY * HTTP/1.1\r\n"));
+            pending.push(callback);
+        }
+        shutdown.send(()).unwrap();
+        loop_task.await.unwrap();
+        for mut callback in pending {
+            assert_eq!(callback.read(&mut [0; 1]).await.unwrap(), 0);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn auxiliary_write_respects_pending_frame_deadline() {
+        let (mut writer, _reader) = tokio::io::duplex(1);
+        writer.write_all(&[1]).await.unwrap();
+        let started = Instant::now();
+        let error = write_aux(
+            &mut writer,
+            &[2],
+            Some(started + std::time::Duration::from_secs(2)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn saturated_command_listener_leaves_control_shutdown_available() {
+        let root = tempfile::tempdir().unwrap();
+        let server = Server::bind(Config {
+            instance_id: "resource-test".into(), profile: "test".into(), connection: "app".into(),
+            manifest_yaml: "schema: camera-config/v1\ncamera: { manufacturer: Test, model: Test, firmware: '1' }\nconnections:\n  app: { kind: ptpip-app, initShape: app82, commandFraming: compressed, bindings: { command: 15740 } }\noperations: {}\nproperties: {}\n".into(),
+            media_root: root.path().into(), command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None, event_bind: None, knock_bind: None,
+            pcss_init_fails: 0, pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(), liveview_dir: None, state_callback: None,
+        }).await.unwrap();
+        let command = server.command_addr();
+        let control = server.control_addr();
+        let (_shutdown, receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(server.run(receiver));
+        let init = protocol_primitives::build_app_init(&[0; 16], "test").unwrap();
+        let mut peers = Vec::new();
+        for _ in 0..inbound::COMMAND_CONNECTIONS {
+            let mut peer = TcpStream::connect(command).await.unwrap();
+            peer.write_all(&init).await.unwrap();
+            let mut reader = FrameReader::default();
+            let ack = reader
+                .read_frame(
+                    &mut peer,
+                    FrameReadPolicy::until(
+                        inbound::HANDSHAKE_BYTES,
+                        Instant::now() + inbound::HANDSHAKE_TIMEOUT,
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                PtpIpPacket::decode(&ack).unwrap(),
+                PtpIpPacket::InitCommandAck(_)
+            ));
+            peers.push(peer);
+        }
+        let mut rejected = TcpStream::connect(command).await.unwrap();
+        let received = tokio::time::timeout(inbound::HANDSHAKE_TIMEOUT, rejected.read(&mut [0; 1]))
+            .await
+            .unwrap();
+        assert!(matches!(received, Ok(0)) || received.is_err());
+        let mut health = TcpStream::connect(control).await.unwrap();
+        health
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        health.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        let mut shutdown = TcpStream::connect(control).await.unwrap();
+        shutdown
+            .write_all(b"POST /shutdown HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(inbound::HANDSHAKE_TIMEOUT, task)
+            .await
+            .unwrap()
+            .unwrap();
+        for mut peer in peers {
+            assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
+        }
+    }
 
     fn terminal_trace_outcome(trace: &TraceLog) -> String {
         let json: serde_json::Value = serde_json::from_str(&trace.json("run", 0)).unwrap();
