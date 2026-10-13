@@ -125,10 +125,10 @@ impl ByteSource {
     }
 }
 
-fn read_full(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+fn read_full<R: Read + ?Sized>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
     while filled < buf.len() {
-        match f.read(&mut buf[filled..])? {
+        match reader.read(&mut buf[filled..])? {
             0 => break,
             n => filled += n,
         }
@@ -385,10 +385,17 @@ fn extract_raf_thumbnail(path: &Path) -> Result<ByteSource, MediaError> {
 fn raf_header_preview(path: &Path) -> Result<Option<FileSpan>, MediaError> {
     let mut f = File::open(path)?;
     let file_len = f.metadata()?.len();
+    raf_header_preview_reader(&mut f, file_len)
+}
+
+fn raf_header_preview_reader<R: Read + Seek>(
+    reader: &mut R,
+    file_len: u64,
+) -> Result<Option<FileSpan>, MediaError> {
     if file_len < RAF_HEADER_LEN as u64 {
         return Ok(None);
     }
-    let header = read_at(&mut f, 0, RAF_HEADER_LEN)?;
+    let header = read_at(reader, 0, RAF_HEADER_LEN)?;
     if !header.starts_with(b"FUJIFILM") {
         return Ok(None);
     }
@@ -407,7 +414,14 @@ fn raf_header_preview(path: &Path) -> Result<Option<FileSpan>, MediaError> {
 
 fn jpeg_exif_thumbnail(path: &Path, jpeg: FileSpan) -> Result<Option<FileSpan>, MediaError> {
     let mut f = File::open(path)?;
-    if read_at(&mut f, jpeg.offset, 2)? != [0xff, 0xd8] {
+    jpeg_exif_thumbnail_reader(&mut f, jpeg)
+}
+
+fn jpeg_exif_thumbnail_reader<R: Read + Seek>(
+    reader: &mut R,
+    jpeg: FileSpan,
+) -> Result<Option<FileSpan>, MediaError> {
+    if read_at(reader, jpeg.offset, 2)? != [0xff, 0xd8] {
         return Ok(None);
     }
 
@@ -417,7 +431,7 @@ fn jpeg_exif_thumbnail(path: &Path, jpeg: FileSpan) -> Result<Option<FileSpan>, 
         .ok_or(MediaError::NoPreview)?;
     let mut pos = jpeg.offset + 2;
     while pos + 4 <= jpeg_end {
-        let marker = read_at(&mut f, pos, 2)?;
+        let marker = read_at(reader, pos, 2)?;
         if marker[0] != 0xff {
             return Ok(None);
         }
@@ -425,7 +439,7 @@ fn jpeg_exif_thumbnail(path: &Path, jpeg: FileSpan) -> Result<Option<FileSpan>, 
 
         let mut marker_id = marker[1];
         while marker_id == 0xff && pos < jpeg_end {
-            marker_id = read_at(&mut f, pos, 1)?[0];
+            marker_id = read_at(reader, pos, 1)?[0];
             pos += 1;
         }
 
@@ -439,7 +453,7 @@ fn jpeg_exif_thumbnail(path: &Path, jpeg: FileSpan) -> Result<Option<FileSpan>, 
             return Ok(None);
         }
 
-        let len = u16::from_be_bytes(read_at(&mut f, pos, 2)?.try_into().unwrap()) as u64;
+        let len = u16::from_be_bytes(read_at(reader, pos, 2)?.try_into().unwrap()) as u64;
         if len < 2 {
             return Ok(None);
         }
@@ -453,7 +467,7 @@ fn jpeg_exif_thumbnail(path: &Path, jpeg: FileSpan) -> Result<Option<FileSpan>, 
         }
 
         if marker_id == 0xe1 {
-            let data = read_at(&mut f, data_offset, data_len as usize)?;
+            let data = read_at(reader, data_offset, data_len as usize)?;
             if let Some(span) = exif_thumbnail_span(&data) {
                 let offset = data_offset
                     .checked_add(span.offset)
@@ -473,14 +487,33 @@ fn jpeg_exif_thumbnail(path: &Path, jpeg: FileSpan) -> Result<Option<FileSpan>, 
     Ok(None)
 }
 
-fn read_at(f: &mut File, offset: u64, len: usize) -> Result<Vec<u8>, MediaError> {
-    f.seek(SeekFrom::Start(offset))?;
+fn read_at<R: Read + Seek>(reader: &mut R, offset: u64, len: usize) -> Result<Vec<u8>, MediaError> {
+    reader.seek(SeekFrom::Start(offset))?;
     let mut buf = vec![0u8; len];
-    let n = read_full(f, &mut buf)?;
+    let n = read_full(reader, &mut buf)?;
     if n != len {
         return Err(MediaError::NoPreview);
     }
     Ok(buf)
+}
+
+/// Exercise RAF, JPEG marker, and EXIF thumbnail parsing with in-memory input.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_preview_parsers(input: &[u8]) {
+    let file_len = input.len() as u64;
+    let mut reader = std::io::Cursor::new(input);
+    if let Ok(Some(preview)) = raf_header_preview_reader(&mut reader, file_len) {
+        let _ = jpeg_exif_thumbnail_reader(&mut reader, preview);
+    }
+    let _ = jpeg_exif_thumbnail_reader(
+        &mut reader,
+        FileSpan {
+            offset: 0,
+            len: file_len,
+        },
+    );
+    let _ = exif_thumbnail_span(input);
 }
 
 fn exif_thumbnail_span(app1_data: &[u8]) -> Option<FileSpan> {

@@ -46,6 +46,10 @@ name after `build` or `run`.
 | `ptp_datasets` | DeviceInfo, StorageInfo, ObjectInfo, DevicePropDesc, values, strings, arrays |
 | `vendor_codecs` | Fuji/USB framing, app init, legacy init, live view, record streams |
 | `ffi_codecs` | Exported response, data, event, dataset, init, and handle-list parsers |
+| `ffi_executor` | Frame-based `PtpExecutor::issue` through the public action entry point |
+| `initiator_frames` | Camera initiator buffered frame reads, including coalesced frames |
+| `nikon_lss` | Nikon LSS authentication records, cipher blocks, and connection configuration |
+| `media_previews` | RAF preview location, JPEG markers, TIFF IFDs, and EXIF thumbnails |
 
 Parser errors are ordinary results. Successful packet decodes must remain
 stable when encoded and decoded again. Async targets use a current-thread
@@ -72,11 +76,12 @@ reduced regression tests in the owning crate when changing parser behavior.
 
 ## Current scope
 
-This scaffold has no CI job. `cargo fuzz build` compiles every target, and a
+The fuzz package has no CI job. `cargo fuzz build` compiles every target, and a
 bounded local run replays its seeds before mutation. The main workspace CI
 continues to run its ordinary checks.
 
-Private executor transaction assembly, camera-initiator buffered reads,
-whole-request deadline simulation, Nikon connection configuration, and
-RAF/JPEG file preview parsing need additional harness work. They are not
-covered by these byte-input targets. Issue #408 tracks that remaining scope.
+The executor target reaches private transaction assembly through the public
+action entry point. Feature-scoped seams expose the camera-initiator frame
+reader and media preview parsers only to the fuzz package. Whole-request
+deadlines remain covered by deterministic async tests because elapsed time is
+not a byte-input parser dimension.
