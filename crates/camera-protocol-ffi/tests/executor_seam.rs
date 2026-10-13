@@ -205,6 +205,15 @@ fn uuid(ble: &FamilyBleBlock, name: &str) -> String {
 struct ResponderTransport {
     responder: Mutex<BleResponder>,
     sleep_log: Arc<Mutex<Vec<u32>>>,
+    held_action: Option<Mutex<HeldAction>>,
+}
+
+struct HeldAction {
+    launch: String,
+    ap_state: String,
+    clears_after_ms: u32,
+    elapsed_ms: u32,
+    launch_times_ms: Vec<u32>,
 }
 
 impl ResponderTransport {
@@ -212,7 +221,19 @@ impl ResponderTransport {
         ResponderTransport {
             responder: Mutex::new(responder),
             sleep_log: Arc::new(Mutex::new(Vec::new())),
+            held_action: None,
         }
+    }
+
+    fn with_held_action(mut self, launch: String, ap_state: String, clears_after_ms: u32) -> Self {
+        self.held_action = Some(Mutex::new(HeldAction {
+            launch,
+            ap_state,
+            clears_after_ms,
+            elapsed_ms: 0,
+            launch_times_ms: Vec::new(),
+        }));
+        self
     }
 
     fn into_log(self) -> Vec<BleEvent> {
@@ -280,6 +301,27 @@ impl camera_protocol_ffi::BleExecutorTransport for ResponderTransport {
         value: Vec<u8>,
         notification_characteristic: String,
     ) -> Result<(), TransportError> {
+        if let Some(action) = &self.held_action {
+            let mut action = action.lock().unwrap();
+            if characteristic == action.launch {
+                let elapsed_ms = action.elapsed_ms;
+                action.launch_times_ms.push(elapsed_ms);
+                let payload = if elapsed_ms < action.clears_after_ms {
+                    [0x00, 0x80]
+                } else {
+                    [0x01, 0x80]
+                };
+                let mut responder = self.responder.lock().unwrap();
+                let previous =
+                    std::mem::replace(&mut *responder, BleResponder::new(Vec::<String>::new()));
+                *responder = previous.queue_notification_after_fenced_write(
+                    &action.ap_state,
+                    &action.launch,
+                    action.launch_times_ms.len() as u32,
+                    &payload,
+                );
+            }
+        }
         self.responder
             .lock()
             .unwrap()
@@ -316,6 +358,11 @@ impl camera_protocol_ffi::BleExecutorTransport for ResponderTransport {
     }
     async fn sleep(&self, ms: u32) -> Result<(), TransportError> {
         self.sleep_log.lock().unwrap().push(ms);
+        if let Some(action) = &self.held_action {
+            // Only completed waits advance this synthetic clock. Deadline
+            // futures cancelled by ready I/O never advance the held action.
+            action.lock().unwrap().elapsed_ms += ms;
+        }
         Ok(())
     }
 }
@@ -1270,6 +1317,115 @@ fn wifi_ap_retry_fence_discards_notification_left_by_prior_attempt() {
 }
 
 #[test]
+fn wifi_ap_relaunch_waits_for_a_held_action_after_post_exit_readiness() {
+    let store = store();
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let launch = uuid(ble, "functionLaunchRequest");
+    let image_setting = uuid(ble, "imageTransferSetting");
+    let ap_state = uuid(ble, "apState");
+    let details = uuid(ble, "stateErrorDetails");
+    let ssid = uuid(ble, "cameraSSIDNameString");
+    let passphrase = uuid(ble, "cameraWiFiPassphraseString");
+    let responder = BleResponder::new([
+        launch.clone(),
+        image_setting.clone(),
+        ap_state.clone(),
+        details.clone(),
+        ssid.clone(),
+        passphrase.clone(),
+    ])
+    .serve_read(&ap_state, &[0x00, 0x80])
+    .serve_read(&details, &[0x02, 0x00])
+    .serve_read(&ssid, b"GFX100II-1234")
+    .serve_read(&passphrase, b"12345678");
+    // Four seconds is a controlled fixture condition, not a firmware bound.
+    let transport = Arc::new(ResponderTransport::new(responder).with_held_action(
+        launch.clone(),
+        ap_state.clone(),
+        4000,
+    ));
+    let activities = Arc::new(ActivityRecorder::default());
+    let readiness = block_on(run_post_exit_readiness(
+        store.clone(),
+        "gfx100ii:app".into(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        activities.clone(),
+        vec![],
+        vec![],
+        vec![],
+    ))
+    .expect("AP baseline can be ready while a short camera action remains held");
+    assert_eq!(scope_get(&readiness.scope, "apState"), Some("32768"));
+
+    let outcome = block_on(run_establishment(
+        store,
+        "gfx100ii:app".into(),
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        activities.clone(),
+        vec![],
+        vec![],
+        vec![KeyValue {
+            key: "launchMode".into(),
+            value: "4".into(),
+        }],
+    ));
+    let launch_times = transport
+        .held_action
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .launch_times_ms
+        .clone();
+    let outcome = outcome.unwrap_or_else(|error| {
+        panic!("held-action relaunch failed at {launch_times:?}ms: {error:?}")
+    });
+    assert_eq!(launch_times, [0, 5000]);
+    assert_eq!(*transport.sleep_log.lock().unwrap(), [5000]);
+    assert_eq!(scope_get(&outcome.scope, "ssid"), Some("GFX100II-1234"));
+    let events = activities.0.lock().unwrap();
+    assert!(events.contains(&ConnectionActivityEvent::Retrying {
+        id: "camera.ap.launch".into(),
+        version: 2,
+        retry: launch_refusal_retry(),
+    }));
+    assert!(events.contains(&ConnectionActivityEvent::Succeeded {
+        id: "camera.ap.launch".into(),
+        version: 2,
+        summary: ConnectionActivityTerminalSummary {
+            retry_count: 1,
+            last_retry: Some(launch_refusal_retry())
+        },
+    }));
+    drop(events);
+    let transport = Arc::try_unwrap(transport).unwrap_or_else(|_| panic!("sole owner"));
+    let log = transport.into_log();
+    assert_eq!(
+        log.iter()
+            .filter(|event| matches!(event, BleEvent::Write { uuid, .. } if uuid == &launch))
+            .count(),
+        2
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|event| matches!(event, BleEvent::Write { uuid, .. } if uuid == &image_setting))
+            .count(),
+        1
+    );
+    assert_eq!(
+        log.iter()
+            .filter(
+                |event| matches!(event, BleEvent::NotificationFence { uuid } if uuid == &ap_state)
+            )
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn wifi_ap_retry_success_preserves_the_rejected_snapshot() {
     let store = store();
     let view = gfx100ii();
@@ -1452,7 +1608,7 @@ fn wifi_ap_retry_exhaustion_crosses_ffi_with_typed_context() {
             .lock()
             .unwrap()
             .iter()
-            .filter(|ms| **ms == 200)
+            .filter(|ms| **ms == 5000)
             .count(),
         1,
     );
