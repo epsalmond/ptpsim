@@ -57,6 +57,11 @@ first byte of a frame. Once that byte arrives, the entire frame must complete
 within five seconds. Partial header and body state survive cancellation of an
 individual read future, including interruption by an event broadcast.
 
+Event and liveview writes have a five-second deadline. A standard event write
+also respects an earlier pending inbound frame deadline, so output backpressure
+cannot extend a partially received frame's lifetime. Command object streaming
+retains its existing output behavior.
+
 An initiator-to-responder data phase has a ten-second absolute deadline. The
 deadline starts before waiting for its first `StartData` frame. Empty or
 fragmented data frames do not extend it. The accumulated payload limit remains
