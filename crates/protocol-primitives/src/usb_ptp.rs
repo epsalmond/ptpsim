@@ -79,7 +79,8 @@ pub fn encode_data(code: u16, transaction_id: u32, payload: &[u8]) -> Vec<u8> {
     w.into_vec()
 }
 
-/// Decode one USB-PTP container.
+/// Decode exactly one USB-PTP container. Control parameters must be complete
+/// `u32` values; data payloads can have any byte length.
 pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
     let mut r = Reader::new(bytes);
     let length = r.u32()? as usize;
@@ -92,48 +93,71 @@ pub fn decode(bytes: &[u8]) -> Result<PtpIpPacket, DecodeError> {
     let ctype = r.u16()?;
     let code = r.u16()?;
     let tid = r.u32()?;
-    let params = |r: &mut Reader| -> Result<Vec<u32>, DecodeError> {
-        let remaining = r.remaining();
-        if !remaining.is_multiple_of(4) {
-            return Err(DecodeError::UnexpectedEof {
-                offset: r.position(),
-                needed: 4 - (remaining % 4),
-            });
-        }
-        let mut v = Vec::new();
-        while r.remaining() >= 4 {
-            v.push(r.u32()?);
-        }
-        Ok(v)
-    };
-    Ok(match ctype {
+    let packet = match ctype {
         ty::COMMAND => PtpIpPacket::OperationRequest(OperationRequest {
             data_phase_info: 1,
             code,
             transaction_id: tid,
-            params: params(&mut r)?,
+            params: remaining_params(&mut r)?,
         }),
         ty::RESPONSE => PtpIpPacket::OperationResponse(OperationResponse {
             code,
             transaction_id: tid,
-            params: params(&mut r)?,
+            params: remaining_params(&mut r)?,
         }),
         ty::EVENT => PtpIpPacket::Event(EventPacket {
             code,
             transaction_id: tid,
-            params: params(&mut r)?,
+            params: remaining_params(&mut r)?,
         }),
         ty::DATA => PtpIpPacket::Data(DataBlock {
             transaction_id: tid,
             payload: r.rest(),
         }),
         other => return Err(DecodeError::UnknownPacketType(other as u32)),
-    })
+    };
+    r.finish()?;
+    Ok(packet)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_headers_and_lengths_are_rejected() {
+        for length in 0..12 {
+            let mut bytes = vec![0; length];
+            if length >= 4 {
+                bytes[..4].copy_from_slice(&(length as u32).to_le_bytes());
+            }
+            assert!(decode(&bytes).is_err());
+        }
+        for length in [0, 4, 11, 13, u32::MAX] {
+            let mut bytes = vec![0; 12];
+            bytes[..4].copy_from_slice(&length.to_le_bytes());
+            bytes[4..6].copy_from_slice(&ty::COMMAND.to_le_bytes());
+            assert!(matches!(
+                decode(&bytes),
+                Err(DecodeError::LengthMismatch { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn data_payload_need_not_be_parameter_aligned() {
+        for length in 0..=5 {
+            let payload = vec![0xab; length];
+            let bytes = encode_data(0x1009, 7, &payload);
+            assert_eq!(
+                decode(&bytes).unwrap(),
+                PtpIpPacket::Data(DataBlock {
+                    transaction_id: 7,
+                    payload
+                })
+            );
+        }
+    }
 
     #[test]
     fn get_device_info_command_byte_exact() {

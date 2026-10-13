@@ -1,7 +1,9 @@
-//! PTP dataset encoders: the structured payloads carried in data phases —
+//! PTP dataset codecs for the structured payloads carried in data phases:
 //! `ObjectInfo`, `DeviceInfo`, `StorageInfo`, and `DevicePropDesc`. Field order
 //! and widths follow ISO 15740. These are syntax only; which properties or
-//! formats a given camera supports is manifest data.
+//! formats a given camera supports is manifest data. Whole dataset decoders
+//! require complete input and reject trailing bytes. `PropValue::decode` reads
+//! one field from a cursor so it can be composed into larger datasets.
 
 use crate::datatype::{Reader, Writer};
 use crate::error::{DecodeError, EncodeError};
@@ -32,7 +34,7 @@ pub struct ObjectInfo {
 impl ObjectInfo {
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
-        Ok(Self {
+        let value = Self {
             storage_id: r.u32()?,
             object_format: r.u16()?,
             protection_status: r.u16()?,
@@ -52,7 +54,9 @@ impl ObjectInfo {
             capture_date: r.ptp_string()?,
             modification_date: r.ptp_string()?,
             keywords: r.ptp_string()?,
-        })
+        };
+        r.finish()?;
+        Ok(value)
     }
 
     pub fn encode(&self, w: &mut Writer) -> Result<(), EncodeError> {
@@ -100,7 +104,7 @@ pub struct DeviceInfo {
 impl DeviceInfo {
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
-        Ok(Self {
+        let value = Self {
             standard_version: r.u16()?,
             vendor_extension_id: r.u32()?,
             vendor_extension_version: r.u16()?,
@@ -115,7 +119,9 @@ impl DeviceInfo {
             model: r.ptp_string()?,
             device_version: r.ptp_string()?,
             serial_number: r.ptp_string()?,
-        })
+        };
+        r.finish()?;
+        Ok(value)
     }
 
     pub fn encode(&self, w: &mut Writer) -> Result<(), EncodeError> {
@@ -152,7 +158,7 @@ pub struct StorageInfo {
 impl StorageInfo {
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut r = Reader::new(bytes);
-        Ok(Self {
+        let value = Self {
             storage_type: r.u16()?,
             filesystem_type: r.u16()?,
             access_capability: r.u16()?,
@@ -161,7 +167,9 @@ impl StorageInfo {
             free_space_images: r.u32()?,
             storage_description: r.ptp_string()?,
             volume_label: r.ptp_string()?,
-        })
+        };
+        r.finish()?;
+        Ok(value)
     }
 
     pub fn encode(&self, w: &mut Writer) -> Result<(), EncodeError> {
@@ -279,7 +287,7 @@ impl DevicePropDesc {
             },
             2 => {
                 let count = r.u16()?;
-                let mut values = Vec::with_capacity(count as usize);
+                let mut values = Vec::new();
                 for _ in 0..count {
                     values.push(PropValue::decode(&mut r, datatype)?);
                 }
@@ -287,6 +295,7 @@ impl DevicePropDesc {
             }
             _ => return Err(DecodeError::InvalidString("unknown prop form flag")),
         };
+        r.finish()?;
         Ok(Self {
             code,
             datatype,
@@ -327,6 +336,77 @@ impl DevicePropDesc {
 mod tests {
     use super::*;
     use crate::codes::{datatype_code, format};
+
+    fn reject_dataset_suffix<T: std::fmt::Debug>(
+        bytes: &[u8],
+        decode: impl Fn(&[u8]) -> Result<T, DecodeError>,
+    ) {
+        assert!(decode(bytes).is_ok());
+        for suffix in [
+            vec![0xff],
+            vec![0xff; 2],
+            vec![0xff; 3],
+            vec![0; 4],
+            bytes.to_vec(),
+        ] {
+            let mut extended = bytes.to_vec();
+            extended.extend_from_slice(&suffix);
+            assert!(
+                matches!(decode(&extended), Err(DecodeError::TrailingBytes { remaining }) if remaining == suffix.len()),
+                "decoder accepted {} trailing bytes",
+                suffix.len()
+            );
+        }
+        for end in 0..bytes.len() {
+            assert!(decode(&bytes[..end]).is_err(), "accepted prefix {end}");
+        }
+    }
+
+    #[test]
+    fn object_info_rejects_suffixes_and_truncation() {
+        let mut w = Writer::new();
+        ObjectInfo::default().encode(&mut w).unwrap();
+        reject_dataset_suffix(w.as_slice(), ObjectInfo::decode);
+    }
+
+    #[test]
+    fn device_info_rejects_suffixes_and_truncation() {
+        let mut w = Writer::new();
+        DeviceInfo::default().encode(&mut w).unwrap();
+        reject_dataset_suffix(w.as_slice(), DeviceInfo::decode);
+    }
+
+    #[test]
+    fn storage_info_rejects_suffixes_and_truncation() {
+        let mut w = Writer::new();
+        StorageInfo::default().encode(&mut w).unwrap();
+        reject_dataset_suffix(w.as_slice(), StorageInfo::decode);
+    }
+
+    #[test]
+    fn prop_desc_rejects_suffixes_and_truncation() {
+        for form in [
+            PropForm::None,
+            PropForm::Range {
+                min: PropValue::U16(1),
+                max: PropValue::U16(3),
+                step: PropValue::U16(1),
+            },
+            PropForm::Enum(vec![PropValue::U16(1), PropValue::U16(2)]),
+        ] {
+            let desc = DevicePropDesc {
+                code: 0x5001,
+                datatype: datatype_code::UINT16,
+                get_set: 1,
+                factory_default: PropValue::U16(1),
+                current: PropValue::U16(2),
+                form,
+            };
+            let mut w = Writer::new();
+            desc.encode(&mut w).unwrap();
+            reject_dataset_suffix(w.as_slice(), DevicePropDesc::decode);
+        }
+    }
 
     fn rt_objectinfo(oi: &ObjectInfo) {
         let mut w = Writer::new();
