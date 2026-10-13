@@ -24,7 +24,8 @@ Headers must be UTF-8. Body bytes remain opaque until the endpoint decodes them,
 so fragmentation inside a UTF-8 body sequence does not invalidate the request.
 
 The complete request has a five-second read deadline from acceptance. Receiving
-another byte does not extend it. Response writes are also bounded. The service
+another byte does not extend it. Response writes have a separate five-second
+absolute deadline. The service
 admits at most eight control connections before spawning request tasks. The TUI
 handles one connection at a time with the same absolute read deadline.
 
@@ -43,7 +44,7 @@ second permit.
 | Separate event listener | 16 | 4 KiB |
 | Liveview listener | 8 | No peer-selected object allocation |
 | Control HTTP | 8 | 64 KiB complete request |
-| PCSS callback | 8 | Bounded callback acknowledgement |
+| PCSS callback | 8 | 16-byte callback acknowledgement |
 
 The command reservation covers simultaneous input frame storage, decoded data,
 accumulated data, and retained request or handshake bytes. Other roles have
@@ -63,7 +64,8 @@ fragmented data frames do not extend it. The accumulated payload limit remains
 four-byte length prefix is rejected before allocating its declared body.
 
 PCSS callback admission is bounded independently. Connect, write, and
-acknowledgement share one five-second deadline. Completed callback tasks are
+acknowledgement share one five-second deadline. The acknowledgement is exactly
+sixteen bytes. Completed callback tasks are
 reaped. Shutdown cancels and joins retained connection and callback work.
 PCSS notification identity checks bind the advertised host to the observed peer.
 
