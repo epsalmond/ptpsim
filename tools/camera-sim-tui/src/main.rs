@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -9,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use camera_sim_tui::{
     callback_url_for,
+    http::{read_request, write_json},
     plugins::{
         fetch_manifest_from_endpoint, spawn_plugin_and_discover, validate_manifest, PluginRegistry,
     },
@@ -1706,7 +1706,17 @@ fn start_http_surface(addr: &str, shared: Arc<SharedSurface>) -> Result<SocketAd
 }
 
 fn handle_http(stream: &mut TcpStream, shared: &Arc<SharedSurface>) -> Result<()> {
-    let req = read_request(stream)?;
+    let req = match read_request(stream) {
+        Ok(request) => request,
+        Err(error) => {
+            write_json(
+                stream,
+                error.status(),
+                &serde_json::json!({ "error": error.to_string() }).to_string(),
+            )?;
+            return Ok(());
+        }
+    };
     // Keep GET /actions strictly for camera manifest actions; plugin actions live under /plugins.
     if req.path.starts_with("/actions/") && req.method == "POST" {
         // Namespace isolation: POST /actions/{id} is only for camera catalog actions.
@@ -1895,71 +1905,6 @@ fn dispatch_http_action(
             let _ = shared.tx.send(RuntimeEvent::State(state));
         }
     }
-    Ok(())
-}
-
-struct LocalRequest {
-    method: String,
-    path: String,
-    body: Vec<u8>,
-}
-
-fn read_request(stream: &mut TcpStream) -> Result<LocalRequest> {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 2048];
-    loop {
-        let n = stream.read(&mut chunk)?;
-        if n == 0 {
-            anyhow::bail!("client closed before full request");
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > 256 * 1024 {
-            anyhow::bail!("request too large");
-        }
-        if let Some(req) = parse_request_if_complete(&buf)? {
-            return Ok(req);
-        }
-    }
-}
-
-fn parse_request_if_complete(buf: &[u8]) -> Result<Option<LocalRequest>> {
-    let s = std::str::from_utf8(buf).context("request is not UTF-8")?;
-    let Some(split) = s.find("\r\n\r\n") else {
-        return Ok(None);
-    };
-    let headers = &s[..split];
-    let mut lines = headers.lines();
-    let line = lines.next().unwrap_or("");
-    let mut parts = line.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let path = parts.next().unwrap_or("").to_string();
-    let content_length = lines
-        .filter_map(|line| line.split_once(':'))
-        .find_map(|(name, value)| {
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>())
-        })
-        .transpose()
-        .context("invalid Content-Length")?
-        .unwrap_or(0);
-    let body_start = split + 4;
-    if buf.len() < body_start + content_length {
-        return Ok(None);
-    }
-    Ok(Some(LocalRequest {
-        method,
-        path,
-        body: buf[body_start..body_start + content_length].to_vec(),
-    }))
-}
-
-fn write_json(stream: &mut TcpStream, status: &str, body: &str) -> Result<()> {
-    write!(
-        stream,
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )?;
-    stream.flush()?;
     Ok(())
 }
 

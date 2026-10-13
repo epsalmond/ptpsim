@@ -1,25 +1,35 @@
 //! Minimal control HTTP surface. Hand-rolled HTTP/1.1 to avoid a web-framework
 //! dependency in the deployable image. Bound to a private/loopback address by
 //! the operator.
+//!
+//! Requests permit at most 16 KiB of headers and 64 KiB in total. Content-Length
+//! accepts decimal digits only; duplicate lengths and Transfer-Encoding are
+//! rejected. Request reads and response writes each have a five-second absolute
+//! deadline. Bodies are bytes and need not be UTF-8.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use camera_config::{
     parse_hex_code, ActionInvocationRequest, ActionOutcome, ActionRole, ExecutionContext,
     ObservationRecorder, SocketRole,
 };
 use camera_sim::{Engine, FaultSpec, PreparedResponderMutation, StateOverlay};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, Notify};
+use tokio::time::{timeout_at, Instant};
 
 use crate::state_callback::Registry;
 use crate::state_json::snapshot_json;
 use crate::trace::TraceLog;
 use crate::{DeclaredAuxListener, Metrics};
 
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
+pub const MAX_HEADER_BYTES: usize = 16 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct Health {
@@ -403,18 +413,45 @@ async fn subscribe_callback(callbacks: &Registry, body: &[u8]) -> Result<String,
     Ok(serde_json::json!({ "ok": true, "callbacks": callbacks }).to_string())
 }
 
-struct Request {
-    method: String,
-    path: String,
-    body: Vec<u8>,
+#[derive(Debug, PartialEq, Eq)]
+pub struct Request {
+    pub method: String,
+    pub path: String,
+    pub body: Vec<u8>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum RequestError {
+    TooLarge,
+    Invalid(&'static str),
+}
+
+impl RequestError {
+    fn response(self) -> Response {
+        match self {
+            Self::TooLarge => Response {
+                status: "413 Payload Too Large".to_string(),
+                body: r#"{"error":"request too large"}"#.to_string(),
+            },
+            Self::Invalid(message) => Response::bad_request(message.to_string()),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Response {
     status: String,
     body: String,
 }
 
 impl Response {
+    fn request_timeout() -> Self {
+        Self {
+            status: "408 Request Timeout".to_string(),
+            body: r#"{"error":"request deadline exceeded"}"#.to_string(),
+        }
+    }
+
     fn ok(body: String) -> Self {
         Self {
             status: "200 OK".to_string(),
@@ -445,75 +482,430 @@ impl Response {
 }
 
 async fn write_response(stream: &mut TcpStream, status: &str, body: &str, metrics: &Metrics) {
+    write_response_before(
+        stream,
+        status,
+        body,
+        metrics,
+        Instant::now() + RESPONSE_TIMEOUT,
+    )
+    .await;
+}
+
+async fn write_response_before<W: AsyncWrite + Unpin>(
+    stream: &mut W,
+    status: &str,
+    body: &str,
+    metrics: &Metrics,
+    deadline: Instant,
+) {
     let resp = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    if stream.write_all(resp.as_bytes()).await.is_ok() {
-        metrics.record_write(resp.len());
-    }
-    let _ = stream.flush().await;
+    let _ = timeout_at(deadline, async {
+        if stream.write_all(resp.as_bytes()).await.is_ok() {
+            metrics.record_write(resp.len());
+            let _ = stream.flush().await;
+        }
+    })
+    .await;
 }
 
 async fn read_request(
     stream: &mut TcpStream,
     metrics: &Metrics,
 ) -> Result<Option<Request>, Response> {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 1024];
-    loop {
-        let n = stream
-            .read(&mut chunk)
-            .await
-            .map_err(|e| Response::bad_request(format!("read request: {e}")))?;
-        if n == 0 {
-            return Ok(None);
-        }
-        metrics.record_read(n);
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > MAX_REQUEST_BYTES {
-            return Err(Response {
-                status: "413 Payload Too Large".to_string(),
-                body: r#"{"error":"request too large"}"#.to_string(),
-            });
-        }
-        if let Some(req) = parse_request_if_complete(&buf)? {
-            return Ok(Some(req));
-        }
-    }
+    read_request_before(stream, metrics, Instant::now() + REQUEST_TIMEOUT).await
 }
 
-fn parse_request_if_complete(buf: &[u8]) -> Result<Option<Request>, Response> {
-    let s = std::str::from_utf8(buf)
-        .map_err(|e| Response::bad_request(format!("request is not UTF-8: {e}")))?;
-    let Some(split) = s.find("\r\n\r\n") else {
-        return Ok(None);
-    };
-    let headers = &s[..split];
-    let mut lines = headers.lines();
-    let line = lines.next().unwrap_or("");
-    let mut parts = line.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let path = parts.next().unwrap_or("").to_string();
-    if method.is_empty() || path.is_empty() {
-        return Err(Response::bad_request("malformed request line".to_string()));
+async fn read_request_before<R: AsyncRead + Unpin>(
+    stream: &mut R,
+    metrics: &Metrics,
+    deadline: Instant,
+) -> Result<Option<Request>, Response> {
+    timeout_at(deadline, async {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            if Instant::now() >= deadline {
+                return Err(Response::request_timeout());
+            }
+            // Never buffer beyond the parser's total request allowance.
+            let available = chunk.len().min(MAX_REQUEST_BYTES - buf.len());
+            let n = stream
+                .read(&mut chunk[..available])
+                .await
+                .map_err(|e| Response::bad_request(format!("read request: {e}")))?;
+            if Instant::now() >= deadline {
+                return Err(Response::request_timeout());
+            }
+            if n == 0 {
+                return if buf.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(Response::bad_request(
+                        "client closed before full request".to_string(),
+                    ))
+                };
+            }
+            metrics.record_read(n);
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(req) = parse_request_if_complete(&buf).map_err(RequestError::response)? {
+                return Ok(Some(req));
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err(Response::request_timeout()))
+}
+
+/// Parse one bounded request. Incomplete bodies are left unallocated.
+/// Duplicate Content-Length fields are invalid even when their values agree.
+pub fn parse_request_if_complete(buf: &[u8]) -> Result<Option<Request>, RequestError> {
+    if buf.len() > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
     }
-    let content_length = lines
-        .filter_map(|line| line.split_once(':'))
-        .find_map(|(name, value)| {
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>())
-        })
-        .transpose()
-        .map_err(|e| Response::bad_request(format!("invalid Content-Length: {e}")))?
-        .unwrap_or(0);
-    let body_start = split + 4;
-    if buf.len() < body_start + content_length {
+    let Some(split) = buf.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+        return if buf.len() >= MAX_HEADER_BYTES {
+            Err(RequestError::TooLarge)
+        } else {
+            Ok(None)
+        };
+    };
+    let body_start = split.checked_add(4).ok_or(RequestError::TooLarge)?;
+    if body_start > MAX_HEADER_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    let headers = std::str::from_utf8(&buf[..split])
+        .map_err(|_| RequestError::Invalid("request headers are not UTF-8"))?;
+    let mut lines = headers.split("\r\n");
+    let mut parts = lines.next().unwrap_or("").split(' ');
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    let version = parts.next().unwrap_or("");
+    if !is_token(method)
+        || path.is_empty()
+        || !path
+            .bytes()
+            .all(|byte| byte.is_ascii() && !byte.is_ascii_control())
+        || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
+        || parts.next().is_some()
+    {
+        return Err(RequestError::Invalid("malformed request line"));
+    }
+    let mut content_length = None;
+    for line in lines {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or(RequestError::Invalid("malformed header"))?;
+        if !is_token(name)
+            || value
+                .bytes()
+                .any(|byte| byte.is_ascii_control() && byte != b'\t')
+        {
+            return Err(RequestError::Invalid("malformed header"));
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(RequestError::Invalid("Transfer-Encoding is unsupported"));
+        }
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err(RequestError::Invalid("duplicate Content-Length"));
+            }
+            let value = value.trim_matches([' ', '\t']);
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(RequestError::Invalid("invalid Content-Length"));
+            }
+            content_length = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| RequestError::Invalid("invalid Content-Length"))?,
+            );
+        }
+    }
+    let body_end = body_start
+        .checked_add(content_length.unwrap_or(0))
+        .ok_or(RequestError::TooLarge)?;
+    if body_end > MAX_REQUEST_BYTES {
+        return Err(RequestError::TooLarge);
+    }
+    if buf.len() < body_end {
         return Ok(None);
     }
     Ok(Some(Request {
-        method,
-        path,
-        body: buf[body_start..body_start + content_length].to_vec(),
+        method: method.to_string(),
+        path: path.to_string(),
+        body: buf[body_start..body_end].to_vec(),
     }))
+}
+
+fn is_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+
+    #[test]
+    fn http_rejects_overflowing_declared_length() {
+        let request = format!(
+            "POST /state HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            usize::MAX
+        );
+        assert!(parse_request_if_complete(request.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn http_rejects_duplicate_lengths_and_transfer_encoding() {
+        for headers in [
+            "Content-Length: 1\r\nContent-Length: 1",
+            "Content-Length: 1\r\ncontent-length: 2",
+            "Transfer-Encoding: chunked",
+            "Content-Length: 1\r\nTransfer-Encoding: identity",
+        ] {
+            let request = format!("POST /state HTTP/1.1\r\n{headers}\r\n\r\n");
+            assert!(
+                parse_request_if_complete(request.as_bytes()).is_err(),
+                "{headers}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_requires_decimal_content_lengths() {
+        for length in [
+            "",
+            "+1",
+            "-1",
+            "1.0",
+            "0x10",
+            "1, 1",
+            "1 1",
+            "184467440737095516150",
+        ] {
+            let request = format!("POST /state HTTP/1.1\r\nContent-Length: {length}\r\n\r\n");
+            assert!(
+                parse_request_if_complete(request.as_bytes()).is_err(),
+                "{length}"
+            );
+        }
+        let request = b"POST /state HTTP/1.1\r\ncOnTeNt-LeNgTh: \t003 \t\r\n\r\nabc";
+        assert_eq!(
+            parse_request_if_complete(request).unwrap().unwrap().body,
+            b"abc"
+        );
+    }
+
+    #[test]
+    fn http_rejects_malformed_request_lines_and_headers() {
+        for header in [
+            "GET /state",
+            "GET  /state HTTP/1.1",
+            "GET /state HTTP/2.0",
+            "GET /state HTTP/1.1 extra",
+            "GET /state HTTP/1.1\r\nContent-Length 2",
+            "GET /state HTTP/1.1\r\nContent-Length : 2",
+            "GET /state HTTP/1.1\r\nX: a\nb",
+        ] {
+            let request = format!("{header}\r\n\r\n");
+            assert!(
+                parse_request_if_complete(request.as_bytes()).is_err(),
+                "{header}"
+            );
+        }
+        for version in ["HTTP/1.0", "HTTP/1.1"] {
+            let request = format!("GET /healthz {version}\r\n\r\n");
+            let request = parse_request_if_complete(request.as_bytes())
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.path, "/healthz");
+            assert!(request.body.is_empty());
+        }
+    }
+
+    fn request_at_size(total: usize) -> Vec<u8> {
+        let mut length = total;
+        loop {
+            let header = format!("POST /state HTTP/1.1\r\nContent-Length: {length}\r\n\r\n");
+            let adjusted = total - header.len();
+            if adjusted == length {
+                let mut request = header.into_bytes();
+                request.resize(total, b'a');
+                return request;
+            }
+            length = adjusted;
+        }
+    }
+
+    #[test]
+    fn http_enforces_announced_total_before_body_arrives() {
+        let request = request_at_size(MAX_REQUEST_BYTES);
+        let body_start = request
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert!(parse_request_if_complete(&request[..body_start])
+            .unwrap()
+            .is_none());
+        let parsed = parse_request_if_complete(&request).unwrap().unwrap();
+        assert_eq!(parsed.body.len(), MAX_REQUEST_BYTES - body_start);
+        let oversized = request_at_size(MAX_REQUEST_BYTES + 1);
+        let body_start = oversized
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert_eq!(
+            parse_request_if_complete(&oversized[..body_start]),
+            Err(RequestError::TooLarge)
+        );
+        assert_eq!(
+            parse_request_if_complete(&oversized),
+            Err(RequestError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn http_bounds_headers_including_terminator() {
+        let mut header = b"GET /state HTTP/1.1\r\nX-Pad: ".to_vec();
+        header.resize(MAX_HEADER_BYTES - 4, b'a');
+        header.extend_from_slice(b"\r\n\r\n");
+        assert!(parse_request_if_complete(&header).unwrap().is_some());
+        header.insert(MAX_HEADER_BYTES - 4, b'a');
+        assert_eq!(
+            parse_request_if_complete(&header),
+            Err(RequestError::TooLarge)
+        );
+        assert_eq!(
+            parse_request_if_complete(&vec![b'a'; MAX_HEADER_BYTES]),
+            Err(RequestError::TooLarge)
+        );
+        assert!(parse_request_if_complete(&vec![b'a'; MAX_HEADER_BYTES - 1])
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn http_accepts_every_fragment_of_headers_and_binary_body() {
+        let mut request = b"POST /state HTTP/1.1\r\nContent-Length: 7\r\n\r\n".to_vec();
+        let body = [0xe2, 0x82, 0xac, 0xff, 0x00, 0x0d, 0x0a];
+        request.extend_from_slice(&body);
+        for split in 0..request.len() {
+            assert!(
+                parse_request_if_complete(&request[..split])
+                    .unwrap()
+                    .is_none(),
+                "split {split}"
+            );
+        }
+        assert_eq!(
+            parse_request_if_complete(&request).unwrap().unwrap().body,
+            body
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_read_deadline_expires_despite_byte_drips() {
+        let (mut reader, mut writer) = tokio::io::duplex(64);
+        let producer = tokio::spawn(async move {
+            for byte in b"GET /healthz HTTP/1.1\r\n\r\n" {
+                if writer.write_all(&[*byte]).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        let started = Instant::now();
+        let result =
+            read_request_before(&mut reader, &Metrics::default(), started + REQUEST_TIMEOUT).await;
+        assert_eq!(result.unwrap_err().status, "408 Request Timeout");
+        assert_eq!(Instant::now() - started, REQUEST_TIMEOUT);
+        producer.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_read_accepts_fragmented_binary_body() {
+        let request = b"POST /state HTTP/1.1\r\nContent-Length: 3\r\n\r\n\xe2\x82\xac";
+        let (mut reader, mut writer) = tokio::io::duplex(64);
+        let producer = tokio::spawn(async move {
+            for byte in request {
+                writer.write_all(&[*byte]).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+        let result = read_request_before(
+            &mut reader,
+            &Metrics::default(),
+            Instant::now() + REQUEST_TIMEOUT,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.body, [0xe2, 0x82, 0xac]);
+        producer.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_read_rejects_announced_oversize_without_body() {
+        let request = format!(
+            "POST /state HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_REQUEST_BYTES
+        );
+        let (mut reader, mut writer) = tokio::io::duplex(1024);
+        writer.write_all(request.as_bytes()).await.unwrap();
+        let started = Instant::now();
+        let result =
+            read_request_before(&mut reader, &Metrics::default(), started + REQUEST_TIMEOUT).await;
+        assert_eq!(result.unwrap_err().status, "413 Payload Too Large");
+        assert_eq!(Instant::now(), started);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_response_write_has_absolute_deadline() {
+        let (mut writer, _unread_peer) = tokio::io::duplex(1);
+        let started = Instant::now();
+        let metrics = Metrics::default();
+        write_response_before(
+            &mut writer,
+            "400 Bad Request",
+            "{}",
+            &metrics,
+            started + RESPONSE_TIMEOUT,
+        )
+        .await;
+        assert_eq!(Instant::now() - started, RESPONSE_TIMEOUT);
+        assert_eq!(metrics.snapshot().bytes_written, 0);
+    }
+
+    #[tokio::test]
+    async fn http_distinguishes_empty_eof_from_truncated_request() {
+        let mut empty = &b""[..];
+        assert!(read_request_before(
+            &mut empty,
+            &Metrics::default(),
+            Instant::now() + REQUEST_TIMEOUT
+        )
+        .await
+        .unwrap()
+        .is_none());
+        let mut truncated = &b"GET /state"[..];
+        assert_eq!(
+            read_request_before(
+                &mut truncated,
+                &Metrics::default(),
+                Instant::now() + REQUEST_TIMEOUT
+            )
+            .await
+            .unwrap_err()
+            .status,
+            "400 Bad Request"
+        );
+    }
 }

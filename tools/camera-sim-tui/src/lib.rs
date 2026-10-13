@@ -1,3 +1,4 @@
+pub mod http;
 pub mod plugins;
 
 use std::collections::{BTreeMap, BTreeSet};
