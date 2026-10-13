@@ -2983,7 +2983,7 @@ properties:
   "0x5010":
     name: exposureBias
     type: i16
-    dispositions: [{ disposition: valueless, when: { prop: "0x500e", eq: 1 } }]
+    dispositions: [{ disposition: valueless, evidence: [propertyFixture, sharedFixture], when: { prop: "0x500e", eq: 1 } }]
   "0x500a":
     name: focusMode
     type: u16
@@ -2991,7 +2991,7 @@ properties:
 operations:
   "0x9026":
     name: afLock
-    dispositions: [{ disposition: silentRefusal, when: { prop: "0x500a", eq: 1 } }]
+    dispositions: [{ disposition: silentRefusal, evidence: [operationFixture, sharedFixture], when: { prop: "0x500a", eq: 1 } }]
 "#;
     let store = ConfigStore::from_bundle(body.into(), None).expect("manifest loads");
     let props = store.properties();
@@ -3002,11 +3002,16 @@ operations:
         PropertyDispositionKind::Valueless
     );
     assert!(bias.dispositions[0].when.is_some());
+    assert_eq!(
+        bias.dispositions[0].evidence,
+        ["propertyFixture", "sharedFixture"]
+    );
     let focus = props.iter().find(|p| p.code == 0x500a).expect("0x500a");
     assert_eq!(
         focus.dispositions[0].disposition,
         PropertyDispositionKind::SilentRefusal
     );
+    assert!(focus.dispositions[0].evidence.is_empty());
     let ops = store.operations();
     let op = ops.iter().find(|o| o.code == 0x9026).expect("0x9026");
     assert_eq!(op.dispositions.len(), 1);
@@ -3014,13 +3019,17 @@ operations:
         op.dispositions[0].disposition,
         OperationDispositionKind::SilentRefusal
     );
+    assert_eq!(
+        op.dispositions[0].evidence,
+        ["operationFixture", "sharedFixture"]
+    );
 }
 
 #[test]
 fn a_disposition_with_an_unconvertible_when_is_dropped_whole() {
     // `when: null` on the FFI record means *unconditional*, so a predicate that
-    // fails to cross must take its disposition with it — never widen a scoped
-    // absence or refusal into an always-on one.
+    // fails to cross must take its disposition with it. This preserves the
+    // predicate's scope even when the disposition carries evidence.
     let body = r#"
 schema: camera-config/v1
 camera: { manufacturer: Test, model: Test, firmware: "1" }
@@ -3028,11 +3037,11 @@ properties:
   "0x5010":
     name: exposureBias
     type: i16
-    dispositions: [{ disposition: valueless, when: { prop: "0xzz", eq: 1 } }]
+    dispositions: [{ disposition: valueless, evidence: [propertyFixture], when: { prop: "0xzz", eq: 1 } }]
 operations:
   "0x9026":
     name: afLock
-    dispositions: [{ disposition: silentRefusal, when: { prop: "0xzz", eq: 1 } }]
+    dispositions: [{ disposition: silentRefusal, evidence: [operationFixture], when: { prop: "0xzz", eq: 1 } }]
 "#;
     let store = ConfigStore::from_bundle(body.into(), None).expect("manifest loads");
     let props = store.properties();
