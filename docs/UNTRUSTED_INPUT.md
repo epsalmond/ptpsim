@@ -71,7 +71,9 @@ four-byte length prefix is rejected before allocating its declared body.
 PCSS callback admission is bounded independently. Connect, write, and
 acknowledgement share one five-second deadline. The acknowledgement is exactly
 sixteen bytes. Completed callback tasks are
-reaped. Shutdown cancels and joins retained connection and callback work.
+reaped. On shutdown, listener loops and the PCSS callback loop are dropped. Their
+`JoinSet`s abort retained tasks without awaiting completion. The separately spawned
+state callback task receives a shutdown signal, but the server does not join it.
 PCSS notification identity checks bind the advertised host to the observed peer.
 
 ## Binary decoders
