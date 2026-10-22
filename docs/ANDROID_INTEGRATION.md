@@ -117,4 +117,4 @@ file, is a possible future follow-up.)
 - `ci/build-android.sh` — the build recipe (runnable locally if you
   have Rust + Android NDK + the 3 targets + `kotlinc` + a JNA jar)
 - `.github/workflows/linux.yml` — the CI step that publishes the `.aar`
-- `ci/github-linux-setup` and the Linux workflow install the hosted build tools
+- `ci/github-linux-setup.sh` and the Linux workflow install the hosted build tools
