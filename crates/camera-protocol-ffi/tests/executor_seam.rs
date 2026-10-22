@@ -35,6 +35,155 @@ fn store() -> Arc<ConfigStore> {
     common::real_fuji_store()
 }
 
+#[test]
+fn chunk_checksum_producers_match_public_vectors() {
+    use protocol_primitives::chunk_frame::{Direction, SourceSum16Decoder};
+    use std::collections::BTreeMap;
+    const GATT: &str = "00002A25-0000-1000-8000-00805F9B34FB";
+    let index = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: { data: "00002A25-0000-1000-8000-00805F9B34FB" }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - { id: camera.test.chunk, version: 1, displayRole: preparingConnection, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 3 } }
+          steps:
+            - bleConnect: {}
+            - bleDiscoverServices: {}
+            - bleWriteChunk:
+                source: blob
+                index: idx
+                size: 120
+                gatt: data
+                frame: [{ field: index, encoding: u16-le }, { field: length, encoding: u32-le }]
+                sentinelIndex: 65535
+                checksum: sourceSum16Le
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let body = "schema: camera-config/v1\ncamera: { manufacturer: TESTCO, model: TM1 }\nconnections: { ble: { kind: ble, establishment: test } }";
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../protocol-primitives/tests/fixtures/chunk-frames.json"
+    ))
+    .unwrap();
+    let decode = |hex: &str| -> Vec<u8> {
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    };
+    for policy in [true, false] {
+        let index = if policy {
+            index.to_string()
+        } else {
+            index.replace("                checksum: sourceSum16Le\n", "")
+        };
+        let native = ResolvedManufacturerIndex::from_yaml(&index).unwrap();
+        let steps = &native.models[0]
+            .ble
+            .as_ref()
+            .unwrap()
+            .establishment("test")
+            .unwrap()
+            .steps;
+        let store = ConfigStore::from_manufacturer_index(
+            index,
+            vec![KeyValue {
+                key: "tm1".into(),
+                value: body.into(),
+            }],
+        )
+        .unwrap();
+        let plan = store
+            .establishment("tm1".into(), "ble".into(), vec![])
+            .unwrap();
+        for vector in fixture["vectors"].as_array().unwrap() {
+            if vector["direction"] != "restore" || !vector["source_hex"].is_string() {
+                continue;
+            }
+            let source_hex = vector["source_hex"].as_str().unwrap();
+            let source = decode(source_hex);
+            let frames = vector["frames_hex"].as_array().unwrap();
+            let mut decoder =
+                SourceSum16Decoder::new(Direction::Restore, 120, source.len(), Some(source.len()))
+                    .unwrap();
+            for (ordinal, frame) in frames.iter().enumerate() {
+                let final_window = ordinal + 1 == frames.len();
+                let index = if final_window { 65535 } else { ordinal };
+                let mut expected = decode(frame.as_str().unwrap());
+                if !policy {
+                    expected.truncate(expected.len() - if final_window { 4 } else { 2 });
+                    if final_window {
+                        let length = (expected.len() - 6) as u32;
+                        expected[2..6].copy_from_slice(&length.to_le_bytes());
+                    }
+                }
+                let scope = vec![KeyValue {
+                    key: "idx".into(),
+                    value: index.to_string(),
+                }];
+                let params = vec![KeyValue {
+                    key: "blob".into(),
+                    value: source_hex.into(),
+                }];
+                let transport = Arc::new(ResponderTransport::new(BleResponder::new([
+                    GATT.to_string()
+                ])));
+                block_on(run_establishment(
+                    store.clone(),
+                    plan.plan_handle.clone(),
+                    transport.clone(),
+                    Arc::new(Recorder::default()),
+                    Arc::new(ActivityRecorder::default()),
+                    scope.clone(),
+                    vec![],
+                    params.clone(),
+                ))
+                .unwrap();
+                let written: Vec<Vec<u8>> = transport
+                    .responder
+                    .lock()
+                    .unwrap()
+                    .written(GATT)
+                    .iter()
+                    .map(|v| v.to_vec())
+                    .collect();
+                assert_eq!(
+                    written,
+                    [expected.clone()],
+                    "{} policy={policy}",
+                    vector["id"]
+                );
+                let mut reference = BleResponder::new([GATT.to_string()]);
+                let native_scope = BTreeMap::from([("idx".into(), index.to_string())]);
+                let native_params = BTreeMap::from([("blob".into(), source_hex.into())]);
+                camera_sim::walk_establishment(
+                    &mut reference,
+                    steps,
+                    &native_scope,
+                    &BTreeMap::new(),
+                    &native_params,
+                )
+                .unwrap();
+                assert_eq!(reference.written(GATT), [expected]);
+                if policy {
+                    decoder.push(&written[0]).unwrap();
+                }
+            }
+            if policy {
+                assert_eq!(decoder.finish().unwrap(), source);
+            }
+        }
+    }
+}
+
 fn poll_timeout_store() -> Arc<ConfigStore> {
     let index = r#"
 manufacturer: TESTCO

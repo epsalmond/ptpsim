@@ -314,6 +314,81 @@ models:
 }
 
 #[test]
+fn chunk_checksum_policy_is_optional_and_closed() {
+    use camera_config::index::ChunkChecksum;
+    let step = "            - bleWriteChunk:\n                source: blob\n                index: idx\n                size: 120\n                gatt: status\n                frame: [{ field: index, encoding: u16-le }, { field: length, encoding: u32-le }]\n                sentinelIndex: 65535";
+    let index = confirmation_index(step, 1);
+    let loaded = ResolvedManufacturerIndex::from_yaml(&index).unwrap();
+    let Step::BleWriteChunk(chunk) = &loaded.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("pair")
+        .unwrap()
+        .steps[0]
+    else {
+        panic!("chunk step")
+    };
+    assert_eq!(chunk.checksum, None);
+    assert_eq!(
+        chunk.encode_chunk(&[], 65535).unwrap(),
+        [255, 255, 0, 0, 0, 0]
+    );
+    let enabled = format!("{step}\n                checksum: sourceSum16Le");
+    let index = confirmation_index(&enabled, 1);
+    let loaded = ResolvedManufacturerIndex::from_yaml(&index).unwrap();
+    let Step::BleWriteChunk(chunk) = &loaded.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("pair")
+        .unwrap()
+        .steps[0]
+    else {
+        panic!("chunk step")
+    };
+    assert_eq!(chunk.checksum, Some(ChunkChecksum::SourceSum16Le));
+    assert!(chunk.encode_chunk(&[], 65535).is_err());
+    for bad in [
+        enabled.replace("sourceSum16Le", "crc16"),
+        enabled.replace("size: 120", "size: 0"),
+        enabled.replace("size: 120", "size: 1"),
+        enabled.replace("size: 120", "size: 4294967295"),
+        enabled.replace("65535", "65534"),
+        enabled.replace("u16-le", "u16-be"),
+        enabled.replace("field: length", "field: index"),
+        enabled.replace("u32-le", "u16-le"),
+    ] {
+        assert!(
+            ResolvedManufacturerIndex::from_yaml(&confirmation_index(&bad, 1)).is_err(),
+            "accepted {bad}"
+        );
+    }
+    // Existing manifests still load with the policy absent everywhere.
+    for model in real_index().models {
+        if let Some(ble) = model.ble {
+            for action in ble.actions.values() {
+                fn check(step: &Step) {
+                    match step {
+                        Step::BleWriteChunk(chunk) => assert_eq!(chunk.checksum, None),
+                        Step::BleAwaitUntil(await_step) => {
+                            await_step.on_each.iter().for_each(check)
+                        }
+                        Step::If(branch) => branch
+                            .then
+                            .iter()
+                            .chain(&branch.else_branch)
+                            .for_each(check),
+                        _ => {}
+                    }
+                }
+                action.steps.iter().for_each(check);
+            }
+        }
+    }
+}
+
+#[test]
 fn registration_confirmation_marker_parses_on_signal_step_and_nested_if() {
     let idx = real_index();
     let pair = idx.models[0]
