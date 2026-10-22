@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+test_root=$(mktemp -d)
+trap 'rm -rf "$test_root"' EXIT
+export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.com
+export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.com
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+
+git init --quiet --bare "$test_root/remote.git"
+git init --quiet -b main "$test_root/source"
+cd "$test_root/source"
+git -c core.hooksPath=/dev/null commit --quiet --allow-empty -m Initial
+merged=$(git rev-parse HEAD)
+tag="apple-ffi-${merged:0:8}"
+git remote add origin "$test_root/remote.git"
+git tag "$tag"
+git -c core.hooksPath=/dev/null commit --quiet --allow-empty -m Advance
+main_tip=$(git rev-parse HEAD)
+git push --quiet origin main "refs/tags/$tag"
+git clone --quiet --branch main "$test_root/remote.git" "$test_root/checkout"
+mkdir -p "$test_root/checkout/ci"
+cp "$script_dir/validate-apple-promotion" "$test_root/checkout/ci/"
+cd "$test_root/checkout"
+git checkout --quiet --detach "$merged"
+
+run_case() {
+    local name=$1 expected=$2
+    shift 2
+    local actual=success
+    if ! ci/validate-apple-promotion "$@" >"$test_root/$name.log" 2>&1; then
+        actual=failure
+    fi
+    if [[ "$actual" != "$expected" ]]; then
+        echo "$name: expected $expected, got $actual" >&2
+        cat "$test_root/$name.log" >&2
+        exit 1
+    fi
+}
+
+run_case merged-ancestor success "$tag" "$merged"
+run_case wrong-suffix failure apple-ffi-00000000 "$merged"
+run_case invalid-sha failure apple-ffi-01234567 01234567
+run_case wrong-checkout failure "apple-ffi-${main_tip:0:8}" "$main_tip"
+run_case argument-count failure "$tag"
+
+# Annotated promotion tags must peel to the same commit.
+git -C "$test_root/source" tag -a -f "$tag" "$merged" -m Promotion >/dev/null
+git -C "$test_root/source" push --quiet --force origin "refs/tags/$tag" 2>/dev/null
+run_case annotated-tag success "$tag" "$merged"
+
+# A tag moved after checkout must fail even if the old commit remains merged.
+git -C "$test_root/source" tag -f "$tag" "$main_tip" >/dev/null
+git -C "$test_root/source" push --quiet --force origin "refs/tags/$tag" 2>/dev/null
+run_case moved-tag failure "$tag" "$merged"
+
+git -C "$test_root/source" checkout --quiet -b unmerged "$merged"
+git -C "$test_root/source" -c core.hooksPath=/dev/null commit --quiet --allow-empty -m Unmerged
+unmerged=$(git -C "$test_root/source" rev-parse HEAD)
+unmerged_tag="apple-ffi-${unmerged:0:8}"
+git -C "$test_root/source" tag "$unmerged_tag"
+git -C "$test_root/source" push --quiet origin "refs/tags/$unmerged_tag"
+git fetch --quiet origin "refs/tags/$unmerged_tag"
+git checkout --quiet --detach "$unmerged"
+run_case unmerged-commit failure "$unmerged_tag" "$unmerged"
+
+git -C "$test_root/source" push --quiet origin ":refs/tags/$unmerged_tag"
+run_case deleted-tag failure "$unmerged_tag" "$unmerged"
+
+echo "validate-apple-promotion tests passed"
