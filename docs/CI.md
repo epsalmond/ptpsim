@@ -27,6 +27,11 @@ use BuildKit's GitHub Actions cache. Changed-file selection limits expensive
 jobs while preserving stable check names. A commit message containing `[ALL]`
 requests all applicable checks. The OCI workflow also supports manual dispatch.
 
+Android setup uses the hosted runner's SDK at `ANDROID_HOME`. It invokes
+`cmdline-tools/latest/bin/sdkmanager` within that SDK because the command-line
+tools directory is not on the runner's `PATH`. The setup installs the pinned
+NDK and Android platform before exporting `ANDROID_NDK_HOME` for the build.
+
 ## Release assets
 
 Release jobs check out the exact triggering commit. Main-branch artifact jobs

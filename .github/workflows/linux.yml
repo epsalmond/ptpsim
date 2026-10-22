@@ -45,6 +45,7 @@ jobs:
       - run: ci/test-ensure-github-release
       - run: ci/test-validate-apple-promotion
       - run: ci/test-build-android.sh
+      - run: ci/test-github-linux-setup.sh
       - run: python3 ci/github-linux-changes.test.py
       - run: bash -n ci/github-linux-setup.sh
 

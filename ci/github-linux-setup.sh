@@ -25,7 +25,12 @@ case "${1:-}" in
     } >>"${GITHUB_ENV:?}"
     ;;
   android)
-    sdkmanager 'ndk;27.2.12479018' 'platforms;android-35'
+    sdkmanager="${ANDROID_HOME:?}/cmdline-tools/latest/bin/sdkmanager"
+    if [[ ! -x "$sdkmanager" ]]; then
+      printf 'Android SDK manager is missing or not executable: %s\n' "$sdkmanager" >&2
+      exit 1
+    fi
+    "$sdkmanager" 'ndk;27.2.12479018' 'platforms;android-35'
     printf 'ANDROID_NDK_HOME=%s/ndk/27.2.12479018\n' "${ANDROID_HOME:?}" >>"${GITHUB_ENV:?}"
     cargo install --locked cargo-ndk --version 3.5.4
     ;;
