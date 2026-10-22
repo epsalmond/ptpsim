@@ -8,7 +8,7 @@
 # runtime, and Kaniko skips mounted paths when it snapshots layers. Cargo
 # 1.97 does not hash the workspace directory for registry dependencies, so
 # only the /ci-cache paths must match CI. The deployment owner's CI builds and publishes this
-# image and supplies it to .woodpecker/linux.yml via RUST_TOOLCHAIN_IMAGE.
+# image for external build infrastructure. Hosted Actions jobs do not use it.
 
 FROM rust:1-slim AS base
 

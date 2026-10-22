@@ -159,7 +159,7 @@ per-platform packaging:
   x86_64 simulators, `lipo`-combine the simulator archives, then
   `xcodebuild -create-xcframework`. **Verified end-to-end recipe in
   `docs/APPLE_FFI_RELEASES.md` "Build recipe"** — that's the recipe
-  the explicit Woodpecker promotion workflow ships; reuse it for local builds.
+  the explicit GitHub Actions promotion workflow ships; reuse it for local builds.
   Each promoted release
   publishes `CameraProtocolFFI-<sha8>.xcframework.zip` + a `.checksum`
   sibling for SPM `binaryTarget(url:, checksum:)`; consumer-side wiring
@@ -172,8 +172,8 @@ per-platform packaging:
   as a real Android Archive (`CameraProtocolFFI-<sha8>.aar`) the consumer adds as
   a Gradle file dependency (`implementation(files("libs/…​.aar"))`) plus the JNA
   `@aar`. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Built by
-  `ci/build-android.sh` on the `ci-android` image (`kotlinc` + JNA; `android.jar`
-  from the cimg Android image).
+  `ci/build-android.sh` with the Android toolchain (`kotlinc` + JNA; `android.jar`
+  from the installed Android SDK).
 - **Linux / Python:** the `.so` + generated `camera_protocol_ffi.py` remain an
   adapter surface. New first-party observations come from the shipping Rust
   initiator; an external adapter must emit the same canonical contract and does

@@ -36,15 +36,16 @@ git push origin "apple-ffi-${SHA:0:8}"
 
 The workflow rejects a tag whose suffix does not match its commit or whose
 commit is not an ancestor of `origin/main`. It builds each architecture in a
-separate step, generates Swift bindings with the host-only binding tool, and
+separate step on a GitHub-hosted Apple Silicon macOS runner, generates Swift bindings with the host-only binding tool, and
 publishes the XCFramework archives and checksum to the commit's `sha-<commit>`
 release.
 
-On a maintainer session with the shared waiter installed, select the pipeline
-URL from the tag's CI check and run
-`wait-for-status woodpecker-deploy <pipeline-URL>`. This observes the selected
-pipeline and does not create or move a tag. The pipeline page remains available
-to other contributors.
+Open the tag's `Apple FFI` Actions run to inspect its build and publication
+steps. The workflow uses its `GITHUB_TOKEN` to upload assets; no external
+runner or release-token secret is required. A maintainer or authorized external
+client must push the promotion tag: tag pushes made with a workflow
+`GITHUB_TOKEN` do not trigger another workflow. The resulting artifact still
+requires the consumer validation described below.
 
 ## Consumer workflow
 
@@ -69,7 +70,9 @@ binary distribution. The artifact is promoted explicitly from a commit already
 merged to `main`; the current distribution authority is
 `docs/APPLE_FFI_RELEASES.md`.
 
-**Verified recipe** (spike run 2026-06-01 on a macOS build host against uniffi 0.31 — Xcode 26.3, rustc 1.95.0; lives at `ci/build-xcframework.sh`, called from `.woodpecker.yml`):
+**Verified recipe:** the original macOS spike ran on 2026-06-01 against
+uniffi 0.31, Xcode 26.3, and rustc 1.95.0. The recipe lives at
+`ci/build-xcframework.sh`; `.github/workflows/xcframework.yml` invokes it.
 
 ```sh
 # 1. compile each Apple target's staticlib
@@ -111,7 +114,7 @@ xcodebuild -create-xcframework \
 * `--library` flag deprecated; auto-detected from the .a path.
 
 **Distribution:** an `apple-ffi-<sha8>` promotion tag identifies a validated,
-merged commit. Woodpecker publishes the archive and checksum to that commit's
+merged commit. GitHub Actions publishes the archive and checksum to that commit's
 `sha-<sha8>` GitHub release. Consumers vendor and review that exact artifact;
 they do not follow a moving release branch or build ptpsim inside their native
 application pipeline.

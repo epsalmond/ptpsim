@@ -9,11 +9,32 @@ fi
 tag="$1"
 target_commit="$2"
 
+case "$target_commit" in
+  *[!0-9a-f]*|'')
+    echo "target commit must be a full lowercase Git SHA" >&2
+    exit 2
+    ;;
+esac
+if [ "${#target_commit}" -ne 40 ] || [ "$tag" != "sha-$(printf '%.8s' "$target_commit")" ]; then
+  echo "release tag must be sha-<first eight characters of the full target commit>" >&2
+  exit 2
+fi
+
 release_exists() {
   gh release view "$tag" >/dev/null 2>&1
 }
 
+verify_target() {
+  # targetCommitish can be a moving branch. Resolve the release tag itself.
+  actual_commit="$(gh api "repos/{owner}/{repo}/commits/$tag" --jq .sha)"
+  if [ "$actual_commit" != "$target_commit" ]; then
+    echo "release tag $tag does not identify target commit $target_commit" >&2
+    exit 1
+  fi
+}
+
 if release_exists; then
+  verify_target
   exit 0
 fi
 
@@ -21,10 +42,13 @@ if gh release create "$tag" \
   --target "$target_commit" \
   --title "ptpsim FFI $tag" \
   --notes "Auto-built artifacts."; then
+  verify_target
   exit 0
 fi
 
+# Another platform job may have created the same release concurrently.
 if ! release_exists; then
   echo "could not create or observe release $tag" >&2
   exit 1
 fi
+verify_target
