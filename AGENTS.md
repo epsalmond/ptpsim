@@ -300,7 +300,7 @@ CI uses GitHub Actions in `.github/workflows/` for public builds and tests.
 Linux jobs use hosted runners and Cargo caches. Apple FFI promotion tags run on
 hosted macOS. The private registry publish, verify, and smoke sequence remains
 in `.woodpecker/oci-image.yml`. A commit message containing `[ALL]` requests all
-applicable checks; manual workflow dispatch also runs them.
+applicable checks. The OCI workflow also supports manual dispatch.
 
 Read [`docs/CI.md`](docs/CI.md) before diagnosing a CI failure or editing a
 workflow. Validate Actions definitions with `actionlint` and the retained

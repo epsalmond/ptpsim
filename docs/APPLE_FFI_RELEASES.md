@@ -42,8 +42,10 @@ release.
 
 Open the tag's `Apple FFI` Actions run to inspect its build and publication
 steps. The workflow uses its `GITHUB_TOKEN` to upload assets; no external
-runner or release-token secret is required. This does not replace the consumer
-validation described below.
+runner or release-token secret is required. A maintainer or authorized external
+client must push the promotion tag: tag pushes made with a workflow
+`GITHUB_TOKEN` do not trigger another workflow. The resulting artifact still
+requires the consumer validation described below.
 
 ## Consumer workflow
 

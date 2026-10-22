@@ -173,7 +173,7 @@ per-platform packaging:
   a Gradle file dependency (`implementation(files("libs/…​.aar"))`) plus the JNA
   `@aar`. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Built by
   `ci/build-android.sh` with the Android toolchain (`kotlinc` + JNA; `android.jar`
-  from the cimg Android image).
+  from the installed Android SDK).
 - **Linux / Python:** the `.so` + generated `camera_protocol_ffi.py` remain an
   adapter surface. New first-party observations come from the shipping Rust
   initiator; an external adapter must emit the same canonical contract and does

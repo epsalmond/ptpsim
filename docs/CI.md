@@ -25,14 +25,15 @@ Rust jobs cache Cargo dependencies with `Swatinem/rust-cache`. Cache keys
 include `Cargo.lock`; a lockfile change can require a cold build. OCI dry runs
 use BuildKit's GitHub Actions cache. Changed-file selection limits expensive
 jobs while preserving stable check names. A commit message containing `[ALL]`
-requests all applicable checks. Manual workflow dispatch also runs the checks.
+requests all applicable checks. The OCI workflow also supports manual dispatch.
 
 ## Release assets
 
 Release jobs check out the exact triggering commit. Main-branch artifact jobs
 and Apple promotions share the `sha-<sha8>` GitHub release for that commit.
 `ci/ensure-github-release TAG TARGET_COMMIT` creates that release or observes a
-concurrent creator. Parallel jobs upload only their own named assets.
+concurrent creator. It verifies that the release tag resolves to the full
+triggering commit. Parallel jobs upload only their own named assets.
 
 | Asset | Meaning |
 | --- | --- |

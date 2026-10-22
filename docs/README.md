@@ -18,7 +18,7 @@ index is a navigational summary of it.
 | [`SPM_INTEGRATION.md`](SPM_INTEGRATION.md) | Consuming a pinned, promoted `CameraProtocolFFI.xcframework` via SPM or direct vendoring | Adding or updating an iOS/macOS consumer's dependency |
 | [`APPLE_FFI_RELEASES.md`](APPLE_FFI_RELEASES.md) | How Apple FFI artifacts are promoted — supported slices, tag-driven promotion procedure | Cutting or consuming an Apple FFI release; changing the xcframework pipeline |
 | [`CONTAINER.md`](CONTAINER.md) | The `camera-sim-service` container image — platforms, runtime port contract, publication guidance | Building, publishing, or running the simulator container |
-| [`CI.md`](CI.md) | GitHub Actions checks and private image publication — workflow layout, status meanings, triage rules of thumb | A pipeline is red or errored; changing `.woodpecker/` workflows |
+| [`CI.md`](CI.md) | GitHub Actions checks, release artifacts, and private image publication | Diagnosing CI failures; changing CI workflows |
 | [`UNTRUSTED_INPUT.md`](UNTRUSTED_INPUT.md) | HTTP, simulator connection, and binary decoder resource limits | Changing network parsers, connection admission, read deadlines, or binary decoders |
 | [`FUZZING.md`](FUZZING.md) | Local cargo-fuzz targets, synthetic seeds, and coverage scope | Building or running parser fuzz targets |
 | [`CODE_REVIEW_WORKFLOW.md`](CODE_REVIEW_WORKFLOW.md) | The durable PR review-thread workflow — SHA-pinned reviews, thread triage, delta reviews, readiness gates | Running or remediating a review pass; resuming a PR after context loss |
