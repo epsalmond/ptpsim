@@ -31,7 +31,7 @@ def selection(event_name, event):
     elif event_name == "push":
         base = commit(event["before"])
         head = commit(event["after"])
-        lint_range = f"{base}..{head}" if base != "0" * 40 else f"{head}^!"
+        lint_range = f"{base}..{head}" if base != "0" * 40 else head
     else:
         raise ValueError(f"unsupported event: {event_name}")
 
@@ -44,13 +44,13 @@ def selection(event_name, event):
             if event_name == "pull_request"
             else base
         )
-        paths = git("diff", "--name-only", "-z", diff_base, head, "--").decode().split("\0")
+        paths = git("diff", "--name-only", "--no-renames", "-z", diff_base, head, "--").decode().split("\0")
         messages = git("log", "--format=%B", lint_range).decode()
     except (subprocess.CalledProcessError, UnicodeError):
         # A force push or unavailable base must not silently skip checks.
         selected = dict.fromkeys(JOBS, True)
         if event_name == "push":
-            lint_range = f"{head}^!"
+            lint_range = head
         return {**selected, "lint_range": lint_range}
 
     all_jobs = "[ALL]" in messages

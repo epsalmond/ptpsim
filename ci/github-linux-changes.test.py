@@ -11,6 +11,7 @@ import unittest
 
 
 SCRIPT = Path(__file__).with_name("github-linux-changes.py")
+LINTER = SCRIPT.parent.parent / "scripts/lint-commit-messages.sh"
 SPEC = importlib.util.spec_from_file_location("changes", SCRIPT)
 CHANGES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHANGES)
@@ -56,6 +57,12 @@ class SelectionTests(unittest.TestCase):
     def assert_jobs(self, result, *enabled):
         for job in CHANGES.JOBS:
             self.assertEqual(result[job], job in enabled, job)
+
+    def assert_lint_success(self, result):
+        lint = subprocess.run([str(LINTER), result["lint_range"]],
+                              capture_output=True, text=True)
+        self.assertEqual(lint.returncode, 0, lint.stderr)
+        self.assertIn("lint-commit-messages: ok", lint.stdout)
 
     def test_docs_only_fork_pr(self):
         self.add("docs/reference.md")
@@ -113,6 +120,21 @@ class SelectionTests(unittest.TestCase):
         self.assert_jobs(result, "docs", "workspace", "kotlin", "android", "python")
         self.assertEqual(result["lint_range"], f"{self.base}..{head}")
 
+    def test_renamed_source_runs_builds_for_pr_and_push(self):
+        before = self.add("crates/example/src/lib.rs")
+        self.git("config", "diff.renames", "true")
+        Path("docs").mkdir()
+        self.git("mv", "crates/example/src/lib.rs", "docs/lib.rs")
+        self.git("commit", "--quiet", "-m", "Move fixture")
+        head = self.git("rev-parse", "HEAD")
+        for event_name, event in (
+            ("pull_request", self.pr(base=before, head=head)),
+            ("push", {"before": before, "after": head}),
+        ):
+            with self.subTest(event_name=event_name):
+                result = CHANGES.selection(event_name, event)
+                self.assert_jobs(result, "workspace", "kotlin", "android", "python")
+
     def test_main_push_all_marker(self):
         head = self.add("README.md", "Exercise all jobs [ALL]")
         result = CHANGES.selection("push", {"before": self.base, "after": head})
@@ -128,7 +150,16 @@ class SelectionTests(unittest.TestCase):
             with self.subTest(before=before):
                 result = CHANGES.selection("push", {"before": before, "after": head})
                 self.assert_jobs(result, *CHANGES.JOBS)
-                self.assertEqual(result["lint_range"], f"{head}^!")
+                self.assert_lint_success(result)
+                self.assertEqual(result["lint_range"], head)
+
+    def test_initial_and_missing_history_push_lint_root_commit(self):
+        for before in ("0" * 40, "1" * 40):
+            with self.subTest(before=before):
+                result = CHANGES.selection("push", {"before": before, "after": self.base})
+                self.assert_jobs(result, *CHANGES.JOBS)
+                self.assert_lint_success(result)
+                self.assertEqual(result["lint_range"], self.base)
 
     def test_payload_is_read_as_data_and_outputs_are_fixed(self):
         self.add("docs/$(touch injected)\nworkspace=true.md")
