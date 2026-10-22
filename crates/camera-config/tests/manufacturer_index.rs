@@ -1877,7 +1877,7 @@ fn fuji_condition_retry_parses_with_resolved_diagnostic_gatt() {
         })
         .expect("launch retry parses");
     assert_eq!(retry.max_attempts, 2);
-    assert_eq!(retry.retry_delay_ms, 200);
+    assert_eq!(retry.retry_delay_ms, 5000);
     assert!(retry.on_failure.is_empty());
     assert!(matches!(
         &plan.steps[2],

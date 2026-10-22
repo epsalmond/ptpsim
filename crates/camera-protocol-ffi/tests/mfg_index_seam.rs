@@ -1312,7 +1312,7 @@ fn establishment_app_connection_returns_wifi_ap_plan() {
     };
     assert_eq!(*when_failure, ExecutorStepFailureKind::ConditionRejected);
     assert_eq!(*max_attempts, 2);
-    assert_eq!(*retry_delay_ms, 200);
+    assert_eq!(*retry_delay_ms, 5000);
     assert_eq!(retry_when.field, "stateErrorDetails");
     assert_eq!(retry_when.value, "2");
     assert_eq!(failure_context, &["apState", "stateErrorDetails"]);
