@@ -296,22 +296,20 @@ cargo test --workspace
 the clippy and test commands enforce warning-free local crates without denying
 warnings emitted by dependencies.
 
-CI: Woodpecker, `.woodpecker/`. Steps are path-filtered and heavily cached
-(#41), so docs-only pushes run almost nothing. Toolchain images come prebuilt
-from the local registry (`ci/images/`). The deployment owner's CI rebuilds
-them by manual trigger; `ci-rust` carries the locked workspace dependency
-cache, so budget one cold run after a `Cargo.lock` change until it is rebuilt.
-The macOS agent keeps a persistent cargo target dir. A commit message containing
-`[ALL]` bypasses every path filter when you need a full run.
+CI uses GitHub Actions in `.github/workflows/` for public builds and tests.
+Linux jobs use hosted runners and Cargo caches. Apple FFI promotion tags run on
+hosted macOS. The private registry publish, verify, and smoke sequence remains
+in `.woodpecker/oci-image.yml`. A commit message containing `[ALL]` requests all
+applicable checks; manual workflow dispatch also runs them.
 
-When a pipeline is red, diagnose it with [`docs/CI.md`](docs/CI.md) before
-touching code: an `error` status with no steps is a config-fetch/infra
-failure, not a failing test, and rerunning it reuses the stored (failed)
-config — create a fresh pipeline instead.
+Read [`docs/CI.md`](docs/CI.md) before diagnosing a CI failure or editing a
+workflow. Validate Actions definitions with `actionlint` and the retained
+Woodpecker workflow with `woodpecker-cli lint .woodpecker/oci-image.yml`.
+A Woodpecker `error` with no steps can be a configuration-fetch or runner
+failure; inspect the pipeline before changing source.
 
-For an explicit blocking wait on an existing PR or Woodpecker run, maintainer
-sessions with the shared `wait-for-status` command installed can run it once:
-`wait-for-status gh-checks <PR-number>` or
-`wait-for-status woodpecker-deploy <pipeline-URL>`. The URL selects the
-repository and pipeline. The waiter retains the failed log and prints matching
-failure lines; it does not create or move release tags.
+For an explicit blocking wait, maintainer sessions with the shared waiter
+installed can run `wait-for-status gh-checks <PR-number>` once. For an existing
+private image publication pipeline, use
+`wait-for-status woodpecker-deploy <pipeline-URL>`. The waiter retains failed
+logs and does not create or move release tags.
