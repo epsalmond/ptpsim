@@ -2309,10 +2309,6 @@ where
 // Chunked write
 // ---------------------------------------------------------------------------
 
-/// Reference-walker guard on a `bleWriteChunk` upload (#112): a blob needing
-/// more windows than this fails rather than letting a corrupt size spin.
-const MAX_CHUNK_WINDOWS: usize = 4096;
-
 /// `bleWriteChunk` (#112): frame + write ONE window of the host blob,
 /// selected by the captured chunk index. Slice math and frame assembly live
 /// here; the manifest declares only policy.
@@ -2334,16 +2330,6 @@ async fn run_write_chunk(
     let blob = eval::scope_string_to_bytes(raw, Some(Encoding::BytesRaw))
         .ok_or_else(|| err(format!("source '{}' undecodable", s.source)))?;
 
-    let size = s.size.max(1) as usize;
-    let total = blob.len();
-    let full = if total == 0 { 0 } else { (total - 1) / size };
-    if full + 1 > MAX_CHUNK_WINDOWS {
-        return Err(err(format!(
-            "blob of {total} bytes needs {} windows, exceeds cap {MAX_CHUNK_WINDOWS}",
-            full + 1
-        )));
-    }
-
     let captured = ctx
         .scope
         .get(&s.index)
@@ -2356,33 +2342,9 @@ async fn run_write_chunk(
         ))
     })?;
 
-    let (offset, len) = if idx == s.sentinel_index as u64 {
-        (full * size, total - full * size)
-    } else if (idx as usize) < full {
-        (idx as usize * size, size)
-    } else {
-        return Err(err(format!(
-            "chunk index {idx} out of range (full windows 0..{full}, sentinel {})",
-            s.sentinel_index
-        )));
-    };
-
-    let mut frame = Vec::new();
-    for f in &s.frame {
-        let value = match f.field {
-            camera_config::index::ChunkField::Index => idx,
-            camera_config::index::ChunkField::Length => len as u64,
-        };
-        let encoded = eval::encode_uint(value, f.encoding).ok_or_else(|| {
-            err(format!(
-                "frame field {:?} needs an integer encoding (got {})",
-                f.field,
-                f.encoding.as_token()
-            ))
-        })?;
-        frame.extend_from_slice(&encoded);
-    }
-    frame.extend_from_slice(&blob[offset..offset + len]);
+    let frame = s
+        .encode_chunk(&blob, idx)
+        .map_err(|error| err(error.to_string()))?;
 
     deadline(transport, DEFAULT_OP_TIMEOUT_MS, "write", async {
         transport.write(s.gatt.clone(), frame).await

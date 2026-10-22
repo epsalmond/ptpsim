@@ -53,6 +53,56 @@ Anything else is a schema-validation error at FFI load.
 
 The scope (`Vec<KeyValue { key: String, value: String }>`) **always carries strings**. Encoding is the dispatcher's contract for turning bytes-from-wire into scope strings (on capture) and scope strings into bytes-to-wire (on consumption). Integer encodings render as decimal strings ("12345"); byte encodings as hex strings ("44732a80"); text encodings as the literal string.
 
+### 11.2a Chunk framing
+
+`bleWriteChunk` selects one window from the runtime `source` blob using the
+captured `index`, `size`, and `sentinelIndex`. The final window contains the
+remaining source bytes, including a full window for an exact multiple of
+`size`. `frame` declares ordered `index` and `length` fields with integer
+encodings. Without `checksum`, length counts only source bytes and the header
+is followed by those bytes. Existing empty sources emit an empty sentinel.
+
+The optional `checksum: sourceSum16Le` selects a closed framing policy. It
+requires `2 <= size <= 4294967293`, `sentinelIndex: 65535`, and exactly this
+header (the u32 length must also fit the two checksum bytes):
+
+```yaml
+frame:
+  - { field: index, encoding: u16-le }
+  - { field: length, encoding: u32-le }
+checksum: sourceSum16Le
+```
+
+Let C be the sum of every unsigned byte of the complete source modulo 65536.
+For a compressed source, C covers compressed bytes. No decompression occurs.
+Each checksum is a little-endian u16. Framing bytes never contribute to C.
+
+| Window | Declared length | Body | Write suffix |
+|---|---|---|---|
+| Ordinary | N | N source bytes | `00 00` |
+| Final, index 65535 | N + 2 | N final source bytes, C | C |
+
+For invented source `80 ff`, C = 383 and the complete write is
+`ff ff 04 00 00 00 80 ff 7f 01 7f 01`. Empty sources under this policy are
+unsupported. Encoders permit at most 4096 windows.
+
+The shared `protocol_primitives::chunk_frame` decoder consumes the fixed
+header and declared body. `Backup` ignores all bytes beyond that body, even
+nonzero bytes. `Restore` requires exactly the write suffix above. It enforces
+ordinary sequence numbers starting at zero, full ordinary windows, one final
+window, bounded source bytes and windows, and the final source checksum.
+An optional independently known source size detects a premature final window;
+without that size, a valid shorter object cannot be distinguished. Do not
+assume metadata describing an uncompressed object gives the compressed size.
+
+The fixture at `crates/protocol-primitives/tests/fixtures/chunk-frames.json`
+contains 21 vectors made entirely from invented bytes. Its SHA-256 is
+`47759dc20511ef504f76db2e3c52949cdda50bed8f655dfa2c9463345645e1a1`.
+Negative vectors specify defensive decoder policy, not observed camera
+rejection. This foundation defines no backup action, characteristic
+subscription mode, ordered request flow, terminal opcode, or result payload.
+Those remain evidence-gated in #200. No shipped manifest enables this policy.
+
 ### 11.3 GATT-name resolution
 
 Steps in the YAML reference GATT characteristics by symbolic name (`gatt: pairingKey`). **The FFI resolves these to UUID strings at index-build time.** The Step variant returned over the uniffi boundary carries the resolved UUID, NOT the symbolic name. The dispatcher passes the UUID straight to CoreBluetooth.

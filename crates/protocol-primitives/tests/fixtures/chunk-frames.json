@@ -1,0 +1,303 @@
+{
+  "schema": "synthetic-ble-framing-evidence/v1",
+  "window": 120,
+  "scope": "Invented bytes only; not valid settings files. Backup suffixes are unconstrained. Negative outcomes are proposed validation policy, not camera observations. Empty camera transfers, terminal state events and CCCD behavior remain unknown.",
+  "vectors": [
+    {
+      "id": "unsigned-over-255-backup",
+      "direction": "backup",
+      "source_hex": "80ff",
+      "source_size": 2,
+      "checksum_u16": 383,
+      "checksum_le_hex": "7f01",
+      "frames_hex": [
+        "ffff0400000080ff7f01"
+      ],
+      "declared_lengths": [
+        4
+      ],
+      "frame_sizes": [
+        10
+      ]
+    },
+    {
+      "id": "unsigned-over-255-restore",
+      "direction": "restore",
+      "source_hex": "80ff",
+      "source_size": 2,
+      "checksum_u16": 383,
+      "checksum_le_hex": "7f01",
+      "frames_hex": [
+        "ffff0400000080ff7f017f01"
+      ],
+      "declared_lengths": [
+        4
+      ],
+      "frame_sizes": [
+        12
+      ]
+    },
+    {
+      "id": "multi-chunk-overflow-backup",
+      "direction": "backup",
+      "source_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "source_size": 258,
+      "checksum_u16": 254,
+      "checksum_le_hex": "fe00",
+      "frames_hex": [
+        "000078000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "010078000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "ffff14000000fffffffffffffffffffffffffffffffffffffe00"
+      ],
+      "declared_lengths": [
+        120,
+        120,
+        20
+      ],
+      "frame_sizes": [
+        126,
+        126,
+        26
+      ]
+    },
+    {
+      "id": "multi-chunk-overflow-restore",
+      "direction": "restore",
+      "source_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "source_size": 258,
+      "checksum_u16": 254,
+      "checksum_le_hex": "fe00",
+      "frames_hex": [
+        "000078000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000",
+        "010078000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000",
+        "ffff14000000fffffffffffffffffffffffffffffffffffffe00fe00"
+      ],
+      "declared_lengths": [
+        120,
+        120,
+        20
+      ],
+      "frame_sizes": [
+        128,
+        128,
+        28
+      ]
+    },
+    {
+      "id": "exact-window-backup",
+      "direction": "backup",
+      "source_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f7071727374757677",
+      "source_size": 120,
+      "checksum_u16": 7140,
+      "checksum_le_hex": "e41b",
+      "frames_hex": [
+        "ffff7a000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f7071727374757677e41b"
+      ],
+      "declared_lengths": [
+        122
+      ],
+      "frame_sizes": [
+        128
+      ]
+    },
+    {
+      "id": "exact-window-restore",
+      "direction": "restore",
+      "source_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f7071727374757677",
+      "source_size": 120,
+      "checksum_u16": 7140,
+      "checksum_le_hex": "e41b",
+      "frames_hex": [
+        "ffff7a000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f7071727374757677e41be41b"
+      ],
+      "declared_lengths": [
+        122
+      ],
+      "frame_sizes": [
+        130
+      ]
+    },
+    {
+      "id": "one-byte-final-window-backup",
+      "direction": "backup",
+      "source_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778",
+      "source_size": 121,
+      "checksum_u16": 7260,
+      "checksum_le_hex": "5c1c",
+      "frames_hex": [
+        "000078000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f7071727374757677",
+        "ffff03000000785c1c"
+      ],
+      "declared_lengths": [
+        120,
+        3
+      ],
+      "frame_sizes": [
+        126,
+        9
+      ]
+    },
+    {
+      "id": "one-byte-final-window-restore",
+      "direction": "restore",
+      "source_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778",
+      "source_size": 121,
+      "checksum_u16": 7260,
+      "checksum_le_hex": "5c1c",
+      "frames_hex": [
+        "000078000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70717273747576770000",
+        "ffff03000000785c1c5c1c"
+      ],
+      "declared_lengths": [
+        120,
+        3
+      ],
+      "frame_sizes": [
+        128,
+        11
+      ]
+    },
+    {
+      "id": "exact-two-windows-backup",
+      "direction": "backup",
+      "source_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+      "source_size": 240,
+      "checksum_u16": 28680,
+      "checksum_le_hex": "0870",
+      "frames_hex": [
+        "000078000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f7071727374757677",
+        "ffff7a00000078797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef0870"
+      ],
+      "declared_lengths": [
+        120,
+        122
+      ],
+      "frame_sizes": [
+        126,
+        128
+      ]
+    },
+    {
+      "id": "exact-two-windows-restore",
+      "direction": "restore",
+      "source_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+      "source_size": 240,
+      "checksum_u16": 28680,
+      "checksum_le_hex": "0870",
+      "frames_hex": [
+        "000078000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f70717273747576770000",
+        "ffff7a00000078797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef08700870"
+      ],
+      "declared_lengths": [
+        120,
+        122
+      ],
+      "frame_sizes": [
+        128,
+        130
+      ]
+    },
+    {
+      "id": "checksum-mismatch",
+      "direction": "restore",
+      "frames_hex": [
+        "ffff0400000080ff7e017f01"
+      ],
+      "expected_source_size": 2,
+      "proposed_validation_error": "checksum-mismatch"
+    },
+    {
+      "id": "declared-body-truncated",
+      "direction": "restore",
+      "frames_hex": [
+        "ffff0400000080ff7f"
+      ],
+      "expected_source_size": 2,
+      "proposed_validation_error": "truncated-body"
+    },
+    {
+      "id": "missing-dto-trailer",
+      "direction": "restore",
+      "frames_hex": [
+        "ffff0400000080ff7f01"
+      ],
+      "expected_source_size": 2,
+      "proposed_validation_error": "restore-trailer-policy"
+    },
+    {
+      "id": "duplicate-checksum-mismatch",
+      "direction": "restore",
+      "frames_hex": [
+        "ffff0400000080ff7f017f00"
+      ],
+      "expected_source_size": 2,
+      "proposed_validation_error": "restore-trailer-policy"
+    },
+    {
+      "id": "sentinel-declared-size-excludes-checksum",
+      "direction": "restore",
+      "frames_hex": [
+        "ffff0200000080ff7f017f01"
+      ],
+      "expected_source_size": 2,
+      "proposed_validation_error": "checksum-mismatch"
+    },
+    {
+      "id": "short-header",
+      "direction": "backup",
+      "frames_hex": [
+        "ff"
+      ],
+      "expected_source_size": 2,
+      "proposed_validation_error": "short-frame"
+    },
+    {
+      "id": "declared-size-under-two",
+      "direction": "backup",
+      "frames_hex": [
+        "ffff010000000000"
+      ],
+      "expected_source_size": 0,
+      "proposed_validation_error": "short-body"
+    },
+    {
+      "id": "missing-sentinel",
+      "direction": "restore",
+      "frames_hex": [
+        "000078000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000",
+        "010078000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000"
+      ],
+      "expected_source_size": 258,
+      "proposed_validation_error": "missing-sentinel-policy"
+    },
+    {
+      "id": "premature-sentinel-with-known-size",
+      "direction": "restore",
+      "frames_hex": [
+        "ffff7a000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff88778877"
+      ],
+      "expected_source_size": 258,
+      "proposed_validation_error": "size-mismatch-policy"
+    },
+    {
+      "id": "duplicate-sentinel",
+      "direction": "restore",
+      "frames_hex": [
+        "ffff0400000080ff7f017f01",
+        "ffff0400000080ff7f017f01"
+      ],
+      "expected_source_size": 2,
+      "proposed_validation_error": "after-sentinel-policy"
+    },
+    {
+      "id": "out-of-order-ordinary",
+      "direction": "restore",
+      "frames_hex": [
+        "010078000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000",
+        "ffff14000000fffffffffffffffffffffffffffffffffffffe00fe00"
+      ],
+      "expected_source_size": 258,
+      "proposed_validation_error": "ordinal-policy"
+    }
+  ]
+}

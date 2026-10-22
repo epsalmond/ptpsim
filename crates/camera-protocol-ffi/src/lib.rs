@@ -50,11 +50,11 @@ pub use streaming_executor::{
 pub mod mfg_index;
 pub use mfg_index::{
     AcquireSource, AwaitSource, BleActionPlan, BleAdRecord, BleManufacturerData, BleNotifyUntil,
-    BleServiceData, CccdMode, ChunkField, ChunkFrameField, Confidence, ConnectionActivityBinding,
-    ConnectionActivityDescriptor, ConnectionActivityDisplayRole, ConnectionActivitySequence,
-    EstablishmentPlan, EstablishmentRefinement, HostEstablishment, ModelMatch, NotifyCapture,
-    Predicate, PredicateOp, Recognition, ReconnectDecision, ReconnectPolicy, ScanObservation, Step,
-    StepConfirmation, StepOptions, StepValue, Transform,
+    BleServiceData, CccdMode, ChunkChecksum, ChunkField, ChunkFrameField, Confidence,
+    ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityDisplayRole,
+    ConnectionActivitySequence, EstablishmentPlan, EstablishmentRefinement, HostEstablishment,
+    ModelMatch, NotifyCapture, Predicate, PredicateOp, Recognition, ReconnectDecision,
+    ReconnectPolicy, ScanObservation, Step, StepConfirmation, StepOptions, StepValue, Transform,
 };
 mod observation_ffi;
 pub use observation_ffi::*;

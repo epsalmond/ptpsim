@@ -635,7 +635,7 @@ pub struct NikonLssReadConnectionConfigurationStep {
 /// math AND the frame assembly; the manifest declares only policy (source blob,
 /// window size, frame header layout, sentinel index). The blob is supplied once
 /// as a `bytes-raw` hex runtime param, like the host-packed write-gps/write-time
-/// payloads (#114). Frame: the declared header fields, then the window payload.
+/// payloads (#114). Optional checksum framing is defined in §11.2a.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BleWriteChunkStep {
@@ -645,7 +645,8 @@ pub struct BleWriteChunkStep {
     /// the notification's index field). Selects which window to frame + write.
     pub index: String,
     /// Window size in bytes. Full windows are `size` bytes; the final window is
-    /// the remainder and is labelled `sentinel_index`. Must be > 0 (validated).
+    /// the remainder and is labelled `sentinel_index`. The checksum policy
+    /// requires at least two bytes. Legacy zero sizes retain the one-byte floor.
     pub size: u32,
     /// Resolved GATT characteristic each framed window is written to
     /// (`filePartialData`). The loader resolves the symbolic name → UUID.
@@ -655,9 +656,13 @@ pub struct BleWriteChunkStep {
     /// the header out of engine code — another family could frame differently
     /// without a code change.
     pub frame: Vec<ChunkFrameField>,
-    /// The index the FINAL (remainder) window carries — Fuji `65535` / `0xffff`.
+    /// The index the FINAL window carries, including a full last window.
     /// The last window holds real data, not a separate empty frame.
     pub sentinel_index: u32,
+    /// Optional source-wide checksum framing (§11.2a). Absence preserves the
+    /// declared header followed by the unmodified source window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<ChunkChecksum>,
     #[serde(flatten, default)]
     pub opts: StepOptions,
 }
@@ -680,6 +685,15 @@ pub enum ChunkField {
     Index,
     /// The window's payload length in bytes.
     Length,
+}
+
+/// Closed checksum/framing policies for `bleWriteChunk` (§11.2a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChunkChecksum {
+    /// Unsigned source-byte sum modulo 65536, LE, inside the sentinel body
+    /// and repeated outside it. Ordinary write suffixes are zero.
+    SourceSum16Le,
 }
 
 /// `bleSubscribe` — enable notifications (CCCD descriptor write) on a

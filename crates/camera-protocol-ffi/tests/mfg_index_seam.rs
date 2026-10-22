@@ -77,6 +77,45 @@ models:
     .expect("synthetic single-step index loads")
 }
 
+#[test]
+fn chunk_checksum_policy_crosses_the_ffi_seam() {
+    let step = "            - bleWriteChunk:\n                source: blob\n                index: idx\n                size: 120\n                gatt: c\n                frame: [{ field: index, encoding: u16-le }, { field: length, encoding: u32-le }]\n                sentinelIndex: 65535";
+    for enabled in [false, true] {
+        let yaml = if enabled {
+            format!("{step}\n                checksum: sourceSum16Le")
+        } else {
+            step.into()
+        };
+        let store = tm1_store_with_step(&yaml);
+        let plan = store
+            .establishment("tm1".into(), "ble".into(), vec![])
+            .unwrap();
+        let Step::BleWriteChunk {
+            source,
+            index,
+            size,
+            gatt,
+            frame,
+            sentinel_index,
+            checksum,
+            ..
+        } = &plan.steps[0]
+        else {
+            panic!("chunk step")
+        };
+        assert_eq!(source, "blob");
+        assert_eq!(index, "idx");
+        assert_eq!(*size, 120);
+        assert_eq!(gatt, "00002A25-0000-1000-8000-00805F9B34FB");
+        assert_eq!(*sentinel_index, 65535);
+        assert!(matches!(frame[0].field, ChunkField::Index));
+        assert!(matches!(frame[1].field, ChunkField::Length));
+        assert_eq!(frame[0].encoding, "u16-le");
+        assert_eq!(frame[1].encoding, "u32-le");
+        assert_eq!(*checksum, enabled.then_some(ChunkChecksum::SourceSum16Le));
+    }
+}
+
 /// Convenience constructor for the common "manufacturer data + service
 /// UUIDs" advert shape. Fields the synthetic adverts never carry
 /// (service data, TX power, raw AD records) stay empty.

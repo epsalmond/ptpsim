@@ -484,6 +484,8 @@ pub enum Step {
         frame: Vec<ChunkFrameField>,
         /// Index the final (remainder) window carries (Fuji `0xffff`).
         sentinel_index: u32,
+        /// Optional closed source checksum/framing policy (§11.2a).
+        checksum: Option<ChunkChecksum>,
         opts: StepOptions,
     },
     Acquire {
@@ -601,6 +603,20 @@ pub struct ChunkFrameField {
 pub enum ChunkField {
     Index,
     Length,
+}
+
+/// Mirrors `ix::ChunkChecksum` exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ChunkChecksum {
+    SourceSum16Le,
+}
+
+impl From<ix::ChunkChecksum> for ChunkChecksum {
+    fn from(checksum: ix::ChunkChecksum) -> Self {
+        match checksum {
+            ix::ChunkChecksum::SourceSum16Le => Self::SourceSum16Le,
+        }
+    }
 }
 
 impl From<ix::ChunkField> for ChunkField {
@@ -1115,6 +1131,7 @@ fn step_from_ix(
                 })
                 .collect(),
             sentinel_index: inner.sentinel_index,
+            checksum: inner.checksum.map(Into::into),
             opts: (&inner.opts).into(),
         },
         ix::Step::Acquire(inner) => Step::Acquire {

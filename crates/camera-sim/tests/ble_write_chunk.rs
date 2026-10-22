@@ -35,6 +35,7 @@ fn chunk_step(size: u32) -> Vec<Step> {
                 },
             ],
             sentinel_index: 65535,
+            checksum: None,
             opts: StepOptions::default(),
         }),
     ]
@@ -105,10 +106,100 @@ fn empty_blob_writes_an_empty_sentinel_frame() {
 }
 
 #[test]
+fn absent_policy_preserves_other_header_layouts() {
+    let mut steps = chunk_step(0);
+    let Step::BleWriteChunk(step) = &mut steps[2] else {
+        unreachable!()
+    };
+    step.sentinel_index = 255;
+    step.frame = vec![
+        ChunkFrameField {
+            field: ChunkField::Length,
+            encoding: Encoding::U16Be,
+        },
+        ChunkFrameField {
+            field: ChunkField::Index,
+            encoding: Encoding::U8,
+        },
+    ];
+    assert_eq!(
+        step.encode_chunk(&[0x80, 0xff], 0).unwrap(),
+        [0, 1, 0, 0x80]
+    );
+    assert_eq!(
+        step.encode_chunk(&[0x80, 0xff], 255).unwrap(),
+        [0, 1, 255, 0xff]
+    );
+    assert_eq!(step.encode_chunk(&[], 255).unwrap(), [0, 0, 255]);
+}
+
+#[test]
 fn an_out_of_range_index_is_an_error() {
     // 10 bytes, size 4 → full windows are 0..2; index 5 is neither a full window
     // nor the sentinel.
     let blob: Vec<u8> = (0..10).collect();
     let err = write(&blob, 4, "5").expect_err("out-of-range index must fail");
     assert!(err.contains("out of range"), "got: {err}");
+}
+
+#[test]
+fn checksum_policy_matches_public_restore_vectors() {
+    use camera_config::index::ChunkChecksum;
+    use protocol_primitives::chunk_frame::{Direction, SourceSum16Decoder};
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../protocol-primitives/tests/fixtures/chunk-frames.json"
+    ))
+    .unwrap();
+    let decode = |hex: &str| -> Vec<u8> {
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    };
+    for vector in fixture["vectors"].as_array().unwrap() {
+        if vector["direction"] != "restore" || !vector["source_hex"].is_string() {
+            continue;
+        }
+        let source = decode(vector["source_hex"].as_str().unwrap());
+        let frames = vector["frames_hex"].as_array().unwrap();
+        let mut steps = chunk_step(120);
+        let Step::BleWriteChunk(step) = &mut steps[2] else {
+            unreachable!()
+        };
+        step.checksum = Some(ChunkChecksum::SourceSum16Le);
+        let params =
+            BTreeMap::from([("blob".into(), vector["source_hex"].as_str().unwrap().into())]);
+        let mut decoder =
+            SourceSum16Decoder::new(Direction::Restore, 120, source.len(), Some(source.len()))
+                .unwrap();
+        for (ordinal, expected) in frames.iter().enumerate() {
+            let index = if ordinal + 1 == frames.len() {
+                65535
+            } else {
+                ordinal
+            };
+            let scope = BTreeMap::from([("idx".into(), index.to_string())]);
+            let mut responder = BleResponder::new([GATT.to_string()]);
+            walk_establishment(&mut responder, &steps, &scope, &BTreeMap::new(), &params).unwrap();
+            let written = responder.written(GATT);
+            assert_eq!(
+                written,
+                [decode(expected.as_str().unwrap())],
+                "{}",
+                vector["id"]
+            );
+            decoder.push(written[0]).unwrap();
+        }
+        assert_eq!(decoder.finish().unwrap(), source);
+    }
+    let mut steps = chunk_step(120);
+    let Step::BleWriteChunk(step) = &mut steps[2] else {
+        unreachable!()
+    };
+    step.checksum = Some(ChunkChecksum::SourceSum16Le);
+    assert!(step
+        .encode_chunk(&[], 65535)
+        .unwrap_err()
+        .to_string()
+        .contains("empty source"));
 }

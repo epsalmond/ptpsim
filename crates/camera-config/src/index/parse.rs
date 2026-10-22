@@ -990,6 +990,13 @@ fn validate_step_with_context(
     confirmation_path: &mut Option<String>,
 ) -> Result<(), ConfigError> {
     // Per-step structural checks beyond what serde already enforces.
+    if let Step::BleWriteChunk(s) = step {
+        s.validate_checksum_layout()
+            .map_err(|error| ConfigError::Validation {
+                path: format!("{path}.checksum"),
+                message: error.to_string(),
+            })?;
+    }
     if step.options().confirms.is_some() {
         if !confirmation_allowed
             || !matches!(
