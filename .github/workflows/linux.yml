@@ -1,0 +1,221 @@
+name: Linux
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # This job always starts, including for docs and commits containing [ALL].
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      docs: ${{ steps.select.outputs.docs }}
+      workspace: ${{ steps.select.outputs.workspace }}
+      kotlin: ${{ steps.select.outputs.kotlin }}
+      android: ${{ steps.select.outputs.android }}
+      python: ${{ steps.select.outputs.python }}
+      manifest: ${{ steps.select.outputs.manifest }}
+      lint_range: ${{ steps.select.outputs.lint_range }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: select
+        run: python3 ci/github-linux-changes.py
+
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: ci/test-ensure-github-release
+      - run: ci/test-validate-apple-promotion
+      - run: ci/test-build-android.sh
+      - run: python3 ci/github-linux-changes.test.py
+      - run: bash -n ci/github-linux-setup.sh
+
+  public-content:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: scripts/lint-public.sh
+
+  commit-messages:
+    needs: changes
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: scripts/lint-commit-messages.sh --self-test
+      # Lint authored PR commits, not the synthetic merge commit checkout.
+      - run: scripts/lint-commit-messages.sh "$LINT_RANGE"
+        env:
+          LINT_RANGE: ${{ needs.changes.outputs.lint_range }}
+
+  docs-lint:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: scripts/lint-docs.sh
+
+  workspace:
+    needs: changes
+    if: needs.changes.outputs.workspace == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: ci/github-linux-setup.sh rust
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: linux-workspace
+          key: ${{ hashFiles('Cargo.lock') }}
+      - run: scripts/test-rustc-wrapper.sh
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo test --workspace --locked
+
+  kotlin-bindings:
+    needs: [changes, workspace]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.kotlin == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: ci/github-linux-setup.sh rust
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: linux-workspace
+          key: ${{ hashFiles('Cargo.lock') }}
+      - run: ci/github-linux-setup.sh kotlin
+      - run: ci/build-android.sh
+        env:
+          KOTLIN_BINDINGS_CHECK_ONLY: '1'
+
+  android-libs:
+    needs: [changes, workspace]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: linux-release-android-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: ci/github-linux-setup.sh rust
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: linux-android
+          key: ${{ hashFiles('Cargo.lock') }}
+      - run: ci/github-linux-setup.sh kotlin
+      - run: ci/github-linux-setup.sh android
+      - run: ci/build-android.sh
+      - name: Publish Android AAR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha8="${GITHUB_SHA:0:8}"
+          tag="sha-$sha8"
+          ci/ensure-github-release "$tag" "$GITHUB_SHA"
+          gh release upload "$tag" \
+            "out/dist/CameraProtocolFFI-$sha8.aar" \
+            "out/dist/CameraProtocolFFI-android-$sha8.checksum" --clobber
+
+  python-wheel:
+    needs: [changes, workspace]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: linux-release-python-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: ci/github-linux-setup.sh rust
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: linux-python
+          key: ${{ hashFiles('Cargo.lock') }}
+      - run: ci/github-linux-setup.sh python
+      - run: ci/build-python-wheel.sh
+      - name: Publish Python wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="sha-${GITHUB_SHA:0:8}"
+          ci/ensure-github-release "$tag" "$GITHUB_SHA"
+          gh release upload "$tag" packages/camera-protocol-python/dist/*.whl --clobber
+
+  manifest-data:
+    needs: [changes, smoke]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.manifest == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: linux-release-manifest-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Package manifest data
+        run: |
+          mkdir -p out/dist
+          tarball="out/dist/camera-config-data-${GITHUB_SHA:0:8}.tar.gz"
+          tar -czf "$tarball" -C packages camera-config-data
+          sha256sum "$tarball" | awk '{print $1}' >"${tarball%.tar.gz}.checksum"
+      - name: Publish manifest data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha8="${GITHUB_SHA:0:8}"
+          tag="sha-$sha8"
+          ci/ensure-github-release "$tag" "$GITHUB_SHA"
+          gh release upload "$tag" \
+            "out/dist/camera-config-data-$sha8.tar.gz" \
+            "out/dist/camera-config-data-$sha8.checksum" --clobber
