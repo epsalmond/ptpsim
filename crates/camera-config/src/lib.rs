@@ -268,6 +268,17 @@ impl CameraManifest {
 
         for (code, op) in &self.operations {
             check(&op.evidence, &format!("operation {code}"), &mut lints);
+            for (index, disposition) in op.dispositions.iter().enumerate() {
+                let ctx = format!("operation {code} disposition {index}");
+                check(&disposition.evidence, &ctx, &mut lints);
+                self.check_disposition_scope(
+                    &disposition.connections,
+                    &disposition.modes,
+                    disposition.when.as_ref(),
+                    &ctx,
+                    &mut lints,
+                );
+            }
             check_gate_requirement(
                 op.requires_gate.as_ref(),
                 &format!("operation {code}"),
@@ -288,6 +299,17 @@ impl CameraManifest {
         }
         for (code, prop) in &self.properties {
             check(&prop.evidence, &format!("property {code}"), &mut lints);
+            for (index, disposition) in prop.dispositions.iter().enumerate() {
+                let ctx = format!("property {code} disposition {index}");
+                check(&disposition.evidence, &ctx, &mut lints);
+                self.check_disposition_scope(
+                    &disposition.connections,
+                    &disposition.modes,
+                    disposition.when.as_ref(),
+                    &ctx,
+                    &mut lints,
+                );
+            }
             check_gate_requirement(
                 prop.requires_gate.as_ref(),
                 &format!("property {code}"),
@@ -351,6 +373,59 @@ impl CameraManifest {
             }
         }
         lints
+    }
+
+    fn check_disposition_scope(
+        &self,
+        connections: &[String],
+        modes: &[String],
+        when: Option<&Predicate>,
+        ctx: &str,
+        lints: &mut Vec<Lint>,
+    ) {
+        for connection in connections {
+            if !self.connections.contains_key(connection) {
+                lints.push(Lint::warn(format!(
+                    "{ctx} references unknown connection '{connection}'"
+                )));
+            }
+        }
+        for mode in modes {
+            if !self
+                .modes
+                .keys()
+                .any(|declared| declared == mode || declared.starts_with(&format!("{mode}/")))
+            {
+                lints.push(Lint::warn(format!(
+                    "{ctx} mode scope '{mode}' matches no declared mode"
+                )));
+            }
+        }
+        if let Some(predicate) = when {
+            self.check_disposition_predicate(predicate, ctx, lints);
+        }
+    }
+
+    fn check_disposition_predicate(&self, predicate: &Predicate, ctx: &str, lints: &mut Vec<Lint>) {
+        match predicate {
+            Predicate::All { all: children } | Predicate::Any { any: children } => {
+                for child in children {
+                    self.check_disposition_predicate(child, ctx, lints);
+                }
+            }
+            Predicate::Not { not } => self.check_disposition_predicate(not, ctx, lints),
+            Predicate::Leaf(leaf) => match parse_hex_code(&leaf.prop) {
+                None => lints.push(Lint::warn(format!(
+                    "{ctx} when property '{}' is not a hex property code",
+                    leaf.prop
+                ))),
+                Some(code) if self.property(code).is_none() => lints.push(Lint::warn(format!(
+                    "{ctx} when references unknown property '{}'",
+                    leaf.prop
+                ))),
+                Some(_) => {}
+            },
+        }
     }
 
     /// Fail closed on destructive outer transitions. A consumer must be able to

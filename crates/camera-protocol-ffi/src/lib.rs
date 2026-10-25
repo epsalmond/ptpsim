@@ -1738,6 +1738,7 @@ impl From<cc::PropertyDispositionKind> for PropertyDispositionKind {
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct PropertyDispositionInfo {
+    pub evidence: Vec<String>,
     pub connections: Vec<String>,
     pub modes: Vec<String>,
     pub when: Option<FfiPredicate>,
@@ -1751,6 +1752,7 @@ impl PropertyDispositionInfo {
     /// narrow scope into an always-on one.
     fn try_map(value: &cc::PropertyDisposition) -> Option<Self> {
         Some(Self {
+            evidence: value.evidence.clone(),
             connections: value.connections.clone(),
             modes: value.modes.clone(),
             when: match &value.when {
@@ -1777,6 +1779,7 @@ impl From<cc::OperationDispositionKind> for OperationDispositionKind {
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct OperationDispositionInfo {
+    pub evidence: Vec<String>,
     pub connections: Vec<String>,
     pub modes: Vec<String>,
     pub when: Option<FfiPredicate>,
@@ -1788,6 +1791,7 @@ impl OperationDispositionInfo {
     /// hazard as [`PropertyDispositionInfo::try_map`].
     fn try_map(value: &cc::OperationDisposition) -> Option<Self> {
         Some(Self {
+            evidence: value.evidence.clone(),
             connections: value.connections.clone(),
             modes: value.modes.clone(),
             when: match &value.when {

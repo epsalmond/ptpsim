@@ -2135,20 +2135,34 @@ transactions. Standard `GetObjectHandles` is the authoritative enumeration
 path, and its returned handle order is preserved. The row uses no ImageCapture
 catalog or download APIs. It does not claim USB live view.
 
-### 11.28 Value dispositions — valueless and silent-refusal (#464, #465)
+### 11.28 Value dispositions (#464, #465)
 
 Some bodies expose a property that has no current value in certain modes or
 when a physical control owns it. The simulator must present absence instead of
 a zero default. Other properties and operations acknowledge a write with OK but
 leave state unchanged or suppress their normal side effects. These are modeled
-as declarative dispositions, not error gates.
+as declarative dispositions.
 
 A `dispositions` entry carries a closed `disposition` kind, optional
-`connections` and `modes` filters (empty = all), and an optional `when`
-predicate over observed property values. Empty list = default behavior. All
+`connections` and `modes` filters (empty = all), an optional `when`
+predicate over observed property values, and optional `evidence` ids. Empty
+disposition list = default behavior. All
 scopes are intersected: the disposition applies only when connection matches,
 mode prefix-matches (so `shooting/stills` covers `shooting/stills/manual`),
 and the predicate holds.
+
+`evidence` defaults to an empty list and is omitted when empty during
+serialization. It records provenance for the behavioral claim and is exposed
+on the property and operation FFI disposition records. It does not affect
+scope matching.
+
+`CameraManifest::validate` reports non-fatal warnings for unknown connection
+ids, mode scopes that match no declared mode, malformed or undeclared property
+codes in any `when` leaf, and undefined evidence ids. Mode scopes match an
+exact declared path or its descendants at a `/` boundary. A parent scope is
+valid even if only its descendants are declared. Property references are
+compared as numeric codes, so hexadecimal letter case does not matter. Each
+warning identifies the owning property or operation and disposition index.
 
 ```yaml
 properties:
