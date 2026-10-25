@@ -752,6 +752,162 @@ fn saved_reconnect_rejects_wrong_identity_and_startup_is_not_discoverable() {
     ));
 }
 
+fn generic_legacy_awake_advert(local_name: Option<&str>) -> ScanObservation {
+    ScanObservation::BleAdvert {
+        service_uuids: vec!["AF854C2E-B214-458E-97E2-912C4ECF2CB8".into()],
+        manufacturer_data: None,
+        service_data: vec![],
+        local_name: local_name.map(String::from),
+        tx_power: None,
+        ad_records: vec![],
+    }
+}
+
+#[test]
+fn saved_reconnect_rejects_identity_missing_from_both_scopes() {
+    let s = store();
+    for persisted_scope in [
+        vec![],
+        vec![
+            KeyValue {
+                key: "style".into(),
+                value: "legacy".into(),
+            },
+            KeyValue {
+                key: "pairingKeyBytes".into(),
+                value: "44732a80".into(),
+            },
+        ],
+    ] {
+        let decision = s.reconnect_decision(
+            "fuji-generic".into(),
+            generic_legacy_awake_advert(None),
+            persisted_scope.clone(),
+        );
+        assert!(
+            matches!(decision, ReconnectDecision::NoMatch),
+            "missing observed serial with saved scope {persisted_scope:?}: {decision:?}"
+        );
+    }
+}
+
+#[test]
+fn saved_reconnect_rejects_missing_observed_identity() {
+    let decision = store().reconnect_decision(
+        "fuji-generic".into(),
+        generic_legacy_awake_advert(None),
+        vec![KeyValue {
+            key: "shortSerial".into(),
+            value: "0C3E".into(),
+        }],
+    );
+    assert!(matches!(decision, ReconnectDecision::NoMatch));
+}
+
+#[test]
+fn saved_reconnect_rejects_short_identity_capture_with_no_saved_identity() {
+    let decision = store().reconnect_decision(
+        "fuji-generic".into(),
+        generic_legacy_awake_advert(Some("ABC")),
+        vec![],
+    );
+    assert!(
+        matches!(decision, ReconnectDecision::NoMatch),
+        "short name cannot supply the four-byte serial: {decision:?}"
+    );
+}
+
+#[test]
+fn saved_reconnect_rejects_non_ascii_identity_capture_with_no_saved_identity() {
+    let decision = store().reconnect_decision(
+        "fuji-generic".into(),
+        generic_legacy_awake_advert(Some("éAB")),
+        vec![],
+    );
+    assert!(
+        matches!(decision, ReconnectDecision::NoMatch),
+        "non-ASCII bytes cannot supply an ASCII serial: {decision:?}"
+    );
+}
+
+#[test]
+fn saved_reconnect_requires_every_declared_identity_value() {
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {}
+      reconnect: { scanTimeoutMs: 1000 }
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - id: camera.test.connect
+              version: 1
+              displayRole: connecting
+              defaultExpectedDurationMs: 1
+              interactionRequired: false
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 }
+          steps:
+            - bleConnect: {}
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+    signatures:
+      awake:
+        kind: bleAdvert
+        require:
+          serviceUuids: { contains: "AF854C2E-B214-458E-97E2-912C4ECF2CB8" }
+        capture:
+          - { source: localName, at: 0, length: 4, encoding: ascii, name: shortSerial }
+        scope: { style: legacy }
+        suggests: { connection: ble, confidence: high }
+        discoverable: false
+        reconnect:
+          disposition: ready
+          mechanism: test
+          identity: [style, shortSerial]
+"#;
+    let s = ConfigStore::from_manufacturer_index(
+        index_yaml.into(),
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: tm1_body(),
+        }],
+    )
+    .expect("synthetic reconnect index loads");
+    let saved_style = KeyValue {
+        key: "style".into(),
+        value: "legacy".into(),
+    };
+    assert!(matches!(
+        s.reconnect_decision(
+            "tm1".into(),
+            generic_legacy_awake_advert(Some("0C3E")),
+            vec![
+                saved_style.clone(),
+                KeyValue {
+                    key: "shortSerial".into(),
+                    value: "0C3E".into(),
+                },
+            ],
+        ),
+        ReconnectDecision::Ready { .. }
+    ));
+    let decision = s.reconnect_decision(
+        "tm1".into(),
+        generic_legacy_awake_advert(None),
+        vec![saved_style],
+    );
+    assert!(
+        matches!(decision, ReconnectDecision::NoMatch),
+        "matching style cannot substitute for the missing serial: {decision:?}"
+    );
+}
+
 #[test]
 fn legacy_advert_recognised_as_gfx100ii_with_legacy_style() {
     let s = store();

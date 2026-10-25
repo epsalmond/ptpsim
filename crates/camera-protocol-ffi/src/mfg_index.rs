@@ -1557,7 +1557,10 @@ pub fn reconnect_decision(
             .collect();
         if route.identity.is_empty()
             || !route.identity.iter().all(|key| {
-                observed.get(key.as_str()).copied() == persisted.get(key.as_str()).copied()
+                matches!(
+                    (observed.get(key.as_str()), persisted.get(key.as_str())),
+                    (Some(observed), Some(persisted)) if observed == persisted
+                )
             })
         {
             continue;
