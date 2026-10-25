@@ -1,5 +1,14 @@
 import Foundation
 
+func fallbackModelBindingShape(_ store: ConfigStore, model: String) -> String {
+    let fallback: Bool? = store.isFallbackModel(model: model)
+    switch fallback {
+    case true?: return "baseline"
+    case false?: return "specific"
+    case nil: return "unknown"
+    }
+}
+
 final class ConnectionActivityObserverStub: ConnectionActivityObserver, @unchecked Sendable {
     func onActivity(event: ConnectionActivityEvent) {}
 }

@@ -444,6 +444,7 @@ available for manufacturers whose indexed bodies are entirely self-contained.
 |---|---|
 | `recognize(observation)` | `Recognition::Candidate{model, connection, confidence, runtimeScope}` / `Disambiguate{family, candidates, runtimeScope, hint}` / `NoMatch`. `runtimeScope` is `Vec<KeyValue>` carrying facts derived from the observation. |
 | `confirmDeviceInfo(model, deviceInfo)` | Confirms parsed PTP manufacturer and model against the selected manifest body after normalization. Use this before persisting a vendor-level USB candidate. |
+| `isFallbackModel(model)` | Returns `true` for an indexed family baseline and `false` for an indexed specific profile. Returns `nil` for an unknown model or a store without a manufacturer index. This is manifest metadata, not evidence of physical camera identity. |
 | `reconnectPolicy(model)` | The manifest-authored saved-camera scan window. `None` means the model has no automatic BLE reconnect contract. |
 | `reconnectDecision(model, observation, persistedScope)` | Classifies a fresh advert for one saved camera as `Wake{plan, runtimeScope}`, `Ready{plan, runtimeScope}`, or `NoMatch`. The manifest owns advert-state recognition, identity keys, and plan selection; callers must not infer readiness from a cached peripheral. |
 
@@ -474,6 +475,13 @@ scan. `Ready` means walk the returned reconnect plan. `NoMatch` is ignored. Stop
 after `reconnectPolicy.scanTimeoutMs` and surface unavailable/retry UI. Startup and
 already-paired signatures can be reconnect-only, so they do not appear in normal
 `recognize` results.
+
+A reconnect route requires every declared identity key to be present in both
+the fresh observation scope and the persisted scope, with equal values. Missing
+captures, missing saved values, and unequal values reject that route. Matching
+routes retain their manifest order and their declared `Wake` or `Ready` result.
+Profile selection and baseline metadata do not authorize changing saved model
+ids or replacing saved credentials with observation scope.
 
 X-A7 migration is intentionally one-time and explicit. Records created before
 the dedicated `xa7` model remain keyed as `fuji-generic`; persistence ids are

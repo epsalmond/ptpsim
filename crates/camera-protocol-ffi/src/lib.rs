@@ -2638,6 +2638,18 @@ impl ConfigStore {
             .map(|inner| Arc::new(Self { inner }))
     }
 
+    /// Return whether the indexed model is a family baseline. Unknown models
+    /// and stores loaded without a manufacturer index return `None`.
+    pub fn is_fallback_model(&self, model: String) -> Option<bool> {
+        self.inner
+            .index
+            .as_ref()?
+            .models
+            .iter()
+            .find(|view| view.id == model)
+            .map(|view| view.fallback)
+    }
+
     // -----------------------------------------------------------------------
     // Manufacturer-index pull model (§3.2 + §3.3 + §11)
     // -----------------------------------------------------------------------
