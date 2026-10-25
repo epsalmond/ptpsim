@@ -447,6 +447,7 @@ available for manufacturers whose indexed bodies are entirely self-contained.
 | `isFallbackModel(model)` | Returns `true` for an indexed family baseline and `false` for an indexed specific profile. Returns `nil` for an unknown model or a store without a manufacturer index. This is manifest metadata, not evidence of physical camera identity. |
 | `reconnectPolicy(model)` | The manifest-authored saved-camera scan window. `None` means the model has no automatic BLE reconnect contract. |
 | `reconnectDecision(model, observation, persistedScope)` | Classifies a fresh advert for one saved camera as `Wake{plan, runtimeScope}`, `Ready{plan, runtimeScope}`, or `NoMatch`. The manifest owns advert-state recognition, identity keys, and plan selection; callers must not infer readiness from a cached peripheral. |
+| `recognizeReadyForReconnect(observation, persistedScope)` | Returns `ReadyReconnectRecognition::NoMatch`, `Candidate{candidate}`, or `Disambiguate{candidates}`. Each `ReadyReconnectCandidate` contains `model` and `isFallback`. Candidates are profiles whose existing reconnect decision is `Ready` for the supplied observation and saved scope. |
 
 `ScanObservation::BleAdvert` carries `{ serviceUuids, manufacturerData?:
 { companyId, payload }, serviceData: [{uuid, payload}], localName?,
@@ -482,6 +483,21 @@ captures, missing saved values, and unequal values reject that route. Matching
 routes retain their manifest order and their declared `Wake` or `Ready` result.
 Profile selection and baseline metadata do not authorize changing saved model
 ids or replacing saved credentials with observation scope.
+
+`recognizeReadyForReconnect` evaluates indexed profiles in declaration order.
+Only `Ready` decisions are eligible. An earlier eligible `Wake` route within a
+profile excludes that profile even if a later route could return `Ready`.
+Fallback candidates are removed only when a specific `Ready` candidate survives.
+Multiple remaining candidates retain declaration order in `Disambiguate`; the
+selector does not choose among them. Non-BLE observations and stores without a
+manufacturer index return `NoMatch`. Pairing recognition has separate eligibility
+rules and is unchanged.
+
+These candidates are advisory compatible profiles, not proof of the physical
+camera model. Continue using `reconnectDecision` for the original saved model
+to obtain its executable plan and fresh scope. A candidate must not turn that
+model's `NoMatch` into another profile's connection or silently change its saved
+model id. The selector returns no executable plans or replacement credentials.
 
 X-A7 migration is intentionally one-time and explicit. Records created before
 the dedicated `xa7` model remain keyed as `fuji-generic`; persistence ids are

@@ -134,6 +134,26 @@ pub enum Recognition {
     },
 }
 
+/// One compatible reconnect profile from the manufacturer index.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReadyReconnectCandidate {
+    pub model: String,
+    pub is_fallback: bool,
+}
+
+/// Advisory profiles with a Ready route for the supplied observation and saved
+/// identity. A candidate does not authorize changing the saved model or plan.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum ReadyReconnectRecognition {
+    NoMatch,
+    Candidate {
+        candidate: ReadyReconnectCandidate,
+    },
+    Disambiguate {
+        candidates: Vec<ReadyReconnectCandidate>,
+    },
+}
+
 /// Manifest-authored policy for one saved-camera reconnect scan.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ReconnectPolicy {
@@ -1591,6 +1611,37 @@ pub fn reconnect_decision(
         };
     }
     ReconnectDecision::NoMatch
+}
+
+pub fn recognize_ready_for_reconnect(
+    index: &ix::ResolvedManufacturerIndex,
+    facts: &ix::eval::BleAdvertFacts,
+    persisted_scope: &[KeyValue],
+) -> ReadyReconnectRecognition {
+    let mut candidates: Vec<_> = index
+        .models
+        .iter()
+        .filter(|model| {
+            matches!(
+                reconnect_decision(index, &model.id, facts, persisted_scope),
+                ReconnectDecision::Ready { .. }
+            )
+        })
+        .map(|model| ReadyReconnectCandidate {
+            model: model.id.clone(),
+            is_fallback: model.fallback,
+        })
+        .collect();
+    if candidates.iter().any(|candidate| !candidate.is_fallback) {
+        candidates.retain(|candidate| !candidate.is_fallback);
+    }
+    match candidates.len() {
+        0 => ReadyReconnectRecognition::NoMatch,
+        1 => ReadyReconnectRecognition::Candidate {
+            candidate: candidates.remove(0),
+        },
+        _ => ReadyReconnectRecognition::Disambiguate { candidates },
+    }
 }
 
 fn intersect_scope<'a>(

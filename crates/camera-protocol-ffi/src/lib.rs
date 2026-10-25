@@ -53,8 +53,9 @@ pub use mfg_index::{
     BleServiceData, CccdMode, ChunkChecksum, ChunkField, ChunkFrameField, Confidence,
     ConnectionActivityBinding, ConnectionActivityDescriptor, ConnectionActivityDisplayRole,
     ConnectionActivitySequence, EstablishmentPlan, EstablishmentRefinement, HostEstablishment,
-    ModelMatch, NotifyCapture, Predicate, PredicateOp, Recognition, ReconnectDecision,
-    ReconnectPolicy, ScanObservation, Step, StepConfirmation, StepOptions, StepValue, Transform,
+    ModelMatch, NotifyCapture, Predicate, PredicateOp, ReadyReconnectCandidate,
+    ReadyReconnectRecognition, Recognition, ReconnectDecision, ReconnectPolicy, ScanObservation,
+    Step, StepConfirmation, StepOptions, StepValue, Transform,
 };
 mod observation_ffi;
 pub use observation_ffi::*;
@@ -2749,32 +2750,27 @@ impl ConfigStore {
         let Some(index) = &self.inner.index else {
             return ReconnectDecision::NoMatch;
         };
-        let ScanObservation::BleAdvert {
-            service_uuids,
-            manufacturer_data,
-            service_data,
-            local_name,
-            tx_power,
-            ad_records,
-        } = observation
-        else {
+        let Some(facts) = reconnect_advert_facts(observation) else {
             return ReconnectDecision::NoMatch;
         };
-        let facts = cc::index::eval::BleAdvertFacts {
-            service_uuids,
-            manufacturer_data: manufacturer_data.map(|m| (m.company_id, m.payload)),
-            service_data: service_data
-                .into_iter()
-                .map(|s| (s.uuid, s.payload))
-                .collect(),
-            local_name,
-            tx_power,
-            ad_records: ad_records
-                .into_iter()
-                .map(|r| (r.ad_type, r.payload))
-                .collect(),
-        };
         mfg_index::reconnect_decision(index, &model, &facts, &persisted_scope)
+    }
+
+    /// Recognize advisory Ready profiles for a fresh advert and saved identity.
+    /// Keep the original saved model's reconnect decision authoritative for
+    /// execution. These candidates do not authorize saved-model migration.
+    pub fn recognize_ready_for_reconnect(
+        &self,
+        observation: ScanObservation,
+        persisted_scope: Vec<KeyValue>,
+    ) -> ReadyReconnectRecognition {
+        let Some(index) = &self.inner.index else {
+            return ReadyReconnectRecognition::NoMatch;
+        };
+        let Some(facts) = reconnect_advert_facts(observation) else {
+            return ReadyReconnectRecognition::NoMatch;
+        };
+        mfg_index::recognize_ready_for_reconnect(index, &facts, &persisted_scope)
     }
 
     /// Per-(model, connection) establishment plan with the given
@@ -5245,6 +5241,34 @@ fn value_with_runtime(
         cc::ValuePolicy::ClientDerived { runtime } => runtime_scope.get(runtime).cloned(),
         _ => None,
     }
+}
+
+fn reconnect_advert_facts(observation: ScanObservation) -> Option<cc::index::eval::BleAdvertFacts> {
+    let ScanObservation::BleAdvert {
+        service_uuids,
+        manufacturer_data,
+        service_data,
+        local_name,
+        tx_power,
+        ad_records,
+    } = observation
+    else {
+        return None;
+    };
+    Some(cc::index::eval::BleAdvertFacts {
+        service_uuids,
+        manufacturer_data: manufacturer_data.map(|m| (m.company_id, m.payload)),
+        service_data: service_data
+            .into_iter()
+            .map(|s| (s.uuid, s.payload))
+            .collect(),
+        local_name,
+        tx_power,
+        ad_records: ad_records
+            .into_iter()
+            .map(|r| (r.ad_type, r.payload))
+            .collect(),
+    })
 }
 
 #[cfg(test)]

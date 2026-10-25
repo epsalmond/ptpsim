@@ -9,6 +9,16 @@ func fallbackModelBindingShape(_ store: ConfigStore, model: String) -> String {
     }
 }
 
+func readyReconnectBindingShape(
+    _ store: ConfigStore, observation: ScanObservation, persistedScope: [KeyValue]
+) -> [(String, Bool)] {
+    switch store.recognizeReadyForReconnect(observation: observation, persistedScope: persistedScope) {
+    case .noMatch: return []
+    case let .candidate(candidate): return [(candidate.model, candidate.isFallback)]
+    case let .disambiguate(candidates): return candidates.map { ($0.model, $0.isFallback) }
+    }
+}
+
 final class ConnectionActivityObserverStub: ConnectionActivityObserver, @unchecked Sendable {
     func onActivity(event: ConnectionActivityEvent) {}
 }
