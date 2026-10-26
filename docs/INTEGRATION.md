@@ -939,6 +939,15 @@ checked-in JSON Schema is
 `camera-config-generate schema --contract connection-lifecycle --check <path>`
 to verify that it still matches the Rust types.
 
+`camera-sim-service` exposes `GET /connection-lifecycles` as the additive
+`ptpsim-service-connection-lifecycles/v1` control surface. It keys each
+snapshot and trace by the canonical observation `sessionSequence` and matching
+`connectionInstance`. A command handler records its terminal reason as an
+acknowledged `CloseSession`, local clean close, peer EOF, or transport error.
+Acknowledged `CloseSession` followed by EOF is a local clean transport close,
+not a transport loss. Each key keeps the core 512-event trace tail. The service
+retains every active key and the 64 most recent completed keys.
+
 ## 10. camera-sim-tui external plugin protocol v1
 
 `camera-sim-tui` supports external operator plugins as spawned commands or attached

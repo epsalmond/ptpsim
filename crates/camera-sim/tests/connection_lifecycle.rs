@@ -1,4 +1,4 @@
-use camera_config::CameraManifest;
+use camera_config::{CameraManifest, ConnectionLifecycleTracker, ConnectionLifecycleTransition};
 use camera_media_store::{MediaStore, ObjectQuery};
 use camera_sim::{
     Engine, FeatureMode, FeatureState, LifecycleEvidence, NetworkPersonaState, ProxyTransportState,
@@ -85,6 +85,51 @@ fn close_session_preserves_transport_listener_and_persona() {
     assert_eq!(
         after.network_persona,
         LifecycleEvidence::Confirmed(NetworkPersonaState::Ready)
+    );
+}
+
+#[test]
+fn caller_owned_tracker_keeps_engine_lifecycle_independent() {
+    let (mut engine, _directory) = engine();
+    let mut first = ConnectionLifecycleTracker::default();
+    let mut second = ConnectionLifecycleTracker::default();
+    for tracker in [&mut first, &mut second] {
+        tracker
+            .apply(ConnectionLifecycleTransition::CommandListenerReady)
+            .unwrap();
+        tracker
+            .apply(ConnectionLifecycleTransition::ProxyTransportAccepted)
+            .unwrap();
+        tracker
+            .apply(ConnectionLifecycleTransition::CommandInitialized)
+            .unwrap();
+    }
+
+    assert_ok(engine.on_operation_with_connection_lifecycle(
+        &mut first,
+        &request(op::OPEN_SESSION, 1, vec![1]),
+        None,
+    ));
+    assert_ok(engine.on_operation_with_connection_lifecycle(
+        &mut first,
+        &request(op::SET_DEVICE_PROP_VALUE, 2, vec![0xdf01]),
+        Some(&20u16.to_le_bytes()),
+    ));
+
+    assert_eq!(
+        first.snapshot().ptp_session,
+        LifecycleEvidence::Confirmed(PtpSessionState::Open)
+    );
+    assert_eq!(
+        first.snapshot().feature,
+        LifecycleEvidence::Confirmed(FeatureState::Active {
+            mode: FeatureMode::ImageTransfer
+        })
+    );
+    assert_eq!(second.snapshot().ptp_session, LifecycleEvidence::Unknown);
+    assert_eq!(
+        engine.connection_lifecycle_snapshot().ptp_session,
+        LifecycleEvidence::Unknown
     );
 }
 

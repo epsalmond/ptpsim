@@ -400,6 +400,12 @@ impl Engine {
         self.state.phase = Phase::Closed;
     }
 
+    /// Clear the shared simulator session after a transport owner ends when the
+    /// caller records the terminal transition in an external keyed tracker.
+    pub fn clear_session_after_transport_end(&mut self) {
+        self.clear_session();
+    }
+
     /// Whether a manifest-authored auxiliary socket has crossed its causal
     /// availability boundary. Connections without an `openChannel` step retain
     /// the historical immediately-available behavior.
@@ -1026,6 +1032,22 @@ impl Engine {
             }
         }
         self.applied_fault = applied;
+        reply
+    }
+
+    /// Handle one operation while recording lifecycle transitions in a
+    /// caller-owned tracker. The service uses one tracker per command socket;
+    /// standalone engine callers retain the engine-owned tracker by calling
+    /// [`Self::on_operation`].
+    pub fn on_operation_with_connection_lifecycle(
+        &mut self,
+        lifecycle: &mut ConnectionLifecycleTracker,
+        req: &OperationRequest,
+        data_in: Option<&[u8]>,
+    ) -> Reply {
+        std::mem::swap(&mut self.lifecycle, lifecycle);
+        let reply = self.on_operation(req, data_in);
+        std::mem::swap(&mut self.lifecycle, lifecycle);
         reply
     }
 
