@@ -1,0 +1,611 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConnectionLifecycleRecord",
+  "description": "JSON records accepted by the versioned schema.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "snapshot"
+        },
+        "record": {
+          "$ref": "#/$defs/ConnectionLifecycleSnapshot"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "record"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "traceEvent"
+        },
+        "record": {
+          "$ref": "#/$defs/ConnectionLifecycleTraceEvent"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "record"
+      ]
+    }
+  ],
+  "$defs": {
+    "CommandListenerState": {
+      "type": "string",
+      "enum": [
+        "ready"
+      ]
+    },
+    "ConnectionLifecycleSchema": {
+      "type": "string",
+      "enum": [
+        "ptpsim-connection-lifecycle/v1"
+      ]
+    },
+    "ConnectionLifecycleSnapshot": {
+      "type": "object",
+      "properties": {
+        "commandListener": {
+          "$ref": "#/$defs/LifecycleEvidence2"
+        },
+        "feature": {
+          "$ref": "#/$defs/LifecycleEvidence5"
+        },
+        "networkPersona": {
+          "$ref": "#/$defs/LifecycleEvidence"
+        },
+        "proxyTransport": {
+          "$ref": "#/$defs/LifecycleEvidence3"
+        },
+        "ptpSession": {
+          "$ref": "#/$defs/LifecycleEvidence4"
+        },
+        "schema": {
+          "$ref": "#/$defs/ConnectionLifecycleSchema"
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "sequence",
+        "networkPersona",
+        "commandListener",
+        "proxyTransport",
+        "ptpSession",
+        "feature"
+      ]
+    },
+    "ConnectionLifecycleTraceEvent": {
+      "type": "object",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/ConnectionLifecycleSnapshot"
+        },
+        "before": {
+          "$ref": "#/$defs/ConnectionLifecycleSnapshot"
+        },
+        "schema": {
+          "$ref": "#/$defs/ConnectionLifecycleSchema"
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "transition": {
+          "$ref": "#/$defs/ConnectionLifecycleTransition"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "sequence",
+        "transition",
+        "before",
+        "after"
+      ]
+    },
+    "ConnectionLifecycleTransition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "networkPersonaReady"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "networkPersonaExitRequested"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "networkPersonaExitConfirmed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "commandListenerReady"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "proxyTransportAccepted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "commandInitialized"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "proxyTransportLost"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "proxyTransportClosedLocally"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ptpSessionOpened"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ptpSessionClosed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/FeatureMode"
+            },
+            "type": {
+              "type": "string",
+              "const": "featureEntered"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "featureExited"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "FeatureMode": {
+      "type": "string",
+      "enum": [
+        "liveView",
+        "imageTransfer"
+      ]
+    },
+    "FeatureState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "inactive"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/FeatureMode"
+            },
+            "state": {
+              "type": "string",
+              "const": "active"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "mode"
+          ]
+        }
+      ]
+    },
+    "LifecycleEvidence": {
+      "description": "Evidence carried by one lifecycle layer.\n\n`Unconfirmed(value)` records the last observed or requested value without\nclaiming that the camera currently has that value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unconfirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/NetworkPersonaState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "confirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/NetworkPersonaState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        }
+      ]
+    },
+    "LifecycleEvidence2": {
+      "description": "Evidence carried by one lifecycle layer.\n\n`Unconfirmed(value)` records the last observed or requested value without\nclaiming that the camera currently has that value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unconfirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/CommandListenerState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "confirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/CommandListenerState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        }
+      ]
+    },
+    "LifecycleEvidence3": {
+      "description": "Evidence carried by one lifecycle layer.\n\n`Unconfirmed(value)` records the last observed or requested value without\nclaiming that the camera currently has that value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unconfirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/ProxyTransportState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "confirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/ProxyTransportState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        }
+      ]
+    },
+    "LifecycleEvidence4": {
+      "description": "Evidence carried by one lifecycle layer.\n\n`Unconfirmed(value)` records the last observed or requested value without\nclaiming that the camera currently has that value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unconfirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/PtpSessionState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "confirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/PtpSessionState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        }
+      ]
+    },
+    "LifecycleEvidence5": {
+      "description": "Evidence carried by one lifecycle layer.\n\n`Unconfirmed(value)` records the last observed or requested value without\nclaiming that the camera currently has that value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "unconfirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/FeatureState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "evidence": {
+              "type": "string",
+              "const": "confirmed"
+            },
+            "value": {
+              "$ref": "#/$defs/FeatureState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "evidence",
+            "value"
+          ]
+        }
+      ]
+    },
+    "NetworkPersonaState": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "exited"
+      ]
+    },
+    "ProxyTransportState": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "commandInitialized",
+        "lost",
+        "locallyClosed"
+      ]
+    },
+    "PtpSessionState": {
+      "type": "string",
+      "enum": [
+        "open",
+        "closed"
+      ]
+    }
+  }
+}

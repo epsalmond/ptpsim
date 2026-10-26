@@ -17,6 +17,11 @@ pub use ble::{
     walk_establishment, BleError, BleEvent, BleResponder, EstablishmentConfirmOutcome,
     EstablishmentWalkSummary, WalkError, WalkOutcome,
 };
+pub use camera_config::{
+    CommandListenerState, ConnectionLifecycleSnapshot, ConnectionLifecycleTraceEvent,
+    ConnectionLifecycleTransition, FeatureMode, FeatureState, LifecycleEvidence,
+    NetworkPersonaState, ProxyTransportState, PtpSessionState,
+};
 pub use engine::{
     Engine, PreparedPropertyTransition, PreparedResponderMutation, QueueStats, Reply,
     StreamCompletion, TransferQueueStats,

@@ -913,6 +913,31 @@ AP establishment, but OS network association, DHCP, and AP management remain
 host-owned. Adding another I/O primitive is one schema verb + one dispatcher
 case — no other layer changes.
 
+### 9.8 Dynamic connection lifecycle contract
+
+`ptpsim-connection-lifecycle/v1` records five independent runtime layers:
+network persona, command listener, proxy transport, PTP session, and feature
+mode. Each layer carries `unknown`, `unconfirmed`, or `confirmed` evidence over
+a closed state vocabulary. The contract contains no firewall state and is not
+a manifest-authored state machine. One snapshot tracks one logical connection;
+callers key snapshots by their own connection identity.
+
+A confirmed PTP `CloseSession` closes the PTP session and makes the feature
+inactive. It does not change the proxy transport, listener, or network persona.
+A lost or locally closed transport preserves the listener and network persona.
+It changes a previously open session and active feature to unconfirmed because
+the host action does not prove camera-side cleanup. Only a separate confirmed
+network-persona exit proves that the camera left the persona.
+
+The simulator engine exposes the current snapshot and deterministic transition
+trace. The FFI exposes pure initial-snapshot and transition functions over
+caller-owned values. Those functions do not read simulator mutable state, so a
+production consumer must supply transitions from its own observations. The
+checked-in JSON Schema is
+`packages/camera-config-data/ptpsim-connection-lifecycle-v1.schema.json`. Run
+`camera-config-generate schema --contract connection-lifecycle --check <path>`
+to verify that it still matches the Rust types.
+
 ## 10. camera-sim-tui external plugin protocol v1
 
 `camera-sim-tui` supports external operator plugins as spawned commands or attached

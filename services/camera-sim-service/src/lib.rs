@@ -863,6 +863,7 @@ impl Server {
         let frames = Arc::new(Mutex::new(LoopingFrameSource::new(frame_bytes)));
         tracing::info!(frame_count, "live-view frame source loaded");
         let command = TcpListener::bind(command_bind).await?;
+        engine.lock().await.command_listener_ready();
         let liveview = match liveview_bind {
             Some(addr) => Some(bind_aux_listener(addr, liveview_declared).await?),
             None => None,
@@ -1584,6 +1585,8 @@ async fn handle_command_conn(
     if *owner == Some(session_sequence) {
         engine.transport_lost();
         *owner = None;
+    } else if owner.is_none() {
+        engine.proxy_transport_lost();
     }
     result
 }
@@ -1613,6 +1616,7 @@ async fn handle_command_conn_inner(
     let session = format!("ptp-session-{session_sequence:016x}");
     let endpoints = TraceEndpoints::connection(&stream);
     let is_pcss = context.init_shape == "pcssKnock";
+    engine.lock().await.proxy_transport_accepted();
     let is_legacy_app = context.init_shape == "legacyApp82";
     if is_pcss {
         trace.record(
@@ -1812,6 +1816,7 @@ async fn handle_command_conn_inner(
         .await
         .map_err(|_| inbound::timed_out())??;
     metrics.record_write(ack_bytes.len());
+    engine.lock().await.command_initialized();
     if is_pcss {
         trace.record(
             "ptpip.init_ack.sent",

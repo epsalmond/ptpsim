@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use camera_config::model::{Action, ScalarEncoding, SetPropValue, Step, StepParam};
 use camera_config::{
     parse_hex_code, ActionArgumentValue, ActionVerb, CameraInitiatedMetadataPhase, CameraManifest,
+    ConnectionLifecycleSnapshot, ConnectionLifecycleTraceEvent, ConnectionLifecycleTracker,
+    ConnectionLifecycleTransition, FeatureMode, FeatureState, LifecycleEvidence,
     PropertyTransitionTerminal, ResponderMutation,
 };
 use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
@@ -272,6 +274,7 @@ pub struct Engine {
     gate_sequences: Vec<GateSequence>,
     store: MediaStore,
     state: CameraState,
+    lifecycle: ConnectionLifecycleTracker,
     connection: String,
     transfer_queue: Option<TransferQueue>,
     live_view_stream_connection: Option<String>,
@@ -304,6 +307,7 @@ impl Engine {
             gate_sequences,
             store,
             state,
+            lifecycle: ConnectionLifecycleTracker::default(),
             connection: Self::DEFAULT_CONNECTION.to_string(),
             transfer_queue: None,
             live_view_stream_connection: None,
@@ -335,6 +339,48 @@ impl Engine {
         self.connection.push_str(connection);
     }
 
+    /// Confirm that the camera's dynamic network persona is ready.
+    pub fn network_persona_ready(&mut self) {
+        self.record_lifecycle(ConnectionLifecycleTransition::NetworkPersonaReady);
+    }
+
+    /// Record a requested network-persona exit without claiming camera-side
+    /// completion.
+    pub fn network_persona_exit_requested(&mut self) {
+        self.record_lifecycle(ConnectionLifecycleTransition::NetworkPersonaExitRequested);
+    }
+
+    /// Confirm that the camera left its dynamic network persona.
+    pub fn network_persona_exit_confirmed(&mut self) {
+        self.record_lifecycle(ConnectionLifecycleTransition::NetworkPersonaExitConfirmed);
+    }
+
+    /// Confirm that the command listener is accepting connections.
+    pub fn command_listener_ready(&mut self) {
+        self.record_lifecycle(ConnectionLifecycleTransition::CommandListenerReady);
+    }
+
+    /// Record a newly accepted proxy transport.
+    pub fn proxy_transport_accepted(&mut self) {
+        self.record_lifecycle(ConnectionLifecycleTransition::ProxyTransportAccepted);
+    }
+
+    /// Record a successful command-channel initialization.
+    pub fn command_initialized(&mut self) {
+        self.record_lifecycle(ConnectionLifecycleTransition::CommandInitialized);
+    }
+
+    /// Record a local transport close. This confirms only the local action.
+    pub fn proxy_transport_closed_locally(&mut self) {
+        self.record_lifecycle(ConnectionLifecycleTransition::ProxyTransportClosedLocally);
+    }
+
+    /// Record an observed proxy transport loss without changing legacy session
+    /// fields. Service ownership decides whether the lost transport owned them.
+    pub fn proxy_transport_lost(&mut self) {
+        self.record_lifecycle(ConnectionLifecycleTransition::ProxyTransportLost);
+    }
+
     /// The owning command transport ended without `CloseSession` (client
     /// killed, Wi-Fi dropped, the transport-close the manifest itself models):
     /// a real camera binds the session to its link, so the session state goes
@@ -342,6 +388,7 @@ impl Engine {
     /// outlives the connection; without this, a shared engine wedges on
     /// `SessionAlreadyOpen` until restart.
     pub fn transport_lost(&mut self) {
+        self.proxy_transport_lost();
         self.clear_session();
     }
 
@@ -380,6 +427,28 @@ impl Engine {
 
     pub fn state(&self) -> &CameraState {
         &self.state
+    }
+
+    pub fn connection_lifecycle_snapshot(&self) -> ConnectionLifecycleSnapshot {
+        self.lifecycle.snapshot().clone()
+    }
+
+    pub fn connection_lifecycle_trace(&self) -> &[ConnectionLifecycleTraceEvent] {
+        self.lifecycle.trace()
+    }
+
+    fn record_lifecycle(&mut self, transition: ConnectionLifecycleTransition) {
+        self.lifecycle
+            .apply(transition)
+            .expect("an in-memory lifecycle trace cannot exhaust u64 sequence space");
+    }
+
+    fn record_feature_mode(&mut self, mode: Option<FeatureMode>) {
+        let transition = match mode {
+            Some(mode) => ConnectionLifecycleTransition::FeatureEntered { mode },
+            None => ConnectionLifecycleTransition::FeatureExited,
+        };
+        self.record_lifecycle(transition);
     }
 
     /// Current phase — small Copy enum, safe to read under a brief lock from
@@ -1057,9 +1126,11 @@ impl Engine {
                 self.camera_initiated_pre_mode_probe_armed = false;
                 self.state.session_open = true;
                 self.state.phase = Phase::SessionOpen;
+                self.record_lifecycle(ConnectionLifecycleTransition::PtpSessionOpened);
                 Self::ok(tid)
             }
             op::CLOSE_SESSION => {
+                self.record_lifecycle(ConnectionLifecycleTransition::PtpSessionClosed);
                 self.clear_session();
                 Self::ok(tid)
             }
@@ -1726,6 +1797,20 @@ impl Engine {
         if previous_declared == Some(Phase::ImageImport) && new_declared != Some(Phase::ImageImport)
         {
             self.state.reset_gates();
+        }
+        let feature_mode = if transfer_active || new_declared == Some(Phase::ImageImport) {
+            Some(FeatureMode::ImageTransfer)
+        } else if matches!(new_declared, Some(Phase::LiveView | Phase::Streaming)) {
+            Some(FeatureMode::LiveView)
+        } else {
+            None
+        };
+        let current_feature = match self.lifecycle.snapshot().feature {
+            LifecycleEvidence::Confirmed(FeatureState::Active { mode }) => Some(mode),
+            _ => None,
+        };
+        if current_feature != feature_mode {
+            self.record_feature_mode(feature_mode);
         }
     }
 
