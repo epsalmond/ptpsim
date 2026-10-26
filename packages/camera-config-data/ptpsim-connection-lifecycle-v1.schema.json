@@ -75,6 +75,7 @@
         "sequence": {
           "type": "integer",
           "format": "uint64",
+          "maximum": 18446744073709551615,
           "minimum": 0
         }
       },
@@ -104,6 +105,7 @@
         "sequence": {
           "type": "integer",
           "format": "uint64",
+          "maximum": 18446744073709551615,
           "minimum": 0
         },
         "transition": {

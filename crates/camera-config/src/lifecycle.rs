@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const CONNECTION_LIFECYCLE_SCHEMA_VERSION: &str = "ptpsim-connection-lifecycle/v1";
+const MAX_CONNECTION_LIFECYCLE_TRACE_EVENTS: usize = 512;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ConnectionLifecycleSchema {
@@ -80,6 +81,7 @@ pub enum FeatureState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConnectionLifecycleSnapshot {
     pub schema: ConnectionLifecycleSchema,
+    #[schemars(range(max = u64::MAX))]
     pub sequence: u64,
     pub network_persona: LifecycleEvidence<NetworkPersonaState>,
     pub command_listener: LifecycleEvidence<CommandListenerState>,
@@ -123,6 +125,7 @@ pub enum ConnectionLifecycleTransition {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConnectionLifecycleTraceEvent {
     pub schema: ConnectionLifecycleSchema,
+    #[schemars(range(max = u64::MAX))]
     pub sequence: u64,
     pub transition: ConnectionLifecycleTransition,
     pub before: ConnectionLifecycleSnapshot,
@@ -250,6 +253,9 @@ impl ConnectionLifecycleTracker {
         let event = apply_connection_lifecycle_transition(&self.snapshot, transition)?;
         self.snapshot = event.after.clone();
         self.trace.push(event);
+        if self.trace.len() > MAX_CONNECTION_LIFECYCLE_TRACE_EVENTS {
+            self.trace.remove(0);
+        }
         Ok(self.trace.last().expect("event was just pushed"))
     }
 }
@@ -399,6 +405,31 @@ mod tests {
     }
 
     #[test]
+    fn schema_rejects_missing_fields_unknown_states_and_overflow() {
+        let mut missing = serde_json::to_value(ConnectionLifecycleRecord::Snapshot(
+            ConnectionLifecycleSnapshot::default(),
+        ))
+        .unwrap();
+        missing["record"].as_object_mut().unwrap().remove("feature");
+        assert!(serde_json::from_value::<ConnectionLifecycleRecord>(missing).is_err());
+
+        let mut unknown_state = serde_json::to_value(ConnectionLifecycleRecord::Snapshot(
+            ConnectionLifecycleSnapshot::default(),
+        ))
+        .unwrap();
+        unknown_state["record"]["proxyTransport"] =
+            serde_json::json!({ "evidence": "confirmed", "value": "firewalled" });
+        assert!(serde_json::from_value::<ConnectionLifecycleRecord>(unknown_state).is_err());
+
+        let mut overflow = serde_json::to_value(ConnectionLifecycleRecord::Snapshot(
+            ConnectionLifecycleSnapshot::default(),
+        ))
+        .unwrap();
+        overflow["record"]["sequence"] = serde_json::from_str("18446744073709551616").unwrap();
+        assert!(serde_json::from_value::<ConnectionLifecycleRecord>(overflow).is_err());
+    }
+
+    #[test]
     fn trace_sequence_and_snapshots_are_deterministic() {
         let mut tracker = ConnectionLifecycleTracker::default();
         tracker
@@ -413,5 +444,24 @@ mod tests {
         assert_eq!(tracker.trace()[0].after.sequence, 1);
         assert_eq!(tracker.trace()[1].before, tracker.trace()[0].after);
         assert_eq!(tracker.trace()[1].after, *tracker.snapshot());
+    }
+
+    #[test]
+    fn trace_retains_a_bounded_deterministic_tail() {
+        let mut tracker = ConnectionLifecycleTracker::default();
+        for _ in 0..(MAX_CONNECTION_LIFECYCLE_TRACE_EVENTS + 3) {
+            tracker
+                .apply(ConnectionLifecycleTransition::ProxyTransportAccepted)
+                .unwrap();
+        }
+
+        assert_eq!(tracker.trace().len(), MAX_CONNECTION_LIFECYCLE_TRACE_EVENTS);
+        assert_eq!(tracker.snapshot().sequence, 515);
+        assert_eq!(tracker.trace().first().unwrap().sequence, 4);
+        assert_eq!(tracker.trace().last().unwrap().sequence, 515);
+        assert!(tracker
+            .trace()
+            .windows(2)
+            .all(|events| events[0].after == events[1].before));
     }
 }

@@ -433,6 +433,7 @@ impl Engine {
         self.lifecycle.snapshot().clone()
     }
 
+    /// The bounded, sequence-numbered tail of observed lifecycle transitions.
     pub fn connection_lifecycle_trace(&self) -> &[ConnectionLifecycleTraceEvent] {
         self.lifecycle.trace()
     }

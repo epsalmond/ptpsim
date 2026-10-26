@@ -75,7 +75,7 @@ fn ffi_close_session_does_not_collapse_lower_layers() {
 }
 
 #[test]
-fn ffi_issue_921_loss_and_user_exit_remain_evidence_aware() {
+fn ffi_idle_loss_and_user_exit_remain_evidence_aware() {
     let mut snapshot = connection_lifecycle_initial_snapshot();
     for transition in [
         ConnectionLifecycleTransition::NetworkPersonaReady,

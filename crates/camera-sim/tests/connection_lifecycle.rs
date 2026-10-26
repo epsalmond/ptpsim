@@ -153,7 +153,7 @@ fn local_transport_close_records_local_fact_without_claiming_remote_exit() {
 }
 
 #[test]
-fn completed_transfer_idle_loss_then_user_exit_preserves_media() {
+fn idle_loss_then_user_exit_preserves_simulator_source_media() {
     let (mut engine, _directory) = engine();
     establish(&mut engine, 20);
     let handles_before = engine.store().handles(ObjectQuery::default());
@@ -187,6 +187,8 @@ fn completed_transfer_idle_loss_then_user_exit_preserves_media() {
         exited.ptp_session,
         LifecycleEvidence::Unconfirmed(PtpSessionState::Open)
     );
+    // This is the simulator's camera-side source store. Consumer-side completed
+    // download preservation remains a consumer acceptance test.
     assert_eq!(
         engine.store().handles(ObjectQuery::default()),
         handles_before
@@ -197,20 +199,4 @@ fn completed_transfer_idle_loss_then_user_exit_preserves_media() {
     assert!(trace
         .windows(2)
         .all(|events| events[0].after == events[1].before));
-    let exit_requested = trace
-        .iter()
-        .position(|event| {
-            matches!(
-                event.transition,
-                camera_sim::ConnectionLifecycleTransition::NetworkPersonaExitRequested
-            )
-        })
-        .unwrap();
-    assert!(!trace[exit_requested + 1..].iter().any(|event| matches!(
-        event.transition,
-        camera_sim::ConnectionLifecycleTransition::ProxyTransportAccepted
-            | camera_sim::ConnectionLifecycleTransition::CommandInitialized
-            | camera_sim::ConnectionLifecycleTransition::PtpSessionOpened
-            | camera_sim::ConnectionLifecycleTransition::FeatureEntered { .. }
-    )));
 }

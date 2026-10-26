@@ -929,8 +929,9 @@ It changes a previously open session and active feature to unconfirmed because
 the host action does not prove camera-side cleanup. Only a separate confirmed
 network-persona exit proves that the camera left the persona.
 
-The simulator engine exposes the current snapshot and deterministic transition
-trace. The FFI exposes pure initial-snapshot and transition functions over
+The simulator engine exposes the current snapshot and a bounded deterministic
+transition-trace tail. Sequence numbers reveal when older events were dropped.
+The FFI exposes pure initial-snapshot and transition functions over
 caller-owned values. Those functions do not read simulator mutable state, so a
 production consumer must supply transitions from its own observations. The
 checked-in JSON Schema is
