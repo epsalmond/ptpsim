@@ -948,6 +948,20 @@ Acknowledged `CloseSession` followed by EOF is a local clean transport close,
 not a transport loss. Each key keeps the core 512-event trace tail. The service
 retains every active key and the 64 most recent completed keys.
 
+The service engine shares one PTP session across command connections. An
+operation from an overlapping connection keeps the existing wire behavior.
+Its session and feature transitions update the current session owner's
+tracker and the sender's tracker. Other lifecycle layers remain specific to
+each connection. A successful session open assigns the sender as owner; a
+session close clears ownership. Teardown of a previous connection cannot clear
+a replacement session. These rules describe simulator state, not camera-side
+connection ownership or operation gating.
+
+Cancellation or handler unwinding records a local clean transport close.
+The service drains cancelled command tasks before returning from shutdown, so
+retained lifecycle handles contain only completed command records at that
+point. Local transport closure leaves camera-side session cleanup unconfirmed.
+
 ## 10. camera-sim-tui external plugin protocol v1
 
 `camera-sim-tui` supports external operator plugins as spawned commands or attached
