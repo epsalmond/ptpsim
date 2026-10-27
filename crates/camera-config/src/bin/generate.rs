@@ -4,7 +4,8 @@
 //! camera-config-generate validate <bundle.jsonl>...
 //! camera-config-generate propose [--output FILE] <bundle.jsonl>...
 //! camera-config-generate apply --base MANIFEST --proposal FILE --review FILE --output MANIFEST
-//! camera-config-generate schema [--check FILE | --output FILE]
+//! camera-config-generate schema [--contract observation|connection-lifecycle]
+//!     [--check FILE | --output FILE]
 //! ```
 
 use std::fs::{File, OpenOptions};
@@ -12,8 +13,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use camera_config::{
-    apply_review, generated_json_schema, proposal_json, propose, validate_bundles,
-    validation_report_json, CameraManifest, Proposal, ProposalReview,
+    apply_review, generated_connection_lifecycle_json_schema, generated_json_schema, proposal_json,
+    propose, validate_bundles, validation_report_json, CameraManifest, Proposal, ProposalReview,
 };
 
 fn main() {
@@ -143,7 +144,16 @@ fn apply_command(args: &[String]) -> Result<(), String> {
 }
 
 fn schema_command(args: &[String]) -> Result<(), String> {
-    let schema = generated_json_schema().map_err(|error| error.to_string())?;
+    let (contract, args) = match args {
+        [option, contract, rest @ ..] if option == "--contract" => (contract.as_str(), rest),
+        _ => ("observation", args),
+    };
+    let schema = match contract {
+        "observation" => generated_json_schema(),
+        "connection-lifecycle" => generated_connection_lifecycle_json_schema(),
+        other => return Err(format!("unknown schema contract {other:?}")),
+    }
+    .map_err(|error| error.to_string())?;
     match args {
         [] => print_json(&schema),
         [option, path] if option == "--check" => {
@@ -159,7 +169,11 @@ fn schema_command(args: &[String]) -> Result<(), String> {
         }
         [option, path] if option == "--output" => atomic_write(Path::new(path), schema.as_bytes())
             .map_err(|error| format!("atomic write {path}: {error}")),
-        _ => Err("schema accepts only optional '--check FILE' or '--output FILE'".to_string()),
+        _ => Err(
+            "schema accepts optional '--contract observation|connection-lifecycle' followed by \
+             '--check FILE' or '--output FILE'"
+                .to_string(),
+        ),
     }
 }
 
@@ -220,7 +234,8 @@ fn help() -> String {
        camera-config-generate validate <bundle.jsonl>...\n  \
        camera-config-generate propose [--output FILE] <bundle.jsonl>...\n  \
        camera-config-generate apply --base MANIFEST --proposal FILE --review FILE --output MANIFEST\n  \
-       camera-config-generate schema [--check FILE | --output FILE]\n\n\
+       camera-config-generate schema [--contract observation|connection-lifecycle] \
+         [--check FILE | --output FILE]\n\n\
      validate accounts for every nonblank record with stable diagnostic codes.\n\
      propose emits no candidates when any record is rejected and disposes every\n\
      accepted record as candidate-linked or evidence-only. Its digest and candidate\n\
@@ -228,7 +243,7 @@ fn help() -> String {
      recomputes proposal integrity, requires accept/reject/defer coverage for every\n\
      candidate, applies only accepted assertions, validates, and replaces output\n\
      atomically.\n\
-     schema prints the JSON Schema generated from the Rust observation model;\n\
+     schema prints JSON Schema generated from the selected Rust contract;\n\
      --check fails if the committed copy has drifted."
         .to_string()
 }

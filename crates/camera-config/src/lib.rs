@@ -11,6 +11,7 @@ pub mod activity;
 pub mod error;
 pub mod generate;
 pub mod index;
+pub mod lifecycle;
 pub mod model;
 pub mod observation;
 pub mod predicate;
@@ -40,6 +41,14 @@ pub use generate::{
     ProposalRecordStatus, ProposalReview, RecordDisposition, ReviewDisposition,
     ValidatedObservations, ValidationReport, ValidationStatus, PROPOSAL_SCHEMA, REVIEW_SCHEMA,
     VALIDATION_REPORT_SCHEMA,
+};
+pub use lifecycle::{
+    apply_connection_lifecycle_transition, generated_connection_lifecycle_json_schema,
+    CommandListenerState, ConnectionLifecycleError, ConnectionLifecycleRecord,
+    ConnectionLifecycleSchema, ConnectionLifecycleSnapshot, ConnectionLifecycleTraceEvent,
+    ConnectionLifecycleTracker, ConnectionLifecycleTransition, FeatureMode, FeatureState,
+    LifecycleEvidence, NetworkPersonaState, ProxyTransportState, PtpSessionState,
+    CONNECTION_LIFECYCLE_SCHEMA_VERSION,
 };
 pub use model::{
     parse_hex_bytes, parse_hex_code, parse_hex_u32, Action, ActionEffect, ActionInitiator,

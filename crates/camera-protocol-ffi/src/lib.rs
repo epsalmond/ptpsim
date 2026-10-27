@@ -59,6 +59,8 @@ pub use mfg_index::{
 };
 mod observation_ffi;
 pub use observation_ffi::*;
+pub mod lifecycle;
+pub use lifecycle::*;
 
 uniffi::setup_scaffolding!();
 

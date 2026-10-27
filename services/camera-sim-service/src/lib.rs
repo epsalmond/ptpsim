@@ -7,7 +7,7 @@
 //! switches to the manifest-selected standard, compressed, or USB/PIMA
 //! operation framing.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -15,10 +15,12 @@ use std::sync::{Arc, Mutex as StdMutex};
 use camera_config::{
     direct_epistemic, no_loss, parse_hex_bytes, parse_hex_code, parse_hex_u32, BundleHeader,
     CameraContext, CameraManifest, CaptureClock, CaptureContext, CaptureInterface,
-    CaptureInterfaceType, ClientContext, ClockType, ClockUnit, DataDirection, ExecutionContext,
-    LifecycleMarker, LiveViewDeliveryKind, ObservationLine, ObservationRecorder, PayloadMetadata,
-    PayloadMetadataBuilder, PcssKnock, PtpDataPhase, PtpEventRecord, PtpRequest, PtpResponse,
-    PtpTransactionRecord, PtpTransport, TransactionOutcome, ValuePolicy,
+    CaptureInterfaceType, ClientContext, ClockType, ClockUnit, ConnectionLifecycleSnapshot,
+    ConnectionLifecycleTraceEvent, ConnectionLifecycleTracker, ConnectionLifecycleTransition,
+    DataDirection, ExecutionContext, LifecycleMarker, LiveViewDeliveryKind, ObservationLine,
+    ObservationRecorder, PayloadMetadata, PayloadMetadataBuilder, PcssKnock, PtpDataPhase,
+    PtpEventRecord, PtpRequest, PtpResponse, PtpTransactionRecord, PtpTransport,
+    TransactionOutcome, ValuePolicy,
 };
 use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
@@ -57,6 +59,280 @@ use inbound::{Admission, FrameReadPolicy, FrameReader};
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::{timeout_at, Instant};
+
+pub const SERVICE_CONNECTION_LIFECYCLES_SCHEMA_VERSION: &str =
+    "ptpsim-service-connection-lifecycles/v1";
+const MAX_COMPLETED_CONNECTION_LIFECYCLES: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommandTerminalReason {
+    AcknowledgedCloseSession,
+    LocalCleanClose,
+    PeerEof,
+    TransportError,
+}
+
+impl CommandTerminalReason {
+    fn transition(self) -> ConnectionLifecycleTransition {
+        match self {
+            Self::AcknowledgedCloseSession | Self::LocalCleanClose => {
+                ConnectionLifecycleTransition::ProxyTransportClosedLocally
+            }
+            Self::PeerEof | Self::TransportError => {
+                ConnectionLifecycleTransition::ProxyTransportLost
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceConnectionLifecycle {
+    pub connection_instance: String,
+    pub session_sequence: u64,
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<CommandTerminalReason>,
+    pub snapshot: ConnectionLifecycleSnapshot,
+    pub trace: Vec<ConnectionLifecycleTraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceConnectionLifecycles {
+    pub schema: &'static str,
+    pub connections: Vec<ServiceConnectionLifecycle>,
+}
+
+#[derive(Default)]
+struct ConnectionLifecycleEntry {
+    tracker: ConnectionLifecycleTracker,
+    terminal_reason: Option<CommandTerminalReason>,
+}
+
+#[derive(Default)]
+struct ConnectionLifecycleState {
+    entries: BTreeMap<u64, ConnectionLifecycleEntry>,
+    completed: VecDeque<u64>,
+}
+
+#[derive(Clone, Default)]
+pub struct ConnectionLifecycles {
+    state: Arc<StdMutex<ConnectionLifecycleState>>,
+    #[cfg(test)]
+    completed: Arc<Notify>,
+}
+
+struct CommandLifecycleGuard {
+    lifecycles: ConnectionLifecycles,
+    session_sequence: u64,
+    armed: bool,
+}
+
+impl CommandLifecycleGuard {
+    fn new(lifecycles: ConnectionLifecycles, session_sequence: u64) -> Self {
+        lifecycles.accepted(session_sequence);
+        Self {
+            lifecycles,
+            session_sequence,
+            armed: true,
+        }
+    }
+
+    fn finish(mut self, reason: CommandTerminalReason) {
+        self.lifecycles.finish(self.session_sequence, reason);
+        self.armed = false;
+    }
+}
+
+impl Drop for CommandLifecycleGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.lifecycles.finish(
+                self.session_sequence,
+                CommandTerminalReason::LocalCleanClose,
+            );
+        }
+    }
+}
+
+impl ConnectionLifecycles {
+    fn accepted(&self, session_sequence: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut entry = ConnectionLifecycleEntry::default();
+        for transition in [
+            ConnectionLifecycleTransition::CommandListenerReady,
+            ConnectionLifecycleTransition::ProxyTransportAccepted,
+        ] {
+            entry
+                .tracker
+                .apply(transition)
+                .expect("a new connection lifecycle cannot exhaust u64 sequence space");
+        }
+        let previous = state.entries.insert(session_sequence, entry);
+        debug_assert!(previous.is_none(), "connection lifecycle identity reused");
+    }
+
+    fn apply(&self, session_sequence: u64, transition: ConnectionLifecycleTransition) {
+        self.with_tracker(session_sequence, |tracker| {
+            tracker
+                .apply(transition)
+                .expect("an in-memory lifecycle trace cannot exhaust u64 sequence space");
+        });
+    }
+
+    fn with_tracker<R>(
+        &self,
+        session_sequence: u64,
+        apply: impl FnOnce(&mut ConnectionLifecycleTracker) -> R,
+    ) -> R {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state
+            .entries
+            .get_mut(&session_sequence)
+            .expect("accepted connection lifecycle must remain active until handler teardown");
+        apply(&mut entry.tracker)
+    }
+
+    fn dispatch_operation(
+        &self,
+        engine: &mut Engine,
+        owner: &mut Option<u64>,
+        sender: u64,
+        request: &OperationRequest,
+        data: Option<&[u8]>,
+    ) -> Reply {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tracker_sequence = owner
+            .filter(|sequence| {
+                state
+                    .entries
+                    .get(sequence)
+                    .is_some_and(|entry| entry.terminal_reason.is_none())
+            })
+            .unwrap_or(sender);
+        let lifecycle = &mut state
+            .entries
+            .get_mut(&tracker_sequence)
+            .expect("dispatch requires an active connection lifecycle")
+            .tracker;
+        let before = lifecycle.snapshot().sequence;
+        // Feature detection compares against the tracker passed to the engine.
+        // Use the owner's evidence so a sender with an unknown feature still
+        // records transitions out of the shared session's active feature.
+        let reply = engine.on_operation_with_connection_lifecycle(lifecycle, request, data);
+        let transitions = lifecycle
+            .trace()
+            .iter()
+            .filter(|event| event.sequence > before)
+            .map(|event| event.transition)
+            .filter(|transition| {
+                matches!(
+                    transition,
+                    ConnectionLifecycleTransition::PtpSessionOpened
+                        | ConnectionLifecycleTransition::PtpSessionClosed
+                        | ConnectionLifecycleTransition::FeatureEntered { .. }
+                        | ConnectionLifecycleTransition::FeatureExited
+                )
+            })
+            .collect::<Vec<_>>();
+        for transition in transitions {
+            if sender != tracker_sequence {
+                state
+                    .entries
+                    .get_mut(&sender)
+                    .expect("operation sender must have an active lifecycle")
+                    .tracker
+                    .apply(transition)
+                    .expect("an in-memory lifecycle trace cannot exhaust u64 sequence space");
+            }
+            match transition {
+                ConnectionLifecycleTransition::PtpSessionOpened => {
+                    if tracker_sequence != sender {
+                        state
+                            .entries
+                            .get_mut(&tracker_sequence)
+                            .expect("previous owner lifecycle was used for dispatch")
+                            .tracker
+                            .apply(ConnectionLifecycleTransition::PtpSessionClosed)
+                            .expect(
+                                "an in-memory lifecycle trace cannot exhaust u64 sequence space",
+                            );
+                    }
+                    *owner = Some(sender);
+                }
+                ConnectionLifecycleTransition::PtpSessionClosed => *owner = None,
+                _ => {}
+            }
+        }
+        reply
+    }
+
+    fn finish(&self, session_sequence: u64, reason: CommandTerminalReason) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(entry) = state.entries.get_mut(&session_sequence) else {
+            return;
+        };
+        if entry.terminal_reason.is_some() {
+            return;
+        }
+        entry
+            .tracker
+            .apply(reason.transition())
+            .expect("an in-memory lifecycle trace cannot exhaust u64 sequence space");
+        entry.terminal_reason = Some(reason);
+        state.completed.push_back(session_sequence);
+        while state.completed.len() > MAX_COMPLETED_CONNECTION_LIFECYCLES {
+            let expired = state
+                .completed
+                .pop_front()
+                .expect("completed lifecycle queue length was checked");
+            state.entries.remove(&expired);
+        }
+        drop(state);
+        #[cfg(test)]
+        self.completed.notify_one();
+    }
+
+    pub fn snapshot(&self) -> ServiceConnectionLifecycles {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ServiceConnectionLifecycles {
+            schema: SERVICE_CONNECTION_LIFECYCLES_SCHEMA_VERSION,
+            connections: state
+                .entries
+                .iter()
+                .map(|(&session_sequence, entry)| ServiceConnectionLifecycle {
+                    connection_instance: command_connection_instance(session_sequence),
+                    session_sequence,
+                    active: entry.terminal_reason.is_none(),
+                    terminal_reason: entry.terminal_reason,
+                    snapshot: entry.tracker.snapshot().clone(),
+                    trace: entry.tracker.trace().to_vec(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.snapshot())
+    }
+}
 
 pub mod control;
 #[doc(hidden)]
@@ -210,6 +486,7 @@ pub struct Server {
     disallowed_ops: Arc<HashSet<u16>>,
     control: TcpListener,
     engine: Arc<Mutex<Engine>>,
+    lifecycles: ConnectionLifecycles,
     metrics: Metrics,
     /// Shared looping frame source (one cursor across all live-view clients —
     /// the normal lease shape is one camera = one client; cursor sharing is
@@ -498,6 +775,7 @@ struct CommandContext {
 struct CommandResources {
     engine: Arc<Mutex<Engine>>,
     session_owner: Arc<Mutex<Option<u64>>>,
+    lifecycles: ConnectionLifecycles,
     frames: Arc<Mutex<LoopingFrameSource>>,
     event_tx: broadcast::Sender<camera_sim::QueuedEvent>,
     state_dirty: Arc<Notify>,
@@ -539,13 +817,18 @@ impl CommandTraceGuard {
         self.terminal_outcome = Some(outcome);
     }
 
-    fn mark_peer_closed(&mut self) {
+    fn mark_peer_closed(&mut self) -> CommandTerminalReason {
         if self.terminal_outcome.is_none() {
             self.terminal_outcome = Some(if self.close_session_acknowledged {
                 "peerClosedAfterCloseSession"
             } else {
                 "transportLost"
             });
+        }
+        if self.close_session_acknowledged {
+            CommandTerminalReason::AcknowledgedCloseSession
+        } else {
+            CommandTerminalReason::PeerEof
         }
     }
 }
@@ -893,6 +1176,7 @@ impl Server {
             disallowed_ops,
             control,
             engine,
+            lifecycles: ConnectionLifecycles::default(),
             metrics,
             frames,
             observations,
@@ -921,6 +1205,11 @@ impl Server {
 
     pub fn control_addr(&self) -> SocketAddr {
         self.control.local_addr().unwrap()
+    }
+
+    /// Versioned, per-command-connection lifecycle state for the service.
+    pub fn connection_lifecycles(&self) -> ConnectionLifecycles {
+        self.lifecycles.clone()
     }
 
     /// This server's arming link (#102), to hand to a BLE responder so a modeled
@@ -959,6 +1248,7 @@ impl Server {
             disallowed_ops,
             control,
             engine,
+            lifecycles,
             metrics,
             frames,
             observations,
@@ -1035,15 +1325,15 @@ impl Server {
 
         // Per-connection tasks live in a JoinSet per accept loop (audit in
         // docs/internal-async-notes.md): the `Some(_) = join_next()` arm reaps
-        // finished tasks on a long-lived server, and JoinSet aborts everything
-        // still running when dropped — which happens when run()'s select!
-        // drops the loop future on shutdown. In-flight connections being cut
-        // on exit is the documented run() contract.
+        // finished tasks on a long-lived server. The command loop aborts and
+        // drains its handlers on shutdown so lifecycle finalizers run before
+        // run() returns. Other accept loops abort their tasks when dropped.
         let command_port = command.local_addr().unwrap().port();
         let command_loop = {
             let resources = CommandResources {
                 engine: engine.clone(),
                 session_owner: session_owner.clone(),
+                lifecycles: lifecycles.clone(),
                 frames: frames.clone(),
                 event_tx: event_tx.clone(),
                 state_dirty: state_dirty.clone(),
@@ -1077,12 +1367,13 @@ impl Server {
                                     match reserve_command_session_identity(
                                         &resources.observations,
                                         &resources.context.connection,
+                                        &resources.lifecycles,
                                     ) {
-                                        Ok(session_sequence) => {
+                                        Ok(lifecycle_guard) => {
                                             let resources = resources.clone();
                                             conns.spawn(async move {
                                                 let _permit = permit;
-                                                handle_command_conn(stream, resources, None, session_sequence, handshake_deadline).await
+                                                handle_command_conn(stream, resources, None, lifecycle_guard, handshake_deadline).await
                                             });
                                         }
                                         Err(error) => {
@@ -1096,6 +1387,7 @@ impl Server {
                         _ = sub.recv() => break,
                     }
                 }
+                conns.shutdown().await;
             }
         };
 
@@ -1103,6 +1395,7 @@ impl Server {
             let context = control::Context {
                 health,
                 engine: engine.clone(),
+                lifecycles: lifecycles.clone(),
                 state_notify: state_dirty.clone(),
                 callbacks: state_callbacks.clone(),
                 trace: trace.clone(),
@@ -1278,15 +1571,19 @@ impl Server {
         }
         state_dirty.notify_one();
 
-        tokio::select! {
-            _ = shutdown => {}
-            _ = command_loop => {}
-            _ = control_loop => {}
-            _ = liveview_loop => {}
-            _ = event_loop => {}
-            _ = knock_loop => {}
-        }
+        tokio::pin!(command_loop);
+        let command_finished = tokio::select! {
+            _ = shutdown => false,
+            _ = &mut command_loop => true,
+            _ = control_loop => false,
+            _ = liveview_loop => false,
+            _ = event_loop => false,
+            _ = knock_loop => false,
+        };
         let _ = shutdown_tx.send(());
+        if !command_finished {
+            command_loop.await;
+        }
     }
 }
 
@@ -1393,8 +1690,9 @@ fn reply_is_ok(reply: &Reply) -> bool {
 fn reserve_command_session_identity(
     observations: &ObservationRecorder,
     connection: &str,
-) -> std::io::Result<u64> {
-    observations
+    lifecycles: &ConnectionLifecycles,
+) -> std::io::Result<CommandLifecycleGuard> {
+    let session_sequence = observations
         .record_lifecycle(
             ExecutionContext {
                 connection: connection.into(),
@@ -1406,7 +1704,15 @@ fn reserve_command_session_identity(
             None,
             BTreeMap::new(),
         )
-        .map_err(|error| std::io::Error::other(error.to_string()))
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(CommandLifecycleGuard::new(
+        lifecycles.clone(),
+        session_sequence,
+    ))
+}
+
+fn command_connection_instance(session_sequence: u64) -> String {
+    format!("simulator-connection-{session_sequence:016x}")
 }
 
 async fn handle_standard_listener_conn(
@@ -1427,11 +1733,12 @@ async fn handle_standard_listener_conn(
     };
     match PtpIpPacket::decode(&first) {
         Ok(PtpIpPacket::InitCommandRequest(_)) => {
-            let session_sequence = match reserve_command_session_identity(
+            let lifecycle_guard = match reserve_command_session_identity(
                 &resources.observations,
                 &resources.context.connection,
+                &resources.lifecycles,
             ) {
-                Ok(session_sequence) => session_sequence,
+                Ok(lifecycle_guard) => lifecycle_guard,
                 Err(error) => {
                     tracing::error!(%error, "canonical connection identity recording failed");
                     return Ok(());
@@ -1441,7 +1748,7 @@ async fn handle_standard_listener_conn(
                 stream,
                 resources,
                 Some(first),
-                session_sequence,
+                lifecycle_guard,
                 handshake_deadline,
             )
             .await
@@ -1564,9 +1871,10 @@ async fn handle_command_conn(
     stream: TcpStream,
     resources: CommandResources,
     first_frame: Option<Vec<u8>>,
-    session_sequence: u64,
+    lifecycle_guard: CommandLifecycleGuard,
     handshake_deadline: Instant,
 ) -> std::io::Result<()> {
+    let session_sequence = lifecycle_guard.session_sequence;
     let engine = resources.engine.clone();
     let session_owner = resources.session_owner.clone();
     let result = handle_command_conn_inner(
@@ -1577,15 +1885,22 @@ async fn handle_command_conn(
         handshake_deadline,
     )
     .await;
+    let terminal_reason = result
+        .as_ref()
+        .copied()
+        .unwrap_or(CommandTerminalReason::TransportError);
     // Session teardown belongs to the command connection that opened it. A
     // completed older task must not clear a session opened by a newer socket.
     let mut engine = engine.lock().await;
     let mut owner = session_owner.lock().await;
     if *owner == Some(session_sequence) {
-        engine.transport_lost();
+        engine.clear_session_after_transport_end();
         *owner = None;
     }
-    result
+    drop(owner);
+    drop(engine);
+    lifecycle_guard.finish(terminal_reason);
+    result.map(|_| ())
 }
 
 async fn handle_command_conn_inner(
@@ -1594,10 +1909,11 @@ async fn handle_command_conn_inner(
     first_frame: Option<Vec<u8>>,
     session_sequence: u64,
     handshake_deadline: Instant,
-) -> std::io::Result<()> {
+) -> std::io::Result<CommandTerminalReason> {
     let CommandResources {
         engine,
         session_owner,
+        lifecycles,
         frames,
         event_tx,
         state_dirty,
@@ -1609,7 +1925,7 @@ async fn handle_command_conn_inner(
         declared_aux,
         declared_aux_sync,
     } = resources;
-    let connection_instance = format!("simulator-connection-{session_sequence:016x}");
+    let connection_instance = command_connection_instance(session_sequence);
     let session = format!("ptp-session-{session_sequence:016x}");
     let endpoints = TraceEndpoints::connection(&stream);
     let is_pcss = context.init_shape == "pcssKnock";
@@ -1647,7 +1963,7 @@ async fn handle_command_conn_inner(
                 Some("command socket closed before InitCommandRequest".into()),
             );
         }
-        return Ok(());
+        return Ok(CommandTerminalReason::PeerEof);
     };
     let mut standard_connection_number = None;
     let mut standard_cancel = None;
@@ -1670,7 +1986,7 @@ async fn handle_command_conn_inner(
                         Some(format!("attempt={}", attempt + 1)),
                         Some(error.to_string()),
                     );
-                    return Ok(());
+                    return Ok(CommandTerminalReason::LocalCleanClose);
                 }
                 if attempt == context.pcss_init_fails {
                     break;
@@ -1706,19 +2022,19 @@ async fn handle_command_conn_inner(
                         Some(format!("attempt={}", attempt + 2)),
                         Some("command socket closed before retry".into()),
                     );
-                    return Ok(());
+                    return Ok(CommandTerminalReason::PeerEof);
                 };
                 first = next;
             }
         }
         "app82" => {
             let Ok(init_req) = parse_app_init(&first) else {
-                return Ok(()); // not a PTP/IP initiator
+                return Ok(CommandTerminalReason::LocalCleanClose); // not a PTP/IP initiator
             };
             // The camera drops InitCommandRequest when a BLE AP handoff launched without
             // the IMAGE_TRANSFER_SETTING arming prep write (#102): no ack, just hang up.
             if !engine.lock().await.accepts_init() {
-                return Ok(());
+                return Ok(CommandTerminalReason::LocalCleanClose);
             }
             // If a device name was registered over BLE during pairing, the PTP/IP friendly
             // name MUST match it — the camera silently drops a mismatch (#109): no ack.
@@ -1726,7 +2042,7 @@ async fn handle_command_conn_inner(
             let registered_name = engine.lock().await.link().device_name();
             if let Some(registered) = registered_name {
                 if registered != init_req.friendly_name {
-                    return Ok(());
+                    return Ok(CommandTerminalReason::LocalCleanClose);
                 }
             }
         }
@@ -1734,7 +2050,7 @@ async fn handle_command_conn_inner(
             let mut parsed = None;
             for attempt in 0..=context.pcss_init_fails {
                 let Ok(init_req) = parse_legacy_app_init(&first) else {
-                    return Ok(());
+                    return Ok(CommandTerminalReason::LocalCleanClose);
                 };
                 parsed = Some(init_req);
                 if attempt == context.pcss_init_fails {
@@ -1757,7 +2073,7 @@ async fn handle_command_conn_inner(
                 )
                 .await?
                 else {
-                    return Ok(());
+                    return Ok(CommandTerminalReason::PeerEof);
                 };
                 first = next;
             }
@@ -1767,7 +2083,7 @@ async fn handle_command_conn_inner(
             let registered_name = engine.lock().await.link().device_name();
             if let Some(registered) = registered_name {
                 if registered != init_req.friendly_name {
-                    return Ok(());
+                    return Ok(CommandTerminalReason::LocalCleanClose);
                 }
             }
         }
@@ -1776,7 +2092,7 @@ async fn handle_command_conn_inner(
                 PtpIpPacket::decode(&first),
                 Ok(PtpIpPacket::InitCommandRequest(_))
             ) {
-                return Ok(());
+                return Ok(CommandTerminalReason::LocalCleanClose);
             }
             let (connection_number, cancel) = standard_connections.allocate();
             standard_connection_number = Some(connection_number);
@@ -1786,7 +2102,7 @@ async fn handle_command_conn_inner(
                 connection_number,
             });
         }
-        _ => return Ok(()),
+        _ => return Ok(CommandTerminalReason::LocalCleanClose),
     }
     let camera_name = {
         let e = engine.lock().await;
@@ -1812,6 +2128,10 @@ async fn handle_command_conn_inner(
         .await
         .map_err(|_| inbound::timed_out())??;
     metrics.record_write(ack_bytes.len());
+    lifecycles.apply(
+        session_sequence,
+        ConnectionLifecycleTransition::CommandInitialized,
+    );
     if is_pcss {
         trace.record(
             "ptpip.init_ack.sent",
@@ -1825,7 +2145,7 @@ async fn handle_command_conn_inner(
     // 2. Manifest-framed operation loop.
     let mut command_trace = CommandTraceGuard::new(trace.clone(), endpoints.clone());
     let mut first_operation_traced = false;
-    loop {
+    let terminal_reason = loop {
         let mut server_cancelled = false;
         let next_result = if let Some(cancel) = standard_cancel.as_mut() {
             tokio::select! {
@@ -1854,10 +2174,10 @@ async fn handle_command_conn_inner(
         let Some(frame) = next else {
             if server_cancelled {
                 command_trace.mark_terminal("serverCancelled");
+                break CommandTerminalReason::LocalCleanClose;
             } else {
-                command_trace.mark_peer_closed();
+                break command_trace.mark_peer_closed();
             }
-            break;
         };
         let req = match decode_command_frame(context.command_framing, &frame) {
             Ok(PtpIpPacket::OperationRequest(req)) => req,
@@ -1950,17 +2270,16 @@ async fn handle_command_conn_inner(
         let (reply, applied_fault, events, is_poll_live_view, observation_context, aux_readiness) = {
             let mut e = engine.lock().await;
             let is_poll_live_view = context.poll_live_view_op == Some(req.code);
-            let reply = e.on_operation(&req, data_in.as_deref());
+            let mut owner = session_owner.lock().await;
+            let reply = lifecycles.dispatch_operation(
+                &mut e,
+                &mut owner,
+                session_sequence,
+                &req,
+                data_in.as_deref(),
+            );
             if req.code == op::OPEN_SESSION && reply_is_ok(&reply) {
                 command_trace.mark_new_session();
-            }
-            if reply_is_ok(&reply) {
-                let mut owner = session_owner.lock().await;
-                match req.code {
-                    op::OPEN_SESSION => *owner = Some(session_sequence),
-                    op::CLOSE_SESSION => *owner = None,
-                    _ => {}
-                }
             }
             let applied_fault = e.take_applied_fault();
             let observation_context = ExecutionContext {
@@ -2133,11 +2452,11 @@ async fn handle_command_conn_inner(
         }
         if closed {
             command_trace.mark_terminal("serverAborted");
-            break;
+            break CommandTerminalReason::LocalCleanClose;
         }
-    }
+    };
     drop(standard_guard);
-    Ok(())
+    Ok(terminal_reason)
 }
 
 async fn run_knock_loop(
@@ -3067,7 +3386,662 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
+    use camera_config::{
+        FeatureMode, FeatureState, LifecycleEvidence, ProxyTransportState, PtpSessionState,
+    };
+
     use super::*;
+
+    const LIFECYCLE_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Lifecycle, firmware: "1" }
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    commandFraming: compressed
+    bindings: { command: 15740 }
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+  "0x1003": { name: CloseSession, connections: [app] }
+  "0x1016": { name: SetDevicePropValue, connections: [app] }
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 22 }
+    phase: liveView
+  image-transfer:
+    detect: { prop: "0xdf01", eq: 20 }
+    phase: imageImport
+properties:
+  "0xdf01": { name: functionMode, type: u16, access: readWrite }
+"#;
+
+    async fn start_lifecycle_server() -> (
+        SocketAddr,
+        SocketAddr,
+        ConnectionLifecycles,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+        tempfile::TempDir,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let server = Server::bind(Config {
+            instance_id: "lifecycle-test".into(),
+            profile: "test".into(),
+            connection: "app".into(),
+            manifest_yaml: LIFECYCLE_MANIFEST.into(),
+            media_root: directory.path().into(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: None,
+            event_bind: None,
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .unwrap();
+        let command = server.command_addr();
+        let control = server.control_addr();
+        let lifecycles = server.connection_lifecycles();
+        let (shutdown, receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(server.run(receiver));
+        (command, control, lifecycles, shutdown, task, directory)
+    }
+
+    async fn connect_lifecycle_command(command: SocketAddr) -> TcpStream {
+        let mut stream = TcpStream::connect(command).await.unwrap();
+        let init = protocol_primitives::build_app_init(&[0; 16], "test").unwrap();
+        stream.write_all(&init).await.unwrap();
+        let mut reader = FrameReader::default();
+        let frame = reader
+            .read_frame(
+                &mut stream,
+                FrameReadPolicy::until(
+                    inbound::HANDSHAKE_BYTES,
+                    Instant::now() + inbound::HANDSHAKE_TIMEOUT,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            PtpIpPacket::decode(&frame).unwrap(),
+            PtpIpPacket::InitCommandAck(_)
+        ));
+        stream
+    }
+
+    async fn lifecycle_operation(
+        stream: &mut TcpStream,
+        code: u16,
+        transaction_id: u32,
+        params: Vec<u32>,
+    ) -> ptp_core::OperationResponse {
+        lifecycle_operation_with_data(stream, code, transaction_id, params, None).await
+    }
+
+    async fn lifecycle_operation_with_data(
+        stream: &mut TcpStream,
+        code: u16,
+        transaction_id: u32,
+        params: Vec<u32>,
+        data: Option<&[u8]>,
+    ) -> ptp_core::OperationResponse {
+        let request = PtpIpPacket::OperationRequest(OperationRequest {
+            data_phase_info: 1,
+            code,
+            transaction_id,
+            params,
+        });
+        let bytes = fuji_framing::encode(&request).unwrap();
+        stream.write_all(&bytes).await.unwrap();
+        if let Some(data) = data {
+            let frame =
+                encode_data_frame(WireFraming::Compressed, code, transaction_id, data).unwrap();
+            stream.write_all(&frame).await.unwrap();
+        }
+        let mut reader = FrameReader::default();
+        let frame = reader
+            .read_frame(
+                stream,
+                FrameReadPolicy::established(inbound::OPERATION_BYTES),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        match decode_command_frame(WireFraming::Compressed, &frame).unwrap() {
+            PtpIpPacket::OperationResponse(response) => response,
+            other => panic!("expected operation response, got {other:?}"),
+        }
+    }
+
+    async fn wait_for_lifecycle_finish(lifecycles: &ConnectionLifecycles) {
+        tokio::time::timeout(inbound::HANDSHAKE_TIMEOUT, lifecycles.completed.notified())
+            .await
+            .expect("command handler did not record terminal lifecycle state");
+    }
+
+    async fn control_json(control: SocketAddr, path: &str) -> serde_json::Value {
+        let mut stream = TcpStream::connect(control).await.unwrap();
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let body = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| &response[index + 4..])
+            .expect("control response header terminator");
+        serde_json::from_slice(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn overlapping_close_reconciles_owner_lifecycle_with_session_not_open() {
+        let (command, _control, lifecycles, shutdown, task, _directory) =
+            start_lifecycle_server().await;
+        let mut owner = connect_lifecycle_command(command).await;
+        assert_eq!(
+            lifecycle_operation(&mut owner, op::OPEN_SESSION, 1, vec![1])
+                .await
+                .code,
+            resp::OK
+        );
+        let mut other = connect_lifecycle_command(command).await;
+        let before = lifecycles.snapshot();
+        assert_eq!(
+            lifecycle_operation(&mut other, op::CLOSE_SESSION, 1, vec![])
+                .await
+                .code,
+            resp::OK
+        );
+        for (before, after) in before
+            .connections
+            .iter()
+            .zip(lifecycles.snapshot().connections)
+        {
+            assert!(after.active);
+            assert_eq!(
+                after.snapshot.ptp_session,
+                LifecycleEvidence::Confirmed(PtpSessionState::Closed)
+            );
+            assert_eq!(
+                after.snapshot.feature,
+                LifecycleEvidence::Confirmed(FeatureState::Inactive)
+            );
+            assert_eq!(
+                after.snapshot.network_persona,
+                before.snapshot.network_persona
+            );
+            assert_eq!(
+                after.snapshot.command_listener,
+                before.snapshot.command_listener
+            );
+            assert_eq!(
+                after.snapshot.proxy_transport,
+                before.snapshot.proxy_transport
+            );
+        }
+        assert_eq!(
+            lifecycle_operation(&mut owner, op::CLOSE_SESSION, 2, vec![])
+                .await
+                .code,
+            resp::SESSION_NOT_OPEN
+        );
+        shutdown.send(()).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn overlapping_mode_writes_reconcile_owner_feature_transitions() {
+        let (command, _control, lifecycles, shutdown, task, _directory) =
+            start_lifecycle_server().await;
+        let mut owner = connect_lifecycle_command(command).await;
+        assert_eq!(
+            lifecycle_operation(&mut owner, op::OPEN_SESSION, 1, vec![1])
+                .await
+                .code,
+            resp::OK
+        );
+        assert_eq!(
+            lifecycle_operation_with_data(
+                &mut owner,
+                op::SET_DEVICE_PROP_VALUE,
+                2,
+                vec![0xdf01],
+                Some(&22u16.to_le_bytes())
+            )
+            .await
+            .code,
+            resp::OK
+        );
+        assert_eq!(
+            lifecycles.snapshot().connections[0].snapshot.feature,
+            LifecycleEvidence::Confirmed(FeatureState::Active {
+                mode: FeatureMode::LiveView
+            })
+        );
+        let mut other = connect_lifecycle_command(command).await;
+        let before = lifecycles.snapshot();
+        // The sender has no feature evidence. The owner still needs an exit
+        // transition when this write selects no declared feature mode.
+        for (transaction_id, mode, feature) in [
+            (1, 0u16, FeatureState::Inactive),
+            (
+                2,
+                20,
+                FeatureState::Active {
+                    mode: FeatureMode::ImageTransfer,
+                },
+            ),
+            (
+                3,
+                22,
+                FeatureState::Active {
+                    mode: FeatureMode::LiveView,
+                },
+            ),
+        ] {
+            assert_eq!(
+                lifecycle_operation_with_data(
+                    &mut other,
+                    op::SET_DEVICE_PROP_VALUE,
+                    transaction_id,
+                    vec![0xdf01],
+                    Some(&mode.to_le_bytes())
+                )
+                .await
+                .code,
+                resp::OK
+            );
+            for (before, after) in before
+                .connections
+                .iter()
+                .zip(lifecycles.snapshot().connections)
+            {
+                assert_eq!(
+                    after.snapshot.feature,
+                    LifecycleEvidence::Confirmed(feature)
+                );
+                assert_eq!(after.snapshot.ptp_session, before.snapshot.ptp_session);
+                assert_eq!(
+                    after.snapshot.network_persona,
+                    before.snapshot.network_persona
+                );
+                assert_eq!(
+                    after.snapshot.command_listener,
+                    before.snapshot.command_listener
+                );
+                assert_eq!(
+                    after.snapshot.proxy_transport,
+                    before.snapshot.proxy_transport
+                );
+            }
+        }
+        shutdown.send(()).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replaced_session_survives_previous_owner_teardown() {
+        let (command, _control, lifecycles, shutdown, task, _directory) =
+            start_lifecycle_server().await;
+        let mut previous = connect_lifecycle_command(command).await;
+        assert_eq!(
+            lifecycle_operation(&mut previous, op::OPEN_SESSION, 1, vec![1])
+                .await
+                .code,
+            resp::OK
+        );
+        let mut current = connect_lifecycle_command(command).await;
+        assert_eq!(
+            lifecycle_operation(&mut current, op::OPEN_SESSION, 1, vec![2])
+                .await
+                .code,
+            resp::SESSION_ALREADY_OPEN
+        );
+        assert_eq!(
+            lifecycle_operation(&mut current, op::CLOSE_SESSION, 2, vec![])
+                .await
+                .code,
+            resp::OK
+        );
+        assert_eq!(
+            lifecycle_operation(&mut current, op::OPEN_SESSION, 3, vec![2])
+                .await
+                .code,
+            resp::OK
+        );
+        drop(previous);
+        wait_for_lifecycle_finish(&lifecycles).await;
+        let view = lifecycles.snapshot();
+        assert!(!view.connections[0].active);
+        assert_eq!(
+            view.connections[0].snapshot.ptp_session,
+            LifecycleEvidence::Confirmed(PtpSessionState::Closed)
+        );
+        assert!(view.connections[1].active);
+        assert_eq!(
+            view.connections[1].snapshot.ptp_session,
+            LifecycleEvidence::Confirmed(PtpSessionState::Open)
+        );
+        assert_eq!(
+            lifecycle_operation(&mut current, op::CLOSE_SESSION, 4, vec![])
+                .await
+                .code,
+            resp::OK
+        );
+        shutdown.send(()).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_finalizes_lifecycles_with_client_sockets_still_open() {
+        let (command, _control, lifecycles, shutdown, task, _directory) =
+            start_lifecycle_server().await;
+        let mut owner = connect_lifecycle_command(command).await;
+        assert_eq!(
+            lifecycle_operation(&mut owner, op::OPEN_SESSION, 1, vec![1])
+                .await
+                .code,
+            resp::OK
+        );
+        let other = connect_lifecycle_command(command).await;
+        assert_eq!(lifecycles.snapshot().connections.len(), 2);
+        shutdown.send(()).unwrap();
+        task.await.unwrap();
+        let view = lifecycles.snapshot();
+        assert_eq!(view.connections.len(), 2);
+        for connection in &view.connections {
+            assert!(!connection.active);
+            assert_eq!(
+                connection.terminal_reason,
+                Some(CommandTerminalReason::LocalCleanClose)
+            );
+            assert_eq!(
+                connection.snapshot.proxy_transport,
+                LifecycleEvidence::Confirmed(ProxyTransportState::LocallyClosed)
+            );
+        }
+        assert_eq!(
+            view.connections[0].snapshot.ptp_session,
+            LifecycleEvidence::Unconfirmed(PtpSessionState::Open)
+        );
+        drop((owner, other));
+    }
+
+    #[tokio::test]
+    async fn unpolled_cancelled_lifecycle_guards_complete_with_bounded_history() {
+        let lifecycles = ConnectionLifecycles::default();
+        let active = CommandLifecycleGuard::new(lifecycles.clone(), 1);
+        let mut tasks = tokio::task::JoinSet::new();
+        for sequence in 2..=67 {
+            let guard = CommandLifecycleGuard::new(lifecycles.clone(), sequence);
+            tasks.spawn(async move {
+                let _guard = guard;
+                panic!("cancelled task must not be polled before abort");
+            });
+        }
+        // This current-thread test has not yielded since spawn. Every guard
+        // must therefore finalize from an unpolled task's captured values.
+        tasks.shutdown().await;
+        let view = lifecycles.snapshot();
+        assert_eq!(
+            view.connections.len(),
+            MAX_COMPLETED_CONNECTION_LIFECYCLES + 1
+        );
+        assert!(view.connections[0].active);
+        assert!(view.connections[1..]
+            .iter()
+            .all(|connection| !connection.active
+                && connection.terminal_reason == Some(CommandTerminalReason::LocalCleanClose)
+                && connection.snapshot.proxy_transport
+                    == LifecycleEvidence::Confirmed(ProxyTransportState::LocallyClosed)));
+        drop(active);
+        assert_eq!(
+            lifecycles.snapshot().connections.len(),
+            MAX_COMPLETED_CONNECTION_LIFECYCLES
+        );
+    }
+
+    #[test]
+    fn lifecycle_guard_finalizes_on_unwind_without_duplicate_completion() {
+        let lifecycles = ConnectionLifecycles::default();
+        let guard = CommandLifecycleGuard::new(lifecycles.clone(), 1);
+        let result = std::panic::catch_unwind(|| {
+            let _guard = guard;
+            lifecycles.with_tracker(1, |_| panic!("handler unwound during lifecycle update"));
+        });
+        assert!(result.is_err());
+        let before = lifecycles.snapshot().connections.pop().unwrap();
+        assert!(!before.active);
+        assert_eq!(
+            before.terminal_reason,
+            Some(CommandTerminalReason::LocalCleanClose)
+        );
+        assert_eq!(
+            before.snapshot.proxy_transport,
+            LifecycleEvidence::Confirmed(ProxyTransportState::LocallyClosed)
+        );
+        lifecycles.finish(1, CommandTerminalReason::TransportError);
+        assert_eq!(lifecycles.snapshot().connections, vec![before]);
+        assert_eq!(
+            lifecycles
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .completed
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn simultaneous_handshakes_keep_teardown_keyed_to_their_connections() {
+        let (command, _control, lifecycles, shutdown, task, _directory) =
+            start_lifecycle_server().await;
+        let mut active = connect_lifecycle_command(command).await;
+        let opened = lifecycle_operation(&mut active, op::OPEN_SESSION, 1, vec![1]).await;
+        assert_eq!(opened.code, resp::OK);
+
+        let mut idle = connect_lifecycle_command(command).await;
+        let unsupported = lifecycle_operation(&mut idle, 0xffff, 1, vec![]).await;
+        assert_eq!(unsupported.code, resp::OPERATION_NOT_SUPPORTED);
+
+        let before = lifecycles.snapshot();
+        assert_eq!(before.connections.len(), 2);
+        assert!(before
+            .connections
+            .iter()
+            .all(|connection| connection.active));
+        let active_sequence = before.connections[0].session_sequence;
+        let idle_sequence = before.connections[1].session_sequence;
+        assert_eq!(
+            before.connections[0].snapshot.ptp_session,
+            LifecycleEvidence::Confirmed(PtpSessionState::Open)
+        );
+        assert_eq!(
+            before.connections[1].snapshot.ptp_session,
+            LifecycleEvidence::Unknown
+        );
+
+        drop(idle);
+        wait_for_lifecycle_finish(&lifecycles).await;
+        let after_idle = lifecycles.snapshot();
+        let active_view = after_idle
+            .connections
+            .iter()
+            .find(|connection| connection.session_sequence == active_sequence)
+            .unwrap();
+        let idle_view = after_idle
+            .connections
+            .iter()
+            .find(|connection| connection.session_sequence == idle_sequence)
+            .unwrap();
+        assert!(active_view.active);
+        assert_eq!(
+            active_view.snapshot.ptp_session,
+            LifecycleEvidence::Confirmed(PtpSessionState::Open)
+        );
+        assert_eq!(
+            idle_view.terminal_reason,
+            Some(CommandTerminalReason::PeerEof)
+        );
+        assert_eq!(
+            idle_view.snapshot.proxy_transport,
+            LifecycleEvidence::Confirmed(ProxyTransportState::Lost)
+        );
+        assert_eq!(idle_view.snapshot.ptp_session, LifecycleEvidence::Unknown);
+
+        drop(active);
+        wait_for_lifecycle_finish(&lifecycles).await;
+        let after_active = lifecycles.snapshot();
+        let active_view = after_active
+            .connections
+            .iter()
+            .find(|connection| connection.session_sequence == active_sequence)
+            .unwrap();
+        assert_eq!(
+            active_view.terminal_reason,
+            Some(CommandTerminalReason::PeerEof)
+        );
+        assert_eq!(
+            active_view.snapshot.ptp_session,
+            LifecycleEvidence::Unconfirmed(PtpSessionState::Open)
+        );
+
+        shutdown.send(()).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn acknowledged_close_session_eof_is_local_and_versioned() {
+        let (command, control, lifecycles, shutdown, task, _directory) =
+            start_lifecycle_server().await;
+        let mut stream = connect_lifecycle_command(command).await;
+        assert_eq!(
+            lifecycle_operation(&mut stream, op::OPEN_SESSION, 1, vec![1])
+                .await
+                .code,
+            resp::OK
+        );
+        assert_eq!(
+            lifecycle_operation(&mut stream, op::CLOSE_SESSION, 2, vec![])
+                .await
+                .code,
+            resp::OK
+        );
+
+        let control_view = control_json(control, "/connection-lifecycles").await;
+        assert_eq!(
+            control_view["schema"],
+            SERVICE_CONNECTION_LIFECYCLES_SCHEMA_VERSION
+        );
+        assert_eq!(control_view["connections"].as_array().unwrap().len(), 1);
+        assert!(control_view["connections"][0]["connectionInstance"]
+            .as_str()
+            .unwrap()
+            .starts_with("simulator-connection-"));
+
+        drop(stream);
+        wait_for_lifecycle_finish(&lifecycles).await;
+        let view = lifecycles.snapshot().connections.pop().unwrap();
+        assert_eq!(
+            view.terminal_reason,
+            Some(CommandTerminalReason::AcknowledgedCloseSession)
+        );
+        assert_eq!(
+            view.snapshot.proxy_transport,
+            LifecycleEvidence::Confirmed(ProxyTransportState::LocallyClosed)
+        );
+        assert_eq!(
+            view.snapshot.ptp_session,
+            LifecycleEvidence::Confirmed(PtpSessionState::Closed)
+        );
+        assert!(!view.trace.iter().any(|event| matches!(
+            event.transition,
+            ConnectionLifecycleTransition::ProxyTransportLost
+        )));
+
+        shutdown.send(()).unwrap();
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn peer_loss_preserves_unconfirmed_open_session_and_feature() {
+        let lifecycles = ConnectionLifecycles::default();
+        for (session_sequence, reason) in [
+            (7, CommandTerminalReason::PeerEof),
+            (8, CommandTerminalReason::TransportError),
+        ] {
+            lifecycles.accepted(session_sequence);
+            for transition in [
+                ConnectionLifecycleTransition::CommandInitialized,
+                ConnectionLifecycleTransition::PtpSessionOpened,
+                ConnectionLifecycleTransition::FeatureEntered {
+                    mode: FeatureMode::ImageTransfer,
+                },
+            ] {
+                lifecycles.apply(session_sequence, transition);
+            }
+            lifecycles.finish(session_sequence, reason);
+        }
+
+        for view in lifecycles.snapshot().connections {
+            assert_eq!(
+                view.snapshot.ptp_session,
+                LifecycleEvidence::Unconfirmed(PtpSessionState::Open)
+            );
+            assert_eq!(
+                view.snapshot.feature,
+                LifecycleEvidence::Unconfirmed(FeatureState::Active {
+                    mode: FeatureMode::ImageTransfer
+                })
+            );
+            assert_eq!(
+                view.snapshot.proxy_transport,
+                LifecycleEvidence::Confirmed(ProxyTransportState::Lost)
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_traces_and_completed_connection_history_are_bounded() {
+        let lifecycles = ConnectionLifecycles::default();
+        lifecycles.accepted(1);
+        for _ in 0..520 {
+            lifecycles.apply(1, ConnectionLifecycleTransition::CommandInitialized);
+        }
+        for session_sequence in 2..=67 {
+            lifecycles.accepted(session_sequence);
+            lifecycles.finish(session_sequence, CommandTerminalReason::LocalCleanClose);
+        }
+
+        let view = lifecycles.snapshot();
+        assert_eq!(
+            view.connections.len(),
+            MAX_COMPLETED_CONNECTION_LIFECYCLES + 1
+        );
+        let active = view
+            .connections
+            .iter()
+            .find(|connection| connection.session_sequence == 1)
+            .unwrap();
+        assert!(active.active);
+        assert_eq!(active.trace.len(), 512);
+        assert!(view
+            .connections
+            .iter()
+            .all(|connection| connection.session_sequence != 2));
+        assert!(view
+            .connections
+            .iter()
+            .any(|connection| connection.session_sequence == 67));
+    }
 
     #[tokio::test]
     async fn data_in_accepts_existing_one_mib_payload_for_all_framings() {

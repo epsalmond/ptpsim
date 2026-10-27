@@ -24,7 +24,7 @@ use tokio::time::{timeout_at, Instant};
 use crate::state_callback::Registry;
 use crate::state_json::snapshot_json;
 use crate::trace::TraceLog;
-use crate::{DeclaredAuxListener, Metrics};
+use crate::{ConnectionLifecycles, DeclaredAuxListener, Metrics};
 
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -72,6 +72,7 @@ impl Health {
 pub struct Context {
     pub(crate) health: Health,
     pub(crate) engine: Arc<Mutex<Engine>>,
+    pub(crate) lifecycles: ConnectionLifecycles,
     pub(crate) state_notify: Arc<Notify>,
     pub(crate) callbacks: Registry,
     pub(crate) trace: TraceLog,
@@ -108,6 +109,10 @@ pub async fn handle(mut stream: TcpStream, context: Context) {
             };
             Response::ok(body)
         }
+        ("GET", "/connection-lifecycles") => match context.lifecycles.json() {
+            Ok(body) => Response::ok(body),
+            Err(error) => Response::server_error(error.to_string()),
+        },
         ("GET", path) if path == "/trace" || path.starts_with("/trace?") => {
             match trace_after(path) {
                 Ok(after) => Response::ok(context.trace.json(&context.health.instance_id, after)),

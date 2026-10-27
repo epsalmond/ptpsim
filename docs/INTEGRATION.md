@@ -913,6 +913,55 @@ AP establishment, but OS network association, DHCP, and AP management remain
 host-owned. Adding another I/O primitive is one schema verb + one dispatcher
 case — no other layer changes.
 
+### 9.8 Dynamic connection lifecycle contract
+
+`ptpsim-connection-lifecycle/v1` records five independent runtime layers:
+network persona, command listener, proxy transport, PTP session, and feature
+mode. Each layer carries `unknown`, `unconfirmed`, or `confirmed` evidence over
+a closed state vocabulary. The contract contains no firewall state and is not
+a manifest-authored state machine. One snapshot tracks one logical connection;
+callers key snapshots by their own connection identity.
+
+A confirmed PTP `CloseSession` closes the PTP session and makes the feature
+inactive. It does not change the proxy transport, listener, or network persona.
+A lost or locally closed transport preserves the listener and network persona.
+It changes a previously open session and active feature to unconfirmed because
+the host action does not prove camera-side cleanup. Only a separate confirmed
+network-persona exit proves that the camera left the persona.
+
+The simulator engine exposes the current snapshot and a bounded deterministic
+transition-trace tail. Sequence numbers reveal when older events were dropped.
+The FFI exposes pure initial-snapshot and transition functions over
+caller-owned values. Those functions do not read simulator mutable state, so a
+production consumer must supply transitions from its own observations. The
+checked-in JSON Schema is
+`packages/camera-config-data/ptpsim-connection-lifecycle-v1.schema.json`. Run
+`camera-config-generate schema --contract connection-lifecycle --check <path>`
+to verify that it still matches the Rust types.
+
+`camera-sim-service` exposes `GET /connection-lifecycles` as the additive
+`ptpsim-service-connection-lifecycles/v1` control surface. It keys each
+snapshot and trace by the canonical observation `sessionSequence` and matching
+`connectionInstance`. A command handler records its terminal reason as an
+acknowledged `CloseSession`, local clean close, peer EOF, or transport error.
+Acknowledged `CloseSession` followed by EOF is a local clean transport close,
+not a transport loss. Each key keeps the core 512-event trace tail. The service
+retains every active key and the 64 most recent completed keys.
+
+The service engine shares one PTP session across command connections. An
+operation from an overlapping connection keeps the existing wire behavior.
+Its session and feature transitions update the current session owner's
+tracker and the sender's tracker. Other lifecycle layers remain specific to
+each connection. A successful session open assigns the sender as owner; a
+session close clears ownership. Teardown of a previous connection cannot clear
+a replacement session. These rules describe simulator state, not camera-side
+connection ownership or operation gating.
+
+Cancellation or handler unwinding records a local clean transport close.
+The service drains cancelled command tasks before returning from shutdown, so
+retained lifecycle handles contain only completed command records at that
+point. Local transport closure leaves camera-side session cleanup unconfirmed.
+
 ## 10. camera-sim-tui external plugin protocol v1
 
 `camera-sim-tui` supports external operator plugins as spawned commands or attached
