@@ -73,6 +73,8 @@ successful `0x101C`. These are distinct delivery contracts.
 The consolidated catalog already contains camera-sourced `0xD173` enum
 `[1,3]` and `0xD174` enum `[1,2,3]`, both `catalogOnly`. Numeric descriptors do
 not establish SDK quality labels or a stream effect from a successful write.
+The reported `0xD173` default/current values 1/3 and pull-stream `0xD174=1`
+writes remain session observations; they do not seed global simulator values.
 
 The audit reports standalone 1024x768 baseline JPEG pull frames, setup-specific
 wired/Wi-Fi polling rates, a separate 640x480 app push stream, and no app push
