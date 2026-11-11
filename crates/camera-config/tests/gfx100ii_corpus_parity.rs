@@ -1,4 +1,7 @@
-use camera_config::{CameraManifest, OperationKind, PropertyKind};
+use camera_config::{
+    CameraManifest, CapabilitySubject, ObservationLine, OperationKind, PropertyKind,
+};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 fn data(rel: &str) -> String {
@@ -121,6 +124,72 @@ fn corpus_parity_is_byte_deterministic() {
         .semantic_assertions
         .properties
         .contains_key("0xd02a"));
+}
+
+#[test]
+fn captured_persona_operation_inventories_survive_consolidation() {
+    let manifest =
+        CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml")).unwrap();
+    let mut inventories = std::collections::BTreeMap::new();
+    for (persona, count) in [
+        ("usb-stills", 24),
+        ("usb-video", 24),
+        ("usb-pcpriority", 24),
+        ("usb-rawconv-backup", 20),
+        ("usb-cardreader", 25),
+        ("usb-tether-auto", 25),
+        ("wireless-stills", 24),
+        ("wireless-video", 24),
+    ] {
+        let bundle = data(&format!(
+            "fuji/gfx100ii/evidence/probe/2026-05-27-ptp-evidence-{persona}.jsonl"
+        ));
+        let mut expected = BTreeSet::new();
+        let mut context = None;
+        for line in bundle.lines() {
+            let ObservationLine::Capability(record) = serde_json::from_str(line).unwrap() else {
+                continue;
+            };
+            if let CapabilitySubject::Operation {
+                code,
+                supported: true,
+                ..
+            } = record.subject
+            {
+                if let Some(previous) = &context {
+                    assert_eq!(previous, &record.common.context);
+                }
+                context = Some(record.common.context);
+                expected.insert(code);
+            }
+        }
+        assert_eq!(expected.len(), count, "captured inventory for {persona}");
+        let context = context.expect("operation inventory has an execution context");
+        let actual = manifest
+            .operations
+            .iter()
+            .filter(|(_, operation)| {
+                operation.observed_scopes.iter().any(|scope| {
+                    scope.connection == context.connection
+                        && scope.mode == context.mode
+                        && scope.state == context.state
+                })
+            })
+            .map(|(code, _)| code.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected, "positive inventory scope for {persona}");
+        inventories.insert(persona, expected);
+    }
+    assert_eq!(inventories["usb-stills"], inventories["usb-video"]);
+    assert_eq!(
+        inventories["wireless-stills"],
+        inventories["wireless-video"]
+    );
+    for persona in ["usb-cardreader", "usb-tether-auto"] {
+        for code in ["0x101b", "0x9801", "0x9802", "0x9803", "0x9805"] {
+            assert!(inventories[persona].contains(code), "{persona}: {code}");
+        }
+    }
 }
 
 #[test]

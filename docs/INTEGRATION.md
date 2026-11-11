@@ -190,13 +190,21 @@ canonical JSON leaves so foreign bindings do not invent a second value grammar.
 
 1. **Embed the data bundle.** Ship `camera-config-data/fuji/fuji.yaml` (manufacturer)
    plus the body manifest selected by recognition (for example
-   `…/gfx100ii/gfx100ii.yaml` or `…/xa7/xa7.yaml`) as app resources; pass their
+   `…/gfx100ii/gfx100ii.consolidated.yaml` or `…/xa7/xa7.yaml`) as app resources; pass their
    contents to `from_bundle`. Each release attaches a `camera-config-data-<sha8>.tar.gz`
    sibling alongside the xcframework, so the FFI binary and the YAML data come
    from the same commit and can't drift mid-integration; extract it to vendor
    the bundle without cloning the source tree. (Co-shipped pre-data-repo-split;
    the eventual Apache-licensed data repo will publish its own versioned
    releases.) OTA bundle loading lands later; bundled baseline for now.
+
+   The GFX100 II consolidated manifest includes the reviewed operation and
+   property inventories. Its authored `gfx100ii.yaml` source contains the
+   executable recipes and curated behavior. Inventory rows marked
+   `advertisedOnly` remain unavailable for execution. Positive `observedScopes`
+   on an executable row record advertisement without extending its callable
+   connection or mode gates. See the [firmware 2.30 audit reconciliation](../packages/camera-config-data/fuji/gfx100ii/evidence/FIRMWARE_230_AUDIT.md)
+   for the captured scopes and remaining evidence questions.
 2. **Pick a connection.** `connections(platform)` → present what's actually available
    here. Bring it up: `connection_establishment(connection)` returns the recipe (knock
    ports, GATT char UUIDs). BLE/Wi-Fi association remains host-owned; Rust-owned
@@ -426,7 +434,7 @@ let store = try ConfigStore.fromManufacturerIndexWithDefaults(
     indexYaml: bundleString("fuji/index.yaml"),
     manufacturerYaml: bundleString("fuji/fuji.yaml"),
     modelBodies: [
-        KeyValue(key: "gfx100ii", value: bundleString("fuji/gfx100ii/gfx100ii.yaml")),
+        KeyValue(key: "gfx100ii", value: bundleString("fuji/gfx100ii/gfx100ii.consolidated.yaml")),
         KeyValue(key: "xa7", value: bundleString("fuji/xa7/xa7.yaml")),
         KeyValue(key: "fuji-generic", value: bundleString("fuji/fuji-generic/fuji-generic.yaml")),
     ]
