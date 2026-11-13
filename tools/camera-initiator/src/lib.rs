@@ -1,3 +1,4 @@
+pub mod idle;
 pub mod probe;
 pub mod session;
 pub mod trace;

@@ -122,6 +122,48 @@ remain available only to transport identity and mode-entry execution.
 `expectedBytes` is valid only for the connection's whole-object streaming read
 action.
 
+A `hold` step observes an already established command session without sending
+traffic. It requires a preceding entry, action, or switch in the plan. Its
+required `durationMs` is an unsigned integer from zero through 3600000. This
+one-hour limit is a host artifact and scheduling bound, not a camera timer.
+Zero continues immediately. Invalid durations and session progression are
+rejected before artifacts or transport I/O.
+
+```yaml
+schema: camera-initiator-session/v1
+steps:
+  - { id: before, kind: action, action: readDeviceInfo }
+  - { id: idle, kind: hold, durationMs: 5000 }
+  - { id: after, kind: action, action: readDeviceInfo }
+```
+
+The hold retains the command socket, session identity, and next transaction
+identifier. It sends no probes, keepalives, property reads, or automatic
+responses. A separate action before another hold supplies an explicit reset
+stimulus when comparing trials. That action does not establish that a camera
+timer resets. Auxiliary sockets remain open and are not read during the hold.
+
+The step report's `hold` records phase `connectedCommandSession`, the requested
+duration, and actual start/end nanoseconds relative to the trace's process
+monotonic epoch. `durationElapsed` means the host interval ended without a
+complete incoming command frame. Peer EOF, reset, a complete peer frame, other
+I/O failure, cancellation, and a host deadline with a partial frame have
+separate results. Incoming frames are bounded by `--max-frame-bytes`; the
+report retains their length, SHA-256, and response code/transaction identifier
+when decoded. The trace retains the bounded wire frame. Unexpected traffic or
+peer loss fails the hold and prevents later actions. It invalidates the
+command session so cleanup closes sockets without sending more protocol
+traffic. A partial frame at the deadline also invalidates the session.
+
+SIGINT during a session step records cancellation and runs cleanup. The
+interrupted command session is invalidated before closing sockets, so cleanup
+sends no further protocol traffic. Cleanup failure stays separate from the
+hold result. `bufferedBytes` is null when an interrupt drops the pending read
+before its buffered-byte count can be observed. These observations establish
+neither camera timeout units nor AP shutdown or readiness. Handshake phases,
+PCSS discovery/callback/init interception, and external property restoration
+remain outside this control.
+
 Entry and action expectations use this exact subset schema:
 
 ```yaml
@@ -148,7 +190,8 @@ field paths, or a separate assertion step.
 
 The runner keeps one native transport, trace writer, and observation recorder.
 It opens one PTP session lazily. Compatible entries merge their captured scope,
-while action scope stays local to the invocation. Transaction identifiers are
+while action scope stays local to the invocation. Mode-independent actions
+preserve the current observation mode. Transaction identifiers are
 transport-owned and increase across retained steps. A re-establishment clears
 the retained scope, closes the old session, records `externalEstablishment`,
 waits for endpoint replacement, and opens the target as a fresh PTP session.

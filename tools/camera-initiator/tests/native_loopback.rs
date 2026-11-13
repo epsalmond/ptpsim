@@ -1518,6 +1518,7 @@ async fn session_runner_retains_ordinary_and_streaming_payload_metadata() {
 schema: camera-initiator-session/v1
 steps:
   - {{ id: device-info, kind: action, action: readDeviceInfo }}
+  - {{ id: idle, kind: hold, durationMs: 5 }}
   - id: object
     kind: action
     action: getObject
@@ -1571,8 +1572,23 @@ steps:
     .await
     .expect("run session payload plan");
 
+    assert_eq!(report.steps.len(), 3);
+    let hold = report.steps[1]
+        .hold
+        .as_ref()
+        .expect("native idle observation");
+    assert_eq!(
+        hold.observation.end,
+        camera_initiator::idle::IdleEnd::DurationElapsed
+    );
+    assert!(report.steps[1].transaction_ids.is_empty());
+    assert!(report
+        .steps
+        .iter()
+        .all(|step| step.session_index == Some(1)));
+    assert!(hold.ended_elapsed_ns >= hold.started_elapsed_ns + 5_000_000);
     assert_eq!(report.steps[0].payloads.len(), 1);
-    assert_eq!(report.steps[1].payloads.len(), 1);
+    assert_eq!(report.steps[2].payloads.len(), 1);
     let ordinary = &report.steps[0].payloads[0];
     assert!(ordinary.path.starts_with("payloads/0000-device-info/"));
     assert_eq!(
@@ -1581,8 +1597,8 @@ steps:
             .len(),
         ordinary.length
     );
-    let streamed = &report.steps[1].payloads[0];
-    assert_eq!(streamed.path, "payloads/0001-object/0000_stream.bin");
+    let streamed = &report.steps[2].payloads[0];
+    assert_eq!(streamed.path, "payloads/0002-object/0000_stream.bin");
     assert_eq!(
         std::fs::read(output_dir.join(&streamed.path)).unwrap(),
         object
@@ -1594,13 +1610,13 @@ steps:
     assert_eq!(streamed.sha256, expected.sha256);
     assert!(
         report.steps[0].transaction_ids.last().unwrap()
-            < report.steps[1].transaction_ids.first().unwrap()
+            < report.steps[2].transaction_ids.first().unwrap()
     );
     let report_json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(output_dir.join("session-report.json")).unwrap())
             .unwrap();
     assert_eq!(
-        report_json.pointer("/steps/1/payloads/0/sha256"),
+        report_json.pointer("/steps/2/payloads/0/sha256"),
         Some(&serde_json::json!(expected.sha256))
     );
 

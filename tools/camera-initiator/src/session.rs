@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 
+use crate::idle::{HoldReport, IdleEnd, IdleObservation, MAX_HOLD_DURATION_MS};
 use crate::{NativePtpTransport, StreamingFileSink, TraceWriter};
 
 pub const SESSION_PLAN_SCHEMA: &str = "camera-initiator-session/v1";
@@ -147,6 +148,11 @@ fn safe_step_id(value: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SessionStep {
+    Hold {
+        id: String,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+    },
     Entry {
         id: String,
         from: Option<String>,
@@ -173,7 +179,10 @@ pub enum SessionStep {
 impl SessionStep {
     pub fn id(&self) -> &str {
         match self {
-            Self::Entry { id, .. } | Self::Switch { id, .. } | Self::Action { id, .. } => id,
+            Self::Entry { id, .. }
+            | Self::Switch { id, .. }
+            | Self::Action { id, .. }
+            | Self::Hold { id, .. } => id,
         }
     }
 }
@@ -227,6 +236,7 @@ pub struct SwitchExpectation {
 
 fn validate_expectation_shape(step: &SessionStep) -> Result<()> {
     let expectations: Vec<&OutcomeExpectation> = match step {
+        SessionStep::Hold { .. } => Vec::new(),
         SessionStep::Entry { expect, .. } | SessionStep::Action { expect, .. } => {
             expect.iter().collect()
         }
@@ -276,6 +286,7 @@ pub struct PreparedSessionPlan {
 
 #[derive(Debug, Clone)]
 enum PreparedStep {
+    Hold { id: String, duration_ms: u64 },
     Entry(PreparedEntry),
     Switch(PreparedSwitch),
     Action(PreparedAction),
@@ -318,8 +329,21 @@ pub fn prepare_session_plan(
 ) -> Result<PreparedSessionPlan> {
     let mut tracked_mode: Option<String> = None;
     let mut prepared = Vec::with_capacity(plan.steps.len());
+    let mut established = false;
     for step in &plan.steps {
         match step {
+            SessionStep::Hold { id, duration_ms } => {
+                if !established {
+                    bail!("hold step '{id}' requires a preceding entry, action, or switch")
+                }
+                if *duration_ms > MAX_HOLD_DURATION_MS {
+                    bail!("hold step '{id}' durationMs exceeds {MAX_HOLD_DURATION_MS}")
+                }
+                prepared.push(PreparedStep::Hold {
+                    id: id.clone(),
+                    duration_ms: *duration_ms,
+                });
+            }
             SessionStep::Entry {
                 id,
                 from,
@@ -520,6 +544,9 @@ pub fn prepare_session_plan(
                 }));
             }
         }
+        if !matches!(step, SessionStep::Hold { .. }) {
+            established = true;
+        }
     }
     Ok(PreparedSessionPlan {
         plan,
@@ -607,6 +634,8 @@ pub struct SessionStepReport {
     pub payloads: Vec<PayloadReport>,
     pub cleanup_attempt: Option<CleanupAttemptReport>,
     pub switch: Option<SwitchReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold: Option<HoldReport>,
     pub expectation_mismatch: Option<ExpectationMismatch>,
     pub error: Option<String>,
 }
@@ -625,6 +654,7 @@ pub struct CleanupAttemptReport {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionStepKind {
+    Hold,
     Entry,
     Switch,
     Action,
@@ -704,6 +734,10 @@ pub trait SessionLifecycle: Send + Sync {
     fn streaming_transport(&self) -> Arc<dyn PtpStreamingTransport>;
     async fn open_command_session(&self) -> Result<PtpSessionOpenResult, PtpTransportError>;
     async fn confirm_live_view_frame(&self) -> Result<usize, PtpTransportError>;
+    async fn hold_command_session(
+        &self,
+        duration: Duration,
+    ) -> Result<IdleObservation, PtpTransportError>;
     async fn endpoint_accepts_tcp(&self) -> bool;
     async fn open_command_session_after_handoff(
         &self,
@@ -738,6 +772,13 @@ impl SessionLifecycle for NativeSessionLifecycle {
 
     async fn confirm_live_view_frame(&self) -> Result<usize, PtpTransportError> {
         self.transport.confirm_live_view_frame().await
+    }
+
+    async fn hold_command_session(
+        &self,
+        duration: Duration,
+    ) -> Result<IdleObservation, PtpTransportError> {
+        self.transport.hold_command_session(duration).await
     }
 
     async fn endpoint_accepts_tcp(&self) -> bool {
@@ -911,6 +952,29 @@ pub async fn run_session_plan(
     trace: Arc<TraceWriter>,
     options: SessionRunOptions,
 ) -> Result<SessionReport> {
+    run_session_plan_with_cancellation(
+        prepared,
+        store,
+        lifecycle,
+        trace,
+        options,
+        tokio::signal::ctrl_c(),
+    )
+    .await
+}
+
+async fn run_session_plan_with_cancellation<F>(
+    prepared: &PreparedSessionPlan,
+    store: Arc<ConfigStore>,
+    lifecycle: Arc<dyn SessionLifecycle>,
+    trace: Arc<TraceWriter>,
+    options: SessionRunOptions,
+    cancellation: F,
+) -> Result<SessionReport>
+where
+    F: std::future::Future<Output = std::io::Result<()>> + Send,
+{
+    tokio::pin!(cancellation);
     tokio::fs::create_dir(&options.output_dir)
         .await
         .with_context(|| {
@@ -962,7 +1026,77 @@ pub async fn run_session_plan(
         let mut failed_payloads = Vec::new();
         let mut failed_transaction_ids = None;
         let mut cleanup_attempt = None;
-        let result = match step {
+        let step_started_elapsed_ns = trace.monotonic_elapsed_ns();
+        let result = tokio::select! {
+            biased;
+            cancelled = &mut cancellation => {
+                lifecycle.streaming_transport().invalidate_command_session("retained session interrupted".into());
+                let reason = cancelled.err().map(|error| error.to_string());
+                if let PreparedStep::Hold { id, duration_ms } = step {
+                    let hold = HoldReport {
+                        phase: "connectedCommandSession",
+                        requested_duration_ms: *duration_ms,
+                        started_elapsed_ns: step_started_elapsed_ns,
+                        ended_elapsed_ns: trace.monotonic_elapsed_ns(),
+                        observation: IdleObservation {
+                            end: if reason.is_some() { IdleEnd::IoFailure } else { IdleEnd::Cancelled },
+                            buffered_bytes: None,
+                            peer_frame: None,
+                            error: reason,
+                        },
+                    };
+                    let trace_error = trace.session("holdEnded", serde_json::to_value(&hold).expect("hold report serializes")).err();
+                    Ok(SessionStepReport {
+                        id: id.clone(), kind: SessionStepKind::Hold, status: RunStatus::Failed,
+                        session_index: (session_index != 0).then_some(session_index),
+                        transaction_ids: Vec::new(), outcome: None, payloads: Vec::new(),
+                        cleanup_attempt: None, switch: None, hold: Some(hold), expectation_mismatch: None,
+                        error: Some(trace_error.map(|error| error.to_string()).unwrap_or_else(|| "retained session interrupted".into())),
+                    })
+                } else {
+                    Err(anyhow::anyhow!(reason.unwrap_or_else(|| "retained session interrupted".into())))
+                }
+            }
+            result = async { match step {
+            PreparedStep::Hold { id, duration_ms } => {
+                async {
+                    trace.session("holdStarted", json!({ "id": id, "durationMs": duration_ms, "phase": "connectedCommandSession" }))?;
+                    let started_elapsed_ns = step_started_elapsed_ns;
+                    let observation = lifecycle
+                        .hold_command_session(Duration::from_millis(*duration_ms))
+                        .await
+                        .unwrap_or_else(|error| IdleObservation {
+                            end: IdleEnd::IoFailure,
+                            buffered_bytes: None,
+                            peer_frame: None,
+                            error: Some(error.to_string()),
+                        });
+                    let hold = HoldReport {
+                        phase: "connectedCommandSession",
+                        requested_duration_ms: *duration_ms,
+                        started_elapsed_ns,
+                        ended_elapsed_ns: trace.monotonic_elapsed_ns(),
+                        observation,
+                    };
+                    let succeeded = hold.observation.end == IdleEnd::DurationElapsed;
+                    let error = (!succeeded).then(|| format!("hold ended with {:?}", hold.observation.end));
+                    trace.session("holdEnded", serde_json::to_value(&hold)?)?;
+                    Ok(SessionStepReport {
+                        id: id.clone(),
+                        kind: SessionStepKind::Hold,
+                        status: if succeeded { RunStatus::Succeeded } else { RunStatus::Failed },
+                        session_index: Some(session_index),
+                        transaction_ids: Vec::new(),
+                        outcome: None,
+                        payloads: Vec::new(),
+                        cleanup_attempt: None,
+                        switch: None,
+                        hold: Some(hold),
+                        expectation_mismatch: None,
+                        error,
+                    })
+                }.await
+            }
             PreparedStep::Entry(entry) => {
                 async {
                     trace.set_mode(entry.to.clone());
@@ -1004,6 +1138,7 @@ pub async fn run_session_plan(
                             payloads: Vec::new(),
                             cleanup_attempt: None,
                             switch: None,
+                            hold: None,
                             expectation_mismatch: mismatch,
                             error: None,
                         }
@@ -1014,7 +1149,9 @@ pub async fn run_session_plan(
             }
             PreparedStep::Action(action) => {
                 async {
-                    trace.set_mode(action.request.mode.clone());
+                    if !action.request.mode.is_empty() {
+                        trace.set_mode(action.request.mode.clone());
+                    }
                     if session_index == 0 {
                         lifecycle.open_command_session().await?;
                         session_index = 1;
@@ -1088,6 +1225,7 @@ pub async fn run_session_plan(
                             payloads: execution.payloads,
                             cleanup_attempt: None,
                             switch: None,
+                            hold: None,
                             expectation_mismatch: mismatch,
                             error: None,
                         }
@@ -1179,6 +1317,7 @@ pub async fn run_session_plan(
                 )
                 .await
             }
+            }} => result,
         };
 
         match result {
@@ -1241,6 +1380,7 @@ fn failed_step_report(
         PreparedStep::Entry(step) => (step.id.clone(), SessionStepKind::Entry),
         PreparedStep::Switch(step) => (step.id.clone(), SessionStepKind::Switch),
         PreparedStep::Action(step) => (step.id.clone(), SessionStepKind::Action),
+        PreparedStep::Hold { id, .. } => (id.clone(), SessionStepKind::Hold),
     };
     SessionStepReport {
         id,
@@ -1252,6 +1392,7 @@ fn failed_step_report(
         payloads,
         cleanup_attempt,
         switch: None,
+        hold: None,
         expectation_mismatch: None,
         error: Some(error.to_string()),
     }
@@ -1634,6 +1775,7 @@ async fn run_switch_step(
         outcome: None,
         payloads: Vec::new(),
         cleanup_attempt: None,
+        hold: None,
         switch: Some(SwitchReport {
             source_entry,
             exit: Some(exit),
@@ -1667,6 +1809,7 @@ fn failed_switch_report(
         outcome: None,
         payloads: Vec::new(),
         cleanup_attempt: None,
+        hold: None,
         switch: Some(SwitchReport {
             source_entry,
             exit,
@@ -2394,6 +2537,8 @@ steps:
         trace: Arc<TraceWriter>,
         calls: Arc<Mutex<Vec<String>>>,
         generation: AtomicU32,
+        idle_end: IdleEnd,
+        hold_started: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl FakeLifecycle {
@@ -2464,6 +2609,26 @@ steps:
         async fn confirm_live_view_frame(&self) -> Result<usize, PtpTransportError> {
             self.calls.lock().unwrap().push("confirm-source".into());
             Ok(10)
+        }
+
+        async fn hold_command_session(
+            &self,
+            duration: Duration,
+        ) -> Result<IdleObservation, PtpTransportError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("hold:{}", duration.as_millis()));
+            if let Some(notify) = &self.hold_started {
+                notify.notify_one();
+            }
+            tokio::time::sleep(duration).await;
+            Ok(IdleObservation {
+                end: self.idle_end,
+                buffered_bytes: Some(0),
+                peer_frame: None,
+                error: None,
+            })
         }
 
         async fn endpoint_accepts_tcp(&self) -> bool {
@@ -2637,6 +2802,28 @@ connections:
         PathBuf,
         Arc<Mutex<Vec<String>>>,
     ) {
+        run_fake_session_with_idle(
+            store,
+            yaml,
+            response_codes,
+            data_replies,
+            IdleEnd::DurationElapsed,
+        )
+        .await
+    }
+
+    async fn run_fake_session_with_idle(
+        store: Arc<ConfigStore>,
+        yaml: &str,
+        response_codes: &[(u16, u16)],
+        data_replies: &[(u16, &[u8])],
+        idle_end: IdleEnd,
+    ) -> (
+        Result<SessionReport>,
+        PathBuf,
+        PathBuf,
+        Arc<Mutex<Vec<String>>>,
+    ) {
         let plan = SessionPlan::from_yaml(yaml).unwrap();
         let prepared = prepare_session_plan(plan, &store, "app").unwrap();
         let nonce = SystemTime::now()
@@ -2668,6 +2855,8 @@ connections:
             trace: Arc::clone(&trace),
             calls: Arc::clone(&calls),
             generation: AtomicU32::new(0),
+            idle_end,
+            hold_started: None,
         });
         let result = run_session_plan(
             &prepared,
@@ -3077,6 +3266,8 @@ steps:
             trace: Arc::clone(&trace),
             calls: Arc::clone(&calls),
             generation: AtomicU32::new(0),
+            idle_end: IdleEnd::DurationElapsed,
+            hold_started: None,
         });
         let report = run_session_plan(
             &prepared,
@@ -3166,5 +3357,168 @@ steps:
 
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_file(observation);
+    }
+    #[test]
+    fn hold_preflight_requires_a_session_and_finite_bounded_duration() {
+        for value in ["-1", "1.5", ".inf", ".nan", "null", "18446744073709551616"] {
+            let yaml = format!("schema: camera-initiator-session/v1\nsteps:\n  - {{ id: wait, kind: hold, durationMs: {value} }}");
+            assert!(SessionPlan::from_yaml(&yaml).is_err(), "accepted {value}");
+        }
+        let cold = SessionPlan::from_yaml("schema: camera-initiator-session/v1\nsteps:\n  - { id: wait, kind: hold, durationMs: 0 }").unwrap();
+        assert!(prepare_session_plan(cold, &fake_switch_store(), "app")
+            .unwrap_err()
+            .to_string()
+            .contains("preceding"));
+        let oversized = SessionPlan::from_yaml("schema: camera-initiator-session/v1\nsteps:\n  - { id: open, kind: action, action: shutter }\n  - { id: wait, kind: hold, durationMs: 3600001 }").unwrap();
+        assert!(prepare_session_plan(oversized, &fake_switch_store(), "app")
+            .unwrap_err()
+            .to_string()
+            .contains("durationMs"));
+    }
+
+    #[tokio::test]
+    async fn holds_keep_session_transaction_identity_without_automatic_traffic() {
+        let (result, root, observation, calls) = run_fake_session(
+            "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: immediate, kind: hold, durationMs: 0 }\n  - { id: idle, kind: hold, durationMs: 1 }\n  - { id: second, kind: action, action: shutter }",
+            &[], &[],
+        ).await;
+        let report = result.unwrap();
+        assert_eq!(report.steps.len(), 4);
+        assert!(report
+            .steps
+            .iter()
+            .all(|step| step.session_index == Some(1)));
+        assert_eq!(report.steps[0].transaction_ids, vec![2, 3]);
+        assert!(report.steps[1].transaction_ids.is_empty());
+        assert!(report.steps[2].transaction_ids.is_empty());
+        assert_eq!(report.steps[3].transaction_ids, vec![4, 5]);
+        let hold = report.steps[2].hold.as_ref().unwrap();
+        assert_eq!(hold.phase, "connectedCommandSession");
+        assert!(hold.ended_elapsed_ns >= hold.started_elapsed_ns);
+        assert_eq!(hold.observation.end, IdleEnd::DurationElapsed);
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("open:"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls.iter().filter(|call| call.starts_with("op:")).count(),
+            4
+        );
+        assert!(calls.iter().any(|call| call == "hold:0"));
+        assert!(calls.iter().any(|call| call == "hold:1"));
+        assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
+        drop(calls);
+        let bundle = std::fs::read_to_string(&observation).unwrap();
+        validate_bundles(&[&bundle]).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(observation).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_or_expired_holds_publish_reports_then_cleanup_without_continuation() {
+        for idle_end in [
+            IdleEnd::Cancelled,
+            IdleEnd::PeerEof,
+            IdleEnd::PeerReset,
+            IdleEnd::HostDeadlinePartialFrame,
+        ] {
+            let (result, root, observation, calls) = run_fake_session_with_idle(
+                fake_switch_store(),
+                "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: wait, kind: hold, durationMs: 0 }\n  - { id: later, kind: action, action: shutter }",
+                &[], &[], idle_end,
+            ).await;
+            assert!(result.is_err());
+            let report: Value =
+                serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                    .unwrap();
+            assert_eq!(report["steps"].as_array().unwrap().len(), 2);
+            assert_eq!(report["steps"][1]["status"], "failed");
+            assert_eq!(
+                report["steps"][1]["hold"]["observation"]["end"],
+                serde_json::to_value(idle_end).unwrap()
+            );
+            let calls = calls.lock().unwrap();
+            assert_eq!(
+                calls.iter().filter(|call| call.starts_with("op:")).count(),
+                2
+            );
+            assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
+            drop(calls);
+            std::fs::remove_dir_all(root).unwrap();
+            std::fs::remove_file(observation).unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn runner_interrupt_preserves_hold_report_and_invalidates_before_cleanup() {
+        let store = fake_switch_store();
+        let yaml = "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: wait, kind: hold, durationMs: 100000 }\n  - { id: later, kind: action, action: shutter }";
+        let prepared =
+            prepare_session_plan(SessionPlan::from_yaml(yaml).unwrap(), &store, "app").unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "camera-initiator-interrupt-{}-{nonce}",
+            std::process::id()
+        ));
+        let trace = Arc::new(TraceWriter::new(
+            crate::TraceFormat::Jsonl,
+            Box::new(io::sink()),
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let transport = FakeTransport::new(Arc::clone(&calls), Arc::clone(&trace));
+        let lifecycle: Arc<dyn SessionLifecycle> = Arc::new(FakeLifecycle {
+            transport,
+            trace: Arc::clone(&trace),
+            calls: Arc::clone(&calls),
+            generation: AtomicU32::new(0),
+            idle_end: IdleEnd::DurationElapsed,
+            hold_started: Some(Arc::clone(&notify)),
+        });
+        let result = run_session_plan_with_cancellation(
+            &prepared,
+            store,
+            lifecycle,
+            trace,
+            SessionRunOptions {
+                output_dir: root.clone(),
+                run_id: "interrupt-test".into(),
+                connection: "app".into(),
+                trace_path: "-".into(),
+                observation_path: root.join("unused.jsonl"),
+                runtime_params: Vec::new(),
+                handoff_timeout: Duration::from_secs(1),
+            },
+            async {
+                notify.notified().await;
+                Ok(())
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["steps"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            report["steps"][1]["hold"]["observation"]["end"],
+            "cancelled"
+        );
+        assert!(report["steps"][1]["hold"]["observation"]["bufferedBytes"].is_null());
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.iter().filter(|call| call.starts_with("op:")).count(),
+            2
+        );
+        assert!(calls[calls.len() - 2].starts_with("invalidate:"));
+        assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
+        drop(calls);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

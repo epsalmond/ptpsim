@@ -21,6 +21,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::idle::{IdleEnd, IdleObservation, IdlePeerFrame};
 use crate::TraceWriter;
 
 const INIT_FRAME_LIMIT: usize = 1024 * 1024;
@@ -376,6 +377,22 @@ impl NativePtpTransport {
             .ok_or_else(|| failed("first live-view packet is not a valid JPEG frame"))?;
         self.trace.live_view(frame.len()).map_err(trace_error)?;
         Ok(frame.len())
+    }
+
+    pub async fn hold_command_session(
+        &self,
+        duration: Duration,
+    ) -> Result<IdleObservation, PtpTransportError> {
+        let channel = self.active_channel().await?;
+        channel
+            .observe_idle(
+                duration,
+                self.config.max_frame_bytes,
+                self.framing,
+                &self.trace,
+                std::future::pending(),
+            )
+            .await
     }
 
     /// Send a standard PTP/IP probe on the initialized event channel and wait
@@ -1736,6 +1753,79 @@ impl CommandChannel {
         }
     }
 
+    async fn observe_idle<F>(
+        &self,
+        duration: Duration,
+        max_frame_bytes: usize,
+        framing: PtpFraming,
+        trace: &TraceWriter,
+        cancellation: F,
+    ) -> Result<IdleObservation, PtpTransportError>
+    where
+        F: std::future::Future<Output = Result<(), PtpTransportError>> + Send,
+    {
+        self.require_usable()?;
+        let mut reader = self.reader.lock().await;
+        let mut observation = IdleObservation {
+            end: IdleEnd::DurationElapsed,
+            buffered_bytes: Some(reader.buffered.len()),
+            peer_frame: None,
+            error: None,
+        };
+        if duration.is_zero() {
+            return Ok(observation);
+        }
+        tokio::select! {
+            biased;
+            cancelled = cancellation => {
+                observation.end = if cancelled.is_ok() { IdleEnd::Cancelled } else { IdleEnd::IoFailure };
+                observation.error = cancelled.err().map(|error| error.to_string());
+            }
+            result = tokio::time::timeout(duration, reader.read_frame(max_frame_bytes)) => {
+                match result {
+                    Err(_) => {
+                        if !reader.buffered.is_empty() {
+                            observation.end = IdleEnd::HostDeadlinePartialFrame;
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        observation.end = match error.kind() {
+                            io::ErrorKind::UnexpectedEof => IdleEnd::PeerEof,
+                            io::ErrorKind::ConnectionReset => IdleEnd::PeerReset,
+                            _ => IdleEnd::IoFailure,
+                        };
+                        observation.error = Some(error.to_string());
+                    }
+                    Ok(Ok(frame)) => {
+                        observation.end = IdleEnd::PeerFrame;
+                        let mut metadata = camera_config::PayloadMetadataBuilder::new();
+                        metadata.update(&frame);
+                        let metadata = metadata.metadata();
+                        let response = parse_response(framing, frame.clone()).ok();
+                        observation.peer_frame = Some(IdlePeerFrame {
+                            length: metadata.length,
+                            sha256: metadata.sha256,
+                            response_code: response.as_ref().map(|response| response.response_code),
+                            transaction_id: response.map(|response| response.txn),
+                        });
+                        if let Err(error) = trace.wire("rx", "idleCommand", &frame) {
+                            observation.error = Some(error.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        observation.buffered_bytes = Some(reader.buffered.len());
+        if !matches!(
+            observation.end,
+            IdleEnd::DurationElapsed | IdleEnd::Cancelled
+        ) || !reader.buffered.is_empty()
+        {
+            self.poisoned.store(true, Ordering::Release);
+        }
+        Ok(observation)
+    }
+
     async fn write_frame(
         &self,
         frame: &[u8],
@@ -2242,5 +2332,201 @@ mod tests {
             Err(ptp_core::error::DecodeError::TrailingBytes { remaining: 4 })
         );
         assert_eq!(canonical_init_fail_reason(&malformed), None);
+    }
+    async fn idle_pair() -> (CommandChannel, TcpStream, TraceWriter) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (client, accepted) = tokio::join!(
+            TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept()
+        );
+        let channel = CommandChannel::new(client.unwrap(), Arc::new(AtomicBool::new(false)));
+        let peer = accepted.unwrap().0;
+        let trace = TraceWriter::new(crate::TraceFormat::Jsonl, Box::new(io::sink()));
+        (channel, peer, trace)
+    }
+
+    async fn idle(
+        channel: &CommandChannel,
+        trace: &TraceWriter,
+        duration: Duration,
+    ) -> IdleObservation {
+        channel
+            .observe_idle(
+                duration,
+                256,
+                PtpFraming::Standard,
+                trace,
+                std::future::pending(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn idle_deadline_sends_nothing_and_retains_transaction_counter() {
+        let (channel, mut peer, trace) = idle_pair().await;
+        let before = channel.next_tid.load(Ordering::Acquire);
+        let immediate = idle(&channel, &trace, Duration::ZERO).await;
+        assert_eq!(immediate.end, IdleEnd::DurationElapsed);
+        let elapsed = idle(&channel, &trace, Duration::from_millis(5)).await;
+        assert_eq!(elapsed.end, IdleEnd::DurationElapsed);
+        assert_eq!(channel.next_tid.load(Ordering::Acquire), before);
+        assert!(!channel.poisoned.load(Ordering::Acquire));
+        let mut bytes = [0; 1];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), peer.read(&mut bytes))
+                .await
+                .is_err()
+        );
+        channel.shutdown().await.unwrap();
+        assert_eq!(peer.read(&mut bytes).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn idle_distinguishes_peer_eof_complete_response_and_partial_deadline() {
+        let (channel, mut peer, trace) = idle_pair().await;
+        peer.shutdown().await.unwrap();
+        let observation = idle(&channel, &trace, Duration::from_secs(1)).await;
+        assert_eq!(observation.end, IdleEnd::PeerEof);
+        assert!(channel.poisoned.load(Ordering::Acquire));
+
+        let (channel, mut peer, trace) = idle_pair().await;
+        let frame = ptp_core::encode(&PtpIpPacket::OperationResponse(
+            ptp_core::OperationResponse {
+                code: 0x2002,
+                transaction_id: 47,
+                params: vec![],
+            },
+        ))
+        .unwrap();
+        peer.write_all(&frame).await.unwrap();
+        let observation = idle(&channel, &trace, Duration::from_secs(1)).await;
+        assert_eq!(observation.end, IdleEnd::PeerFrame);
+        let retained = observation.peer_frame.unwrap();
+        assert_eq!(retained.response_code, Some(0x2002));
+        assert_eq!(retained.transaction_id, Some(47));
+        assert_eq!(retained.length, frame.len() as u64);
+        assert_eq!(retained.sha256.len(), 64);
+        assert!(channel.poisoned.load(Ordering::Acquire));
+
+        let (channel, mut peer, trace) = idle_pair().await;
+        peer.write_all(&[12, 0]).await.unwrap();
+        let observation = idle(&channel, &trace, Duration::from_millis(5)).await;
+        assert_eq!(observation.end, IdleEnd::HostDeadlinePartialFrame);
+        assert_eq!(observation.buffered_bytes, Some(2));
+        assert!(channel.poisoned.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn idle_rejects_oversized_frames_before_body_allocation() {
+        let (channel, mut peer, trace) = idle_pair().await;
+        peer.write_all(&u32::MAX.to_le_bytes()).await.unwrap();
+        let observation = idle(&channel, &trace, Duration::from_secs(1)).await;
+        assert_eq!(observation.end, IdleEnd::IoFailure);
+        assert_eq!(observation.buffered_bytes, Some(4));
+        assert!(observation.error.unwrap().contains("outside 8..=256"));
+        assert!(channel.poisoned.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn idle_cancellation_keeps_clean_session_closable() {
+        let (channel, mut peer, trace) = idle_pair().await;
+        let observation = channel
+            .observe_idle(
+                Duration::from_secs(1),
+                256,
+                PtpFraming::Standard,
+                &trace,
+                async { Ok(()) },
+            )
+            .await
+            .unwrap();
+        assert_eq!(observation.end, IdleEnd::Cancelled);
+        assert!(!channel.poisoned.load(Ordering::Acquire));
+        channel.shutdown().await.unwrap();
+        let mut byte = [0];
+        assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn synthetic_expiry_reset_requires_an_explicit_stimulus() {
+        async fn peer_trial(reset: bool) -> IdleEnd {
+            let (channel, mut peer, trace) = idle_pair().await;
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let peer_task = tokio::spawn(async move {
+                ready_tx.send(()).unwrap();
+                let mut byte = [0];
+                // This timeout belongs to the synthetic peer, not a camera.
+                if tokio::time::timeout(Duration::from_millis(200), peer.read_exact(&mut byte))
+                    .await
+                    .is_ok()
+                {
+                    assert_eq!(byte, [7]);
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                peer.shutdown().await.unwrap();
+            });
+            ready_rx.await.unwrap();
+            assert_eq!(
+                idle(&channel, &trace, Duration::from_millis(125)).await.end,
+                IdleEnd::DurationElapsed
+            );
+            if reset {
+                let tid = channel.next_tid.fetch_add(1, Ordering::AcqRel);
+                assert_eq!(tid, 2);
+                channel
+                    .write_frame(&[7], &trace, "explicitTestStimulus")
+                    .await
+                    .unwrap();
+            }
+            let result = idle(&channel, &trace, Duration::from_millis(125)).await.end;
+            assert_eq!(
+                channel.next_tid.load(Ordering::Acquire),
+                if reset { 3 } else { 2 }
+            );
+            peer_task.await.unwrap();
+            result
+        }
+        assert_eq!(peer_trial(false).await, IdleEnd::PeerEof);
+        assert_eq!(peer_trial(true).await, IdleEnd::DurationElapsed);
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn idle_reports_tcp_reset_separately_from_eof() {
+        let (channel, peer, trace) = idle_pair().await;
+        // Closing a Linux TCP socket with unread input sends RST.
+        channel
+            .write_frame(&[7], &trace, "explicitTestStimulus")
+            .await
+            .unwrap();
+        peer.readable().await.unwrap();
+        drop(peer);
+        let observation = idle(&channel, &trace, Duration::from_secs(1)).await;
+        assert_eq!(observation.end, IdleEnd::PeerReset);
+        assert!(channel.poisoned.load(Ordering::Acquire));
+    }
+    #[tokio::test]
+    async fn idle_cancellation_with_partial_bytes_invalidates_session() {
+        let (channel, _peer, trace) = idle_pair().await;
+        channel
+            .reader
+            .lock()
+            .await
+            .buffered
+            .extend_from_slice(&[12, 0]);
+        let observation = channel
+            .observe_idle(
+                Duration::from_secs(1),
+                256,
+                PtpFraming::Standard,
+                &trace,
+                async { Ok(()) },
+            )
+            .await
+            .unwrap();
+        assert_eq!(observation.end, IdleEnd::Cancelled);
+        assert_eq!(observation.buffered_bytes, Some(2));
+        assert!(channel.poisoned.load(Ordering::Acquire));
+        assert!(channel.require_usable().is_err());
     }
 }
