@@ -194,7 +194,7 @@ inferred.
 
 The `frames` report retains completed frames on failure and distinguishes
 `hostTimeout`, `peerClosed`, `truncatedFrame`, `oversizedFrame`, `byteLimit`,
-`malformedFrame`, and `ioError`. Only `frameCount` is successful. A timed-out or
+`malformedFrame`, `ioError`, and `cancelled`. Only `frameCount` is successful. A timed-out or
 failed sample ends the plan and closes all session sockets through the existing
 cleanup path. A failed artifact write can leave an incomplete file at its
 reserved name; it is not listed as a retained frame. Successful sampling leaves
@@ -204,15 +204,11 @@ the session; it does not invent a mode exit or restore properties. Exact camera
 readiness, AP shutdown, and any caller-owned property restoration remain
 separate acceptance checks. Synthetic tests establish host behavior only.
 
-The shared sampler API takes one `PushFrameProgress` handle per step. Clones
-retain each completed frame's metadata before the next asynchronous operation.
-After dropping a sampling future, the runner can call `cancelled_report()` to
-recover those records with termination `cancelled`. On cancellation,
-`wireBytes` is a lower bound: bytes buffered by an unfinished read are unknown.
-An unfinished artifact write may leave an absent, partial, or complete file
-that is not listed as a retained frame. The progress handle installs no signal
-handler and does not close the transport; the runner owns cancellation and
-socket cleanup.
+SIGINT preserves completed frame records in the session report and stops later
+steps before socket cleanup. On cancellation, `wireBytes` is a lower bound:
+bytes buffered by an unfinished read are unknown. An unfinished artifact write
+may leave an absent, partial, or complete file that is not listed as a retained
+frame.
 
 Entry and action expectations use this exact subset schema:
 

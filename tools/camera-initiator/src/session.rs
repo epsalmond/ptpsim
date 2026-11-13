@@ -2736,6 +2736,31 @@ steps:
         }
     }
 
+    // Remain pending after one synthetic frame, then interrupt at that boundary.
+    struct InterruptAfterFrame {
+        bytes: std::io::Cursor<Vec<u8>>,
+        notify: Arc<tokio::sync::Notify>,
+    }
+
+    impl tokio::io::AsyncRead for InterruptAfterFrame {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let offset = self.bytes.position() as usize;
+            let remaining = &self.bytes.get_ref()[offset..];
+            if remaining.is_empty() {
+                self.notify.notify_one();
+                return std::task::Poll::Pending;
+            }
+            let count = remaining.len().min(buf.remaining());
+            buf.put_slice(&remaining[..count]);
+            self.bytes.set_position((offset + count) as u64);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
     struct FakeLifecycle {
         transport: Arc<FakeTransport>,
         trace: Arc<TraceWriter>,
@@ -2833,6 +2858,38 @@ steps:
                 peer_frame: None,
                 error: None,
             })
+        }
+
+        async fn sample_push_frames(
+            &self,
+            limits: PushFrameLimits,
+            step_dir: &Path,
+            report_root: &Path,
+            progress: PushFrameProgress,
+        ) -> PushFrameReport {
+            let Some(notify) = &self.hold_started else {
+                return PushFrameReport::failed(
+                    PushFrameTermination::IoError,
+                    "fake has no push channel",
+                );
+            };
+            let jpeg = vec![
+                0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 1, 224, 2, 128, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8,
+                1, 1, 0, 0, 63, 0, 1, 0xff, 0xd9,
+            ];
+            let mut reader = crate::transport::FrameReader::new(InterruptAfterFrame {
+                bytes: std::io::Cursor::new(protocol_primitives::liveview::frame_packet(&jpeg, 0)),
+                notify: Arc::clone(notify),
+            });
+            crate::push_frames::sample_push_frames(
+                &mut reader,
+                limits,
+                4096,
+                step_dir,
+                report_root,
+                progress,
+            )
+            .await
         }
 
         async fn endpoint_accepts_tcp(&self) -> bool {
@@ -3657,72 +3714,117 @@ steps:
         }
     }
     #[tokio::test]
-    async fn runner_interrupt_preserves_hold_report_and_invalidates_before_cleanup() {
-        let store = fake_switch_store();
-        let yaml = "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: wait, kind: hold, durationMs: 100000 }\n  - { id: later, kind: action, action: shutter }";
-        let prepared =
-            prepare_session_plan(SessionPlan::from_yaml(yaml).unwrap(), &store, "app").unwrap();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "camera-initiator-interrupt-{}-{nonce}",
-            std::process::id()
-        ));
-        let trace = Arc::new(TraceWriter::new(
-            crate::TraceFormat::Jsonl,
-            Box::new(io::sink()),
-        ));
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let notify = Arc::new(tokio::sync::Notify::new());
-        let transport = FakeTransport::new(Arc::clone(&calls), Arc::clone(&trace));
-        let lifecycle: Arc<dyn SessionLifecycle> = Arc::new(FakeLifecycle {
-            transport,
-            trace: Arc::clone(&trace),
-            calls: Arc::clone(&calls),
-            generation: AtomicU32::new(0),
-            idle_end: IdleEnd::DurationElapsed,
-            hold_started: Some(Arc::clone(&notify)),
-        });
-        let result = run_session_plan_with_cancellation(
-            &prepared,
-            store,
-            lifecycle,
-            trace,
-            SessionRunOptions {
-                output_dir: root.clone(),
-                run_id: "interrupt-test".into(),
-                connection: "app".into(),
-                trace_path: "-".into(),
-                observation_path: root.join("unused.jsonl"),
-                runtime_params: Vec::new(),
-                handoff_timeout: Duration::from_secs(1),
-            },
-            async {
-                notify.notified().await;
-                Ok(())
-            },
-        )
-        .await;
-        assert!(result.is_err());
-        let report: Value =
-            serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
-                .unwrap();
-        assert_eq!(report["steps"].as_array().unwrap().len(), 2);
-        assert_eq!(
-            report["steps"][1]["hold"]["observation"]["end"],
-            "cancelled"
-        );
-        assert!(report["steps"][1]["hold"]["observation"]["bufferedBytes"].is_null());
-        let calls = calls.lock().unwrap();
-        assert_eq!(
-            calls.iter().filter(|call| call.starts_with("op:")).count(),
-            2
-        );
-        assert!(calls[calls.len() - 2].starts_with("invalidate:"));
-        assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
-        drop(calls);
-        std::fs::remove_dir_all(root).unwrap();
+    async fn runner_interrupt_preserves_hold_and_frame_reports_before_cleanup() {
+        for sampling in [false, true] {
+            let store = ConfigStore::from_bundle(
+                r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Session, firmware: "1" }
+connections:
+  app:
+    commandFraming: compressed
+    liveViewDelivery: { kind: stream }
+    sockets: { command: 50000, liveView: 50001 }
+    modes: [source]
+    entries:
+      - to: source
+        steps: [{ sendOp: "0x9001" }]
+    actions:
+      shutter:
+        mode: ""
+        initiator:
+          steps: [{ sendOp: "0x9101" }]
+"#
+                .into(),
+                None,
+            )
+            .unwrap();
+            let step = if sampling {
+                "{ id: wait, kind: samplePushFrames, frameCount: 2, maxFrameBytes: 4096, maxTotalBytes: 8192, timeoutMs: 100000 }"
+            } else {
+                "{ id: wait, kind: hold, durationMs: 100000 }"
+            };
+            let yaml = format!("schema: camera-initiator-session/v1\nsteps:\n  - {{ id: first, kind: entry, to: source }}\n  - {step}\n  - {{ id: later, kind: action, action: shutter }}");
+            let prepared =
+                prepare_session_plan(SessionPlan::from_yaml(&yaml).unwrap(), &store, "app")
+                    .unwrap();
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "camera-initiator-interrupt-{}-{nonce}",
+                std::process::id()
+            ));
+            let trace = Arc::new(TraceWriter::new(
+                crate::TraceFormat::Jsonl,
+                Box::new(io::sink()),
+            ));
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let notify = Arc::new(tokio::sync::Notify::new());
+            let transport = FakeTransport::new(Arc::clone(&calls), Arc::clone(&trace));
+            let lifecycle: Arc<dyn SessionLifecycle> = Arc::new(FakeLifecycle {
+                transport,
+                trace: Arc::clone(&trace),
+                calls: Arc::clone(&calls),
+                generation: AtomicU32::new(0),
+                idle_end: IdleEnd::DurationElapsed,
+                hold_started: Some(Arc::clone(&notify)),
+            });
+            let result = run_session_plan_with_cancellation(
+                &prepared,
+                store,
+                lifecycle,
+                trace,
+                SessionRunOptions {
+                    output_dir: root.clone(),
+                    run_id: "interrupt-test".into(),
+                    connection: "app".into(),
+                    trace_path: "-".into(),
+                    observation_path: root.join("unused.jsonl"),
+                    runtime_params: Vec::new(),
+                    handoff_timeout: Duration::from_secs(1),
+                },
+                async {
+                    notify.notified().await;
+                    Ok(())
+                },
+            )
+            .await;
+            assert!(result.is_err());
+            let report: Value =
+                serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                    .unwrap();
+            assert_eq!(report["steps"].as_array().unwrap().len(), 2);
+            if sampling {
+                let frames = &report["steps"][1]["frames"];
+                assert_eq!(frames["termination"], "cancelled");
+                assert_eq!(frames["frames"].as_array().unwrap().len(), 1);
+                let retained = &frames["frames"][0];
+                let bytes = std::fs::read(root.join(retained["path"].as_str().unwrap())).unwrap();
+                let mut metadata = PayloadMetadataBuilder::new();
+                metadata.update(&bytes);
+                assert_eq!(retained["sha256"], metadata.metadata().sha256);
+                assert_eq!(retained["length"], bytes.len());
+                assert_eq!(retained["jpeg"]["width"], 640);
+                assert_eq!(retained["jpeg"]["height"], 480);
+                assert!(frames["error"].as_str().unwrap().contains("lower bound"));
+            } else {
+                assert_eq!(
+                    report["steps"][1]["hold"]["observation"]["end"],
+                    "cancelled"
+                );
+                assert!(report["steps"][1]["hold"]["observation"]["bufferedBytes"].is_null());
+            }
+            let calls = calls.lock().unwrap();
+            assert_eq!(
+                calls.iter().filter(|call| call.starts_with("op:")).count(),
+                1
+            );
+            assert!(calls[calls.len() - 2].starts_with("invalidate:"));
+            assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
+            drop(calls);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }
