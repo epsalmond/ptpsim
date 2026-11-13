@@ -46,9 +46,9 @@ projection, and is not generator input.
 
 ## Retained session plans
 
-The `session` command runs mode entries, mode switches, named actions, and
-bounded push-frame samples from one strict YAML plan. It prepares the complete plan before opening a transport
-or creating an artifact. Preparation resolves every mode edge and action
+The `session` command runs mode entries, mode switches, named actions, bounded
+idle holds, and push-frame samples from one strict YAML plan. It prepares the
+complete plan before opening a transport or creating an artifact. Preparation resolves every mode edge and action
 through the selected manifest. It also checks mode progression, action mode,
 initiator role, parameters, output policy, and expectations. A rejected plan
 does not create the output directory, trace, observation bundle, report, or
@@ -194,8 +194,8 @@ inferred.
 
 The `frames` report retains completed frames on failure and distinguishes
 `hostTimeout`, `peerClosed`, `truncatedFrame`, `oversizedFrame`, `byteLimit`,
-`malformedFrame`, `ioError`, and `cancelled`. Only `frameCount` is successful. A timed-out or
-failed sample ends the plan and closes all session sockets through the existing
+`malformedFrame`, `ioError`, and `cancelled`. Only `frameCount` is successful.
+A timed-out or failed sample ends the plan and closes all session sockets through the existing
 cleanup path. A failed artifact write can leave an incomplete file at its
 reserved name; it is not listed as a retained frame. Successful sampling leaves
 the session open for the next declared step. Use an existing manifest switch
@@ -279,8 +279,9 @@ best-effort `stopLiveView` attempt is recorded on that failed step with its
 status, transaction identifiers, outcome, payloads, and error. Cleanup
 transactions are excluded from the failed action's transaction identifiers.
 
-This is the exact report shape. Nullable fields remain present. `frames` is non-null only for a `samplePushFrames` step. `switch` is
-non-null only for a switch step. Its `checkpoint` is null when execution stops
+This is the exact report shape for an action. Nullable fields remain present.
+The optional `hold` field is present only for a hold. `frames` is non-null only
+for a `samplePushFrames` step. `switch` is non-null only for a switch step. Its `checkpoint` is null when execution stops
 before the external handoff.
 
 ```json
