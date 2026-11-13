@@ -46,8 +46,8 @@ projection, and is not generator input.
 
 ## Retained session plans
 
-The `session` command runs mode entries, mode switches, and named actions from
-one strict YAML plan. It prepares the complete plan before opening a transport
+The `session` command runs mode entries, mode switches, named actions, and
+bounded push-frame samples from one strict YAML plan. It prepares the complete plan before opening a transport
 or creating an artifact. Preparation resolves every mode edge and action
 through the selected manifest. It also checks mode progression, action mode,
 initiator role, parameters, output policy, and expectations. A rejected plan
@@ -164,6 +164,46 @@ neither camera timeout units nor AP shutdown or readiness. Handshake phases,
 PCSS discovery/callback/init interception, and external property restoration
 remain outside this control.
 
+A `samplePushFrames` step reads an already-open live-view socket. The selected
+connection must declare stream delivery and a live-view socket. A preceding
+entry or switch must establish a retained mode. The sampler does not open the
+socket, poll an operation, set properties, or impose a frame rate.
+
+```yaml
+  - id: frames
+    kind: samplePushFrames
+    frameCount: 3
+    maxFrameBytes: 2097152
+    maxTotalBytes: 6291456
+    timeoutMs: 5000
+```
+
+All four limits are required positive integers. Byte limits include the stream
+header. One deadline covers the sampling step; it does not restart per frame.
+Packets are unwrapped by the shared live-view parser. The sampler checks JPEG
+SOI, segment lengths, SOF geometry, scan boundaries, and a final EOI without
+trailing bytes. These structural checks do not decode the image or prove visual
+quality. Each complete, structurally valid JPEG is saved with create-new
+semantics under the step payload directory. The step's `frames` report records
+relative paths, lengths, SHA-256, Unix receive timestamps in milliseconds,
+elapsed receive times, and JPEG width, height, precision, and component count.
+Timestamps describe host packet receipt, not the camera clock. `wireBytes`
+includes partial packet bytes read before a timeout or framing error. The step
+has a null `outcome` and no PTP transaction identifiers. No quality label is
+inferred.
+
+The `frames` report retains completed frames on failure and distinguishes
+`hostTimeout`, `peerClosed`, `truncatedFrame`, `oversizedFrame`, `byteLimit`,
+`malformedFrame`, and `ioError`. Only `frameCount` is successful. A timed-out or
+failed sample ends the plan and closes all session sockets through the existing
+cleanup path. A failed artifact write can leave an incomplete file at its
+reserved name; it is not listed as a retained frame. Successful sampling leaves
+the session open for the next declared step. Use an existing manifest switch
+when its declared exit and re-establishment are required. Final cleanup closes
+the session; it does not invent a mode exit or restore properties. Exact camera
+readiness, AP shutdown, and any caller-owned property restoration remain
+separate acceptance checks. Synthetic tests establish host behavior only.
+
 Entry and action expectations use this exact subset schema:
 
 ```yaml
@@ -233,7 +273,7 @@ best-effort `stopLiveView` attempt is recorded on that failed step with its
 status, transaction identifiers, outcome, payloads, and error. Cleanup
 transactions are excluded from the failed action's transaction identifiers.
 
-This is the exact report shape. Nullable fields remain present. `switch` is
+This is the exact report shape. Nullable fields remain present. `frames` is non-null only for a `samplePushFrames` step. `switch` is
 non-null only for a switch step. Its `checkpoint` is null when execution stops
 before the external handoff.
 
@@ -261,6 +301,7 @@ before the external handoff.
       "payloads": [],
       "cleanupAttempt": null,
       "switch": null,
+      "frames": null,
       "expectationMismatch": null,
       "error": null
     }

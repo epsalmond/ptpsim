@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 
 use crate::idle::{HoldReport, IdleEnd, IdleObservation, MAX_HOLD_DURATION_MS};
+use crate::push_frames::{PushFrameLimits, PushFrameReport, PushFrameTermination};
 use crate::{NativePtpTransport, StreamingFileSink, TraceWriter};
 
 pub const SESSION_PLAN_SCHEMA: &str = "camera-initiator-session/v1";
@@ -153,6 +154,17 @@ pub enum SessionStep {
         #[serde(rename = "durationMs")]
         duration_ms: u64,
     },
+    SamplePushFrames {
+        id: String,
+        #[serde(rename = "frameCount")]
+        frame_count: u32,
+        #[serde(rename = "maxFrameBytes")]
+        max_frame_bytes: usize,
+        #[serde(rename = "maxTotalBytes")]
+        max_total_bytes: u64,
+        #[serde(rename = "timeoutMs")]
+        timeout_ms: u64,
+    },
     Entry {
         id: String,
         from: Option<String>,
@@ -182,7 +194,8 @@ impl SessionStep {
             Self::Entry { id, .. }
             | Self::Switch { id, .. }
             | Self::Action { id, .. }
-            | Self::Hold { id, .. } => id,
+            | Self::Hold { id, .. }
+            | Self::SamplePushFrames { id, .. } => id,
         }
     }
 }
@@ -237,6 +250,7 @@ pub struct SwitchExpectation {
 fn validate_expectation_shape(step: &SessionStep) -> Result<()> {
     let expectations: Vec<&OutcomeExpectation> = match step {
         SessionStep::Hold { .. } => Vec::new(),
+        SessionStep::SamplePushFrames { .. } => Vec::new(),
         SessionStep::Entry { expect, .. } | SessionStep::Action { expect, .. } => {
             expect.iter().collect()
         }
@@ -287,6 +301,7 @@ pub struct PreparedSessionPlan {
 #[derive(Debug, Clone)]
 enum PreparedStep {
     Hold { id: String, duration_ms: u64 },
+    SamplePushFrames { id: String, limits: PushFrameLimits },
     Entry(PreparedEntry),
     Switch(PreparedSwitch),
     Action(PreparedAction),
@@ -342,6 +357,52 @@ pub fn prepare_session_plan(
                 prepared.push(PreparedStep::Hold {
                     id: id.clone(),
                     duration_ms: *duration_ms,
+                });
+            }
+            SessionStep::SamplePushFrames {
+                id,
+                frame_count,
+                max_frame_bytes,
+                max_total_bytes,
+                timeout_ms,
+            } => {
+                let limits = PushFrameLimits {
+                    frame_count: *frame_count,
+                    max_frame_bytes: *max_frame_bytes,
+                    max_total_bytes: *max_total_bytes,
+                    timeout_ms: *timeout_ms,
+                };
+                limits
+                    .validate()
+                    .with_context(|| format!("sample step '{id}' has invalid limits"))?;
+                if tracked_mode.is_none() {
+                    bail!("sample step '{id}' requires a preceding mode entry")
+                }
+                let streaming = store
+                    .connections(crate::transport::current_platform())
+                    .into_iter()
+                    .any(|info| {
+                        info.id == connection
+                            && info.live_view_delivery.is_some_and(|delivery| {
+                                matches!(
+                                    delivery.kind,
+                                    camera_protocol_ffi::LiveViewDeliveryKind::Stream
+                                )
+                            })
+                    });
+                if !streaming
+                    || store
+                        .port_for_role(
+                            connection.to_string(),
+                            camera_protocol_ffi::SocketRole::LiveView,
+                        )
+                        .is_none()
+                {
+                    bail!("sample step '{id}' requires declared stream delivery and a live-view socket")
+                }
+                prepared.push(PreparedStep::SamplePushFrames {
+                    id: id.clone(),
+                    limits,
                 });
             }
             SessionStep::Entry {
@@ -636,6 +697,7 @@ pub struct SessionStepReport {
     pub switch: Option<SwitchReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold: Option<HoldReport>,
+    pub frames: Option<PushFrameReport>,
     pub expectation_mismatch: Option<ExpectationMismatch>,
     pub error: Option<String>,
 }
@@ -655,6 +717,7 @@ pub struct CleanupAttemptReport {
 #[serde(rename_all = "camelCase")]
 pub enum SessionStepKind {
     Hold,
+    SamplePushFrames,
     Entry,
     Switch,
     Action,
@@ -738,6 +801,17 @@ pub trait SessionLifecycle: Send + Sync {
         &self,
         duration: Duration,
     ) -> Result<IdleObservation, PtpTransportError>;
+    async fn sample_push_frames(
+        &self,
+        _limits: PushFrameLimits,
+        _step_dir: &Path,
+        _report_root: &Path,
+    ) -> PushFrameReport {
+        PushFrameReport::failed(
+            PushFrameTermination::IoError,
+            "push sampling is unsupported by this lifecycle",
+        )
+    }
     async fn endpoint_accepts_tcp(&self) -> bool;
     async fn open_command_session_after_handoff(
         &self,
@@ -779,6 +853,17 @@ impl SessionLifecycle for NativeSessionLifecycle {
         duration: Duration,
     ) -> Result<IdleObservation, PtpTransportError> {
         self.transport.hold_command_session(duration).await
+    }
+
+    async fn sample_push_frames(
+        &self,
+        limits: PushFrameLimits,
+        step_dir: &Path,
+        report_root: &Path,
+    ) -> PushFrameReport {
+        self.transport
+            .sample_push_frames(limits, step_dir, report_root)
+            .await
     }
 
     async fn endpoint_accepts_tcp(&self) -> bool {
@@ -988,8 +1073,13 @@ where
         .await
         .with_context(|| format!("create payload directory {}", payload_root.display()))?;
     for (step_index, step) in prepared.steps.iter().enumerate() {
-        if let PreparedStep::Action(action) = step {
-            let step_dir = payload_root.join(format!("{step_index:04}-{}", action.id));
+        let payload_id = match step {
+            PreparedStep::Action(action) => Some(action.id.as_str()),
+            PreparedStep::SamplePushFrames { id, .. } => Some(id.as_str()),
+            _ => None,
+        };
+        if let Some(id) = payload_id {
+            let step_dir = payload_root.join(format!("{step_index:04}-{id}"));
             tokio::fs::create_dir(&step_dir).await.with_context(|| {
                 format!("create action payload directory {}", step_dir.display())
             })?;
@@ -1050,7 +1140,7 @@ where
                         id: id.clone(), kind: SessionStepKind::Hold, status: RunStatus::Failed,
                         session_index: (session_index != 0).then_some(session_index),
                         transaction_ids: Vec::new(), outcome: None, payloads: Vec::new(),
-                        cleanup_attempt: None, switch: None, hold: Some(hold), expectation_mismatch: None,
+                        cleanup_attempt: None, switch: None, hold: Some(hold), frames: None, expectation_mismatch: None,
                         error: Some(trace_error.map(|error| error.to_string()).unwrap_or_else(|| "retained session interrupted".into())),
                     })
                 } else {
@@ -1092,10 +1182,38 @@ where
                         cleanup_attempt: None,
                         switch: None,
                         hold: Some(hold),
+                        frames: None,
                         expectation_mismatch: None,
                         error,
                     })
                 }.await
+            }
+            PreparedStep::SamplePushFrames { id, limits } => {
+                let step_dir = payload_root.join(format!("{step_index:04}-{id}"));
+                let frames = lifecycle
+                    .sample_push_frames(*limits, &step_dir, &options.output_dir)
+                    .await;
+                let succeeded = frames.termination == PushFrameTermination::FrameCount;
+                let error = frames.error.clone();
+                Ok(SessionStepReport {
+                    id: id.clone(),
+                    kind: SessionStepKind::SamplePushFrames,
+                    status: if succeeded {
+                        RunStatus::Succeeded
+                    } else {
+                        RunStatus::Failed
+                    },
+                    session_index: Some(session_index),
+                    transaction_ids: Vec::new(),
+                    outcome: None,
+                    payloads: Vec::new(),
+                    cleanup_attempt: None,
+                    switch: None,
+                    frames: Some(frames),
+                    hold: None,
+                    expectation_mismatch: None,
+                    error,
+                })
             }
             PreparedStep::Entry(entry) => {
                 async {
@@ -1137,6 +1255,7 @@ where
                             outcome: Some(normalized),
                             payloads: Vec::new(),
                             cleanup_attempt: None,
+                            frames: None,
                             switch: None,
                             hold: None,
                             expectation_mismatch: mismatch,
@@ -1224,6 +1343,7 @@ where
                             outcome: Some(outcome),
                             payloads: execution.payloads,
                             cleanup_attempt: None,
+                            frames: None,
                             switch: None,
                             hold: None,
                             expectation_mismatch: mismatch,
@@ -1381,6 +1501,9 @@ fn failed_step_report(
         PreparedStep::Switch(step) => (step.id.clone(), SessionStepKind::Switch),
         PreparedStep::Action(step) => (step.id.clone(), SessionStepKind::Action),
         PreparedStep::Hold { id, .. } => (id.clone(), SessionStepKind::Hold),
+        PreparedStep::SamplePushFrames { id, .. } => {
+            (id.clone(), SessionStepKind::SamplePushFrames)
+        }
     };
     SessionStepReport {
         id,
@@ -1391,6 +1514,7 @@ fn failed_step_report(
         outcome: None,
         payloads,
         cleanup_attempt,
+        frames: None,
         switch: None,
         hold: None,
         expectation_mismatch: None,
@@ -1776,6 +1900,7 @@ async fn run_switch_step(
         payloads: Vec::new(),
         cleanup_attempt: None,
         hold: None,
+        frames: None,
         switch: Some(SwitchReport {
             source_entry,
             exit: Some(exit),
@@ -1810,6 +1935,7 @@ fn failed_switch_report(
         payloads: Vec::new(),
         cleanup_attempt: None,
         hold: None,
+        frames: None,
         switch: Some(SwitchReport {
             source_entry,
             exit,
@@ -2211,6 +2337,64 @@ steps:
         )
         .unwrap();
         assert_eq!(plan.steps.len(), 3);
+    }
+
+    #[test]
+    fn push_samples_require_finite_limits_a_mode_and_declared_stream_delivery() {
+        let sample = "{ id: frames, kind: samplePushFrames, frameCount: 2, maxFrameBytes: 1024, maxTotalBytes: 2048, timeoutMs: 500 }";
+        let valid = format!("schema: camera-initiator-session/v1\nsteps:\n  - {{ id: enter, kind: entry, to: shooting/stills }}\n  - {sample}\n");
+        assert!(prepare(&valid).is_ok());
+        for (before, after) in [
+            ("frameCount: 2", "frameCount: 0"),
+            ("maxFrameBytes: 1024", "maxFrameBytes: 0"),
+            ("maxTotalBytes: 2048", "maxTotalBytes: 0"),
+            ("timeoutMs: 500", "timeoutMs: 0"),
+            ("timeoutMs: 500", "timeoutMs: 500, expect: {}"),
+            ("frameCount: 2, ", ""),
+        ] {
+            assert!(prepare(&valid.replace(before, after)).is_err());
+        }
+        assert!(prepare(&format!(
+            "schema: camera-initiator-session/v1\nsteps: [{sample}]\n"
+        ))
+        .is_err());
+        let plan = SessionPlan::from_yaml(&valid).unwrap();
+        assert!(prepare_session_plan(plan, &store(), "wireless-tether").is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_push_sample_publishes_report_and_closes_session() {
+        // Add the stream declaration to the synthetic manifest used by the runner.
+        let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Session, firmware: "1" }
+connections:
+  app:
+    commandFraming: compressed
+    liveViewDelivery: { kind: stream }
+    sockets: { command: 50000, liveView: 50001 }
+    modes: [source]
+    entries:
+      - to: source
+        steps: [{ sendOp: "0x9001" }]
+"#;
+        let store = ConfigStore::from_bundle(manifest.into(), None).unwrap();
+        let (result, root, observation, calls) = run_fake_session_with_store(store,
+            r#"schema: camera-initiator-session/v1
+steps:
+  - { id: entry, kind: entry, to: source }
+  - { id: frames, kind: samplePushFrames, frameCount: 1, maxFrameBytes: 1024, maxTotalBytes: 1024, timeoutMs: 100 }
+"#, &[], &[]).await;
+        assert!(result.is_err());
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["steps"].as_array().unwrap().len(), 2);
+        assert_eq!(report["steps"][1]["frames"]["termination"], "ioError");
+        assert_eq!(report["steps"][1]["transactionIds"], json!([]));
+        assert_eq!(calls.lock().unwrap().last().unwrap(), "cleanup");
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(observation).unwrap();
     }
 
     #[test]

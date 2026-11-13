@@ -360,6 +360,30 @@ impl NativePtpTransport {
         }
     }
 
+    pub async fn sample_push_frames(
+        &self,
+        limits: crate::push_frames::PushFrameLimits,
+        step_dir: &std::path::Path,
+        report_root: &std::path::Path,
+    ) -> crate::push_frames::PushFrameReport {
+        use crate::push_frames::{PushFrameReport, PushFrameTermination};
+        let mut guard = self.live_view.lock().await;
+        let Some(channel) = guard.as_mut() else {
+            return PushFrameReport::failed(
+                PushFrameTermination::IoError,
+                "connection has no open live-view socket",
+            );
+        };
+        crate::push_frames::sample_push_frames(
+            &mut channel.reader,
+            limits,
+            self.config.max_frame_bytes,
+            step_dir,
+            report_root,
+        )
+        .await
+    }
+
     pub async fn confirm_live_view_frame(&self) -> Result<usize, PtpTransportError> {
         let mut guard = self.live_view.lock().await;
         let channel = guard
@@ -1877,19 +1901,19 @@ struct PassiveChannel {
     _writer: OwnedWriteHalf,
 }
 
-struct FrameReader<R> {
+pub(crate) struct FrameReader<R> {
     reader: R,
     buffered: BytesMut,
 }
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
-    fn new(reader: R) -> Self {
+    pub(crate) fn new(reader: R) -> Self {
         Self {
             reader,
             buffered: BytesMut::new(),
         }
     }
-    async fn read_frame(&mut self, max: usize) -> io::Result<Vec<u8>> {
+    pub(crate) async fn read_frame(&mut self, max: usize) -> io::Result<Vec<u8>> {
         self.fill(4).await?;
         let length = u32::from_le_bytes(self.buffered[0..4].try_into().unwrap()) as usize;
         if !(8..=max).contains(&length) {
@@ -1919,9 +1943,20 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         Ok(chunk)
     }
 
+    pub(crate) fn buffered_len(&self) -> usize {
+        self.buffered.len()
+    }
+
+    pub(crate) fn declared_length(&self) -> Option<usize> {
+        Some(u32::from_le_bytes(self.buffered.get(..4)?.try_into().ok()?) as usize)
+    }
+
     async fn fill(&mut self, target: usize) -> io::Result<()> {
         while self.buffered.len() < target {
-            let count = self.reader.read_buf(&mut self.buffered).await?;
+            let count = (&mut self.reader)
+                .take((target - self.buffered.len()) as u64)
+                .read_buf(&mut self.buffered)
+                .await?;
             if count == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -2131,7 +2166,7 @@ fn decode_u32_array(payload: &[u8]) -> Result<Vec<u32>, String> {
         .collect())
 }
 
-fn current_platform() -> Platform {
+pub(crate) fn current_platform() -> Platform {
     #[cfg(target_os = "macos")]
     {
         Platform::Macos
