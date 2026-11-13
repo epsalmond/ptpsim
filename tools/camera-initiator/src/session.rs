@@ -2392,7 +2392,7 @@ connections:
   app:
     commandFraming: compressed
     liveViewDelivery: { kind: stream }
-    sockets: { command: 50000, liveView: 50001 }
+    bindings: { command: 50000, liveView: 50001 }
     modes: [source]
     entries:
       - to: source
@@ -3724,7 +3724,7 @@ connections:
   app:
     commandFraming: compressed
     liveViewDelivery: { kind: stream }
-    sockets: { command: 50000, liveView: 50001 }
+    bindings: { command: 50000, liveView: 50001 }
     modes: [source]
     entries:
       - to: source
