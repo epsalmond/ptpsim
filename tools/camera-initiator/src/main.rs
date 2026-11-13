@@ -36,7 +36,7 @@ use serde_json::{json, Value};
 #[derive(Parser)]
 #[command(
     name = "camera-initiator",
-    about = "Drive a real camera through ptpsim's shipping PTP/IP engine"
+    about = "Drive a camera through the shared PTP engine"
 )]
 struct Cli {
     /// Camera IPv4/IPv6 address. Omit only when the manifest defaults to broadcast discovery.
@@ -51,6 +51,18 @@ struct Cli {
     /// Optional manufacturer-tier YAML.
     #[arg(long)]
     manufacturer: Option<PathBuf>,
+    /// Manufacturer index required for raw USB establishment.
+    #[arg(long)]
+    manufacturer_index: Option<PathBuf>,
+    /// Explicit model key in the manufacturer index.
+    #[arg(long)]
+    model: Option<String>,
+    /// Explicit USB bus identifier reported by the operating system.
+    #[arg(long)]
+    usb_bus: Option<String>,
+    /// Explicit USB address on that bus (1..127).
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=127))]
+    usb_address: Option<u8>,
     /// Firmware overlays, applied in command-line order.
     #[arg(long)]
     overlay: Vec<PathBuf>,
@@ -85,6 +97,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Read and retain the complete advertised DeviceInfo inventory through raw USB.
+    UsbInventory {
+        /// New directory for the DeviceInfo payload and inventory report.
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
     /// Execute a current-session mode entry.
     Entry {
         #[arg(long)]
@@ -135,6 +153,16 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if matches!(cli.command, Command::UsbInventory { .. }) {
+        return run_cli_usb_inventory(&cli).await;
+    }
+    if cli.usb_bus.is_some()
+        || cli.usb_address.is_some()
+        || cli.manufacturer_index.is_some()
+        || cli.model.is_some()
+    {
+        bail!("USB selection and manufacturer-index options require usb-inventory")
+    }
     let store = load_store(&cli)?;
     let params = RuntimeParams::parse(&cli.params)?;
     let prepared_session = prepare_cli_session(&cli, &store)?;
@@ -146,6 +174,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "unknown".into()),
         Command::Probe { .. } => "probe".into(),
         Command::Session { .. } => "session".into(),
+        Command::UsbInventory { .. } => unreachable!("USB inventory uses the raw adapter"),
     };
     let trace = Arc::new(TraceWriter::with_observations(
         cli.trace_format,
@@ -178,7 +207,8 @@ async fn main() -> Result<()> {
         Command::Entry { .. }
         | Command::Switch { .. }
         | Command::Probe { .. }
-        | Command::Session { .. } => None,
+        | Command::Session { .. }
+        | Command::UsbInventory { .. } => None,
     };
     let session_run_id = cli.run_id.clone();
     let session_connection = cli.connection.clone();
@@ -186,6 +216,7 @@ async fn main() -> Result<()> {
     let session_observation_path = cli.observation.clone();
     let session_handoff_timeout = Duration::from_millis(cli.handoff_timeout_ms);
     let result = match cli.command {
+        Command::UsbInventory { .. } => unreachable!("USB inventory uses the raw adapter"),
         Command::Entry { to, from } => {
             run_entry(
                 &cli.connection,
@@ -308,6 +339,88 @@ async fn main() -> Result<()> {
             if let Err(trace_error) = trace.outcome("failed", detail) {
                 eprintln!("trace warning: {trace_error}");
             }
+            Err(error)
+        }
+    }
+}
+
+async fn run_cli_usb_inventory(cli: &Cli) -> Result<()> {
+    use camera_initiator::usb::{
+        load_usb_store, run_usb_inventory, validate_usb_artifact_paths, NativeUsbIo,
+        UsbInventoryPlan, UsbInventoryTransport,
+    };
+    let Command::UsbInventory { output_dir } = &cli.command else {
+        unreachable!()
+    };
+    if cli.camera.is_some() || cli.interface.is_some() || !cli.params.is_empty() {
+        bail!("USB inventory does not accept network selection or runtime parameters")
+    }
+    let index = cli
+        .manufacturer_index
+        .as_deref()
+        .context("usb-inventory requires --manufacturer-index")?;
+    let model = cli
+        .model
+        .as_deref()
+        .context("usb-inventory requires --model")?;
+    let bus = cli
+        .usb_bus
+        .as_deref()
+        .context("usb-inventory requires --usb-bus")?;
+    let address = cli
+        .usb_address
+        .context("usb-inventory requires --usb-address")?;
+    let store = load_usb_store(
+        &cli.manifest,
+        index,
+        model,
+        cli.manufacturer.as_deref(),
+        &cli.overlay,
+    )?;
+    let plan = UsbInventoryPlan::prepare(&store, model, &cli.connection, cli.max_frame_bytes)?;
+    let mut inputs = vec![cli.manifest.clone(), index.to_path_buf()];
+    inputs.extend(cli.manufacturer.iter().cloned());
+    inputs.extend(cli.overlay.iter().cloned());
+    validate_usb_artifact_paths(&inputs, output_dir, &cli.trace, &cli.observation)?;
+    if cli.connect_timeout_ms == 0 {
+        bail!("USB transfer timeout must be positive")
+    }
+    let io = tokio::time::timeout(
+        Duration::from_millis(cli.connect_timeout_ms),
+        NativeUsbIo::open_selected(bus, address),
+    )
+    .await
+    .context("USB device selection and open timed out")??;
+    // Descriptor selection precedes artifact creation and interface claiming.
+    camera_initiator::usb::select_usb_interface(
+        camera_initiator::usb::UsbInventoryIo::descriptors(&io),
+        plan.interface_triple(),
+    )?;
+    let trace = Arc::new(
+        TraceWriter::with_observations(
+            cli.trace_format,
+            trace_output(&cli.trace)?,
+            initiator_observation_recorder(cli, &store)?,
+            cli.connection.clone(),
+            "inventory".into(),
+        )
+        .with_ptp_transport(camera_config::PtpTransport::Usb),
+    );
+    let transport = UsbInventoryTransport::new(
+        Box::new(io),
+        &plan,
+        Duration::from_millis(cli.connect_timeout_ms),
+        cli.max_frame_bytes,
+        Arc::clone(&trace),
+    )?;
+    let result = run_usb_inventory(plan, store, transport, Arc::clone(&trace), output_dir).await;
+    match result {
+        Ok(report) => {
+            trace.outcome("succeeded", serde_json::to_value(report)?)?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = trace.outcome("failed", json!({"error": format!("{error:#}")}));
             Err(error)
         }
     }
@@ -810,7 +923,11 @@ fn initiator_observation_recorder(cli: &Cli, store: &ConfigStore) -> Result<Obse
         capture: CaptureContext {
             interfaces: vec![CaptureInterface {
                 id: "manifest-transport".into(),
-                interface_type: CaptureInterfaceType::Tcp,
+                interface_type: if matches!(cli.command, Command::UsbInventory { .. }) {
+                    CaptureInterfaceType::Usb
+                } else {
+                    CaptureInterfaceType::Tcp
+                },
                 role: "initiator".into(),
             }],
             clocks: vec![CaptureClock {

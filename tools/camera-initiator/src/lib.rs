@@ -2,6 +2,7 @@ pub mod probe;
 pub mod session;
 pub mod trace;
 pub mod transport;
+pub mod usb;
 
 pub use probe::{run_probe_plan, ProbePlan, ProbeReport, StreamingFileSink, PROBE_PLAN_SCHEMA};
 pub use session::{

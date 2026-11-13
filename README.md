@@ -121,6 +121,8 @@ cargo run -p camera-initiator -- \
 It supports `entry`, `action`, and `switch` commands, PCSS wireless-tether
 discovery, `--then` action chaining, and bounded probe plans. It writes
 traces plus `camera-observation/v1` JSONL bundles.
+The restricted [`usb-inventory` command](docs/USB_INVENTORY.md) retains the
+advertised DeviceInfo inventory from an explicitly selected raw USB device.
 
 Safety: it sends commands to a real camera. Use a body and media card whose
 state may safely change.
