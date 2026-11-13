@@ -46,9 +46,9 @@ projection, and is not generator input.
 
 ## Retained session plans
 
-The `session` command runs mode entries, mode switches, and named actions from
-one strict YAML plan. It prepares the complete plan before opening a transport
-or creating an artifact. Preparation resolves every mode edge and action
+The `session` command runs mode entries, mode switches, named actions, bounded
+idle holds, and push-frame samples from one strict YAML plan. It prepares the
+complete plan before opening a transport or creating an artifact. Preparation resolves every mode edge and action
 through the selected manifest. It also checks mode progression, action mode,
 initiator role, parameters, output policy, and expectations. A rejected plan
 does not create the output directory, trace, observation bundle, report, or
@@ -122,6 +122,94 @@ remain available only to transport identity and mode-entry execution.
 `expectedBytes` is valid only for the connection's whole-object streaming read
 action.
 
+A `hold` step observes an already established command session without sending
+traffic. It requires a preceding entry, action, or switch in the plan. Its
+required `durationMs` is an unsigned integer from zero through 3600000. This
+one-hour limit is a host artifact and scheduling bound, not a camera timer.
+Zero continues immediately. Invalid durations and session progression are
+rejected before artifacts or transport I/O.
+
+```yaml
+schema: camera-initiator-session/v1
+steps:
+  - { id: before, kind: action, action: readDeviceInfo }
+  - { id: idle, kind: hold, durationMs: 5000 }
+  - { id: after, kind: action, action: readDeviceInfo }
+```
+
+The hold retains the command socket, session identity, and next transaction
+identifier. It sends no probes, keepalives, property reads, or automatic
+responses. A separate action before another hold supplies an explicit reset
+stimulus when comparing trials. That action does not establish that a camera
+timer resets. Auxiliary sockets remain open and are not read during the hold.
+
+The step report's `hold` records phase `connectedCommandSession`, the requested
+duration, and actual start/end nanoseconds relative to the trace's process
+monotonic epoch. `durationElapsed` means the host interval ended without a
+complete incoming command frame. Peer EOF, reset, a complete peer frame, other
+I/O failure, cancellation, and a host deadline with a partial frame have
+separate results. Incoming frames are bounded by `--max-frame-bytes`; the
+report retains their length, SHA-256, and response code/transaction identifier
+when decoded. The trace retains the bounded wire frame. Unexpected traffic or
+peer loss fails the hold and prevents later actions. It invalidates the
+command session so cleanup closes sockets without sending more protocol
+traffic. A partial frame at the deadline also invalidates the session.
+
+SIGINT during a session step records cancellation and runs cleanup. The
+interrupted command session is invalidated before closing sockets, so cleanup
+sends no further protocol traffic. Cleanup failure stays separate from the
+hold result. `bufferedBytes` is null when an interrupt drops the pending read
+before its buffered-byte count can be observed. These observations establish
+neither camera timeout units nor AP shutdown or readiness. Handshake phases,
+PCSS discovery/callback/init interception, and external property restoration
+remain outside this control.
+
+A `samplePushFrames` step reads an already-open live-view socket. The selected
+connection must declare stream delivery and a live-view socket. A preceding
+entry or switch must establish a retained mode. The sampler does not open the
+socket, poll an operation, set properties, or impose a frame rate.
+
+```yaml
+  - id: frames
+    kind: samplePushFrames
+    frameCount: 3
+    maxFrameBytes: 2097152
+    maxTotalBytes: 6291456
+    timeoutMs: 5000
+```
+
+All four limits are required positive integers. Byte limits include the stream
+header. One deadline covers the sampling step; it does not restart per frame.
+Packets are unwrapped by the shared live-view parser. The sampler checks JPEG
+SOI, segment lengths, SOF geometry, scan boundaries, and a final EOI without
+trailing bytes. These structural checks do not decode the image or prove visual
+quality. Each complete, structurally valid JPEG is saved with create-new
+semantics under the step payload directory. The step's `frames` report records
+relative paths, lengths, SHA-256, Unix receive timestamps in milliseconds,
+elapsed receive times, and JPEG width, height, precision, and component count.
+Timestamps describe host packet receipt, not the camera clock. `wireBytes`
+includes partial packet bytes read before a timeout or framing error. The step
+has a null `outcome` and no PTP transaction identifiers. No quality label is
+inferred.
+
+The `frames` report retains completed frames on failure and distinguishes
+`hostTimeout`, `peerClosed`, `truncatedFrame`, `oversizedFrame`, `byteLimit`,
+`malformedFrame`, `ioError`, and `cancelled`. Only `frameCount` is successful.
+A timed-out or failed sample ends the plan and closes all session sockets through the existing
+cleanup path. A failed artifact write can leave an incomplete file at its
+reserved name; it is not listed as a retained frame. Successful sampling leaves
+the session open for the next declared step. Use an existing manifest switch
+when its declared exit and re-establishment are required. Final cleanup closes
+the session; it does not invent a mode exit or restore properties. Exact camera
+readiness, AP shutdown, and any caller-owned property restoration remain
+separate acceptance checks. Synthetic tests establish host behavior only.
+
+SIGINT preserves completed frame records in the session report and stops later
+steps before socket cleanup. On cancellation, `wireBytes` is a lower bound:
+bytes buffered by an unfinished read are unknown. An unfinished artifact write
+may leave an absent, partial, or complete file that is not listed as a retained
+frame.
+
 Entry and action expectations use this exact subset schema:
 
 ```yaml
@@ -148,7 +236,8 @@ field paths, or a separate assertion step.
 
 The runner keeps one native transport, trace writer, and observation recorder.
 It opens one PTP session lazily. Compatible entries merge their captured scope,
-while action scope stays local to the invocation. Transaction identifiers are
+while action scope stays local to the invocation. Mode-independent actions
+preserve the current observation mode. Transaction identifiers are
 transport-owned and increase across retained steps. A re-establishment clears
 the retained scope, closes the old session, records `externalEstablishment`,
 waits for endpoint replacement, and opens the target as a fresh PTP session.
@@ -190,8 +279,9 @@ best-effort `stopLiveView` attempt is recorded on that failed step with its
 status, transaction identifiers, outcome, payloads, and error. Cleanup
 transactions are excluded from the failed action's transaction identifiers.
 
-This is the exact report shape. Nullable fields remain present. `switch` is
-non-null only for a switch step. Its `checkpoint` is null when execution stops
+This is the exact report shape for an action. Nullable fields remain present.
+The optional `hold` field is present only for a hold. `frames` is non-null only
+for a `samplePushFrames` step. `switch` is non-null only for a switch step. Its `checkpoint` is null when execution stops
 before the external handoff.
 
 ```json
@@ -218,6 +308,7 @@ before the external handoff.
       "payloads": [],
       "cleanupAttempt": null,
       "switch": null,
+      "frames": null,
       "expectationMismatch": null,
       "error": null
     }
