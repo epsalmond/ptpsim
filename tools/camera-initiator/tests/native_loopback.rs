@@ -1045,7 +1045,10 @@ async fn session_runner_retains_gfx_entry_and_autofocus_actions() {
     std::fs::create_dir_all(&live_view).expect("create session live-view fixtures");
     std::fs::write(
         live_view.join("frame.jpg"),
-        b"\xFF\xD8\xFF\xE0SESSION\xFF\xD9",
+        [
+            0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 1, 224, 2, 128, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8, 1,
+            1, 0, 0, 63, 0, 1, 2, 3, 0xff, 0xd9,
+        ],
     )
     .expect("write session live-view fixture");
     let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
@@ -1086,6 +1089,7 @@ steps:
     action: autofocusLock
     parameters: { afArea: 7 }
   - { id: focus-release, kind: action, action: autofocusRelease }
+  - { id: frames, kind: samplePushFrames, frameCount: 2, maxFrameBytes: 4096, maxTotalBytes: 8192, timeoutMs: 2000 }
 "#,
     )
     .expect("parse session plan");
@@ -1118,7 +1122,7 @@ steps:
     let report = run_session_plan(
         &prepared,
         Arc::clone(&store),
-        NativeSessionLifecycle::new(transport),
+        NativeSessionLifecycle::new(Arc::clone(&transport)),
         trace,
         SessionRunOptions {
             output_dir: output_dir.clone(),
@@ -1133,19 +1137,36 @@ steps:
     .await
     .expect("run retained session plan");
 
-    assert_eq!(report.steps.len(), 3);
+    assert_eq!(report.steps.len(), 4);
     assert_eq!(
         report
             .steps
             .iter()
             .map(|step| step.id.as_str())
             .collect::<Vec<_>>(),
-        ["enter-stills", "focus-lock", "focus-release"]
+        ["enter-stills", "focus-lock", "focus-release", "frames"]
     );
     assert!(report
         .steps
         .iter()
         .all(|step| step.session_index == Some(1)));
+    let frames = report.steps[3].frames.as_ref().expect("push frame report");
+    assert_eq!(
+        frames.termination,
+        camera_initiator::push_frames::PushFrameTermination::FrameCount
+    );
+    assert_eq!(frames.frames.len(), 2);
+    for frame in &frames.frames {
+        assert!(output_dir.join(&frame.path).is_file());
+        assert_eq!(frame.jpeg.width, 640);
+        assert_eq!(frame.jpeg.height, 480);
+    }
+    assert!(report.steps[3].transaction_ids.is_empty());
+    assert!(report.cleanup_warning.is_none());
+    assert!(
+        transport.confirm_live_view_frame().await.is_err(),
+        "cleanup closes the push socket"
+    );
     let lock_ids = &report.steps[1].transaction_ids;
     let release_ids = &report.steps[2].transaction_ids;
     assert!(!lock_ids.is_empty());
@@ -1518,6 +1539,7 @@ async fn session_runner_retains_ordinary_and_streaming_payload_metadata() {
 schema: camera-initiator-session/v1
 steps:
   - {{ id: device-info, kind: action, action: readDeviceInfo }}
+  - {{ id: idle, kind: hold, durationMs: 5 }}
   - id: object
     kind: action
     action: getObject
@@ -1571,8 +1593,23 @@ steps:
     .await
     .expect("run session payload plan");
 
+    assert_eq!(report.steps.len(), 3);
+    let hold = report.steps[1]
+        .hold
+        .as_ref()
+        .expect("native idle observation");
+    assert_eq!(
+        hold.observation.end,
+        camera_initiator::idle::IdleEnd::DurationElapsed
+    );
+    assert!(report.steps[1].transaction_ids.is_empty());
+    assert!(report
+        .steps
+        .iter()
+        .all(|step| step.session_index == Some(1)));
+    assert!(hold.ended_elapsed_ns >= hold.started_elapsed_ns + 5_000_000);
     assert_eq!(report.steps[0].payloads.len(), 1);
-    assert_eq!(report.steps[1].payloads.len(), 1);
+    assert_eq!(report.steps[2].payloads.len(), 1);
     let ordinary = &report.steps[0].payloads[0];
     assert!(ordinary.path.starts_with("payloads/0000-device-info/"));
     assert_eq!(
@@ -1581,8 +1618,8 @@ steps:
             .len(),
         ordinary.length
     );
-    let streamed = &report.steps[1].payloads[0];
-    assert_eq!(streamed.path, "payloads/0001-object/0000_stream.bin");
+    let streamed = &report.steps[2].payloads[0];
+    assert_eq!(streamed.path, "payloads/0002-object/0000_stream.bin");
     assert_eq!(
         std::fs::read(output_dir.join(&streamed.path)).unwrap(),
         object
@@ -1594,13 +1631,13 @@ steps:
     assert_eq!(streamed.sha256, expected.sha256);
     assert!(
         report.steps[0].transaction_ids.last().unwrap()
-            < report.steps[1].transaction_ids.first().unwrap()
+            < report.steps[2].transaction_ids.first().unwrap()
     );
     let report_json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(output_dir.join("session-report.json")).unwrap())
             .unwrap();
     assert_eq!(
-        report_json.pointer("/steps/1/payloads/0/sha256"),
+        report_json.pointer("/steps/2/payloads/0/sha256"),
         Some(&serde_json::json!(expected.sha256))
     );
 

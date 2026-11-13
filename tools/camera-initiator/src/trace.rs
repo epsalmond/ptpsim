@@ -102,6 +102,10 @@ impl TraceWriter {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode.into();
     }
 
+    pub fn monotonic_elapsed_ns(&self) -> u64 {
+        self.started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+    }
+
     /// Start a fresh physical PTP session before any transaction frame is
     /// observed. The persisted lifecycle ordinal is the identity, so reconnects
     /// and process restarts cannot reuse a correlation key even when earlier
