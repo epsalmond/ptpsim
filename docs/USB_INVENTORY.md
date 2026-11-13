@@ -45,7 +45,10 @@ by a failed action or non-OK response. The new output directory contains the
 action DeviceInfo payload, any establishment DeviceInfo payload, and a JSON
 report with every advertised operation, event, property, capture format, and
 image format. Advertised values do not establish that an operation is callable.
-The canonical observation bundle identifies USB transport and framing.
+The canonical observation bundle identifies USB transport and framing. Its
+actual-camera firmware is `unknown`, regardless of the selected manifest or
+overlay version. The raw DeviceInfo `deviceVersion` string is retained in the
+payload and report without interpreting it as an observed firmware version.
 
 This command does not execute selector or property writes, capture, object
 deletion, hidden operations, or live view. Scripted acceptance tests establish

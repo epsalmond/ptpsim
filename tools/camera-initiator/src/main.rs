@@ -913,7 +913,11 @@ fn initiator_observation_recorder(cli: &Cli, store: &ConfigStore) -> Result<Obse
             manufacturer: identity.manufacturer,
             model: identity.model,
             body_id: cli.body_id.clone(),
-            firmware: identity.firmware,
+            firmware: if matches!(cli.command, Command::UsbInventory { .. }) {
+                "unknown".into()
+            } else {
+                identity.firmware
+            },
         },
         client: ClientContext {
             artifact: "camera-initiator".into(),
@@ -1175,6 +1179,46 @@ fn sanitize(value: &str) -> String {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn usb_capture_does_not_infer_firmware_from_the_manifest() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "camera-initiator-usb-provenance-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let observation = root.join("observation.jsonl");
+        let store = ConfigStore::from_bundle(
+            "schema: camera-config/v1\ncamera: { manufacturer: TESTCO, model: TU1, firmware: '99.99' }\nconnections: {}\n".into(), None,
+        ).unwrap();
+        assert_eq!(store.camera_identity().firmware, "99.99");
+        let cli = Cli::try_parse_from([
+            "camera-initiator".into(),
+            "--manifest".into(),
+            "unused.yaml".into(),
+            "--connection".into(),
+            "usb".into(),
+            "--observation".into(),
+            observation.clone().into_os_string(),
+            "usb-inventory".into(),
+            "--output-dir".into(),
+            root.join("inventory").into_os_string(),
+        ])
+        .unwrap();
+        let recorder = initiator_observation_recorder(&cli, &store).unwrap();
+        let export: Value = serde_json::from_str(&recorder.export_json(0).unwrap()).unwrap();
+        assert_eq!(export["header"]["camera"]["firmware"], "unknown");
+        assert_eq!(
+            export["header"]["capture"]["interfaces"][0]["interfaceType"],
+            "usb"
+        );
+        camera_config::validate_bundles(&[&std::fs::read_to_string(observation).unwrap()]).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_numeric_runtime_values_exactly() {
