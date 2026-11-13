@@ -231,7 +231,7 @@ fn trace(directory: &TempDir) -> (Arc<TraceWriter>, ObservationRecorder) {
             clock_mappings: vec![],
             loss: no_loss(),
             redactions: vec![],
-            tool_versions: BTreeMap::new(),
+            tool_versions: BTreeMap::from([("camera-initiator-test".into(), "1".into())]),
             artifacts: vec![],
         },
         epistemic: direct_epistemic(),
@@ -325,6 +325,9 @@ fn descriptor_selection_is_explicit_and_unambiguous() {
         missing[0].endpoints.remove(endpoint);
         assert!(select_usb_interface(&missing, (6, 1, 1)).is_err());
     }
+    let mut overlapping = all.clone();
+    overlapping[0].endpoints[2].address = overlapping[0].endpoints[0].address;
+    assert!(select_usb_interface(&overlapping, (6, 1, 1)).is_err());
     let mut alternate = all;
     alternate[0].alternate = 1;
     assert!(select_usb_interface(&alternate, (6, 1, 1)).is_err());

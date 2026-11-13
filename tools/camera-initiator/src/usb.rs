@@ -96,12 +96,16 @@ pub fn select_usb_interface(
         }
         Ok(ep.address)
     };
-    Ok(UsbSelection {
+    let selection = UsbSelection {
         interface: descriptor.number,
         bulk_in: endpoint(UsbTransferType::Bulk, true)?,
         bulk_out: endpoint(UsbTransferType::Bulk, false)?,
         interrupt_in: endpoint(UsbTransferType::Interrupt, true)?,
-    })
+    };
+    if selection.bulk_in == selection.interrupt_in {
+        bail!("USB bulk and interrupt endpoints share an address")
+    }
+    Ok(selection)
 }
 
 /// Host USB boundary. Implementations never detach another driver's interface.
