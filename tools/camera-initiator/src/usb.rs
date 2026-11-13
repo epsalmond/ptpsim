@@ -986,15 +986,21 @@ pub async fn run_usb_inventory(
             })
     };
     let cleanup = transport.cleanup().await;
-    let result = match (result, retention) {
-        (Ok(report), Ok(())) => Ok(report),
-        (Err(primary), Ok(())) => Err(primary),
-        (Ok(_), Err(retention)) => Err(retention),
-        (Err(primary), Err(retention)) => {
-            Err(primary.context(format!("USB payload retention also failed: {retention}")))
+    let mut result = result;
+    for (additional, stage) in [
+        (retention, "USB payload retention"),
+        (cleanup, "USB cleanup"),
+    ] {
+        if let Err(additional) = additional {
+            result = match result {
+                Ok(_) => Err(additional.context(format!("{stage} failed"))),
+                Err(primary) => {
+                    Err(primary.context(format!("{stage} also failed: {additional:#}")))
+                }
+            };
         }
-    };
-    trace.action(
+    }
+    let observation = trace.action(
         store.action_catalog().revision,
         "readDeviceInfo".into(),
         BTreeMap::new(),
@@ -1003,8 +1009,8 @@ pub async fn run_usb_inventory(
         } else {
             ActionOutcome::Failed
         },
-    )?;
-    match (result, cleanup) {
+    );
+    match (result, observation) {
         (Ok(report), Ok(())) => {
             std::fs::write(
                 output_dir.join("report.json"),
@@ -1013,10 +1019,12 @@ pub async fn run_usb_inventory(
             Ok(report)
         }
         (Err(primary), Ok(())) => Err(primary),
-        (Err(primary), Err(cleanup)) => {
-            Err(primary.context(format!("USB cleanup also failed: {cleanup}")))
+        (Err(primary), Err(observation)) => {
+            Err(primary.context(format!("USB action observation also failed: {observation}")))
         }
-        (Ok(_), Err(cleanup)) => Err(cleanup.context("USB inventory completed but cleanup failed")),
+        (Ok(_), Err(observation)) => {
+            Err(anyhow::Error::new(observation).context("record USB inventory action observation"))
+        }
     }
     .with_context(|| format!("USB inventory on {}", plan.connection))
 }

@@ -179,6 +179,46 @@ impl UsbInventoryIo for ScriptedIo {
     }
 }
 
+struct FinalizationFailureIo {
+    inner: ScriptedIo,
+    observation: PathBuf,
+    fail_release: bool,
+    block_payload: Option<PathBuf>,
+}
+
+#[async_trait]
+impl UsbInventoryIo for FinalizationFailureIo {
+    fn descriptors(&self) -> &[UsbInterfaceDescriptor] {
+        self.inner.descriptors()
+    }
+    async fn claim(&mut self, selection: &UsbSelection) -> Result<()> {
+        self.inner.claim(selection).await
+    }
+    async fn write(&mut self, endpoint: u8, bytes: &[u8]) -> Result<usize> {
+        self.inner.write(endpoint, bytes).await
+    }
+    async fn read(&mut self, endpoint: u8, max_length: usize) -> Result<Vec<u8>> {
+        if let Some(path) = self.block_payload.take() {
+            std::fs::create_dir(path).unwrap();
+        }
+        self.inner.read(endpoint, max_length).await
+    }
+    async fn release(&mut self) -> Result<()> {
+        self.inner.release().await?;
+        // Replace the observation destination only after inventory and retention finish.
+        std::fs::rename(
+            &self.observation,
+            self.observation.with_extension("retained"),
+        )
+        .unwrap();
+        std::fs::create_dir(&self.observation).unwrap();
+        if self.fail_release {
+            bail!("injected USB release failure")
+        }
+        Ok(())
+    }
+}
+
 struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
@@ -657,4 +697,77 @@ async fn non_ok_inventory_response_preserves_primary_failure_and_closes_owned_se
     let script = script.lock().unwrap();
     assert!(script.calls.contains(&"out:1003:2".into()));
     assert_eq!(script.calls.last().unwrap(), "release");
+}
+
+#[tokio::test]
+async fn final_observation_failure_preserves_inventory_retention_and_cleanup_errors() {
+    for failure in ["claim", "retention", "none"] {
+        let directory = TempDir::new();
+        let (trace, _) = trace(&directory);
+        let store = store("initiatorOwned", "0x1001", false);
+        let plan = UsbInventoryPlan::prepare(&store, "tu1", "usb", 65536).unwrap();
+        let script = Arc::new(Mutex::new(Script {
+            fail_claim: failure == "claim",
+            reads: VecDeque::from([
+                response(0x2001, 0),
+                data(1, &payload()),
+                response(0x2001, 1),
+                response(0x2001, 2),
+            ]),
+            ..Script::default()
+        }));
+        let adapter = UsbInventoryTransport::new(
+            Box::new(FinalizationFailureIo {
+                inner: ScriptedIo {
+                    script: script.clone(),
+                    descriptors: descriptors(),
+                },
+                observation: directory.0.join("observation.jsonl"),
+                fail_release: failure != "none",
+                block_payload: (failure == "retention")
+                    .then(|| directory.output().join("device-info.bin")),
+            }),
+            &plan,
+            Duration::from_secs(1),
+            65536,
+            trace.clone(),
+        )
+        .unwrap();
+        let error = run_usb_inventory(plan, store, adapter, trace, &directory.output())
+            .await
+            .unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(
+            detail.contains("observation recorder I/O failed"),
+            "{detail}"
+        );
+        match failure {
+            "claim" => {
+                assert!(
+                    detail.contains("interface belongs to another owner"),
+                    "{detail}"
+                );
+                assert!(detail.contains("injected USB release failure"), "{detail}");
+                assert!(script.lock().unwrap().writes.is_empty());
+            }
+            "retention" => {
+                assert!(detail.contains("retain DeviceInfo payload"), "{detail}");
+                assert!(
+                    detail.contains("retain received USB DeviceInfo payload"),
+                    "{detail}"
+                );
+                assert!(detail.contains("injected USB release failure"), "{detail}");
+            }
+            "none" => {
+                assert_eq!(
+                    std::fs::read(directory.output().join("device-info.bin")).unwrap(),
+                    payload()
+                );
+                assert!(!detail.contains("USB cleanup"), "{detail}");
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(script.lock().unwrap().calls.last().unwrap(), "release");
+        assert!(!directory.output().join("report.json").exists());
+    }
 }
