@@ -204,6 +204,16 @@ the session; it does not invent a mode exit or restore properties. Exact camera
 readiness, AP shutdown, and any caller-owned property restoration remain
 separate acceptance checks. Synthetic tests establish host behavior only.
 
+The shared sampler API takes one `PushFrameProgress` handle per step. Clones
+retain each completed frame's metadata before the next asynchronous operation.
+After dropping a sampling future, the runner can call `cancelled_report()` to
+recover those records with termination `cancelled`. On cancellation,
+`wireBytes` is a lower bound: bytes buffered by an unfinished read are unknown.
+An unfinished artifact write may leave an absent, partial, or complete file
+that is not listed as a retained frame. The progress handle installs no signal
+handler and does not close the transport; the runner owns cancellation and
+socket cleanup.
+
 Entry and action expectations use this exact subset schema:
 
 ```yaml

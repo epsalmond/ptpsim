@@ -365,6 +365,7 @@ impl NativePtpTransport {
         limits: crate::push_frames::PushFrameLimits,
         step_dir: &std::path::Path,
         report_root: &std::path::Path,
+        progress: crate::push_frames::PushFrameProgress,
     ) -> crate::push_frames::PushFrameReport {
         use crate::push_frames::{PushFrameReport, PushFrameTermination};
         let mut guard = self.live_view.lock().await;
@@ -380,6 +381,7 @@ impl NativePtpTransport {
             self.config.max_frame_bytes,
             step_dir,
             report_root,
+            progress,
         )
         .await
     }

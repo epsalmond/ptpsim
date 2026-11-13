@@ -1,5 +1,6 @@
 //! Bounded retention of payloads from an already-open push channel.
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use camera_config::PayloadMetadataBuilder;
@@ -42,6 +43,7 @@ impl PushFrameLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PushFrameTermination {
+    Cancelled,
     FrameCount,
     HostTimeout,
     PeerClosed,
@@ -69,6 +71,47 @@ impl PushFrameReport {
             termination,
             error: Some(error.into()),
         }
+    }
+}
+
+/// Create one handle per sampling step. Clones share completed-frame metadata.
+#[derive(Debug, Clone, Default)]
+pub struct PushFrameProgress {
+    state: Arc<Mutex<PushFrameProgressState>>,
+}
+
+#[derive(Debug, Default)]
+struct PushFrameProgressState {
+    frames: Vec<RetainedPushFrame>,
+    wire_bytes: u64,
+}
+
+impl PushFrameProgress {
+    /// Snapshot after dropping the sampling future. Pending reads and writes
+    /// cannot establish exact byte counts or completed artifact metadata.
+    pub fn cancelled_report(&self) -> PushFrameReport {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        PushFrameReport {
+            frames: state.frames.clone(),
+            wire_bytes: state.wire_bytes,
+            termination: PushFrameTermination::Cancelled,
+            error: Some("host canceled sampling; wireBytes is a lower bound; an in-flight artifact may be absent, partial, or complete".into()),
+        }
+    }
+
+    fn record_wire_bytes(&self, wire_bytes: u64) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .wire_bytes = wire_bytes;
+    }
+
+    fn record_frame(&self, frame: RetainedPushFrame) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .frames
+            .push(frame);
     }
 }
 
@@ -185,6 +228,7 @@ pub(crate) async fn sample_push_frames<R: AsyncRead + Unpin>(
     transport_max: usize,
     step_dir: &Path,
     report_root: &Path,
+    progress: PushFrameProgress,
 ) -> PushFrameReport {
     use PushFrameTermination as End;
     if let Err(error) = limits.validate() {
@@ -250,6 +294,7 @@ pub(crate) async fn sample_push_frames<R: AsyncRead + Unpin>(
             Ok(Ok(packet)) => packet,
         };
         report.wire_bytes += packet.len() as u64;
+        progress.record_wire_bytes(report.wire_bytes);
         let received_elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let received_unix_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(duration) => duration.as_millis().min(u64::MAX as u128) as u64,
@@ -310,15 +355,18 @@ pub(crate) async fn sample_push_frames<R: AsyncRead + Unpin>(
         let mut metadata = PayloadMetadataBuilder::new();
         metadata.update(jpeg);
         let metadata = metadata.metadata();
-        report.frames.push(RetainedPushFrame {
+        let retained = RetainedPushFrame {
             path: relative,
             length: metadata.length,
             sha256: metadata.sha256,
             received_unix_ms,
             received_elapsed_ms,
             jpeg: geometry,
-        });
+        };
+        progress.record_frame(retained.clone());
+        report.frames.push(retained);
     }
+    progress.record_wire_bytes(report.wire_bytes);
     report
 }
 
@@ -418,8 +466,15 @@ mod tests {
         all.splice(frame.len()..2 * frame.len(), adjusted);
         writer.write_all(&all[..2]).await.unwrap();
         writer.write_all(&all[2..]).await.unwrap();
-        let report =
-            sample_push_frames(&mut reader, limits(2), 4096, &artifacts.0, &artifacts.0).await;
+        let report = sample_push_frames(
+            &mut reader,
+            limits(2),
+            4096,
+            &artifacts.0,
+            &artifacts.0,
+            PushFrameProgress::default(),
+        )
+        .await;
         assert_eq!(report.termination, PushFrameTermination::FrameCount);
         assert_eq!(report.frames.len(), 2);
         assert_eq!(report.wire_bytes, (2 * frame.len() + 2) as u64);
@@ -483,8 +538,15 @@ mod tests {
             let (mut writer, mut reader) = socket().await;
             writer.write_all(&bytes).await.unwrap();
             writer.shutdown().await.unwrap();
-            let report =
-                sample_push_frames(&mut reader, limits, 4096, &artifacts.0, &artifacts.0).await;
+            let report = sample_push_frames(
+                &mut reader,
+                limits,
+                4096,
+                &artifacts.0,
+                &artifacts.0,
+                PushFrameProgress::default(),
+            )
+            .await;
             assert_eq!(report.termination, expected, "{report:?}");
             assert!(report.wire_bytes <= limits.max_total_bytes);
             assert!(report.wire_bytes <= bytes.len() as u64);
@@ -501,6 +563,86 @@ mod tests {
             }
         }
     }
+    struct SignalNextFrameRead {
+        stream: TcpStream,
+        remaining: usize,
+        next_read: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    impl AsyncRead for SignalNextFrameRead {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.remaining == 0 {
+                if let Some(sender) = self.next_read.take() {
+                    let _ = sender.send(());
+                }
+            }
+            let before = buffer.filled().len();
+            let result = std::pin::Pin::new(&mut self.stream).poll_read(context, buffer);
+            if matches!(result, std::task::Poll::Ready(Ok(()))) {
+                self.remaining = self
+                    .remaining
+                    .saturating_sub(buffer.filled().len() - before);
+            }
+            result
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_push_sample_preserves_completed_frame_progress() {
+        let artifacts = Artifacts::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut writer = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let jpeg = jpeg();
+        let packet = protocol_primitives::liveview::frame_packet(&jpeg, 0);
+        writer.write_all(&packet).await.unwrap();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let mut reader = FrameReader::new(SignalNextFrameRead {
+            stream,
+            remaining: packet.len(),
+            next_read: Some(sender),
+        });
+        let progress = PushFrameProgress::default();
+        let mut sampling = Box::pin(sample_push_frames(
+            &mut reader,
+            limits(2),
+            4096,
+            &artifacts.0,
+            &artifacts.0,
+            progress.clone(),
+        ));
+        // The next read is reached only after the first artifact is synced and
+        // its metadata is published. The peer keeps the socket open and idle.
+        tokio::select! {
+            result = &mut sampling => panic!("sample ended before cancellation: {result:?}"),
+            reached = receiver => reached.expect("sampler starts its next frame read"),
+        }
+        drop(sampling);
+        let snapshot = progress.cancelled_report();
+        assert_eq!(snapshot.termination, PushFrameTermination::Cancelled);
+        assert_eq!(snapshot.frames.len(), 1);
+        assert_eq!(snapshot.wire_bytes, packet.len() as u64);
+        assert!(snapshot.error.as_ref().unwrap().contains("lower bound"));
+        let retained = &snapshot.frames[0];
+        assert_eq!(
+            std::fs::read(artifacts.0.join(&retained.path)).unwrap(),
+            jpeg
+        );
+        assert_eq!(retained.length, jpeg.len() as u64);
+        let mut metadata = PayloadMetadataBuilder::new();
+        metadata.update(&jpeg);
+        assert_eq!(retained.sha256, metadata.metadata().sha256);
+        assert!(retained.received_unix_ms > 0);
+        assert_eq!((retained.jpeg.width, retained.jpeg.height), (640, 480));
+        assert!(!artifacts.0.join("0001.jpg").exists());
+    }
+
     #[tokio::test]
     async fn push_sockets_timeout_without_peer_close_and_preserve_existing_artifacts() {
         let artifacts = Artifacts::new();
@@ -514,6 +656,7 @@ mod tests {
             4096,
             &artifacts.0,
             &artifacts.0,
+            PushFrameProgress::default(),
         )
         .await;
         assert_eq!(report.termination, PushFrameTermination::HostTimeout);
@@ -522,8 +665,15 @@ mod tests {
             .write_all(&protocol_primitives::liveview::frame_packet(&jpeg(), 0))
             .await
             .unwrap();
-        let report =
-            sample_push_frames(&mut reader, limits(1), 4096, &artifacts.0, &artifacts.0).await;
+        let report = sample_push_frames(
+            &mut reader,
+            limits(1),
+            4096,
+            &artifacts.0,
+            &artifacts.0,
+            PushFrameProgress::default(),
+        )
+        .await;
         assert_eq!(report.termination, PushFrameTermination::IoError);
         assert!(report.frames.is_empty());
         assert_eq!(

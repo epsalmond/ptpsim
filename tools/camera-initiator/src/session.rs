@@ -20,7 +20,9 @@ use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 
 use crate::idle::{HoldReport, IdleEnd, IdleObservation, MAX_HOLD_DURATION_MS};
-use crate::push_frames::{PushFrameLimits, PushFrameReport, PushFrameTermination};
+use crate::push_frames::{
+    PushFrameLimits, PushFrameProgress, PushFrameReport, PushFrameTermination,
+};
 use crate::{NativePtpTransport, StreamingFileSink, TraceWriter};
 
 pub const SESSION_PLAN_SCHEMA: &str = "camera-initiator-session/v1";
@@ -806,6 +808,7 @@ pub trait SessionLifecycle: Send + Sync {
         _limits: PushFrameLimits,
         _step_dir: &Path,
         _report_root: &Path,
+        _progress: PushFrameProgress,
     ) -> PushFrameReport {
         PushFrameReport::failed(
             PushFrameTermination::IoError,
@@ -860,9 +863,10 @@ impl SessionLifecycle for NativeSessionLifecycle {
         limits: PushFrameLimits,
         step_dir: &Path,
         report_root: &Path,
+        progress: PushFrameProgress,
     ) -> PushFrameReport {
         self.transport
-            .sample_push_frames(limits, step_dir, report_root)
+            .sample_push_frames(limits, step_dir, report_root, progress)
             .await
     }
 
@@ -1116,6 +1120,7 @@ where
         let mut failed_payloads = Vec::new();
         let mut failed_transaction_ids = None;
         let mut cleanup_attempt = None;
+        let frame_progress = PushFrameProgress::default();
         let step_started_elapsed_ns = trace.monotonic_elapsed_ns();
         let result = tokio::select! {
             biased;
@@ -1142,6 +1147,15 @@ where
                         transaction_ids: Vec::new(), outcome: None, payloads: Vec::new(),
                         cleanup_attempt: None, switch: None, hold: Some(hold), frames: None, expectation_mismatch: None,
                         error: Some(trace_error.map(|error| error.to_string()).unwrap_or_else(|| "retained session interrupted".into())),
+                    })
+                } else if let PreparedStep::SamplePushFrames { id, .. } = step {
+                    let frames = frame_progress.cancelled_report();
+                    Ok(SessionStepReport {
+                        id: id.clone(), kind: SessionStepKind::SamplePushFrames, status: RunStatus::Failed,
+                        session_index: (session_index != 0).then_some(session_index),
+                        transaction_ids: Vec::new(), outcome: None, payloads: Vec::new(),
+                        cleanup_attempt: None, switch: None, hold: None, frames: Some(frames), expectation_mismatch: None,
+                        error: Some(reason.unwrap_or_else(|| "retained session interrupted".into())),
                     })
                 } else {
                     Err(anyhow::anyhow!(reason.unwrap_or_else(|| "retained session interrupted".into())))
@@ -1188,10 +1202,16 @@ where
                     })
                 }.await
             }
+
             PreparedStep::SamplePushFrames { id, limits } => {
                 let step_dir = payload_root.join(format!("{step_index:04}-{id}"));
                 let frames = lifecycle
-                    .sample_push_frames(*limits, &step_dir, &options.output_dir)
+                    .sample_push_frames(
+                        *limits,
+                        &step_dir,
+                        &options.output_dir,
+                        frame_progress.clone(),
+                    )
                     .await;
                 let succeeded = frames.termination == PushFrameTermination::FrameCount;
                 let error = frames.error.clone();
