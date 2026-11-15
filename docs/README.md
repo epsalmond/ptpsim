@@ -11,6 +11,7 @@ index is a navigational summary of it.
 | --- | --- | --- |
 | [`../DESIGN.md`](../DESIGN.md) | Baseline architecture — purpose, the central observation loop, the generic engine, the transport/mode matrix | Architecture-level decisions; needing the system-wide picture |
 | [`MANIFEST_SCHEMA.md`](MANIFEST_SCHEMA.md) | The manifest schema contract — template grammar, step/observation vocabulary, predicates, wire conventions; wins over code and other docs on conflict | Authoring or reviewing manifests, schema changes, or anything that parses/emits manifest data |
+| [`STATIC_CATALOG.md`](STATIC_CATALOG.md) | Static client candidate contract and reviewed catalog intake | Adding unverified client identities or preparing initiator validation |
 | [`INTEGRATION.md`](INTEGRATION.md) | How a client app consumes `camera-protocol-ffi` — the platform-neutral seam, binding generation, both query surfaces, the action catalog | Wiring an app to the FFI, or changing the FFI surface consumers depend on |
 | [`USB_INVENTORY.md`](USB_INVENTORY.md) | Native raw USB DeviceInfo inventory through camera-initiator | Selecting an explicit USB device or validating inventory behavior |
 | [`REAL_CAMERA_PTPIP.md`](REAL_CAMERA_PTPIP.md) | Operating `camera-initiator`, the headless real-camera PTP/IP probe lane | Driving a real camera, capturing traces, or debugging manifests against hardware |
