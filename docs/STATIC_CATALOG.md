@@ -32,7 +32,7 @@ gaps. A request does not authorize its execution.
 The dispositions are:
 
 - `addCatalog`: a missing property in a named model's catalog.
-- `nameCandidate`: an existing raw property with a candidate client identity.
+- `nameCandidate`: an existing raw property or operation with a candidate client identity.
 - `preserveReviewed`: an existing semantic identity remains authoritative.
 - `unknownModel`: the property or operation belongs to an unidentified plugin.
 - `coverageOnly`: compound behavior or an operation retained for validation.
@@ -46,12 +46,13 @@ model before applying accepted assertions.
 Accepted `addCatalog` properties enter as `catalogOnly`, with no access,
 descriptor, current/default value, legal values, controls or simulator effects.
 The catalog stores no static datatype as an observed property type.
-Accepted `nameCandidate` rows replace only generated raw names. Existing
+Accepted `nameCandidate` rows replace only generated raw property or operation names. Existing
 reviewed names, types and behavior are preserved. Generated YAML comments begin
 with `unverified:` and identify static additions or candidate names. The
 source ledger and reviewed proposal retain all alternate identities and client
-type hints. Static operation and coverage assertions remain in those artifacts;
-they do not create executable simulator behavior.
+type hints. Operation names retain their existing execution classification. Other static
+operation and coverage assertions remain in those artifacts; they do not create
+executable simulator behavior.
 
 Initiator validation consumes the candidate document directly. Descriptor and
 value reads can compare actual camera results with the client hints. Operations

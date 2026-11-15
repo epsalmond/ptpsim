@@ -151,11 +151,13 @@ impl StaticCandidateDocument {
             if matches!(
                 row.disposition,
                 StaticCandidateDisposition::AddCatalog | StaticCandidateDisposition::NameCandidate
-            ) && (row.kind != StaticCandidateKind::Property
+            ) && (row.kind == StaticCandidateKind::Coverage
+                || (row.disposition == StaticCandidateDisposition::AddCatalog
+                    && row.kind != StaticCandidateKind::Property)
                 || row.catalog_name.as_ref().is_none_or(|name| name.is_empty()))
             {
                 return Err(reject(
-                    "catalog additions require a property candidate name",
+                    "catalog changes require an eligible property or operation name",
                 ));
             }
             if let Some(request) = &row.request {
@@ -216,43 +218,58 @@ pub(crate) fn apply_static_candidate(
             "static candidate model differs from base manifest".into(),
         ));
     }
-    let code = row.code.as_ref().expect("validated property code");
+    let code = row.code.as_ref().expect("validated catalog code");
     let name = row.catalog_name.as_ref().expect("validated catalog name");
-    if manifest
-        .properties
-        .iter()
-        .any(|(other_code, property)| other_code != code && property.name == *name)
-    {
-        return Err(GenerationError::ApplyConflict(format!(
-            "static name candidate {code} duplicates catalog name {name}"
-        )));
-    }
     let evidence_id = format!("staticCandidate{}", source.plugin);
-    if row.disposition == StaticCandidateDisposition::AddCatalog {
-        if manifest.properties.contains_key(code) {
+    if row.kind == StaticCandidateKind::Operation {
+        if manifest
+            .operations
+            .iter()
+            .any(|(other_code, operation)| other_code != code && operation.name == *name)
+        {
             return Err(GenerationError::ApplyConflict(format!(
-                "static addition {code} already exists"
+                "static operation {code} duplicates catalog name {name}"
             )));
         }
-        let property = serde_json::from_value(serde_json::json!({
-            "name": name,
-            "kind": "catalogOnly",
-            "evidence": [evidence_id],
-        }))?;
-        manifest.properties.insert(code.clone(), property);
-    } else {
-        let property = manifest.properties.get_mut(code).ok_or_else(|| {
-            GenerationError::ApplyConflict(format!("static name candidate {code} is absent"))
+        let operation = manifest.operations.get_mut(code).ok_or_else(|| {
+            GenerationError::ApplyConflict(format!(
+                "static operation name candidate {code} is absent"
+            ))
         })?;
-        if property.name != format!("raw_{code}") && property.name != *name {
+        apply_static_name(&mut operation.name, name, code)?;
+        if !operation.evidence.contains(&evidence_id) {
+            operation.evidence.push(evidence_id.clone());
+        }
+    } else {
+        if manifest
+            .properties
+            .iter()
+            .any(|(other_code, property)| other_code != code && property.name == *name)
+        {
             return Err(GenerationError::ApplyConflict(format!(
-                "static name candidate {code} conflicts with curated name {}",
-                property.name
+                "static property {code} duplicates catalog name {name}"
             )));
         }
-        property.name = name.clone();
-        if !property.evidence.contains(&evidence_id) {
-            property.evidence.push(evidence_id.clone());
+        if row.disposition == StaticCandidateDisposition::AddCatalog {
+            if manifest.properties.contains_key(code) {
+                return Err(GenerationError::ApplyConflict(format!(
+                    "static addition {code} already exists"
+                )));
+            }
+            let property = serde_json::from_value(serde_json::json!({
+                "name": name,
+                "kind": "catalogOnly",
+                "evidence": [evidence_id],
+            }))?;
+            manifest.properties.insert(code.clone(), property);
+        } else {
+            let property = manifest.properties.get_mut(code).ok_or_else(|| {
+                GenerationError::ApplyConflict(format!("static name candidate {code} is absent"))
+            })?;
+            apply_static_name(&mut property.name, name, code)?;
+            if !property.evidence.contains(&evidence_id) {
+                property.evidence.push(evidence_id.clone());
+            }
         }
     }
     manifest.evidence.insert(
@@ -269,19 +286,44 @@ pub(crate) fn apply_static_candidate(
     Ok(())
 }
 
+fn apply_static_name(current: &mut String, name: &str, code: &str) -> Result<(), GenerationError> {
+    if *current != format!("raw_{code}") && *current != name {
+        return Err(GenerationError::ApplyConflict(format!(
+            "static name candidate {code} conflicts with curated name {current}"
+        )));
+    }
+    *current = name.into();
+    Ok(())
+}
+
 /// Mark every statically named catalog row in generated YAML, including rows
 /// retained by a later observation apply. Comments do not affect execution.
 pub fn annotate_static_candidates(manifest: &CameraManifest, yaml: &str) -> String {
-    let mut in_properties = false;
+    let mut section = "";
     let mut output = String::new();
     for line in yaml.lines() {
         if !line.starts_with(' ') {
-            in_properties = line == "properties:";
+            section = match line {
+                "properties:" => "properties",
+                "operations:" => "operations",
+                _ => "",
+            };
         }
-        if in_properties && line.starts_with("  '0x") && line.ends_with("':") {
+        if !section.is_empty() && line.starts_with("  '0x") && line.ends_with("':") {
             let code = line.trim().trim_end_matches(':').trim_matches('\'');
-            if manifest.properties.get(code).is_some_and(|property| {
-                property.evidence.iter().any(|id| {
+            let evidence = if section == "properties" {
+                manifest
+                    .properties
+                    .get(code)
+                    .map(|property| &property.evidence)
+            } else {
+                manifest
+                    .operations
+                    .get(code)
+                    .map(|operation| &operation.evidence)
+            };
+            if evidence.is_some_and(|evidence| {
+                evidence.iter().any(|id| {
                     manifest
                         .evidence
                         .get(id)
