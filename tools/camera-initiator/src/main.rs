@@ -16,6 +16,9 @@ use camera_config::{
     CaptureContext, CaptureInterface, CaptureInterfaceType, ClientContext, ClockType, ClockUnit,
     ObservationRecorder, Redaction, RedactionMethod,
 };
+use camera_initiator::capability::{
+    run_capability_verification, CandidateLedger, CapabilityOptions, CapabilityPlan,
+};
 use camera_initiator::{
     prepare_action_request, prepare_session_plan, resolve_reestablishment_checkpoint,
     run_probe_plan, run_session_plan, validate_ptp_entry, validate_session_artifact_paths,
@@ -139,6 +142,25 @@ enum Command {
         #[arg(long)]
         output_dir: PathBuf,
     },
+    /// Observe static candidate capabilities. All results remain unverified.
+    VerifyCapabilities {
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        /// Optional strict known-shape request plan.
+        #[arg(long)]
+        plan: Option<PathBuf>,
+        /// Permit exploration of a ledger whose source model is unknown.
+        #[arg(long)]
+        allow_unknown_model: bool,
+        /// Authorize explicitly planned writes or actions.
+        #[arg(long)]
+        allow_control: bool,
+        /// Operator claim about the camera's current mode. Does not enter the mode.
+        #[arg(long)]
+        scope_mode: Option<String>,
+    },
     /// Execute a strict retained-session plan.
     Session {
         /// Strict camera-initiator-session/v1 YAML plan.
@@ -166,6 +188,7 @@ async fn main() -> Result<()> {
     let store = load_store(&cli)?;
     let params = RuntimeParams::parse(&cli.params)?;
     let prepared_session = prepare_cli_session(&cli, &store)?;
+    let prepared_capabilities = prepare_cli_capabilities(&cli, &store)?;
     let observation_mode = match &cli.command {
         Command::Entry { to, .. } | Command::Switch { to, .. } => to.clone(),
         Command::Action { action, .. } => parse_action_verb(action.clone())
@@ -173,6 +196,9 @@ async fn main() -> Result<()> {
             .map(|action| action.mode)
             .unwrap_or_else(|| "unknown".into()),
         Command::Probe { .. } => "probe".into(),
+        Command::VerifyCapabilities { scope_mode, .. } => {
+            scope_mode.clone().unwrap_or_else(|| "unspecified".into())
+        }
         Command::Session { .. } => "session".into(),
         Command::UsbInventory { .. } => unreachable!("USB inventory uses the raw adapter"),
     };
@@ -207,6 +233,7 @@ async fn main() -> Result<()> {
         Command::Entry { .. }
         | Command::Switch { .. }
         | Command::Probe { .. }
+        | Command::VerifyCapabilities { .. }
         | Command::Session { .. }
         | Command::UsbInventory { .. } => None,
     };
@@ -265,6 +292,13 @@ async fn main() -> Result<()> {
                 payload_dir,
                 expected_bytes,
                 Arc::clone(&trace),
+            )
+            .await
+        }
+        Command::VerifyCapabilities { .. } => {
+            run_capabilities(
+                prepared_capabilities.expect("capability command prepared"),
+                Arc::clone(&transport),
             )
             .await
         }
@@ -475,6 +509,83 @@ async fn run_session(
     )
     .await?;
     serde_json::to_value(report).context("serialize session report")
+}
+
+type PreparedCapabilities = (CandidateLedger, Option<CapabilityPlan>, CapabilityOptions);
+
+fn prepare_cli_capabilities(
+    cli: &Cli,
+    store: &ConfigStore,
+) -> Result<Option<PreparedCapabilities>> {
+    let Command::VerifyCapabilities {
+        candidates,
+        output_dir,
+        plan,
+        allow_unknown_model,
+        allow_control,
+        scope_mode,
+    } = &cli.command
+    else {
+        return Ok(None);
+    };
+    validate_session_artifact_paths(candidates, output_dir, &cli.trace, &cli.observation)?;
+    if let Some(path) = plan {
+        validate_session_artifact_paths(path, output_dir, &cli.trace, &cli.observation)?;
+    }
+    if output_dir.exists()
+        || cli.observation.exists()
+        || (cli.trace != "-" && PathBuf::from(&cli.trace).exists())
+    {
+        bail!("capability output, observation, and trace paths must be new")
+    }
+    let ledger = CandidateLedger::from_json(
+        &std::fs::read_to_string(candidates).context("read candidate ledger")?,
+    )?;
+    let plan = plan
+        .as_ref()
+        .map(|path| {
+            CapabilityPlan::from_yaml(
+                &std::fs::read_to_string(path).context("read capability plan")?,
+                &ledger,
+            )
+        })
+        .transpose()?;
+    Ok(Some((
+        ledger,
+        plan,
+        CapabilityOptions {
+            selected_model: store.camera_identity().model,
+            manifest_firmware: store.camera_identity().firmware,
+            connection: cli.connection.clone(),
+            scope_mode: scope_mode.clone(),
+            allow_unknown_model: *allow_unknown_model,
+            allow_control: *allow_control,
+            output_dir: output_dir.clone(),
+        },
+    )))
+}
+
+async fn run_capabilities(
+    prepared: PreparedCapabilities,
+    transport: Arc<NativePtpTransport>,
+) -> Result<Value> {
+    let (ledger, plan, options) = prepared;
+    if let Some(plan) = &plan {
+        plan.validate_framing(transport.command_framing())?;
+    }
+    transport.open_command_session().await?;
+    let report = run_capability_verification(
+        &ledger,
+        plan.as_ref(),
+        transport.command_framing(),
+        transport,
+        options,
+    )
+    .await?;
+    if let Some(error) = &report.error {
+        bail!("capability report retained after failure: {error}")
+    }
+    serde_json::to_value(report).context("serialize capability report")
 }
 
 async fn run_probe(
@@ -913,7 +1024,10 @@ fn initiator_observation_recorder(cli: &Cli, store: &ConfigStore) -> Result<Obse
             manufacturer: identity.manufacturer,
             model: identity.model,
             body_id: cli.body_id.clone(),
-            firmware: if matches!(cli.command, Command::UsbInventory { .. }) {
+            firmware: if matches!(
+                cli.command,
+                Command::UsbInventory { .. } | Command::VerifyCapabilities { .. }
+            ) {
                 "unknown".into()
             } else {
                 identity.firmware

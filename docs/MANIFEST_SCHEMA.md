@@ -1052,6 +1052,15 @@ and labels. Firmware strings and secondary implementations remain candidate
 evidence at their reviewed confidence; a name or match alone never creates
 runtime behavior.
 
+Experimental static client identities may enter through the separate
+`camera-static-candidates/v1` intake described in [Static client catalog
+candidates](STATIC_CATALOG.md). Digest-bound review can add `catalogOnly`
+properties or replace generated raw names. These rows carry `unverified:` YAML
+comments and static-client evidence references. Client type hints remain in the
+candidate ledger; this path does not create descriptor, access, value, control,
+operation-execution or simulator-effect claims. Unknown-model candidates remain
+in the ledger and cannot add support to a named camera.
+
 ### 11.19 PTP-IP sequence gates
 
 Some responders require an ordered wire ritual before a later property or

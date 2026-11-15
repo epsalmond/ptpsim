@@ -2481,3 +2481,132 @@ async fn native_transport_rejects_invalid_pcss_names_before_discovery() {
         }));
     }
 }
+
+#[tokio::test]
+async fn capability_verification_retains_native_observations_without_promoting_results() {
+    use camera_initiator::capability::{
+        run_capability_verification, CandidateLedger, CapabilityOptions,
+    };
+    let body = data("fuji/gfx100ii/gfx100ii.yaml");
+    let media = TempMediaRoot::new();
+    let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let server = Server::bind(Config {
+        instance_id: "capability-verification-loopback".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "app".into(),
+        manifest_yaml: body.clone(),
+        media_root: media.path().to_path_buf(),
+        command_bind: Some(loopback),
+        liveview_bind: Some(loopback),
+        event_bind: Some(loopback),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: loopback,
+        liveview_dir: None,
+        state_callback: None,
+    })
+    .await
+    .unwrap();
+    let body = with_loopback_ports(
+        body,
+        server.command_addr(),
+        server.event_addr_opt().unwrap(),
+        server.liveview_addr_opt().unwrap(),
+    );
+    let store =
+        ConfigStore::from_tiers(body, Some(data("fuji/fuji.yaml")), Vec::<String>::new()).unwrap();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+    let observation_path = media.path().join("capability-observation.jsonl");
+    let trace = Arc::new(TraceWriter::with_observations(
+        TraceFormat::Jsonl,
+        Box::new(std::io::sink()),
+        observation_recorder(observation_path.clone(), "capability-loopback"),
+        "app".into(),
+        "unspecified".into(),
+    ));
+    let transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        trace,
+    )
+    .unwrap();
+    let ledger = CandidateLedger::from_json(&serde_json::json!({
+        "schema":"camera-static-candidates/v1",
+        "source":{"application":"Synthetic Client","version":"1","plugin":"test","sha256":"0".repeat(64)},
+        "manufacturer":"FUJIFILM", "model":"GFX100 II",
+        "candidates":[
+            {"id":"aperture","kind":"property","code":"0x5007","status":"unverified","expectedType":"u16","nativeNames":["Aperture"],"disposition":"preserveReviewed","reason":"Synthetic read candidate","evidence":["simulator"]},
+            {"id":"missing","kind":"property","code":"0xdfff","status":"unverified","nativeNames":["Unknown"],"disposition":"preserveReviewed","reason":"Synthetic missing candidate","evidence":["simulator"]}
+        ]
+    }).to_string()).unwrap();
+    transport.open_command_session().await.unwrap();
+    let report = run_capability_verification(
+        &ledger,
+        None,
+        transport.command_framing(),
+        transport.clone(),
+        CapabilityOptions {
+            selected_model: "GFX100 II".into(),
+            manifest_firmware: "2.30".into(),
+            connection: "app".into(),
+            scope_mode: None,
+            allow_unknown_model: false,
+            allow_control: false,
+            output_dir: media.path().join("capabilities"),
+        },
+    )
+    .await
+    .unwrap();
+    transport.close_session_if_open().await.unwrap();
+    assert!(report.error.is_none());
+    assert_eq!(report.rows[0].outcome, "observed");
+    assert_eq!(report.rows[1].outcome, "rejected");
+    assert_eq!(report.rows[1].advertised, Some(false));
+    assert!(report.rows.iter().all(|row| row.status == "unverified"));
+    let observation = std::fs::read_to_string(observation_path).unwrap();
+    let bundle = validate_bundles(&[&observation]).unwrap();
+    let transactions: Vec<_> = bundle
+        .records
+        .iter()
+        .filter_map(|line| match line {
+            ObservationLine::PtpTransaction(record) => Some(record),
+            _ => None,
+        })
+        .collect();
+    for request in report.rows.iter().flat_map(|row| &row.requests) {
+        let transaction = transactions
+            .iter()
+            .find(|r| Some(r.transaction_id) == request.transaction_id)
+            .unwrap();
+        assert_eq!(transaction.request.operation, request.opcode);
+        assert_eq!(
+            transaction.response.as_ref().unwrap().code,
+            format!("0x{:04x}", request.response.unwrap())
+        );
+        if let Some(payload) = &request.payload {
+            assert_eq!(
+                transaction
+                    .response
+                    .as_ref()
+                    .unwrap()
+                    .data
+                    .as_ref()
+                    .unwrap()
+                    .payload
+                    .sha256,
+                payload.sha256
+            );
+        }
+    }
+    let _ = shutdown_tx.send(());
+    server_task.await.unwrap();
+}
