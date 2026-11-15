@@ -183,6 +183,31 @@ fn validate_request(request: &CandidateRequest, baseline_override: bool) -> Resu
     Ok(())
 }
 
+fn validate_read(request: &CandidateRequest) -> Result<()> {
+    if request.data_phase != DataPhase::In {
+        bail!("read probe requires an inbound data phase")
+    }
+    // Standard data-returning getters and the retained live-view request have read semantics.
+    let known_read = match parse_code(&request.opcode)? {
+        0x1001 | 0x1004 | 0x1005 | 0x1007..=0x100a | 0x1014 | 0x1015 | 0x101b => true,
+        0x9018 => request.params.is_empty(),
+        _ => false,
+    };
+    if !known_read {
+        bail!("operation is not an established read; use a control probe with --allow-control")
+    }
+    Ok(())
+}
+
+fn validate_property_target(request: &CandidateRequest, code: u16) -> Result<()> {
+    if matches!(parse_code(&request.opcode)?, 0x1014..=0x1016)
+        && request.params != [u32::from(code)]
+    {
+        bail!("standard property request target differs from candidate code")
+    }
+    Ok(())
+}
+
 impl CapabilityPlan {
     pub fn from_yaml(input: &str, ledger: &CandidateLedger) -> Result<Self> {
         let plan: Self = serde_yaml::from_str(input).context("parse capability plan")?;
@@ -239,8 +264,8 @@ impl CapabilityPlan {
                 }
             }
             probe.request.validate(false)?;
-            if probe.kind == ProbeKind::Read && probe.request.request.data_phase != DataPhase::In {
-                bail!("read probe requires an inbound data phase")
+            if probe.kind == ProbeKind::Read {
+                validate_read(&probe.request.request)?;
             }
             let auxiliaries = [
                 &probe.baseline,
@@ -248,6 +273,17 @@ impl CapabilityPlan {
                 &probe.restore,
                 &probe.verify_restored,
             ];
+            if row.kind == CandidateKind::Property {
+                let code = parse_code(
+                    row.code
+                        .as_deref()
+                        .context("property candidate needs code")?,
+                )?;
+                validate_property_target(&probe.request.request, code)?;
+                for request in auxiliaries.iter().filter_map(|request| request.as_ref()) {
+                    validate_property_target(&request.request, code)?;
+                }
+            }
             if probe.kind == ProbeKind::ReversibleWrite {
                 let [Some(baseline), Some(verify), Some(restore), Some(restored)] = auxiliaries
                 else {
@@ -1242,14 +1278,20 @@ mod tests {
         assert!(plan.validate_framing(PtpFraming::Standard).is_ok());
     }
 
-    #[test]
-    fn checked_in_ledgers_and_known_request_plan_share_the_schema() {
+    fn checked_in_ledger() -> CandidateLedger {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../packages/camera-config-data/fuji/catalog");
-        let gfx = CandidateLedger::from_json(
+        CandidateLedger::from_json(
             &std::fs::read_to_string(root.join("tether-app-ff0018.candidates.json")).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn checked_in_ledgers_and_known_request_plan_share_the_schema() {
+        let gfx = checked_in_ledger();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packages/camera-config-data/fuji/catalog");
         let unknown = CandidateLedger::from_json(
             &std::fs::read_to_string(root.join("tether-app-ff0021.candidates.json")).unwrap(),
         )
@@ -1260,6 +1302,99 @@ mod tests {
             .unwrap();
         assert_eq!(plan.probes[1].request.request.params, [0, 0]);
         assert_eq!(plan.probes[0].kind, ProbeKind::Read);
+    }
+
+    fn read_plan(candidate_id: &str, opcode: &str, params: Vec<u32>) -> CapabilityPlan {
+        serde_json::from_value(json!({
+            "schema": CAPABILITY_PLAN_SCHEMA,
+            "connection": "wireless-tether",
+            "probes": [{
+                "candidateId": candidate_id,
+                "kind": "read",
+                "mode": "test",
+                "shapeEvidence": ["synthetic request against unchanged ledger"],
+                "request": {"request": {"opcode": opcode, "params": params, "dataPhase": "in"}}
+            }]
+        }))
+        .unwrap()
+    }
+
+    async fn assert_rejected_without_sending(
+        ledger: &CandidateLedger,
+        plan: &CapabilityPlan,
+        expected: &str,
+    ) {
+        // CLI preparation uses this parser before constructing the transport or artifacts.
+        let error =
+            CapabilityPlan::from_yaml(&serde_yaml::to_string(plan).unwrap(), ledger).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+        let dir = TestDir::new();
+        let transport = Synthetic::new();
+        let error = run_capability_verification(
+            ledger,
+            Some(plan),
+            PtpFraming::Compressed,
+            transport.clone(),
+            dir.options(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(transport.sent.lock().unwrap().is_empty());
+        assert!(!dir.0.join("output").exists());
+    }
+
+    #[tokio::test]
+    async fn read_plans_reject_mutations_and_unknown_vendor_semantics_before_sending() {
+        let ledger = checked_in_ledger();
+        for opcode in [
+            "0x100b", "0x100f", "0x100e", "0x1016", "0x9008", "0x90ff", "0x9018",
+        ] {
+            let plan = read_plan("ff0018-coverage-tether-download", opcode, vec![1, 0]);
+            assert_rejected_without_sending(&ledger, &plan, "not an established read").await;
+        }
+        let object_read = read_plan("ff0018-coverage-tether-download", "0x1009", vec![1]);
+        object_read.validate(&ledger).unwrap();
+    }
+
+    #[tokio::test]
+    async fn property_read_targets_must_match_candidate_before_sending() {
+        let ledger = checked_in_ledger();
+        for opcode in ["0x1014", "0x1015"] {
+            for params in [vec![0xd00a], vec![]] {
+                let plan = read_plan("ff0018-property-d017", opcode, params);
+                assert_rejected_without_sending(&ledger, &plan, "target differs from candidate")
+                    .await;
+            }
+            let plan = read_plan("ff0018-property-d017", opcode, vec![0xd017]);
+            plan.validate(&ledger).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn reversible_property_cycle_and_each_auxiliary_must_target_candidate() {
+        let template = write_plan(&ledger());
+        let ledger = checked_in_ledger();
+        for wrong_target in ["all", "baseline", "verify", "restore", "verifyRestored"] {
+            let mut plan = template.clone();
+            let probe = &mut plan.probes[0];
+            probe.candidate_id = "ff0018-property-d017".into();
+            let requests = [
+                ("request", &mut probe.request),
+                ("baseline", probe.baseline.as_mut().unwrap()),
+                ("verify", probe.verify.as_mut().unwrap()),
+                ("restore", probe.restore.as_mut().unwrap()),
+                ("verifyRestored", probe.verify_restored.as_mut().unwrap()),
+            ];
+            for (label, request) in requests {
+                request.request.params = vec![if wrong_target == "all" || wrong_target == label {
+                    0xd00a
+                } else {
+                    0xd017
+                }];
+            }
+            assert_rejected_without_sending(&ledger, &plan, "target differs from candidate").await;
+        }
     }
 
     #[tokio::test]
