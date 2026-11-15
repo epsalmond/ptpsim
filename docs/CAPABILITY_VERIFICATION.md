@@ -22,7 +22,9 @@ a conflicting client datatype hint becomes a reported conflict.
 ```sh
 cargo run -p camera-initiator -- \
   --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
+  --manufacturer packages/camera-config-data/fuji/fuji.yaml \
   --connection wireless-tether \
+  --param terminalName='probe-host' \
   --camera CAMERA_IP \
   --trace camera-capabilities.trace.jsonl \
   --observation camera-capabilities.observation.jsonl \
@@ -30,6 +32,11 @@ cargo run -p camera-initiator -- \
   --candidates packages/camera-config-data/fuji/catalog/tether-app-ff0018.candidates.json \
   --output-dir camera-capabilities
 ```
+
+The manufacturer tier supplies the initiator identity defaults. `terminalName`
+supplies the host name used during PCSS initialization. `probe-host` is a local
+example. For a camera that enforces identity continuity, use the same normalized
+name as its paired host.
 
 Use a fresh output directory and observation path for every run. The directory
 contains `capability-report.json`, a copy of the input ledger, DeviceInfo, and
@@ -114,9 +121,25 @@ cargo run -p camera-sim-service -- \
   --command-bind 127.0.0.1:15740 --knock-bind 127.0.0.1:51562
 ```
 
-Run the initiator command above with `--camera 127.0.0.1` and distinct
-`simulator-` artifact paths. This exercises the PCSS rendezvous on loopback. Run it
-against the intended camera with distinct `camera-` paths after the camera and
+In a second terminal, run the initiator against loopback:
+
+```sh
+cargo run -p camera-initiator -- \
+  --manifest packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml \
+  --manufacturer packages/camera-config-data/fuji/fuji.yaml \
+  --connection wireless-tether \
+  --param terminalName='probe-host' \
+  --camera 127.0.0.1 \
+  --trace simulator-capabilities.trace.jsonl \
+  --observation simulator-capabilities.observation.jsonl \
+  verify-capabilities \
+  --candidates packages/camera-config-data/fuji/catalog/tether-app-ff0018.candidates.json \
+  --output-dir simulator-capabilities
+```
+
+This exercises the PCSS rendezvous on loopback and writes
+`simulator-capabilities/capability-report.json`. Stop the simulator after the run.
+Run the first initiator command against the intended camera after the camera and
 mode have been selected. No hardware run is part of implementing this command.
 
 Compare row `id`, `outcome`, advertisement, descriptor datatype, response codes,
