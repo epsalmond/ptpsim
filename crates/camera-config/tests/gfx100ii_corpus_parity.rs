@@ -1,5 +1,7 @@
 use camera_config::{
     CameraManifest, CapabilitySubject, ObservationLine, OperationKind, PropertyKind,
+    ProposalReview, ReviewDisposition, StaticCandidateDisposition, StaticCandidateDocument,
+    StaticCandidateKind,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -93,7 +95,6 @@ fn corpus_parity_is_byte_deterministic() {
         }
     }
     let all_refs: Vec<&str> = bundles.iter().map(String::as_str).collect();
-    // The slice test's exact bundle set is 10 bundles: 8 probes + iso legality + usb descriptor? Check migration.
     let proposal = camera_config::propose(&all_refs).unwrap();
     let committed: camera_config::Proposal = serde_json::from_str(
         &std::fs::read_to_string(
@@ -110,11 +111,11 @@ fn corpus_parity_is_byte_deterministic() {
         "proposal bytes must be deterministic"
     );
 
-    // Census after restoring the app startup 0x902b operation and property slice.
+    // The reviewed static catalog adds 67 identities to the 330-property corpus.
     let manifest =
         CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml")).unwrap();
     assert_eq!(manifest.operations.len(), 47, "operation census");
-    assert_eq!(manifest.properties.len(), 330, "property census");
+    assert_eq!(manifest.properties.len(), 397, "property census");
     assert_eq!(proposal.candidates.len(), 680, "candidate census");
 
     // Representative value rows survive loader.
@@ -124,6 +125,110 @@ fn corpus_parity_is_byte_deterministic() {
         .semantic_assertions
         .properties
         .contains_key("0xd02a"));
+}
+
+#[test]
+fn reviewed_static_catalog_parity_is_byte_deterministic() {
+    let document: StaticCandidateDocument =
+        serde_json::from_str(&data("fuji/catalog/tether-app-ff0018.candidates.json")).unwrap();
+    let proposal = camera_config::propose_static_candidates(&document).unwrap();
+    let committed: camera_config::Proposal =
+        serde_json::from_str(&data("fuji/catalog/tether-app-ff0018.proposal.json")).unwrap();
+    assert_eq!(proposal.digest, committed.digest);
+    assert_eq!(
+        camera_config::proposal_json(&proposal).unwrap(),
+        camera_config::proposal_json(&committed).unwrap(),
+        "static proposal bytes must be deterministic"
+    );
+    let review: ProposalReview =
+        serde_json::from_str(&data("fuji/catalog/tether-app-ff0018.review.json")).unwrap();
+    assert_eq!(review.proposal_digest, proposal.digest);
+    assert_eq!(
+        review.decisions,
+        proposal
+            .candidates
+            .iter()
+            .map(|candidate| (candidate.id.clone(), ReviewDisposition::Accept))
+            .collect(),
+        "every static identity has a digest-bound acceptance"
+    );
+
+    let manifest =
+        CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.consolidated.yaml")).unwrap();
+    let mut additions = 0;
+    let mut property_names = 0;
+    let mut operation_names = 0;
+    let mut expected_properties = BTreeSet::new();
+    let mut expected_operations = BTreeSet::new();
+    for row in &document.candidates {
+        let (StaticCandidateDisposition::AddCatalog | StaticCandidateDisposition::NameCandidate) =
+            row.disposition
+        else {
+            continue;
+        };
+        let code = row.code.as_ref().unwrap();
+        let expected_name = row.catalog_name.as_ref().unwrap();
+        match row.kind {
+            StaticCandidateKind::Property => {
+                let property = &manifest.properties[code];
+                assert_eq!(&property.name, expected_name, "static property {code}");
+                expected_properties.insert(code.clone());
+                if row.disposition == StaticCandidateDisposition::AddCatalog {
+                    additions += 1;
+                    assert_eq!(
+                        property.kind,
+                        PropertyKind::CatalogOnly,
+                        "static addition {code}"
+                    );
+                    assert!(
+                        property.observed_scopes.is_empty(),
+                        "static addition {code}"
+                    );
+                } else {
+                    property_names += 1;
+                }
+            }
+            StaticCandidateKind::Operation => {
+                let operation = &manifest.operations[code];
+                assert_eq!(&operation.name, expected_name, "static operation {code}");
+                assert_eq!(
+                    operation.kind,
+                    OperationKind::AdvertisedOnly,
+                    "static operation {code}"
+                );
+                expected_operations.insert(code.clone());
+                operation_names += 1;
+            }
+            StaticCandidateKind::Coverage => panic!("coverage cannot modify a catalog"),
+        }
+    }
+    assert_eq!((additions, property_names, operation_names), (67, 163, 2));
+    assert_eq!(
+        manifest.properties.len() - additions,
+        330,
+        "pre-static corpus census"
+    );
+    let evidence_id = format!("staticCandidate{}", document.source.plugin);
+    assert_eq!(
+        manifest
+            .properties
+            .iter()
+            .filter(|(_, property)| property.evidence.contains(&evidence_id))
+            .map(|(code, _)| code.clone())
+            .collect::<BTreeSet<_>>(),
+        expected_properties,
+        "static property provenance matches the reviewed ledger"
+    );
+    assert_eq!(
+        manifest
+            .operations
+            .iter()
+            .filter(|(_, operation)| operation.evidence.contains(&evidence_id))
+            .map(|(code, _)| code.clone())
+            .collect::<BTreeSet<_>>(),
+        expected_operations,
+        "static operation provenance matches the reviewed ledger"
+    );
 }
 
 #[test]
