@@ -13,7 +13,8 @@ are in each document. Static candidates remain unverified on a camera.
 The comparison base is `a2cea30`. It has 330 GFX100 II properties. FF0018 also
 has three absent standard-range property codes: `0x5014`, `0x5018`, `0x5019`.
 Its catalog proposal therefore adds 67 property identities and replaces 163
-generated raw names. Existing reviewed names and camera types remain intact.
+generated raw property names. Two advertised-only firmware-upload operations
+also receive candidate names without changing their classification. Existing reviewed names and camera types remain intact.
 FF0021 rows do not establish GFX100 II support.
 
 All rows use the [static candidate contract](../../../../docs/STATIC_CATALOG.md).
@@ -42,7 +43,7 @@ Corrections retained in the catalog:
 catalog additions to their reviewed facts. The review accepts static identities
 and their stated limitations. It does not promote them to wire observations.
 The generated consolidated manifest contains `unverified:` comments on every
-added or statically named property.
+added or statically named property and operation.
 
 Regenerate a proposal with:
 
