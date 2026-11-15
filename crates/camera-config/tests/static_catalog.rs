@@ -24,6 +24,8 @@ fn base() -> CameraManifest {
         r#"
 schema: camera-config/v1
 camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: '2.30' }
+operations:
+  '0x900c': { name: raw_0x900c, kind: advertisedOnly, connections: [usb] }
 properties:
   '0xd232': { name: raw_0xd232, type: u16, access: readOnly }
   '0xd20c': { name: simultaneousCardRecording, type: u16, access: readWrite }
@@ -194,6 +196,75 @@ fn operation_and_workflow_dispositions_retain_request_boundaries() {
         assert_eq!(row.disposition, StaticCandidateDisposition::UnknownModel);
         assert!(row.request.is_none());
     }
+}
+
+#[test]
+fn static_operation_identity_keeps_execution_classification_and_scope() {
+    let mut doc = document("FF0018");
+    doc.candidates
+        .retain(|row| row.code.as_deref() == Some("0x900c"));
+    let (proposal, review) = reviewed(&doc);
+    let manifest = apply_review(&base(), &proposal, &review).unwrap();
+    let operation = &manifest.operations["0x900c"];
+    assert_eq!(operation.name, "firmwareVersionUpSendObjectInfo");
+    assert_eq!(operation.kind, camera_config::OperationKind::AdvertisedOnly);
+    assert_eq!(operation.connections, ["usb"]);
+    assert!(operation.effects.is_empty());
+    assert!(operation.emits.is_empty());
+    assert!(operation.handler.is_none());
+    let yaml = annotate_static_candidates(&manifest, &manifest.to_yaml().unwrap());
+    assert_eq!(yaml.matches("# unverified:").count(), 1);
+}
+
+#[test]
+fn generated_manifest_contains_only_reviewed_static_catalog_changes() {
+    let yaml = include_str!(
+        "../../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml"
+    );
+    let manifest = CameraManifest::from_yaml(yaml).unwrap();
+    let doc = document("FF0018");
+    assert_eq!(manifest.properties.len(), 397);
+    assert_eq!(manifest.operations.len(), 47);
+    assert_eq!(yaml.matches("# unverified:").count(), 232);
+    for row in doc
+        .candidates
+        .iter()
+        .filter(|row| row.disposition == StaticCandidateDisposition::AddCatalog)
+    {
+        let property = &manifest.properties[row.code.as_ref().unwrap()];
+        assert_eq!(property.name, *row.catalog_name.as_ref().unwrap());
+        assert_eq!(property.kind, PropertyKind::CatalogOnly);
+        assert!(property.ptype.is_none());
+        assert!(property.access.is_none());
+        assert!(property.initial_value.is_none());
+        assert!(property.descriptor.is_none());
+        assert!(property.observed_scopes.is_empty());
+        assert!(property.controls.is_empty());
+    }
+    assert_eq!(
+        manifest.properties["0xd20c"].name,
+        "simultaneousCardRecording"
+    );
+    assert_eq!(manifest.properties["0xd208"].name, "pcssCaptureFunction");
+    assert!(!manifest.operations.contains_key("0x9008"));
+    assert!(!manifest.operations.contains_key("0x901b"));
+    for code in ["0x900c", "0x900d"] {
+        assert_eq!(
+            manifest.operations[code].kind,
+            camera_config::OperationKind::AdvertisedOnly
+        );
+    }
+    let proposal: camera_config::Proposal = serde_json::from_str(include_str!(
+        "../../../packages/camera-config-data/fuji/catalog/tether-app-ff0018.proposal.json"
+    ))
+    .unwrap();
+    assert_eq!(proposal, propose_static_candidates(&doc).unwrap());
+    let review: ProposalReview = serde_json::from_str(include_str!(
+        "../../../packages/camera-config-data/fuji/catalog/tether-app-ff0018.review.json"
+    ))
+    .unwrap();
+    assert_eq!(review.proposal_digest, proposal.digest);
+    assert_eq!(review.decisions.len(), proposal.candidates.len());
 }
 
 #[test]

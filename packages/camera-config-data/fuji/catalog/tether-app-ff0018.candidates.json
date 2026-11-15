@@ -5986,11 +5986,12 @@
       "nativeNames": [
         "CCameraCommandFirmwareVersionUp::SendObjectInfo"
       ],
-      "disposition": "coverageOnly",
+      "disposition": "nameCandidate",
       "reason": "Firmware upload operation. Payload and safety contract absent. Preserve advertisedOnly classification; do not probe uploads.",
       "evidence": [
         "FF0018 arm64 operation call sites; source SHA-256 in document header"
-      ]
+      ],
+      "catalogName": "firmwareVersionUpSendObjectInfo"
     },
     {
       "id": "ff0018-operation-900d",
@@ -6000,11 +6001,12 @@
       "nativeNames": [
         "CCameraCommandFirmwareVersionUp::SendObject"
       ],
-      "disposition": "coverageOnly",
+      "disposition": "nameCandidate",
       "reason": "Firmware upload operation. Payload and safety contract absent. Preserve advertisedOnly classification; do not probe uploads.",
       "evidence": [
         "FF0018 arm64 operation call sites; source SHA-256 in document header"
-      ]
+      ],
+      "catalogName": "firmwareVersionUpSendObject"
     },
     {
       "id": "ff0018-operation-9018",
