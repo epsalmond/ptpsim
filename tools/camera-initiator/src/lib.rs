@@ -1,3 +1,4 @@
+pub mod capability;
 pub mod idle;
 pub mod probe;
 pub mod push_frames;
