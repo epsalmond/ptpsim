@@ -44,6 +44,13 @@ observation destination is `camera-observation.jsonl` in canonical
 bundle path. The trace defaults to standard output, remains a bounded operator
 projection, and is not generator input.
 
+## Candidate ledgers
+
+Use `verify-capabilities` to probe static candidate properties without writes.
+[CAPABILITY_VERIFICATION.md](CAPABILITY_VERIFICATION.md) describes the ledger
+contract, scope gates, retained payloads, optional requests, and simulator
+comparison.
+
 ## Retained session plans
 
 The `session` command runs mode entries, mode switches, named actions, bounded
