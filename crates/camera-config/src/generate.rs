@@ -8,6 +8,10 @@ use thiserror::Error;
 
 use crate::model::*;
 use crate::observation::*;
+use crate::static_catalog::{
+    apply_static_candidate, StaticCandidate, StaticCandidateDocument, StaticCandidateSource,
+    STATIC_CANDIDATE_SCHEMA,
+};
 
 pub const VALIDATION_REPORT_SCHEMA: &str = "camera-observation-validation/v1";
 pub const PROPOSAL_SCHEMA: &str = "camera-config-proposal/v1";
@@ -97,6 +101,12 @@ pub struct ProposalCandidate {
     deny_unknown_fields
 )]
 pub enum CandidateAssertion {
+    StaticCatalog {
+        manufacturer: String,
+        model: Option<String>,
+        source: StaticCandidateSource,
+        entry: Box<StaticCandidate>,
+    },
     CameraIdentity {
         manufacturer: String,
         model: String,
@@ -1496,12 +1506,54 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
             }
         })
         .collect::<Vec<_>>();
-    let digest = proposal_digest(&candidates, &record_dispositions);
+    let digest = proposal_digest(
+        OBSERVATION_SCHEMA_VERSION,
+        &candidates,
+        &record_dispositions,
+    );
     Ok(Proposal {
         schema: PROPOSAL_SCHEMA.to_string(),
         observation_schema: OBSERVATION_SCHEMA_VERSION.to_string(),
         candidates,
         record_dispositions,
+        digest,
+    })
+}
+
+/// Propose reduced client facts without constructing camera observations.
+pub fn propose_static_candidates(
+    document: &StaticCandidateDocument,
+) -> Result<Proposal, GenerationError> {
+    document.validate()?;
+    let mut candidates = Vec::new();
+    let mut records = Vec::new();
+    for row in &document.candidates {
+        let identity = format!("{}:{}", document.source.plugin, row.id);
+        let candidate = candidate(
+            CandidateAssertion::StaticCatalog {
+                manufacturer: document.manufacturer.clone(),
+                model: document.model.clone(),
+                source: document.source.clone(),
+                entry: Box::new(row.clone()),
+            },
+            vec![identity.clone()],
+            Vec::new(),
+        );
+        records.push(ProposalRecordDisposition {
+            identity,
+            status: ProposalRecordStatus::Proposed,
+            candidate_ids: vec![candidate.id.clone()],
+        });
+        candidates.push(candidate);
+    }
+    candidates.sort_by(|a, b| a.id.cmp(&b.id));
+    records.sort_by(|a, b| a.identity.cmp(&b.identity));
+    let digest = proposal_digest(STATIC_CANDIDATE_SCHEMA, &candidates, &records);
+    Ok(Proposal {
+        schema: PROPOSAL_SCHEMA.into(),
+        observation_schema: STATIC_CANDIDATE_SCHEMA.into(),
+        candidates,
+        record_dispositions: records,
         digest,
     })
 }
@@ -1556,6 +1608,7 @@ fn sort_dedup_provenance(provenance: &mut Vec<AssertionProvenance>) {
 }
 
 fn proposal_digest(
+    input_schema: &str,
     candidates: &[ProposalCandidate],
     record_dispositions: &[ProposalRecordDisposition],
 ) -> String {
@@ -1570,7 +1623,7 @@ fn proposal_digest(
     sha256(
         &serde_json::to_vec(&ProposalCore {
             schema: PROPOSAL_SCHEMA,
-            observation_schema: OBSERVATION_SCHEMA_VERSION,
+            observation_schema: input_schema,
             candidates,
             record_dispositions,
         })
@@ -1645,7 +1698,8 @@ fn is_semantic_candidate(assertion: &CandidateAssertion) -> bool {
 
 fn require_proposal_integrity(proposal: &Proposal) -> Result<(), GenerationError> {
     if proposal.schema != PROPOSAL_SCHEMA
-        || proposal.observation_schema != OBSERVATION_SCHEMA_VERSION
+        || ![OBSERVATION_SCHEMA_VERSION, STATIC_CANDIDATE_SCHEMA]
+            .contains(&proposal.observation_schema.as_str())
     {
         return Err(GenerationError::ProposalIntegrity(
             "proposal uses an unknown schema discriminator".into(),
@@ -1667,6 +1721,16 @@ fn require_proposal_integrity(proposal: &Proposal) -> Result<(), GenerationError
     {
         return Err(GenerationError::ProposalIntegrity(
             "record dispositions must have unique sorted identities".into(),
+        ));
+    }
+    if proposal.candidates.iter().any(|candidate| {
+        matches!(
+            candidate.assertion,
+            CandidateAssertion::StaticCatalog { .. }
+        ) != (proposal.observation_schema == STATIC_CANDIDATE_SCHEMA)
+    }) {
+        return Err(GenerationError::ProposalIntegrity(
+            "proposal mixes static and observed assertions".into(),
         ));
     }
     let candidates = proposal
@@ -1744,7 +1808,11 @@ fn require_proposal_integrity(proposal: &Proposal) -> Result<(), GenerationError
             }
         }
     }
-    let expected_digest = proposal_digest(&proposal.candidates, &proposal.record_dispositions);
+    let expected_digest = proposal_digest(
+        &proposal.observation_schema,
+        &proposal.candidates,
+        &proposal.record_dispositions,
+    );
     if proposal.digest != expected_digest {
         return Err(GenerationError::ProposalIntegrity(format!(
             "proposal digest {:?} does not match its contents",
@@ -1759,6 +1827,14 @@ fn apply_candidate(
     candidate: &ProposalCandidate,
 ) -> Result<(), GenerationError> {
     match &candidate.assertion {
+        CandidateAssertion::StaticCatalog {
+            manufacturer,
+            model,
+            source,
+            entry,
+        } => {
+            apply_static_candidate(manifest, manufacturer, model, source, entry)?;
+        }
         CandidateAssertion::CameraIdentity {
             manufacturer,
             model,
@@ -2161,7 +2237,11 @@ fn apply_candidate(
             register_assertion_evidence(manifest, &candidate.provenance);
         }
     }
-    if !manifest.evidence.contains_key("canonicalObservation") {
+    if !matches!(
+        candidate.assertion,
+        CandidateAssertion::StaticCatalog { .. }
+    ) && !manifest.evidence.contains_key("canonicalObservation")
+    {
         manifest.evidence.insert(
             "canonicalObservation".to_string(),
             Evidence {
@@ -3343,6 +3423,7 @@ properties:
             candidate.observed_scopes.clear();
         }
         legacy_proposal.digest = proposal_digest(
+            OBSERVATION_SCHEMA_VERSION,
             &legacy_proposal.candidates,
             &legacy_proposal.record_dispositions,
         );
