@@ -119,6 +119,7 @@ pub enum ConnectionLifecycleTransition {
     PtpSessionClosed,
     FeatureEntered { mode: FeatureMode },
     FeatureExited,
+    SharedSessionOwnerEnded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -207,6 +208,14 @@ pub fn apply_connection_lifecycle_transition(
         }
         ConnectionLifecycleTransition::FeatureExited => {
             after.feature = LifecycleEvidence::Confirmed(FeatureState::Inactive);
+        }
+        ConnectionLifecycleTransition::SharedSessionOwnerEnded => {
+            // The connection that owned the shared session ended its
+            // transport. Downgrade the open session and active feature
+            // evidence without claiming a camera-side close: no
+            // `CloseSession` crossed the wire, so the last observed value is
+            // retained as unconfirmed.
+            mark_open_layers_unconfirmed(&mut after);
         }
     }
 
@@ -359,6 +368,44 @@ mod tests {
             LifecycleEvidence::Unconfirmed(FeatureState::Active {
                 mode: FeatureMode::ImageTransfer
             })
+        );
+    }
+
+    #[test]
+    fn shared_session_owner_ended_downgrades_only_stale_session_evidence() {
+        let before = connected_feature(FeatureMode::LiveView);
+        let after = applied(
+            &before,
+            ConnectionLifecycleTransition::SharedSessionOwnerEnded,
+        );
+
+        assert_eq!(after.network_persona, before.network_persona);
+        assert_eq!(after.command_listener, before.command_listener);
+        assert_eq!(after.proxy_transport, before.proxy_transport);
+        assert_eq!(
+            after.ptp_session,
+            LifecycleEvidence::Unconfirmed(PtpSessionState::Open)
+        );
+        assert_eq!(
+            after.feature,
+            LifecycleEvidence::Unconfirmed(FeatureState::Active {
+                mode: FeatureMode::LiveView
+            })
+        );
+    }
+
+    #[test]
+    fn shared_session_owner_ended_changes_no_layer_without_open_evidence() {
+        let idle = applied(
+            &ConnectionLifecycleSnapshot::default(),
+            ConnectionLifecycleTransition::SharedSessionOwnerEnded,
+        );
+        assert_eq!(
+            idle,
+            ConnectionLifecycleSnapshot {
+                sequence: 1,
+                ..ConnectionLifecycleSnapshot::default()
+            }
         );
     }
 
