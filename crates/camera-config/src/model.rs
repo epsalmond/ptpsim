@@ -389,6 +389,9 @@ pub struct ObservedScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PropertyDisposition {
+    /// Evidence ids supporting this behavioral claim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
     /// Connection ids this disposition applies to. Empty = all connections.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<String>,
@@ -424,6 +427,9 @@ pub enum PropertyDispositionKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationDisposition {
+    /// Evidence ids supporting this behavioral claim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
