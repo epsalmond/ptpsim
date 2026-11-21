@@ -142,6 +142,48 @@ fn ffi_idle_loss_and_user_exit_remain_evidence_aware() {
 }
 
 #[test]
+fn ffi_shared_session_owner_ended_downgrades_without_claiming_a_close() {
+    let mut snapshot = connection_lifecycle_initial_snapshot();
+    for transition in [
+        ConnectionLifecycleTransition::NetworkPersonaReady,
+        ConnectionLifecycleTransition::CommandListenerReady,
+        ConnectionLifecycleTransition::ProxyTransportAccepted,
+        ConnectionLifecycleTransition::CommandInitialized,
+        ConnectionLifecycleTransition::PtpSessionOpened,
+        ConnectionLifecycleTransition::FeatureEntered {
+            mode: LifecycleFeatureMode::LiveView,
+        },
+    ] {
+        snapshot = apply(snapshot, transition);
+    }
+    let network = snapshot.network_persona;
+    let listener = snapshot.command_listener;
+    let transport = snapshot.proxy_transport;
+
+    snapshot = apply(
+        snapshot,
+        ConnectionLifecycleTransition::SharedSessionOwnerEnded,
+    );
+    assert_eq!(snapshot.network_persona, network);
+    assert_eq!(snapshot.command_listener, listener);
+    assert_eq!(snapshot.proxy_transport, transport);
+    assert_eq!(
+        snapshot.ptp_session,
+        LifecyclePtpSessionEvidence::Unconfirmed {
+            state: LifecyclePtpSessionState::Open
+        }
+    );
+    assert_eq!(
+        snapshot.feature,
+        LifecycleFeatureEvidence::Unconfirmed {
+            state: LifecycleFeatureState::Active {
+                mode: LifecycleFeatureMode::LiveView
+            }
+        }
+    );
+}
+
+#[test]
 fn ffi_transition_rejects_a_future_snapshot_version() {
     let mut snapshot = connection_lifecycle_initial_snapshot();
     snapshot.schema = "ptpsim-connection-lifecycle/v2".into();
