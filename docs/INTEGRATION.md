@@ -962,7 +962,13 @@ Its session and feature transitions update the current session owner's
 tracker and the sender's tracker. Other lifecycle layers remain specific to
 each connection. A successful session open assigns the sender as owner; a
 session close clears ownership. Teardown of a previous connection cannot clear
-a replacement session. These rules describe simulator state, not camera-side
+a replacement session. When the owning connection's transport ends, the service
+clears the shared session and records `sharedSessionOwnerEnded` on each other
+active tracker holding confirmed open-session or active-feature evidence. That
+transition downgrades the stale session and feature evidence to unconfirmed
+and leaves the listener, network-persona, and proxy-transport layers untouched.
+It does not claim a camera-side session close; no `CloseSession` crossed the
+wire. These rules describe simulator state, not camera-side
 connection ownership or operation gating.
 
 Cancellation or handler unwinding records a local clean transport close.
