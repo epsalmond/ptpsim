@@ -17,10 +17,10 @@ use camera_config::{
     CameraContext, CameraManifest, CaptureClock, CaptureContext, CaptureInterface,
     CaptureInterfaceType, ClientContext, ClockType, ClockUnit, ConnectionLifecycleSnapshot,
     ConnectionLifecycleTraceEvent, ConnectionLifecycleTracker, ConnectionLifecycleTransition,
-    DataDirection, ExecutionContext, LifecycleMarker, LiveViewDeliveryKind, ObservationLine,
-    ObservationRecorder, PayloadMetadata, PayloadMetadataBuilder, PcssKnock, PtpDataPhase,
-    PtpEventRecord, PtpRequest, PtpResponse, PtpTransactionRecord, PtpTransport,
-    TransactionOutcome, ValuePolicy,
+    DataDirection, ExecutionContext, FeatureState, LifecycleEvidence, LifecycleMarker,
+    LiveViewDeliveryKind, ObservationLine, ObservationRecorder, PayloadMetadata,
+    PayloadMetadataBuilder, PcssKnock, PtpDataPhase, PtpEventRecord, PtpRequest, PtpResponse,
+    PtpSessionState, PtpTransactionRecord, PtpTransport, TransactionOutcome, ValuePolicy,
 };
 use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
@@ -305,6 +305,38 @@ impl ConnectionLifecycles {
         drop(state);
         #[cfg(test)]
         self.completed.notify_one();
+    }
+
+    /// Reconcile peer evidence after the owning command connection ends its
+    /// transport. Each other active tracker holding confirmed open-session or
+    /// active-feature evidence records `SharedSessionOwnerEnded`, which
+    /// downgrades that stale evidence without claiming a session close. The
+    /// owner's own tracker is reconciled by its terminal transition, and
+    /// layers below the shared session are never touched.
+    fn shared_session_owner_ended(&self, owner_sequence: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (&sequence, entry) in state.entries.iter_mut() {
+            if sequence == owner_sequence || entry.terminal_reason.is_some() {
+                continue;
+            }
+            let snapshot = entry.tracker.snapshot();
+            let stale = matches!(
+                snapshot.ptp_session,
+                LifecycleEvidence::Confirmed(PtpSessionState::Open)
+            ) || matches!(
+                snapshot.feature,
+                LifecycleEvidence::Confirmed(FeatureState::Active { .. })
+            );
+            if stale {
+                entry
+                    .tracker
+                    .apply(ConnectionLifecycleTransition::SharedSessionOwnerEnded)
+                    .expect("an in-memory lifecycle trace cannot exhaust u64 sequence space");
+            }
+        }
     }
 
     pub fn snapshot(&self) -> ServiceConnectionLifecycles {
@@ -1891,11 +1923,16 @@ async fn handle_command_conn(
         .unwrap_or(CommandTerminalReason::TransportError);
     // Session teardown belongs to the command connection that opened it. A
     // completed older task must not clear a session opened by a newer socket.
+    // Peers that mirrored evidence from the cleared session lose their
+    // confirmed session and feature claims (#538).
     let mut engine = engine.lock().await;
     let mut owner = session_owner.lock().await;
     if *owner == Some(session_sequence) {
         engine.clear_session_after_transport_end();
         *owner = None;
+        lifecycle_guard
+            .lifecycles
+            .shared_session_owner_ended(session_sequence);
     }
     drop(owner);
     drop(engine);
@@ -3740,6 +3777,100 @@ properties:
     }
 
     #[tokio::test]
+    async fn owner_disconnect_downgrades_peer_shared_session_evidence() {
+        let (command, _control, lifecycles, shutdown, task, _directory) =
+            start_lifecycle_server().await;
+        let mut owner = connect_lifecycle_command(command).await;
+        assert_eq!(
+            lifecycle_operation(&mut owner, op::OPEN_SESSION, 1, vec![1])
+                .await
+                .code,
+            resp::OK
+        );
+        let mut peer = connect_lifecycle_command(command).await;
+        assert_eq!(
+            lifecycle_operation_with_data(
+                &mut peer,
+                op::SET_DEVICE_PROP_VALUE,
+                1,
+                vec![0xdf01],
+                Some(&22u16.to_le_bytes())
+            )
+            .await
+            .code,
+            resp::OK
+        );
+        let before = lifecycles.snapshot();
+        assert_eq!(before.connections.len(), 2);
+        let peer_before = before.connections[1].snapshot.clone();
+        // The peer mirrored the owner's active feature without ever
+        // observing the session open itself.
+        assert_eq!(peer_before.ptp_session, LifecycleEvidence::Unknown);
+        assert_eq!(
+            peer_before.feature,
+            LifecycleEvidence::Confirmed(FeatureState::Active {
+                mode: FeatureMode::LiveView
+            })
+        );
+
+        drop(owner);
+        wait_for_lifecycle_finish(&lifecycles).await;
+        let after = lifecycles.snapshot();
+        assert_eq!(
+            after.connections[0].terminal_reason,
+            Some(CommandTerminalReason::PeerEof)
+        );
+        assert_eq!(
+            after.connections[0].snapshot.ptp_session,
+            LifecycleEvidence::Unconfirmed(PtpSessionState::Open)
+        );
+        assert_eq!(
+            after.connections[0].snapshot.feature,
+            LifecycleEvidence::Unconfirmed(FeatureState::Active {
+                mode: FeatureMode::LiveView
+            })
+        );
+
+        assert!(after.connections[1].active);
+        let peer_after = &after.connections[1];
+        // The cleared shared session no longer supports the peer's confirmed
+        // feature claim, so the evidence is downgraded, not asserted closed.
+        assert_eq!(peer_after.snapshot.ptp_session, LifecycleEvidence::Unknown);
+        assert_eq!(
+            peer_after.snapshot.feature,
+            LifecycleEvidence::Unconfirmed(FeatureState::Active {
+                mode: FeatureMode::LiveView
+            })
+        );
+        assert_eq!(
+            peer_after.snapshot.network_persona,
+            peer_before.network_persona
+        );
+        assert_eq!(
+            peer_after.snapshot.command_listener,
+            peer_before.command_listener
+        );
+        assert_eq!(
+            peer_after.snapshot.proxy_transport,
+            peer_before.proxy_transport
+        );
+        assert_eq!(peer_after.snapshot.sequence, peer_before.sequence + 1);
+        assert!(peer_after.trace.iter().any(|event| matches!(
+            event.transition,
+            ConnectionLifecycleTransition::SharedSessionOwnerEnded
+        )));
+
+        assert_eq!(
+            lifecycle_operation(&mut peer, op::CLOSE_SESSION, 2, vec![])
+                .await
+                .code,
+            resp::SESSION_NOT_OPEN
+        );
+        shutdown.send(()).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn shutdown_finalizes_lifecycles_with_client_sockets_still_open() {
         let (command, _control, lifecycles, shutdown, task, _directory) =
             start_lifecycle_server().await;
@@ -4007,6 +4138,61 @@ properties:
                 LifecycleEvidence::Confirmed(ProxyTransportState::Lost)
             );
         }
+    }
+
+    #[test]
+    fn shared_session_owner_ended_reconciles_only_stale_live_trackers() {
+        let lifecycles = ConnectionLifecycles::default();
+        for sequence in 1..=3 {
+            lifecycles.accepted(sequence);
+        }
+        lifecycles.apply(1, ConnectionLifecycleTransition::PtpSessionOpened);
+        lifecycles.apply(2, ConnectionLifecycleTransition::PtpSessionOpened);
+        lifecycles.apply(
+            2,
+            ConnectionLifecycleTransition::FeatureEntered {
+                mode: FeatureMode::LiveView,
+            },
+        );
+
+        lifecycles.shared_session_owner_ended(1);
+
+        let views = lifecycles.snapshot().connections;
+        let owner = views
+            .iter()
+            .find(|connection| connection.session_sequence == 1)
+            .unwrap();
+        let peer = views
+            .iter()
+            .find(|connection| connection.session_sequence == 2)
+            .unwrap();
+        let idle = views
+            .iter()
+            .find(|connection| connection.session_sequence == 3)
+            .unwrap();
+        // The owner's own evidence is reconciled by its terminal transition.
+        assert_eq!(owner.snapshot.sequence, 3);
+        assert_eq!(
+            owner.snapshot.ptp_session,
+            LifecycleEvidence::Confirmed(PtpSessionState::Open)
+        );
+        assert_eq!(
+            peer.snapshot.ptp_session,
+            LifecycleEvidence::Unconfirmed(PtpSessionState::Open)
+        );
+        assert_eq!(
+            peer.snapshot.feature,
+            LifecycleEvidence::Unconfirmed(FeatureState::Active {
+                mode: FeatureMode::LiveView
+            })
+        );
+        assert_eq!(
+            peer.snapshot.proxy_transport,
+            LifecycleEvidence::Confirmed(ProxyTransportState::Accepted)
+        );
+        // A tracker without stale shared-session evidence records no event.
+        assert_eq!(idle.snapshot.sequence, 2);
+        assert_eq!(idle.snapshot.ptp_session, LifecycleEvidence::Unknown);
     }
 
     #[test]

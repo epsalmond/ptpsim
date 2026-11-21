@@ -106,6 +106,7 @@ pub enum ConnectionLifecycleTransition {
     PtpSessionClosed,
     FeatureEntered { mode: LifecycleFeatureMode },
     FeatureExited,
+    SharedSessionOwnerEnded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -357,6 +358,7 @@ impl From<ConnectionLifecycleTransition> for cc::ConnectionLifecycleTransition {
                 Self::FeatureEntered { mode: mode.into() }
             }
             ConnectionLifecycleTransition::FeatureExited => Self::FeatureExited,
+            ConnectionLifecycleTransition::SharedSessionOwnerEnded => Self::SharedSessionOwnerEnded,
         }
     }
 }
@@ -386,6 +388,9 @@ impl From<cc::ConnectionLifecycleTransition> for ConnectionLifecycleTransition {
                 Self::FeatureEntered { mode: mode.into() }
             }
             cc::ConnectionLifecycleTransition::FeatureExited => Self::FeatureExited,
+            cc::ConnectionLifecycleTransition::SharedSessionOwnerEnded => {
+                Self::SharedSessionOwnerEnded
+            }
         }
     }
 }
