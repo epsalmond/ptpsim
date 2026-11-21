@@ -1,13 +1,11 @@
-# OCI image workflow — builds and publishes the deployable camera-sim-service
-# container image. Runs on the privileged Docker-backend Linux lane, unlike the
-# unprivileged portable lane in linux.yml.
+# Publish the deployable camera-sim-service image on the privileged Docker lane.
+# GitHub Actions runs the secretless build dry-run for pull requests.
 # Credentials come from Woodpecker repository secrets, never tracked files.
 #
 # The registry hostname and repo path never appear in this file: they arrive
 # through the oci_registry / oci_repo repo secrets so this public repo stays
-# free of private endpoints. PRs build both architectures with dry_run (no
-# secrets, no push); pushes to the default branch publish, then verify and
-# smoke the published manifest.
+# free of private endpoints. Default-branch pushes publish both architectures,
+# then verify and smoke the published manifest.
 
 workspace:
   base: /woodpecker
@@ -28,7 +26,8 @@ labels:
   trust: host-root
 
 when:
-  - event: [push, pull_request]
+  - event: push
+    evaluate: 'CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
     path:
       include:
         - Dockerfile
@@ -39,42 +38,17 @@ when:
         - .woodpecker/oci-image.yml
         - 'crates/**'
         - 'services/**'
+        - 'tools/**'
         - 'packages/camera-config-data/**'
         - 'packages/fixtures/**'
         - Cargo.toml
         - Cargo.lock
         - rust-toolchain.toml
+      ignore_message: '[ALL]'
       on_empty: false
   - event: manual
 
 steps:
-  # PRs only: cross-compile both arches through the Dockerfile with no push and
-  # no secrets. Proves the image builds before it can reach the registry.
-  - name: build-dry-run
-    image: woodpeckerci/plugin-docker-buildx
-    privileged: true
-    settings:
-      # Literal dummy repo — dry_run never contacts a registry, so no secret is
-      # needed and none is exposed to pull_request builds.
-      repo: localhost/ptpsim/camera-sim-service
-      platforms: linux/amd64,linux/arm64
-      provenance: false
-      dry_run: true
-      # Let the Dockerfile own the OCI labels. auto_label would derive
-      # org.opencontainers.image.source from the git remote as ".../ptpsim.git"
-      # and overwrite the Dockerfile's ".../ptpsim" — which verify asserts on.
-      auto_label: false
-      tag: sha-${CI_COMMIT_SHA:0:8}
-      # No BUILDER_IMAGE override: the buildx plugin builds inside a
-      # docker-container buildkit that does not inherit the host daemon's CA
-      # trust, so pulling the private toolchain base fails on x509. The
-      # Dockerfile's public rust:1.97.0-slim default is self-contained and
-      # installs cargo-chef/zigbuild/zig itself.
-      build_args:
-        SOURCE_COMMIT: ${CI_COMMIT_SHA}
-    when:
-      - event: pull_request
-
   # Default-branch push (and manual): publish the multi-arch manifest. amd64 and
   # arm64 both come from the Dockerfile's cargo-zigbuild cross-compile, so arm64
   # is cheap and rides the same blocking build (no async merge path exists for
@@ -93,26 +67,25 @@ steps:
         from_secret: oci_registry_password
       platforms: linux/amd64,linux/arm64
       provenance: false
-      # See build-dry-run: the Dockerfile owns the OCI labels, so auto_label's
-      # ".git"-suffixed source must not overwrite the label verify checks.
+      # The Dockerfile owns the OCI labels. Do not overwrite its source label.
       auto_label: false
       tag: sha-${CI_COMMIT_SHA:0:8},latest
-      # See build-dry-run: no BUILDER_IMAGE override, so buildkit-in-container
-      # never pulls the private toolchain base it cannot verify. The public
-      # Dockerfile default builds self-contained.
+      # Keep the public Dockerfile builder default. BuildKit does not inherit
+      # the host daemon's trust configuration for private toolchain images.
       build_args:
         SOURCE_COMMIT: ${CI_COMMIT_SHA}
     when:
-      - evaluate: 'CI_PIPELINE_EVENT == "push" && CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
+      - event: push
+        evaluate: 'CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
       - event: manual
 
   # Assert the published manifest per architecture. regctl image inspect on a
   # manifest list returns the index, not a platform config, so resolve each
-  # platform's digest first and hand the digest-pinned ref to the verifier —
-  # a digest addresses exactly one platform, which is what its jq expects.
+  # platform's digest first and hand the digest-pinned ref to the verifier.
+  # A digest addresses exactly one platform, which is what its jq expects.
   # jq/bash/coreutils(od) come from apk; regctl is not an Alpine package, so
-  # pull the pinned release binary (the agent reaches GitHub — linux.yml uses
-  # gh releases). The step runs on the amd64 agent, so fetch the amd64 build.
+  # pull the pinned release binary from GitHub. The step runs on the amd64
+  # agent, so fetch the amd64 build.
   - name: verify
     image: alpine:3.22
     depends_on: [publish]
@@ -139,7 +112,8 @@ steps:
       - IMAGE_REF="$OCI_REPO@$AMD64_DIGEST" EXPECTED_ARCH=amd64 EXPECTED_REVISION="$CI_COMMIT_SHA" bash ci/verify-oci-image.sh
       - IMAGE_REF="$OCI_REPO@$ARM64_DIGEST" EXPECTED_ARCH=arm64 EXPECTED_REVISION="$CI_COMMIT_SHA" bash ci/verify-oci-image.sh
     when:
-      - evaluate: 'CI_PIPELINE_EVENT == "push" && CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
+      - event: push
+        evaluate: 'CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
       - event: manual
 
   # Boot the amd64 image and drive it end to end: pull, run with a startup-state
@@ -162,5 +136,6 @@ steps:
       - apk add --no-cache bash
       - IMAGE_REF="$OCI_REPO:sha-${CI_COMMIT_SHA:0:8}" bash ci/smoke-oci-image.sh
     when:
-      - evaluate: 'CI_PIPELINE_EVENT == "push" && CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
+      - event: push
+        evaluate: 'CI_COMMIT_BRANCH == CI_REPO_DEFAULT_BRANCH'
       - event: manual

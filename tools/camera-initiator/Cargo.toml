@@ -24,6 +24,7 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 rustix = { workspace = true }
+nusb = { version = "0.2.9", features = ["tokio"] }
 
 [dev-dependencies]
 camera-config = { path = "../../crates/camera-config" }

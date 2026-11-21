@@ -1,67 +1,49 @@
 #!/bin/sh
 set -eu
 
-script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+script_dir="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT HUP INT TERM
-
 mkdir -p "$test_root/bin"
 
-cat >"$test_root/bin/gh" <<'EOF'
+cat >"$test_root/bin/gh" <<'MOCK'
 #!/bin/sh
 set -eu
-
-command="$1 $2"
-case "$command" in
+case "$1 $2" in
   "release view")
+    [ "$3" = sha-01234567 ]
     echo view >>"$CALLS_FILE"
     case "$SCENARIO" in
-      existing)
-        printf '%s\n' "$TARGET_COMMIT"
-        ;;
-      branch)
-        printf '%s\n' main
-        ;;
-      empty)
-        printf '\n'
-        ;;
-      create|race)
-        if [ -f "$CREATED_FILE" ]; then
-          printf '%s\n' "$TARGET_COMMIT"
-        else
-          exit 1
-        fi
-        ;;
-      fatal)
-        exit 1
-        ;;
+      existing|branch|empty|wrong|api-failure) : ;;
+      create|race) [ -f "$CREATED_FILE" ] ;;
+      fatal) exit 1 ;;
     esac
     ;;
   "release create")
+    [ "$3" = sha-01234567 ]
+    [ "$4" = --target ]
+    [ "$5" = "$TARGET_COMMIT" ]
     echo create >>"$CALLS_FILE"
     case "$SCENARIO" in
-      create)
-        : >"$CREATED_FILE"
-        ;;
-      race)
-        : >"$CREATED_FILE"
-        exit 1
-        ;;
-      fatal)
-        exit 1
-        ;;
-      *)
-        exit 2
-        ;;
+      create) : >"$CREATED_FILE" ;;
+      race) : >"$CREATED_FILE"; exit 1 ;;
+      *) exit 1 ;;
     esac
     ;;
-  *)
-    exit 2
+  "api repos/{owner}/{repo}/commits/sha-01234567")
+    [ "$3" = --jq ]
+    [ "$4" = .sha ]
+    echo resolve >>"$CALLS_FILE"
+    case "$SCENARIO" in
+      wrong) printf '%s\n' 01234567aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+      api-failure) exit 1 ;;
+      *) printf '%s\n' "$TARGET_COMMIT" ;;
+    esac
     ;;
+  *) exit 2 ;;
 esac
-EOF
+MOCK
 chmod +x "$test_root/bin/gh"
-
 target_commit=0123456789abcdef0123456789abcdef01234567
 
 run_case() {
@@ -72,19 +54,14 @@ run_case() {
   calls_file="$case_root/calls"
   created_file="$case_root/created"
   : >"$calls_file"
-
-  if PATH="$test_root/bin:$PATH" \
-    SCENARIO="$scenario" \
-    TARGET_COMMIT="$target_commit" \
-    CALLS_FILE="$calls_file" \
-    CREATED_FILE="$created_file" \
-    "$script_dir/ensure-github-release" sha-01234567 "$target_commit" \
+  if PATH="$test_root/bin:$PATH" SCENARIO="$scenario" \
+    TARGET_COMMIT="$target_commit" CALLS_FILE="$calls_file" CREATED_FILE="$created_file" \
+    "$script_dir/ensure-github-release" "${3:-sha-01234567}" "${4:-$target_commit}" \
     >"$case_root/stdout" 2>"$case_root/stderr"; then
     result=success
   else
     result=failure
   fi
-
   if [ "$result" != "$expected_result" ]; then
     echo "$scenario: expected $expected_result, got $result" >&2
     cat "$case_root/stderr" >&2
@@ -92,22 +69,27 @@ run_case() {
   fi
 }
 
-run_case existing success
-if grep -q '^create$' "$test_root/existing/calls"; then
-  echo "existing: unexpectedly attempted release creation" >&2
-  exit 1
-fi
-
-run_case branch success
-run_case empty success
-
+for scenario in existing branch empty; do
+  run_case "$scenario" success
+  if grep -q '^create$' "$test_root/$scenario/calls"; then
+    echo "$scenario: unexpectedly attempted release creation" >&2
+    exit 1
+  fi
+  [ "$(grep -c '^resolve$' "$test_root/$scenario/calls")" -eq 1 ]
+done
 run_case create success
 [ "$(grep -c '^create$' "$test_root/create/calls")" -eq 1 ]
-
 run_case race success
 [ "$(grep -c '^view$' "$test_root/race/calls")" -eq 2 ]
 [ "$(grep -c '^create$' "$test_root/race/calls")" -eq 1 ]
-
+[ "$(grep -c '^resolve$' "$test_root/race/calls")" -eq 1 ]
+run_case wrong failure
+run_case api-failure failure
 run_case fatal failure
-
+run_case invalid-tag failure sha-aaaaaaaa
+run_case short-sha failure sha-01234567 01234567
+run_case branch-sha failure sha-main main
+[ ! -s "$test_root/invalid-tag/calls" ]
+[ ! -s "$test_root/short-sha/calls" ]
+[ ! -s "$test_root/branch-sha/calls" ]
 echo "ensure-github-release tests passed"

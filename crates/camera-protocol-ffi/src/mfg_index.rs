@@ -134,6 +134,26 @@ pub enum Recognition {
     },
 }
 
+/// One compatible reconnect profile from the manufacturer index.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ReadyReconnectCandidate {
+    pub model: String,
+    pub is_fallback: bool,
+}
+
+/// Advisory profiles with a Ready route for the supplied observation and saved
+/// identity. A candidate does not authorize changing the saved model or plan.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum ReadyReconnectRecognition {
+    NoMatch,
+    Candidate {
+        candidate: ReadyReconnectCandidate,
+    },
+    Disambiguate {
+        candidates: Vec<ReadyReconnectCandidate>,
+    },
+}
+
 /// Manifest-authored policy for one saved-camera reconnect scan.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ReconnectPolicy {
@@ -484,6 +504,8 @@ pub enum Step {
         frame: Vec<ChunkFrameField>,
         /// Index the final (remainder) window carries (Fuji `0xffff`).
         sentinel_index: u32,
+        /// Optional closed source checksum/framing policy (§11.2a).
+        checksum: Option<ChunkChecksum>,
         opts: StepOptions,
     },
     Acquire {
@@ -601,6 +623,20 @@ pub struct ChunkFrameField {
 pub enum ChunkField {
     Index,
     Length,
+}
+
+/// Mirrors `ix::ChunkChecksum` exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ChunkChecksum {
+    SourceSum16Le,
+}
+
+impl From<ix::ChunkChecksum> for ChunkChecksum {
+    fn from(checksum: ix::ChunkChecksum) -> Self {
+        match checksum {
+            ix::ChunkChecksum::SourceSum16Le => Self::SourceSum16Le,
+        }
+    }
 }
 
 impl From<ix::ChunkField> for ChunkField {
@@ -1115,6 +1151,7 @@ fn step_from_ix(
                 })
                 .collect(),
             sentinel_index: inner.sentinel_index,
+            checksum: inner.checksum.map(Into::into),
             opts: (&inner.opts).into(),
         },
         ix::Step::Acquire(inner) => Step::Acquire {
@@ -1540,7 +1577,10 @@ pub fn reconnect_decision(
             .collect();
         if route.identity.is_empty()
             || !route.identity.iter().all(|key| {
-                observed.get(key.as_str()).copied() == persisted.get(key.as_str()).copied()
+                matches!(
+                    (observed.get(key.as_str()), persisted.get(key.as_str())),
+                    (Some(observed), Some(persisted)) if observed == persisted
+                )
             })
         {
             continue;
@@ -1571,6 +1611,37 @@ pub fn reconnect_decision(
         };
     }
     ReconnectDecision::NoMatch
+}
+
+pub fn recognize_ready_for_reconnect(
+    index: &ix::ResolvedManufacturerIndex,
+    facts: &ix::eval::BleAdvertFacts,
+    persisted_scope: &[KeyValue],
+) -> ReadyReconnectRecognition {
+    let mut candidates: Vec<_> = index
+        .models
+        .iter()
+        .filter(|model| {
+            matches!(
+                reconnect_decision(index, &model.id, facts, persisted_scope),
+                ReconnectDecision::Ready { .. }
+            )
+        })
+        .map(|model| ReadyReconnectCandidate {
+            model: model.id.clone(),
+            is_fallback: model.fallback,
+        })
+        .collect();
+    if candidates.iter().any(|candidate| !candidate.is_fallback) {
+        candidates.retain(|candidate| !candidate.is_fallback);
+    }
+    match candidates.len() {
+        0 => ReadyReconnectRecognition::NoMatch,
+        1 => ReadyReconnectRecognition::Candidate {
+            candidate: candidates.remove(0),
+        },
+        _ => ReadyReconnectRecognition::Disambiguate { candidates },
+    }
 }
 
 fn intersect_scope<'a>(

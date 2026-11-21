@@ -19,9 +19,12 @@ Kotlin bindings, and publishes a real **Android Archive (`.aar`)**:
 | asset | role |
 |---|---|
 | `CameraProtocolFFI-<sha8>.aar` | the artifact: `classes.jar` (compiled bindings) + `AndroidManifest.xml` + `jni/<abi>/*.so` |
-| `CameraProtocolFFI-<sha8>.checksum` | SHA-256 of the `.aar` |
+| `CameraProtocolFFI-android-<sha8>.checksum` | SHA-256 of the `.aar` |
 
-Three ABIs are bundled — covers everything except 32-bit x86:
+The checksum filename includes `android` to distinguish it from the Apple
+ZIP checksum attached to the same release.
+
+Three ABIs are bundled, covering everything except 32-bit x86:
 
 - `arm64-v8a` (aarch64-linux-android) — modern devices + emulators
 - `armeabi-v7a` (armv7-linux-androideabi) — older 32-bit ARM devices
@@ -113,5 +116,5 @@ file, is a possible future follow-up.)
 - `docs/SPM_INTEGRATION.md` — the iOS equivalent
 - `ci/build-android.sh` — the build recipe (runnable locally if you
   have Rust + Android NDK + the 3 targets + `kotlinc` + a JNA jar)
-- `.woodpecker/linux.yml` — the CI step that publishes the `.aar`
-- `ci/images/ci-android/Dockerfile` — the CI image carrying `kotlinc` + JNA
+- `.github/workflows/linux.yml` — the CI step that publishes the `.aar`
+- `ci/github-linux-setup.sh` and the Linux workflow install the hosted build tools

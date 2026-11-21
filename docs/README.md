@@ -11,14 +11,17 @@ index is a navigational summary of it.
 | --- | --- | --- |
 | [`../DESIGN.md`](../DESIGN.md) | Baseline architecture — purpose, the central observation loop, the generic engine, the transport/mode matrix | Architecture-level decisions; needing the system-wide picture |
 | [`MANIFEST_SCHEMA.md`](MANIFEST_SCHEMA.md) | The manifest schema contract — template grammar, step/observation vocabulary, predicates, wire conventions; wins over code and other docs on conflict | Authoring or reviewing manifests, schema changes, or anything that parses/emits manifest data |
+| [`STATIC_CATALOG.md`](STATIC_CATALOG.md) | Static client candidate contract and reviewed catalog intake | Adding unverified client identities or preparing initiator validation |
 | [`INTEGRATION.md`](INTEGRATION.md) | How a client app consumes `camera-protocol-ffi` — the platform-neutral seam, binding generation, both query surfaces, the action catalog | Wiring an app to the FFI, or changing the FFI surface consumers depend on |
+| [`CAPABILITY_VERIFICATION.md`](CAPABILITY_VERIFICATION.md) | Candidate property probes and scoped unverified results | Preparing static candidates for simulator or camera qualification |
+| [`USB_INVENTORY.md`](USB_INVENTORY.md) | Native raw USB DeviceInfo inventory through camera-initiator | Selecting an explicit USB device or validating inventory behavior |
 | [`REAL_CAMERA_PTPIP.md`](REAL_CAMERA_PTPIP.md) | Operating `camera-initiator`, the headless real-camera PTP/IP probe lane | Driving a real camera, capturing traces, or debugging manifests against hardware |
 | [`NIKON_LSS.md`](NIKON_LSS.md) | Spec of the sans-I/O Nikon LSS authentication primitive in `protocol-primitives`, with clean-room provenance | Nikon BLE authentication / LSS crypto work; verifying the clean-room boundary |
 | [`ANDROID_INTEGRATION.md`](ANDROID_INTEGRATION.md) | Consuming the published `CameraProtocolFFI` `.aar` from a Kotlin app — release contents, ABIs, Gradle wiring | Integrating or updating the Android bindings; Android packaging/ABI issues |
 | [`SPM_INTEGRATION.md`](SPM_INTEGRATION.md) | Consuming a pinned, promoted `CameraProtocolFFI.xcframework` via SPM or direct vendoring | Adding or updating an iOS/macOS consumer's dependency |
 | [`APPLE_FFI_RELEASES.md`](APPLE_FFI_RELEASES.md) | How Apple FFI artifacts are promoted — supported slices, tag-driven promotion procedure | Cutting or consuming an Apple FFI release; changing the xcframework pipeline |
 | [`CONTAINER.md`](CONTAINER.md) | The `camera-sim-service` container image — platforms, runtime port contract, publication guidance | Building, publishing, or running the simulator container |
-| [`CI.md`](CI.md) | Reading ptpsim's Woodpecker CI — workflow layout, status meanings, triage rules of thumb | A pipeline is red or errored; changing `.woodpecker/` workflows |
+| [`CI.md`](CI.md) | GitHub Actions checks, release artifacts, and private image publication | Diagnosing CI failures; changing CI workflows |
 | [`UNTRUSTED_INPUT.md`](UNTRUSTED_INPUT.md) | HTTP, simulator connection, and binary decoder resource limits | Changing network parsers, connection admission, read deadlines, or binary decoders |
 | [`FUZZING.md`](FUZZING.md) | Local cargo-fuzz targets, synthetic seeds, and coverage scope | Building or running parser fuzz targets |
 | [`CODE_REVIEW_WORKFLOW.md`](CODE_REVIEW_WORKFLOW.md) | The durable PR review-thread workflow — SHA-pinned reviews, thread triage, delta reviews, readiness gates | Running or remediating a review pass; resuming a PR after context loss |

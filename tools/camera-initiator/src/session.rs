@@ -19,6 +19,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 
+use crate::idle::{HoldReport, IdleEnd, IdleObservation, MAX_HOLD_DURATION_MS};
+use crate::push_frames::{
+    PushFrameLimits, PushFrameProgress, PushFrameReport, PushFrameTermination,
+};
 use crate::{NativePtpTransport, StreamingFileSink, TraceWriter};
 
 pub const SESSION_PLAN_SCHEMA: &str = "camera-initiator-session/v1";
@@ -147,6 +151,22 @@ fn safe_step_id(value: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SessionStep {
+    Hold {
+        id: String,
+        #[serde(rename = "durationMs")]
+        duration_ms: u64,
+    },
+    SamplePushFrames {
+        id: String,
+        #[serde(rename = "frameCount")]
+        frame_count: u32,
+        #[serde(rename = "maxFrameBytes")]
+        max_frame_bytes: usize,
+        #[serde(rename = "maxTotalBytes")]
+        max_total_bytes: u64,
+        #[serde(rename = "timeoutMs")]
+        timeout_ms: u64,
+    },
     Entry {
         id: String,
         from: Option<String>,
@@ -173,7 +193,11 @@ pub enum SessionStep {
 impl SessionStep {
     pub fn id(&self) -> &str {
         match self {
-            Self::Entry { id, .. } | Self::Switch { id, .. } | Self::Action { id, .. } => id,
+            Self::Entry { id, .. }
+            | Self::Switch { id, .. }
+            | Self::Action { id, .. }
+            | Self::Hold { id, .. }
+            | Self::SamplePushFrames { id, .. } => id,
         }
     }
 }
@@ -227,6 +251,8 @@ pub struct SwitchExpectation {
 
 fn validate_expectation_shape(step: &SessionStep) -> Result<()> {
     let expectations: Vec<&OutcomeExpectation> = match step {
+        SessionStep::Hold { .. } => Vec::new(),
+        SessionStep::SamplePushFrames { .. } => Vec::new(),
         SessionStep::Entry { expect, .. } | SessionStep::Action { expect, .. } => {
             expect.iter().collect()
         }
@@ -276,6 +302,8 @@ pub struct PreparedSessionPlan {
 
 #[derive(Debug, Clone)]
 enum PreparedStep {
+    Hold { id: String, duration_ms: u64 },
+    SamplePushFrames { id: String, limits: PushFrameLimits },
     Entry(PreparedEntry),
     Switch(PreparedSwitch),
     Action(PreparedAction),
@@ -318,8 +346,67 @@ pub fn prepare_session_plan(
 ) -> Result<PreparedSessionPlan> {
     let mut tracked_mode: Option<String> = None;
     let mut prepared = Vec::with_capacity(plan.steps.len());
+    let mut established = false;
     for step in &plan.steps {
         match step {
+            SessionStep::Hold { id, duration_ms } => {
+                if !established {
+                    bail!("hold step '{id}' requires a preceding entry, action, or switch")
+                }
+                if *duration_ms > MAX_HOLD_DURATION_MS {
+                    bail!("hold step '{id}' durationMs exceeds {MAX_HOLD_DURATION_MS}")
+                }
+                prepared.push(PreparedStep::Hold {
+                    id: id.clone(),
+                    duration_ms: *duration_ms,
+                });
+            }
+            SessionStep::SamplePushFrames {
+                id,
+                frame_count,
+                max_frame_bytes,
+                max_total_bytes,
+                timeout_ms,
+            } => {
+                let limits = PushFrameLimits {
+                    frame_count: *frame_count,
+                    max_frame_bytes: *max_frame_bytes,
+                    max_total_bytes: *max_total_bytes,
+                    timeout_ms: *timeout_ms,
+                };
+                limits
+                    .validate()
+                    .with_context(|| format!("sample step '{id}' has invalid limits"))?;
+                if tracked_mode.is_none() {
+                    bail!("sample step '{id}' requires a preceding mode entry")
+                }
+                let streaming = store
+                    .connections(crate::transport::current_platform())
+                    .into_iter()
+                    .any(|info| {
+                        info.id == connection
+                            && info.live_view_delivery.is_some_and(|delivery| {
+                                matches!(
+                                    delivery.kind,
+                                    camera_protocol_ffi::LiveViewDeliveryKind::Stream
+                                )
+                            })
+                    });
+                if !streaming
+                    || store
+                        .port_for_role(
+                            connection.to_string(),
+                            camera_protocol_ffi::SocketRole::LiveView,
+                        )
+                        .is_none()
+                {
+                    bail!("sample step '{id}' requires declared stream delivery and a live-view socket")
+                }
+                prepared.push(PreparedStep::SamplePushFrames {
+                    id: id.clone(),
+                    limits,
+                });
+            }
             SessionStep::Entry {
                 id,
                 from,
@@ -520,6 +607,9 @@ pub fn prepare_session_plan(
                 }));
             }
         }
+        if !matches!(step, SessionStep::Hold { .. }) {
+            established = true;
+        }
     }
     Ok(PreparedSessionPlan {
         plan,
@@ -607,6 +697,9 @@ pub struct SessionStepReport {
     pub payloads: Vec<PayloadReport>,
     pub cleanup_attempt: Option<CleanupAttemptReport>,
     pub switch: Option<SwitchReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold: Option<HoldReport>,
+    pub frames: Option<PushFrameReport>,
     pub expectation_mismatch: Option<ExpectationMismatch>,
     pub error: Option<String>,
 }
@@ -625,6 +718,8 @@ pub struct CleanupAttemptReport {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionStepKind {
+    Hold,
+    SamplePushFrames,
     Entry,
     Switch,
     Action,
@@ -704,6 +799,22 @@ pub trait SessionLifecycle: Send + Sync {
     fn streaming_transport(&self) -> Arc<dyn PtpStreamingTransport>;
     async fn open_command_session(&self) -> Result<PtpSessionOpenResult, PtpTransportError>;
     async fn confirm_live_view_frame(&self) -> Result<usize, PtpTransportError>;
+    async fn hold_command_session(
+        &self,
+        duration: Duration,
+    ) -> Result<IdleObservation, PtpTransportError>;
+    async fn sample_push_frames(
+        &self,
+        _limits: PushFrameLimits,
+        _step_dir: &Path,
+        _report_root: &Path,
+        _progress: PushFrameProgress,
+    ) -> PushFrameReport {
+        PushFrameReport::failed(
+            PushFrameTermination::IoError,
+            "push sampling is unsupported by this lifecycle",
+        )
+    }
     async fn endpoint_accepts_tcp(&self) -> bool;
     async fn open_command_session_after_handoff(
         &self,
@@ -738,6 +849,25 @@ impl SessionLifecycle for NativeSessionLifecycle {
 
     async fn confirm_live_view_frame(&self) -> Result<usize, PtpTransportError> {
         self.transport.confirm_live_view_frame().await
+    }
+
+    async fn hold_command_session(
+        &self,
+        duration: Duration,
+    ) -> Result<IdleObservation, PtpTransportError> {
+        self.transport.hold_command_session(duration).await
+    }
+
+    async fn sample_push_frames(
+        &self,
+        limits: PushFrameLimits,
+        step_dir: &Path,
+        report_root: &Path,
+        progress: PushFrameProgress,
+    ) -> PushFrameReport {
+        self.transport
+            .sample_push_frames(limits, step_dir, report_root, progress)
+            .await
     }
 
     async fn endpoint_accepts_tcp(&self) -> bool {
@@ -911,6 +1041,29 @@ pub async fn run_session_plan(
     trace: Arc<TraceWriter>,
     options: SessionRunOptions,
 ) -> Result<SessionReport> {
+    run_session_plan_with_cancellation(
+        prepared,
+        store,
+        lifecycle,
+        trace,
+        options,
+        tokio::signal::ctrl_c(),
+    )
+    .await
+}
+
+async fn run_session_plan_with_cancellation<F>(
+    prepared: &PreparedSessionPlan,
+    store: Arc<ConfigStore>,
+    lifecycle: Arc<dyn SessionLifecycle>,
+    trace: Arc<TraceWriter>,
+    options: SessionRunOptions,
+    cancellation: F,
+) -> Result<SessionReport>
+where
+    F: std::future::Future<Output = std::io::Result<()>> + Send,
+{
+    tokio::pin!(cancellation);
     tokio::fs::create_dir(&options.output_dir)
         .await
         .with_context(|| {
@@ -924,8 +1077,13 @@ pub async fn run_session_plan(
         .await
         .with_context(|| format!("create payload directory {}", payload_root.display()))?;
     for (step_index, step) in prepared.steps.iter().enumerate() {
-        if let PreparedStep::Action(action) = step {
-            let step_dir = payload_root.join(format!("{step_index:04}-{}", action.id));
+        let payload_id = match step {
+            PreparedStep::Action(action) => Some(action.id.as_str()),
+            PreparedStep::SamplePushFrames { id, .. } => Some(id.as_str()),
+            _ => None,
+        };
+        if let Some(id) = payload_id {
+            let step_dir = payload_root.join(format!("{step_index:04}-{id}"));
             tokio::fs::create_dir(&step_dir).await.with_context(|| {
                 format!("create action payload directory {}", step_dir.display())
             })?;
@@ -962,7 +1120,121 @@ pub async fn run_session_plan(
         let mut failed_payloads = Vec::new();
         let mut failed_transaction_ids = None;
         let mut cleanup_attempt = None;
-        let result = match step {
+        let frame_progress = PushFrameProgress::default();
+        let step_started_elapsed_ns = trace.monotonic_elapsed_ns();
+        let result = tokio::select! {
+            biased;
+            cancelled = &mut cancellation => {
+                lifecycle.streaming_transport().invalidate_command_session("retained session interrupted".into());
+                let reason = cancelled.err().map(|error| error.to_string());
+                if let PreparedStep::Hold { id, duration_ms } = step {
+                    let hold = HoldReport {
+                        phase: "connectedCommandSession",
+                        requested_duration_ms: *duration_ms,
+                        started_elapsed_ns: step_started_elapsed_ns,
+                        ended_elapsed_ns: trace.monotonic_elapsed_ns(),
+                        observation: IdleObservation {
+                            end: if reason.is_some() { IdleEnd::IoFailure } else { IdleEnd::Cancelled },
+                            buffered_bytes: None,
+                            peer_frame: None,
+                            error: reason,
+                        },
+                    };
+                    let trace_error = trace.session("holdEnded", serde_json::to_value(&hold).expect("hold report serializes")).err();
+                    Ok(SessionStepReport {
+                        id: id.clone(), kind: SessionStepKind::Hold, status: RunStatus::Failed,
+                        session_index: (session_index != 0).then_some(session_index),
+                        transaction_ids: Vec::new(), outcome: None, payloads: Vec::new(),
+                        cleanup_attempt: None, switch: None, hold: Some(hold), frames: None, expectation_mismatch: None,
+                        error: Some(trace_error.map(|error| error.to_string()).unwrap_or_else(|| "retained session interrupted".into())),
+                    })
+                } else if let PreparedStep::SamplePushFrames { id, .. } = step {
+                    let frames = frame_progress.cancelled_report();
+                    Ok(SessionStepReport {
+                        id: id.clone(), kind: SessionStepKind::SamplePushFrames, status: RunStatus::Failed,
+                        session_index: (session_index != 0).then_some(session_index),
+                        transaction_ids: Vec::new(), outcome: None, payloads: Vec::new(),
+                        cleanup_attempt: None, switch: None, hold: None, frames: Some(frames), expectation_mismatch: None,
+                        error: Some(reason.unwrap_or_else(|| "retained session interrupted".into())),
+                    })
+                } else {
+                    Err(anyhow::anyhow!(reason.unwrap_or_else(|| "retained session interrupted".into())))
+                }
+            }
+            result = async { match step {
+            PreparedStep::Hold { id, duration_ms } => {
+                async {
+                    trace.session("holdStarted", json!({ "id": id, "durationMs": duration_ms, "phase": "connectedCommandSession" }))?;
+                    let started_elapsed_ns = step_started_elapsed_ns;
+                    let observation = lifecycle
+                        .hold_command_session(Duration::from_millis(*duration_ms))
+                        .await
+                        .unwrap_or_else(|error| IdleObservation {
+                            end: IdleEnd::IoFailure,
+                            buffered_bytes: None,
+                            peer_frame: None,
+                            error: Some(error.to_string()),
+                        });
+                    let hold = HoldReport {
+                        phase: "connectedCommandSession",
+                        requested_duration_ms: *duration_ms,
+                        started_elapsed_ns,
+                        ended_elapsed_ns: trace.monotonic_elapsed_ns(),
+                        observation,
+                    };
+                    let succeeded = hold.observation.end == IdleEnd::DurationElapsed;
+                    let error = (!succeeded).then(|| format!("hold ended with {:?}", hold.observation.end));
+                    trace.session("holdEnded", serde_json::to_value(&hold)?)?;
+                    Ok(SessionStepReport {
+                        id: id.clone(),
+                        kind: SessionStepKind::Hold,
+                        status: if succeeded { RunStatus::Succeeded } else { RunStatus::Failed },
+                        session_index: Some(session_index),
+                        transaction_ids: Vec::new(),
+                        outcome: None,
+                        payloads: Vec::new(),
+                        cleanup_attempt: None,
+                        switch: None,
+                        hold: Some(hold),
+                        frames: None,
+                        expectation_mismatch: None,
+                        error,
+                    })
+                }.await
+            }
+
+            PreparedStep::SamplePushFrames { id, limits } => {
+                let step_dir = payload_root.join(format!("{step_index:04}-{id}"));
+                let frames = lifecycle
+                    .sample_push_frames(
+                        *limits,
+                        &step_dir,
+                        &options.output_dir,
+                        frame_progress.clone(),
+                    )
+                    .await;
+                let succeeded = frames.termination == PushFrameTermination::FrameCount;
+                let error = frames.error.clone();
+                Ok(SessionStepReport {
+                    id: id.clone(),
+                    kind: SessionStepKind::SamplePushFrames,
+                    status: if succeeded {
+                        RunStatus::Succeeded
+                    } else {
+                        RunStatus::Failed
+                    },
+                    session_index: Some(session_index),
+                    transaction_ids: Vec::new(),
+                    outcome: None,
+                    payloads: Vec::new(),
+                    cleanup_attempt: None,
+                    switch: None,
+                    frames: Some(frames),
+                    hold: None,
+                    expectation_mismatch: None,
+                    error,
+                })
+            }
             PreparedStep::Entry(entry) => {
                 async {
                     trace.set_mode(entry.to.clone());
@@ -1003,7 +1275,9 @@ pub async fn run_session_plan(
                             outcome: Some(normalized),
                             payloads: Vec::new(),
                             cleanup_attempt: None,
+                            frames: None,
                             switch: None,
+                            hold: None,
                             expectation_mismatch: mismatch,
                             error: None,
                         }
@@ -1014,7 +1288,9 @@ pub async fn run_session_plan(
             }
             PreparedStep::Action(action) => {
                 async {
-                    trace.set_mode(action.request.mode.clone());
+                    if !action.request.mode.is_empty() {
+                        trace.set_mode(action.request.mode.clone());
+                    }
                     if session_index == 0 {
                         lifecycle.open_command_session().await?;
                         session_index = 1;
@@ -1087,7 +1363,9 @@ pub async fn run_session_plan(
                             outcome: Some(outcome),
                             payloads: execution.payloads,
                             cleanup_attempt: None,
+                            frames: None,
                             switch: None,
+                            hold: None,
                             expectation_mismatch: mismatch,
                             error: None,
                         }
@@ -1179,6 +1457,7 @@ pub async fn run_session_plan(
                 )
                 .await
             }
+            }} => result,
         };
 
         match result {
@@ -1241,6 +1520,10 @@ fn failed_step_report(
         PreparedStep::Entry(step) => (step.id.clone(), SessionStepKind::Entry),
         PreparedStep::Switch(step) => (step.id.clone(), SessionStepKind::Switch),
         PreparedStep::Action(step) => (step.id.clone(), SessionStepKind::Action),
+        PreparedStep::Hold { id, .. } => (id.clone(), SessionStepKind::Hold),
+        PreparedStep::SamplePushFrames { id, .. } => {
+            (id.clone(), SessionStepKind::SamplePushFrames)
+        }
     };
     SessionStepReport {
         id,
@@ -1251,7 +1534,9 @@ fn failed_step_report(
         outcome: None,
         payloads,
         cleanup_attempt,
+        frames: None,
         switch: None,
+        hold: None,
         expectation_mismatch: None,
         error: Some(error.to_string()),
     }
@@ -1634,6 +1919,8 @@ async fn run_switch_step(
         outcome: None,
         payloads: Vec::new(),
         cleanup_attempt: None,
+        hold: None,
+        frames: None,
         switch: Some(SwitchReport {
             source_entry,
             exit: Some(exit),
@@ -1667,6 +1954,8 @@ fn failed_switch_report(
         outcome: None,
         payloads: Vec::new(),
         cleanup_attempt: None,
+        hold: None,
+        frames: None,
         switch: Some(SwitchReport {
             source_entry,
             exit,
@@ -2071,6 +2360,64 @@ steps:
     }
 
     #[test]
+    fn push_samples_require_finite_limits_a_mode_and_declared_stream_delivery() {
+        let sample = "{ id: frames, kind: samplePushFrames, frameCount: 2, maxFrameBytes: 1024, maxTotalBytes: 2048, timeoutMs: 500 }";
+        let valid = format!("schema: camera-initiator-session/v1\nsteps:\n  - {{ id: enter, kind: entry, to: shooting/stills }}\n  - {sample}\n");
+        assert!(prepare(&valid).is_ok());
+        for (before, after) in [
+            ("frameCount: 2", "frameCount: 0"),
+            ("maxFrameBytes: 1024", "maxFrameBytes: 0"),
+            ("maxTotalBytes: 2048", "maxTotalBytes: 0"),
+            ("timeoutMs: 500", "timeoutMs: 0"),
+            ("timeoutMs: 500", "timeoutMs: 500, expect: {}"),
+            ("frameCount: 2, ", ""),
+        ] {
+            assert!(prepare(&valid.replace(before, after)).is_err());
+        }
+        assert!(prepare(&format!(
+            "schema: camera-initiator-session/v1\nsteps: [{sample}]\n"
+        ))
+        .is_err());
+        let plan = SessionPlan::from_yaml(&valid).unwrap();
+        assert!(prepare_session_plan(plan, &store(), "wireless-tether").is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_push_sample_publishes_report_and_closes_session() {
+        // Add the stream declaration to the synthetic manifest used by the runner.
+        let manifest = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Session, firmware: "1" }
+connections:
+  app:
+    commandFraming: compressed
+    liveViewDelivery: { kind: stream }
+    bindings: { command: 50000, liveView: 50001 }
+    modes: [source]
+    entries:
+      - to: source
+        steps: [{ sendOp: "0x9001" }]
+"#;
+        let store = ConfigStore::from_bundle(manifest.into(), None).unwrap();
+        let (result, root, observation, calls) = run_fake_session_with_store(store,
+            r#"schema: camera-initiator-session/v1
+steps:
+  - { id: entry, kind: entry, to: source }
+  - { id: frames, kind: samplePushFrames, frameCount: 1, maxFrameBytes: 1024, maxTotalBytes: 1024, timeoutMs: 100 }
+"#, &[], &[]).await;
+        assert!(result.is_err());
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(report["steps"].as_array().unwrap().len(), 2);
+        assert_eq!(report["steps"][1]["frames"]["termination"], "ioError");
+        assert_eq!(report["steps"][1]["transactionIds"], json!([]));
+        assert_eq!(calls.lock().unwrap().last().unwrap(), "cleanup");
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(observation).unwrap();
+    }
+
+    #[test]
     fn strict_parser_rejects_schema_kinds_fields_ids_and_assertion_fields() {
         let rejected = [
             "schema: wrong\nsteps: [{ id: one, kind: entry, to: shooting/stills }]\n",
@@ -2389,11 +2736,38 @@ steps:
         }
     }
 
+    // Remain pending after one synthetic frame, then interrupt at that boundary.
+    struct InterruptAfterFrame {
+        bytes: std::io::Cursor<Vec<u8>>,
+        notify: Arc<tokio::sync::Notify>,
+    }
+
+    impl tokio::io::AsyncRead for InterruptAfterFrame {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let offset = self.bytes.position() as usize;
+            let remaining = &self.bytes.get_ref()[offset..];
+            if remaining.is_empty() {
+                self.notify.notify_one();
+                return std::task::Poll::Pending;
+            }
+            let count = remaining.len().min(buf.remaining());
+            buf.put_slice(&remaining[..count]);
+            self.bytes.set_position((offset + count) as u64);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
     struct FakeLifecycle {
         transport: Arc<FakeTransport>,
         trace: Arc<TraceWriter>,
         calls: Arc<Mutex<Vec<String>>>,
         generation: AtomicU32,
+        idle_end: IdleEnd,
+        hold_started: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl FakeLifecycle {
@@ -2464,6 +2838,58 @@ steps:
         async fn confirm_live_view_frame(&self) -> Result<usize, PtpTransportError> {
             self.calls.lock().unwrap().push("confirm-source".into());
             Ok(10)
+        }
+
+        async fn hold_command_session(
+            &self,
+            duration: Duration,
+        ) -> Result<IdleObservation, PtpTransportError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("hold:{}", duration.as_millis()));
+            if let Some(notify) = &self.hold_started {
+                notify.notify_one();
+            }
+            tokio::time::sleep(duration).await;
+            Ok(IdleObservation {
+                end: self.idle_end,
+                buffered_bytes: Some(0),
+                peer_frame: None,
+                error: None,
+            })
+        }
+
+        async fn sample_push_frames(
+            &self,
+            limits: PushFrameLimits,
+            step_dir: &Path,
+            report_root: &Path,
+            progress: PushFrameProgress,
+        ) -> PushFrameReport {
+            let Some(notify) = &self.hold_started else {
+                return PushFrameReport::failed(
+                    PushFrameTermination::IoError,
+                    "fake has no push channel",
+                );
+            };
+            let jpeg = vec![
+                0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 1, 224, 2, 128, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8,
+                1, 1, 0, 0, 63, 0, 1, 0xff, 0xd9,
+            ];
+            let mut reader = crate::transport::FrameReader::new(InterruptAfterFrame {
+                bytes: std::io::Cursor::new(protocol_primitives::liveview::frame_packet(&jpeg, 0)),
+                notify: Arc::clone(notify),
+            });
+            crate::push_frames::sample_push_frames(
+                &mut reader,
+                limits,
+                4096,
+                step_dir,
+                report_root,
+                progress,
+            )
+            .await
         }
 
         async fn endpoint_accepts_tcp(&self) -> bool {
@@ -2637,6 +3063,28 @@ connections:
         PathBuf,
         Arc<Mutex<Vec<String>>>,
     ) {
+        run_fake_session_with_idle(
+            store,
+            yaml,
+            response_codes,
+            data_replies,
+            IdleEnd::DurationElapsed,
+        )
+        .await
+    }
+
+    async fn run_fake_session_with_idle(
+        store: Arc<ConfigStore>,
+        yaml: &str,
+        response_codes: &[(u16, u16)],
+        data_replies: &[(u16, &[u8])],
+        idle_end: IdleEnd,
+    ) -> (
+        Result<SessionReport>,
+        PathBuf,
+        PathBuf,
+        Arc<Mutex<Vec<String>>>,
+    ) {
         let plan = SessionPlan::from_yaml(yaml).unwrap();
         let prepared = prepare_session_plan(plan, &store, "app").unwrap();
         let nonce = SystemTime::now()
@@ -2668,6 +3116,8 @@ connections:
             trace: Arc::clone(&trace),
             calls: Arc::clone(&calls),
             generation: AtomicU32::new(0),
+            idle_end,
+            hold_started: None,
         });
         let result = run_session_plan(
             &prepared,
@@ -3077,6 +3527,8 @@ steps:
             trace: Arc::clone(&trace),
             calls: Arc::clone(&calls),
             generation: AtomicU32::new(0),
+            idle_end: IdleEnd::DurationElapsed,
+            hold_started: None,
         });
         let report = run_session_plan(
             &prepared,
@@ -3166,5 +3618,213 @@ steps:
 
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_file(observation);
+    }
+    #[test]
+    fn hold_preflight_requires_a_session_and_finite_bounded_duration() {
+        for value in ["-1", "1.5", ".inf", ".nan", "null", "18446744073709551616"] {
+            let yaml = format!("schema: camera-initiator-session/v1\nsteps:\n  - {{ id: wait, kind: hold, durationMs: {value} }}");
+            assert!(SessionPlan::from_yaml(&yaml).is_err(), "accepted {value}");
+        }
+        let cold = SessionPlan::from_yaml("schema: camera-initiator-session/v1\nsteps:\n  - { id: wait, kind: hold, durationMs: 0 }").unwrap();
+        assert!(prepare_session_plan(cold, &fake_switch_store(), "app")
+            .unwrap_err()
+            .to_string()
+            .contains("preceding"));
+        let oversized = SessionPlan::from_yaml("schema: camera-initiator-session/v1\nsteps:\n  - { id: open, kind: action, action: shutter }\n  - { id: wait, kind: hold, durationMs: 3600001 }").unwrap();
+        assert!(prepare_session_plan(oversized, &fake_switch_store(), "app")
+            .unwrap_err()
+            .to_string()
+            .contains("durationMs"));
+    }
+
+    #[tokio::test]
+    async fn holds_keep_session_transaction_identity_without_automatic_traffic() {
+        let (result, root, observation, calls) = run_fake_session(
+            "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: immediate, kind: hold, durationMs: 0 }\n  - { id: idle, kind: hold, durationMs: 1 }\n  - { id: second, kind: action, action: shutter }",
+            &[], &[],
+        ).await;
+        let report = result.unwrap();
+        assert_eq!(report.steps.len(), 4);
+        assert!(report
+            .steps
+            .iter()
+            .all(|step| step.session_index == Some(1)));
+        assert_eq!(report.steps[0].transaction_ids, vec![2, 3]);
+        assert!(report.steps[1].transaction_ids.is_empty());
+        assert!(report.steps[2].transaction_ids.is_empty());
+        assert_eq!(report.steps[3].transaction_ids, vec![4, 5]);
+        let hold = report.steps[2].hold.as_ref().unwrap();
+        assert_eq!(hold.phase, "connectedCommandSession");
+        assert!(hold.ended_elapsed_ns >= hold.started_elapsed_ns);
+        assert_eq!(hold.observation.end, IdleEnd::DurationElapsed);
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("open:"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls.iter().filter(|call| call.starts_with("op:")).count(),
+            4
+        );
+        assert!(calls.iter().any(|call| call == "hold:0"));
+        assert!(calls.iter().any(|call| call == "hold:1"));
+        assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
+        drop(calls);
+        let bundle = std::fs::read_to_string(&observation).unwrap();
+        validate_bundles(&[&bundle]).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_file(observation).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_or_expired_holds_publish_reports_then_cleanup_without_continuation() {
+        for idle_end in [
+            IdleEnd::Cancelled,
+            IdleEnd::PeerEof,
+            IdleEnd::PeerReset,
+            IdleEnd::HostDeadlinePartialFrame,
+        ] {
+            let (result, root, observation, calls) = run_fake_session_with_idle(
+                fake_switch_store(),
+                "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: wait, kind: hold, durationMs: 0 }\n  - { id: later, kind: action, action: shutter }",
+                &[], &[], idle_end,
+            ).await;
+            assert!(result.is_err());
+            let report: Value =
+                serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                    .unwrap();
+            assert_eq!(report["steps"].as_array().unwrap().len(), 2);
+            assert_eq!(report["steps"][1]["status"], "failed");
+            assert_eq!(
+                report["steps"][1]["hold"]["observation"]["end"],
+                serde_json::to_value(idle_end).unwrap()
+            );
+            let calls = calls.lock().unwrap();
+            assert_eq!(
+                calls.iter().filter(|call| call.starts_with("op:")).count(),
+                2
+            );
+            assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
+            drop(calls);
+            std::fs::remove_dir_all(root).unwrap();
+            std::fs::remove_file(observation).unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn runner_interrupt_preserves_hold_and_frame_reports_before_cleanup() {
+        for sampling in [false, true] {
+            let store = ConfigStore::from_bundle(
+                r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Session, firmware: "1" }
+connections:
+  app:
+    commandFraming: compressed
+    liveViewDelivery: { kind: stream }
+    bindings: { command: 50000, liveView: 50001 }
+    modes: [source]
+    entries:
+      - to: source
+        steps: [{ sendOp: "0x9001" }]
+    actions:
+      shutter:
+        mode: ""
+        initiator:
+          steps: [{ sendOp: "0x9101" }]
+"#
+                .into(),
+                None,
+            )
+            .unwrap();
+            let step = if sampling {
+                "{ id: wait, kind: samplePushFrames, frameCount: 2, maxFrameBytes: 4096, maxTotalBytes: 8192, timeoutMs: 100000 }"
+            } else {
+                "{ id: wait, kind: hold, durationMs: 100000 }"
+            };
+            let yaml = format!("schema: camera-initiator-session/v1\nsteps:\n  - {{ id: first, kind: entry, to: source }}\n  - {step}\n  - {{ id: later, kind: action, action: shutter }}");
+            let prepared =
+                prepare_session_plan(SessionPlan::from_yaml(&yaml).unwrap(), &store, "app")
+                    .unwrap();
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "camera-initiator-interrupt-{}-{nonce}",
+                std::process::id()
+            ));
+            let trace = Arc::new(TraceWriter::new(
+                crate::TraceFormat::Jsonl,
+                Box::new(io::sink()),
+            ));
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let notify = Arc::new(tokio::sync::Notify::new());
+            let transport = FakeTransport::new(Arc::clone(&calls), Arc::clone(&trace));
+            let lifecycle: Arc<dyn SessionLifecycle> = Arc::new(FakeLifecycle {
+                transport,
+                trace: Arc::clone(&trace),
+                calls: Arc::clone(&calls),
+                generation: AtomicU32::new(0),
+                idle_end: IdleEnd::DurationElapsed,
+                hold_started: Some(Arc::clone(&notify)),
+            });
+            let result = run_session_plan_with_cancellation(
+                &prepared,
+                store,
+                lifecycle,
+                trace,
+                SessionRunOptions {
+                    output_dir: root.clone(),
+                    run_id: "interrupt-test".into(),
+                    connection: "app".into(),
+                    trace_path: "-".into(),
+                    observation_path: root.join("unused.jsonl"),
+                    runtime_params: Vec::new(),
+                    handoff_timeout: Duration::from_secs(1),
+                },
+                async {
+                    notify.notified().await;
+                    Ok(())
+                },
+            )
+            .await;
+            assert!(result.is_err());
+            let report: Value =
+                serde_json::from_slice(&std::fs::read(root.join("session-report.json")).unwrap())
+                    .unwrap();
+            assert_eq!(report["steps"].as_array().unwrap().len(), 2);
+            if sampling {
+                let frames = &report["steps"][1]["frames"];
+                assert_eq!(frames["termination"], "cancelled");
+                assert_eq!(frames["frames"].as_array().unwrap().len(), 1);
+                let retained = &frames["frames"][0];
+                let bytes = std::fs::read(root.join(retained["path"].as_str().unwrap())).unwrap();
+                let mut metadata = PayloadMetadataBuilder::new();
+                metadata.update(&bytes);
+                assert_eq!(retained["sha256"], metadata.metadata().sha256);
+                assert_eq!(retained["length"], bytes.len());
+                assert_eq!(retained["jpeg"]["width"], 640);
+                assert_eq!(retained["jpeg"]["height"], 480);
+                assert!(frames["error"].as_str().unwrap().contains("lower bound"));
+            } else {
+                assert_eq!(
+                    report["steps"][1]["hold"]["observation"]["end"],
+                    "cancelled"
+                );
+                assert!(report["steps"][1]["hold"]["observation"]["bufferedBytes"].is_null());
+            }
+            let calls = calls.lock().unwrap();
+            assert_eq!(
+                calls.iter().filter(|call| call.starts_with("op:")).count(),
+                1
+            );
+            assert!(calls[calls.len() - 2].starts_with("invalidate:"));
+            assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
+            drop(calls);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }

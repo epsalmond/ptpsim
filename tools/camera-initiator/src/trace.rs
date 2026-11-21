@@ -29,6 +29,7 @@ pub struct TraceWriter {
     failure: Mutex<Option<String>>,
     observations: Option<ObservationRecorder>,
     connection: String,
+    ptp_transport: PtpTransport,
     mode: Mutex<String>,
     ptp: Mutex<PtpObservationState>,
 }
@@ -69,6 +70,7 @@ impl TraceWriter {
             failure: Mutex::new(None),
             observations: None,
             connection: "unspecified".into(),
+            ptp_transport: PtpTransport::PtpIp,
             mode: Mutex::new("unspecified".into()),
             ptp: Mutex::new(PtpObservationState::default()),
         }
@@ -88,11 +90,20 @@ impl TraceWriter {
         writer
     }
 
+    pub fn with_ptp_transport(mut self, transport: PtpTransport) -> Self {
+        self.ptp_transport = transport;
+        self
+    }
+
     pub fn set_mode(&self, mode: impl Into<String>) {
         *self
             .mode
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode.into();
+    }
+
+    pub fn monotonic_elapsed_ns(&self) -> u64 {
+        self.started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
     }
 
     /// Start a fresh physical PTP session before any transaction frame is
@@ -371,7 +382,7 @@ impl TraceWriter {
             .append(self.context("command"), |common| {
                 ObservationLine::PtpTransaction(Box::new(PtpTransactionRecord {
                     common,
-                    transport: PtpTransport::PtpIp,
+                    transport: self.ptp_transport,
                     connection_instance,
                     session,
                     endpoint_set: "command".into(),
@@ -443,7 +454,7 @@ impl TraceWriter {
             .append(self.context("command"), |common| {
                 ObservationLine::PtpTransaction(Box::new(PtpTransactionRecord {
                     common,
-                    transport: PtpTransport::PtpIp,
+                    transport: self.ptp_transport,
                     connection_instance,
                     session,
                     endpoint_set: "command".into(),

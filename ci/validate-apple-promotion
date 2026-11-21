@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Verify the promotion tag against its commit and the current remote main.
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+    echo "usage: ci/validate-apple-promotion TAG COMMIT_SHA" >&2
+    exit 2
+fi
+
+tag=$1
+commit=$2
+if [[ ! "$commit" =~ ^[0-9a-f]{40}$ || "$tag" != "apple-ffi-${commit:0:8}" ]]; then
+    echo "promotion tag must be apple-ffi-<first 8 hex digits of the full commit SHA>" >&2
+    exit 1
+fi
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+if [[ "$(git rev-parse --verify 'HEAD^{commit}')" != "$commit" ]]; then
+    echo "checkout does not match promotion commit $commit" >&2
+    exit 1
+fi
+
+# Refetch the tag before uploading so a moved remote tag cannot publish an old build.
+git fetch --no-tags origin \
+    '+refs/heads/main:refs/remotes/origin/main' \
+    "+refs/tags/$tag:refs/tags/$tag"
+if [[ "$(git rev-parse --verify "refs/tags/$tag^{commit}")" != "$commit" ]]; then
+    echo "promotion tag $tag does not resolve to $commit" >&2
+    exit 1
+fi
+if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+    echo "promotion commit $commit is not merged to main" >&2
+    exit 1
+fi
+
+echo "Apple promotion validated: $tag ($commit)"

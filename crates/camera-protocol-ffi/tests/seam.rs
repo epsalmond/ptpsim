@@ -2881,6 +2881,81 @@ fn operation_and_property_catalog_safety_crosses_the_ffi_seam() {
 }
 
 #[test]
+fn firmware_audit_inventory_does_not_extend_callable_ffi_scopes() {
+    let store = consolidated_store();
+    let operations = store.operations();
+    for code in [
+        0x1001, 0x1004, 0x1005, 0x1006, 0x100c, 0x100d, 0x100f, 0x1017, 0x900c, 0x900d, 0x901d,
+        0x9801, 0x9802, 0x9805,
+    ] {
+        let operation = operations.iter().find(|op| op.code == code).unwrap();
+        assert_eq!(operation.kind, OperationKind::AdvertisedOnly);
+        assert!(!operation.observed_scopes.is_empty());
+        for scope in &operation.observed_scopes {
+            assert!(matches!(
+                store.operation_available(
+                    scope.connection.clone(),
+                    scope.mode.clone(),
+                    code,
+                    vec![]
+                ),
+                Availability::Unavailable
+            ));
+        }
+    }
+
+    for (code, connection, mode) in [
+        (0x9018, "usb", "shooting/stills"),
+        (0x9018, "usb", "shooting/stills/pc-priority"),
+        (0x9018, "usb", "shooting/video"),
+        (0x9018, "wireless-tether", "shooting/video"),
+        (0x101b, "usb", "card-reader"),
+        (0x101b, "usb", "tether-auto"),
+        (0x9803, "usb", "card-reader"),
+        (0x9803, "usb", "tether-auto"),
+    ] {
+        let operation = operations.iter().find(|op| op.code == code).unwrap();
+        assert!(operation
+            .observed_scopes
+            .iter()
+            .any(|scope| scope.connection == connection && scope.mode == mode));
+        assert!(!matches!(
+            store.operation_available(connection.into(), mode.into(), code, vec![]),
+            Availability::Available
+        ));
+    }
+    for (code, connection, mode) in [
+        (0x9018, "wireless-tether", "shooting/stills"),
+        (0x101b, "app", "image-transfer"),
+        (0x101b, "app", "reserved-photo-receive"),
+        (0x9803, "app", "image-transfer"),
+    ] {
+        assert!(matches!(
+            store.operation_available(connection.into(), mode.into(), code, vec![]),
+            Availability::Available
+        ));
+    }
+
+    let properties = store.properties();
+    for (code, expected) in [(0xd173, vec![1, 3]), (0xd174, vec![1, 2, 3])] {
+        let property = properties.iter().find(|prop| prop.code == code).unwrap();
+        assert_eq!(property.kind, PropertyKind::CatalogOnly);
+        assert_eq!(property.descriptor_source, Some(DescriptorSource::Camera));
+        assert_eq!(
+            property.values,
+            expected
+                .into_iter()
+                .map(|value| DescriptorValue::Int { value })
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            property.value_rows.is_empty(),
+            "quality meanings remain unknown"
+        );
+    }
+}
+
+#[test]
 fn string_descriptor_values_cross_the_ffi_seam() {
     let store = ConfigStore::from_bundle(
         r#"

@@ -1,0 +1,70 @@
+name: Apple FFI
+
+on:
+  push:
+    tags:
+      - apple-ffi-*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-ffi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  xcframework:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/apple-ffi-')
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - name: Checkout promotion commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate promotion
+        env:
+          PROMOTION_TAG: ${{ github.ref_name }}
+        run: ci/validate-apple-promotion "$PROMOTION_TAG" "$GITHUB_SHA"
+
+      - name: Set up hosted Apple toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphonesimulator --show-sdk-path
+          toolchain=$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal \
+            --target aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          rustup show active-toolchain
+
+      - name: Cache Apple Cargo builds
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: apple-ffi-ios-device-simulator-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          cache-targets: true
+          save-if: ${{ startsWith(github.ref, 'refs/tags/apple-ffi-') }}
+
+      - name: Build XCFramework with Swift seam check
+        run: ci/build-xcframework.sh all
+
+      - name: Publish Apple release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PROMOTION_TAG: ${{ github.ref_name }}
+        run: |
+          ci/validate-apple-promotion "$PROMOTION_TAG" "$GITHUB_SHA"
+          sha8=${GITHUB_SHA:0:8}
+          ci/ensure-github-release "sha-$sha8" "$GITHUB_SHA"
+          gh release upload "sha-$sha8" \
+            "out/dist/CameraProtocolFFI-$sha8.tar.gz" \
+            "out/dist/CameraProtocolFFI-$sha8.xcframework.zip" \
+            "out/dist/CameraProtocolFFI-$sha8.checksum" --clobber

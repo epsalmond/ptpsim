@@ -10,7 +10,7 @@
 #     android/kotlin/uniffi/camera_protocol_ffi/camera_protocol_ffi.kt (intermediate)
 #     android/classes.jar                                            (intermediate)
 #     dist/CameraProtocolFFI-<sha8>.aar              (the publishable artifact)
-#     dist/CameraProtocolFFI-<sha8>.checksum         (SHA-256 of the .aar)
+#     dist/CameraProtocolFFI-android-<sha8>.checksum         (SHA-256 of the .aar)
 #
 # Requires:
 #   - cargo + rustup (3 Android targets installed)
@@ -243,7 +243,7 @@ MANIFEST
 DIST_DIR="${OUT_DIR}/dist"
 mkdir -p "${DIST_DIR}"
 AAR="${DIST_DIR}/${XCF_NAME}-${SHA8}.aar"
-CHECKSUM="${DIST_DIR}/${XCF_NAME}-${SHA8}.checksum"
+CHECKSUM="${DIST_DIR}/${XCF_NAME}-android-${SHA8}.checksum"
 rm -f "${AAR}"
 
 echo "==> Assembling ${AAR}"

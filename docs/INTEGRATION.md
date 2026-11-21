@@ -159,7 +159,7 @@ per-platform packaging:
   x86_64 simulators, `lipo`-combine the simulator archives, then
   `xcodebuild -create-xcframework`. **Verified end-to-end recipe in
   `docs/APPLE_FFI_RELEASES.md` "Build recipe"** — that's the recipe
-  the explicit Woodpecker promotion workflow ships; reuse it for local builds.
+  the explicit GitHub Actions promotion workflow ships; reuse it for local builds.
   Each promoted release
   publishes `CameraProtocolFFI-<sha8>.xcframework.zip` + a `.checksum`
   sibling for SPM `binaryTarget(url:, checksum:)`; consumer-side wiring
@@ -172,8 +172,8 @@ per-platform packaging:
   as a real Android Archive (`CameraProtocolFFI-<sha8>.aar`) the consumer adds as
   a Gradle file dependency (`implementation(files("libs/…​.aar"))`) plus the JNA
   `@aar`. **Consumer-side: `docs/ANDROID_INTEGRATION.md`.** Built by
-  `ci/build-android.sh` on the `ci-android` image (`kotlinc` + JNA; `android.jar`
-  from the cimg Android image).
+  `ci/build-android.sh` with the Android toolchain (`kotlinc` + JNA; `android.jar`
+  from the installed Android SDK).
 - **Linux / Python:** the `.so` + generated `camera_protocol_ffi.py` remain an
   adapter surface. New first-party observations come from the shipping Rust
   initiator; an external adapter must emit the same canonical contract and does
@@ -190,13 +190,21 @@ canonical JSON leaves so foreign bindings do not invent a second value grammar.
 
 1. **Embed the data bundle.** Ship `camera-config-data/fuji/fuji.yaml` (manufacturer)
    plus the body manifest selected by recognition (for example
-   `…/gfx100ii/gfx100ii.yaml` or `…/xa7/xa7.yaml`) as app resources; pass their
+   `…/gfx100ii/gfx100ii.consolidated.yaml` or `…/xa7/xa7.yaml`) as app resources; pass their
    contents to `from_bundle`. Each release attaches a `camera-config-data-<sha8>.tar.gz`
    sibling alongside the xcframework, so the FFI binary and the YAML data come
    from the same commit and can't drift mid-integration; extract it to vendor
    the bundle without cloning the source tree. (Co-shipped pre-data-repo-split;
    the eventual Apache-licensed data repo will publish its own versioned
    releases.) OTA bundle loading lands later; bundled baseline for now.
+
+   The GFX100 II consolidated manifest includes the reviewed operation and
+   property inventories. Its authored `gfx100ii.yaml` source contains the
+   executable recipes and curated behavior. Inventory rows marked
+   `advertisedOnly` remain unavailable for execution. Positive `observedScopes`
+   on an executable row record advertisement without extending its callable
+   connection or mode gates. See the [firmware 2.30 audit reconciliation](../packages/camera-config-data/fuji/gfx100ii/evidence/FIRMWARE_230_AUDIT.md)
+   for the captured scopes and remaining evidence questions.
 2. **Pick a connection.** `connections(platform)` → present what's actually available
    here. Bring it up: `connection_establishment(connection)` returns the recipe (knock
    ports, GATT char UUIDs). BLE/Wi-Fi association remains host-owned; Rust-owned
@@ -426,7 +434,7 @@ let store = try ConfigStore.fromManufacturerIndexWithDefaults(
     indexYaml: bundleString("fuji/index.yaml"),
     manufacturerYaml: bundleString("fuji/fuji.yaml"),
     modelBodies: [
-        KeyValue(key: "gfx100ii", value: bundleString("fuji/gfx100ii/gfx100ii.yaml")),
+        KeyValue(key: "gfx100ii", value: bundleString("fuji/gfx100ii/gfx100ii.consolidated.yaml")),
         KeyValue(key: "xa7", value: bundleString("fuji/xa7/xa7.yaml")),
         KeyValue(key: "fuji-generic", value: bundleString("fuji/fuji-generic/fuji-generic.yaml")),
     ]
@@ -444,8 +452,10 @@ available for manufacturers whose indexed bodies are entirely self-contained.
 |---|---|
 | `recognize(observation)` | `Recognition::Candidate{model, connection, confidence, runtimeScope}` / `Disambiguate{family, candidates, runtimeScope, hint}` / `NoMatch`. `runtimeScope` is `Vec<KeyValue>` carrying facts derived from the observation. |
 | `confirmDeviceInfo(model, deviceInfo)` | Confirms parsed PTP manufacturer and model against the selected manifest body after normalization. Use this before persisting a vendor-level USB candidate. |
+| `isFallbackModel(model)` | Returns `true` for an indexed family baseline and `false` for an indexed specific profile. Returns `nil` for an unknown model or a store without a manufacturer index. This is manifest metadata, not evidence of physical camera identity. |
 | `reconnectPolicy(model)` | The manifest-authored saved-camera scan window. `None` means the model has no automatic BLE reconnect contract. |
 | `reconnectDecision(model, observation, persistedScope)` | Classifies a fresh advert for one saved camera as `Wake{plan, runtimeScope}`, `Ready{plan, runtimeScope}`, or `NoMatch`. The manifest owns advert-state recognition, identity keys, and plan selection; callers must not infer readiness from a cached peripheral. |
+| `recognizeReadyForReconnect(observation, persistedScope)` | Returns `ReadyReconnectRecognition::NoMatch`, `Candidate{candidate}`, or `Disambiguate{candidates}`. Each `ReadyReconnectCandidate` contains `model` and `isFallback`. Candidates are profiles whose existing reconnect decision is `Ready` for the supplied observation and saved scope. |
 
 `ScanObservation::BleAdvert` carries `{ serviceUuids, manufacturerData?:
 { companyId, payload }, serviceData: [{uuid, payload}], localName?,
@@ -474,6 +484,28 @@ scan. `Ready` means walk the returned reconnect plan. `NoMatch` is ignored. Stop
 after `reconnectPolicy.scanTimeoutMs` and surface unavailable/retry UI. Startup and
 already-paired signatures can be reconnect-only, so they do not appear in normal
 `recognize` results.
+
+A reconnect route requires every declared identity key to be present in both
+the fresh observation scope and the persisted scope, with equal values. Missing
+captures, missing saved values, and unequal values reject that route. Matching
+routes retain their manifest order and their declared `Wake` or `Ready` result.
+Profile selection and baseline metadata do not authorize changing saved model
+ids or replacing saved credentials with observation scope.
+
+`recognizeReadyForReconnect` evaluates indexed profiles in declaration order.
+Only `Ready` decisions are eligible. An earlier eligible `Wake` route within a
+profile excludes that profile even if a later route could return `Ready`.
+Fallback candidates are removed only when a specific `Ready` candidate survives.
+Multiple remaining candidates retain declaration order in `Disambiguate`; the
+selector does not choose among them. Non-BLE observations and stores without a
+manufacturer index return `NoMatch`. Pairing recognition has separate eligibility
+rules and is unchanged.
+
+These candidates are advisory compatible profiles, not proof of the physical
+camera model. Continue using `reconnectDecision` for the original saved model
+to obtain its executable plan and fresh scope. A candidate must not turn that
+model's `NoMatch` into another profile's connection or silently change its saved
+model id. The selector returns no executable plans or replacement credentials.
 
 X-A7 migration is intentionally one-time and explicit. Records created before
 the dedicated `xa7` model remain keyed as `fuji-generic`; persistence ids are
@@ -809,7 +841,7 @@ called out above.
 | `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13 — empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
 | `blePeripheralName` | store the connected peripheral's platform name in scope under `captureAs` (UTF-8, any NUL terminator removed). Use `CBPeripheral.name` on CoreBluetooth, which filters the GAP service from discovery, so a GATT 0x2A00 read cannot succeed there; a 0x2A00 read is fine on stacks that expose it. An unavailable name is a step failure, never an empty string. |
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. Optional `notificationFence` names a subscribed GATT characteristic whose buffered prefix the transport atomically fences immediately before issuing this write; notifications caused by the write remain consumable. |
-| `bleWriteChunk` | frame and write one manifest-declared window from a runtime blob, using the captured chunk index, frame fields, size, and sentinel index. |
+| `bleWriteChunk` | frame and write one manifest-declared window from a runtime blob, using the captured chunk index, frame fields, size, sentinel index, and optional checksum policy (§11.2a). |
 | `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate — CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
 | `bleNotify` | subscribe (`mode` as above) AND wait for `until` (Any / Equals / Matches); bind whole payload via `captureAs` and/or extract fields via `capture` (window → transform chain → encoding → scope; a failing capture is skipped, not a step failure). |
 | `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same captures and predicates, then remain notification-only. `seedRead` cannot be combined with `failWhen`, because callback transports cannot reliably distinguish a read response from a racing notification; use an explicit pre-command read plus a notification-only rejection await. Each observation applies `capture`/`captureAs`; `until` wins, otherwise a matching `failWhen` fails as `ConditionRejected`. When `failureEvidence` is present, its `steps` run inside the await budget and rejection is terminal only if its `when` predicate matches fresh evidence; otherwise observation continues. For a notify source, evidence steps cannot read that same characteristic, including through nested control flow; use a separate evidence characteristic so racing callbacks retain unambiguous provenance. If no rejection is confirmed, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
@@ -888,6 +920,55 @@ layer / live-view socket. BLE plans can expose credentials and request camera
 AP establishment, but OS network association, DHCP, and AP management remain
 host-owned. Adding another I/O primitive is one schema verb + one dispatcher
 case — no other layer changes.
+
+### 9.8 Dynamic connection lifecycle contract
+
+`ptpsim-connection-lifecycle/v1` records five independent runtime layers:
+network persona, command listener, proxy transport, PTP session, and feature
+mode. Each layer carries `unknown`, `unconfirmed`, or `confirmed` evidence over
+a closed state vocabulary. The contract contains no firewall state and is not
+a manifest-authored state machine. One snapshot tracks one logical connection;
+callers key snapshots by their own connection identity.
+
+A confirmed PTP `CloseSession` closes the PTP session and makes the feature
+inactive. It does not change the proxy transport, listener, or network persona.
+A lost or locally closed transport preserves the listener and network persona.
+It changes a previously open session and active feature to unconfirmed because
+the host action does not prove camera-side cleanup. Only a separate confirmed
+network-persona exit proves that the camera left the persona.
+
+The simulator engine exposes the current snapshot and a bounded deterministic
+transition-trace tail. Sequence numbers reveal when older events were dropped.
+The FFI exposes pure initial-snapshot and transition functions over
+caller-owned values. Those functions do not read simulator mutable state, so a
+production consumer must supply transitions from its own observations. The
+checked-in JSON Schema is
+`packages/camera-config-data/ptpsim-connection-lifecycle-v1.schema.json`. Run
+`camera-config-generate schema --contract connection-lifecycle --check <path>`
+to verify that it still matches the Rust types.
+
+`camera-sim-service` exposes `GET /connection-lifecycles` as the additive
+`ptpsim-service-connection-lifecycles/v1` control surface. It keys each
+snapshot and trace by the canonical observation `sessionSequence` and matching
+`connectionInstance`. A command handler records its terminal reason as an
+acknowledged `CloseSession`, local clean close, peer EOF, or transport error.
+Acknowledged `CloseSession` followed by EOF is a local clean transport close,
+not a transport loss. Each key keeps the core 512-event trace tail. The service
+retains every active key and the 64 most recent completed keys.
+
+The service engine shares one PTP session across command connections. An
+operation from an overlapping connection keeps the existing wire behavior.
+Its session and feature transitions update the current session owner's
+tracker and the sender's tracker. Other lifecycle layers remain specific to
+each connection. A successful session open assigns the sender as owner; a
+session close clears ownership. Teardown of a previous connection cannot clear
+a replacement session. These rules describe simulator state, not camera-side
+connection ownership or operation gating.
+
+Cancellation or handler unwinding records a local clean transport close.
+The service drains cancelled command tasks before returning from shutdown, so
+retained lifecycle handles contain only completed command records at that
+point. Local transport closure leaves camera-side session cleanup unconfirmed.
 
 ## 10. camera-sim-tui external plugin protocol v1
 

@@ -1665,6 +1665,12 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
     );
     let base = CameraManifest::from_yaml(&data("fuji/gfx100ii/gfx100ii.yaml")).unwrap();
     let m = camera_config::apply_review(&base, &proposal, &review).expect("review applies");
+    let static_proposal: camera_config::Proposal =
+        serde_json::from_str(&data("fuji/catalog/tether-app-ff0018.proposal.json")).unwrap();
+    let static_review: camera_config::ProposalReview =
+        serde_json::from_str(&data("fuji/catalog/tether-app-ff0018.review.json")).unwrap();
+    let m = camera_config::apply_review(&m, &static_proposal, &static_review)
+        .expect("reviewed static catalog applies after camera observations");
 
     m.require_supported_schema()
         .expect("applied manifest uses the current schema");

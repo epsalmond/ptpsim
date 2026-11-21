@@ -425,12 +425,14 @@ families:
 
             # A NotLaunched response has a typed refusal detail. Only the
             # short-camera-action detail (2) is transient: keep BLE connected,
-            # wait 200 ms, and resend only FUNCTION_LAUNCH_REQUEST once. The
-            # image-transfer setting above remains a one-time setup write.
+            # wait five seconds, and resend only FUNCTION_LAUNCH_REQUEST once.
+            # A fresh launch can succeed after the held action clears (#357,
+            # #480). This backoff is client policy, not a firmware timing bound.
+            # The image-transfer setting above remains a one-time setup write.
             - retry:
                 whenFailure: conditionRejected
                 maxAttempts: 2
-                retryDelayMs: 200
+                retryDelayMs: 5000
                 retryWhen: { stateErrorDetails: { eq: "2" } }
                 failureContext: [apState, stateErrorDetails]
                 steps:

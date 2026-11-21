@@ -10,6 +10,7 @@
 //! per-property silent-refusal or valueless logic — the codecs remain
 //! generic and data-driven.
 
+pub mod chunk_frame;
 pub mod client_identity;
 pub mod error;
 pub mod focus_area;

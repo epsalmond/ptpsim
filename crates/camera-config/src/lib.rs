@@ -11,11 +11,13 @@ pub mod activity;
 pub mod error;
 pub mod generate;
 pub mod index;
+pub mod lifecycle;
 pub mod model;
 pub mod observation;
 pub mod predicate;
 pub mod query;
 pub mod recorder;
+pub mod static_catalog;
 pub mod std_names;
 pub mod store;
 pub mod trace;
@@ -35,11 +37,19 @@ pub use activity::{
 };
 pub use error::{ConfigError, Lint, ManifestError, Severity};
 pub use generate::{
-    apply_review, proposal_json, propose, validate_bundles, validation_report_json,
-    CandidateAssertion, GenerationError, Proposal, ProposalCandidate, ProposalRecordDisposition,
-    ProposalRecordStatus, ProposalReview, RecordDisposition, ReviewDisposition,
-    ValidatedObservations, ValidationReport, ValidationStatus, PROPOSAL_SCHEMA, REVIEW_SCHEMA,
-    VALIDATION_REPORT_SCHEMA,
+    apply_review, proposal_json, propose, propose_static_candidates, validate_bundles,
+    validation_report_json, CandidateAssertion, GenerationError, Proposal, ProposalCandidate,
+    ProposalRecordDisposition, ProposalRecordStatus, ProposalReview, RecordDisposition,
+    ReviewDisposition, ValidatedObservations, ValidationReport, ValidationStatus, PROPOSAL_SCHEMA,
+    REVIEW_SCHEMA, VALIDATION_REPORT_SCHEMA,
+};
+pub use lifecycle::{
+    apply_connection_lifecycle_transition, generated_connection_lifecycle_json_schema,
+    CommandListenerState, ConnectionLifecycleError, ConnectionLifecycleRecord,
+    ConnectionLifecycleSchema, ConnectionLifecycleSnapshot, ConnectionLifecycleTraceEvent,
+    ConnectionLifecycleTracker, ConnectionLifecycleTransition, FeatureMode, FeatureState,
+    LifecycleEvidence, NetworkPersonaState, ProxyTransportState, PtpSessionState,
+    CONNECTION_LIFECYCLE_SCHEMA_VERSION,
 };
 pub use model::{
     parse_hex_bytes, parse_hex_code, parse_hex_u32, Action, ActionEffect, ActionInitiator,
@@ -78,6 +88,7 @@ pub use recorder::{
     direct_epistemic, no_loss, payload_metadata, ObservationRecorder, PayloadMetadataBuilder,
     RecorderError,
 };
+pub use static_catalog::*;
 pub use store::{
     ConfigStore, ResolvedBleLiteralWrite, ResolvedBleStateTrigger, ResolvedCameraInitiatedTransfer,
 };

@@ -6,6 +6,10 @@ import uniffi.camera_protocol_ffi.ConnectionActivityEvent
 import uniffi.camera_protocol_ffi.ConnectionActivityFailure
 import uniffi.camera_protocol_ffi.ConnectionActivityObserver
 import uniffi.camera_protocol_ffi.ConnectionActivityRetry
+import uniffi.camera_protocol_ffi.KeyValue
+import uniffi.camera_protocol_ffi.ReadyReconnectRecognition
+import uniffi.camera_protocol_ffi.ScanObservation
+import uniffi.camera_protocol_ffi.ConfigStore
 import uniffi.camera_protocol_ffi.ExecutorException
 import uniffi.camera_protocol_ffi.ExecutorStepFailureKind
 import uniffi.camera_protocol_ffi.Predicate
@@ -16,6 +20,27 @@ import uniffi.camera_protocol_ffi.SocketRole
 import uniffi.camera_protocol_ffi.Step
 import uniffi.camera_protocol_ffi.StepObserver
 import uniffi.camera_protocol_ffi.StepReport
+
+fun fallbackModelBindingShape(store: ConfigStore, model: String): String {
+    val fallback: Boolean? = store.isFallbackModel(model)
+    return when (fallback) {
+        true -> "baseline"
+        false -> "specific"
+        null -> "unknown"
+    }
+}
+
+fun readyReconnectBindingShape(
+    store: ConfigStore, observation: ScanObservation, persistedScope: List<KeyValue>,
+): List<Pair<String, Boolean>> = when (
+    val result = store.recognizeReadyForReconnect(observation, persistedScope)
+) {
+    is ReadyReconnectRecognition.NoMatch -> emptyList()
+    is ReadyReconnectRecognition.Candidate ->
+        listOf(result.candidate.model to result.candidate.isFallback)
+    is ReadyReconnectRecognition.Disambiguate ->
+        result.candidates.map { it.model to it.isFallback }
+}
 
 class ExecutorBindingsStub : BleExecutorTransport {
     override suspend fun connect() = Unit

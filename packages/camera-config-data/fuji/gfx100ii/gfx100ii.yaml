@@ -1053,7 +1053,7 @@ operations:
   # of 0x100C SendObjectInfo for settings-checkpoint files. Source: single doc.
   "0x9040": { name: FujiSendObjectInfoDatHypothesis,  owner: fuji-vendor, modes: [image-transfer], connections: [app], evidence: [docFujiPtpPropReference] }
   "0x1009": { name: GetObject,               owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
-  # PCSS live-view = vendor 0x9018 poll (vs the App connection's 0x101c+GetObject).
+  # PCSS live view polls 0x9018. App live view uses the push socket after 0x101c.
   "0x9018": { name: PcssPollLiveViewData,    owner: fuji-vendor,  modes: [shooting/stills], connections: [wireless-tether], evidence: [wireTether] }
 
 properties:

@@ -22,6 +22,7 @@
 //! `until: Matches { pattern }`), the type is present and parses; the
 //! dispatcher side lands in P1.
 
+mod chunk;
 pub mod eval;
 pub mod parse;
 pub mod types;
@@ -33,9 +34,9 @@ pub use types::{
     BleAwaitDisconnectStep, BleAwaitFailureEvidence, BleAwaitUntilStep, BleConnectStep,
     BleDelayStep, BleDiscoverServicesStep, BleNotifyStep, BleNotifyUntil, BlePeripheralNameStep,
     BleReadStep, BleReconnectPolicy, BleRequestMtuStep, BleSubscribeStep, BleWriteChunkStep,
-    BleWriteStep, ByteAssertion, CccdMode, ChunkField, ChunkFrameField, Confidence, Encoding,
-    EstablishmentBlock, FamilyBleBlock, FamilyBlock, FamilyPcssBlock, FamilyUsbBlock, IfStep,
-    IndexedModel, LocalNamePredicate, ManufacturerIndex, MfgDataPredicate, ModelView,
+    BleWriteStep, ByteAssertion, CccdMode, ChunkChecksum, ChunkField, ChunkFrameField, Confidence,
+    Encoding, EstablishmentBlock, FamilyBleBlock, FamilyBlock, FamilyPcssBlock, FamilyUsbBlock,
+    IfStep, IndexedModel, LocalNamePredicate, ManufacturerIndex, MfgDataPredicate, ModelView,
     NikonLssAuthenticateStep, NikonLssReadConnectionConfigurationStep, NotifyCapture,
     PayloadPredicate, PcssDiscoveryPolicy, PcssNotifyPredicate, PcssNotifySignature, Predicate,
     PredicateOp, ReconnectDisposition, ReconnectSuggestion, RetryFailureKind, RetryStep, Signature,
