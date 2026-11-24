@@ -1,4 +1,4 @@
-//! Parse surface snapshots and classify the differences between two of them.
+//! Parse surface snapshots and label the differences between two of them.
 //!
 //! A snapshot is a list of items. An item is a header line at column zero
 //! followed by member lines indented by two spaces. The first word of every
@@ -6,6 +6,10 @@
 //! key that matches a baseline line to a current line. The rest of the line is
 //! the signature. A key present in both snapshots with a different line is a
 //! change.
+//!
+//! Every difference fails the check: the baseline must equal the current
+//! surface. The severity only tells the author what the difference means for
+//! code that vendors the generated bindings.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,8 +21,13 @@ pub struct Item {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
+    /// Existing consumer code that uses the item stops compiling.
     Breaking,
-    Addition,
+    /// Consumer types that conform to a generated Swift protocol or Kotlin
+    /// interface (test doubles, for example) stop compiling.
+    BreaksImplementers,
+    /// Existing consumer code keeps compiling.
+    Additive,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,9 +75,16 @@ pub fn parse(text: &str) -> Result<Vec<Item>, String> {
 }
 
 /// The identity of a header or member line: its kind and name.
+///
+/// A `config` name is its whole dotted path, which may contain JSON-quoted
+/// segments; it ends at the first ` = ` outside quotes. Other names are
+/// Rust identifiers, optionally dotted (`uniffi_trait Store.Display`).
 pub fn key(line: &str) -> String {
     let line = line.trim_start();
     let (kind, rest) = line.split_once(' ').unwrap_or((line, ""));
+    if kind == "config" {
+        return format!("{kind} {}", config_path(rest));
+    }
     let name: String = rest
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
@@ -76,32 +92,78 @@ pub fn key(line: &str) -> String {
     format!("{kind} {name}")
 }
 
+fn config_path(rest: &str) -> &str {
+    let (mut quoted, mut escaped) = (false, false);
+    for (index, c) in rest.char_indices() {
+        if quoted {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => quoted = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            quoted = true;
+        } else if rest[index..].starts_with(" = ") {
+            return &rest[..index];
+        }
+    }
+    rest
+}
+
 fn kind(line: &str) -> &str {
     line.split_whitespace().next().unwrap_or("")
 }
 
-/// Member kinds whose additions break consumers of the item.
-fn closed_member_kinds(header: &str) -> &'static [&'static str] {
-    let qualifiers: Vec<&str> = header.split_whitespace().skip(2).collect();
+/// Member kinds whose relative order is part of the consumer contract:
+/// positional Kotlin record constructors and enum ordinals.
+const ORDERED_MEMBER_KINDS: [&str; 2] = ["field", "case"];
+
+const SETTING_REASON: &str =
+    "Binding settings and the generator version change the generated code for every consumer.";
+
+/// What adding a top-level item means for consumers.
+fn added_item(header: &str) -> (Severity, Option<&'static str>) {
     match kind(header) {
-        "record" => &["field"],
-        "enum" if !qualifiers.contains(&"non_exhaustive") => &["case"],
-        "callback_interface" => &["method"],
-        "object" if qualifiers.contains(&"callback_trait") => &["method"],
-        _ => &[],
+        "config" | "generator" => (Severity::Breaking, Some(SETTING_REASON)),
+        _ => (Severity::Additive, None),
     }
 }
 
-/// Member kinds whose relative order is part of the consumer contract:
-/// positional record initializers and enum ordinals.
-const ORDERED_MEMBER_KINDS: [&str; 2] = ["field", "case"];
-
-fn closed_reason(member_kind: &str) -> &'static str {
-    match member_kind {
-        "field" => "Swift and Kotlin record initializers take every field, so existing initializer calls stop compiling.",
-        "case" => "Exhaustive Swift `switch` and Kotlin `when` over this enum must handle the new case.",
-        "method" => "Foreign implementations of this interface must add the method.",
-        _ => "Consumers of this item must change.",
+/// What adding a member to an existing item means for consumers.
+/// `appended_default` is true for a record field that has a default value and
+/// follows every field the baseline already has.
+fn added_member(header: &str, member: &str, appended_default: bool) -> (Severity, &'static str) {
+    let callback_trait = header
+        .split_whitespace()
+        .skip(2)
+        .any(|q| q == "callback_trait");
+    match (kind(header), kind(member)) {
+        ("record", "field") if appended_default => (
+            Severity::Additive,
+            "Appended with a default: existing Swift initializer and Kotlin constructor calls keep compiling.",
+        ),
+        ("record", "field") => (
+            Severity::Breaking,
+            "Swift and Kotlin record initializers take every field without a default, and Kotlin passes fields by position.",
+        ),
+        ("enum", "case") => (
+            Severity::Breaking,
+            "Exhaustive Swift `switch` and Kotlin `when` over this enum must handle the new case.",
+        ),
+        ("callback_interface", "method") => (
+            Severity::Breaking,
+            "Foreign implementations of this interface must add the method.",
+        ),
+        ("object", "method") if callback_trait => (
+            Severity::Breaking,
+            "Foreign implementations of this trait must add the method.",
+        ),
+        ("object", "method") => (
+            Severity::BreaksImplementers,
+            "The generated Swift protocol and Kotlin interface gain this requirement; consumer types that conform to them must add it.",
+        ),
+        _ => (Severity::Additive, "Existing consumer code keeps compiling."),
     }
 }
 
@@ -136,10 +198,15 @@ pub fn compare(baseline: &[Item], current: &[Item]) -> Vec<Finding> {
 
     for new in current {
         if !baseline_keys.contains(&key(&new.header)) {
+            let (severity, reason) = added_item(&new.header);
             findings.push(Finding {
-                severity: Severity::Addition,
+                severity,
                 summary: format!("added `{}`", new.header),
-                detail: new.members.iter().map(|m| format!("+ {m}")).collect(),
+                detail: reason
+                    .map(str::to_string)
+                    .into_iter()
+                    .chain(new.members.iter().map(|m| format!("+ {m}")))
+                    .collect(),
             });
         }
     }
@@ -149,7 +216,11 @@ pub fn compare(baseline: &[Item], current: &[Item]) -> Vec<Finding> {
 fn compare_members(item_key: &str, old: &Item, new: &Item, findings: &mut Vec<Finding>) {
     let new_by_key: BTreeMap<String, &String> = new.members.iter().map(|m| (key(m), m)).collect();
     let old_keys: BTreeSet<String> = old.members.iter().map(|m| key(m)).collect();
-    let closed = closed_member_kinds(&new.header);
+    // Index in the current item of the last field the baseline already has.
+    let last_kept_field = new
+        .members
+        .iter()
+        .rposition(|m| kind(m) == "field" && old_keys.contains(&key(m)));
 
     for member in &old.members {
         match new_by_key.get(&key(member)) {
@@ -167,24 +238,19 @@ fn compare_members(item_key: &str, old: &Item, new: &Item, findings: &mut Vec<Fi
         }
     }
 
-    for member in &new.members {
+    for (index, member) in new.members.iter().enumerate() {
         if old_keys.contains(&key(member)) {
             continue;
         }
-        let member_kind = kind(member);
-        if closed.contains(&member_kind) {
-            findings.push(Finding {
-                severity: Severity::Breaking,
-                summary: format!("`{item_key}`: added `{member}`"),
-                detail: vec![closed_reason(member_kind).to_string()],
-            });
-        } else {
-            findings.push(Finding {
-                severity: Severity::Addition,
-                summary: format!("`{item_key}`: added `{member}`"),
-                detail: Vec::new(),
-            });
-        }
+        let appended_default = kind(member) == "field"
+            && member.contains(" = ")
+            && last_kept_field.is_none_or(|last| index > last);
+        let (severity, reason) = added_member(&new.header, member, appended_default);
+        findings.push(Finding {
+            severity,
+            summary: format!("`{item_key}`: added `{member}`"),
+            detail: vec![reason.to_string()],
+        });
     }
 
     for ordered_kind in ORDERED_MEMBER_KINDS {
@@ -216,6 +282,10 @@ mod tests {
 
     const BASELINE: &str = "\
 # comment
+generator uniffi 0.31.1
+
+config bindings.swift.module_name = \"CameraProtocolFFI\"
+
 fn connect(host: String, port: u16) throws(FfiError) -> Session
 
 record Descriptor
@@ -238,20 +308,20 @@ object Transport callback_trait
         compare(&parse(BASELINE).unwrap(), &parse(current).unwrap())
     }
 
-    fn breaking(findings: &[Finding]) -> Vec<&str> {
+    fn with(findings: &[Finding], severity: Severity) -> Vec<&str> {
         findings
             .iter()
-            .filter(|f| f.severity == Severity::Breaking)
+            .filter(|f| f.severity == severity)
             .map(|f| f.summary.as_str())
             .collect()
     }
 
-    fn additions(findings: &[Finding]) -> Vec<&str> {
-        findings
-            .iter()
-            .filter(|f| f.severity == Severity::Addition)
-            .map(|f| f.summary.as_str())
-            .collect()
+    fn breaking(findings: &[Finding]) -> Vec<&str> {
+        with(findings, Severity::Breaking)
+    }
+
+    fn additive(findings: &[Finding]) -> Vec<&str> {
+        with(findings, Severity::Additive)
     }
 
     #[test]
@@ -277,7 +347,7 @@ object Transport callback_trait
         let findings = run(&current);
         assert_eq!(breaking(&findings).len(), 1);
         assert!(breaking(&findings)[0].starts_with("removed `fn connect("));
-        assert_eq!(additions(&findings).len(), 1);
+        assert_eq!(additive(&findings).len(), 1);
     }
 
     #[test]
@@ -327,16 +397,16 @@ object Transport callback_trait
     }
 
     #[test]
-    fn new_case_in_non_exhaustive_enum_is_an_addition() {
+    fn new_case_in_non_exhaustive_enum_is_breaking() {
+        // UniFFI 0.31 Swift and Kotlin templates ignore `#[non_exhaustive]`.
         let baseline = "enum Kind non_exhaustive\n  case A\n";
         let current = "enum Kind non_exhaustive\n  case A\n  case B\n";
         let findings = compare(&parse(baseline).unwrap(), &parse(current).unwrap());
-        assert_eq!(additions(&findings), ["`enum Kind`: added `case B`"]);
-        assert!(breaking(&findings).is_empty());
+        assert_eq!(breaking(&findings), ["`enum Kind`: added `case B`"]);
     }
 
     #[test]
-    fn new_record_field_is_breaking() {
+    fn new_record_field_without_default_is_breaking() {
         let current = BASELINE.replace(
             "  field title: Option<String>\n",
             "  field title: Option<String>\n  field role: String\n",
@@ -344,6 +414,35 @@ object Transport callback_trait
         assert_eq!(
             breaking(&run(&current)),
             ["`record Descriptor`: added `field role: String`"]
+        );
+    }
+
+    #[test]
+    fn appended_record_field_with_default_is_additive() {
+        let current = BASELINE.replace(
+            "  field title: Option<String>\n",
+            "  field title: Option<String>\n  field role: Option<String> = None\n  field rank: u8 = 0\n",
+        );
+        let findings = run(&current);
+        assert!(breaking(&findings).is_empty());
+        assert_eq!(
+            additive(&findings),
+            [
+                "`record Descriptor`: added `field role: Option<String> = None`",
+                "`record Descriptor`: added `field rank: u8 = 0`",
+            ]
+        );
+    }
+
+    #[test]
+    fn inserted_record_field_with_default_is_breaking() {
+        let current = BASELINE.replace(
+            "  field id: String\n",
+            "  field role: Option<String> = None\n  field id: String\n",
+        );
+        assert_eq!(
+            breaking(&run(&current)),
+            ["`record Descriptor`: added `field role: Option<String> = None`"]
         );
     }
 
@@ -369,16 +468,29 @@ object Transport callback_trait
     }
 
     #[test]
-    fn new_method_on_rust_object_is_an_addition() {
+    fn new_method_on_rust_object_breaks_implementers() {
         let current = BASELINE.replace(
             "  method lookup(model: String) -> Option<bool>\n",
             "  method lookup(model: String) -> Option<bool>\n  method models() -> Vec<String>\n",
         );
         let findings = run(&current);
         assert!(breaking(&findings).is_empty());
+        assert!(additive(&findings).is_empty());
         assert_eq!(
-            additions(&findings),
+            with(&findings, Severity::BreaksImplementers),
             ["`object Store`: added `method models() -> Vec<String>`"]
+        );
+    }
+
+    #[test]
+    fn new_constructor_on_rust_object_is_additive() {
+        let current = BASELINE.replace(
+            "  constructor new(path: String) throws(FfiError)\n",
+            "  constructor new(path: String) throws(FfiError)\n  constructor empty()\n",
+        );
+        assert_eq!(
+            additive(&run(&current)),
+            ["`object Store`: added `constructor empty()`"]
         );
     }
 
@@ -392,17 +504,68 @@ object Transport callback_trait
     }
 
     #[test]
-    fn new_top_level_item_is_an_addition() {
+    fn new_top_level_item_is_additive() {
         let current = format!("{BASELINE}\nfn version() -> String\n");
         let findings = run(&current);
         assert!(breaking(&findings).is_empty());
-        assert_eq!(additions(&findings), ["added `fn version() -> String`"]);
+        assert_eq!(additive(&findings), ["added `fn version() -> String`"]);
     }
 
     #[test]
     fn object_kind_change_is_breaking() {
         let current = BASELINE.replace("object Store\n", "object Store trait\n");
         assert_eq!(breaking(&run(&current)), ["changed `object Store`"]);
+    }
+
+    #[test]
+    fn added_config_setting_is_breaking() {
+        let current = BASELINE.replace(
+            "config bindings.swift.module_name",
+            "config bindings.swift.omit_argument_labels = true\n\nconfig bindings.swift.module_name",
+        );
+        let findings = run(&current);
+        assert_eq!(
+            breaking(&findings),
+            ["added `config bindings.swift.omit_argument_labels = true`"]
+        );
+        assert!(additive(&findings).is_empty());
+    }
+
+    #[test]
+    fn removed_config_setting_is_breaking() {
+        let current = BASELINE.replace(
+            "config bindings.swift.module_name = \"CameraProtocolFFI\"\n",
+            "",
+        );
+        assert_eq!(
+            breaking(&run(&current)),
+            ["removed `config bindings.swift.module_name = \"CameraProtocolFFI\"`"]
+        );
+    }
+
+    #[test]
+    fn changed_config_setting_is_breaking() {
+        let current = BASELINE.replace("\"CameraProtocolFFI\"", "\"Renamed\"");
+        assert_eq!(
+            breaking(&run(&current)),
+            ["changed `config bindings.swift.module_name`"]
+        );
+    }
+
+    #[test]
+    fn generator_version_added_removed_or_changed_is_breaking() {
+        let changed = BASELINE.replace("generator uniffi 0.31.1", "generator uniffi 0.32.0");
+        assert_eq!(breaking(&run(&changed)), ["changed `generator uniffi`"]);
+
+        let removed = BASELINE.replace("generator uniffi 0.31.1\n", "");
+        assert_eq!(
+            breaking(&run(&removed)),
+            ["removed `generator uniffi 0.31.1`"]
+        );
+
+        let baseline = parse(&removed).unwrap();
+        let findings = compare(&baseline, &parse(BASELINE).unwrap());
+        assert_eq!(breaking(&findings), ["added `generator uniffi 0.31.1`"]);
     }
 
     #[test]
@@ -424,6 +587,22 @@ object Transport callback_trait
         assert_eq!(
             key("uniffi_trait Store.Display"),
             "uniffi_trait Store.Display"
+        );
+    }
+
+    #[test]
+    fn config_key_is_the_full_path_including_quoted_segments() {
+        assert_eq!(
+            key(r#"config bindings.swift.rename."a-b" = "x""#),
+            r#"config bindings.swift.rename."a-b""#
+        );
+        assert_eq!(
+            key(r#"config bindings.swift.rename."a = \"b\"" = "x""#),
+            r#"config bindings.swift.rename."a = \"b\"""#
+        );
+        assert_ne!(
+            key(r#"config bindings.swift.rename."a-b" = "x""#),
+            key(r#"config bindings.swift.rename."a-c" = "x""#)
         );
     }
 }
