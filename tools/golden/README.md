@@ -14,9 +14,9 @@ the path, not the bytes of anything but the one frame it documents.
 
 - **frida** blobs are already cherry-picked at runtime (one frame per blob), so
   extraction is just "decode and pick by op/type".
-- **pcap** extraction *requires* `--host`: only the conversation with that single
-  address is touched; nothing else in the file is read. The host is recorded in
-  the golden's provenance.
+- **pcap** extraction *requires* `--host`: `tshark` reads the whole capture, and
+  only matching payloads from the conversation with that single address are
+  retained. The host is recorded in the golden's provenance.
 - **raw** is a single `.bin` already holding one frame.
 
 Redaction replaces known device-identifying byte sequences (the GFX100 II
@@ -44,7 +44,7 @@ python3 tools/golden/extract_golden.py raw --file request.bin --label some-frame
 
 
 # The bulk data transfer (a 100 MB+ RAW) is skipped — only the tiny op/response/
-# event containers are touched.
+# event containers are retained.
 python3 tools/golden/extract_golden.py usbscan --file xraw_capture.pcap
 python3 tools/golden/extract_golden.py usbmon --file xraw_capture.pcap --select op:0x1001 \
     --label usb-get-device-info-request --transport usb

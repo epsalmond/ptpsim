@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(command = %server.command_addr(), control = %server.control_addr(), "ptpsim listening");
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    // SIGTERM / Ctrl-C -> graceful shutdown.
+    // SIGTERM / Ctrl-C -> shutdown.
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("install SIGTERM handler");
