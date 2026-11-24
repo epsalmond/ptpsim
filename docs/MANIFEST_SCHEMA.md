@@ -2275,7 +2275,7 @@ transactions. Standard `GetObjectHandles` is the authoritative enumeration
 path, and its returned handle order is preserved. The row uses no ImageCapture
 catalog or download APIs. It does not claim USB live view.
 
-### 11.28 Value dispositions (#464, #465)
+### 11.29a Value dispositions (#464, #465)
 
 Some bodies expose a property that has no current value in certain modes or
 when a physical control owns it. The simulator must present absence instead of

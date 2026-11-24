@@ -60,13 +60,14 @@ simulator can then reproduce and any client can build on.
   layers with their own issues.
 - Open source the whole simulator, including captured device behavior. The
   engine (codecs, manifest schema, media store, sim runtime, probe) and the
-  captured camera manifests, captures, and fixtures are all public. The point is
+  captured camera manifests, redacted golden packets, and fixtures are all
+  public. Raw captures stay outside the repository. The point is
   a community loop: someone with a camera we do not own runs the probe,
   contributes a manifest, and both this stack and arbitrary third-party apps get
   better camera support. The only private parts are a consumer's own app,
   backend, and management sidecar (e.g. client application's).
-- Redistributability is a contributor rule, not a private/public split. Captures
-  and manifests get a redaction pass (serials, device GUIDs, network
+- Redistributability is a contributor rule, not a private/public split. Golden
+  packets and manifests get a redaction pass (serials, device GUIDs, network
   identifiers); media and firmware fixtures must be synthetic or licensed for
   redistribution — never copyrighted vendor payloads.
 - Evidence is provenance, never a load-time dependency. A manifest must validate
@@ -124,34 +125,39 @@ to send it and only the simulator decides how to respond.
 
 ## Runtime Component Model
 
-The simulator runtime is an actor tree. Each actor owns a narrow state surface
-and communicates with typed messages. There are no process-global sockets,
-transaction counters, or event destinations.
+The simulator runtime is one `Server` per instance
+(`services/camera-sim-service`). Binding creates the command listener, the
+optional event, live-view, and PCSS knock listeners, and the control listener.
+`Server::run` drives one loop per listener, and each accept loop keeps its
+per-connection tasks in a `JoinSet`. All loops share one `Arc<Mutex<Engine>>`
+(the `camera-sim` engine, which owns the manifest, media store, camera state,
+and fault set). There are no process-global sockets, transaction counters, or
+event destinations.
 
 ```text
 camera-sim-service
   |
-  +-- InstanceSupervisor
-  |     owns profile id, media root, bind addresses, graceful shutdown
+  +-- Server::run
+        |
+        +-- command accept loop
+        |     per-connection command tasks; session ownership, init shape, framing
+        |
+        +-- event accept loop
+        |     per-connection event-socket tasks fed by a broadcast channel
+        |
+        +-- live-view accept loop
+        |     per-connection frame-streaming tasks over a shared frame source
+        |
+        +-- knock loop
+        |     PCSS UDP discovery and callback tasks
+        |
+        +-- control loop
+        |     HTTP control API: health, state, faults, actions, trace, shutdown
+        |
+        +-- state-callback task
+              debounced state POSTs to registered subscribers
 
-  |
-  +-- TransportSupervisor
-  |     owns TCP/UDP listeners and accepted socket routing
-  |
-  +-- CameraInstance
-        owns manifest, media store, virtual clock, trace sink
-        |
-        +-- CommandSessionActor
-        |     owns PTP session id, transaction validation, active workflow
-        |
-        +-- EventSocketActor
-        |     owns async event delivery and disconnect behavior
-        |
-        +-- LiveViewStreamActor
-        |     owns frame source, pacing, and frame packetization
-        |
-        +-- ScriptActor
-              owns control API commands, faults, resets, and scenario assertions
+  shared: Arc<Mutex<Engine>>, trace log, observation recorder, metrics
 ```
 
 One leased camera instance can accept at most one active app command session by
@@ -166,16 +172,18 @@ Packet flow:
 TCP socket
   -> transport frame reader
   -> ptp-core packet parser
-  -> command session actor
-  -> active workflow handler
-  -> media/property/event services
+  -> command connection task
+  -> Engine operation dispatch (under the shared mutex)
+  -> media store, camera state, queued events
   -> ptp-core packet serializer
   -> transport writer
 ```
 
-The event and live-view sockets are not side channels hidden inside workflow
-code. They are registered capabilities on the `CameraInstance`, so scripts and
-tests can see whether a client opened the expected sockets.
+The event and live-view sockets are not side channels hidden inside command
+handling. A separate event or live-view listener has its own accept loop in
+`Server::run`. When a `standardPtpIp` connection uses one port for its command
+and event sockets, the command listener accepts both and routes each
+connection by its first packet (`InitCommandRequest` or `InitEventRequest`).
 
 ## Public Contract Sketch
 
@@ -270,7 +278,7 @@ ptpsim is its own standalone repo, published open source. client application con
 crates as dependencies; its placeholder `camera-protocol-{core,fuji,ffi}` crates
 are deleted in favor of these. A monorepo home was rejected because a generic,
 community-contributable simulator should not carry client application's App Review backend
-or app sources. Captured manifests, captures, and fixtures are public — they are
+or app sources. Captured manifests, redacted golden packets, and fixtures are public. They are
 the community camera-behavior database, not private client application data.
 
 ```text
@@ -318,7 +326,7 @@ Public vs private boundary:
   id; those references dangle harmlessly in the public repo because evidence is
   optional at load time.
 
-Contributor hygiene before anything lands public: captures and manifests pass a
+Contributor hygiene before anything lands public: golden packets and manifests pass a
 redaction step (serials, device GUIDs, network identifiers), and media/firmware
 fixtures are synthetic or redistribution-licensed. Captured manifests and
 contributions are data; pick a license (e.g. CC-BY or the project license for
@@ -766,8 +774,9 @@ Responsibilities:
 - Load manifest and scenario files.
 - Serve fixed or mounted media.
 - Emit structured logs.
-- Shut down gracefully on `POST /shutdown` or `SIGTERM`, draining in-flight
-  transfers within a bounded window.
+- Shut down on `POST /shutdown` or `SIGTERM`. Accept loops stop, and in-flight
+  connections, including transfers, are aborted immediately without a drain
+  window.
 
 The instance is lease-agnostic. It does not know about reviewer leases, pools,
 
@@ -793,9 +802,20 @@ Response (the exact shape `camera_sim_service::control::Health` emits today):
   "ok": true,
   "instance_id": "<lease-uuid-or-'local'>",
   "profile": "fuji/gfx100ii",
+  "connection": "app",
   "bind": "[2602:...]:55740",
+  "knock_bind": null,
   "sessions": 1,
-  "media_root": "/var/lib/ptpsim/media-root"
+  "media_root": "/var/lib/ptpsim/media-root",
+  "metrics": {
+    "uptime_ms": 120000,
+    "idle_ms": 5000,
+    "bytes_read": 4096,
+    "bytes_written": 10485760,
+    "bytes_transferred": 10489856,
+    "liveview_frames": 0,
+    "memory_allocated_bytes": 8388608
+  }
 }
 ```
 
@@ -810,6 +830,8 @@ Implemented:
 - `GET /healthz`
 - `GET /state`
 - `PATCH /state`
+- `POST /control/advance-property`
+- `GET /connection-lifecycles`
 - `POST /callbacks`
 - `GET /actions`
 - `POST /actions/{id}`
@@ -918,7 +940,7 @@ camera-sim-service \
   --media-root <path/to/DCIM-root> \
   --profile fuji/gfx100ii \
   --connection app \
-  --startup-state scenarios/fuji/gfx100ii/iso-2000.yaml \
+  --startup-state packages/fixtures/startup-state/gfx100ii-iso-2000.yaml \
   --command-bind  '[::]:55740' \
   --event-bind    '[::]:55741' \
   --liveview-bind '[::]:55742' \
@@ -1664,10 +1686,10 @@ The tethered-shooting product target is higher:
   `/healthz`. A management sidecar talking to NATS is acceptable; it is not part
   of ptpsim.
 - Open-source boundary: the whole simulator is public — engine, schema, probe,
-  service, CLI, manufacturer crates, and captured manifests/captures/fixtures.
+  service, CLI, and captured manifests, redacted golden packets, and fixtures.
   Only a consumer's app, backend, and management sidecar stay private. Evidence
-  is provenance only — manifests must load and run with it unresolved; captures
-  and fixtures pass redaction/redistribution hygiene before landing.
+  is provenance only: manifests must load and run with it unresolved; golden
+  packets and fixtures pass redaction/redistribution hygiene before landing.
 - Manifest format: YAML source with generated JSON Schema.
 - Swift boundary: generated Swift tables first; Rust FFI only for logic that
   would otherwise be duplicated incorrectly.
