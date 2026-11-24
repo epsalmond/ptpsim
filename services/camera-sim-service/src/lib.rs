@@ -1687,11 +1687,15 @@ async fn stream_liveview(
                 }
                 if let Some((period, duration)) = pause {
                     let (next_pause_at, resume_at) = pause_window.get_or_insert((tick_at + period, None));
-                    if resume_at.is_some_and(|deadline| tick_at < deadline) {
+                    // Compare the wake time, not the tick's scheduled instant.
+                    // Skip returns the scheduled instant of a missed tick, which
+                    // can precede a resume deadline the clock has already reached.
+                    let now = Instant::now();
+                    if resume_at.is_some_and(|deadline| now < deadline) {
                         continue;
                     }
                     // Skip can return a tick scheduled before the current pause boundary.
-                    let overdue = tick_at < *next_pause_at && Instant::now() >= *next_pause_at;
+                    let overdue = tick_at < *next_pause_at && now >= *next_pause_at;
                     if overdue || (resume_at.is_none() && tick_at >= *next_pause_at) {
                         let pause_at = tick_at.max(*next_pause_at);
                         *resume_at = Some(pause_at + duration);

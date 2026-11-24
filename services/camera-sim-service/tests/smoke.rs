@@ -3313,8 +3313,17 @@ properties:
     });
 }
 
-#[tokio::test(start_paused = true)]
-async fn service_applies_manifest_push_stream_timing() {
+/// Start a push-stream server whose manifest pauses the 16 ms stream for
+/// 48 ms every 80 ms. Drive the stream through the first pause and into the
+/// second pause, which starts at 160 ms and resumes at 208 ms, then hand the
+/// stream to `script` with the paused clock at 161 ms.
+///
+/// Each read timeout below gives the runtime thread real time to observe one
+/// clock step before the next advance.
+async fn run_push_stream_timing_scenario<F>(script: F)
+where
+    F: FnOnce(&dyn Fn(u64), &mut TcpStream) + Send + 'static,
+{
     use ptp_core::codes::op as code;
     use std::time::Duration;
 
@@ -3387,17 +3396,46 @@ async fn service_applies_manifest_push_stream_timing() {
             .set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
         assert_read_timeout(&mut stream);
-        advance(31);
-        assert_read_timeout(&mut stream);
-        advance(16);
-        stream.set_read_timeout(read_timeout).unwrap();
-        assert_eq!(read_frame_lv(&mut stream).frame_counter, 6);
+        script(&advance, &mut stream);
     })
     .await
     .unwrap();
 
     shutdown_tx.send(()).unwrap();
     handle.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn service_applies_manifest_push_stream_timing() {
+    use std::time::Duration;
+
+    run_push_stream_timing_scenario(|advance, stream| {
+        advance(31);
+        assert_read_timeout(stream);
+        advance(16);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(read_frame_lv(stream).frame_counter, 6);
+    })
+    .await;
+}
+
+/// A wake that lands at the resume deadline first delivers the overdue tick
+/// scheduled at 176 ms. That tick must end the pause instead of waiting for
+/// the 224 ms tick.
+#[tokio::test(start_paused = true)]
+async fn service_resumes_push_stream_on_overdue_tick() {
+    use std::time::Duration;
+
+    run_push_stream_timing_scenario(|advance, stream| {
+        advance(47);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(read_frame_lv(stream).frame_counter, 6);
+    })
+    .await;
 }
 
 /// Live-view smoke: the declared operation controls TCP availability, then
