@@ -91,16 +91,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reset_restores_the_standalone_default() {
+    fn clear_prep_write_keeps_the_armed_state_and_the_name() {
         let link = CameraLink::default();
         link.note_prep_write();
         link.launch_ap();
         link.note_device_name("host".into());
-        link.reset();
-        assert!(link.is_armed());
-        assert_eq!(link.device_name(), None);
-        // The prep flag is cleared too: a launch now leaves the link unarmed.
+        link.clear_prep_write();
+        assert!(link.is_armed(), "the last launch's armed state stands");
+        assert_eq!(link.device_name().as_deref(), Some("host"));
+        // A launch now needs a fresh prep write to arm.
         link.launch_ap();
+        assert!(!link.is_armed());
+
+        // An unarmed link stays unarmed.
+        link.clear_prep_write();
         assert!(!link.is_armed());
     }
 }

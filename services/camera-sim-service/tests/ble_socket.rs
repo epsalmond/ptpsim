@@ -963,7 +963,7 @@ async fn disconnect_responds_then_closes_the_connection() {
 }
 
 #[tokio::test]
-async fn a_new_connection_resets_the_link_handoff_state() {
+async fn a_new_connection_clears_the_prep_write_but_keeps_the_name() {
     let running = start_server().await;
     let view = gfx100ii();
     let ble = view.ble.as_ref().unwrap();
@@ -1005,9 +1005,9 @@ async fn a_new_connection_resets_the_link_handoff_state() {
         "an earlier connection's prep write must not arm this launch"
     );
     assert_eq!(
-        running.link.device_name(),
-        None,
-        "an earlier connection's registered name must not gate this session"
+        running.link.device_name().as_deref(),
+        Some(TERMINAL_NAME),
+        "the name registered during pairing still gates the init"
     );
     drop(second);
     running.stop().await;
@@ -1047,4 +1047,69 @@ async fn a_non_loopback_ble_bind_is_refused_without_the_opt_in() {
         assert!(error.to_string().contains("loopback"), "{error}");
     }
     assert!(server.ble_addr_opt().is_none());
+}
+
+#[tokio::test]
+async fn an_unarmed_engine_stays_unarmed_across_a_later_connection() {
+    let running = start_server().await;
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+
+    let mut first = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut first).await;
+    first.ok("discover", json!({})).await;
+    first
+        .ok(
+            "write_fenced",
+            json!({
+                "uuid": uuid(ble, "functionLaunchRequest"),
+                "value": "0400",
+                "notify_uuid": uuid(ble, "apState"),
+            }),
+        )
+        .await;
+    assert!(!running.link.is_armed(), "launch without prep");
+    first.ok("disconnect", json!({})).await;
+    drop(first);
+
+    // A later connection that only opens and closes (a retry, a probe) must
+    // not arm the engine: only a launch changes the armed state.
+    let probe = Client::connect(running.ble_addr).await;
+    drop(probe);
+    let _ = Client::connect(running.ble_addr).await;
+    assert!(
+        !running.link.is_armed(),
+        "an unarmed engine stays unarmed until a launch after a prep write"
+    );
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_registered_name_survives_a_later_connection_that_does_not_rewrite_it() {
+    let running = start_server().await;
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+
+    let mut first = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut first).await;
+    first.ok("discover", json!({})).await;
+    first
+        .ok(
+            "write",
+            json!({"uuid": uuid(ble, "deviceNameString"), "value": hex(TERMINAL_NAME.as_bytes())}),
+        )
+        .await;
+    first.ok("disconnect", json!({})).await;
+    drop(first);
+
+    let mut second = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut second).await;
+    second.ok("discover", json!({})).await;
+    assert_eq!(
+        running.link.device_name().as_deref(),
+        Some(TERMINAL_NAME),
+        "a connection that does not write the name keeps the registered one"
+    );
+    drop(second);
+    running.stop().await;
 }
