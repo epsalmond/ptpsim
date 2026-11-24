@@ -2115,7 +2115,11 @@ mirroring the BLE verb design (§11.4, §11.4a):
 - `usbBulkIn: { maxLength: <u32>, encoding: <Encoding>, captureAs: <slot>, transform?: [...] }`:
   read up to `maxLength` bytes from the bulk IN endpoint, then run the
   §11.13 capture pipeline (transform chain → encoding decode → scope
-  string) and bind the result under `captureAs`.
+  string) and bind the result under `captureAs`. One step reads one bulk
+  IN transfer. Each PTP-over-USB phase is its own transfer, so a data-in
+  operation such as GetDeviceInfo takes two `usbBulkIn` steps: the data
+  container, then the response container. A plan that skips the response
+  read leaves it queued, and the next transaction reads it as its own reply.
 - `usbAwaitInterrupt: { encoding: <Encoding>, captureAs: <slot>, transform?: [...], timeoutMs?: <u32> }`:
   await one interrupt IN event frame and capture it with the same pipeline
   as `usbBulkIn`. A strict wait verb: a miss fails the step after its
