@@ -12,6 +12,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use camera_config::model::LiveViewSimulationFixture;
 use camera_config::{
     direct_epistemic, no_loss, parse_hex_bytes, parse_hex_code, parse_hex_u32, BundleHeader,
     CameraContext, CameraManifest, CaptureClock, CaptureContext, CaptureInterface,
@@ -405,8 +406,8 @@ pub struct Config {
     /// media handles after each manifest shutter action with objectsAvailable.
     pub pcss_shutter_enqueue_count: u32,
     pub control_bind: SocketAddr,
-    /// Directory of JPEG frames to loop on the live-view socket (sorted by
-    /// filename, gated on Phase::Streaming). None / empty dir => no frames.
+    /// Overrides the selected connection's built-in live-view fixtures.
+    /// The service loads JPEGs in filename order. An empty directory disables frames.
     pub liveview_dir: Option<std::path::PathBuf>,
     /// Optional observer URL (#126). When `Some`, the service POSTs a JSON
     /// snapshot of camera state to it on every change (debounced, fire-and-
@@ -417,12 +418,19 @@ pub struct Config {
 /// Live-view frame pacing (~30 fps).
 const DEFAULT_FRAME_INTERVAL_MS: u64 = 33;
 
-/// Read every `.jpg` from a directory (sorted by filename) into memory once at
-/// bind. Returning an empty Vec on no-dir / empty-dir is fine; the frame loop
-/// then idles cleanly.
-fn load_liveview_frames(dir: Option<&std::path::Path>) -> std::io::Result<Vec<Vec<u8>>> {
+/// Load the selected connection's frame set once at bind.
+fn load_liveview_frames(
+    dir: Option<&std::path::Path>,
+    fixture: Option<LiveViewSimulationFixture>,
+) -> std::io::Result<Vec<Vec<u8>>> {
     let Some(dir) = dir else {
-        return Ok(Vec::new());
+        return Ok(match fixture {
+            Some(LiveViewSimulationFixture::Jpeg1024x768) => vec![
+                include_bytes!("../fixtures/liveview-1024x768-1.jpg").to_vec(),
+                include_bytes!("../fixtures/liveview-1024x768-2.jpg").to_vec(),
+            ],
+            None => Vec::new(),
+        });
     };
     let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -1107,6 +1115,10 @@ impl Server {
             .live_view_delivery
             .as_ref()
             .and_then(|delivery| delivery.simulation_timing);
+        let liveview_fixture = connection
+            .live_view_delivery
+            .as_ref()
+            .and_then(|delivery| delivery.simulation_fixture);
         let poll_live_view_op = connection
             .live_view_delivery
             .as_ref()
@@ -1179,7 +1191,7 @@ impl Server {
             .configure_standard_object_queue(&config.connection, config.pcss_shutter_enqueue_count)
             .map_err(invalid_config)?;
         let engine = Arc::new(Mutex::new(engine_value));
-        let frame_bytes = load_liveview_frames(config.liveview_dir.as_deref())?;
+        let frame_bytes = load_liveview_frames(config.liveview_dir.as_deref(), liveview_fixture)?;
         let frame_count = frame_bytes.len();
         let frames = Arc::new(Mutex::new(LoopingFrameSource::new(frame_bytes)));
         tracing::info!(frame_count, "live-view frame source loaded");

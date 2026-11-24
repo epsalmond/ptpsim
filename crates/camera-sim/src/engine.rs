@@ -10,7 +10,7 @@ use camera_config::{
     parse_hex_bytes, parse_hex_code, ActionArgumentValue, ActionVerb, CameraInitiatedMetadataPhase,
     CameraManifest, ConnectionLifecycleSnapshot, ConnectionLifecycleTraceEvent,
     ConnectionLifecycleTracker, ConnectionLifecycleTransition, FeatureMode, FeatureState,
-    LifecycleEvidence, PropertyTransitionTerminal, ResponderMutation,
+    LifecycleEvidence, LiveViewDeliveryKind, PropertyTransitionTerminal, ResponderMutation,
 };
 use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
@@ -281,6 +281,7 @@ pub struct Engine {
     connection: String,
     transfer_queue: Option<TransferQueue>,
     live_view_stream_connection: Option<String>,
+    polled_live_view_armed: bool,
     camera_initiated_queue: Option<CameraInitiatedQueue>,
     camera_initiated_transfer_active: bool,
     camera_initiated_pre_mode_probe_armed: bool,
@@ -324,6 +325,7 @@ impl Engine {
             connection: Self::DEFAULT_CONNECTION.to_string(),
             transfer_queue: None,
             live_view_stream_connection: None,
+            polled_live_view_armed: false,
             camera_initiated_queue: None,
             camera_initiated_transfer_active: false,
             camera_initiated_pre_mode_probe_armed: false,
@@ -352,6 +354,7 @@ impl Engine {
     pub fn bind_connection(&mut self, connection: &str) {
         if self.connection != connection {
             self.cancel_postview();
+            self.polled_live_view_armed = false;
         }
         self.connection.clear();
         self.connection.push_str(connection);
@@ -412,6 +415,7 @@ impl Engine {
 
     fn clear_session(&mut self) {
         self.cancel_postview();
+        self.polled_live_view_armed = false;
         self.state.reset_gates();
         self.state.active_mode = None;
         self.camera_initiated_pre_mode_probe_armed = false;
@@ -1166,6 +1170,7 @@ impl Engine {
                 self.state.reset_gates();
                 self.state.active_mode = None;
                 self.camera_initiated_pre_mode_probe_armed = false;
+                self.polled_live_view_armed = false;
                 self.state.session_open = true;
                 self.state.phase = Phase::SessionOpen;
                 self.record_lifecycle(ConnectionLifecycleTransition::PtpSessionOpened);
@@ -1377,12 +1382,16 @@ impl Engine {
                     {
                         self.live_view_stream_connection = None;
                     }
+                    self.polled_live_view_armed = false;
                     Self::ok(tid)
                 }
             }
             op::INITIATE_OPEN_CAPTURE => {
-                if matches!(self.state.phase, Phase::LiveView | Phase::Streaming) {
+                if matches!(self.state.phase, Phase::LiveView | Phase::Streaming)
+                    || self.accepts_armed_polled_capture(&req.params)
+                {
                     self.state.phase = Phase::Streaming;
+                    self.polled_live_view_armed = false;
                     if self.connection_models_live_view_stream(&self.connection) {
                         self.live_view_stream_connection = Some(self.connection.clone());
                     }
@@ -2004,6 +2013,46 @@ impl Engine {
             })
     }
 
+    /// Find the required write and capture at the end of a polled start recipe.
+    fn polled_live_view_start(&self) -> Option<(u16, i64, &Step)> {
+        let connection = self.manifest.connections.get(&self.connection)?;
+        if connection.live_view_delivery.as_ref()?.kind != LiveViewDeliveryKind::Poll {
+            return None;
+        }
+        let steps = &connection
+            .actions
+            .get(&ActionVerb::StartLiveView)?
+            .initiator()?
+            .steps;
+        let [earlier @ .., arm, capture] = steps.as_slice() else {
+            return None;
+        };
+        if !earlier.iter().all(|step| step.tolerant)
+            || arm.tolerant
+            || arm.repeat != 1
+            || capture.tolerant
+            || capture.repeat != 1
+            || capture.send_op.as_deref().and_then(parse_hex_code)
+                != Some(op::INITIATE_OPEN_CAPTURE)
+        {
+            return None;
+        }
+        let property = arm.set_prop.as_deref().and_then(parse_hex_code)?;
+        Some((property, arm.value.as_ref()?.literal()?, capture))
+    }
+
+    fn accepts_armed_polled_capture(&self, params: &[u32]) -> bool {
+        self.state.phase == Phase::SessionOpen
+            && self.polled_live_view_armed
+            && !self.pending_queue_blocks_live_view_arming()
+            && !self.stale_stream_blocks_live_view_arming()
+            && self
+                .polled_live_view_start()
+                .and_then(|(_, _, capture)| literal_params(&capture.params))
+                .as_deref()
+                == Some(params)
+    }
+
     fn pending_queue_blocks_live_view_arming(&self) -> bool {
         let Some(queue) = &self.transfer_queue else {
             return false;
@@ -2360,7 +2409,8 @@ impl Engine {
         let Ok(value) = PropValue::decode(&mut r, datatype) else {
             return Self::err(tid, resp::INVALID_PARAMETER);
         };
-        if value_to_i64(&value).is_some_and(|value| {
+        let requested_value = value_to_i64(&value);
+        if requested_value.is_some_and(|value| {
             self.matches_live_view_arming_write(code, value)
                 && (self.pending_queue_blocks_live_view_arming()
                     || self.stale_stream_blocks_live_view_arming())
@@ -2372,6 +2422,13 @@ impl Engine {
             return Self::ok(tid);
         }
         let value = self.normalized_property_write(code, prop, datatype, value);
+        if let Some((arm_property, expected, _)) = self.polled_live_view_start() {
+            if code == arm_property {
+                self.polled_live_view_armed = self.state.phase == Phase::SessionOpen
+                    && requested_value == Some(expected)
+                    && value_to_i64(&value) == Some(expected);
+            }
+        }
         self.state.props.insert(code, value);
         self.refresh_detected_mode();
         Self::ok(tid)

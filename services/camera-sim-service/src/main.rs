@@ -55,11 +55,10 @@ struct Args {
     /// Control HTTP bind (loopback by default).
     #[arg(long, default_value = "127.0.0.1:8080")]
     control_bind: SocketAddr,
-    /// Directory of .jpg fixtures for live view. Fixtures loop in filename
-    /// order. Push delivery runs while streaming at the selected manifest
-    /// connection's cadence, with a default 33 ms frame interval. Poll delivery
-    /// advances on successful requests. An omitted directory or a directory
-    /// without .jpg files supplies no frames.
+    /// Override the selected connection's built-in live-view JPEGs with .jpg
+    /// files in filename order. An empty directory disables frames.
+    /// Push delivery follows the manifest cadence (33 ms by default).
+    /// Poll delivery sends a frame per successful poll.
     #[arg(long)]
     liveview_dir: Option<PathBuf>,
     /// Optional observer URL. When set, the service POSTs a JSON snapshot of

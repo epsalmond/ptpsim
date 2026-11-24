@@ -638,7 +638,10 @@ connections:
     initShape: pcssKnock                                  # PCSS init (not the 82-byte reference app)
     init:
       identity: { guid: initiatorGuid, friendlyName: initFriendlyName }
-    liveViewDelivery: { kind: poll, pollOp: "0x9018" }    # app polls 0x9018 for frames
+    liveViewDelivery:
+      kind: poll
+      pollOp: "0x9018"
+      simulationFixture: jpeg1024x768
     shutterRecipe: wirelessTether3Beat                    # 3-beat 0xD039 + 0x100E virtual shutter
     # `bindings.command` is the simulator/default bind. A real initiator always uses
     # the callback's runtime-advertised DSCPORT. There is no event/live-view socket —

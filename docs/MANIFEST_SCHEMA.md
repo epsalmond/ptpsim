@@ -1500,6 +1500,14 @@ allocated to the start request. A poll may apply a finite response-selected
 retry for the captured transient `0x2002` response; transport failures and
 every other response still escape immediately under §11.21.
 
+The simulator can start polled live view from a newly opened session when
+the selected connection declares a literal arming write followed by a literal
+`0x101c` request in `startLiveView`. Any preceding steps in that recipe must
+be tolerant. The arming write must succeed in the current session, and the
+request must match the declared parameters. The existing queue and stale
+stream checks still apply. Ending the session, accepting a terminate request,
+or replacing the arming value clears the pending arm.
+
 A caller validating live view followed by transfer invokes `startLiveView`,
 `pollLiveView`, `enumerateObjects`, and `stopLiveView` in that order on one open
 session. The PCSS `enumerateObjects` action is therefore mode-neutral, and its
@@ -1507,6 +1515,13 @@ session. The PCSS `enumerateObjects` action is therefore mode-neutral, and its
 per-object transfer actions remain image-transfer scoped. No `DF01` mode flip
 occurs on this connection. The FFI mirrors all three live-view action verbs;
 spelling and casing other than exact lower-camel-case names fail action parsing.
+
+`liveViewDelivery.simulationFixture` optionally selects a built-in frame set
+for the simulator. The `jpeg1024x768` set loops two synthetic baseline JPEGs
+with those dimensions. The wireless-tether connection selects this set for
+`0x9018`. A supplied `--liveview-dir` takes precedence, including an empty
+directory. Without either a directory or a fixture declaration, no frames are
+loaded. The fixture selection has no effect on the request schedule.
 
 #### 11.22c Simulated push-stream timing
 
