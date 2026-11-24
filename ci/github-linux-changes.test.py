@@ -78,6 +78,21 @@ class SelectionTests(unittest.TestCase):
         result = CHANGES.selection("push", {"before": self.base, "after": head})
         self.assertEqual(result["docs_base"], self.base)
 
+    def test_docs_base_is_merge_checkout_first_parent(self):
+        self.git("checkout", "--quiet", "-b", "feature")
+        head = self.add("docs/reference.md")
+        self.git("checkout", "--quiet", "main")
+        newer_base = self.add("docs/newer.md")
+        self.git("merge", "--quiet", "--no-ff", head, "-m", "Synthetic merge")
+        checkout = self.git("rev-parse", "HEAD")
+        result = CHANGES.selection("pull_request", self.pr(head=head), checkout)
+        self.assertEqual(result["docs_base"], newer_base)
+        # A checkout that is not the merge of this head keeps the event base.
+        for other in (None, newer_base, head):
+            with self.subTest(checkout=other):
+                result = CHANGES.selection("pull_request", self.pr(head=head), other)
+                self.assertEqual(result["docs_base"], self.base)
+
     def test_docs_base_is_empty_without_history(self):
         head = self.add("docs/reference.md")
         self.assertEqual(self.select(self.pr(base="1" * 40))["docs_base"], "")
