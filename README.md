@@ -64,12 +64,22 @@ More: [tools/camera-sim-tui/README.md](tools/camera-sim-tui/README.md) and
 `camera-simctl` is a CLI over the control HTTP endpoint (default
 127.0.0.1:8080). It covers health checks, a sequence-numbered lifecycle trace
 with a cursor, shutdown, and occurrence-scoped command-channel fault injection
-(list, add, delete, clear) for testing failure handling.
+(list, add, delete, clear) for testing failure handling. It also reads and
+patches the simulated camera state, lists and runs manifest-backed actions,
+advances a property to its next enumerated value, and reads canonical
+observation records with a cursor. It prints the response body and exits 3
+when the control server returns a non-2xx status (`--help` lists every exit
+status).
 
 ```sh
 cargo run -p camera-simctl -- health
 cargo run -p camera-simctl -- trace --after 0
 cargo run -p camera-simctl -- fault list
+cargo run -p camera-simctl -- state get
+cargo run -p camera-simctl -- state patch --overlay '{"props":{"0x500d":125000}}'
+cargo run -p camera-simctl -- advance-property 0x500D
+cargo run -p camera-simctl -- actions list
+cargo run -p camera-simctl -- observations --after 0
 ```
 
 Run the bounded transfer teardown acceptance to verify a completed transfer,
