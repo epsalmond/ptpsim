@@ -1767,6 +1767,9 @@ pub fn apply_review(
     }
 
     let mut manifest = base.clone();
+    // Accepted candidate ids for each manifest entry whose validated fields
+    // they wrote, so a validation failure below can name them.
+    let mut entry_writers = BTreeMap::<(EntryKind, &str), Vec<&str>>::new();
     for semantic_pass in [false, true] {
         for candidate in &proposal.candidates {
             if review.decisions[&candidate.id] != ReviewDisposition::Accept
@@ -1774,16 +1777,101 @@ pub fn apply_review(
             {
                 continue;
             }
-            apply_candidate(&mut manifest, candidate)?;
+            apply_candidate(&mut manifest, candidate)
+                .map_err(|error| name_candidates(&[&candidate.id], error))?;
+            if let Some(entry) = validated_entry_written(&candidate.assertion) {
+                entry_writers.entry(entry).or_default().push(&candidate.id);
+            }
         }
     }
     manifest
         .require_supported_schema()
         .map_err(|error| GenerationError::ApplyConflict(error.to_string()))?;
+    // Validate each written entry only after every candidate has applied. A
+    // property's type and descriptor arrive as separate candidates, so the
+    // entry can be invalid between them. The base manifest passed validation
+    // when it loaded, so a failing written entry points at its writers.
+    for ((kind, code), writers) in &entry_writers {
+        let result = match kind {
+            EntryKind::Operation => manifest.operations.get(*code).map(|operation| {
+                crate::require_valid_operation_handler(&manifest, operation, code)
+            }),
+            EntryKind::Property => manifest
+                .properties
+                .get(*code)
+                .map(|property| crate::require_valid_property(&manifest, property, code)),
+        };
+        if let Some(Err(error)) = result {
+            return Err(name_candidates(
+                writers,
+                GenerationError::ApplyConflict(error.to_string()),
+            ));
+        }
+    }
     manifest
         .require_valid_mode_entries()
         .map_err(|error| GenerationError::ApplyConflict(error.to_string()))?;
     Ok(manifest)
+}
+
+/// The kind of manifest entry `apply_review` validates on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum EntryKind {
+    Operation,
+    Property,
+}
+
+/// The operation or property entry whose validated fields this candidate
+/// writes. Entry validation reads a property's type, initial value,
+/// descriptor, structured text, and payload, and an operation's handler
+/// fields. Candidates that write only names, labels, value rows, value
+/// profiles, evidence, or observed scopes return `None`. So do operation
+/// candidates and static catalog additions, which create entries without a
+/// handler, type, or descriptor.
+fn validated_entry_written(assertion: &CandidateAssertion) -> Option<(EntryKind, &str)> {
+    match assertion {
+        CandidateAssertion::Property {
+            code,
+            supported: true,
+            property_type,
+            descriptor,
+            ..
+        } if property_type.is_some() || descriptor.is_some() => {
+            Some((EntryKind::Property, code.as_str()))
+        }
+        CandidateAssertion::PropertyDescriptorSnapshot { code, .. } => {
+            Some((EntryKind::Operation, code.as_str()))
+        }
+        CandidateAssertion::StaticCatalog { .. }
+        | CandidateAssertion::CameraIdentity { .. }
+        | CandidateAssertion::Operation { .. }
+        | CandidateAssertion::OperationName { .. }
+        | CandidateAssertion::Property { .. }
+        | CandidateAssertion::PropertyName { .. }
+        | CandidateAssertion::PropertySourceNativeName { .. }
+        | CandidateAssertion::PropertyValueRow { .. }
+        | CandidateAssertion::PropertyValueProfile { .. } => None,
+    }
+}
+
+/// Prefix an apply failure with the accepted candidate ids behind it, so a
+/// reviewer can find the decision to change in the review file. Variants
+/// without a message string pass through unchanged; `apply_candidate` returns
+/// those only when serializing fixed input fails.
+fn name_candidates(ids: &[&str], error: GenerationError) -> GenerationError {
+    let subject = match ids {
+        [id] => format!("candidate {id}"),
+        _ => format!("candidates {}", ids.join(", ")),
+    };
+    match error {
+        GenerationError::ApplyConflict(detail) => {
+            GenerationError::ApplyConflict(format!("{subject}: {detail}"))
+        }
+        GenerationError::ProposalIntegrity(detail) => {
+            GenerationError::ProposalIntegrity(format!("{subject}: {detail}"))
+        }
+        other => other,
+    }
 }
 
 fn is_semantic_candidate(assertion: &CandidateAssertion) -> bool {
@@ -3518,11 +3606,125 @@ camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
         )
         .unwrap();
 
+        let descriptor_id = &proposal
+            .candidates
+            .iter()
+            .find(|candidate| {
+                matches!(
+                    candidate.assertion,
+                    CandidateAssertion::Property {
+                        descriptor: Some(_),
+                        ..
+                    }
+                )
+            })
+            .unwrap()
+            .id;
+        let expected = format!(
+            "candidate {descriptor_id}: property 0xd001: descriptor value 1.5 is not an integer or string"
+        );
         assert!(matches!(
             apply_review(&base, &proposal, &accept_all(&proposal)),
-            Err(GenerationError::ApplyConflict(message))
-                if message == "property 0xd001: descriptor value 1.5 is not an integer or string"
+            Err(GenerationError::ApplyConflict(message)) if message == expected
         ));
+    }
+
+    #[test]
+    fn manifest_validation_failure_names_the_candidate_that_changed_the_entry() {
+        // The type and descriptor arrive as separate candidates. Accepting the
+        // string descriptor while rejecting the str type leaves the base u16
+        // type in place, which manifest validation rejects only after apply.
+        let property = descriptor_property_with_type(
+            "property",
+            1,
+            "ready",
+            "str",
+            serde_json::json!(["4000x2664", "4000x2248"]),
+        );
+        let proposal = propose(&[&canonical_bundle(&[property])]).unwrap();
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
+properties:
+  "0xd001": { name: raw_0xd001, type: u16 }
+"#,
+        )
+        .unwrap();
+        let mut review = accept_all(&proposal);
+        let mut descriptor_id = None;
+        for candidate in &proposal.candidates {
+            match &candidate.assertion {
+                CandidateAssertion::Property {
+                    property_type: Some(_),
+                    ..
+                } => {
+                    review
+                        .decisions
+                        .insert(candidate.id.clone(), ReviewDisposition::Reject);
+                }
+                CandidateAssertion::Property {
+                    descriptor: Some(_),
+                    ..
+                } => descriptor_id = Some(candidate.id.clone()),
+                _ => {}
+            }
+        }
+        let descriptor_id = descriptor_id.unwrap();
+
+        let error = apply_review(&base, &proposal, &review)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&descriptor_id), "{error}");
+        assert!(error.contains("does not have type str"), "{error}");
+        for candidate in &proposal.candidates {
+            if candidate.id != descriptor_id {
+                assert!(!error.contains(&candidate.id), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn descriptor_list_validation_failure_names_the_snapshot_candidate() {
+        // The base selector is a string property, which a descriptor list
+        // cannot use. Only the accepted snapshot adds the list.
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x902b": { name: ReadDescriptors, modes: [shooting/stills], connections: [app] }
+properties:
+  "0xd246": { name: selector, type: str }
+"#,
+        )
+        .unwrap();
+        let proposal = propose(&[APP_DESCRIPTOR_OBSERVATIONS]).unwrap();
+        let mut review = accept_all(&proposal);
+        let mut snapshot_id = None;
+        for candidate in &proposal.candidates {
+            if candidate
+                .source_records
+                .iter()
+                .any(|record| record == APP_STILLS_SNAPSHOT_RECORD)
+            {
+                snapshot_id = Some(candidate.id.clone());
+            } else {
+                review
+                    .decisions
+                    .insert(candidate.id.clone(), ReviewDisposition::Reject);
+            }
+        }
+        let snapshot_id = snapshot_id.unwrap();
+
+        let error = apply_review(&base, &proposal, &review)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&snapshot_id), "{error}");
+        assert!(
+            error.contains("must reference a declared numeric property"),
+            "{error}"
+        );
     }
 
     #[test]
