@@ -71,7 +71,38 @@ impl CameraLink {
     pub fn device_name(&self) -> Option<String> {
         self.device_name.lock().unwrap().clone()
     }
+
+    /// Forget an earlier prep write, so the next launch arms only if a new
+    /// prep write precedes it. The armed state and the registered name are
+    /// left as they are. A transport calls this when a new BLE session starts;
+    /// this is a simulator modelling choice, not observed camera behavior.
+    pub fn clear_prep_write(&self) {
+        self.prep_written.store(false, Ordering::SeqCst);
+    }
 }
 
 /// A `CameraLink` shared (cloned) between the BLE responder and the engine.
 pub type SharedLink = Arc<CameraLink>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_prep_write_keeps_the_armed_state_and_the_name() {
+        let link = CameraLink::default();
+        link.note_prep_write();
+        link.launch_ap();
+        link.note_device_name("host".into());
+        link.clear_prep_write();
+        assert!(link.is_armed(), "the last launch's armed state stands");
+        assert_eq!(link.device_name().as_deref(), Some("host"));
+        // A launch now needs a fresh prep write to arm.
+        link.launch_ap();
+        assert!(!link.is_armed());
+
+        // An unarmed link stays unarmed.
+        link.clear_prep_write();
+        assert!(!link.is_armed());
+    }
+}

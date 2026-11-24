@@ -1,0 +1,53 @@
+# BLE socket scenario for camera-sim-service `--ble-scenario` (docs/TRANSPORTS.md,
+# "BLE socket"). It serves the GFX100 II legacy pairing advert, the `ble-pair`
+# plan, and the `ble-establish-wifi-ap` handoff for launch modes 3 and 4.
+#
+# Every served value below is scripted for simulation. None is observed wire
+# data. The manifest supplies the GATT catalog, the advert constants, and the
+# AP-state values its plan predicates name. Values the manifest does not
+# describe are copied from existing ptpsim tests and labelled as such.
+schema: ptpsim-ble-scenario/v1
+provenance: test-scripted
+# Relative to this file. Symbolic GATT names below resolve through
+# models[id=gfx100ii].ble.gatt in this index.
+index: ../../camera-config-data/fuji/index.yaml
+model: gfx100ii
+# Responder default ATT MTU (crates/camera-sim/src/ble.rs, BleResponder::new).
+mtu: 247
+# The prep and launch writes arm the PTP/IP engine, and the device-name write
+# registers the init friendly name, as crates/camera-sim/tests/ble_arms_init.rs
+# asserts.
+arming: { prep: imageTransferSetting, launch: functionLaunchRequest, deviceName: deviceNameString }
+peripherals:
+  # Fixed synthetic RFC 4122 identifier for the one simulated body.
+  - id: "6F1C2A4E-3B7D-4C59-8E21-0A9B4D7C3E15"
+    advert:
+      # Manifest ble.advert.serviceUuids.fileTransfer.
+      serviceUuids: ["AF854C2E-B214-458E-97E2-912C4ECF2CB8"]
+      # Raw advertised manufacturer field: company ID 0x04D8 little-endian
+      # (manifest ble.advert.manufacturerCompanyId), then the payload. The 0x02
+      # type byte is what the bleLegacyAdvert signature requires. The key bytes
+      # 44732a80 are test-scripted, from legacy_facts in
+      # crates/camera-sim/tests/ble_pair_roundtrip.rs.
+      manufacturerData: "d8040244732a80"
+reads:
+  # The consolidated manifest's synthetic DeviceInfo serialNumber, so the BLE
+  # and PTP/IP serials agree.
+  protectedSerialString: { utf8: "PTPSIM-GFX100II-0001" }
+  # Test-scripted, from responder_for in crates/camera-sim/tests/ble_pair_roundtrip.rs.
+  transferState: { hex: "00" }
+  # 0x8000 NotLaunched, u16-le: the baseline the ble-establish-wifi-ap
+  # pre-command predicate names.
+  apState: { hex: "0080" }
+  # Test-scripted placeholder. A client only joins with it.
+  cameraSSIDNameString: { utf8: "ptpsim-ap" }
+  # Test-scripted placeholder.
+  cameraWiFiPassphraseString: { utf8: "ptpsim-pass" }
+notifications:
+  # 0x8002 Launching (transitional), then 0x8001 Launched, the value the
+  # ble-establish-wifi-ap plan awaits (`until apStateRaw eq "0180"`). Both follow
+  # the first fenced functionLaunchRequest write. The shape matches
+  # establish_wifi_ap_treats_pre_command_not_launched_as_a_baseline in
+  # crates/camera-sim/tests/ble_establish_wifi_ap.rs.
+  - { gatt: apState, afterFencedWrite: { gatt: functionLaunchRequest, ordinal: 1 }, hex: "0280" }
+  - { gatt: apState, afterFencedWrite: { gatt: functionLaunchRequest, ordinal: 1 }, hex: "0180" }
