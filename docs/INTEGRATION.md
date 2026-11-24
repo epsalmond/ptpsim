@@ -192,10 +192,13 @@ canonical JSON leaves so foreign bindings do not invent a second value grammar.
 1. **Embed the data bundle.** Ship `camera-config-data/fuji/fuji.yaml` (manufacturer)
    plus the body manifest selected by recognition (for example
    `…/gfx100ii/gfx100ii.consolidated.yaml` or `…/xa7/xa7.yaml`) as app resources; pass their
-   contents to `from_bundle`. Each release attaches a `camera-config-data-<sha8>.tar.gz`
-   sibling alongside the xcframework, so the FFI binary and the YAML data come
-   from the same commit and can't drift mid-integration; extract it to vendor
-   the bundle without cloning the source tree. (Co-shipped pre-data-repo-split;
+   contents to `from_bundle`. When a `main` push changes
+   `packages/camera-config-data/` (or its commit message contains `[ALL]`), CI
+   attaches `camera-config-data-<sha8>.tar.gz` and a `.checksum` to that
+   commit's `sha-<sha8>` release; extract it to vendor the bundle without
+   cloning the source tree. Other releases, including Apple promotions, attach
+   no data tarball. Take the data for such an FFI release from the source tree
+   at the same commit so the binary and the YAML cannot drift. (Co-shipped pre-data-repo-split;
    the eventual Apache-licensed data repo will publish its own versioned
    releases.) OTA bundle loading lands later; bundled baseline for now.
 

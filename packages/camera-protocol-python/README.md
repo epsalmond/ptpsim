@@ -76,9 +76,9 @@ if isinstance(result, Recognition.CANDIDATE):
 
 Every type from plan §3.3 + §11: `ScanObservation`, `Recognition`,
 `Candidate` / `Disambiguate` / `NoMatch`, `EstablishmentPlan`, the
-7-verb `Step` grammar, `StepOptions`, `StepValue` (with optional
-`transform`), `AcquireSource`, `BleNotifyUntil`, `Predicate`,
-`PredicateOp`, `ValueTransform`, plus the existing single-body surface
+`Step` grammar (every variant of the FFI `Step` enum), `StepOptions`,
+`StepValue` (with optional `transform`), `AcquireSource`, `BleNotifyUntil`,
+`Predicate`, `PredicateOp`, `Transform`, plus the existing single-body surface
 (`connections`, `mode_entry`, `operation_available`, …).
 
 Naming is Python-conventional: snake_case methods, `ScanObservation.BLE_ADVERT`

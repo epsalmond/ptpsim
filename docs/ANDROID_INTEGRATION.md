@@ -13,7 +13,9 @@ packaging.
 
 ## What's in the release
 
-Every push to `main` builds three Android cdylib ABIs, compiles the uniffi
+A push to `main` that changes the Rust crates, the Cargo manifests or
+lockfile, or the Kotlin/Android build scripts (or whose commit message contains
+`[ALL]`) builds three Android cdylib ABIs, compiles the uniffi
 Kotlin bindings, and publishes a real **Android Archive (`.aar`)**:
 
 | asset | role |
@@ -88,6 +90,7 @@ the Swift one:
 
 ```kotlin
 import uniffi.camera_protocol_ffi.ConfigStore
+import uniffi.camera_protocol_ffi.KeyValue
 
 val store = ConfigStore.fromManufacturerIndex(
     indexYaml = readAsset("fuji/index.yaml"),
