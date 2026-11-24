@@ -45,6 +45,10 @@ evidence:
     kind: doc
     path: docs/TRANSPORTS.md#xlv
     date: ''
+  fieldImageImportSlot1Empty20260718:
+    kind: doc
+    path: evidence/IMAGE_IMPORT_EMPTY_SLOT_20260718.md
+    date: ''
   restoredStartupPendingHardware:
     kind: doc
     path: evidence/APP_PTPIP_OBSERVATIONS.md
@@ -1802,6 +1806,18 @@ sequenceGates:
     evidence:
     - docFujiPtpPropReference
     - docImageTransfer
+states:
+  memoryCardSlot1Empty:
+    summary: Memory card slot 1 holds no card and slot 2 holds one. This is the only observed configuration, from one field session; the body's firmware was not recorded. App image import 0x9050 answers 0x2019 on every attempt, across fresh PTP/IP sessions. Nothing else is modeled.
+    responses:
+    - operation: '0x9050'
+      response: '0x2019'
+      connections:
+      - app
+      modes:
+      - image-transfer
+    evidence:
+    - fieldImageImportSlot1Empty20260718
 cameraInitiatedTransfer:
   trigger:
     match: all
