@@ -647,12 +647,62 @@ fn require_valid_operation_handler(operation: &Operation, code: &str) -> Result<
                 )));
             }
         }
-        None => {
-            if operation.object_size.is_some() {
-                return Err(ManifestError::Contract(format!(
-                    "operation '{code}' declares 'objectSize' without handler 'object.size'"
-                )));
-            }
+        Some(OperationHandler::PropertyDescriptorList) => {
+            let list = operation.property_descriptor_list.as_ref().ok_or_else(|| {
+                ManifestError::Contract(format!(
+                    "operation '{code}' handler 'property.descriptorList' requires 'propertyDescriptorList'"
+                ))
+            })?;
+            require_valid_property_descriptor_list(operation, code, list)?;
+        }
+        None => {}
+    }
+    if operation.handler != Some(OperationHandler::ObjectSize) && operation.object_size.is_some() {
+        return Err(ManifestError::Contract(format!(
+            "operation '{code}' declares 'objectSize' without handler 'object.size'"
+        )));
+    }
+    if operation.handler != Some(OperationHandler::PropertyDescriptorList)
+        && operation.property_descriptor_list.is_some()
+    {
+        return Err(ManifestError::Contract(format!(
+            "operation '{code}' declares 'propertyDescriptorList' without handler 'property.descriptorList'"
+        )));
+    }
+    Ok(())
+}
+
+fn require_valid_property_descriptor_list(
+    operation: &Operation,
+    code: &str,
+    list: &model::PropertyDescriptorListHandler,
+) -> Result<(), ManifestError> {
+    let invalid = |detail| {
+        ManifestError::Contract(format!(
+            "operation '{code}' propertyDescriptorList {detail}"
+        ))
+    };
+    if !operation.params.is_empty() {
+        return Err(invalid("requires a zero-parameter operation"));
+    }
+    let selector =
+        parse_hex_code(&list.selector).ok_or_else(|| invalid("has an invalid selector"))?;
+    if list.snapshots.is_empty() {
+        return Err(invalid("requires at least one snapshot"));
+    }
+    for (&value, records) in &list.snapshots {
+        let descriptors = records
+            .iter()
+            .map(|record| {
+                let bytes = parse_hex_bytes(record).ok_or_else(|| invalid("record is not hex"))?;
+                ptp_core::DevicePropDesc::decode(&bytes)
+                    .map_err(|_| invalid("record is not a complete DevicePropDesc"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if (ptp_core::DevicePropDescList { descriptors }).selector_value(selector) != Some(value) {
+            return Err(invalid(
+                "expects one selector record with the snapshot key as its current value",
+            ));
         }
     }
     Ok(())

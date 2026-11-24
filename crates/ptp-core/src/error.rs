@@ -12,6 +12,8 @@ pub enum DecodeError {
     InvalidString(&'static str),
     #[error("declared length {declared} does not match buffer length {actual}")]
     LengthMismatch { declared: usize, actual: usize },
+    #[error("record length {declared} is smaller than its {minimum}-byte prefix")]
+    InvalidRecordLength { declared: usize, minimum: usize },
     #[error("unknown PTP/IP packet type {0}")]
     UnknownPacketType(u32),
     #[error("input has {remaining} trailing byte(s)")]

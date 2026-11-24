@@ -1,0 +1,12 @@
+{
+  "schema": "camera-config-review/v1",
+  "proposalDigest": "d5b372815a91264e0911ed89a7c6054400d8f6fec3d8805121230aa068895d1e",
+  "decisions": {
+    "a2ad115ceacfb5371d13cbe17be50403f1e9a20f453d0330f7436ffd0dbafd0b": "accept",
+    "a8a0ccb0a6b6c55036778b3cecc4b47dda43b709ab61cc34505e60c686539b8d": "accept",
+    "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9": "reject",
+    "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9": "reject",
+    "d3c7a585a06225b184383b36c3f1cd6275abd981ac38c5fe3f2e278999e5e925": "reject",
+    "f53dc448634cfbd25be19629d1c187bfcee628fce6237e186ef256d439e15411": "accept"
+  }
+}

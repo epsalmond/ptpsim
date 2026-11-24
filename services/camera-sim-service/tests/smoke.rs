@@ -1107,6 +1107,102 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
     rt.block_on(handle).unwrap();
 }
 
+#[test]
+fn gfx_app_descriptor_snapshots_follow_the_stills_video_selector() {
+    let evidence = include_str!(
+        "../../../packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-18-app-descriptor-snapshots-1.jsonl"
+    );
+    let observed_body = |record_id| {
+        let row = evidence
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|row| {
+                row["runId"] == "gfx100ii-app-descriptors-20260518-1"
+                    && row["recordId"] == record_id
+            })
+            .unwrap();
+        camera_config::parse_hex_bytes(
+            row["response"]["data"]["payload"]["inlineHex"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let stills = observed_body("snapshot-13");
+    let video = observed_body("snapshot-17");
+
+    let card = tmp_card();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (command_addr, shutdown_tx, handle) = rt.block_on(async {
+        let server = Server::bind(Config {
+            instance_id: "descriptor-test".into(),
+            profile: "fuji/gfx100ii/fw0230".into(),
+            connection: "app".into(),
+            manifest_yaml: real_gfx_manifest(),
+            media_root: card.path().to_path_buf(),
+            command_bind: Some("127.0.0.1:0".parse().unwrap()),
+            liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+            event_bind: Some("127.0.0.1:0".parse().unwrap()),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: "127.0.0.1:0".parse().unwrap(),
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .unwrap();
+        let address = server.command_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (address, tx, tokio::spawn(server.run(rx)))
+    });
+
+    let mut stream = connect_ptpip(command_addr, "descriptors");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    open_session(&mut stream);
+    set_prop(&mut stream, 2, 0xdf01, &0x16u16.to_le_bytes());
+
+    let assert_snapshot = |stream: &mut TcpStream, tid, expected: &[u8]| {
+        write_frame(stream, &op(0x902b, tid, vec![]));
+        let frame = read_frame(stream);
+        assert_eq!(&frame[4..8], &[2, 0, 0x2b, 0x90]);
+        let PtpIpPacket::Data(data) = fuji_framing::decode(&frame).unwrap() else {
+            panic!("expected one compact data container");
+        };
+        assert_eq!(data.transaction_id, tid);
+        assert_eq!(data.payload, expected);
+        let PtpIpPacket::OperationResponse(response) =
+            fuji_framing::decode(&read_frame(stream)).unwrap()
+        else {
+            panic!("expected an operation response after the data");
+        };
+        assert_eq!(response.transaction_id, tid);
+        assert_eq!(response.code, 0x2001);
+        assert!(response.params.is_empty());
+    };
+
+    assert_snapshot(&mut stream, 3, &stills);
+    assert_snapshot(&mut stream, 4, &stills);
+    write_frame(&mut stream, &op(0x101c, 5, vec![]));
+    read_ok(&mut stream);
+    assert_snapshot(&mut stream, 6, &stills);
+    set_prop(&mut stream, 7, 0xd246, &[1]);
+    assert_snapshot(&mut stream, 8, &video);
+    assert_snapshot(&mut stream, 9, &video);
+    set_prop(&mut stream, 10, 0xd246, &[0]);
+    assert_snapshot(&mut stream, 11, &stills);
+    write_frame(&mut stream, &op(0x902b, 12, vec![0]));
+    assert_eq!(
+        read_response_code(&mut stream),
+        ptp_core::codes::resp::INVALID_PARAMETER
+    );
+
+    let _ = shutdown_tx.send(());
+    rt.block_on(handle).unwrap();
+}
+
 /// Completion events from the production GFX100 II manifest reach the real
 /// app-persona event socket instead of leaving shutter/AF await steps at their
 /// timeout ceilings.

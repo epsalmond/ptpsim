@@ -303,7 +303,7 @@ tracked by issue #164.
   `parse_data_phase` (standard framing streams `StartData`/`Data`/`EndData`; the Fuji
   compressed and USB channels deliver the whole data phase in one type-2 `Data` frame —
   reconciled byte-exact against the wire, #143) / `parse_event`, plus dataset codecs
-  `parse_object_info` / `parse_device_prop_desc` /
+  `parse_object_info` / `parse_device_prop_desc` / `parse_device_prop_desc_list` /
   `parse_record_stream` (manifest-declared composite properties) /
   `parse_object_handle_list` (0xd621). Framing is selected per call by
   `PtpFraming { Standard | Compressed | Usb }`, which you **read from the manifest**

@@ -55,8 +55,7 @@ App command codes such as `0x9022`, `0x9026`/`0x9027`, `0x902B` through
 `0x902E`, and the authored `0x9050` family retain their existing app-only
 behavior. They are absent from these USB/PCSS advertisements. Their internal
 menu-command or dispatch-table classification does not remove that separate
-app surface. The unresolved app `0x902B` bulk-descriptor behavior remains
-owned by [issue #537](https://github.com/epsalmond/ptpsim/issues/537).
+app surface. The app `0x902B` behavior is described in [App property descriptor snapshots](APP_PROPERTY_DESCRIPTOR_SNAPSHOTS.md).
 
 The absence of `0x9804` and `0x9806` through `0x980B` from these observations
 does not prove a response on every connection. The reported `0x2005` standard

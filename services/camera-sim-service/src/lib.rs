@@ -2355,6 +2355,7 @@ async fn handle_command_conn_inner(
             operation: format!("0x{:04x}", req.code),
             parameters: req.params.clone(),
             data: data_in.as_deref().map(|bytes| PtpDataPhase {
+                property_descriptor_list_selector: None,
                 direction: DataDirection::HostToCamera,
                 payload: camera_config::payload_metadata(bytes),
             }),
@@ -3100,6 +3101,7 @@ async fn write_reply<W: AsyncWrite + Unpin>(
                     code: format!("0x{code:04x}"),
                     parameters,
                     data: payload.clone().map(|payload| PtpDataPhase {
+                        property_descriptor_list_selector: None,
                         direction: DataDirection::CameraToHost,
                         payload,
                     }),
@@ -3176,6 +3178,7 @@ async fn write_reply<W: AsyncWrite + Unpin>(
                     code: format!("0x{code:04x}"),
                     parameters,
                     data: payload.clone().map(|payload| PtpDataPhase {
+                        property_descriptor_list_selector: None,
                         direction: DataDirection::CameraToHost,
                         payload,
                     }),

@@ -250,6 +250,9 @@ pub struct Operation {
     pub property: Option<HexCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_size: Option<ObjectSizeHandler>,
+    /// Exact descriptor records selected by the current value of one property.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub property_descriptor_list: Option<PropertyDescriptorListHandler>,
     /// Modes (by path) this operation is valid in; prefix-matched, so a
     /// `Shooting`-level entry covers `Shooting/Stills`. Empty = all modes.
     #[serde(default)]
@@ -372,6 +375,15 @@ pub enum OperationHandler {
     /// the parameter layout and encoding.
     #[serde(rename = "object.size")]
     ObjectSize,
+    #[serde(rename = "property.descriptorList")]
+    PropertyDescriptorList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PropertyDescriptorListHandler {
+    pub selector: HexCode,
+    pub snapshots: BTreeMap<i64, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

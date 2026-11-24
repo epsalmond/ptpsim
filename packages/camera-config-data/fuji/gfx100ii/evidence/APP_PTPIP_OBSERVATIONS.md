@@ -28,9 +28,10 @@ before opening the event and live-view channels.
 
 ## Uncertainty
 
-Retained public captures do not independently reproduce the restored `0xDF00`,
-`0xDF2A`, and `0x902B` steps. Hardware observations may refine this declaration.
-Listener behavior after every possible disconnect is not established.
+The [descriptor snapshot captures](APP_PROPERTY_DESCRIPTOR_SNAPSHOTS.md)
+establish `0x902B` replies before and after `0x101C`. The full restored
+preamble, including the `0xDF00` and `0xDF2A` sequence, remains under review.
+Listener behavior after all disconnect paths remains unverified.
 
 ## Implementation consequence
 

@@ -406,6 +406,9 @@ pub struct PtpResponse {
 pub struct PtpDataPhase {
     pub direction: DataDirection,
     pub payload: PayloadMetadata,
+    /// Opt-in interpretation of a complete camera-to-host descriptor-list payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub property_descriptor_list_selector: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

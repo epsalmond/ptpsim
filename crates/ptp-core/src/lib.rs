@@ -19,7 +19,9 @@ pub use container::{
     DataBlock, EventPacket, InitCommandAck, InitCommandRequest, InitEventAck, InitEventRequest,
     InitFail, OperationRequest, OperationResponse, ProbeRequest, ProbeResponse, StartData,
 };
-pub use dataset::{DeviceInfo, DevicePropDesc, ObjectInfo, PropForm, PropValue, StorageInfo};
+pub use dataset::{
+    DeviceInfo, DevicePropDesc, DevicePropDescList, ObjectInfo, PropForm, PropValue, StorageInfo,
+};
 pub use datatype::{Reader, Writer};
 pub use error::{DecodeError, EncodeError};
 pub use framing::{encode, PtpCodec, PtpIpPacket};

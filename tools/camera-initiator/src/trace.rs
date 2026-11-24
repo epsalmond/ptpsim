@@ -345,6 +345,7 @@ impl TraceWriter {
         })?;
         if let Some(payload) = pending.request_payload.take() {
             pending.request.data = Some(PtpDataPhase {
+                property_descriptor_list_selector: None,
                 direction: DataDirection::HostToCamera,
                 payload: payload.metadata(),
             });
@@ -392,6 +393,7 @@ impl TraceWriter {
                         code: format!("0x{response_code:04x}"),
                         parameters: response_params,
                         data: response_payload.map(|payload| PtpDataPhase {
+                            property_descriptor_list_selector: None,
                             direction: DataDirection::CameraToHost,
                             payload,
                         }),
@@ -435,6 +437,7 @@ impl TraceWriter {
                 });
         if let Some(payload) = pending.request_payload.take() {
             pending.request.data = Some(PtpDataPhase {
+                property_descriptor_list_selector: None,
                 direction: DataDirection::HostToCamera,
                 payload: payload.metadata(),
             });
