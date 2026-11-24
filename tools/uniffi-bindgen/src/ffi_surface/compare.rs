@@ -170,30 +170,111 @@ fn added_member(header: &str, member: &str, appended_default: bool) -> (Severity
     }
 }
 
-const OBJECT_REASON: &str = "Swift records and enums that contain an object, directly or through another type, are generated without `Equatable` and `Hashable` (unless the type exports `Eq` or `Hash`), so consumer code that compares them or uses them in a `Set` or as a dictionary key changes.";
-
 const DEFAULT_REASON: &str = "Only default values or trailing defaulted parameters changed. Existing Swift and Kotlin call sites keep compiling, and callers that omit the argument get the new default. Code that refers to the function as a value (a typed Swift function reference or a Kotlin `::name` reference) may need updating.";
+
+const METHOD_DEFAULT_REASON: &str = "Only default values of existing parameters changed. The Swift class and Kotlin interface declare the defaults; the Swift protocol and Kotlin overrides do not, so call sites and implementers keep compiling. Callers that omit the argument get the new default.";
 
 const FIELD_DEFAULT_REASON: &str = "Only the field default changed. Existing Swift initializer and Kotlin constructor calls keep compiling, and callers that omit the field get the new default.";
 
-/// What changing a line with the same key means for consumers.
-fn changed_line(old: &str, new: &str) -> (Severity, Option<&'static str>) {
-    let qualifiers = |line: &str| -> BTreeSet<String> {
-        line.split_whitespace()
-            .skip(2)
-            .map(str::to_string)
-            .collect()
-    };
-    match kind(new) {
-        "record" | "enum"
-            if qualifiers(old)
-                .symmetric_difference(&qualifiers(new))
-                .any(|q| q == "contains_object") =>
-        {
-            (Severity::Breaking, Some(OBJECT_REASON))
+/// The conformances UniFFI 0.31.1 derives for records and enums from
+/// whether they reach an object (`contains_object`): Swift drops `Equatable`
+/// unless the type exports `Eq`, drops `Hashable` unless it exports `Hash`,
+/// and drops `Codable` (when enabled) regardless; Kotlin adds `Disposable`.
+struct Conformance {
+    traits: BTreeSet<String>,
+    codable: bool,
+}
+
+impl Conformance {
+    fn of(items: &[Item]) -> Self {
+        Self {
+            traits: items
+                .iter()
+                .map(|item| key(&item.header))
+                .filter(|k| k.starts_with("uniffi_trait "))
+                .collect(),
+            codable: items.iter().any(|item| {
+                item.header == "config bindings.swift.generate_codable_conformance = true"
+            }),
         }
-        "fn" | "constructor" if defaults_only_change(old, new) => {
+    }
+
+    fn derived(&self, header: &str) -> BTreeSet<&'static str> {
+        let name = header.split_whitespace().nth(1).unwrap_or("");
+        let contains = header
+            .split_whitespace()
+            .skip(2)
+            .any(|q| q == "contains_object");
+        let exports = |t: &str| self.traits.contains(&format!("uniffi_trait {name}.{t}"));
+        let mut out = BTreeSet::new();
+        if !contains || exports("Eq") {
+            out.insert("Swift `Equatable`");
+        }
+        if !contains || exports("Hash") {
+            out.insert("Swift `Hashable`");
+        }
+        if !contains && self.codable {
+            out.insert("Swift `Codable`");
+        }
+        if contains {
+            out.insert("Kotlin `Disposable`");
+        }
+        out
+    }
+}
+
+fn without_object_qualifier(header: &str) -> String {
+    header
+        .split_whitespace()
+        .filter(|word| *word != "contains_object")
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What changing an item header means for consumers.
+fn changed_header(
+    old: &str,
+    new: &str,
+    old_conformance: &Conformance,
+    new_conformance: &Conformance,
+) -> (Severity, Option<String>) {
+    if !matches!(kind(new), "record" | "enum") {
+        let (severity, reason) = changed_line(old, new);
+        return (severity, reason.map(str::to_string));
+    }
+    if without_object_qualifier(old) != without_object_qualifier(new) {
+        return (Severity::Breaking, None);
+    }
+    let before = old_conformance.derived(old);
+    let after = new_conformance.derived(new);
+    let lost: Vec<&str> = before.difference(&after).copied().collect();
+    let gained: Vec<&str> = after.difference(&before).copied().collect();
+    let mut reason = String::from("Whether this type reaches an object changed.");
+    if !lost.is_empty() {
+        reason.push_str(&format!(
+            " It loses {}, so consumer code that relies on them stops compiling.",
+            lost.join(", ")
+        ));
+    }
+    if !gained.is_empty() {
+        reason.push_str(&format!(" It gains {}.", gained.join(", ")));
+    }
+    let severity = if lost.is_empty() {
+        Severity::Additive
+    } else {
+        Severity::Breaking
+    };
+    (severity, Some(reason))
+}
+
+/// What changing a member line with the same key means for consumers.
+fn changed_line(old: &str, new: &str) -> (Severity, Option<&'static str>) {
+    match kind(new) {
+        "fn" | "constructor" if defaults_only_change(old, new, true) => {
             (Severity::SourceCompatible, Some(DEFAULT_REASON))
+        }
+        "method" if defaults_only_change(old, new, false) => {
+            (Severity::SourceCompatible, Some(METHOD_DEFAULT_REASON))
         }
         "field" if field_default_only_change(old, new) => {
             (Severity::SourceCompatible, Some(FIELD_DEFAULT_REASON))
@@ -264,14 +345,15 @@ fn parse_callable(line: &str) -> Option<Callable<'_>> {
 }
 
 /// True when two callable lines differ only in parameter defaults, in
-/// parameters that gained a default, or in new trailing parameters that all
-/// have defaults.
-fn defaults_only_change(old: &str, new: &str) -> bool {
+/// parameters that gained a default, or (when `allow_trailing`) in new
+/// trailing parameters that all have defaults.
+fn defaults_only_change(old: &str, new: &str, allow_trailing: bool) -> bool {
     let (Some(old), Some(new)) = (parse_callable(old), parse_callable(new)) else {
         return false;
     };
     old.suffix == new.suffix
-        && new.params.len() >= old.params.len()
+        && (new.params.len() == old.params.len()
+            || (allow_trailing && new.params.len() > old.params.len()))
         && old.params.iter().zip(&new.params).all(
             |((old_decl, old_default), (new_decl, new_default))| {
                 old_decl == new_decl && (old_default.is_none() || new_default.is_some())
@@ -289,6 +371,7 @@ pub fn compare(baseline: &[Item], current: &[Item]) -> Vec<Finding> {
         .map(|item| (key(&item.header), item))
         .collect();
     let baseline_keys: BTreeSet<String> = baseline.iter().map(|item| key(&item.header)).collect();
+    let (old_conformance, new_conformance) = (Conformance::of(baseline), Conformance::of(current));
     let mut findings = Vec::new();
 
     for old in baseline {
@@ -302,13 +385,14 @@ pub fn compare(baseline: &[Item], current: &[Item]) -> Vec<Finding> {
             continue;
         };
         if old.header != new.header {
-            let (severity, reason) = changed_line(&old.header, &new.header);
+            let (severity, reason) =
+                changed_header(&old.header, &new.header, &old_conformance, &new_conformance);
             findings.push(Finding {
                 severity,
                 summary: format!("changed `{item_key}`"),
                 detail: [format!("- {}", old.header), format!("+ {}", new.header)]
                     .into_iter()
-                    .chain(reason.map(str::to_string))
+                    .chain(reason)
                     .collect(),
             });
         }
@@ -718,6 +802,7 @@ object Transport callback_trait
             "enum Event error\n  case A\n",
         );
         assert_eq!(breaking(&findings), ["changed `enum Event`"]);
+        assert!(findings[0].detail.last().unwrap().contains("Disposable"));
     }
 
     #[test]
@@ -777,17 +862,77 @@ object Transport callback_trait
     }
 
     #[test]
-    fn method_default_change_is_breaking() {
-        // Kotlin method declarations carry no defaults, and Swift protocol
-        // requirements change with the parameter list.
+    fn method_default_change_is_source_compatible() {
+        // UniFFI 0.31.1 writes method defaults in the Swift class and the
+        // Kotlin interface; the Swift protocol and Kotlin overrides omit them,
+        // so neither implementers nor call sites change.
         let findings = pair(
-            "object Store\n  method lookup(model: String = \"a\")\n",
-            "object Store\n  method lookup(model: String = \"b\")\n",
+            "object Store\n  method lookup(model: String = \"a\", limit: u8)\n",
+            "object Store\n  method lookup(model: String = \"b\", limit: u8 = 1)\n",
+        );
+        assert!(breaking(&findings).is_empty());
+        assert_eq!(
+            source_compatible(&findings),
+            ["`object Store`: changed `method lookup`"]
+        );
+    }
+
+    #[test]
+    fn method_trailing_defaulted_parameter_is_breaking() {
+        // A new parameter changes the Swift protocol requirement and the
+        // Kotlin interface method that implementers override.
+        let findings = pair(
+            "object Store\n  method lookup(model: String)\n",
+            "object Store\n  method lookup(model: String, limit: u8 = 1)\n",
         );
         assert_eq!(
             breaking(&findings),
             ["`object Store`: changed `method lookup`"]
         );
+    }
+
+    #[test]
+    fn object_reference_keeps_conformances_the_type_exports() {
+        let with_traits = |header: &str| {
+            format!("{header}\n  field id: String\n\nuniffi_trait Descriptor.Eq\n\nuniffi_trait Descriptor.Hash\n")
+        };
+        let findings = pair(
+            &with_traits("record Descriptor"),
+            &with_traits("record Descriptor contains_object"),
+        );
+        assert!(breaking(&findings).is_empty());
+        assert_eq!(additive(&findings), ["changed `record Descriptor`"]);
+        assert!(findings[0].detail.iter().any(|d| d.contains("Disposable")));
+    }
+
+    #[test]
+    fn object_reference_loses_each_unexported_conformance_separately() {
+        let eq_only =
+            |header: &str| format!("{header}\n  field id: String\n\nuniffi_trait Descriptor.Eq\n");
+        let findings = pair(
+            &eq_only("record Descriptor"),
+            &eq_only("record Descriptor contains_object"),
+        );
+        assert_eq!(breaking(&findings), ["changed `record Descriptor`"]);
+        let reason = findings[0].detail.last().unwrap();
+        assert!(reason.contains("`Hashable`"), "{reason}");
+        assert!(!reason.contains("`Equatable`"), "{reason}");
+    }
+
+    #[test]
+    fn object_reference_loses_codable_when_generation_is_on() {
+        let both = |header: &str| {
+            format!(
+                "config bindings.swift.generate_codable_conformance = true\n\n{header}\n  field id: String\n\n\
+                 uniffi_trait Descriptor.Eq\n\nuniffi_trait Descriptor.Hash\n"
+            )
+        };
+        let findings = pair(
+            &both("record Descriptor"),
+            &both("record Descriptor contains_object"),
+        );
+        assert_eq!(breaking(&findings), ["changed `record Descriptor`"]);
+        assert!(findings[0].detail.last().unwrap().contains("`Codable`"));
     }
 
     #[test]

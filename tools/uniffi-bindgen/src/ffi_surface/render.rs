@@ -246,30 +246,60 @@ pub fn items(
     Ok(items)
 }
 
-/// Field types of every record and enum, by name.
+/// The types each record, enum and callback interface refers to, by name:
+/// fields and variant fields, plus the parameters, return and error types of
+/// its constructors and methods. This is the set UniFFI's
+/// `item_contains_object_references` walks.
 fn field_types(metadata: &[Metadata]) -> BTreeMap<String, Vec<Type>> {
-    metadata
-        .iter()
-        .filter_map(|item| match item {
-            Metadata::Record(meta) => Some((
-                meta.name.clone(),
-                meta.fields.iter().map(|f| f.ty.clone()).collect(),
-            )),
-            Metadata::Enum(meta) => Some((
-                meta.name.clone(),
+    let mut graph: BTreeMap<String, Vec<Type>> = BTreeMap::new();
+    let mut callable = |owner: &str, inputs: &[FnParamMetadata], other: [Option<&Type>; 2]| {
+        graph.entry(owner.to_string()).or_default().extend(
+            inputs
+                .iter()
+                .map(|p| p.ty.clone())
+                .chain(other.into_iter().flatten().cloned()),
+        );
+    };
+    for item in metadata {
+        match item {
+            Metadata::Constructor(meta) => {
+                callable(&meta.self_name, &meta.inputs, [meta.throws.as_ref(), None])
+            }
+            Metadata::Method(meta) => callable(
+                &meta.self_name,
+                &meta.inputs,
+                [meta.return_type.as_ref(), meta.throws.as_ref()],
+            ),
+            Metadata::TraitMethod(meta) => callable(
+                &meta.trait_name,
+                &meta.inputs,
+                [meta.return_type.as_ref(), meta.throws.as_ref()],
+            ),
+            _ => {}
+        }
+    }
+    for item in metadata {
+        match item {
+            Metadata::Record(meta) => graph
+                .entry(meta.name.clone())
+                .or_default()
+                .extend(meta.fields.iter().map(|f| f.ty.clone())),
+            Metadata::Enum(meta) => graph.entry(meta.name.clone()).or_default().extend(
                 meta.variants
                     .iter()
-                    .flat_map(|v| v.fields.iter().map(|f| f.ty.clone()))
-                    .collect(),
-            )),
-            _ => None,
-        })
-        .collect()
+                    .flat_map(|v| v.fields.iter().map(|f| f.ty.clone())),
+            ),
+            _ => {}
+        }
+    }
+    graph
 }
 
-/// Whether a record or enum reaches an object through its fields, directly
-/// or through other records, enums and containers. UniFFI's Swift generator
-/// drops `Equatable`, `Hashable` and `Codable` from such types.
+/// Whether a record or enum reaches an object, directly or through
+/// containers, custom types, other records and enums, and callback
+/// interfaces. UniFFI's Swift generator drops `Equatable`, `Hashable` and
+/// `Codable` from such types (each unless exported), and Kotlin adds
+/// `Disposable`.
 fn contains_object(name: &str, graph: &BTreeMap<String, Vec<Type>>) -> bool {
     fn reaches(
         ty: &Type,
@@ -286,7 +316,9 @@ fn contains_object(name: &str, graph: &BTreeMap<String, Vec<Type>>) -> bool {
                 value_type,
             } => reaches(key_type, graph, seen) || reaches(value_type, graph, seen),
             Type::Custom { builtin, .. } => reaches(builtin, graph, seen),
-            Type::Record { name, .. } | Type::Enum { name, .. } => {
+            Type::Record { name, .. }
+            | Type::Enum { name, .. }
+            | Type::CallbackInterface { name, .. } => {
                 seen.insert(name.clone())
                     && graph
                         .get(name)
@@ -521,8 +553,8 @@ pub fn generator_version(lockfile: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use uniffi_meta::{
-        CallbackInterfaceMetadata, EnumMetadata, FnMetadata, ObjectMetadata, RecordMetadata,
-        TraitMethodMetadata, VariantMetadata,
+        CallbackInterfaceMetadata, EnumMetadata, FnMetadata, MethodMetadata, ObjectMetadata,
+        RecordMetadata, TraitMethodMetadata, VariantMetadata,
     };
 
     const MODULE: &str = "camera_protocol_ffi";
@@ -845,6 +877,77 @@ mod tests {
         assert!(out.contains("\nrecord Plain\n"));
         assert!(out.contains("\nrecord Loop\n"));
         assert!(out.contains("\nenum Event contains_object\n"));
+    }
+
+    fn method_of(owner: &str, name: &str, return_type: Option<Type>) -> Metadata {
+        Metadata::Method(MethodMetadata {
+            module_path: MODULE.into(),
+            self_name: owner.into(),
+            name: name.into(),
+            is_async: false,
+            inputs: Vec::new(),
+            return_type,
+            throws: None,
+            takes_self_by_arc: false,
+            checksum: None,
+            docstring: None,
+        })
+    }
+
+    #[test]
+    fn methods_and_callback_interfaces_count_like_uniffi() {
+        // UniFFI's item_contains_object_references also walks record and enum
+        // methods and constructors, and callback interface methods.
+        let store = Metadata::Object(ObjectMetadata {
+            module_path: MODULE.into(),
+            name: "Store".into(),
+            remote: false,
+            imp: ObjectImpl::Struct,
+            docstring: None,
+        });
+        let listener = |name: &str| {
+            Metadata::CallbackInterface(CallbackInterfaceMetadata {
+                module_path: MODULE.into(),
+                name: name.into(),
+                docstring: None,
+            })
+        };
+        let trait_method = |owner: &str, returns: Option<Type>| {
+            Metadata::TraitMethod(TraitMethodMetadata {
+                module_path: MODULE.into(),
+                trait_name: owner.into(),
+                index: 0,
+                name: "changed".into(),
+                is_async: false,
+                inputs: Vec::new(),
+                return_type: returns,
+                throws: None,
+                takes_self_by_arc: false,
+                checksum: None,
+                docstring: None,
+            })
+        };
+        let callback = |name: &str| Type::CallbackInterface {
+            module_path: MODULE.into(),
+            name: name.into(),
+        };
+        let out = render(vec![
+            store,
+            record_of("WithMethod", vec![field_of("id", Type::String)]),
+            method_of("WithMethod", "open", Some(object_type("Store"))),
+            listener("Reaching"),
+            trait_method("Reaching", Some(object_type("Store"))),
+            listener("Plain"),
+            trait_method("Plain", Some(Type::String)),
+            record_of("Holder", vec![field_of("listener", callback("Reaching"))]),
+            record_of("PlainHolder", vec![field_of("listener", callback("Plain"))]),
+        ]);
+        assert!(
+            out.contains("\nrecord WithMethod contains_object\n"),
+            "{out}"
+        );
+        assert!(out.contains("\nrecord Holder contains_object\n"), "{out}");
+        assert!(out.contains("\nrecord PlainHolder\n"), "{out}");
     }
 
     /// Structural equality that tells apart values `==` conflates or
