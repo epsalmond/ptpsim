@@ -2310,3 +2310,77 @@ suppressed, never half. Both are exposed through `PropertyInfo.dispositions` and
 unknown value is a load error. A disposition whose `when` predicate fails to
 cross the FFI is dropped whole rather than surfaced with `when: null`, which
 would read as unconditional.
+
+### 11.32 Simulator states (#164, #352)
+
+A simulator state is a named physical condition of one camera body, such as an
+empty memory card slot. While a state is active, the simulator answers the
+operations the state lists with the PTP response code the state declares.
+States are simulator data. They are not exported through the FFI, and
+consumers do not read them.
+
+A state exists only as an evidence-backed manifest entry. The control surface
+can switch a declared state on or off. It cannot supply a response the
+manifest does not declare. Test-only response injection uses the separate
+fault registry described in `DESIGN.md`.
+
+```yaml
+evidence:
+  docEmptySlot: { kind: doc, path: "evidence/IMAGE_IMPORT_EMPTY_SLOT_20260718.md" }
+states:
+  memoryCardSlot1Empty:
+    summary: >-
+      Memory card slot 1 holds no card and slot 2 holds one. Image import
+      0x9050 answers 0x2019 on every attempt. Nothing else is modeled.
+    responses:
+      - { operation: "0x9050", response: "0x2019", connections: [app], modes: [image-transfer] }
+    evidence: [docEmptySlot]
+```
+
+**Fields.** `states` maps a state name to its declaration. `summary` describes
+the observed configuration and says what is not modeled. `responses` lists one
+or more overrides. Each override names an `operation`, the `response` to
+answer with, and optional `connections` and `modes` filters. `evidence` lists
+the evidence ids behind the state. Unknown fields are load errors.
+
+**Load-time contract errors.** The manifest fails to load when a state has an
+empty `summary`, `responses`, or `evidence`; when an `operation` or `response`
+is not a hexadecimal PTP code; when a `response` is `0x2001` (OK); or when an
+`operation` is not declared under `operations`.
+
+**Lints.** `CameraManifest::validate` warns about an unknown connection id, a
+mode scope that matches no declared mode, and an undefined evidence id. Each
+warning names the state and the response index.
+
+**Scope matching.** Filters follow the value-disposition rules: an empty
+`connections` or `modes` list means all, and a mode scope matches the declared
+path and its descendants. `modes` is matched against the detected mode only.
+Before the simulator has detected a mode, an override that names modes does
+not apply.
+
+**Precedence.** These replies outrank a state response, in order: an installed
+fault, the missing-session refusal (`0x2003`), the silence of an unsatisfied
+`requiresGate`, the shutter-busy reply, camera-initiated queue routing, and
+catalog availability. An operation outside its declared connections or modes
+therefore still answers `0x2005`. A state response outranks a `silentRefusal`
+disposition and every handler. When several active states match the same
+request, the state whose name sorts first answers.
+
+**Side effects.** A state response is a failure reply with no parameters and no
+data phase. The operation runs no handler, applies no `effects`, queues no
+`emits`, and does not start or advance a sequence gate.
+
+**Lifetime.** An active state is a physical camera condition. It survives
+`CloseSession`, a new `OpenSession`, transport loss, and mode changes. Only the
+control surface enters or leaves it.
+
+**Entering and leaving.** The state overlay's `states` field maps a declared
+state name to `true` (enter) or `false` (leave). The same field works in
+`PATCH /state`, in a `--startup-state` file, and in
+`camera-simctl state patch --overlay`. An unknown name rejects the whole
+overlay, changes nothing, and the error lists the declared state names.
+`GET /state` reports the active state names, sorted, under `states`.
+
+**Not modeled yet.** A state has no `when` predicate, property values, events,
+entry trigger, or automatic clearing. Consumer-visible failure classification
+is a separate change.
