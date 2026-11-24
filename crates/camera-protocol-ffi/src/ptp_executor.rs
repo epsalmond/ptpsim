@@ -271,6 +271,7 @@ pub async fn run_mode_entry(
         activity_observer,
         numeric_runtime_params(runtime_params),
         None,
+        Vec::new(),
     )
     .await
 }
@@ -309,6 +310,7 @@ pub async fn run_mode_entry_txn(
         activity_observer,
         numeric_runtime_params(runtime_params),
         None,
+        Vec::new(),
     )
     .await
 }
@@ -345,6 +347,7 @@ pub async fn run_mode_reestablishment_exit(
         activity_observer,
         numeric_runtime_params(runtime_params),
         None,
+        Vec::new(),
     )
     .await
 }
@@ -358,7 +361,8 @@ pub async fn run_initiator_action(
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
-    let (connection, action, runtime_params) = resolve_initiator(&store, request)?;
+    let (connection, action, runtime_params, failure_conditions) =
+        resolve_initiator(&store, request)?;
     let initiator = action
         .initiator
         .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
@@ -374,6 +378,7 @@ pub async fn run_initiator_action(
         activity_observer,
         runtime_params,
         None,
+        failure_conditions,
     )
     .await
 }
@@ -389,7 +394,8 @@ pub async fn run_initiator_action_txn(
     observer: Arc<dyn StepObserver>,
     activity_observer: Arc<dyn ConnectionActivityObserver>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
-    let (connection, action, runtime_params) = resolve_initiator(&store, request)?;
+    let (connection, action, runtime_params, failure_conditions) =
+        resolve_initiator(&store, request)?;
     let initiator = action
         .initiator
         .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
@@ -405,6 +411,7 @@ pub async fn run_initiator_action_txn(
         activity_observer,
         runtime_params,
         None,
+        failure_conditions,
     )
     .await
 }
@@ -419,7 +426,8 @@ pub async fn run_initiator_action_to_sink(
     activity_observer: Arc<dyn ConnectionActivityObserver>,
     sink: Arc<dyn PtpDataOutputSink>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
-    let (connection, action, runtime_params) = resolve_initiator(&store, request)?;
+    let (connection, action, runtime_params, failure_conditions) =
+        resolve_initiator(&store, request)?;
     let initiator = action
         .initiator
         .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
@@ -435,6 +443,7 @@ pub async fn run_initiator_action_to_sink(
         activity_observer,
         runtime_params,
         Some(sink),
+        failure_conditions,
     )
     .await
 }
@@ -452,7 +461,8 @@ pub async fn run_initiator_action_txn_to_sink(
     activity_observer: Arc<dyn ConnectionActivityObserver>,
     sink: Arc<dyn PtpDataOutputSink>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
-    let (connection, action, runtime_params) = resolve_initiator(&store, request)?;
+    let (connection, action, runtime_params, failure_conditions) =
+        resolve_initiator(&store, request)?;
     let initiator = action
         .initiator
         .ok_or_else(|| PtpExecutorError::UnsupportedPlan {
@@ -468,14 +478,25 @@ pub async fn run_initiator_action_txn_to_sink(
         activity_observer,
         runtime_params,
         Some(sink),
+        failure_conditions,
     )
     .await
 }
 
+/// The resolved action, its runtime arguments, and its failure conditions
+/// (§11.33). The rules come from the loaded core manifest: they never cross the
+/// FFI as a type, so the consumer sees only the context strings they produce.
+type ResolvedInitiator = (
+    String,
+    crate::Action,
+    Vec<PtpScopeValue>,
+    Vec<cc::FailureConditionRule>,
+);
+
 fn resolve_initiator(
     store: &ConfigStore,
     request: ActionInvocationRequest,
-) -> Result<(String, crate::Action, Vec<PtpScopeValue>), PtpExecutorError> {
+) -> Result<ResolvedInitiator, PtpExecutorError> {
     if request.role != ActionRole::Initiator {
         return Err(PtpExecutorError::ActionRejected {
             code: "wrongRole".into(),
@@ -490,6 +511,13 @@ fn resolve_initiator(
                 PtpExecutorError::ActionRejected { code, detail }
             }
         })?;
+    let failure_conditions = store
+        .inner
+        .manifest
+        .action(&connection, crate::ffi_to_cc_verb(resolved.action))
+        .and_then(|action| action.initiator.as_ref())
+        .map(|initiator| initiator.failure_conditions.clone())
+        .unwrap_or_default();
     let action = store
         .action(connection.clone(), resolved.action)
         .ok_or_else(|| PtpExecutorError::UnknownPlan {
@@ -503,7 +531,7 @@ fn resolve_initiator(
             value: argument.value,
         })
         .collect();
-    Ok((connection, action, runtime_params))
+    Ok((connection, action, runtime_params, failure_conditions))
 }
 
 #[uniffi::export]
@@ -534,6 +562,7 @@ pub async fn run_selected_object_preparation(
         activity_observer,
         numeric_runtime_params(runtime_params),
         None,
+        Vec::new(),
     )
     .await
 }
@@ -569,6 +598,7 @@ pub async fn run_selected_object_preparation_txn(
         activity_observer,
         numeric_runtime_params(runtime_params),
         None,
+        Vec::new(),
     )
     .await
 }
@@ -584,6 +614,7 @@ async fn run_steps(
     activity_observer: Arc<dyn ConnectionActivityObserver>,
     runtime_params: Vec<PtpScopeValue>,
     output_sink: Option<Arc<dyn PtpDataOutputSink>>,
+    failure_conditions: Vec<cc::FailureConditionRule>,
 ) -> Result<PtpExecutionOutcome, PtpExecutorError> {
     let connection_config = store
         .inner
@@ -662,10 +693,14 @@ async fn run_steps(
         steps_run: 0,
         control_attempts: None,
         deferred_tolerance: None,
+        failure_conditions,
     };
-    ctx.walk_steps(&steps, "steps", true)
-        .await
-        .map_err(PtpExecutorError::from)?;
+    if let Err(error) = ctx.walk_steps(&steps, "steps", true).await {
+        // The top-level walk has already failed any active activity with the
+        // same classification, so telemetry and the returned error agree.
+        let condition = failure_condition_context(&ctx.failure_conditions, &error);
+        return Err(step_failed(error, condition));
+    }
     ctx.finish_activity_success();
     Ok(ctx.outcome())
 }
@@ -697,7 +732,45 @@ struct StepError {
     meta: Option<TxMeta>,
 }
 
-fn ptp_activity_failure(error: &StepError) -> ConnectionActivityFailure {
+/// The context a declared failure condition (§11.33) adds when it classifies
+/// `error`: `condition` with the condition name, then the rule's declared keys
+/// in sorted order. `None` when no rule matches. Only a non-OK PTP response
+/// can match; the caller passes only the failure that ends the action.
+fn failure_condition_context(
+    rules: &[cc::FailureConditionRule],
+    error: &StepError,
+) -> Option<Vec<KeyValue>> {
+    if error.class != FailureClass::Response {
+        return None;
+    }
+    let meta = error.meta.as_ref()?;
+    let rule = rules
+        .iter()
+        .find(|rule| rule.matches(meta.operation, meta.response_code))?;
+    let mut context = vec![KeyValue {
+        key: "condition".into(),
+        value: rule.condition.name().into(),
+    }];
+    context.extend(rule.context.iter().map(|(key, value)| KeyValue {
+        key: key.clone(),
+        value: value.clone(),
+    }));
+    Some(context)
+}
+
+/// The activity form of a step failure. A classified failure carries only the
+/// manifest-declared condition context; the raw operation, response, and
+/// transaction id stay on the returned error and the step reports.
+fn ptp_activity_failure(
+    error: &StepError,
+    condition: Option<Vec<KeyValue>>,
+) -> ConnectionActivityFailure {
+    if let Some(context) = condition {
+        return ConnectionActivityFailure {
+            kind: ExecutorStepFailureKind::ConditionRejected,
+            context,
+        };
+    }
     let kind = if error.class == FailureClass::Deadline {
         ExecutorStepFailureKind::DeadlineExceeded
     } else {
@@ -706,35 +779,41 @@ fn ptp_activity_failure(error: &StepError) -> ConnectionActivityFailure {
     ConnectionActivityFailure::without_context(kind)
 }
 
-impl From<StepError> for PtpExecutorError {
-    fn from(error: StepError) -> Self {
-        let mut context = Vec::new();
-        if let Some(meta) = &error.meta {
-            context.push(KeyValue {
-                key: "operation".into(),
-                value: format!("0x{:04x}", meta.operation),
-            });
-            context.push(KeyValue {
-                key: "response".into(),
-                value: format!("0x{:04x}", meta.response_code),
-            });
-            context.push(KeyValue {
-                key: "transactionId".into(),
-                value: meta.transaction_id.to_string(),
-            });
+/// The error returned for the failure that ends a run. `condition` is the
+/// context of the matching failure condition, if any (§11.33).
+fn step_failed(error: StepError, condition: Option<Vec<KeyValue>>) -> PtpExecutorError {
+    let mut context = Vec::new();
+    if let Some(meta) = &error.meta {
+        context.push(KeyValue {
+            key: "operation".into(),
+            value: format!("0x{:04x}", meta.operation),
+        });
+        context.push(KeyValue {
+            key: "response".into(),
+            value: format!("0x{:04x}", meta.response_code),
+        });
+        context.push(KeyValue {
+            key: "transactionId".into(),
+            value: meta.transaction_id.to_string(),
+        });
+    }
+    let kind = if condition.is_some() {
+        ExecutorStepFailureKind::ConditionRejected
+    } else {
+        match error.class {
+            FailureClass::Deadline => ExecutorStepFailureKind::DeadlineExceeded,
+            FailureClass::Response
+            | FailureClass::Transport
+            | FailureClass::Decode
+            | FailureClass::Other => ExecutorStepFailureKind::Other,
         }
-        Self::StepFailed {
-            step: error.step,
-            kind: match error.class {
-                FailureClass::Deadline => ExecutorStepFailureKind::DeadlineExceeded,
-                FailureClass::Response
-                | FailureClass::Transport
-                | FailureClass::Decode
-                | FailureClass::Other => ExecutorStepFailureKind::Other,
-            },
-            detail: error.detail,
-            context,
-        }
+    };
+    context.extend(condition.unwrap_or_default());
+    PtpExecutorError::StepFailed {
+        step: error.step,
+        kind,
+        detail: error.detail,
+        context,
     }
 }
 
@@ -795,6 +874,9 @@ struct PtpCtx {
     steps_run: u32,
     control_attempts: Option<u32>,
     deferred_tolerance: Option<StepError>,
+    /// The running action's failure conditions (§11.33); empty for mode
+    /// entries and other non-action plans.
+    failure_conditions: Vec<cc::FailureConditionRule>,
 }
 
 impl PtpCtx {
@@ -857,9 +939,14 @@ impl PtpCtx {
         }
     }
 
+    /// Fail the active activity. Called only from the top-level walk, so
+    /// `error` is the failure that ends the run and may be classified.
     fn finish_activity_failure(&mut self, error: &StepError) {
         if let Some(activity) = self.active_activity.take() {
-            activity.lifecycle.fail(ptp_activity_failure(error));
+            let condition = failure_condition_context(&self.failure_conditions, error);
+            activity
+                .lifecycle
+                .fail(ptp_activity_failure(error, condition));
         }
     }
 
@@ -868,7 +955,9 @@ impl PtpCtx {
             activity.lifecycle.retry(ConnectionActivityRetry {
                 ordinal,
                 limit,
-                failure: ptp_activity_failure(error),
+                // A replayed failure does not end the action, so it is
+                // never classified.
+                failure: ptp_activity_failure(error, None),
             });
         }
     }

@@ -3025,3 +3025,311 @@ fn aggregate_step_deadline_cancels_the_pending_foreign_read() {
     ));
     assert!(dropped.load(Ordering::SeqCst));
 }
+
+// --- Action failure conditions (MANIFEST_SCHEMA §11.33, #352) ---------------
+//
+// The GFX100 II `enumerateObjects` action declares that a final 0x9050
+// failure answering 0x2019 is `mediaSlotUnavailable` for slot 1. The simulator
+// produces that failure through its `memoryCardSlot1Empty` state.
+
+const EMPTY_SLOT_STATE: &str = "memoryCardSlot1Empty";
+
+impl EngineTransport {
+    fn enter_state(&self, name: &str) {
+        let overlay = camera_sim::StateOverlay {
+            states: BTreeMap::from([(name.to_string(), true)]),
+            ..Default::default()
+        };
+        self.state
+            .lock()
+            .expect("state")
+            .engine
+            .apply_state_overlay(&overlay)
+            .expect("declared simulator state");
+    }
+}
+
+/// The shipped GFX100 II manifest with one activity spanning the whole
+/// `enumerateObjects` initiator, so activity telemetry can be compared with
+/// the returned error.
+fn store_with_enumeration_activity() -> Arc<ConfigStore> {
+    let original = data("fuji/gfx100ii/gfx100ii.yaml");
+    let anchor = "      enumerateObjects:\n        mode: image-transfer\n        initiator:\n";
+    let body = original.replacen(
+        anchor,
+        &format!(
+            "{anchor}          activities:
+            - id: camera.test.enumerate
+              version: 1
+              displayRole: preparingConnection
+              defaultExpectedDurationMs: 10
+              interactionRequired: false
+              executorSpan: {{ sequence: steps, startStep: 0, endStepExclusive: 3 }}
+"
+        ),
+        1,
+    );
+    assert_ne!(body, original, "enumerateObjects anchor missing");
+    store_from_body(body)
+}
+
+fn image_transfer_transport(store: &Arc<ConfigStore>) -> Arc<EngineTransport> {
+    let transport = Arc::new(EngineTransport::new(
+        "app",
+        PtpFraming::Compressed,
+        PtpFraming::Usb,
+    ));
+    block_on(run_mode_entry(
+        store.clone(),
+        "app".into(),
+        None,
+        "image-transfer".into(),
+        transport.clone(),
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+    .expect("image-transfer entry succeeds");
+    transport
+}
+
+fn enumerate(
+    store: Arc<ConfigStore>,
+    transport: Arc<EngineTransport>,
+    activities: Arc<Activities>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    block_on(run_initiator_action(
+        store,
+        "app".into(),
+        ActionVerb::EnumerateObjects,
+        transport,
+        Arc::new(Reports::default()),
+        activities,
+        Vec::new(),
+    ))
+}
+
+fn context_keys(context: &[camera_protocol_ffi::KeyValue]) -> Vec<&str> {
+    context.iter().map(|entry| entry.key.as_str()).collect()
+}
+
+fn context_value<'a>(context: &'a [camera_protocol_ffi::KeyValue], key: &str) -> &'a str {
+    context
+        .iter()
+        .find(|entry| entry.key == key)
+        .unwrap_or_else(|| panic!("context has {key}: {context:?}"))
+        .value
+        .as_str()
+}
+
+/// Assert `error` is the classified empty-slot import failure.
+fn assert_empty_slot_condition(error: &PtpExecutorError) {
+    let PtpExecutorError::StepFailed {
+        step,
+        kind,
+        detail,
+        context,
+    } = error
+    else {
+        panic!("expected StepFailed, got {error:?}");
+    };
+    assert_eq!(*kind, ExecutorStepFailureKind::ConditionRejected);
+    assert_eq!(step, "steps[0].retry.steps[0].sendOp");
+    assert_eq!(detail, "operation 0x9050 returned 0x2019");
+    assert_eq!(
+        context_keys(context),
+        [
+            "operation",
+            "response",
+            "transactionId",
+            "condition",
+            "slot"
+        ]
+    );
+    assert_eq!(context_value(context, "operation"), "0x9050");
+    assert_eq!(context_value(context, "response"), "0x2019");
+    assert!(context_value(context, "transactionId")
+        .parse::<u32>()
+        .is_ok());
+    assert_eq!(context_value(context, "condition"), "mediaSlotUnavailable");
+    assert_eq!(context_value(context, "slot"), "1");
+}
+
+#[test]
+fn empty_slot_import_failure_reports_the_declared_condition() {
+    let store = store();
+    let transport = image_transfer_transport(&store);
+    transport.enter_state(EMPTY_SLOT_STATE);
+
+    let error = enumerate(store, transport.clone(), Arc::new(Activities::default()))
+        .expect_err("every import attempt is refused");
+
+    assert_empty_slot_condition(&error);
+    // The rule does not shorten the retry: all five attempts run first.
+    assert_eq!(transport.request_count(0x9050, &[]), 5);
+    assert_eq!(transport.request_count(0x1015, &[0xd620]), 0);
+}
+
+#[test]
+fn enumeration_succeeds_without_the_empty_slot_state() {
+    let store = store();
+    let transport = image_transfer_transport(&store);
+    let outcome = enumerate(store, transport.clone(), Arc::new(Activities::default()))
+        .expect("enumeration succeeds with a card in slot 1");
+    assert!(outcome
+        .collections
+        .iter()
+        .any(|collection| collection.key == "objectHandles"));
+    assert_eq!(transport.request_count(0x9050, &[]), 1);
+}
+
+#[test]
+fn transient_import_refusal_recovers_without_classification() {
+    let store = store();
+    let transport = image_transfer_transport(&store);
+    transport.install_fault(fault(
+        0x9050,
+        None,
+        Some(2),
+        FaultMutation::FailResponse { response: 0x2019 },
+    ));
+    enumerate(store, transport.clone(), Arc::new(Activities::default()))
+        .expect("a brief 0x2019 is retried away");
+    assert_eq!(transport.request_count(0x9050, &[]), 3);
+}
+
+/// Run enumeration with a persistent fault and return the escaping error.
+fn enumerate_with_fault(
+    operation: u16,
+    params: Option<Vec<u32>>,
+    response: u16,
+) -> PtpExecutorError {
+    let store = store();
+    let transport = image_transfer_transport(&store);
+    transport.install_fault(fault(
+        operation,
+        params,
+        None,
+        FaultMutation::FailResponse { response },
+    ));
+    enumerate(store, transport, Arc::new(Activities::default()))
+        .expect_err("persistent fault fails the action")
+}
+
+fn assert_unclassified(error: &PtpExecutorError, operation: &str, response: &str) {
+    let PtpExecutorError::StepFailed { kind, context, .. } = error else {
+        panic!("expected StepFailed, got {error:?}");
+    };
+    assert_eq!(*kind, ExecutorStepFailureKind::Other);
+    assert_eq!(
+        context_keys(context),
+        ["operation", "response", "transactionId"]
+    );
+    assert_eq!(context_value(context, "operation"), operation);
+    assert_eq!(context_value(context, "response"), response);
+}
+
+#[test]
+fn undeclared_final_failures_stay_unclassified() {
+    // Same response, different operation: a later count read.
+    let error = enumerate_with_fault(0x1015, Some(vec![0xd620]), 0x2019);
+    assert_unclassified(&error, "0x1015", "0x2019");
+
+    // Same operation, a retry-selected response the rule does not list.
+    let error = enumerate_with_fault(0x9050, None, 0x2013);
+    assert_unclassified(&error, "0x9050", "0x2013");
+
+    // Same operation, a response the retry does not select.
+    let error = enumerate_with_fault(0x9050, None, 0x2005);
+    assert_unclassified(&error, "0x9050", "0x2005");
+}
+
+#[test]
+fn sink_entry_point_reports_the_same_condition() {
+    let store = store();
+    let transport = image_transfer_transport(&store);
+    transport.enter_state(EMPTY_SLOT_STATE);
+    let error = block_on(run_initiator_action_to_sink(
+        store,
+        "app".into(),
+        ActionVerb::EnumerateObjects,
+        transport,
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Arc::new(RecordingSink::default()),
+        Vec::new(),
+    ))
+    .expect_err("every import attempt is refused");
+    assert_empty_slot_condition(&error);
+}
+
+#[test]
+fn activity_failure_agrees_with_the_classified_error() {
+    let store = store_with_enumeration_activity();
+    let transport = image_transfer_transport(&store);
+    transport.enter_state(EMPTY_SLOT_STATE);
+    let activities = Arc::new(Activities::default());
+
+    let error = enumerate(store, transport, activities.clone())
+        .expect_err("every import attempt is refused");
+    assert_empty_slot_condition(&error);
+
+    let events = activities.0.lock().expect("activities");
+    let retries: Vec<&ConnectionActivityRetry> = events
+        .iter()
+        .filter_map(|event| match event {
+            ConnectionActivityEvent::Retrying { retry, .. } => Some(retry),
+            _ => None,
+        })
+        .collect();
+    // Replayed attempts do not end the action, so they stay unclassified.
+    assert_eq!(retries.len(), 4);
+    for retry in &retries {
+        assert_eq!(
+            retry.failure,
+            ConnectionActivityFailure {
+                kind: ExecutorStepFailureKind::Other,
+                context: Vec::new(),
+            }
+        );
+    }
+    let failure = events
+        .iter()
+        .find_map(|event| match event {
+            ConnectionActivityEvent::Failed { id, failure, .. }
+                if id == "camera.test.enumerate" =>
+            {
+                Some(failure)
+            }
+            _ => None,
+        })
+        .expect("the enumeration activity fails");
+    assert_eq!(failure.kind, ExecutorStepFailureKind::ConditionRejected);
+    assert_eq!(context_keys(&failure.context), ["condition", "slot"]);
+    assert_eq!(
+        context_value(&failure.context, "condition"),
+        "mediaSlotUnavailable"
+    );
+    assert_eq!(context_value(&failure.context, "slot"), "1");
+}
+
+#[test]
+fn unclassified_activity_failure_keeps_kind_other() {
+    let store = store_with_enumeration_activity();
+    let transport = image_transfer_transport(&store);
+    transport.install_fault(fault(
+        0x9050,
+        None,
+        None,
+        FaultMutation::FailResponse { response: 0x2005 },
+    ));
+    let activities = Arc::new(Activities::default());
+    let error = enumerate(store, transport, activities.clone()).expect_err("refused");
+    assert_unclassified(&error, "0x9050", "0x2005");
+    let events = activities.0.lock().expect("activities");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ConnectionActivityEvent::Failed { failure, .. }
+            if failure.kind == ExecutorStepFailureKind::Other && failure.context.is_empty()
+    )));
+}

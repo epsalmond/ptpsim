@@ -1153,3 +1153,60 @@ fn reliable_event_miss_still_fails_deadline_exceeded() {
         vec![UsbEvent::EventWait { event_code: 0xc005 }]
     );
 }
+
+/// An action whose single `sendOp` carries a declared failure condition
+/// (MANIFEST_SCHEMA §11.33).
+fn store_with_failure_condition() -> Arc<ConfigStore> {
+    store(
+        "reliable",
+        r#"            - { sendOp: "0x9026" }
+          failureConditions:
+            - operation: "0x9026"
+              whenResponseCodes: ["0x2019"]
+              condition: mediaSlotUnavailable
+              context: { slot: "2" }
+              evidence: [docTest]"#,
+    )
+}
+
+fn run_failing_send_op(response: u16) -> PtpExecutorError {
+    let store = store_with_failure_condition();
+    let responder = UsbResponder::new().reply_transaction(
+        0x9026,
+        &[],
+        UsbTxnReply::response(response, vec![], None),
+    );
+    let transport = Arc::new(ResponderTxnTransport::new(responder, &[60_000]));
+    block_on(run_initiator_action_txn(
+        store.clone(),
+        action_request(&store),
+        transport,
+        Arc::new(NullObserver),
+        Arc::new(NullActivities),
+    ))
+    .expect_err("the operation is refused")
+}
+
+#[test]
+fn transaction_seam_classifies_a_declared_failure_condition() {
+    let PtpExecutorError::StepFailed { kind, context, .. } = run_failing_send_op(0x2019) else {
+        panic!("expected StepFailed");
+    };
+    assert_eq!(kind, ExecutorStepFailureKind::ConditionRejected);
+    let pairs: Vec<(&str, &str)> = context
+        .iter()
+        .map(|entry| (entry.key.as_str(), entry.value.as_str()))
+        .collect();
+    assert_eq!(pairs.len(), 5, "{pairs:?}");
+    assert_eq!(pairs[0], ("operation", "0x9026"));
+    assert_eq!(pairs[1], ("response", "0x2019"));
+    assert_eq!(pairs[2].0, "transactionId");
+    assert_eq!(pairs[3], ("condition", "mediaSlotUnavailable"));
+    assert_eq!(pairs[4], ("slot", "2"));
+
+    let PtpExecutorError::StepFailed { kind, context, .. } = run_failing_send_op(0x2005) else {
+        panic!("expected StepFailed");
+    };
+    assert_eq!(kind, ExecutorStepFailureKind::Other);
+    assert_eq!(context.len(), 3);
+}
