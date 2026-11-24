@@ -1158,18 +1158,20 @@ fetches and proxies the service's manifest action catalog instead of defining a
 camera-action registry of its own. Process-local phase patches and quit use a
 reserved `operator.*` namespace and never masquerade as camera actions.
 
-- The TUI is an app-state injector and the BLE/Wi-Fi boundary. It is how a test
-  asserts states like "already Bluetooth-paired" without real wireless, and a
-  shortcut for setting up app states for screenshots and user-flow automation.
-  It is moving out of the camera/PTP interface entirely. Dev/test only.
-- ptpsim is the PTP/IP wire — a believable camera responder. Dev, test, and
-  production verification (it is the binary client application leases for App Review).
+- The TUI is an app-state injector. It is how a test asserts states like
+  "already Bluetooth-paired" without real wireless, and a shortcut for setting
+  up app states for screenshots and user-flow automation. It is moving out of
+  the camera/PTP interface entirely. Dev/test only.
+- ptpsim is the camera responder: the PTP/IP wire, and optionally the BLE GATT
+  side over a loopback socket. Dev, test, and production verification (it is
+  the binary a client application leases for App Review).
 
-In review and production the app's `connectToDevCameraHost()` skips BLE/Wi-Fi
-and opens PTP/IP directly, so ptpsim stands alone with no TUI involved. In local
-development the TUI injects the "paired" state and the app then talks to ptpsim
-over PTP/IP. The seam is BLE: the TUI owns everything up to and including
-pairing; ptpsim owns everything on the PTP/IP transport.
+In review and production the app's direct-connect path skips BLE and Wi-Fi and
+opens PTP/IP directly, so ptpsim stands alone with no TUI involved. Local
+development has two ways to reach a paired state. The TUI can inject the
+"paired" state, after which the app talks to ptpsim over PTP/IP only. Or the
+app can run its real discovery, pairing and AP handoff against ptpsim's BLE
+socket, after which the same service answers its PTP/IP session.
 
 BLE emulation is in scope as a data-driven transport. Per-model BLE variance
 is device behavior the app should not need to know, which is the same

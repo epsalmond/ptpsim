@@ -237,51 +237,95 @@ camera-sim-service ... --ble-bind 127.0.0.1:55750 \
 
 `./run` passes `PTPSIM_BLE_BIND` and `PTPSIM_BLE_SCENARIO` through when both
 are set. It starts no BLE listener by default. `127.0.0.1:55750` is the
-suggested local address.
+suggested local address. The protocol has no authentication and its writes
+arm the PTP/IP init gate, so the service refuses a non-loopback `--ble-bind`
+unless `--ble-allow-non-loopback` is also given.
 
 ### Protocol `ptpsim-ble/1`
 
 - Newline-delimited JSON: one compact UTF-8 object per line, ended by `\n`.
-- Wire field names are `snake_case`. Bytes are lowercase hex strings. UUIDs
-  are uppercase canonical strings; the server uppercases UUID input before
-  lookup.
-- Request (client to server): `{"id": <u64>, "op": "<name>", ...args}`. Client
-  ids start at 1 and increase by 1.
+  A line longer than 64 KiB (65536 bytes) gets a `bad_request` response with
+  `"id": null`, and the server closes the connection.
+- Wire field names are `snake_case`. Bytes are lowercase hex strings: pairs of
+  hex digits, with no sign, prefix or separator (the server also accepts
+  uppercase digits). UUIDs are uppercase canonical strings; the server
+  uppercases UUID input before lookup.
+- Request (client to server): `{"id": <u64>, "op": "<name>", ...args}`. `id`
+  must be a non-negative integer. Client ids start at 1 and increase by 1. A
+  line that is not JSON, or has no such `id`, gets a `bad_request` response
+  with `"id": null`.
 - Response (server to client): exactly one per request, in request order:
   `{"id": n, "ok": true, ...result}` or
-  `{"id": n, "ok": false, "error": {"code": "...", "detail": "..."}}`. A line
-  with no readable `id` gets a `bad_request` response with `"id": null`.
+  `{"id": n, "ok": false, "error": {"code": "...", "detail": "..."}}`.
 - Event (server to client): `{"event": "<name>", ...}`, with no `id`.
 
 The server handles one request at a time per connection. After it writes a
 response it pushes the events that request made eligible, then reads the next
-request. Notification fencing depends on this order.
+request. It never sends an event spontaneously: every `advert` and
+`notification` follows the response to the request that produced it.
+Notification fencing depends on this order.
 
-On accept the server builds a fresh responder from the scenario, wired to the
-engine's shared `CameraLink`, and sends
-`{"event":"hello","protocol":"ptpsim-ble","version":1}`. A client fails the
-connection on any other version. A fresh responder per accept means a client
-that closes and reconnects starts from an unspent script. The service serves
-one client at a time: a second concurrent client receives the hello, then
-`{"event":"error","code":"busy"}`, and is closed. The server waits up to
-500 ms for an earlier connection to finish before it answers `busy`.
+#### Connection lifecycle
+
+- The service serves one client at a time. On accept the server waits up to
+  500 ms for an earlier connection to finish. A connection that gets the slot
+  receives `{"event":"hello","protocol":"ptpsim-ble","version":1}` as its first
+  line; a client fails the connection on any other version. A connection that
+  does not get the slot receives `{"event":"error","code":"busy"}` instead of
+  `hello`, and is closed. `hello` therefore always means the connection holds
+  the slot.
+- Each connection that gets the slot starts a fresh session: a new responder
+  built from the scenario, with an unspent notification script, and the
+  engine's `CameraLink` reset to its standalone default (no prep write, armed,
+  no registered device name). An earlier connection's writes cannot satisfy
+  the next connection's gates. This is simulator session policy, not camera
+  behavior.
+- `disconnect` answers, then the server closes the connection. A fresh script
+  needs a new TCP connection.
+- A connection holds the slot for as long as it is open, however quiet, since
+  a client may hold its BLE link idle for a whole session. The server enables
+  TCP keepalive (30 s idle, 10 s interval), so a peer that vanishes without
+  closing ends with a read error. A refused client is logged at `warn` with
+  the peer that holds the slot and for how long, so a client that opens two
+  connections is visible in the service log.
 
 | op | args | result | responder call |
 |---|---|---|---|
 | `scan_start` | none | none | none; then one `advert` event per scenario peripheral |
 | `scan_stop` | none | none | none |
-| `connect` | `peripheral` | `mtu`, `peripheral_name` (nullable) | `connect()`; a repeated `connect` to the connected peripheral returns the same result and leaves discovery and subscriptions intact |
+| `connect` | `peripheral` | `mtu`, `peripheral_name` (nullable) | `connect()`. A repeated `connect` to the connected peripheral returns the same result and leaves discovery and subscriptions intact |
 | `discover` | none | `characteristics: [uuid]` | `discover_services()` |
 | `read` | `uuid` | `value` | `read(uuid)` |
 | `write` | `uuid`, `value` | none | `write(uuid, value)` |
 | `write_fenced` | `uuid`, `value`, `notify_uuid` | none | `write_with_notification_fence(uuid, value, notify_uuid)` |
 | `subscribe` | `uuid` | none | `subscribe(uuid, notify)`; adds `uuid` to the connection's subscribed set |
-| `await_disconnect` | none | none | `await_disconnect()`; on success clears the subscribed set and sends `disconnected` |
-| `disconnect` | none | none | none; clears the subscribed set |
+| `disconnect` | none | none | none; the server then closes the connection |
 
-`mtu` and `peripheral_name` come from the scenario. The server does not call
-the responder's MTU or peripheral-name methods, so the responder log holds only
-operations the client requested.
+`discover`, `read`, `write`, `write_fenced` and `subscribe` before `connect`
+answer `not_connected`. Every characteristic in the scenario's catalog accepts
+`subscribe`; one with no scripted notification stays quiet.
+
+`mtu` is the scenario's `mtu` value, reported as the link's ATT MTU. No MTU
+negotiation is modeled. `peripheral_name` is the scenario's `peripheralName`,
+or `null`.
+
+Notifications:
+
+- Scripted notifications are released only by `write_fenced`. A plain `write`
+  to the same characteristic releases nothing.
+- `write_fenced` requires `notify_uuid` to be in the catalog; it need not be
+  subscribed. The fence discards the notifications buffered on `notify_uuid`
+  before the write.
+- A GATT server sends notifications only while the client has them enabled.
+  Notifications that a `write_fenced` releases on a characteristic the
+  connection has not subscribed are dropped. A later `subscribe` does not
+  deliver them.
+- Notifications scripted with no `afterFencedWrite` are buffered when the
+  session starts and delivered after `subscribe` to their characteristic,
+  unless a fence on that characteristic discarded them first.
+- After every request the server pushes the eligible notifications of each
+  subscribed characteristic: per characteristic in script order, and across
+  characteristics in subscription order.
 
 Events:
 
@@ -289,11 +333,7 @@ Events:
   `manufacturer_data` is the raw advertised field: the 2-byte little-endian
   company ID, then the payload.
 - `notification`: `{"event":"notification","uuid":"...","value":"<hex>"}`.
-  After every request the server takes each subscribed characteristic's
-  eligible notifications from the responder and pushes them in order.
-- `disconnected`: `{"event":"disconnected","peripheral":"<uuid>","reason":"peer_disconnect"}`,
-  after a scripted peer disconnect is observed.
-- `error`: only `busy`.
+- `error`: only `busy`, as the first and only line of a refused connection.
 
 Responder errors map to wire codes:
 
@@ -302,12 +342,16 @@ Responder errors map to wire codes:
 | `NotConnected` | `not_connected` | |
 | `ServicesNotDiscovered` | `services_not_discovered` | |
 | `NotExposed(uuid)` | `not_exposed` | the UUID |
-| `NoPeripheralName` | `no_peripheral_name` | |
-| `MtuRequestFailed` | `mtu_request_failed` | |
 | `UnexpectedWrite`, `ScriptOutOfOrder` | `script_violation` | the error text |
-| `PeerDisconnectNotObserved` | `peer_disconnect_not_observed` | |
 
-Protocol-level codes are `bad_request`, `unknown_peripheral` and `busy`.
+Protocol-level codes are `bad_request` (unknown op, missing or malformed
+argument, invalid line), `unknown_peripheral` (`detail` is the requested id)
+and `busy`.
+
+Not supported in this version: a scripted peer disconnect (and with it the
+`await_disconnect` operation and a `disconnected` event), a failing MTU
+request, and a scripted peripheral-name failure. A request for an op this
+table does not list answers `bad_request`.
 
 The protocol carries opaque UUIDs, hex bytes, a peripheral id and an MTU. It
 never names a manufacturer, model, characteristic meaning or launch mode.
@@ -340,10 +384,11 @@ reads:
   <gattName>: { hex: "<hex>" }     # or { utf8: "<text>" }
 notifications:
   - { gatt: <gattName>, afterFencedWrite: { gatt: <gattName>, ordinal: 1 }, hex: "<hex>" }
-  - { gatt: <gattName>, utf8: "<text>" }   # no afterFencedWrite: buffered at connect
+  - { gatt: <gattName>, utf8: "<text>" }   # no afterFencedWrite: buffered at session start
 ```
 
-The catalog served is the model's whole GATT map, so a client may subscribe to any declared characteristic; one with no scripted notification stays quiet. `arming` wires the
+The catalog served is the model's whole GATT map, with every UUID in
+uppercase canonical form; a malformed UUID fails startup. `arming` wires the
 responder's prep, launch and device-name writes to the engine's `CameraLink`,
 so the PTP/IP init gates apply to a handoff that arrives over the socket.
 
@@ -359,8 +404,9 @@ Limits:
 - Advert fields are literal scenario values. They are not generated from
   signature data or connection state.
 - The responder answers immediately. AP-launch timing is not modeled.
-- `CameraLink` never clears its prep flag, so once any pass has written the
-  prep characteristic, a later launch without it still arms the engine.
+- Within one connection the prep flag is never cleared, so after a prep write
+  every later launch on that connection arms the engine. A new connection
+  starts from the standalone link state.
 - One client per service.
 
 ---
