@@ -33,6 +33,23 @@ use BuildKit's GitHub Actions cache. Changed-file selection limits expensive
 jobs while preserving stable check names. A commit message containing `[ALL]`
 requests all applicable checks. The OCI workflow also supports manual dispatch.
 
+The documentation job rejects an em dash (U+2014) on any Markdown line that
+the change adds or edits. Code spans and fenced code blocks are exempt. The
+check compares the checkout with the pull request base or the push's previous
+commit, so older prose passes until someone edits it. A pull request compares
+against the first parent of GitHub's merge checkout. Locally,
+`scripts/lint-docs.sh` compares the working tree with its merge base on
+`origin/main` and accepts `--base <revision>` instead. Without either base it
+skips the em dash check and prints a notice. When that merge base is HEAD, as
+after a `main` push whose previous commit is unavailable, the check covers only
+uncommitted changes and prints a notice. `scripts/lint-docs.sh --self-test`
+exercises the check in a scratch repository.
+
+The check is not a full Markdown parser. It flags em dashes in indented code
+blocks, in fences inside blockquotes, and in fences indented four or more
+spaces inside list items. Move such a block to a fenced block at the left
+margin, or reword the line.
+
 Android setup uses the hosted runner's SDK at `ANDROID_HOME`. It invokes
 `cmdline-tools/latest/bin/sdkmanager` within that SDK because the command-line
 tools directory is not on the runner's `PATH`. The setup installs the pinned

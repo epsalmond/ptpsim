@@ -23,7 +23,18 @@ def commit(value):
     return value
 
 
-def selection(event_name, event):
+def merge_first_parent(checkout, head):
+    """Return the base side of a pull request merge checkout, if it is one."""
+    if checkout is None:
+        return None
+    try:
+        parents = git("rev-list", "--parents", "-n", "1", commit(checkout)).decode().split()[1:]
+    except subprocess.CalledProcessError:
+        return None
+    return parents[0] if len(parents) == 2 and parents[1] == head else None
+
+
+def selection(event_name, event, checkout=None):
     if event_name == "pull_request":
         base = commit(event["pull_request"]["base"]["sha"])
         head = commit(event["pull_request"]["head"]["sha"])
@@ -34,6 +45,15 @@ def selection(event_name, event):
         lint_range = f"{base}..{head}" if base != "0" * 40 else head
     else:
         raise ValueError(f"unsupported event: {event_name}")
+
+    # The docs lint checks em dashes only on lines added since docs_base. A
+    # pull request checkout is GitHub's merge of the head into the base
+    # branch, whose first parent can be newer than the event's base. When
+    # docs_base is empty, the lint falls back to the origin/main merge base;
+    # after a main push that is HEAD, so it compares nothing and says so.
+    merge_base_side = (
+        merge_first_parent(checkout, head) if event_name == "pull_request" else None
+    )
 
     selected = dict.fromkeys(JOBS, False)
     try:
@@ -51,7 +71,7 @@ def selection(event_name, event):
         selected = dict.fromkeys(JOBS, True)
         if event_name == "push":
             lint_range = head
-        return {**selected, "lint_range": lint_range}
+        return {**selected, "lint_range": lint_range, "docs_base": merge_base_side or ""}
 
     all_jobs = "[ALL]" in messages
     for path in paths:
@@ -92,12 +112,12 @@ def selection(event_name, event):
         selected = dict.fromkeys(JOBS, True)
     # Publication and seam jobs depend on workspace validation.
     selected["workspace"] |= selected["kotlin"] or selected["android"] or selected["python"]
-    return {**selected, "lint_range": lint_range}
+    return {**selected, "lint_range": lint_range, "docs_base": merge_base_side or base}
 
 
 def main():
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-    result = selection(os.environ["GITHUB_EVENT_NAME"], event)
+    result = selection(os.environ["GITHUB_EVENT_NAME"], event, os.environ.get("GITHUB_SHA"))
     lines = [f"{name}={str(value).lower() if isinstance(value, bool) else value}"
              for name, value in result.items()]
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:

@@ -29,6 +29,7 @@ jobs:
       manifest: ${{ steps.select.outputs.manifest }}
       ffi_surface: ${{ steps.select.outputs.ffi_surface }}
       lint_range: ${{ steps.select.outputs.lint_range }}
+      docs_base: ${{ steps.select.outputs.docs_base }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -79,8 +80,14 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - run: scripts/lint-docs.sh
+      - run: scripts/lint-docs.sh --self-test
+      # The em dash check reads only lines added since DOCS_BASE. Without one
+      # (unavailable history), the script falls back to origin/main.
+      - run: scripts/lint-docs.sh ${DOCS_BASE:+--base "$DOCS_BASE"}
+        env:
+          DOCS_BASE: ${{ needs.changes.outputs.docs_base }}
 
   workspace:
     needs: changes
