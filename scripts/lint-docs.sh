@@ -125,6 +125,13 @@ self_test() {
     printf '%s\n' "Escaped path $em_dash prose." >"$tab_name"
     run_case fail 'path with a control character' "$tab_name:1: em dash"
 
+    printf '%s\n' "Spaced quoted path $em_dash prose." >'sp "q.md'
+    run_case fail 'quoted path with a space' 'sp "q.md:1: em dash'
+
+    tab_space_name=$(printf 't\tab sp.md')
+    printf '%s\n' "Tab space path $em_dash prose." >"$tab_space_name"
+    run_case fail 'path with a tab plus a space' "$tab_space_name:1: em dash"
+
     if "$script" --base refs/heads/missing >/dev/null 2>&1; then
         echo "lint-docs self-test: unresolvable base passed unexpectedly" >&2
         st_failed=1
@@ -347,11 +354,10 @@ if [ -n "$base" ]; then
                 /^diff --git / { in_hunk = 0; path = ""; next }
                 !in_hunk && /^\+\+\+ / {
                     path = substr($0, 5)
-                    if (substr(path, 1, 1) == "\"") {
-                        path = unquote(path)
-                    } else {
-                        sub(/\t$/, "", path)
-                    }
+                    # Git ends a name containing a space with a tab, quoted
+                    # or not.
+                    sub(/\t$/, "", path)
+                    if (substr(path, 1, 1) == "\"") path = unquote(path)
                     if (substr(path, 1, 2) != "b/") { path = ""; next }
                     path = substr(path, 3)
                     files[++count] = path
