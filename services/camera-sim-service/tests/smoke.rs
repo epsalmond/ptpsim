@@ -3314,13 +3314,14 @@ properties:
 }
 
 /// Start a push-stream server whose manifest pauses the 16 ms stream for
-/// 48 ms every 80 ms. Drive the stream through the first pause and into the
-/// second pause, which starts at 160 ms and resumes at 208 ms, then hand the
-/// stream to `script` with the paused clock at 161 ms.
+/// `pause_ms` every 80 ms. Drive the stream through the first pause and into
+/// the second pause, which starts at 160 ms, then hand the stream to `script`
+/// with the paused clock at 161 ms. A `pause_ms` from 33 to 48 resumes the
+/// first pause on the 128 ms tick and the second on the 208 ms tick.
 ///
 /// Each read timeout below gives the runtime thread real time to observe one
 /// clock step before the next advance.
-async fn run_push_stream_timing_scenario<F>(script: F)
+async fn run_push_stream_timing_scenario<F>(pause_ms: u32, script: F)
 where
     F: FnOnce(&dyn Fn(u64), &mut TcpStream) + Send + 'static,
 {
@@ -3333,7 +3334,7 @@ where
     std::fs::write(liveview.path().join("frame.jpg"), jpeg).unwrap();
     let manifest_yaml = real_gfx_manifest()
         .replace("everyMs: 13000", "everyMs: 80")
-        .replace("durationMs: 1200", "durationMs: 48");
+        .replace("durationMs: 1200", &format!("durationMs: {pause_ms}"));
     let server = Server::bind(Config {
         instance_id: "push-timing".into(),
         profile: "fuji/gfx100ii/fw0230".into(),
@@ -3409,7 +3410,7 @@ where
 async fn service_applies_manifest_push_stream_timing() {
     use std::time::Duration;
 
-    run_push_stream_timing_scenario(|advance, stream| {
+    run_push_stream_timing_scenario(48, |advance, stream| {
         advance(31);
         assert_read_timeout(stream);
         advance(16);
@@ -3428,12 +3429,35 @@ async fn service_applies_manifest_push_stream_timing() {
 async fn service_resumes_push_stream_on_overdue_tick() {
     use std::time::Duration;
 
-    run_push_stream_timing_scenario(|advance, stream| {
+    run_push_stream_timing_scenario(48, |advance, stream| {
         advance(47);
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         assert_eq!(read_frame_lv(stream).frame_counter, 6);
+    })
+    .await;
+}
+
+/// A 40 ms pause from 160 ms elapses at 200 ms, between frame ticks. Emission
+/// resumes on the next frame tick, 208 ms, even when a wake at 200 ms delivers
+/// the overdue 176 ms tick.
+#[tokio::test(start_paused = true)]
+async fn service_resumes_off_grid_push_stream_pause_on_next_tick() {
+    use std::time::Duration;
+
+    run_push_stream_timing_scenario(40, |advance, stream| {
+        advance(39);
+        assert_read_timeout(stream);
+        advance(8);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(read_frame_lv(stream).frame_counter, 6);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        assert_read_timeout(stream);
     })
     .await;
 }

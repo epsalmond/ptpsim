@@ -1673,9 +1673,14 @@ async fn stream_liveview(
         .and_then(|timing| timing.periodic_pause)
         .map(|pause| {
             let period_ms = u64::from(pause.every_ms.get()).div_ceil(interval_ms) * interval_ms;
+            // Pauses start on a frame tick, and emission resumes on the first
+            // tick at or after the pause has elapsed. Rounding the duration up
+            // to whole ticks puts every resume deadline on that tick.
+            let duration_ms =
+                u64::from(pause.duration_ms.get()).div_ceil(interval_ms) * interval_ms;
             (
                 Duration::from_millis(period_ms),
-                Duration::from_millis(u64::from(pause.duration_ms.get())),
+                Duration::from_millis(duration_ms),
             )
         });
     let mut pause_window = None;
