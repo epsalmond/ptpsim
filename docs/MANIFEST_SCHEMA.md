@@ -936,15 +936,17 @@ for a cataloged operation:
   block. The operation MUST declare `objectSize`.
 - `property.descriptorList`: answer a zero-parameter request with the
   `propertyDescriptorList` block's snapshot for the current numeric value of
-  its `selector` property. Each `snapshots` key is a selector value. Each
+  its `selector` property. The selector must name a declared scalar numeric
+  property. Each `snapshots` key is a selector value. Each
   value is an ordered list of complete standard `DevicePropDesc` records
   encoded as hex. The selector record must occur once and report the key as
   its current value. A reply is a little-endian `u32` record count followed by
   the ordered records. A little-endian `u32` byte length precedes each record
   and includes the length field itself. Default and current values may differ
   from the record's enum, and enum entries may repeat. The dispatcher serves
-  the complete reviewed snapshot with its captured values. A mode-scoped
-  operation sends only an acknowledgment before mode detection.
+  the complete reviewed snapshot with its captured values. Before mode
+  detection, a mode-scoped operation acknowledges a zero-parameter request
+  without data. A request with parameters returns `0x201D`.
 
 An unknown handler string fails validation. An `objectSize` or
 `propertyDescriptorList` block requires its corresponding handler. A cataloged
