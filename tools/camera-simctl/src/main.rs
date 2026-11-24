@@ -3,12 +3,20 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "camera-simctl", about = "Control a ptpsim instance")]
+#[command(
+    name = "camera-simctl",
+    about = "Control a ptpsim instance",
+    after_help = "Exit status: 0 for a 2xx response, 1 when the request cannot be \
+                  sent or the response cannot be read, 2 for invalid arguments, and \
+                  3 when the control server returns a non-2xx status. The response \
+                  body is printed in every case where one is received."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -140,18 +148,56 @@ enum FaultCmd {
     },
 }
 
-fn main() -> Result<()> {
+/// Exit status when the control server answers with a non-2xx status. Clap
+/// uses 2 for usage errors and a returned error exits 1.
+const EXIT_HTTP_STATUS: u8 = 3;
+
+fn main() -> Result<ExitCode> {
     let request = request_for(Cli::parse().cmd);
-    println!(
-        "{}",
-        http(
-            &request.control,
-            request.method,
-            &request.path,
-            request.body.as_deref()
-        )?
-    );
-    Ok(())
+    let response = parse_response(&http(
+        &request.control,
+        request.method,
+        &request.path,
+        request.body.as_deref(),
+    )?)?;
+    println!("{}", response.body);
+    let code = exit_code_for(response.status);
+    if code != 0 {
+        eprintln!(
+            "camera-simctl: control server returned HTTP {}",
+            response.status
+        );
+    }
+    Ok(ExitCode::from(code))
+}
+
+fn exit_code_for(status: u16) -> u8 {
+    if (200..300).contains(&status) {
+        0
+    } else {
+        EXIT_HTTP_STATUS
+    }
+}
+
+struct Response {
+    status: u16,
+    body: String,
+}
+
+fn parse_response(raw: &str) -> Result<Response> {
+    let (head, body) = raw
+        .split_once("\r\n\r\n")
+        .context("control response has no header terminator")?;
+    let status_line = head.lines().next().unwrap_or("");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .with_context(|| format!("control response has invalid status line {status_line:?}"))?;
+    Ok(Response {
+        status,
+        body: body.to_string(),
+    })
 }
 
 struct Request {
@@ -275,7 +321,7 @@ fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> Result<Stri
     s.write_all(render_request(method, path, body).as_bytes())?;
     let mut out = String::new();
     s.read_to_string(&mut out)?;
-    Ok(out.rsplit("\r\n\r\n").next().unwrap_or("").to_string())
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -403,6 +449,50 @@ mod tests {
 
         let next = request(&["camera-simctl", "observations", "--after", "17"]);
         assert_eq!(next.path, "/observations?after=17");
+    }
+
+    #[test]
+    fn non_success_status_fails_and_keeps_the_body() {
+        let ok =
+            parse_response("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}").unwrap();
+        assert_eq!((ok.status, ok.body.as_str()), (200, r#"{"ok":true}"#));
+        assert_eq!(exit_code_for(ok.status), 0);
+
+        for (raw, status) in [
+            (
+                "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\n{\"error\":\"bad\"}",
+                400,
+            ),
+            ("HTTP/1.1 404 Not Found\r\n\r\n", 404),
+            (
+                "HTTP/1.1 500 Internal Server Error\r\n\r\n{\"error\":\"x\"}",
+                500,
+            ),
+        ] {
+            let response = parse_response(raw).unwrap();
+            assert_eq!(response.status, status);
+            assert_eq!(exit_code_for(response.status), EXIT_HTTP_STATUS, "{raw}");
+        }
+        assert_eq!(
+            parse_response("HTTP/1.1 400 Bad Request\r\n\r\n{\"error\":\"bad\"}")
+                .unwrap()
+                .body,
+            r#"{"error":"bad"}"#
+        );
+        assert_ne!(EXIT_HTTP_STATUS, 2, "2 is clap's usage-error status");
+    }
+
+    #[test]
+    fn response_body_starts_after_the_first_blank_line() {
+        let response = parse_response("HTTP/1.1 200 OK\r\n\r\nline\r\n\r\nmore").unwrap();
+        assert_eq!(response.body, "line\r\n\r\nmore");
+    }
+
+    #[test]
+    fn malformed_response_is_an_error() {
+        for raw in ["", "garbage", "HTTP/1.1 abc\r\n\r\n", "HTTP/1.1 200 OK"] {
+            assert!(parse_response(raw).is_err(), "{raw:?}");
+        }
     }
 
     #[test]

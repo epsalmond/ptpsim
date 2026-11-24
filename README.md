@@ -67,7 +67,9 @@ with a cursor, shutdown, and occurrence-scoped command-channel fault injection
 (list, add, delete, clear) for testing failure handling. It also reads and
 patches the simulated camera state, lists and runs manifest-backed actions,
 advances a property to its next enumerated value, and reads canonical
-observation records with a cursor.
+observation records with a cursor. It prints the response body and exits 3
+when the control server returns a non-2xx status (`--help` lists every exit
+status).
 
 ```sh
 cargo run -p camera-simctl -- health
