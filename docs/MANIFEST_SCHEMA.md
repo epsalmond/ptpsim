@@ -2376,9 +2376,10 @@ applies its own defaults. The block is meaningful only on a plan that leaves a
 network for the consumer to join, such as a plan that launches the camera's
 access point and reads its credentials. Pairing, wake, and reconnect plans
 should not carry it. The loader does not enforce this on BLE plans, because
-the schema has no generic marker for a plan that returns a network. A USB establishment plan (§11.29) cannot carry the
-block; that is a load error. `EstablishmentBlock` itself rejects unknown keys,
-so a misspelled `wifiHandoff` fails at load instead of being ignored.
+the schema has no generic marker for a plan that returns a network. A USB
+establishment plan (§11.29) cannot carry the block; that is a load error.
+`EstablishmentBlock` itself rejects unknown keys, so a misspelled
+`wifiHandoff` fails at load instead of being ignored.
 
 **Fresh launch.** A fresh launch is a handoff in which the consumer walked this
 plan's `steps` and the walk completed. A handoff that joins with credentials
@@ -2395,16 +2396,17 @@ as a single attempt.
   launched before the radio is beaconing.
 - `join.associationTimeoutMs` starts when the join request resolves, and
   restarts with each attempt's new join request. It is an upper bound. A
-  consumer may apply a shorter bound of its own in a recovery path, for
-  example after the previous recovery failed because the phone joined the
-  wrong network. That shorter value is consumer policy and is not carried in
-  the manifest.
+  consumer may apply a shorter bound of its own in a later handoff that
+  follows a wrong-network failure (a handoff whose phone joined a different
+  network). That shorter value is consumer policy and is not carried in the
+  manifest.
 - `sessionOpen.settleMs` starts when association is confirmed in the first
   attempt. It covers the PTP/IP responder starting after the network is up.
 - `sessionOpen.retryDelayMs` starts when the previous session open fails.
-- `retryDelayMs` starts when the retry checks below complete, including the
-  network check made after the failure. It is not applied when no retry will
-  happen, for example when the checks fail or the handoff has already ended.
+- `retryDelayMs` starts when the retry checks below pass, including the
+  network check made after the failure. It is applied only when a retry will
+  happen, so it is skipped when a check fails or the handoff has already
+  ended.
 
 **One handoff, step by step.**
 
@@ -2437,11 +2439,11 @@ all of these hold:
 - The handoff has not been cancelled or replaced by a newer connection
   attempt.
 
-When every check passes, the consumer waits `retryDelayMs` and runs steps 2
-to 6 again. It does not reapply
-either settle. The association bound and the session-open count start fresh
-for each attempt. No time limit spans attempts; the attempt counts and the
-per-step bounds bound the total.
+When every check passes, the consumer waits `retryDelayMs`. After the wait it
+checks again that the handoff has not been cancelled or replaced, then runs
+steps 2 to 6 again. It does not reapply either settle. The association bound
+and the session-open count start fresh for each attempt. No time limit spans
+attempts; the attempt counts and the per-step bounds bound the total.
 
 **Consumer policy kept out of the manifest.** Values that depend on the
 phone's operating system rather than the camera stay in the consumer: how long
