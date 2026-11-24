@@ -398,6 +398,12 @@ overlay changes only the listed properties. It preserves the current phase, sess
 state, active mode, and gate progress. The same overlay shape is available at runtime
 through `PATCH /state`.
 
+The overlay's `states` field enters or leaves a manifest-declared simulator state
+(`MANIFEST_SCHEMA.md` §11.32), such as the GFX100 II's empty memory card slot 1. A
+state changes only the simulator's responses to the operations the manifest lists for
+it. States are not part of the FFI surface, and the executor reports their failures
+the same way as any other PTP failure.
+
 `POST /control/advance-property` accepts a property code such as
 `{"code":"0x500D"}`. It advances the current value by one position in the loaded
 manifest descriptor enumeration and wraps the final value to the first. Existing

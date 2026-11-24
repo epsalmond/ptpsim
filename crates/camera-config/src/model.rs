@@ -72,6 +72,12 @@ pub struct CameraManifest {
     /// executable steps; the gate is simulator oracle metadata.
     #[serde(default)]
     pub sequence_gates: BTreeMap<String, SequenceGate>,
+    /// Named physical conditions of the body, such as an empty memory card
+    /// slot. While the control surface marks a state active, the simulator
+    /// answers the operations it lists with the declared response. Simulator
+    /// data only: consumers do not receive it through the FFI.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub states: BTreeMap<String, SimulatorState>,
     /// The camera-signalled private media queue that consumers pull over a
     /// declared connection.
     #[serde(default)]
@@ -208,6 +214,36 @@ pub struct ProvenancedPropertyValueProfile {
 pub struct SequenceGate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
+}
+
+/// One evidence-backed physical condition the simulator can be placed in
+/// (`states:` in the manifest). The loader requires a non-empty summary,
+/// response list, and evidence list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SimulatorState {
+    /// What was observed, and what the state does not model.
+    #[serde(default)]
+    pub summary: String,
+    /// Responses that replace normal handling while the state is active.
+    #[serde(default)]
+    pub responses: Vec<StateResponse>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// While its state is active, `operation` answers `response` in the given
+/// scope. Empty `connections` or `modes` mean all; `modes` matches the
+/// detected mode and its descendants, and never applies before detection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StateResponse {
+    pub operation: HexCode,
+    pub response: HexCode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

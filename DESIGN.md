@@ -985,6 +985,8 @@ camera-simctl state get --control 127.0.0.1:8080
 camera-simctl state patch --control 127.0.0.1:8080 \
   --overlay '{"props":{"0x500d":125000}}'
 camera-simctl state patch --control 127.0.0.1:8080 --overlay-file overlay.json
+camera-simctl state patch --control 127.0.0.1:8080 \
+  --overlay '{"states":{"memoryCardSlot1Empty":true}}'
 camera-simctl advance-property 0x500D --control 127.0.0.1:8080
 camera-simctl actions list --control 127.0.0.1:8080
 # The simulator applies only responder bindings. With the GFX100 II manifest,
@@ -1060,6 +1062,25 @@ The same overlay shape is accepted by the local control API as JSON:
 curl -X PATCH http://127.0.0.1:8080/state \
   -H 'Content-Type: application/json' \
   -d '{"props":{"0xd02a":2000}}'
+```
+
+An overlay can also enter or leave a manifest-declared simulator state
+(`docs/MANIFEST_SCHEMA.md` §11.32). The `states` field maps a state name to
+`true` or `false`. A state is a physical condition with evidence, such as an
+empty memory card slot, and it changes only the responses the manifest lists
+for it. It survives session close, reconnection, and transport loss until an
+overlay leaves it. An undeclared state name rejects the whole overlay and the
+error lists the declared names. `GET /state` and state callbacks list the
+active names under `states`. The fixture
+`packages/fixtures/startup-state/gfx100ii-memory-card-slot1-empty.yaml` starts
+a GFX100 II with memory card slot 1 empty:
+
+```yaml
+schema: ptpsim-startup-state/v1
+profile: fuji/gfx100ii
+connection: app
+states:
+  memoryCardSlot1Empty: true
 ```
 
 State observation stays push-first. `--state-callback <http-url>` POSTs an

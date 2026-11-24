@@ -76,11 +76,11 @@ pub use model::{
     RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
     ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
     SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SessionContract,
-    SessionOwnership, SetPropValue, ShutterRecipe, SocketAvailability, SocketBinding,
-    SocketBindingDescriptor, SocketBindings, SocketRole, Step, StepParam, StepRetry,
-    StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
-    TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
-    WorkflowPhase,
+    SessionOwnership, SetPropValue, ShutterRecipe, SimulatorState, SocketAvailability,
+    SocketBinding, SocketBindingDescriptor, SocketBindings, SocketRole, StateResponse, Step,
+    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
+    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
+    WireFraming, Workflow, WorkflowPhase,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -301,6 +301,9 @@ impl CameraManifest {
         for (id, gate) in &self.sequence_gates {
             check(&gate.evidence, &format!("sequenceGate {id}"), &mut lints);
         }
+        for (name, state) in &self.states {
+            check(&state.evidence, &format!("state {name}"), &mut lints);
+        }
         for (id, sentinel) in &self.sentinels {
             check(&sentinel.evidence, &format!("sentinel {id}"), &mut lints);
             if parse_hex_bytes(&sentinel.bytes).is_none() {
@@ -462,6 +465,10 @@ impl CameraManifest {
         for (code, operation) in &self.operations {
             require_valid_operation_handler(self, operation, code)?;
         }
+        for (name, state) in &self.states {
+            require_valid_simulator_state(self, state, name)?;
+        }
+        require_disjoint_state_responses(self)?;
         for (code, property) in &self.properties {
             require_valid_property(self, property, code)?;
         }
@@ -643,6 +650,178 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+/// A simulator state must say what it models, answer at least one cataloged
+/// operation with a non-OK response, and cite evidence (MANIFEST_SCHEMA §11.32).
+fn require_valid_simulator_state(
+    manifest: &CameraManifest,
+    state: &model::SimulatorState,
+    name: &str,
+) -> Result<(), ManifestError> {
+    let path = format!("states.{name}");
+    let contract = |detail: String| Err(ManifestError::Contract(detail));
+    if state.summary.trim().is_empty() {
+        return contract(format!("{path} summary must not be empty"));
+    }
+    if state.responses.is_empty() {
+        return contract(format!("{path} responses must not be empty"));
+    }
+    if state.evidence.is_empty() {
+        return contract(format!("{path} evidence must not be empty"));
+    }
+    for (index, response) in state.responses.iter().enumerate() {
+        let path = format!("{path}.responses[{index}]");
+        let Some(operation) = parse_hex_code(&response.operation) else {
+            return contract(format!(
+                "{path} operation '{}' is not a hex operation code",
+                response.operation
+            ));
+        };
+        let Some(code) = parse_hex_code(&response.response) else {
+            return contract(format!(
+                "{path} response '{}' is not a hex response code",
+                response.response
+            ));
+        };
+        if !ptp_core::codes::resp::is_response_code(code) {
+            return contract(format!(
+                "{path} response '{}' is not a PTP response code",
+                response.response
+            ));
+        }
+        if code == ptp_core::codes::resp::OK {
+            return contract(format!("{path} response must not be 0x2001 (OK)"));
+        }
+        if manifest.operation(operation).is_none() {
+            return contract(format!(
+                "{path} operation '{}' is not declared under operations",
+                response.operation
+            ));
+        }
+        for connection in &response.connections {
+            if !manifest.connections.contains_key(connection) {
+                return contract(format!(
+                    "{path} connection '{connection}' is not a declared connection"
+                ));
+            }
+        }
+        for mode in &response.modes {
+            if !manifest
+                .modes
+                .keys()
+                .any(|declared| query::mode_matches(std::slice::from_ref(mode), declared))
+            {
+                return contract(format!("{path} mode '{mode}' matches no declared mode"));
+            }
+        }
+        if !state_response_reachable(manifest, response, operation) {
+            return contract(format!(
+                "{path} operation '{}' is unavailable on every connection and mode in its scope",
+                response.operation
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// No two state responses may answer the same operation in overlapping
+/// scopes, within one state or across states, so at most one active state can
+/// answer any request (MANIFEST_SCHEMA §11.32).
+fn require_disjoint_state_responses(manifest: &CameraManifest) -> Result<(), ManifestError> {
+    let entries: Vec<(String, &model::StateResponse, Option<u16>)> = manifest
+        .states
+        .iter()
+        .flat_map(|(name, state)| {
+            state
+                .responses
+                .iter()
+                .enumerate()
+                .map(move |(index, response)| {
+                    (
+                        format!("states.{name}.responses[{index}]"),
+                        response,
+                        parse_hex_code(&response.operation),
+                    )
+                })
+        })
+        .collect();
+    for (later, (path, response, operation)) in entries.iter().enumerate() {
+        for (earlier_path, earlier, earlier_operation) in &entries[..later] {
+            if operation == earlier_operation
+                && scopes_overlap(&response.connections, &earlier.connections, |a, b| a == b)
+                && scopes_overlap(&response.modes, &earlier.modes, modes_nest)
+            {
+                return Err(ManifestError::Contract(format!(
+                    "{path} overlaps {earlier_path} for operation '{}'",
+                    response.operation
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Two scope lists overlap when either is empty (it covers everything) or
+/// some pair of entries is related.
+fn scopes_overlap(a: &[String], b: &[String], related: impl Fn(&str, &str) -> bool) -> bool {
+    a.is_empty() || b.is_empty() || a.iter().any(|x| b.iter().any(|y| related(x, y)))
+}
+
+/// Mode paths share territory when they are equal or one is an ancestor of
+/// the other at a `/` boundary.
+fn modes_nest(a: &str, b: &str) -> bool {
+    a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
+}
+
+/// Whether the engine's dispatch rule ([`CameraManifest::dispatch_availability`])
+/// lets the operation through on at least one declared connection and mode
+/// the response covers. A `requires`
+/// predicate is runtime state, so `Blocked` still counts as reachable. A
+/// response without `modes` also applies before mode detection.
+fn state_response_reachable(
+    manifest: &CameraManifest,
+    response: &model::StateResponse,
+    operation: u16,
+) -> bool {
+    // A manifest that declares no connections still runs on the engine's
+    // bound connection, so fall back to the operation's own list (or any).
+    let catalog_connections = manifest
+        .operation(operation)
+        .map(|op| op.connections.clone())
+        .unwrap_or_default();
+    let connections: Vec<&str> = if !response.connections.is_empty() {
+        response.connections.iter().map(String::as_str).collect()
+    } else if !manifest.connections.is_empty() {
+        manifest.connections.keys().map(String::as_str).collect()
+    } else if !catalog_connections.is_empty() {
+        catalog_connections.iter().map(String::as_str).collect()
+    } else {
+        vec![""]
+    };
+    let no_observed_values = PropView::new();
+    let dispatchable = |availability: Availability| {
+        matches!(
+            availability,
+            Availability::Available | Availability::Blocked
+        )
+    };
+    let available = |connection: &str, mode: Option<&str>| {
+        dispatchable(manifest.dispatch_availability(
+            connection,
+            mode,
+            operation,
+            &no_observed_values,
+        ))
+    };
+    connections.iter().any(|connection| {
+        manifest
+            .modes
+            .keys()
+            .filter(|mode| query::mode_matches(&response.modes, mode))
+            .any(|mode| available(connection, Some(mode)))
+            || (response.modes.is_empty() && available(connection, None))
+    })
 }
 
 fn is_scalar_numeric_property(property: &model::Property) -> bool {

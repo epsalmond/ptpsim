@@ -216,6 +216,10 @@ Memory note expanding on this: `feedback-eager-schema-cleanup-preproduction`.
   `camera-config-generate apply`. The archived standalone mapper is historical
   provenance only. Memory:
   `feedback-data-via-generator-not-agent-authoring`.
+  Regenerate `fuji/gfx100ii/gfx100ii.consolidated.yaml` only with
+  `scripts/regenerate-gfx100ii-consolidated.sh`. It replays the reviewed
+  chain that the drift test checks and reproduces the file byte for byte;
+  `--check` fails when the committed file has drifted.
 
   do NOT belong in ptpsim source.** Private analyses stay in their owning
   systems and must not be referenced by private path. Promote only the
