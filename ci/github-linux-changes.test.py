@@ -68,6 +68,24 @@ class SelectionTests(unittest.TestCase):
         self.add("docs/reference.md")
         self.assert_jobs(self.select(), "docs")
 
+    def test_docs_lint_script_change_runs_docs(self):
+        self.add("scripts/lint-docs.sh")
+        self.assert_jobs(self.select(), "docs")
+
+    def test_docs_base_is_pr_base_or_push_before(self):
+        head = self.add("docs/reference.md")
+        self.assertEqual(self.select()["docs_base"], self.base)
+        result = CHANGES.selection("push", {"before": self.base, "after": head})
+        self.assertEqual(result["docs_base"], self.base)
+
+    def test_docs_base_is_empty_without_history(self):
+        head = self.add("docs/reference.md")
+        self.assertEqual(self.select(self.pr(base="1" * 40))["docs_base"], "")
+        for before in ("0" * 40, "1" * 40):
+            with self.subTest(before=before):
+                result = CHANGES.selection("push", {"before": before, "after": head})
+                self.assertEqual(result["docs_base"], "")
+
     def test_ffi_change_runs_workspace_seams_and_release_build_selection(self):
         self.add("crates/camera-protocol-ffi/src/lib.rs")
         self.assert_jobs(self.select(), "workspace", "kotlin", "android", "python",
@@ -188,7 +206,8 @@ class SelectionTests(unittest.TestCase):
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(values["workspace"], "false")
         self.assertEqual(values["docs"], "true")
-        self.assertEqual(len(values), len(CHANGES.JOBS) + 1)
+        self.assertEqual(values["docs_base"], self.base)
+        self.assertEqual(len(values), len(CHANGES.JOBS) + 2)
 
     def test_invalid_sha_and_event_rejected(self):
         event = self.pr(head="HEAD; touch injected")

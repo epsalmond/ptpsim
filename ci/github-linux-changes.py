@@ -51,7 +51,7 @@ def selection(event_name, event):
         selected = dict.fromkeys(JOBS, True)
         if event_name == "push":
             lint_range = head
-        return {**selected, "lint_range": lint_range}
+        return {**selected, "lint_range": lint_range, "docs_base": ""}
 
     all_jobs = "[ALL]" in messages
     for path in paths:
@@ -92,7 +92,9 @@ def selection(event_name, event):
         selected = dict.fromkeys(JOBS, True)
     # Publication and seam jobs depend on workspace validation.
     selected["workspace"] |= selected["kotlin"] or selected["android"] or selected["python"]
-    return {**selected, "lint_range": lint_range}
+    # The docs lint checks em dashes only on lines added since this commit. A
+    # pull request checkout is GitHub's merge of the head into this base.
+    return {**selected, "lint_range": lint_range, "docs_base": base}
 
 
 def main():
