@@ -67,16 +67,22 @@ cause of the pauses remain unknown.
 
 ## Common response codes
 
-| Code | Meaning |
-|---|---|
-| `0x2001` | OK |
-| `0x2002` | Session already open |
-| `0x2003` | Transaction cancelled |
-| `0x2005` | Operation not supported |
-| `0x2009` | Invalid transaction ID |
-| `0x200A` | Device property or access rejected in observed sessions |
-| `0x2019` | Device busy in observed sessions |
-| `0x201F` | Transaction cancelled |
+The examples come from the May 23, 2026 GFX100 II wired app-aux command session
+on TCP 15740. Session context identifies firmware 2.30.
+
+| Code | Standard PTP name | Observed use |
+|---|---|---|
+| `0x2001` | OK | |
+| `0x2002` | General Error | Some parameterless `0x9018` live-view polls returned a zero-payload data container followed by this response. [Wire evidence](https://github.com/epsalmond/ptpsim/issues/541#issuecomment-7123267399) |
+| `0x2003` | Session Not Open | |
+| `0x2004` | Invalid Transaction ID | |
+| `0x2005` | Operation Not Supported | |
+| `0x2009` | Invalid Object Handle | |
+| `0x200A` | Device Prop Not Supported | `GetDevicePropDesc` requests for `0xD1B8` and `0xD1BF` returned a zero-payload data container followed by this response. [Wire evidence](https://github.com/epsalmond/ptpsim/issues/566) |
+| `0x200F` | Access Denied | |
+| `0x2019` | Device Busy | |
+| `0x201E` | Session Already Open | |
+| `0x201F` | Transaction Cancelled | |
 
 ## Properties supported by checked evidence
 
