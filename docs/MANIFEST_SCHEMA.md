@@ -2351,9 +2351,10 @@ the evidence ids behind the state. Unknown fields are load errors.
   vendor `0xA000` to `0xAFFF`), or is `0x2001` (OK);
 - a `connections` entry names no declared connection, or a `modes` entry
   matches no declared mode (exactly or as an ancestor at a `/` boundary);
-- the operation's catalog entry (`kind`, `connections`, `modes`) makes it
-  unavailable on every declared connection and mode in the response's scope,
-  so the response could never be reached. A `requires` predicate depends on
+- the simulator's dispatcher would refuse the operation on every declared
+  connection and mode in the response's scope, so the response could never be
+  reached. The check uses the same availability rule as the dispatcher
+  (`CameraManifest::dispatch_availability`). A `requires` predicate depends on
   runtime values and is not part of this check;
 - two response entries for the same operation have overlapping scopes, in one
   state or in two different states.
@@ -2379,6 +2380,21 @@ fault, the missing-session refusal (`0x2003`), the silence of an unsatisfied
 catalog availability. An operation outside its declared connections or modes
 therefore still answers `0x2005`. A state response outranks a `silentRefusal`
 disposition and every handler.
+
+**Dispatch availability.** The dispatcher never applies the catalog to
+`GetDeviceInfo`, `OpenSession`, or `CloseSession`. The property-access
+operations (`GetDevicePropDesc`, `GetDevicePropValue`, `SetDevicePropValue`)
+ignore the catalog's mode axis, because properties are scoped one by one. A
+state response on a property-access operation can still name `modes`; it then
+applies only while one of those modes is detected.
+
+**Session operations.** A state may answer a session operation. The engine
+lets `OpenSession` and `GetDeviceInfo` through without an open session, so a
+state response on either applies before any session exists. For
+`OpenSession` it also comes before the refusal of a second open (`0x201E`).
+`CloseSession` without a session still answers `0x2003` first. A state that
+answers `OpenSession` with an error leaves the simulator unable to open a
+session until the control surface leaves the state.
 
 **Side effects.** A state response is a failure reply with no parameters and no
 data phase. The operation runs no handler, applies no `effects`, queues no
