@@ -1972,6 +1972,15 @@ pub struct LiveViewDelivery {
     /// Optional simulator scheduling policy for pushed frames.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simulation_timing: Option<LiveViewSimulationTiming>,
+    /// Built-in simulator frames used when no custom directory is supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation_fixture: Option<LiveViewSimulationFixture>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LiveViewSimulationFixture {
+    Jpeg1024x768,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -2316,7 +2316,7 @@ connections:
   wireless-tether:
     kind: ptpip-direct
     initShape: pcssKnock
-    liveViewDelivery: { kind: poll, pollOp: "0x9018" }
+    liveViewDelivery: { kind: poll, pollOp: "0x9018", simulationFixture: jpeg1024x768 }
     commandFraming: compressed
     bindings: { command: 15740 }
 operations:
@@ -2358,13 +2358,99 @@ properties: {}
 
     write_frame(&mut s, &op(0x9018, 2, vec![]));
     let frame = read_data_reply(&mut s);
-    assert_eq!(&frame[..], lv_jpeg, "poll op returns the fixture JPEG");
+    assert_eq!(
+        &frame[..],
+        lv_jpeg,
+        "the custom directory overrides the built-in set"
+    );
 
     drop(s);
     rt.block_on(async {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     });
+}
+
+#[tokio::test]
+async fn service_serves_builtin_wireless_tether_liveview() {
+    use ptp_core::codes::{op as code, resp};
+
+    // The wireless-tether recipe requires the object queue to be clear.
+    let card = tempfile::tempdir().unwrap();
+    let server = Server::bind(Config {
+        instance_id: "pcss-liveview".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "wireless-tether".into(),
+        manifest_yaml: real_gfx_manifest(),
+        media_root: card.path().to_path_buf(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: None,
+        event_bind: None,
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+        state_callback: None,
+    })
+    .await
+    .unwrap();
+    let command_addr = server.command_addr();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(server.run(shutdown_rx));
+
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = connect_pcss(command_addr, "sim");
+        cmd.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        open_session(&mut cmd);
+        write_frame(&mut cmd, &op(code::INITIATE_OPEN_CAPTURE, 2, vec![0, 0]));
+        assert_eq!(read_response_code(&mut cmd), resp::GENERAL_ERROR);
+        write_frame(&mut cmd, &op(code::TERMINATE_OPEN_CAPTURE, 3, vec![1]));
+        read_ok(&mut cmd);
+        set_prop(&mut cmd, 4, 0xd1bc, &2u16.to_le_bytes());
+        set_prop(&mut cmd, 5, 0xd1bc, &1u16.to_le_bytes());
+        write_frame(&mut cmd, &op(code::INITIATE_OPEN_CAPTURE, 6, vec![0, 0]));
+        assert_eq!(read_response_code(&mut cmd), resp::GENERAL_ERROR);
+
+        set_prop(&mut cmd, 7, 0xd1bc, &2u16.to_le_bytes());
+        write_frame(&mut cmd, &op(code::INITIATE_OPEN_CAPTURE, 8, vec![]));
+        assert_eq!(read_response_code(&mut cmd), resp::GENERAL_ERROR);
+        write_frame(&mut cmd, &op(code::INITIATE_OPEN_CAPTURE, 9, vec![0, 0]));
+        read_ok(&mut cmd);
+
+        let mut frames = Vec::new();
+        for tid in 10..=12 {
+            write_frame(&mut cmd, &op(0x9018, tid, vec![]));
+            let data_frame = read_frame(&mut cmd);
+            assert_eq!(&data_frame[4..8], &[2, 0, 0x18, 0x90]);
+            let PtpIpPacket::Data(frame) = fuji_framing::decode(&data_frame).unwrap() else {
+                panic!("expected compact poll data");
+            };
+            assert_eq!(frame.transaction_id, tid);
+            let jpeg = frame.payload;
+            assert!(jpeg.starts_with(&[0xff, 0xd8]) && jpeg.ends_with(&[0xff, 0xd9]));
+            // SOF0, segment length, precision, height 768, width 1024.
+            let baseline_dimensions = [0xff, 0xc0, 0, 0x11, 8, 3, 0, 4, 0];
+            assert!(jpeg
+                .windows(baseline_dimensions.len())
+                .any(|part| part == baseline_dimensions));
+            let PtpIpPacket::OperationResponse(response) =
+                fuji_framing::decode(&read_frame(&mut cmd)).unwrap()
+            else {
+                panic!("expected poll response");
+            };
+            assert_eq!((response.code, response.transaction_id), (resp::OK, tid));
+            frames.push(jpeg);
+        }
+        assert_ne!(frames[0], frames[1]);
+        assert_eq!(frames[0], frames[2]);
+    })
+    .await
+    .unwrap();
+
+    shutdown_tx.send(()).unwrap();
+    handle.await.unwrap();
 }
 
 #[test]

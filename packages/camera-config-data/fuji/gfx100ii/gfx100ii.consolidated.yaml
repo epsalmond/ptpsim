@@ -18339,6 +18339,7 @@ connections:
     liveViewDelivery:
       kind: poll
       pollOp: '0x9018'
+      simulationFixture: jpeg1024x768
     shutterRecipe: wirelessTether3Beat
     session: null
     events: null

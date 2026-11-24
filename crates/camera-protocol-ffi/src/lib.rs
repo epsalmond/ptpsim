@@ -975,6 +975,20 @@ pub struct FfiLiveViewDelivery {
     pub kind: LiveViewDeliveryKind,
     pub poll_op: Option<u16>,
     pub simulation_timing: Option<FfiLiveViewSimulationTiming>,
+    pub simulation_fixture: Option<FfiLiveViewSimulationFixture>,
+}
+
+#[derive(uniffi::Enum)]
+pub enum FfiLiveViewSimulationFixture {
+    Jpeg1024x768,
+}
+
+impl From<cc::model::LiveViewSimulationFixture> for FfiLiveViewSimulationFixture {
+    fn from(fixture: cc::model::LiveViewSimulationFixture) -> Self {
+        match fixture {
+            cc::model::LiveViewSimulationFixture::Jpeg1024x768 => Self::Jpeg1024x768,
+        }
+    }
 }
 
 #[derive(uniffi::Record)]
@@ -1020,6 +1034,7 @@ impl From<&cc::LiveViewDelivery> for FfiLiveViewDelivery {
                         duration_ms: pause.duration_ms.get(),
                     }),
                 }),
+            simulation_fixture: d.simulation_fixture.map(Into::into),
         }
     }
 }
