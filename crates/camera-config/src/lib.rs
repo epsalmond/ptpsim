@@ -473,6 +473,7 @@ impl CameraManifest {
             require_valid_connection_transitions(self, connection, connection_id)?;
             require_valid_pcss_rendezvous(connection, connection_id)?;
             require_valid_object_transfer(self, connection, connection_id)?;
+            require_valid_postview(self, connection, connection_id)?;
             require_valid_control_surfaces(self, connection, connection_id)?;
             require_valid_platforms(connection, connection_id)?;
             require_valid_discovery(connection, connection_id)?;
@@ -626,6 +627,80 @@ impl CameraManifest {
     }
 }
 
+fn is_scalar_numeric_property(property: &model::Property) -> bool {
+    property.kind != PropertyKind::CatalogOnly
+        && matches!(
+            property.ptype.as_deref(),
+            Some("i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64")
+        )
+}
+
+fn require_valid_postview(
+    manifest: &CameraManifest,
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(spec) = &connection.postview else {
+        return Ok(());
+    };
+    let invalid = |detail: &str| {
+        ManifestError::Contract(format!("connections.{connection_id}.postview {detail}"))
+    };
+    if !connection.modes.contains(&spec.mode) {
+        return Err(invalid("requires a declared connection mode"));
+    }
+    if !parse_hex_code(&spec.selector.property)
+        .and_then(|code| manifest.property(code))
+        .is_some_and(is_scalar_numeric_property)
+    {
+        return Err(invalid(
+            "requires a declared scalar numeric selector property",
+        ));
+    }
+    let capture = parse_hex_code(&spec.capture_op);
+    let read = parse_hex_code(&spec.read_op);
+    if capture == read
+        || ![capture, read].into_iter().all(|code| {
+            code.and_then(|code| manifest.operation(code))
+                .is_some_and(|op| {
+                    op.kind == OperationKind::Executable
+                        && (op.connections.is_empty()
+                            || op.connections.iter().any(|id| id == connection_id))
+                        && query::mode_matches(&op.modes, &spec.mode)
+                })
+        })
+    {
+        return Err(invalid(
+            "requires distinct executable capture and read operations",
+        ));
+    }
+    if !read.is_some_and(|code| {
+        (0x9000..=0x9fff).contains(&code)
+            && manifest
+                .operation(code)
+                .is_some_and(|operation| operation.handler.is_none() && operation.params.is_empty())
+    }) {
+        return Err(invalid(
+            "requires a parameterless vendor read without another handler",
+        ));
+    }
+    if spec.pending.delay_ms >= spec.ready.delay_ms {
+        return Err(invalid("requires pending.delayMs to precede ready.delayMs"));
+    }
+    for event in [&spec.pending, &spec.ready, &spec.complete] {
+        let code =
+            parse_hex_code(&event.code).ok_or_else(|| invalid("has an invalid event code"))?;
+        if !manifest
+            .events
+            .keys()
+            .any(|candidate| parse_hex_code(candidate) == Some(code))
+        {
+            return Err(invalid("requires each event to be declared"));
+        }
+    }
+    Ok(())
+}
+
 fn require_valid_operation_handler(
     manifest: &CameraManifest,
     operation: &Operation,
@@ -692,13 +767,10 @@ fn require_valid_property_descriptor_list(
     }
     let selector =
         parse_hex_code(&list.selector).ok_or_else(|| invalid("has an invalid selector"))?;
-    if !manifest.property(selector).is_some_and(|property| {
-        property.kind != PropertyKind::CatalogOnly
-            && matches!(
-                property.ptype.as_deref(),
-                Some("i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64")
-            )
-    }) {
+    if !manifest
+        .property(selector)
+        .is_some_and(is_scalar_numeric_property)
+    {
         return Err(ManifestError::Contract(format!(
             "operation '{code}' propertyDescriptorList selector '{}' must reference a declared numeric property",
             list.selector
@@ -3037,6 +3109,123 @@ operations:
 
         let properties = "properties: { '0xD2FF': { name: selector, type: u8, initialValue: 0 } }";
         CameraManifest::from_yaml(&format!("{operation}{properties}")).unwrap();
+    }
+
+    #[test]
+    fn postview_contract_rejects_invalid_declarations() {
+        let valid = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    kind: ptpip
+    modes: [stills]
+    postview:
+      mode: stills
+      selector: { property: "0xd001", value: 1 }
+      captureOp: "0x100e"
+      captureParams: [0, 0]
+      readOp: "0x9022"
+      fixture: jpeg640x480
+      eventTransactionId: 1
+      pending: { code: "0xc004", delayMs: 1, counterOffset: 1 }
+      ready: { code: "0xc001", delayMs: 2, counterOffset: 1 }
+      complete: { code: "0x400d", delayMs: 1, counterOffset: 1 }
+modes:
+  stills: {}
+  video: {}
+properties:
+  "0xd001": { name: selector, type: u16 }
+operations:
+  "0x100e": { name: Capture }
+  "0x1009": { name: GetObject }
+  "0x9022": { name: ReadPreview }
+events:
+  "0xc004": { name: Pending }
+  "0xc001": { name: Ready }
+  "0x400d": { name: Complete }
+"#;
+        CameraManifest::from_yaml(valid).unwrap();
+
+        let selector_error = "requires a declared scalar numeric selector property";
+        let operation_error = "requires distinct executable capture and read operations";
+        let read_error = "requires a parameterless vendor read without another handler";
+        let cases = [
+            (
+                "mode: stills",
+                "mode: video",
+                "requires a declared connection mode",
+            ),
+            (
+                r#"property: "0xd001""#,
+                r#"property: "0xd002""#,
+                selector_error,
+            ),
+            ("type: u16", "type: str", selector_error),
+            (
+                r#"readOp: "0x9022""#,
+                r#"readOp: "0x100e""#,
+                operation_error,
+            ),
+            (
+                r#"readOp: "0x9022""#,
+                r#"readOp: "0x9023""#,
+                operation_error,
+            ),
+            (
+                "name: ReadPreview",
+                "name: ReadPreview, kind: advertisedOnly",
+                operation_error,
+            ),
+            (
+                "name: ReadPreview",
+                "name: ReadPreview, connections: [tether]",
+                operation_error,
+            ),
+            (
+                "name: ReadPreview",
+                "name: ReadPreview, modes: [video]",
+                operation_error,
+            ),
+            (r#"readOp: "0x9022""#, r#"readOp: "0x1009""#, read_error),
+            (
+                "name: ReadPreview",
+                "name: ReadPreview, params: [0]",
+                read_error,
+            ),
+            (
+                "name: ReadPreview",
+                r#"name: ReadPreview, handler: property.step, property: "0xd001""#,
+                read_error,
+            ),
+            (
+                "delayMs: 2",
+                "delayMs: 1",
+                "requires pending.delayMs to precede ready.delayMs",
+            ),
+            (
+                r#"code: "0x400d""#,
+                r#"code: "not-hex""#,
+                "has an invalid event code",
+            ),
+            (
+                r#"code: "0x400d""#,
+                r#"code: "0x400e""#,
+                "requires each event to be declared",
+            ),
+        ];
+        for (original, replacement, detail) in cases {
+            let invalid = valid.replacen(original, replacement, 1);
+            let err = CameraManifest::from_yaml(&invalid).expect_err(replacement);
+            let ManifestError::Contract(message) = err else {
+                panic!("{replacement}: expected a contract error, got {err}");
+            };
+            assert_eq!(
+                message,
+                format!("connections.app.postview {detail}"),
+                "{replacement}"
+            );
+        }
     }
 
     #[test]

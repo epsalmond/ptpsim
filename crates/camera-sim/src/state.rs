@@ -99,7 +99,9 @@ pub struct CameraState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedEvent {
     pub code: u16,
+    pub transaction_id: u32,
     pub params: Vec<u32>,
+    pub delay_ms: u32,
 }
 
 /// A scheduled op-effect: the value `set_prop` settles to, and how many more
@@ -186,14 +188,20 @@ impl CameraState {
 
     /// Queue a completion/lifecycle event (an operation `emits` code). FIFO.
     pub fn push_event(&mut self, code: u16) {
-        self.events.push_back(QueuedEvent {
-            code,
-            params: Vec::new(),
-        });
+        self.push_event_with_params(code, Vec::new());
     }
 
     pub fn push_event_with_params(&mut self, code: u16, params: Vec<u32>) {
-        self.events.push_back(QueuedEvent { code, params });
+        self.queue_event(QueuedEvent {
+            code,
+            transaction_id: 0,
+            params,
+            delay_ms: 0,
+        });
+    }
+
+    pub(crate) fn queue_event(&mut self, event: QueuedEvent) {
+        self.events.push_back(event);
     }
 
     /// Remove the first queued copy of `code` and return whether it was there.

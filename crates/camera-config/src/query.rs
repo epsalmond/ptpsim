@@ -38,7 +38,7 @@ pub enum Availability {
 
 /// Does an operation's `modes` set (path-prefix matched) cover `mode_path`?
 /// Empty = valid in all modes. A `Shooting` entry covers `Shooting/Stills`.
-fn mode_matches(op_modes: &[String], mode_path: &str) -> bool {
+pub(crate) fn mode_matches(op_modes: &[String], mode_path: &str) -> bool {
     op_modes.is_empty()
         || op_modes
             .iter()
