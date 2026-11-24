@@ -206,7 +206,9 @@ The record names the current connection instance and stream `liveView`.
 including a first-frame readiness check, so it continues across sampling steps.
 The record keeps the exact envelope bytes, the envelope frame counter, the
 JPEG length, SHA-256, and geometry, and the times of the first and last host
-reads of the packet on the bundle's `process-monotonic` clock. It never contains
+reads of the packet on the bundle's `process-monotonic` clock. Those times are
+whole milliseconds, so frames read less than 1 ms apart can share a value. It
+never contains
 JPEG bytes. The SHA-256 links it to the retained file listed in the step report.
 A frame whose artifact write fails gets no record. A failed observation append
 keeps the retained frame in the report and ends the step with `ioError`.

@@ -1911,7 +1911,9 @@ returned its final byte. Both name declared clocks, so the clock and its origin
 stay explicit. A clock that differs from the record clock requires a declared
 mapping, and `lastRead` cannot precede `firstRead` on the same clock. These
 times describe reads at the client. They combine camera delivery, transport,
-and client scheduling, and are not camera timestamps.
+and client scheduling, and are not camera timestamps. Their resolution is the
+named clock's unit; on a millisecond clock, frames read less than 1 ms apart can
+share a value.
 
 `envelope.framing` names the framing contract that parsed the packet.
 `envelope.declaredLength` is the whole packet length the envelope declares, and
