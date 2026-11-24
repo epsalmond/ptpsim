@@ -138,8 +138,8 @@ LIB=target/release/libcamera_protocol_ffi.a   # .so on Linux; .a is canonical on
 
 Swift emits `CameraProtocolFFI.swift` + `CameraProtocolFFIFFI.{h,modulemap}` (the
 PascalCase names come from `crates/camera-protocol-ffi/uniffi.toml`). Kotlin emits
-`dev/ptpsim/cameraprotocol/camera_protocol_ffi.kt` in package
-`dev.ptpsim.cameraprotocol`, also set in `uniffi.toml`. A consumer that wants
+`io/fujikage/ptpsim/cameraprotocol/camera_protocol_ffi.kt` in package
+`io.fujikage.ptpsim.cameraprotocol`, also set in `uniffi.toml`. A consumer that wants
 its own package passes a `--config` file with a `[bindings.kotlin]
 package_name` override to `generate`. Python emits
 `camera_protocol_ffi.py`. Optional formatters (`swiftformat`/`ktlint`/`ruff`) run
