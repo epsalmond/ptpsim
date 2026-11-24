@@ -33,6 +33,15 @@ use BuildKit's GitHub Actions cache. Changed-file selection limits expensive
 jobs while preserving stable check names. A commit message containing `[ALL]`
 requests all applicable checks. The OCI workflow also supports manual dispatch.
 
+The documentation job rejects an em dash (U+2014) on any Markdown line that
+the change adds or edits. Code spans and fenced code blocks are exempt. The
+check compares the checkout with the pull request base or the push's previous
+commit, so older prose passes until someone edits it. Locally,
+`scripts/lint-docs.sh` compares the working tree with its merge base on
+`origin/main` and accepts `--base <revision>` instead. Without either base it
+skips the em dash check and prints a notice. `scripts/lint-docs.sh --self-test`
+exercises the check in a scratch repository.
+
 Android setup uses the hosted runner's SDK at `ANDROID_HOME`. It invokes
 `cmdline-tools/latest/bin/sdkmanager` within that SDK because the command-line
 tools directory is not on the runner's `PATH`. The setup installs the pinned
