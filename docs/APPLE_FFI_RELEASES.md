@@ -72,25 +72,47 @@ consumers vendor these bindings, so a removed or changed item stops their code
 from compiling at the next update. Without this check, such a change passes
 ptpsim CI when no in-repo code uses the item.
 
-The snapshot comes from the metadata that UniFFI embeds in a host dev-profile
-staticlib. `ci/build-android.sh` generates the Kotlin bindings from the same
-kind of build, but `ci/build-xcframework.sh` generates the Swift bindings from
-the iOS device release build. The two builds export the same items only while
-the FFI crate is target-independent, so the FFI crate must not use a target- or
-profile-dependent `cfg` (`target_*`, `unix`, `windows`, `debug_assertions`,
-`panic`, and similar) anywhere in `src/`, and must not have a build script.
-`ci/ffi-surface.sh` runs `ffi-surface cfg-scan` before the comparison and fails
-when it finds one; the scan ignores comments and string literals and rejects
-the predicate even in test code. It does not inspect dependencies, which export
-no UniFFI items today.
+The snapshot comes from the metadata that UniFFI embeds in a staticlib.
+`ci/build-android.sh` generates the Kotlin bindings from a host build, and
+`ci/build-xcframework.sh` generates the Swift bindings from the iOS device
+release build. The FFI surface must be the same for every target and build
+profile, and three comparisons check it:
+
+- The `ffi-surface` job compares a host dev build (`ci/ffi-surface.sh`) and an
+  `aarch64-apple-ios` release staticlib built on Linux
+  (`ci/ffi-surface.sh check --target aarch64-apple-ios`). A staticlib needs no
+  Apple linker or SDK.
+- `ci/build-xcframework.sh` compares the exact iOS device staticlib it
+  generates the Swift bindings from
+  (`ci/ffi-surface.sh check --library <staticlib>`), so a promotion fails when
+  the shipped surface differs from the committed one.
+
+A difference that only the iOS comparisons report comes from target- or
+profile-dependent code. Make the surface target-independent instead of
+updating the baseline, because `update` reads the host build.
+
+The host mode also runs `ffi-surface cfg-scan`, a source heuristic that names
+the likely cause with a file and line. It flags build-dependent names
+(`target_*`, `unix`, `windows`, `debug_assertions`, `panic`, and similar) in
+`#[cfg]`, `#![cfg]`, the predicate of `cfg_attr`, `cfg!` and `cfg_select!`,
+`#[path]` and `include!` that leave `src/`, and a build script. It ignores
+comments and literals. It does not see predicates forwarded through
+`macro_rules!` fragments, custom `--cfg` names set by cargo config or
+`RUSTFLAGS`, or macros from dependencies; the iOS comparisons cover those. A
+justified exception carries the comment
+`// ffi-surface: allow-build-cfg <reason>` on the flagged line or the line
+above it.
 
 The snapshot also records every `crates/camera-protocol-ffi/uniffi.toml`
 setting, including empty tables, and the `uniffi_bindgen` version from
 `Cargo.lock`. One snapshot covers Swift and Kotlin because both bindings derive
 their names from the Rust names by fixed case conversion. Records and enums
-that reach an object through their fields are marked `contains_object`,
-because the Swift generator drops `Equatable`, `Hashable`, and `Codable` from
-them.
+that reach an object are marked `contains_object`. The test is UniFFI's: an
+object reached through fields, containers, custom types, other records and
+enums, their methods and constructors, or callback interface methods. For such
+types the Swift generator keeps `Equatable` only if the type exports `Eq`,
+keeps `Hashable` only if it exports `Hash`, and drops `Codable` (when
+enabled); the Kotlin generator adds `Disposable`.
 
 Every difference fails the job. The report labels each difference so the
 author knows whether the pull request breaks consumers:
@@ -98,15 +120,16 @@ author knows whether the pull request breaks consumers:
 | Change | Label |
 | --- | --- |
 | Item removed or renamed | Breaking for consumers |
-| Function, constructor, or method signature changed (parameter names or types, return type, `async`, `throws`); a parameter that loses its default; any change to a method | Breaking for consumers |
+| Function, constructor, or method signature changed (parameter names or types, return type, `async`, `throws`); a parameter that loses its default; a parameter added to a method | Breaking for consumers |
 | Record field removed, reordered, its type changed, or its default removed; a field added without a default, or added before an existing field | Breaking for consumers |
-| Record or enum starts or stops reaching an object (`contains_object`), directly or through another type | Breaking for consumers: Swift `Equatable` and `Hashable` conformance changes |
+| Record or enum starts or stops reaching an object (`contains_object`) and loses a Swift conformance it does not export, or Kotlin `Disposable` | Breaking for consumers |
+| Record or enum starts reaching an object but exports `Eq` and `Hash` (and `Codable` generation is off) | Additive: Kotlin gains `Disposable` |
 | Enum case added, removed, reordered, or its fields changed (UniFFI generates exhaustive Swift and Kotlin enums even for `#[non_exhaustive]`) | Breaking for consumers |
 | Method added to a callback trait or callback interface | Breaking for consumers: foreign implementations must add it |
 | Object kind or enum shape changed | Breaking for consumers |
 | Binding setting or generator version added, removed, or changed | Breaking for consumers |
 | Method added to a Rust-implemented object | Breaking for implementers: consumer types that conform to the generated Swift protocol or Kotlin interface must add it |
-| Function or constructor default changed, a parameter gaining a default, or new trailing parameters that all have defaults; a record field default changed or added | Source-compatible behaviour change: existing Swift and Kotlin call sites compile, callers that omit the value get the new default, and code that refers to the function as a value may need updating |
+| Function or constructor default changed, a parameter gaining a default, or new trailing parameters that all have defaults; a method default changed or added on an existing parameter; a record field default changed or added | Source-compatible behaviour change: existing Swift and Kotlin call sites compile, callers that omit the value get the new default, and code that refers to a function as a value may need updating |
 | New top-level item, new constructor, or a record field with a default appended after the existing fields | Additive |
 
 Update the baseline in the same pull request as the change, so reviewers see
