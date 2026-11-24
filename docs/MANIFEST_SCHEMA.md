@@ -2306,3 +2306,23 @@ suppressed, never half. Both are exposed through `PropertyInfo.dispositions` and
 unknown value is a load error. A disposition whose `when` predicate fails to
 cross the FFI is dropped whole rather than surfaced with `when: null`, which
 would read as unconditional.
+
+### 11.30 Media reported-size sentinel (#356)
+
+`media.objectInfoSizeSentinel` is an optional unsigned integer. It names the
+value a body reports in the 32-bit `ObjectInfo.ObjectCompressedSize` field when
+the object is too large to fit, typically `0xffffffff`. A consumer that reads
+this value treats the reported size as unknown and takes the real size from
+another source, such as the transfer itself. It is not a transfer limit: the
+object can still be downloaded. The FFI exposes it as
+`ConfigStore.object_info_size_sentinel()`, which returns `None` when the body
+declares no sentinel.
+
+```yaml
+media:
+  objectInfoSizeSentinel: 0xffffffff
+```
+
+The former key `wirelessTransferCeiling` is retired. A manifest that still uses
+it no longer sets the sentinel; the key is kept as an unrecognized `media`
+entry.

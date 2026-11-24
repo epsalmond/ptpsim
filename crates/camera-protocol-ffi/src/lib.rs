@@ -4106,12 +4106,6 @@ impl ConfigStore {
             .as_ref()?
             .object_info_size_sentinel
     }
-
-    /// Deprecated compatibility alias for the former name. The value is a
-    /// reported-size sentinel, not a transfer prohibition.
-    pub fn wireless_transfer_ceiling(&self) -> Option<u64> {
-        self.object_info_size_sentinel()
-    }
 }
 
 fn flattened_establishment_params(
