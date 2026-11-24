@@ -59,6 +59,9 @@ pub struct BleScenario {
     mtu: u16,
     peripheral_name: Option<String>,
     factory: ResponderFactory,
+    /// The engine link the scenario's arming writes reach. Reset at the start
+    /// of every BLE connection.
+    link: Option<SharedLink>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +188,7 @@ impl BleScenario {
             mtu,
             peripheral_name,
             factory: Arc::new(factory),
+            link: None,
         }
     }
 
@@ -221,7 +225,18 @@ impl BleScenario {
         let gatt = model
             .ble
             .ok_or_else(|| scenario_error(format!("model '{}' has no BLE block", file.model)))?
-            .gatt;
+            .gatt
+            .into_iter()
+            .map(|(name, uuid)| {
+                // Client UUIDs are uppercased before lookup, so the catalog
+                // uses the same canonical form.
+                canonical_uuid(&uuid)
+                    .map(|uuid| (name.clone(), uuid))
+                    .ok_or_else(|| {
+                        scenario_error(format!("GATT name '{name}' has a malformed UUID '{uuid}'"))
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let resolve = |name: &str| {
             gatt.get(name).cloned().ok_or_else(|| {
                 scenario_error(format!(
@@ -306,6 +321,7 @@ impl BleScenario {
 
         let mtu = file.mtu;
         let served_name = file.peripheral_name.clone();
+        let session_link = link.clone();
         let factory = move || {
             let mut responder = BleResponder::new(catalog.iter().cloned()).with_mtu_cap(mtu);
             if let Some(name) = &served_name {
@@ -333,12 +349,9 @@ impl BleScenario {
             }
             responder
         };
-        Ok(BleScenario::new(
-            peripherals,
-            mtu,
-            file.peripheral_name,
-            factory,
-        ))
+        let mut scenario = BleScenario::new(peripherals, mtu, file.peripheral_name, factory);
+        scenario.link = Some(session_link);
+        Ok(scenario)
     }
 
     pub fn peripherals(&self) -> &[SimulatedPeripheral] {
@@ -377,8 +390,9 @@ fn canonical_uuid(text: &str) -> Option<String> {
     shaped.then(|| text.to_ascii_uppercase())
 }
 
+/// Pairs of hex digits only: no sign, prefix or separator.
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     (0..text.len())
@@ -403,9 +417,12 @@ struct Inner {
     busy: AtomicBool,
     released: Notify,
     /// The connected client's responder. Locked only for synchronous
-    /// responder calls, never across an await.
+    /// responder calls, never across an await. Lock order: `active`, then
+    /// `history`.
     active: Mutex<Option<BleResponder>>,
     history: Mutex<Vec<BleEvent>>,
+    /// Who holds the slot and since when, for the `busy` log line.
+    holder: Mutex<Option<(String, Instant)>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -423,9 +440,13 @@ struct ActiveClient {
 
 impl Drop for ActiveClient {
     fn drop(&mut self) {
-        if let Some(responder) = lock(&self.inner.active).take() {
-            lock(&self.inner.history).extend_from_slice(responder.log());
+        {
+            let mut active = lock(&self.inner.active);
+            if let Some(responder) = active.take() {
+                lock(&self.inner.history).extend_from_slice(responder.log());
+            }
         }
+        *lock(&self.inner.holder) = None;
         self.inner.busy.store(false, Ordering::SeqCst);
         self.inner.released.notify_waiters();
     }
@@ -456,12 +477,17 @@ impl From<BleError> for WireError {
             BleError::NotConnected => wire_error("not_connected", ""),
             BleError::ServicesNotDiscovered => wire_error("services_not_discovered", ""),
             BleError::NotExposed(uuid) => wire_error("not_exposed", uuid.clone()),
-            BleError::NoPeripheralName => wire_error("no_peripheral_name", ""),
-            BleError::MtuRequestFailed => wire_error("mtu_request_failed", ""),
             BleError::UnexpectedWrite { .. } | BleError::ScriptOutOfOrder { .. } => {
                 wire_error("script_violation", error.to_string())
             }
-            BleError::PeerDisconnectNotObserved => wire_error("peer_disconnect_not_observed", ""),
+            // The socket never calls the responder's MTU, peripheral-name or
+            // peer-disconnect methods, so these cannot occur. Named here so a
+            // new responder error is a compile error, not a silent mapping.
+            BleError::NoPeripheralName
+            | BleError::MtuRequestFailed
+            | BleError::PeerDisconnectNotObserved => {
+                wire_error("script_violation", error.to_string())
+            }
         }
     }
 }
@@ -486,6 +512,12 @@ fn bytes_arg(request: &Value, name: &str) -> Result<Vec<u8>, WireError> {
     decode_hex(text).ok_or_else(|| wire_error("bad_request", format!("'{name}' is not hex")))
 }
 
+/// What the request loop does after sending a request's messages.
+enum After {
+    Continue,
+    Close,
+}
+
 impl BleSocket {
     pub fn new(scenario: BleScenario) -> Self {
         BleSocket {
@@ -495,6 +527,7 @@ impl BleSocket {
                 released: Notify::new(),
                 active: Mutex::new(None),
                 history: Mutex::new(Vec::new()),
+                holder: Mutex::new(None),
             }),
         }
     }
@@ -504,16 +537,20 @@ impl BleSocket {
     }
 
     /// Every finished connection's responder log in order, then the connected
-    /// client's log so far.
+    /// client's log so far, as one consistent snapshot.
     pub fn log(&self) -> Vec<BleEvent> {
+        let active = lock(&self.inner.active);
         let mut log = lock(&self.inner.history).clone();
-        if let Some(responder) = lock(&self.inner.active).as_ref() {
+        if let Some(responder) = active.as_ref() {
             log.extend_from_slice(responder.log());
         }
         log
     }
 
-    async fn claim(&self) -> Option<ActiveClient> {
+    /// Take the single-client slot, waiting up to [`BUSY_GRACE`] for an
+    /// earlier connection to finish. A new session starts from the
+    /// standalone link state and an unspent responder script.
+    async fn claim(&self, peer: &str) -> Option<ActiveClient> {
         let deadline = Instant::now() + BUSY_GRACE;
         loop {
             let released = self.inner.released.notified();
@@ -525,7 +562,11 @@ impl BleSocket {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
+                if let Some(link) = &self.inner.scenario.link {
+                    link.reset();
+                }
                 *lock(&self.inner.active) = Some((self.inner.scenario.factory)());
+                *lock(&self.inner.holder) = Some((peer.to_string(), Instant::now()));
                 return Some(ActiveClient {
                     inner: self.inner.clone(),
                 });
@@ -536,21 +577,26 @@ impl BleSocket {
         }
     }
 
-    /// Serve one client connection until it closes.
-    pub async fn serve<S>(&self, stream: S) -> std::io::Result<()>
+    /// Serve one client connection until it closes. `peer` labels the
+    /// connection in the log.
+    pub async fn serve<S>(&self, stream: S, peer: &str) -> std::io::Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let (read, mut write) = tokio::io::split(stream);
         let mut reader = BufReader::new(read);
-        let hello = json!({"event": "hello", "protocol": PROTOCOL, "version": PROTOCOL_VERSION});
-        send(&mut write, &[hello]).await?;
-        let Some(_client) = self.claim().await else {
-            tracing::info!(target: "ble", "refused a concurrent client: busy");
+        let Some(_client) = self.claim(peer).await else {
+            let holder = lock(&self.inner.holder).clone();
+            let (holder_peer, held_ms) = holder.map_or((String::new(), 0), |(peer, since)| {
+                (peer, since.elapsed().as_millis())
+            });
+            tracing::warn!(target: "ble", %peer, holder = %holder_peer, held_ms, "refused a concurrent client: busy");
             send(&mut write, &[json!({"event": "error", "code": "busy"})]).await?;
             return write.shutdown().await;
         };
-        tracing::info!(target: "ble", "client connected; responder built from the scenario");
+        tracing::info!(target: "ble", %peer, "client connected; link reset, responder built from the scenario");
+        let hello = json!({"event": "hello", "protocol": PROTOCOL, "version": PROTOCOL_VERSION});
+        send(&mut write, &[hello]).await?;
 
         let mut connection = Connection::default();
         let mut line = Vec::new();
@@ -566,31 +612,37 @@ impl BleSocket {
             if line.len() > MAX_LINE_BYTES {
                 let error = wire_error("bad_request", "request line too long");
                 send(&mut write, &[failure(Value::Null, &error)]).await?;
+                write.shutdown().await?;
                 break;
             }
-            let messages = self.handle(&mut connection, &line);
+            let (messages, after) = self.handle(&mut connection, &line);
             send(&mut write, &messages).await?;
+            if let After::Close = after {
+                write.shutdown().await?;
+                break;
+            }
         }
-        tracing::info!(target: "ble", "client disconnected");
+        tracing::info!(target: "ble", %peer, "client disconnected");
         Ok(())
     }
 
     /// One request: its response, then the events it made eligible.
-    fn handle(&self, connection: &mut Connection, line: &[u8]) -> Vec<Value> {
+    fn handle(&self, connection: &mut Connection, line: &[u8]) -> (Vec<Value>, After) {
         let request: Value = match serde_json::from_slice(line) {
             Ok(request) => request,
             Err(error) => {
                 let error = wire_error("bad_request", format!("invalid JSON: {error}"));
-                return vec![failure(Value::Null, &error)];
+                return (vec![failure(Value::Null, &error)], After::Continue);
             }
         };
         let Some(id) = request.get("id").and_then(Value::as_u64) else {
-            let error = wire_error("bad_request", "missing or invalid id");
-            return vec![failure(Value::Null, &error)];
+            let error = wire_error("bad_request", "id must be a non-negative integer");
+            return (vec![failure(Value::Null, &error)], After::Continue);
         };
         let op = request.get("op").and_then(Value::as_str).unwrap_or("");
         let mut events = Vec::new();
-        let response = match self.dispatch(connection, op, &request, &mut events) {
+        let mut after = After::Continue;
+        let response = match self.dispatch(connection, op, &request, &mut events, &mut after) {
             Ok(mut result) => {
                 let logged = Value::Object(result.clone());
                 tracing::info!(target: "ble", id, op, request = %request, result = %logged, "ok");
@@ -606,7 +658,7 @@ impl BleSocket {
         let mut messages = vec![response];
         messages.extend(events);
         messages.extend(self.drain_notifications(connection));
-        messages
+        (messages, after)
     }
 
     fn with_responder<T>(
@@ -626,6 +678,7 @@ impl BleSocket {
         op: &str,
         request: &Value,
         events: &mut Vec<Value>,
+        after: &mut After,
     ) -> Result<Map<String, Value>, WireError> {
         let mut result = Map::new();
         match op {
@@ -656,6 +709,7 @@ impl BleSocket {
                         responder.connect();
                         Ok(())
                     })?;
+                    connection.subscribed.clear();
                     connection.peripheral = Some(id);
                 }
                 result.insert("mtu".into(), self.inner.scenario.mtu.into());
@@ -688,8 +742,21 @@ impl BleSocket {
                 let uuid = uuid_arg(request, "uuid")?;
                 let value = bytes_arg(request, "value")?;
                 let notify_uuid = uuid_arg(request, "notify_uuid")?;
+                let subscribed = &connection.subscribed;
                 self.with_responder(|responder| {
-                    responder.write_with_notification_fence(&uuid, &value, &notify_uuid)
+                    responder.write_with_notification_fence(&uuid, &value, &notify_uuid)?;
+                    // A GATT server sends notifications only while the client
+                    // has them enabled, so whatever this write released on an
+                    // unsubscribed characteristic is never delivered.
+                    let unsubscribed: Vec<String> = responder
+                        .characteristics()
+                        .filter(|candidate| !subscribed.iter().any(|s| s == candidate))
+                        .map(String::from)
+                        .collect();
+                    for candidate in &unsubscribed {
+                        responder.discard_released_notifications(candidate);
+                    }
+                    Ok(())
                 })?;
             }
             "subscribe" => {
@@ -699,46 +766,34 @@ impl BleSocket {
                     connection.subscribed.push(uuid);
                 }
             }
-            "await_disconnect" => {
-                self.with_responder(BleResponder::await_disconnect)?;
-                connection.subscribed.clear();
-                events.push(json!({
-                    "event": "disconnected",
-                    "peripheral": connection.peripheral.take(),
-                    "reason": "peer_disconnect",
-                }));
-            }
             "disconnect" => {
                 connection.subscribed.clear();
                 connection.peripheral = None;
+                *after = After::Close;
             }
             other => return Err(wire_error("bad_request", format!("unknown op '{other}'"))),
         }
         Ok(result)
     }
 
-    /// Every eligible notification on the subscribed characteristics. Passes
-    /// repeat until none yields, so an ordered script that alternates
-    /// characteristics drains in script order.
+    /// Every eligible notification on the subscribed characteristics: per
+    /// characteristic in queue order, across characteristics in subscription
+    /// order. The responder keeps one queue per characteristic, so it holds
+    /// no order across characteristics.
     fn drain_notifications(&self, connection: &Connection) -> Vec<Value> {
         let mut events = Vec::new();
         let mut active = lock(&self.inner.active);
         let Some(responder) = active.as_mut() else {
             return events;
         };
-        loop {
-            let before = events.len();
-            for uuid in &connection.subscribed {
-                while let Some(payload) = responder.take_notification(uuid) {
-                    let value = encode_hex(&payload);
-                    tracing::info!(target: "ble", uuid = %uuid, value = %value, "notification");
-                    events.push(json!({"event": "notification", "uuid": uuid, "value": value}));
-                }
-            }
-            if events.len() == before {
-                return events;
+        for uuid in &connection.subscribed {
+            while let Some(payload) = responder.take_notification(uuid) {
+                let value = encode_hex(&payload);
+                tracing::info!(target: "ble", uuid = %uuid, value = %value, "notification");
+                events.push(json!({"event": "notification", "uuid": uuid, "value": value}));
             }
         }
+        events
     }
 }
 

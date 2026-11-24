@@ -1687,9 +1687,20 @@ impl Server {
                         accepted = listener.accept() => {
                             if let Ok((stream, peer)) = accepted {
                                 tracing::info!(target: "ble", %peer, "accepted");
+                                // The slot is held for as long as the peer is
+                                // alive, however quiet: a client may hold its
+                                // BLE link idle for a whole session. Keepalive
+                                // turns a vanished peer into a read error.
+                                let keepalive = socket2::TcpKeepalive::new()
+                                    .with_time(Duration::from_secs(30))
+                                    .with_interval(Duration::from_secs(10));
+                                if let Err(error) = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive) {
+                                    tracing::warn!(target: "ble", %peer, %error, "TCP keepalive not set");
+                                }
                                 let socket = socket.clone();
+                                let peer = peer.to_string();
                                 conns.spawn(async move {
-                                    if let Err(error) = socket.serve(stream).await {
+                                    if let Err(error) = socket.serve(stream, &peer).await {
                                         tracing::info!(target: "ble", %error, "connection ended");
                                     }
                                 });

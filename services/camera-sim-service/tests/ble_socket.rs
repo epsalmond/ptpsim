@@ -102,7 +102,7 @@ async fn golden_transcript_replays_through_the_connection_handler() {
     let (client, server) = tokio::io::duplex(64 * 1024);
     let serve = tokio::spawn({
         let socket = socket.clone();
-        async move { socket.serve(server).await }
+        async move { socket.serve(server, "golden").await }
     });
     let (read, mut write) = tokio::io::split(client);
     let mut lines = BufReader::new(read).lines();
