@@ -1031,7 +1031,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Mutex;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use async_trait::async_trait;
     use camera_protocol_ffi::{PtpSessionOpenResult, PtpTransportError, SocketRole};
@@ -1040,19 +1039,20 @@ mod tests {
     };
     use serde_json::json;
 
-    struct TestDir(PathBuf);
+    /// A directory that belongs to one test. `tempfile` creates it exclusively
+    /// under a random name and removes it when the guard drops.
+    struct TestDir(tempfile::TempDir);
     impl TestDir {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "capability-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
+            Self(
+                tempfile::Builder::new()
+                    .prefix("capability-")
+                    .tempdir()
+                    .unwrap(),
+            )
+        }
+        fn path(&self) -> &Path {
+            self.0.path()
         }
         fn options(&self) -> CapabilityOptions {
             CapabilityOptions {
@@ -1062,13 +1062,8 @@ mod tests {
                 scope_mode: None,
                 allow_unknown_model: false,
                 allow_control: false,
-                output_dir: self.0.join("output"),
+                output_dir: self.path().join("output"),
             }
-        }
-    }
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
@@ -1351,7 +1346,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
         assert!(transport.sent.lock().unwrap().is_empty());
-        assert!(!dir.0.join("output").exists());
+        assert!(!dir.path().join("output").exists());
     }
 
     #[tokio::test]
@@ -1440,10 +1435,10 @@ mod tests {
         assert_eq!(report.rows[1].descriptor_type, Some(6));
         assert!(report.rows.iter().all(|row| row.status == "unverified"));
         assert_eq!(
-            std::fs::read(dir.0.join("output/row-0001-value.bin")).unwrap(),
+            std::fs::read(dir.path().join("output/row-0001-value.bin")).unwrap(),
             [0, 0, 0, 0]
         );
-        assert!(dir.0.join("output/row-0003-descriptor.bin").is_file());
+        assert!(dir.path().join("output/row-0003-descriptor.bin").is_file());
         assert!(report.rows[6].detail.contains("Missing dynamic handle"));
         let sent = transport.sent.lock().unwrap();
         assert_eq!(sent.len(), 9);
@@ -1510,7 +1505,7 @@ mod tests {
         assert!(report.error.is_some());
         assert_eq!(report.rows[0].outcome, "transportError");
         assert_eq!(transport.sent.lock().unwrap().len(), 2);
-        assert!(dir.0.join("output/capability-report.json").is_file());
+        assert!(dir.path().join("output/capability-report.json").is_file());
         assert!(report.rows[1].detail.contains("earlier transport"));
     }
 

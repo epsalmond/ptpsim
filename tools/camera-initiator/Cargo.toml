@@ -30,3 +30,4 @@ nusb = { version = "0.2.9", features = ["tokio"] }
 camera-config = { path = "../../crates/camera-config" }
 camera-sim = { path = "../../crates/camera-sim" }
 camera-sim-service = { path = "../../services/camera-sim-service" }
+tempfile = "3"

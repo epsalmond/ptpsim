@@ -2309,7 +2309,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::{self, Write};
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use camera_config::{
         direct_epistemic, no_loss, validate_bundles, BundleHeader, CameraContext, CaptureClock,
@@ -2399,7 +2398,7 @@ connections:
         steps: [{ sendOp: "0x9001" }]
 "#;
         let store = ConfigStore::from_bundle(manifest.into(), None).unwrap();
-        let (result, root, observation, calls) = run_fake_session_with_store(store,
+        let (result, root, _observation, calls, _temp) = run_fake_session_with_store(store,
             r#"schema: camera-initiator-session/v1
 steps:
   - { id: entry, kind: entry, to: source }
@@ -2413,8 +2412,6 @@ steps:
         assert_eq!(report["steps"][1]["frames"]["termination"], "ioError");
         assert_eq!(report["steps"][1]["transactionIds"], json!([]));
         assert_eq!(calls.lock().unwrap().last().unwrap(), "cleanup");
-        std::fs::remove_dir_all(root).unwrap();
-        std::fs::remove_file(observation).unwrap();
     }
 
     #[test]
@@ -3039,16 +3036,36 @@ connections:
         .unwrap()
     }
 
-    async fn run_fake_session(
-        yaml: &str,
-        response_codes: &[(u16, u16)],
-        data_replies: &[(u16, &[u8])],
-    ) -> (
+    /// Result, output directory, observation path, recorded calls, and the
+    /// guard that owns both paths.
+    type FakeSessionRun = (
         Result<SessionReport>,
         PathBuf,
         PathBuf,
         Arc<Mutex<Vec<String>>>,
-    ) {
+        tempfile::TempDir,
+    );
+
+    /// Creates a private parent directory for one session run. `tempfile`
+    /// creates it exclusively under a random name, so parallel tests never
+    /// share paths. The returned output path does not exist yet because
+    /// `run_session_plan` creates its output directory exclusively. Dropping
+    /// the guard removes the parent and everything in it.
+    fn session_temp(label: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let parent = tempfile::Builder::new()
+            .prefix(&format!("camera-initiator-{label}-"))
+            .tempdir()
+            .unwrap();
+        let root = parent.path().join("output");
+        let observation = parent.path().join("observation.jsonl");
+        (parent, root, observation)
+    }
+
+    async fn run_fake_session(
+        yaml: &str,
+        response_codes: &[(u16, u16)],
+        data_replies: &[(u16, &[u8])],
+    ) -> FakeSessionRun {
         run_fake_session_with_store(fake_switch_store(), yaml, response_codes, data_replies).await
     }
 
@@ -3057,12 +3074,7 @@ connections:
         yaml: &str,
         response_codes: &[(u16, u16)],
         data_replies: &[(u16, &[u8])],
-    ) -> (
-        Result<SessionReport>,
-        PathBuf,
-        PathBuf,
-        Arc<Mutex<Vec<String>>>,
-    ) {
+    ) -> FakeSessionRun {
         run_fake_session_with_idle(
             store,
             yaml,
@@ -3079,23 +3091,10 @@ connections:
         response_codes: &[(u16, u16)],
         data_replies: &[(u16, &[u8])],
         idle_end: IdleEnd,
-    ) -> (
-        Result<SessionReport>,
-        PathBuf,
-        PathBuf,
-        Arc<Mutex<Vec<String>>>,
-    ) {
+    ) -> FakeSessionRun {
         let plan = SessionPlan::from_yaml(yaml).unwrap();
         let prepared = prepare_session_plan(plan, &store, "app").unwrap();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "camera-initiator-fake-session-{}-{nonce}",
-            std::process::id()
-        ));
-        let observation = root.with_extension("jsonl");
+        let (temp, root, observation) = session_temp("fake-session");
         let trace = Arc::new(TraceWriter::with_observations(
             crate::TraceFormat::Jsonl,
             Box::new(TestTraceBuffer::default()),
@@ -3135,7 +3134,7 @@ connections:
             },
         )
         .await;
-        (result, root, observation, calls)
+        (result, root, observation, calls, temp)
     }
 
     #[tokio::test]
@@ -3143,7 +3142,7 @@ connections:
         let source_label = [
             7, b'o', 0, b'p', 0, b'a', 0, b'q', 0, b'u', 0, b'e', 0, 0, 0,
         ];
-        let (result, root, observation, calls) = run_fake_session_with_store(
+        let (result, root, _observation, calls, _temp) = run_fake_session_with_store(
             fake_string_switch_store(),
             r#"
 schema: camera-initiator-session/v1
@@ -3180,14 +3179,11 @@ steps:
             .unwrap()
             .iter()
             .any(|call| call.starts_with("op:9002:") || call.starts_with("op:9101:")));
-
-        let _ = std::fs::remove_dir_all(root);
-        let _ = std::fs::remove_file(observation);
     }
 
     #[tokio::test]
     async fn failed_action_reports_payloads_and_rejected_cleanup_separately() {
-        let (result, root, observation, _) = run_fake_session(
+        let (result, root, _observation, _, _temp) = run_fake_session(
             r#"
 schema: camera-initiator-session/v1
 steps:
@@ -3236,14 +3232,11 @@ steps:
             .iter()
             .all(|transaction_id| !cleanup_ids.contains(transaction_id)));
         assert_eq!(cleanup["payloads"].as_array().unwrap().len(), 1);
-
-        let _ = std::fs::remove_dir_all(root);
-        let _ = std::fs::remove_file(observation);
     }
 
     #[tokio::test]
     async fn replacement_session_clears_live_view_cleanup_state() {
-        let (result, root, observation, calls) = run_fake_session(
+        let (result, _root, _observation, calls, _temp) = run_fake_session(
             r#"
 schema: camera-initiator-session/v1
 steps:
@@ -3262,9 +3255,6 @@ steps:
         assert!(!calls[replacement..]
             .iter()
             .any(|call| call.starts_with("op:9103:")));
-
-        let _ = std::fs::remove_dir_all(root);
-        let _ = std::fs::remove_file(observation);
     }
 
     #[test]
@@ -3351,23 +3341,19 @@ steps:
         }
     }
 
-    fn publication_root(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+    /// A directory that belongs to one publication test. `tempfile` creates it
+    /// exclusively under a random name and removes it when the guard drops.
+    fn publication_root(label: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("camera-initiator-report-{label}-"))
+            .tempdir()
             .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "camera-initiator-report-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        root
     }
 
     #[tokio::test]
     async fn report_publication_copies_complete_bytes_when_links_are_unsupported() {
         let root = publication_root("fallback");
-        let path = root.join("session-report.json");
+        let path = root.path().join("session-report.json");
         let calls = Arc::new(Mutex::new(Vec::new()));
         let file_system = FaultInjectingReportFileSystem {
             rename_error: Some(io::ErrorKind::Unsupported),
@@ -3388,14 +3374,12 @@ steps:
             calls.lock().unwrap().as_slice(),
             ["rename", "link", "copy", "sync-parent", "remove"]
         );
-
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn report_publication_refuses_an_existing_destination() {
         let root = publication_root("existing");
-        let path = root.join("session-report.json");
+        let path = root.path().join("session-report.json");
         publish_report(&path, &publication_report("first"))
             .await
             .unwrap();
@@ -3405,14 +3389,12 @@ steps:
             .await
             .expect_err("existing report must not be overwritten");
         assert_eq!(std::fs::read(&path).unwrap(), first);
-
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn report_publication_does_not_overwrite_a_racing_creator() {
         let root = publication_root("race");
-        let path = root.join("session-report.json");
+        let path = root.path().join("session-report.json");
         let competing = b"competing report\n".to_vec();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let file_system = FaultInjectingReportFileSystem {
@@ -3431,14 +3413,12 @@ steps:
         assert_eq!(calls.lock().unwrap().as_slice(), ["rename", "link", "copy"]);
         let staging = PathBuf::from(format!("{}.partial-{}", path.display(), std::process::id()));
         assert!(staging.is_file());
-
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn published_report_ignores_staging_cleanup_failure() {
         let root = publication_root("cleanup");
-        let path = root.join("session-report.json");
+        let path = root.path().join("session-report.json");
         let calls = Arc::new(Mutex::new(Vec::new()));
         let file_system = FaultInjectingReportFileSystem {
             rename_error: Some(io::ErrorKind::Unsupported),
@@ -3458,14 +3438,12 @@ steps:
             calls.lock().unwrap().as_slice(),
             ["rename", "link", "sync-parent", "remove"]
         );
-
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
     async fn parent_sync_failure_preserves_the_final_and_staging_files() {
         let root = publication_root("sync-failure");
-        let path = root.join("session-report.json");
+        let path = root.path().join("session-report.json");
         let calls = Arc::new(Mutex::new(Vec::new()));
         let file_system = FaultInjectingReportFileSystem {
             rename_error: Some(io::ErrorKind::Unsupported),
@@ -3487,8 +3465,6 @@ steps:
             calls.lock().unwrap().as_slice(),
             ["rename", "link", "sync-parent"]
         );
-
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
@@ -3503,15 +3479,7 @@ steps:
         )
         .unwrap();
         let prepared = prepare_session_plan(plan, &store, "app").unwrap();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "camera-initiator-fake-switch-{}-{nonce}",
-            std::process::id()
-        ));
-        let observation = root.with_extension("jsonl");
+        let (_temp, root, observation) = session_temp("fake-switch");
         let trace_buffer = TestTraceBuffer::default();
         let trace = Arc::new(TraceWriter::with_observations(
             crate::TraceFormat::Jsonl,
@@ -3615,9 +3583,6 @@ steps:
             .iter()
             .filter(|transaction| transaction.session != replacement_session)
             .all(|transaction| transaction.common.context.mode == "source"));
-
-        let _ = std::fs::remove_dir_all(root);
-        let _ = std::fs::remove_file(observation);
     }
     #[test]
     fn hold_preflight_requires_a_session_and_finite_bounded_duration() {
@@ -3639,7 +3604,7 @@ steps:
 
     #[tokio::test]
     async fn holds_keep_session_transaction_identity_without_automatic_traffic() {
-        let (result, root, observation, calls) = run_fake_session(
+        let (result, _root, observation, calls, _temp) = run_fake_session(
             "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: immediate, kind: hold, durationMs: 0 }\n  - { id: idle, kind: hold, durationMs: 1 }\n  - { id: second, kind: action, action: shutter }",
             &[], &[],
         ).await;
@@ -3675,8 +3640,6 @@ steps:
         drop(calls);
         let bundle = std::fs::read_to_string(&observation).unwrap();
         validate_bundles(&[&bundle]).unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-        std::fs::remove_file(observation).unwrap();
     }
 
     #[tokio::test]
@@ -3687,7 +3650,7 @@ steps:
             IdleEnd::PeerReset,
             IdleEnd::HostDeadlinePartialFrame,
         ] {
-            let (result, root, observation, calls) = run_fake_session_with_idle(
+            let (result, root, _observation, calls, _temp) = run_fake_session_with_idle(
                 fake_switch_store(),
                 "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: wait, kind: hold, durationMs: 0 }\n  - { id: later, kind: action, action: shutter }",
                 &[], &[], idle_end,
@@ -3709,8 +3672,6 @@ steps:
             );
             assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
             drop(calls);
-            std::fs::remove_dir_all(root).unwrap();
-            std::fs::remove_file(observation).unwrap();
         }
     }
     #[tokio::test]
@@ -3748,14 +3709,7 @@ connections:
             let prepared =
                 prepare_session_plan(SessionPlan::from_yaml(&yaml).unwrap(), &store, "app")
                     .unwrap();
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root = std::env::temp_dir().join(format!(
-                "camera-initiator-interrupt-{}-{nonce}",
-                std::process::id()
-            ));
+            let (_temp, root, _) = session_temp("interrupt");
             let trace = Arc::new(TraceWriter::new(
                 crate::TraceFormat::Jsonl,
                 Box::new(io::sink()),
@@ -3824,7 +3778,6 @@ connections:
             assert!(calls[calls.len() - 2].starts_with("invalidate:"));
             assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
             drop(calls);
-            std::fs::remove_dir_all(root).unwrap();
         }
     }
 }
