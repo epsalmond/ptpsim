@@ -959,6 +959,14 @@ camera-simctl fault add --control 127.0.0.1:8080 \
   --spec '{"operation":"0x1015","params":[53],"skip":2,"count":1,"mutation":{"type":"failResponse","response":"0x2019"}}'
 camera-simctl fault delete 3 --control 127.0.0.1:8080
 camera-simctl fault clear --control 127.0.0.1:8080
+camera-simctl state get --control 127.0.0.1:8080
+camera-simctl state patch --control 127.0.0.1:8080 \
+  --overlay '{"props":{"0x500d":125000}}'
+camera-simctl advance-property 0x500D --control 127.0.0.1:8080
+camera-simctl actions list --control 127.0.0.1:8080
+camera-simctl actions run shutter --control 127.0.0.1:8080 \
+  --request '{"catalogRevision":"<from actions list>","mode":"shooting/stills","role":"initiator"}'
+camera-simctl observations --control 127.0.0.1:8080 --after 0
 camera-simctl shutdown --control 127.0.0.1:8080
 
 # Drive the same manifest-backed protocol path used against real cameras:
