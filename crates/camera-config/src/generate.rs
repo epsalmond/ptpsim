@@ -876,6 +876,13 @@ fn validate_record(
     }
 }
 
+/// Fixed header length of each push framing the validator accepts. The
+/// framing contracts live in protocol-primitives.
+fn push_framing_header_length(framing: &str) -> Option<u64> {
+    use protocol_primitives::liveview;
+    (framing == liveview::FRAMING_ID).then_some(liveview::HEADER_LEN as u64)
+}
+
 fn validate_push_frame(
     record: &PushFrameRecord,
     artifacts: &BTreeMap<&str, u64>,
@@ -901,6 +908,23 @@ fn validate_push_frame(
             "O141",
             "push-frame envelope header must be inline and end at or before bodyOffset",
         );
+    }
+    match push_framing_header_length(&envelope.framing) {
+        None => line.reject(
+            "O148",
+            format!("unknown push-frame framing {:?}", envelope.framing),
+        ),
+        Some(length) if envelope.header.length != length => line.reject(
+            "O147",
+            format!(
+                "push-frame header must be the {length}-byte {} header",
+                envelope.framing
+            ),
+        ),
+        Some(_) => {}
+    }
+    if record.body.payload.length == 0 {
+        line.reject("O149", "push-frame body must not be empty");
     }
     if envelope
         .body_offset

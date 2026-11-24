@@ -1915,14 +1915,18 @@ and client scheduling, and are not camera timestamps. Their resolution is the
 named clock's unit; on a millisecond clock, frames read less than 1 ms apart can
 share a value.
 
-`envelope.framing` names the framing contract that parsed the packet.
+`envelope.framing` names the framing contract that parsed the packet. The
+validator knows each accepted framing's fixed header length and rejects an
+unknown framing; `fuji-liveview-v1` (the shared live-view framing) has an
+18-byte header.
 `envelope.declaredLength` is the whole packet length the envelope declares, and
 `envelope.bodyOffset` is where the body begins. `envelope.header` is the
 framing's fixed header, the first packet bytes, and must carry inline bytes, so
 envelope fields with unknown meaning are preserved without interpretation.
 `bodyOffset` cannot precede the end of the header. Bytes between the header and
 `bodyOffset`, which a framing's offset adjustment can insert, are counted by
-`bodyOffset` but not retained. `body.payload` starts at `bodyOffset` and ends at
+`bodyOffset` but not retained. The header length must equal the framing's
+header length. `body.payload` is nonempty, starts at `bodyOffset`, and ends at
 `declaredLength`. `body.mediaType` names the
 body format, and optional `body.image` records `width`, `height`, `precision`,
 and `components` from structural checks, all nonzero. A body payload never

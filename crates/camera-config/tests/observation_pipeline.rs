@@ -314,6 +314,11 @@ fn proposal_preserves_scope_tuples_without_a_cartesian_product() {
         .any(|scope| { scope.connection == "wireless-tether" && scope.mode == "shooting/stills" }));
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
 const PUSH_FIXTURE: &str =
     "packages/camera-config-data/observations/fixtures/positive/push-frames-multi-stream.jsonl";
 
@@ -411,8 +416,8 @@ fn push_frame_validation_rejects_retained_bytes_and_incoherent_frames() {
     );
     assert_eq!(
         push_frame_rejections(1, |record| {
-            record["envelope"]["bodyOffset"] = serde_json::json!(7);
-            record["envelope"]["declaredLength"] = serde_json::json!(37);
+            record["envelope"]["bodyOffset"] = serde_json::json!(17);
+            record["envelope"]["declaredLength"] = serde_json::json!(47);
         }),
         ["O141"]
     );
@@ -449,6 +454,59 @@ fn push_frame_validation_rejects_retained_bytes_and_incoherent_frames() {
             record["body"]["image"]["width"] = serde_json::json!(0);
         }),
         ["O146"]
+    );
+    // The header length is fixed by the named framing.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            let short = &record["envelope"]["header"]["inlineHex"].as_str().unwrap()[..16];
+            let bytes = (0..8)
+                .map(|index| u8::from_str_radix(&short[2 * index..2 * index + 2], 16).unwrap())
+                .collect::<Vec<_>>();
+            record["envelope"]["header"] = serde_json::json!({
+                "length": 8,
+                "sha256": sha256_hex(&bytes),
+                "inlineHex": short,
+            });
+        }),
+        ["O147"]
+    );
+    // An unknown framing has no checkable header contract.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["framing"] = serde_json::json!("example-framing-v1");
+        }),
+        ["O148"]
+    );
+    // A record must describe a body; image bytes cannot move into the header.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["declaredLength"] = serde_json::json!(18);
+            record["body"]["payload"] = serde_json::json!({
+                "length": 0,
+                "sha256": sha256_hex(&[]),
+            });
+        }),
+        ["O149"]
+    );
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            let packet = [0u8; 48];
+            let hex = packet
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            record["envelope"]["bodyOffset"] = serde_json::json!(48);
+            record["envelope"]["header"] = serde_json::json!({
+                "length": 48,
+                "sha256": sha256_hex(&packet),
+                "inlineHex": hex,
+            });
+            record["body"]["payload"] = serde_json::json!({
+                "length": 0,
+                "sha256": sha256_hex(&[]),
+            });
+        }),
+        ["O147", "O149"]
     );
     // Stream identity is a stable identifier.
     assert_eq!(

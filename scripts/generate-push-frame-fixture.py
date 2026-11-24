@@ -31,7 +31,10 @@ FIXTURE = (
 )
 RUN = "fixture-push-frames"
 EPISTEMIC = {"class": "syntheticFixture", "confidence": "exact", "alternatives": [], "unknowns": []}
-FRAMING = "example-length-counter-v1"
+# The shared live-view framing from crates/protocol-primitives/src/liveview.rs:
+# an 18-byte little-endian header (u32 inclusive length, zero u32, u32 frame
+# counter, zero u32 body offset adjustment, reserved u16) before the body.
+FRAMING = "fuji-liveview-v1"
 # Two connection instances, each with one live-view stream, and the first-read
 # time in milliseconds of each frame on the synthetic "mono" clock.
 STREAMS = [
@@ -81,7 +84,7 @@ def header_line():
 
 def frame_line(ordinal, stream_index, instance, sequence, first_read):
     body = jpeg(16 * stream_index + sequence + 1)
-    envelope = struct.pack("<II", 8 + len(body), sequence)
+    envelope = struct.pack("<IIIIH", 18 + len(body), 0, sequence, 0, 0)
     last_read = first_read + 1
     return {
         "kind": "pushFrame",
