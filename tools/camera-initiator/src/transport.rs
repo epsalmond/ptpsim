@@ -2209,8 +2209,8 @@ fn decode_u32_array(payload: &[u8]) -> Result<Vec<u32>, String> {
 }
 
 /// The manifest platform this binary was built for. `cfg!` keeps every branch
-/// compiled on every target, so the macOS and Android arms are type-checked by
-/// the Linux CI build instead of being skipped there.
+/// compiled on every target. CI still builds this crate for Linux only, so
+/// the rest of the crate is not checked on macOS or Android.
 pub(crate) fn current_platform() -> Platform {
     if cfg!(target_os = "macos") {
         Platform::Macos
