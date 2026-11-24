@@ -221,6 +221,66 @@ pub struct EstablishmentPlan {
     /// replaying `steps`. Empty means no post-exit readiness gate is declared.
     pub post_exit_readiness: Vec<Step>,
     pub steps: Vec<Step>,
+    /// Timing and retry values for joining the Wi-Fi network this plan
+    /// returns and opening the PTP/IP session on it (schema §11.31). `None`
+    /// when the plan declares no policy. Kept last with a default so generated
+    /// initializers that omit it still compile.
+    #[uniffi(default)]
+    pub wifi_handoff: Option<WifiHandoffPolicy>,
+}
+
+/// Wi-Fi handoff policy (schema §11.31). One handoff attempt is one join
+/// followed by one session-open sequence; the consumer runs the loop.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WifiHandoffPolicy {
+    /// Handoff attempts, counting the first.
+    pub max_attempts: u32,
+    /// Wait before each handoff retry, from when the retry checks pass.
+    /// Retries reapply neither settle.
+    pub retry_delay_ms: u32,
+    pub join: WifiJoinPolicy,
+    pub session_open: SessionOpenPolicy,
+}
+
+/// The join half of a [`WifiHandoffPolicy`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WifiJoinPolicy {
+    /// Wait before the first join request of a fresh launch, from the end of
+    /// the plan's `steps`.
+    pub settle_ms: u32,
+    /// Upper bound on confirming the phone is on the returned network, from
+    /// when each join request resolves.
+    pub association_timeout_ms: u32,
+}
+
+/// The session-open half of a [`WifiHandoffPolicy`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SessionOpenPolicy {
+    /// Wait before the first session open of a fresh launch, from when
+    /// association is confirmed.
+    pub settle_ms: u32,
+    /// Session opens within one handoff attempt, counting the first.
+    pub max_attempts: u32,
+    /// Wait before each session-open retry within one handoff attempt.
+    pub retry_delay_ms: u32,
+}
+
+impl From<&ix::WifiHandoffPolicy> for WifiHandoffPolicy {
+    fn from(policy: &ix::WifiHandoffPolicy) -> Self {
+        Self {
+            max_attempts: policy.max_attempts,
+            retry_delay_ms: policy.retry_delay_ms,
+            join: WifiJoinPolicy {
+                settle_ms: policy.join.settle_ms,
+                association_timeout_ms: policy.join.association_timeout_ms,
+            },
+            session_open: SessionOpenPolicy {
+                settle_ms: policy.session_open.settle_ms,
+                max_attempts: policy.session_open.max_attempts,
+                retry_delay_ms: policy.session_open.retry_delay_ms,
+            },
+        }
+    }
 }
 
 /// The result of refining a plan after firmware is discovered mid-walk.
@@ -1822,6 +1882,7 @@ fn build_establishment_mechanism(
             .collect::<Result<_, _>>()
             .expect("plans validated at store load"),
         steps,
+        wifi_handoff: block.wifi_handoff.as_ref().map(Into::into),
     })
 }
 

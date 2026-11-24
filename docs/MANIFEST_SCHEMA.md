@@ -2310,3 +2310,155 @@ suppressed, never half. Both are exposed through `PropertyInfo.dispositions` and
 unknown value is a load error. A disposition whose `when` predicate fails to
 cross the FFI is dropped whole rather than surfaced with `when: null`, which
 would read as unconditional.
+
+### 11.30 Media reported-size sentinel (#356)
+
+`media.objectInfoSizeSentinel` is an optional unsigned integer. It names the
+value a body reports in the 32-bit `ObjectInfo.ObjectCompressedSize` field when
+the object is too large to fit, typically `0xffffffff`. A consumer that reads
+this value treats the reported size as unknown and takes the real size from
+another source, such as the transfer itself. It is not a transfer limit: the
+object can still be downloaded. The FFI exposes it as
+`ConfigStore.object_info_size_sentinel()`, which returns `None` when the body
+declares no sentinel.
+
+```yaml
+media:
+  objectInfoSizeSentinel: 0xffffffff
+```
+
+The former key `wirelessTransferCeiling` is retired. A manifest that still uses
+it no longer sets the sentinel; the key is kept as an unrecognized `media`
+entry.
+
+### 11.31 Wi-Fi handoff policy (#486)
+
+A BLE establishment plan that launches the camera's Wi-Fi access point leaves
+the network credentials in runtime scope (for Fuji, `ssid` and `passphrase`).
+The consumer then joins that network and opens the PTP/IP session. This step is
+called the handoff. ptpsim does not run it; the consumer does, with the
+platform's Wi-Fi API. The optional `wifiHandoff` block on the plan carries the
+handoff timing and retry values whose right value depends on the camera or the
+launch mechanism.
+
+```yaml
+ble-establish-wifi-ap:
+  mechanism: ble-establish-wifi-ap
+  steps: [...]
+  wifiHandoff:
+    maxAttempts: 2
+    retryDelayMs: 2000
+    join:
+      settleMs: 4000
+      associationTimeoutMs: 20000
+    sessionOpen:
+      settleMs: 3000
+      maxAttempts: 2
+      retryDelayMs: 2000
+```
+
+| Field | Rule | Meaning |
+|---|---|---|
+| `maxAttempts` | greater than zero | Handoff attempts, counting the first. One attempt is one join followed by one session-open sequence. |
+| `retryDelayMs` | zero or more | Wait before each handoff retry, once the retry checks pass. |
+| `join.settleMs` | zero or more | Wait before the first join request of a fresh launch. |
+| `join.associationTimeoutMs` | greater than zero | Upper bound on confirming, after the join request resolves, that the phone is on the returned network. |
+| `sessionOpen.settleMs` | zero or more | Wait before the first session open of a fresh launch. |
+| `sessionOpen.maxAttempts` | greater than zero | Session opens within one handoff attempt, counting the first. |
+| `sessionOpen.retryDelayMs` | zero or more | Wait before each session-open retry within one handoff attempt. |
+
+Every value is an unsigned 32-bit integer: milliseconds for `...Ms` fields, a
+count otherwise. Every field is required, and an unknown field is a load error.
+Validation errors name the field, for example
+`models.<id>.establishments.<mechanism>.wifiHandoff.join.associationTimeoutMs`.
+The block is optional. A plan without it declares no policy, and the consumer
+applies its own defaults. The block is meaningful only on a plan that leaves a
+network for the consumer to join, such as a plan that launches the camera's
+access point and reads its credentials. Pairing, wake, and reconnect plans
+should not carry it. The loader does not enforce this on BLE plans, because
+the schema has no generic marker for a plan that returns a network. A USB
+establishment plan (§11.29) cannot carry the block; that is a load error.
+`EstablishmentBlock` itself rejects unknown keys, so a misspelled
+`wifiHandoff` fails at load instead of being ignored.
+
+**Fresh launch.** A fresh launch is a handoff in which the consumer walked this
+plan's `steps` and the walk completed. A handoff that joins with credentials
+kept from an earlier launch is not a fresh launch. Examples are rejoining an
+access point still held from a previous handoff, or joining for a
+camera-initiated transfer with cached credentials. A handoff that is not a
+fresh launch skips both settles. The shipped iOS consumer runs such a handoff
+as a single attempt.
+
+**Clock origins.**
+
+- `join.settleMs` starts when the walk of `steps` completes, which is when the
+  last step returns. It covers the camera reporting its access point as
+  launched before the radio is beaconing.
+- `join.associationTimeoutMs` starts when the join request resolves, and
+  restarts with each attempt's new join request. It is an upper bound. A
+  consumer may apply a shorter bound of its own in a later handoff that
+  follows a wrong-network failure (a handoff whose phone joined a different
+  network). That shorter value is consumer policy and is not carried in the
+  manifest.
+- `sessionOpen.settleMs` starts when association is confirmed in the first
+  attempt. It covers the PTP/IP responder starting after the network is up.
+- `sessionOpen.retryDelayMs` starts when the previous session open fails.
+- `retryDelayMs` starts when the retry checks below pass, including the
+  network check made after the failure. It is applied only when a retry will
+  happen, so it is skipped when a check fails or the handoff has already
+  ended.
+
+**One handoff, step by step.**
+
+1. On a fresh launch, wait `join.settleMs`.
+2. Issue one join request for the returned network.
+3. Confirm that the phone is on the returned network within
+   `join.associationTimeoutMs`.
+4. On the first attempt of a fresh launch, wait `sessionOpen.settleMs`.
+5. Open the session on a new socket. If it fails, wait
+   `sessionOpen.retryDelayMs` and try again on another new socket, up to
+   `sessionOpen.maxAttempts` opens in total. Any session-open failure is retried
+   within this sequence.
+6. The handoff succeeds when a session opens. Otherwise the attempt fails.
+
+A failed attempt is retried, up to `maxAttempts` attempts in total, only when
+all of these hold:
+
+- The failure was a join or association failure (steps 2 and 3), or the last
+  session open of step 5 failed before the socket connected or could send.
+  A failure after the socket connected (the camera rejected or did not answer
+  the session handshake) is not retried, because the camera was reached and
+  rejoining cannot change its answer.
+- The failure is not a terminal join outcome: the user declined the join, the
+  platform's join confirmation prompt expired, or the platform reported that
+  another join request was already pending.
+- The join did not resolve onto a confirmed different network. A confirmed
+  wrong-network observation is never retried.
+- A network check made after the failure shows the phone on the returned
+  network, matched exactly by name.
+- The handoff has not been cancelled or replaced by a newer connection
+  attempt.
+
+When every check passes, the consumer waits `retryDelayMs`. After the wait it
+checks again that the handoff has not been cancelled or replaced, then runs
+steps 2 to 6 again. It does not reapply either settle. The association bound
+and the session-open count start fresh for each attempt. No time limit spans
+attempts; the attempt counts and the per-step bounds bound the total.
+
+**Consumer policy kept out of the manifest.** Values that depend on the
+phone's operating system rather than the camera stay in the consumer: how long
+to wait for a join confirmation prompt, how often to check association, and how
+long to wait before treating association as complete when the platform does not
+disclose the joined network's name. That last rule never applies to a
+connection that requires `networkIdentityExact` (§11.23).
+
+**Per-body values.** A body that needs different values adds a family layer
+after the shared family in its `inherits` list and overrides only the fields
+that differ (§11.9). Scalars from the later layer win; the rest of the block is
+kept.
+
+**FFI.** `EstablishmentPlan.wifi_handoff: Option<WifiHandoffPolicy>` mirrors
+the block, with nested `WifiJoinPolicy` (`settle_ms`, `association_timeout_ms`)
+and `SessionOpenPolicy` (`settle_ms`, `max_attempts`, `retry_delay_ms`)
+records. The field is the last one in the record and defaults to nil (Swift)
+or null (Kotlin) in generated initializers.

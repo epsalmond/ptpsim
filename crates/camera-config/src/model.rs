@@ -1097,11 +1097,7 @@ pub struct Media {
     /// Reported 32-bit `ObjectInfo.ObjectCompressedSize` sentinel. Some cameras
     /// report oversized objects at this value while exposing a separate true
     /// transfer size.
-    #[serde(
-        default,
-        alias = "wirelessTransferCeiling",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_info_size_sentinel: Option<u64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
@@ -3110,6 +3106,22 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown variant `inferred`"), "got: {error}");
+    }
+
+    #[test]
+    fn retired_wireless_transfer_ceiling_key_does_not_set_sentinel() {
+        // The current key sets the sentinel.
+        let current: Media = serde_yaml::from_str("objectInfoSizeSentinel: 0xffffffff\n").unwrap();
+        assert_eq!(current.object_info_size_sentinel, Some(0xffff_ffff));
+
+        // The retired key no longer does. It stays in `extra` like any other
+        // unrecognized media entry.
+        let retired: Media = serde_yaml::from_str("wirelessTransferCeiling: 0xffffffff\n").unwrap();
+        assert_eq!(retired.object_info_size_sentinel, None);
+        assert_eq!(
+            retired.extra.get("wirelessTransferCeiling"),
+            Some(&serde_yaml::Value::from(0xffff_ffff_u64))
+        );
     }
 
     // A body manifest exercising the 2b vocabulary against the one body we own.
