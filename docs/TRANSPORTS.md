@@ -270,7 +270,7 @@ one client at a time: a second concurrent client receives the hello, then
 |---|---|---|---|
 | `scan_start` | none | none | none; then one `advert` event per scenario peripheral |
 | `scan_stop` | none | none | none |
-| `connect` | `peripheral` | `mtu`, `peripheral_name` (nullable) | `connect()` |
+| `connect` | `peripheral` | `mtu`, `peripheral_name` (nullable) | `connect()`; a repeated `connect` to the connected peripheral returns the same result and leaves discovery and subscriptions intact |
 | `discover` | none | `characteristics: [uuid]` | `discover_services()` |
 | `read` | `uuid` | `value` | `read(uuid)` |
 | `write` | `uuid`, `value` | none | `write(uuid, value)` |
@@ -343,7 +343,7 @@ notifications:
   - { gatt: <gattName>, utf8: "<text>" }   # no afterFencedWrite: buffered at connect
 ```
 
-The catalog served is the model's whole GATT map. `arming` wires the
+The catalog served is the model's whole GATT map, so a client may subscribe to any declared characteristic; one with no scripted notification stays quiet. `arming` wires the
 responder's prep, launch and device-name writes to the engine's `CameraLink`,
 so the PTP/IP init gates apply to a handoff that arrives over the socket.
 

@@ -648,11 +648,16 @@ impl BleSocket {
                 if !self.inner.scenario.peripherals.iter().any(|p| p.id == id) {
                     return Err(wire_error("unknown_peripheral", id));
                 }
-                self.with_responder(|responder| {
-                    responder.connect();
-                    Ok(())
-                })?;
-                connection.peripheral = Some(id);
+                // A client reuses its link, so a repeated connect to the
+                // connected peripheral leaves discovery and subscriptions
+                // intact. A new TCP connection is what rebuilds the responder.
+                if connection.peripheral.as_deref() != Some(id.as_str()) {
+                    self.with_responder(|responder| {
+                        responder.connect();
+                        Ok(())
+                    })?;
+                    connection.peripheral = Some(id);
+                }
                 result.insert("mtu".into(), self.inner.scenario.mtu.into());
                 result.insert(
                     "peripheral_name".into(),
