@@ -186,10 +186,6 @@ complete hand-written typed mirror. Closed record variants, nested outcome and
 readback enums, capture metadata, payload streaming ranges, and action roles are
 all explicit in generated bindings. Arbitrary JSON values are preserved as
 canonical JSON leaves so foreign bindings do not invent a second value grammar.
-The one exception is the tool-side `pushFrame` record (pushed live-view frames
-recorded by the initiator). It has no foreign mirror yet, so
-`parseObservationRecord` returns `ObservationError::Invalid` for it instead of
-dropping fields. Tools read those records through the Rust model.
 
 ## 5. Integration pattern
 
