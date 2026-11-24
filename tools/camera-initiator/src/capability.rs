@@ -1,6 +1,6 @@
 //! Scoped observations of static candidates. Results deliberately remain unverified.
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -467,15 +467,20 @@ pub async fn run_capability_verification<T: PtpExecutorTransport + 'static>(
         plan.validate(ledger)?;
         plan.validate_framing(framing)?;
     }
-    std::fs::create_dir(&options.output_dir).context("create new capability output directory")?;
+    std::fs::create_dir(&options.output_dir).with_context(|| {
+        format!(
+            "create new capability output directory {}",
+            options.output_dir.display()
+        )
+    })?;
     if let Some(plan) = plan {
-        std::fs::write(
-            options.output_dir.join("plan.yaml"),
+        write_output(
+            &options.output_dir.join("plan.yaml"),
             serde_yaml::to_string(plan)?,
         )?;
     }
-    std::fs::write(
-        options.output_dir.join("candidates.json"),
+    write_output(
+        &options.output_dir.join("candidates.json"),
         serde_json::to_vec_pretty(ledger)?,
     )?;
     let mut report = CapabilityReport {
@@ -635,11 +640,16 @@ pub async fn run_capability_verification<T: PtpExecutorTransport + 'static>(
 }
 
 fn write_report(options: &CapabilityOptions, report: &CapabilityReport) -> Result<()> {
-    std::fs::write(
-        options.output_dir.join("capability-report.json"),
+    write_output(
+        &options.output_dir.join("capability-report.json"),
         serde_json::to_vec_pretty(report)?,
-    )?;
-    Ok(())
+    )
+}
+
+/// Writes one capability output file. The error names the file so that a
+/// missing output directory is distinguishable from other write failures.
+fn write_output(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
+    std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))
 }
 
 fn standard_request(opcode: u16, params: Vec<u32>) -> PlannedRequest {
@@ -1009,7 +1019,7 @@ async fn exchange<T: PtpExecutorTransport + 'static>(
         result.record.payload = Some(payload_metadata(&result.payload));
         match std::fs::write(options.output_dir.join(&filename), &result.payload) {
             Ok(()) => result.record.payload_file = Some(filename),
-            Err(error) => result.record.error = Some(format!("retain payload: {error}")),
+            Err(error) => result.record.error = Some(format!("retain payload {filename}: {error}")),
         }
     }
     result

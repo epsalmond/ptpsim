@@ -19,8 +19,13 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum RecorderError {
-    #[error("observation recorder I/O failed: {0}")]
-    Io(#[from] std::io::Error),
+    /// The error names the bundle file so that a missing file or directory
+    /// can be traced to the path the recorder was given.
+    #[error("observation recorder I/O failed for {}: {source}", path.display())]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("observation recorder JSON failed: {0}")]
     Json(#[from] serde_json::Error),
     #[error("observation recorder contract failed: {0}")]
@@ -317,7 +322,7 @@ fn load_existing(
     path: &Path,
     expected: &BundleHeader,
 ) -> Result<Vec<ObservationLine>, RecorderError> {
-    let text = std::fs::read_to_string(path)?;
+    let text = std::fs::read_to_string(path).map_err(io_error(path))?;
     let mut lines = Vec::new();
     for raw in text.lines().filter(|line| !line.trim().is_empty()) {
         lines.push(serde_json::from_str::<ObservationLine>(raw)?);
@@ -347,12 +352,16 @@ fn load_existing(
 
 fn write_new(path: &Path, header: &ObservationLine) -> Result<(), RecorderError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(io_error(parent))?;
     }
-    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(io_error(path))?;
     serde_json::to_writer(&mut file, header)?;
-    file.write_all(b"\n")?;
-    file.sync_data()?;
+    file.write_all(b"\n").map_err(io_error(path))?;
+    file.sync_data().map_err(io_error(path))?;
     Ok(())
 }
 
@@ -360,11 +369,21 @@ fn append_line(path: Option<&Path>, line: &ObservationLine) -> Result<(), Record
     let Some(path) = path else {
         return Ok(());
     };
-    let mut file = OpenOptions::new().append(true).open(path)?;
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(io_error(path))?;
     serde_json::to_writer(&mut file, line)?;
-    file.write_all(b"\n")?;
-    file.flush()?;
+    file.write_all(b"\n").map_err(io_error(path))?;
+    file.flush().map_err(io_error(path))?;
     Ok(())
+}
+
+fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> RecorderError + '_ {
+    move |source| RecorderError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -506,5 +525,33 @@ mod tests {
         let reopened = ObservationRecorder::open(Some(path.clone()), header("run")).unwrap();
         assert_eq!(reopened.cursor(), 1);
         assert!(ObservationRecorder::open(Some(path), header("other")).is_err());
+    }
+
+    #[test]
+    fn append_io_failure_names_the_bundle_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.jsonl");
+        let recorder = ObservationRecorder::open(Some(path.clone()), header("run")).unwrap();
+        std::fs::remove_dir_all(dir.path()).unwrap();
+
+        let error = recorder
+            .record_lifecycle(
+                ExecutionContext {
+                    connection: "app".into(),
+                    mode: "idle".into(),
+                    state: "ready".into(),
+                },
+                LifecycleMarker::ConnectionOpened,
+                None,
+                None,
+                BTreeMap::new(),
+            )
+            .unwrap_err();
+        assert!(matches!(error, RecorderError::Io { .. }));
+        let message = error.to_string();
+        assert!(
+            message.contains(&path.display().to_string()),
+            "error must name the bundle path: {message}"
+        );
     }
 }
