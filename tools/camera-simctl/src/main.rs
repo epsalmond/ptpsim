@@ -472,6 +472,24 @@ mod tests {
         let path = file.path().to_str().unwrap();
         let patch = request(&["camera-simctl", "state", "patch", "--overlay-file", path]);
         assert_eq!(patch.body.as_deref(), Some(r#"{"phase":"liveView"}"#));
+
+        // Simulator states travel in the same overlay (#164, #352).
+        let overlay = r#"{"states":{"memoryCardSlot1Empty":true}}"#;
+        let patch = request(&["camera-simctl", "state", "patch", "--overlay", overlay]);
+        assert_eq!(
+            (patch.method, patch.path.as_str(), patch.body.as_deref()),
+            ("PATCH", "/state", Some(overlay))
+        );
+        let error = Cli::try_parse_from([
+            "camera-simctl",
+            "state",
+            "patch",
+            "--overlay",
+            r#"{"states":{"memoryCardSlot1Empty":"yes"}}"#,
+        ])
+        .err()
+        .expect("a state flag must be a boolean");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]

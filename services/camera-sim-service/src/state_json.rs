@@ -41,6 +41,8 @@ pub(crate) fn snapshot_json(engine: &Engine) -> String {
         "camera_initiated_transfer_active": engine.camera_initiated_transfer_active(),
         "props": props,
         "property_labels": property_labels,
+        // Active manifest-declared simulator states, sorted by name.
+        "states": engine.active_states(),
         "media": { "objects": engine.store().handles(ObjectQuery::default()).len() },
         "transfer_queues": engine.transfer_queue_stats(),
     })
