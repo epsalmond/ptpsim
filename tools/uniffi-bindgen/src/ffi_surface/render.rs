@@ -342,24 +342,83 @@ fn literal(literal: &LiteralMetadata) -> String {
     }
 }
 
-/// Flatten a TOML table into sorted `dotted.key = value` entries.
+/// Flatten a TOML table into sorted `(path, value)` entries, each of which
+/// renders as one snapshot line with a unique key.
+///
+/// A path segment is written bare when it is a non-empty TOML bare key
+/// (`A-Za-z0-9_-`) and JSON-quoted otherwise, so distinct paths stay distinct
+/// and a quoted segment can hold `.`, ` = ` or a newline. Values use a
+/// one-line encoding in which strings are JSON-quoted.
 pub fn config_entries(table: &toml::Table) -> Vec<(String, String)> {
     fn walk(prefix: &str, table: &toml::Table, out: &mut Vec<(String, String)>) {
         for (name, value) in table {
+            let segment = config_segment(name);
             let path = if prefix.is_empty() {
-                name.clone()
+                segment
             } else {
-                format!("{prefix}.{name}")
+                format!("{prefix}.{segment}")
             };
             match value {
                 toml::Value::Table(inner) => walk(&path, inner, out),
-                other => out.push((path, other.to_string())),
+                other => out.push((path, config_value(other))),
             }
         }
     }
     let mut out = Vec::new();
     walk("", table, &mut out);
     out.sort();
+    out
+}
+
+fn config_segment(name: &str) -> String {
+    let bare = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'));
+    if bare {
+        name.to_string()
+    } else {
+        json_string(name)
+    }
+}
+
+fn config_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(text) => json_string(text),
+        toml::Value::Integer(number) => number.to_string(),
+        toml::Value::Float(number) => format!("{number:?}"),
+        toml::Value::Boolean(flag) => flag.to_string(),
+        toml::Value::Datetime(datetime) => datetime.to_string(),
+        toml::Value::Array(values) => {
+            let values: Vec<String> = values.iter().map(config_value).collect();
+            format!("[{}]", values.join(", "))
+        }
+        toml::Value::Table(table) => {
+            let entries: Vec<String> = table
+                .iter()
+                .map(|(name, value)| format!("{} = {}", config_segment(name), config_value(value)))
+                .collect();
+            format!("{{{}}}", entries.join(", "))
+        }
+    }
+}
+
+/// A JSON string literal: quoted, with quotes, backslashes and control
+/// characters escaped.
+fn json_string(text: &str) -> String {
+    let mut out = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
     out
 }
 
@@ -591,6 +650,125 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// `update` writes `text(PREAMBLE, items)`; `check` parses that file and
+    /// compares it with freshly rendered items. The pair must always agree.
+    fn assert_update_then_check_passes(config: &[(String, String)]) {
+        let rendered = items(Vec::new(), config, "0.31.1").unwrap();
+        let written = text("# preamble\n", &rendered);
+        let parsed = crate::compare::parse(&written).unwrap();
+        assert_eq!(parsed, rendered, "{written}");
+        assert!(
+            crate::compare::compare(&parsed, &rendered).is_empty(),
+            "{written}"
+        );
+    }
+
+    #[test]
+    fn multi_line_config_value_renders_on_one_line() {
+        let table: toml::Table =
+            toml::from_str("[bindings.kotlin.custom_types.Foo]\nlift = \"\"\"\nx\ny\"\"\"\n")
+                .unwrap();
+        let entries = config_entries(&table);
+        assert_eq!(
+            entries,
+            [(
+                "bindings.kotlin.custom_types.Foo.lift".to_string(),
+                "\"x\\ny\"".to_string()
+            )]
+        );
+        assert_update_then_check_passes(&entries);
+    }
+
+    #[test]
+    fn quoted_config_keys_stay_distinct() {
+        let table: toml::Table = toml::from_str(
+            "[bindings.swift.rename]\n\"a-b\" = \"x\"\n\"a-c\" = \"y\"\n\"a.b\" = \"z\"\n",
+        )
+        .unwrap();
+        let entries = config_entries(&table);
+        assert_eq!(entries.len(), 3);
+        assert_update_then_check_passes(&entries);
+    }
+
+    /// Small deterministic generator for the round-trip property.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn pick<'a>(&mut self, options: &[&'a str]) -> &'a str {
+            options[(self.next() % options.len() as u64) as usize]
+        }
+    }
+
+    const KEYS: [&str; 14] = [
+        "a",
+        "a-b",
+        "a-c",
+        "a.b",
+        "",
+        " ",
+        "a = b",
+        "\"q\"",
+        "x\\y",
+        "\u{fc}n",
+        "#h",
+        "  lead",
+        "tab\tkey",
+        "line\nkey",
+    ];
+    const STRINGS: [&str; 9] = [
+        "plain",
+        "",
+        "two\nlines",
+        "crlf\r\nend",
+        "\"\"\"",
+        " = ",
+        "tab\there",
+        "\\",
+        "\u{2028}",
+    ];
+
+    fn value(rng: &mut Rng, depth: u32) -> toml::Value {
+        match rng.next() % if depth == 0 { 6 } else { 8 } {
+            0 => toml::Value::String(rng.pick(&STRINGS).to_string()),
+            1 => toml::Value::Integer(rng.next() as i64),
+            2 => toml::Value::Float(match rng.next() % 4 {
+                0 => f64::NAN,
+                1 => f64::INFINITY,
+                2 => -0.0,
+                _ => (rng.next() % 1000) as f64 / 7.0,
+            }),
+            3 => toml::Value::Boolean(rng.next().is_multiple_of(2)),
+            4 => toml::Value::Datetime("1979-05-27T07:32:00Z".parse().unwrap()),
+            5 => toml::Value::Array(Vec::new()),
+            6 => toml::Value::Array((0..3).map(|_| value(rng, depth - 1)).collect()),
+            _ => toml::Value::Table(table(rng, depth - 1)),
+        }
+    }
+
+    fn table(rng: &mut Rng, depth: u32) -> toml::Table {
+        let mut out = toml::Table::new();
+        for _ in 0..(rng.next() % 5) {
+            out.insert(rng.pick(&KEYS).to_string(), value(rng, depth));
+        }
+        out
+    }
+
+    #[test]
+    fn update_then_check_passes_for_generated_configs() {
+        for seed in 1..=500_u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let config = table(&mut rng, 3);
+            assert_update_then_check_passes(&config_entries(&config));
+        }
     }
 
     #[test]
