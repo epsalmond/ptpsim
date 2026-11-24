@@ -2343,14 +2343,29 @@ or more overrides. Each override names an `operation`, the `response` to
 answer with, and optional `connections` and `modes` filters. `evidence` lists
 the evidence ids behind the state. Unknown fields are load errors.
 
-**Load-time contract errors.** The manifest fails to load when a state has an
-empty `summary`, `responses`, or `evidence`; when an `operation` or `response`
-is not a hexadecimal PTP code; when a `response` is `0x2001` (OK); or when an
-`operation` is not declared under `operations`.
+**Load-time contract errors.** The manifest fails to load when:
 
-**Lints.** `CameraManifest::validate` warns about an unknown connection id, a
-mode scope that matches no declared mode, and an undefined evidence id. Each
-warning names the state and the response index.
+- a state has an empty `summary`, `responses`, or `evidence`;
+- an `operation` is not a hexadecimal code declared under `operations`;
+- a `response` is not a PTP response code (standard `0x2000` to `0x2FFF`, or
+  vendor `0xA000` to `0xAFFF`), or is `0x2001` (OK);
+- a `connections` entry names no declared connection, or a `modes` entry
+  matches no declared mode (exactly or as an ancestor at a `/` boundary);
+- the operation's catalog entry (`kind`, `connections`, `modes`) makes it
+  unavailable on every declared connection and mode in the response's scope,
+  so the response could never be reached. A `requires` predicate depends on
+  runtime values and is not part of this check;
+- two response entries for the same operation have overlapping scopes, in one
+  state or in two different states.
+
+Two scopes overlap when their connection lists share a connection (an empty
+list covers every connection) and their mode lists share a mode or an
+ancestor and descendant (an empty list covers every mode). Because overlaps
+are rejected, at most one active state can answer any request, and the result
+never depends on which states are active together.
+
+**Lints.** `CameraManifest::validate` warns about an undefined evidence id,
+naming the state.
 
 **Scope matching.** Filters follow the value-disposition rules: an empty
 `connections` or `modes` list means all, and a mode scope matches the declared
@@ -2363,8 +2378,7 @@ fault, the missing-session refusal (`0x2003`), the silence of an unsatisfied
 `requiresGate`, the shutter-busy reply, camera-initiated queue routing, and
 catalog availability. An operation outside its declared connections or modes
 therefore still answers `0x2005`. A state response outranks a `silentRefusal`
-disposition and every handler. When several active states match the same
-request, the state whose name sorts first answers.
+disposition and every handler.
 
 **Side effects.** A state response is a failure reply with no parameters and no
 data phase. The operation runs no handler, applies no `effects`, queues no
