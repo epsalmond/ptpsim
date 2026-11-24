@@ -1500,13 +1500,15 @@ allocated to the start request. A poll may apply a finite response-selected
 retry for the captured transient `0x2002` response; transport failures and
 every other response still escape immediately under §11.21.
 
-The simulator can start polled live view from a newly opened session when
-the selected connection declares a literal arming write followed by a literal
-`0x101c` request in `startLiveView`. Any preceding steps in that recipe must
-be tolerant. The arming write must succeed in the current session, and the
-request must match the declared parameters. The existing queue and stale
-stream checks still apply. Ending the session, accepting a terminate request,
-or replacing the arming value clears the pending arm.
+The simulator can start live view from a newly opened session when the selected
+connection declares polled delivery and `startLiveView` ends with a literal
+arming write followed by a literal `0x101c` request. Any preceding steps in that
+recipe must be tolerant. The arming write must succeed in the current session.
+At capture time the stored property must match the arming literal, and the
+request must match the declared parameters. The queue and stale stream checks
+apply to both requests. Ending the session or accepting a terminate request
+clears the pending arm. A `SetDevicePropValue` that replaces the arming value
+also clears the pending arm.
 
 A caller validating live view followed by transfer invokes `startLiveView`,
 `pollLiveView`, `enumerateObjects`, and `stopLiveView` in that order on one open

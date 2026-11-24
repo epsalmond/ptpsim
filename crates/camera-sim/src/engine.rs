@@ -2048,9 +2048,10 @@ impl Engine {
             && !self.stale_stream_blocks_live_view_arming()
             && self
                 .polled_live_view_start()
-                .and_then(|(_, _, capture)| literal_params(&capture.params))
-                .as_deref()
-                == Some(params)
+                .is_some_and(|(property, expected, capture)| {
+                    self.state.props.get(&property).and_then(value_to_i64) == Some(expected)
+                        && literal_params(&capture.params).as_deref() == Some(params)
+                })
     }
 
     fn pending_queue_blocks_live_view_arming(&self) -> bool {
@@ -3011,6 +3012,171 @@ mod tests {
     /// Same, decoding a u32 property (e.g. 0xD17C S1LockAreaState).
     fn poll_u32(engine: &mut Engine, code: u16, tid: u32) -> i64 {
         poll_dt(engine, code, tid, ptp_core::codes::datatype_code::UINT32)
+    }
+
+    fn live_view_capture_engine(kind: LiveViewDeliveryKind) -> (Engine, tempfile::TempDir) {
+        let mut manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+properties:
+  "0xd001": { name: liveViewArming, type: u16, access: readWrite }
+operations:
+  "0x9001":
+    name: ResetLiveViewArming
+    effects:
+      - { setProp: "0xd001", value: 0 }
+  "0x100e": { name: InitiateCapture }
+connections:
+  app:
+    kind: ptpip-app
+    bindings: { command: 55740, event: 55741, liveView: 55742 }
+    liveViewDelivery: { kind: poll }
+    actions:
+      startLiveView:
+        mode: ""
+        initiator:
+          steps:
+            - { sendOp: "0x1018", params: [1], tolerant: true }
+            - { setProp: "0xd001", value: 2 }
+            - { sendOp: "0x101c", params: [0, 0] }
+      enumerateObjects:
+        mode: ""
+        initiator:
+          steps:
+            - { sendOp: "0x1007", params: [0xffffffff, 0, 0] }
+      shutter:
+        mode: ""
+        initiator:
+          steps:
+            - { sendOp: "0x100e", params: [0, 0] }
+        triggers:
+          - objectsAvailable: { min: 1, max: 1 }
+"#,
+        )
+        .unwrap();
+        manifest
+            .connections
+            .get_mut(Engine::DEFAULT_CONNECTION)
+            .unwrap()
+            .live_view_delivery
+            .as_mut()
+            .unwrap()
+            .kind = kind;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("image.jpg"), b"\xff\xd8\xff\xd9").unwrap();
+        let mut store = MediaStore::open(directory.path()).unwrap();
+        store.scan().unwrap();
+        let mut engine = Engine::new(manifest, store);
+        assert_ok_open(&mut engine);
+        (engine, directory)
+    }
+
+    fn arm_live_view_capture(engine: &mut Engine, tid: u32) {
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::SET_DEVICE_PROP_VALUE, tid, vec![0xd001]),
+            Some(&2u16.to_le_bytes()),
+        )));
+        assert_eq!(engine.phase(), Phase::SessionOpen);
+    }
+
+    fn assert_live_view_capture_response(engine: &mut Engine, tid: u32, expected: u16) {
+        let reply = engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, tid, vec![0, 0]), None);
+        assert_eq!(response_code_of(reply), expected);
+    }
+
+    #[test]
+    fn armed_live_view_capture_requires_current_property_value() {
+        let (mut engine, _directory) = live_view_capture_engine(LiveViewDeliveryKind::Poll);
+        arm_live_view_capture(&mut engine, 2);
+        assert_eq!(poll(&mut engine, 0xd001, 3), 2);
+
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(0x9001, 4, vec![]), None)
+        ));
+        assert_eq!(poll(&mut engine, 0xd001, 5), 0);
+        assert_live_view_capture_response(&mut engine, 6, resp::GENERAL_ERROR);
+
+        arm_live_view_capture(&mut engine, 7);
+        assert_live_view_capture_response(&mut engine, 8, resp::OK);
+    }
+
+    #[test]
+    fn armed_live_view_capture_is_cleared_by_terminate() {
+        let (mut engine, _directory) = live_view_capture_engine(LiveViewDeliveryKind::Poll);
+        arm_live_view_capture(&mut engine, 2);
+
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::TERMINATE_OPEN_CAPTURE, 3, vec![1]),
+            None,
+        )));
+        assert_eq!(poll(&mut engine, 0xd001, 4), 2);
+        assert_live_view_capture_response(&mut engine, 5, resp::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn armed_live_view_capture_is_cleared_by_session_close() {
+        let (mut engine, _directory) = live_view_capture_engine(LiveViewDeliveryKind::Poll);
+        arm_live_view_capture(&mut engine, 2);
+
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::CLOSE_SESSION, 3, vec![]), None)
+        ));
+        assert!(!engine.polled_live_view_armed);
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::OPEN_SESSION, 4, vec![2]), None)
+        ));
+        assert_eq!(poll(&mut engine, 0xd001, 5), 2);
+        assert_live_view_capture_response(&mut engine, 6, resp::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn armed_live_view_capture_is_cleared_by_transport_loss() {
+        let (mut engine, _directory) = live_view_capture_engine(LiveViewDeliveryKind::Poll);
+        arm_live_view_capture(&mut engine, 2);
+
+        engine.transport_lost();
+        assert!(!engine.polled_live_view_armed);
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::OPEN_SESSION, 3, vec![2]), None)
+        ));
+        assert_eq!(poll(&mut engine, 0xd001, 4), 2);
+        assert_live_view_capture_response(&mut engine, 5, resp::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn armed_live_view_capture_rechecks_object_queue() {
+        let (mut engine, _directory) = live_view_capture_engine(LiveViewDeliveryKind::Poll);
+        engine
+            .configure_standard_object_queue(Engine::DEFAULT_CONNECTION, 1)
+            .unwrap();
+        arm_live_view_capture(&mut engine, 2);
+
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_CAPTURE, 3, vec![0, 0]), None)
+        ));
+        assert_eq!(engine.transfer_queue_stats().standard.unwrap().queued, 1);
+        assert_live_view_capture_response(&mut engine, 4, resp::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn armed_live_view_capture_rechecks_stale_stream() {
+        let (mut engine, _directory) = live_view_capture_engine(LiveViewDeliveryKind::Poll);
+        arm_live_view_capture(&mut engine, 2);
+
+        engine
+            .preseed_stale_live_view_stream(Engine::DEFAULT_CONNECTION)
+            .unwrap();
+        assert_live_view_capture_response(&mut engine, 3, resp::GENERAL_ERROR);
+    }
+
+    #[test]
+    fn armed_live_view_capture_is_unavailable_for_stream_delivery() {
+        let (mut engine, _directory) = live_view_capture_engine(LiveViewDeliveryKind::Stream);
+        arm_live_view_capture(&mut engine, 2);
+
+        assert_eq!(poll(&mut engine, 0xd001, 3), 2);
+        assert_live_view_capture_response(&mut engine, 4, resp::GENERAL_ERROR);
     }
 
     fn transition_engine() -> Engine {
