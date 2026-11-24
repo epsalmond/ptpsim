@@ -852,6 +852,11 @@ failed BLE link before offering a scan/reconnect path.
 
 #### PTP failure conditions
 
+PTP actions can now end with kind `ConditionRejected`. Before this, only BLE
+plans produced that kind. The access-point launch handling above applies only to
+a BLE AP-launch establishment. Do not apply it to a PTP action failure: for a PTP
+action, branch on `context["condition"]` instead.
+
 Every PTP response failure that escapes an action carries `operation`,
 `response`, and `transactionId` in `context`. An action may declare failure
 conditions (`MANIFEST_SCHEMA.md` §11.33). When the failure that ends the action
@@ -863,9 +868,10 @@ exactly as they would without the rule.
 
 | `condition` | extra context | suggested handling |
 |---|---|---|
-| `mediaSlotUnavailable` | `slot` (decimal, 1-based) | Ask the user to check the card in that slot, for example "Check the card in slot 1". Keep the wording cautious: the same response has also been seen briefly while a card was present and the camera was still settling. Do not tell the user that no card is present. |
+| `mediaSlotUnavailable` | `slot` (decimal, 1-based) | Ask the user to check the card in that slot, for example "Check the card in slot 1", and offer a retry next to the hint. One classified failure is not proof: the same response was once seen briefly while a card was present and the camera was still settling, and the rule sees only the short retry inside one action. Only a response that persists across attempts and connections separates the two cases. Do not tell the user that no card is present. |
 
-Branch on `kind` and `context["condition"]`, never on `detail`. Treat a
+Branch on `kind` and `context["condition"]`, never on `detail`, the step path,
+or the response code alone. Treat a
 `condition` value you do not recognize as an unclassified failure. The rules are
 read from the loaded manifest, so no FFI type describes them; they reach the app
 only as these context strings.

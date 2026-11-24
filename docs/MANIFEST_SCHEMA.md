@@ -2679,11 +2679,29 @@ replaces does not leave the action, so it is never classified either. When a
 `retry` exhausts its budget on a listed response, the final attempt's failure
 is the one that leaves the action.
 
+A rule matches by operation code, not by step. It applies to the final failure
+of that operation from any step of the action, including a second `sendOp` of
+the same code elsewhere in the initiator. The load-time check only requires
+that at least one `sendOp` step sends the operation.
+
 **Report.** A matching failure is `StepFailed` with kind `ConditionRejected`.
 `step` and `detail` are unchanged. `context` lists `operation`, `response`, and
 `transactionId` as for every PTP response failure, then `condition` with the
 condition name, then the declared context keys in sorted order. An unmatched
 failure keeps kind `Other` and the three response entries only.
+
+**A classified failure is a hint, not proof.** For `mediaSlotUnavailable` on
+the GFX100 II, the same response was once seen briefly while a card was
+present and the camera was still settling. The rule sees only the short retry
+inside one action. Only a response that persists across attempts and across
+connections separates an empty slot from a camera that is still settling. A
+consumer should therefore offer a retry next to the hint, and should not
+treat one classified failure as confirmation of the condition.
+
+**Slot number.** The evidence does not establish whether changing the
+camera's selected import slot changes which slot this response reflects.
+`slot: "1"` describes the one observed configuration: slot 1 empty and a card
+in slot 2.
 
 If a semantic activity (§11.23) is active when the failure leaves the action,
 it fails with the same kind. Its context holds `condition` and the declared
@@ -2702,7 +2720,7 @@ loaded manifest, so the consumer sees only the kind and context strings on the
 existing error. A consumer should treat a `condition` value it does not
 recognize as an unclassified failure.
 
-**Compatibility.** `ActionInitiator` rejects unknown fields, so a loader that
-predates this section cannot load a manifest that declares
-`failureConditions`. Consumers vendor the FFI and the manifests from the same
-revision.
+**Compatibility.** `ActionInitiator` rejects unknown fields. A library built
+before this section was added rejects any manifest that declares
+`failureConditions`, so the whole manifest fails to load. Vendor the library
+and the manifests from the same revision.
