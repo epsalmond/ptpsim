@@ -12,10 +12,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use camera_config::{
-    parse_hex_code, ActionInvocationRequest, ActionOutcome, ActionRole, ExecutionContext,
-    ObservationRecorder, SocketRole,
+    parse_hex_code, ActionInvocationRequest, ActionOutcome, ExecutionContext, ObservationRecorder,
+    SocketRole,
 };
-use camera_sim::{Engine, FaultSpec, PreparedResponderMutation, StateOverlay};
+use camera_sim::{
+    ActionRunRequest, AdvancePropertyRequest, Engine, FaultSpec, PreparedResponderMutation,
+    StateOverlay,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex, Notify};
@@ -241,16 +244,6 @@ fn cursor_after(path: &str, endpoint: &str) -> Result<u64, String> {
     Ok(after)
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ActionRequestBody {
-    catalog_revision: String,
-    mode: String,
-    role: ActionRole,
-    #[serde(default)]
-    parameters: Vec<camera_config::ActionArgument>,
-}
-
 enum ActionInvokeError {
     BadRequest(String),
     Internal(String),
@@ -261,7 +254,7 @@ async fn invoke_action(
     action_id: &str,
     body: &[u8],
 ) -> Result<String, ActionInvokeError> {
-    let request: ActionRequestBody = serde_json::from_slice(body).map_err(|error| {
+    let request: ActionRunRequest = serde_json::from_slice(body).map_err(|error| {
         ActionInvokeError::BadRequest(format!("invalid JSON action request: {error}"))
     })?;
     let invocation = ActionInvocationRequest {
@@ -354,12 +347,6 @@ fn execution_context(connection: &str, mode: &str, engine: &Engine) -> Execution
         mode: mode.to_string(),
         state: engine.phase().state_name().to_string(),
     }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AdvancePropertyRequest {
-    code: String,
 }
 
 async fn advance_property(context: &Context, body: &[u8]) -> Result<String, String> {

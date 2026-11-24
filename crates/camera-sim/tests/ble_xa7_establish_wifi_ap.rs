@@ -25,18 +25,18 @@ fn xa7() -> ModelView {
         .expect("X-A7 model")
 }
 
-fn engine() -> Engine {
+/// Returns the engine with the guard for its media root. `tempfile` creates the
+/// root exclusively under a random name and removes it when the guard drops.
+fn engine() -> (Engine, tempfile::TempDir) {
     let manifest =
         CameraManifest::from_yaml(&data("fuji/xa7/xa7.yaml")).expect("X-A7 manifest loads");
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("ptpsim-xa7-device-info-{nanos}"));
-    std::fs::create_dir_all(&root).expect("create X-A7 media root");
-    let mut store = MediaStore::open(&root).expect("open X-A7 media store");
+    let root = tempfile::Builder::new()
+        .prefix("ptpsim-xa7-device-info-")
+        .tempdir()
+        .expect("create X-A7 media root");
+    let mut store = MediaStore::open(root.path()).expect("open X-A7 media store");
     store.scan().expect("scan X-A7 media store");
-    Engine::new(manifest, store)
+    (Engine::new(manifest, store), root)
 }
 
 fn request(code: u16, transaction_id: u32, params: Vec<u32>) -> OperationRequest {
@@ -90,7 +90,7 @@ fn walk(
 
 #[test]
 fn device_info_advertises_property_operations_used_by_the_manifest() {
-    let mut engine = engine();
+    let (mut engine, _media_root) = engine();
     engine.bind_connection("legacy-app");
     let open = engine.on_operation(&request(0x1002, 1, vec![1]), None);
     assert!(matches!(open, Reply::Response(response) if response.code == 0x2001));

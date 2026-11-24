@@ -1292,19 +1292,20 @@ fn sanitize(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// A directory that belongs to one test. `tempfile` creates it exclusively
+    /// under a random name and removes it when the guard drops.
+    fn test_root(label: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("camera-initiator-{label}-"))
+            .tempdir()
+            .unwrap()
+    }
 
     #[test]
     fn usb_capture_does_not_infer_firmware_from_the_manifest() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "camera-initiator-usb-provenance-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let temp = test_root("usb-provenance");
+        let root = temp.path();
         let observation = root.join("observation.jsonl");
         let store = ConfigStore::from_bundle(
             "schema: camera-config/v1\ncamera: { manufacturer: TESTCO, model: TU1, firmware: '99.99' }\nconnections: {}\n".into(), None,
@@ -1331,7 +1332,6 @@ mod tests {
             "usb"
         );
         camera_config::validate_bundles(&[&std::fs::read_to_string(observation).unwrap()]).unwrap();
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1486,15 +1486,8 @@ mod tests {
 
     #[test]
     fn invalid_session_plan_creates_no_artifacts() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "camera-initiator-invalid-session-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let temp = test_root("invalid-session");
+        let root = temp.path();
         let plan = root.join("plan.yaml");
         let output = root.join("output");
         let trace = root.join("trace.jsonl");
@@ -1529,7 +1522,6 @@ mod tests {
         assert!(!output.exists());
         assert!(!trace.exists());
         assert!(!observation.exists());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

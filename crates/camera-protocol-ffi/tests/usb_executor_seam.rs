@@ -17,6 +17,8 @@ use camera_sim::usb::{UsbError, UsbEvent, UsbResponder};
 use futures::executor::block_on;
 use futures::FutureExt;
 
+mod common;
+
 /// PTP-over-USB OpenSession command container (session id 1, transaction 0).
 const OPEN_SESSION_CONTAINER: [u8; 16] = [
     0x10, 0x00, 0x00, 0x00, // length
@@ -603,6 +605,91 @@ fn establishment_plan_mirrors_resolved_usb_steps() {
         matches!(&plan.steps[3], Step::UsbAwaitInterrupt { .. }),
         "{:?}",
         plan.steps[3]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The shipped Fuji `usb-claim-open` plan against the shared responder. Each
+// USB transaction phase is its own bulk IN transfer, so a data-in operation
+// such as GetDeviceInfo yields a data container and then a response
+// container. A plan that stops after the data container leaves the response
+// queued, and the next transaction on the pipe reads it as its own reply.
+// ---------------------------------------------------------------------------
+
+fn usb_command(code: u16, transaction_id: u32, params: &[u32]) -> Vec<u8> {
+    protocol_primitives::usb_ptp::encode(&ptp_core::PtpIpPacket::OperationRequest(
+        ptp_core::OperationRequest {
+            data_phase_info: 1,
+            code,
+            transaction_id,
+            params: params.to_vec(),
+        },
+    ))
+    .expect("command container encodes")
+}
+
+fn usb_ok_response(transaction_id: u32) -> Vec<u8> {
+    protocol_primitives::usb_ptp::encode(&ptp_core::PtpIpPacket::OperationResponse(
+        ptp_core::OperationResponse {
+            code: 0x2001,
+            transaction_id,
+            params: vec![],
+        },
+    ))
+    .expect("response container encodes")
+}
+
+#[test]
+fn shipped_claim_open_plan_leaves_the_pipe_at_a_transaction_boundary() {
+    let store = common::real_fuji_store();
+    let plan = store
+        .establishment("gfx100ii".into(), "usb".into(), vec![])
+        .expect("the shipped raw USB connection resolves its establishment");
+    // Synthetic dataset bytes: the plan captures the container verbatim and
+    // never decodes the DeviceInfo dataset.
+    let dataset = [0x64, 0x00, 0x0e, 0x00, 0x00, 0x00];
+    let device_info = protocol_primitives::usb_ptp::encode_data(0x1001, 1, &dataset);
+    let next_data = protocol_primitives::usb_ptp::encode_data(0x1001, 2, &dataset);
+    let responder = UsbResponder::new()
+        .expect_bulk_out_command(0x1002, 0, &[1])
+        .expect_bulk_out_command(0x1001, 1, &[])
+        .expect_bulk_out_command(0x1001, 2, &[])
+        .queue_bulk_in(&usb_ok_response(0))
+        .queue_bulk_in(&device_info)
+        .queue_bulk_in(&usb_ok_response(1))
+        .queue_bulk_in(&next_data)
+        .queue_bulk_in(&usb_ok_response(2));
+    let transport = Arc::new(ResponderUsbTransport::new(responder));
+    let outcome = block_on(run_usb_establishment(
+        store,
+        plan.plan_handle,
+        transport.clone(),
+        Arc::new(Recorder::default()),
+        Arc::new(ActivityRecorder::default()),
+        vec![],
+        vec![],
+        vec![],
+    ))
+    .expect("the shipped claim-open plan completes");
+    assert_eq!(
+        scope_get(&outcome.scope, "deviceInfo"),
+        Some(hex_lower(&device_info).as_str())
+    );
+
+    // A second transaction after establishment reads its own containers.
+    block_on(transport.bulk_out(usb_command(0x1001, 2, &[]))).expect("second command writes");
+    let data = block_on(transport.bulk_in(65536)).expect("second data phase reads");
+    assert_eq!(
+        protocol_primitives::usb_ptp::decode(&data).expect("container decodes"),
+        protocol_primitives::usb_ptp::decode(&next_data).unwrap(),
+        "the second transaction's first IN transfer is its own data container"
+    );
+    let response = block_on(transport.bulk_in(512)).expect("second response reads");
+    assert_eq!(response, usb_ok_response(2));
+    assert_eq!(
+        scope_get(&outcome.scope, "deviceInfoResponse"),
+        Some(hex_lower(&usb_ok_response(1)).as_str()),
+        "the GetDeviceInfo response container is read inside the plan"
     );
 }
 
