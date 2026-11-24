@@ -19,6 +19,10 @@ files live in [`.github/workflows/`](../.github/workflows/):
 - `oci-image.yml` builds the service image without pushing it on pull requests
   and `main` pushes. A default-branch build populates the shared BuildKit cache.
 
+Branch protection on `main` lists the required status checks. A job that its
+path filter skips reports `skipped`, which satisfies a required check, so
+path-filtered jobs can be required.
+
 Fork pull requests use read-only repository access. Build and test jobs need
 no repository secrets. Release jobs use the workflow's `GITHUB_TOKEN` with
 job-scoped `contents: write` permission and run only from trusted pushes.

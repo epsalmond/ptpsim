@@ -66,47 +66,50 @@ unsupported.
 the generated Swift and Kotlin bindings expose. The `ffi-surface` job in
 `.github/workflows/linux.yml` runs `ci/ffi-surface.sh` on Linux for every pull
 request and `main` push that changes `crates/`, `tools/uniffi-bindgen/`, the
-workspace manifests, or the script. It fails when the current surface removes
-or changes a baseline item. Downstream consumers vendor these bindings, so
-such a change stops their code from compiling at the next update. Without this
-check, a removed or renamed item passes ptpsim CI when no in-repo code uses it.
+workspace manifests, `.cargo/`, the rustc wrapper, or the script. The job fails
+when the baseline differs from the current surface in any way. Downstream
+consumers vendor these bindings, so a removed or changed item stops their code
+from compiling at the next update. Without this check, such a change passes
+ptpsim CI when no in-repo code uses the item.
 
 The snapshot comes from the metadata that UniFFI embeds in the library, the
 same input the binding generator reads for both languages. It also records
-`crates/camera-protocol-ffi/uniffi.toml` binding settings and the
+every `crates/camera-protocol-ffi/uniffi.toml` setting and the
 `uniffi_bindgen` version from `Cargo.lock`. One snapshot covers Swift and
 Kotlin because both bindings derive their names from the Rust names by fixed
 case conversion.
 
-| Change | Result |
-| --- | --- |
-| Item removed or renamed | Breaking |
-| Function, constructor, or method signature changed (parameters, parameter names, defaults, return type, `async`, `throws`) | Breaking |
-| Record field added, removed, changed, or reordered | Breaking |
-| Enum case added, removed, reordered, or its fields changed | Breaking, unless the enum is `non_exhaustive` (additions only) |
-| Method added to a callback trait or callback interface | Breaking: foreign implementations must add it |
-| Object kind, enum shape, binding setting, or generator version changed | Breaking |
-| New top-level item, or a method or constructor added to a Rust-implemented object | Addition |
+Every difference fails the job. The report labels each difference so the
+author knows whether the pull request breaks consumers:
 
-An intended break updates the baseline in the same pull request, so reviewers
-see the surface change next to the code change:
+| Change | Label |
+| --- | --- |
+| Item removed or renamed | Breaking for consumers |
+| Function, constructor, or method signature changed (parameters, parameter names, defaults, return type, `async`, `throws`) | Breaking for consumers |
+| Record field removed, changed, or reordered; a field added without a default, or added before an existing field | Breaking for consumers |
+| Enum case added, removed, reordered, or its fields changed (UniFFI generates exhaustive Swift and Kotlin enums even for `#[non_exhaustive]`) | Breaking for consumers |
+| Method added to a callback trait or callback interface | Breaking for consumers: foreign implementations must add it |
+| Object kind or enum shape changed | Breaking for consumers |
+| Binding setting or generator version added, removed, or changed | Breaking for consumers |
+| Method added to a Rust-implemented object | Breaking for implementers: consumer types that conform to the generated Swift protocol or Kotlin interface must add it |
+| New top-level item, new constructor, or a record field with a default appended after the existing fields | Additive |
+
+Update the baseline in the same pull request as the change, so reviewers see
+the surface change next to the code change:
 
 ```sh
 ci/ffi-surface.sh update
 git add crates/camera-protocol-ffi/ffi-surface.txt
 ```
 
-Additions do not fail the job. They produce a warning annotation and a job
-summary entry. Update the baseline for additions in the same pull request as
-well: an addition left out of the baseline is not protected, and removing it
-later passes the check. Running `update` for any later change also picks up
-earlier unrecorded additions, and the baseline diff shows them.
+Additions fail the job too. An item that is missing from the baseline is not
+protected, and a later pull request could remove it without a failure.
 
 The snapshot does not cover runtime behavior, manifest data, or binding code
 that changes without a metadata change other than through a UniFFI upgrade
-(the generator version line catches upgrades). The job reports differences; a
-consumer still records the ptpsim commit it vendors and reviews the baseline
-diff between its old and new commit.
+(the generator version line catches upgrades). A consumer still records the
+ptpsim commit it vendors and reviews the baseline diff between its old and new
+commit.
 
 ## Build recipe (formerly manifest-schema §11.11)
 The repo's existing `crates/camera-protocol-ffi` is already uniffi-annotated. P1 ships:
