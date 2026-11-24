@@ -288,6 +288,24 @@ fn every_observation_variant_has_a_complete_hand_written_ffi_mirror() {
     }
 }
 
+/// Push-frame records are tool-side evidence without a foreign mirror. The
+/// seam must reject them explicitly instead of returning a partial value.
+/// Adding the mirror replaces this test with a full field assertion.
+#[test]
+fn push_frame_observations_are_rejected_until_mirrored() {
+    let fixture = data("observations/fixtures/positive/push-frames-multi-stream.jsonl");
+    let mut frames = 0;
+    for line in fixture.lines().skip(1).filter(|line| !line.is_empty()) {
+        let Err(ObservationError::Invalid { detail }) = parse_observation_record(line.into())
+        else {
+            panic!("push frame crossed the FFI without a mirror");
+        };
+        assert!(detail.contains("pushFrame"), "{detail}");
+        frames += 1;
+    }
+    assert_eq!(frames, 6);
+}
+
 #[test]
 fn semantic_observation_assertions_cross_the_hand_written_ffi_seam() {
     let record = serde_json::json!({

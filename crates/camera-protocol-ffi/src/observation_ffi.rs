@@ -585,15 +585,16 @@ pub fn parse_observation_record(json: String) -> Result<ObservationRecord, Obser
             ),
         });
     }
-    let kind = match &line {
-        cc::ObservationLine::BundleHeader(_) => ObservationKind::BundleHeader,
-        cc::ObservationLine::Lifecycle(_) => ObservationKind::Lifecycle,
-        cc::ObservationLine::BleGatt(_) => ObservationKind::BleGatt,
-        cc::ObservationLine::PtpTransaction(_) => ObservationKind::PtpTransaction,
-        cc::ObservationLine::PtpEvent(_) => ObservationKind::PtpEvent,
-        cc::ObservationLine::HttpExchange(_) => ObservationKind::HttpExchange,
-        cc::ObservationLine::Capability(_) => ObservationKind::Capability,
-        cc::ObservationLine::ActionInvocation(_) => ObservationKind::ActionInvocation,
+    let value = ObservationValue::try_from(&line)?;
+    let kind = match &value {
+        ObservationValue::BundleHeader { .. } => ObservationKind::BundleHeader,
+        ObservationValue::Lifecycle { .. } => ObservationKind::Lifecycle,
+        ObservationValue::BleGatt { .. } => ObservationKind::BleGatt,
+        ObservationValue::PtpTransaction { .. } => ObservationKind::PtpTransaction,
+        ObservationValue::PtpEvent { .. } => ObservationKind::PtpEvent,
+        ObservationValue::HttpExchange { .. } => ObservationKind::HttpExchange,
+        ObservationValue::Capability { .. } => ObservationKind::Capability,
+        ObservationValue::ActionInvocation { .. } => ObservationKind::ActionInvocation,
     };
     let canonical_json =
         serde_json::to_string(&line).map_err(|error| ObservationError::Invalid {
@@ -605,14 +606,21 @@ pub fn parse_observation_record(json: String) -> Result<ObservationRecord, Obser
         run_id: line.run_id().to_string(),
         record_id: line.record_id().to_string(),
         ordinal: line.ordinal(),
-        value: ObservationValue::from(&line),
+        value,
         canonical_json,
     })
 }
 
-impl From<&cc::ObservationLine> for ObservationValue {
-    fn from(value: &cc::ObservationLine) -> Self {
-        match value {
+/// Push-frame records are tool-side evidence with no foreign mirror yet. They
+/// fail explicitly rather than losing fields in a partial mapping.
+const PUSH_FRAME_NOT_MIRRORED: &str =
+    "pushFrame observations have no FFI mirror; read them through the Rust model";
+
+impl TryFrom<&cc::ObservationLine> for ObservationValue {
+    type Error = ObservationError;
+
+    fn try_from(value: &cc::ObservationLine) -> Result<Self, Self::Error> {
+        Ok(match value {
             cc::ObservationLine::BundleHeader(value) => Self::BundleHeader {
                 value: value.into(),
             },
@@ -637,7 +645,12 @@ impl From<&cc::ObservationLine> for ObservationValue {
             cc::ObservationLine::ActionInvocation(value) => Self::ActionInvocation {
                 value: value.into(),
             },
-        }
+            cc::ObservationLine::PushFrame(_) => {
+                return Err(ObservationError::Invalid {
+                    detail: PUSH_FRAME_NOT_MIRRORED.into(),
+                })
+            }
+        })
     }
 }
 

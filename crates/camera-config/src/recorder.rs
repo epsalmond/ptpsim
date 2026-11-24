@@ -99,6 +99,19 @@ impl PayloadMetadataBuilder {
     }
 
     pub fn metadata(&self) -> PayloadMetadata {
+        match self.inline.as_deref() {
+            Some(inline) => PayloadMetadata {
+                inline_hex: Some(hex(inline)),
+                stream_ranges: Vec::new(),
+                ..self.metadata_without_inline()
+            },
+            None => self.metadata_without_inline(),
+        }
+    }
+
+    /// Metadata for bytes that must stay outside the bundle: whole-payload and
+    /// per-range hashes, never inline bytes, whatever the payload size.
+    pub fn metadata_without_inline(&self) -> PayloadMetadata {
         let mut stream_ranges = self.stream_ranges.clone();
         if self.pending_range_length > 0 {
             stream_ranges.push(PayloadRange {
@@ -110,12 +123,8 @@ impl PayloadMetadataBuilder {
         PayloadMetadata {
             length: self.length,
             sha256: format!("{:x}", self.hasher.clone().finalize()),
-            inline_hex: self.inline.as_deref().map(hex),
-            stream_ranges: if self.inline.is_none() {
-                stream_ranges
-            } else {
-                Vec::new()
-            },
+            inline_hex: None,
+            stream_ranges,
             ranges: Vec::new(),
         }
     }
@@ -218,10 +227,7 @@ impl ObservationRecorder {
             record_id: format!("record-{ordinal:016x}"),
             ordinal,
             context,
-            time: ClockPoint {
-                clock: "process-monotonic".into(),
-                value: self.started.elapsed().as_millis() as u64,
-            },
+            time: self.clock_point(Instant::now()),
             physical_context: BTreeMap::new(),
             artifact_ranges: Vec::new(),
             epistemic: direct_epistemic(),
@@ -240,6 +246,19 @@ impl ObservationRecorder {
             .checked_add(1)
             .ok_or_else(|| RecorderError::Contract("ordinal overflow".into()))?;
         Ok(ordinal)
+    }
+
+    /// Express a host instant on the `process-monotonic` clock that stamps
+    /// every appended record, with the same origin. Instants before the
+    /// recorder opened map to zero.
+    pub fn clock_point(&self, at: Instant) -> ClockPoint {
+        ClockPoint {
+            clock: "process-monotonic".into(),
+            value: at
+                .saturating_duration_since(self.started)
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64,
+        }
     }
 
     pub fn export_json(&self, after: u64) -> Result<String, RecorderError> {
@@ -481,6 +500,40 @@ mod tests {
         let validated = validate_bundles(&[&bundle]).unwrap();
         assert_eq!(validated.report.total_nonblank, 2);
         assert_eq!(validated.report.rejected, 0);
+    }
+
+    #[test]
+    fn hashed_only_metadata_never_inlines_small_payloads() {
+        let payload = [1u8, 2, 3];
+        let mut builder = PayloadMetadataBuilder::new();
+        builder.update(&payload);
+        let inline = builder.metadata();
+        let hashed = builder.metadata_without_inline();
+        assert_eq!(inline.inline_hex.as_deref(), Some("010203"));
+        assert!(inline.stream_ranges.is_empty());
+        assert_eq!(hashed.inline_hex, None);
+        assert_eq!((hashed.length, &hashed.sha256), (3, &inline.sha256));
+        assert_eq!(
+            hashed.stream_ranges,
+            [PayloadRange {
+                offset: 0,
+                length: 3,
+                sha256: inline.sha256.clone(),
+            }]
+        );
+    }
+
+    #[test]
+    fn clock_points_share_the_record_clock_origin() {
+        let before = Instant::now();
+        let recorder = ObservationRecorder::open(None, header("clock-run")).unwrap();
+        let early = recorder.clock_point(before);
+        assert_eq!(
+            (early.clock.as_str(), early.value),
+            ("process-monotonic", 0)
+        );
+        let later = recorder.clock_point(Instant::now() + std::time::Duration::from_millis(250));
+        assert!(later.value >= 250);
     }
 
     #[test]
