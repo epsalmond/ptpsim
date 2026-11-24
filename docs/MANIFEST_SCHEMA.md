@@ -2360,9 +2360,9 @@ ble-establish-wifi-ap:
 | Field | Rule | Meaning |
 |---|---|---|
 | `maxAttempts` | greater than zero | Handoff attempts, counting the first. One attempt is one join followed by one session-open sequence. |
-| `retryDelayMs` | zero or more | Wait before each handoff retry. |
+| `retryDelayMs` | zero or more | Wait before each handoff retry, once the retry checks pass. |
 | `join.settleMs` | zero or more | Wait before the first join request of a fresh launch. |
-| `join.associationTimeoutMs` | greater than zero | Bound on confirming, after the join request resolves, that the phone is on the returned network. |
+| `join.associationTimeoutMs` | greater than zero | Upper bound on confirming, after the join request resolves, that the phone is on the returned network. |
 | `sessionOpen.settleMs` | zero or more | Wait before the first session open of a fresh launch. |
 | `sessionOpen.maxAttempts` | greater than zero | Session opens within one handoff attempt, counting the first. |
 | `sessionOpen.retryDelayMs` | zero or more | Wait before each session-open retry within one handoff attempt. |
@@ -2372,7 +2372,11 @@ count otherwise. Every field is required, and an unknown field is a load error.
 Validation errors name the field, for example
 `models.<id>.establishments.<mechanism>.wifiHandoff.join.associationTimeoutMs`.
 The block is optional. A plan without it declares no policy, and the consumer
-applies its own defaults. A USB establishment plan (§11.29) cannot carry the
+applies its own defaults. The block is meaningful only on a plan that leaves a
+network for the consumer to join, such as a plan that launches the camera's
+access point and reads its credentials. Pairing, wake, and reconnect plans
+should not carry it. The loader does not enforce this on BLE plans, because
+the schema has no generic marker for a plan that returns a network. A USB establishment plan (§11.29) cannot carry the
 block; that is a load error. `EstablishmentBlock` itself rejects unknown keys,
 so a misspelled `wifiHandoff` fails at load instead of being ignored.
 
@@ -2390,11 +2394,17 @@ as a single attempt.
   last step returns. It covers the camera reporting its access point as
   launched before the radio is beaconing.
 - `join.associationTimeoutMs` starts when the join request resolves, and
-  restarts with each attempt's new join request.
+  restarts with each attempt's new join request. It is an upper bound. A
+  consumer may apply a shorter bound of its own in a recovery path, for
+  example after the previous recovery failed because the phone joined the
+  wrong network. That shorter value is consumer policy and is not carried in
+  the manifest.
 - `sessionOpen.settleMs` starts when association is confirmed in the first
   attempt. It covers the PTP/IP responder starting after the network is up.
 - `sessionOpen.retryDelayMs` starts when the previous session open fails.
-- `retryDelayMs` starts when the previous handoff attempt fails.
+- `retryDelayMs` starts when the retry checks below complete, including the
+  network check made after the failure. It is not applied when no retry will
+  happen, for example when the checks fail or the handoff has already ended.
 
 **One handoff, step by step.**
 
@@ -2427,7 +2437,8 @@ all of these hold:
 - The handoff has not been cancelled or replaced by a newer connection
   attempt.
 
-A retry waits `retryDelayMs` and runs steps 2 to 6 again. It does not reapply
+When every check passes, the consumer waits `retryDelayMs` and runs steps 2
+to 6 again. It does not reapply
 either settle. The association bound and the session-open count start fresh
 for each attempt. No time limit spans attempts; the attempt counts and the
 per-step bounds bound the total.

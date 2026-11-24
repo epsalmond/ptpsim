@@ -270,7 +270,8 @@ pub struct EstablishmentBlock {
 pub struct WifiHandoffPolicy {
     /// Handoff attempts, counting the first. Must be greater than zero.
     pub max_attempts: u32,
-    /// Wait before each handoff retry, from the failure of the previous attempt.
+    /// Wait before each handoff retry, from when the retry checks pass. Not
+    /// applied when no retry will happen.
     pub retry_delay_ms: u32,
     pub join: WifiJoinPolicy,
     pub session_open: SessionOpenPolicy,
@@ -284,9 +285,10 @@ pub struct WifiJoinPolicy {
     /// the plan's `steps`. Not applied on retries or when joining with
     /// credentials kept from an earlier launch.
     pub settle_ms: u32,
-    /// Bound on confirming the phone is on the returned network, from when
-    /// the join request resolves. Restarts on each attempt. Must be greater
-    /// than zero.
+    /// Upper bound on confirming the phone is on the returned network, from
+    /// when the join request resolves. Restarts on each attempt. A consumer
+    /// may use a shorter bound of its own in recovery. Must be greater than
+    /// zero.
     pub association_timeout_ms: u32,
 }
 
