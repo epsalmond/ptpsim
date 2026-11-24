@@ -37,8 +37,6 @@ pub enum MediaError {
     Io(#[from] std::io::Error),
     #[error("unknown object handle {0}")]
     UnknownHandle(ObjectHandle),
-    #[error("path escapes media root: {0}")]
-    RootEscape(PathBuf),
     #[error("no embedded thumbnail found")]
     NoPreview,
 }
@@ -258,19 +256,6 @@ impl MediaStore {
             .ok_or(MediaError::UnknownHandle(handle))
     }
 
-    /// Confirm a path is inside the root (defense in depth for any external
-    /// path).
-    pub fn assert_within_root(&self, path: &Path) -> Result<(), MediaError> {
-        let canon = path
-            .canonicalize()
-            .map_err(|_| MediaError::RootEscape(path.to_path_buf()))?;
-        if canon.starts_with(&self.root) {
-            Ok(())
-        } else {
-            Err(MediaError::RootEscape(path.to_path_buf()))
-        }
-    }
-
     pub fn handles(&self, query: ObjectQuery) -> Vec<ObjectHandle> {
         self.by_handle
             .values()
@@ -300,12 +285,6 @@ impl MediaStore {
             filename,
             ..Default::default()
         })
-    }
-
-    /// True if the object's real size is reported through the saturated 32-bit
-    /// `ObjectInfo` size field.
-    pub fn reports_size_sentinel(&self, handle: ObjectHandle) -> Result<bool, MediaError> {
-        Ok(self.entry(handle)?.size >= SIZE_CEILING)
     }
 
     pub fn object_size(&self, handle: ObjectHandle) -> Result<u64, MediaError> {
@@ -746,11 +725,6 @@ mod tests {
             !names.iter().any(|n| n == "escape.JPG"),
             "escaping symlink must be dropped"
         );
-
-        // Direct guard too.
-        assert!(store
-            .assert_within_root(&outside.join("secret.JPG"))
-            .is_err());
     }
 
     #[test]
@@ -811,7 +785,6 @@ mod tests {
             store.object_info(h).unwrap().object_compressed_size,
             0xffff_ffff
         );
-        assert!(store.reports_size_sentinel(h).unwrap());
 
         // A partial read near the end works, allocating only the window.
         let src = store.read_range(h, five_gib - 8, 16).unwrap();
