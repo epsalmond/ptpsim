@@ -197,8 +197,8 @@ fn github_annotations(findings: &[Finding], text: &str) {
     }
 }
 
-/// Fail when the FFI crate uses a target- or profile-dependent `cfg`, which
-/// would make the host snapshot differ from the shipped bindings.
+/// Early warning: fail when the FFI crate's source appears to use a target- or
+/// profile-dependent `cfg`. The iOS staticlib comparisons are the guarantee.
 fn cfg_scan() -> Result<ExitCode, String> {
     let args: Vec<String> = std::env::args().skip(2).collect();
     let [flag, dir] = args.as_slice() else {
@@ -220,10 +220,12 @@ fn cfg_scan() -> Result<ExitCode, String> {
         }
     }
     println!(
-        "\nThe FFI surface check reads a host dev build, while Swift bindings come from\n\
-         the iOS release build. Items gated on the target or build profile would differ\n\
-         between the two, so the FFI crate must not use such cfg predicates. See\n\
-         docs/APPLE_FFI_RELEASES.md, \"FFI surface baseline\"."
+        "\nKotlin bindings come from a host build and Swift bindings from the iOS release\n\
+         build, so the FFI surface must not depend on the target or build profile.\n\
+         For a justified exception that cannot change the surface, add the comment\n\
+         `// {} <reason>` on the flagged line or the line above.\n\
+         See docs/APPLE_FFI_RELEASES.md, \"FFI surface baseline\".",
+        build_cfg::ALLOW_MARKER
     );
     Ok(ExitCode::from(1))
 }
