@@ -11,9 +11,10 @@
 //! fixed width and there is no protocol-version tail.
 //!
 //! The manifest owns everything camera-specific: which connections use this
-//! shape, the initiator GUID, and the friendly name (through value policy).
-//! This module owns only the fixed wire framing, which is a wire format rather
-//! than per-camera data, so it stays code like the other init shapes here.
+//! shape, plus the value policy that resolves the initiator GUID and the
+//! friendly name. This module owns only the fixed wire framing, which is a
+//! wire format rather than per-camera data, so it stays code like the legacy
+//! init shape beside it.
 
 use crate::error::FramingError;
 use ptp_core::Writer;
