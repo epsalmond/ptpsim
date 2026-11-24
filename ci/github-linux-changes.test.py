@@ -77,6 +77,13 @@ class SelectionTests(unittest.TestCase):
         self.add("ci/ffi-surface.sh")
         self.assert_jobs(self.select(), "ffi_surface")
 
+    def test_build_configuration_change_runs_workspace_and_surface_check(self):
+        for path in (".cargo/config.toml", "scripts/rustc-wrapper"):
+            with self.subTest(path=path):
+                self.git("checkout", "--quiet", "--detach", self.base)
+                self.add(path)
+                self.assert_jobs(self.select(), "workspace", "ffi_surface")
+
     def test_manifest_change_runs_workspace_and_data_publication_selection(self):
         self.add("packages/camera-config-data/example/index.yaml")
         self.assert_jobs(self.select(), "workspace", "manifest")

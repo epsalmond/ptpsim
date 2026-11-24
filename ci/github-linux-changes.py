@@ -73,7 +73,11 @@ def selection(event_name, event):
             or path == "ci/build-python-wheel.sh"
         )
         selected["manifest"] |= path.startswith("packages/camera-config-data/")
-        selected["ffi_surface"] |= common or ffi or path == "ci/ffi-surface.sh"
+        # Build configuration can change which items the library exports.
+        selected["ffi_surface"] |= (
+            common or ffi or path.startswith(".cargo/")
+            or path in ("ci/ffi-surface.sh", "scripts/rustc-wrapper")
+        )
         selected["workspace"] |= (
             common or ffi or kotlin
             or path.startswith((
