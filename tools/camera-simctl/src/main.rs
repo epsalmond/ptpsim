@@ -168,9 +168,10 @@ struct JsonInput {
 }
 
 impl JsonInput {
-    /// Parse the JSON into the service's request type `T`. Only the shape is
-    /// checked here; the service performs every semantic check.
-    fn parse<T: DeserializeOwned>(self, what: &str) -> Result<T> {
+    /// Check that the JSON has the shape of the service's request type `T`,
+    /// then return the original text so it is sent unchanged. The service
+    /// performs every semantic check.
+    fn validated<T: DeserializeOwned>(self, what: &str) -> Result<String> {
         let (text, source) = match (self.spec, self.spec_file) {
             (Some(spec), None) => (spec, "--spec".to_string()),
             (None, Some(path)) => (
@@ -180,23 +181,33 @@ impl JsonInput {
             ),
             _ => bail!("pass exactly one of --spec or --spec-file"),
         };
-        serde_json::from_str(&text).with_context(|| format!("{source} is not a valid {what}"))
+        serde_json::from_str::<T>(&text)
+            .with_context(|| format!("{source} is not a valid {what}"))?;
+        Ok(text)
     }
 }
 
 fn main() -> Result<()> {
     let request = request_for(Cli::parse().cmd)?;
-    let response = http(
+    let raw = http(
         &request.control,
         request.method,
         &request.path,
         request.body.as_deref(),
     )?;
+    if !request.fail_on_http_error {
+        // The original commands print whatever came back, even an empty or
+        // header-only reply, and exit zero.
+        println!("{}", raw.rsplit("\r\n\r\n").next().unwrap_or(""));
+        return Ok(());
+    }
+    let (status, body) = split_response(&raw)
+        .with_context(|| format!("no HTTP response from {}", request.control))?;
     // The response body goes to stdout unchanged, including a service error
     // body, so callers see the service's own message.
-    println!("{}", response.body);
-    if request.fail_on_http_error && !response.status.starts_with('2') {
-        bail!("control endpoint answered HTTP {}", response.status);
+    println!("{body}");
+    if !status.starts_with('2') {
+        bail!("control endpoint answered HTTP {status}");
     }
     Ok(())
 }
@@ -206,9 +217,9 @@ struct Request {
     method: &'static str,
     path: String,
     body: Option<String>,
-    /// Exit nonzero when the service answers with a non-2xx status. The
-    /// original health, trace, shutdown, and fault commands keep their
-    /// historical exit status of zero for any HTTP answer.
+    /// Exit nonzero when the service answers with a non-2xx status or closes
+    /// without a reply. The original health, trace, shutdown, and fault
+    /// commands keep their historical exit status of zero in both cases.
     fail_on_http_error: bool,
 }
 
@@ -284,10 +295,8 @@ fn request_for(cmd: Cmd) -> Result<Request> {
         },
         Cmd::State { command } => match command {
             StateCmd::Get { control } => Request::new(control, "GET", "/state"),
-            StateCmd::Patch { control, overlay } => {
-                let overlay: StateOverlay = overlay.parse("state overlay")?;
-                Request::new(control, "PATCH", "/state").with_body(serde_json::to_string(&overlay)?)
-            }
+            StateCmd::Patch { control, overlay } => Request::new(control, "PATCH", "/state")
+                .with_body(overlay.validated::<StateOverlay>("state overlay")?),
         },
         Cmd::Actions { command } => match command {
             ActionsCmd::List { control } => Request::new(control, "GET", "/actions"),
@@ -295,11 +304,8 @@ fn request_for(cmd: Cmd) -> Result<Request> {
                 id,
                 control,
                 request,
-            } => {
-                let request: ActionRunRequest = request.parse("action request")?;
-                Request::new(control, "POST", format!("/actions/{id}"))
-                    .with_body(serde_json::to_string(&request)?)
-            }
+            } => Request::new(control, "POST", format!("/actions/{id}"))
+                .with_body(request.validated::<ActionRunRequest>("action request")?),
         },
         Cmd::AdvanceProperty { code, control } => {
             Request::new(control, "POST", "/control/advance-property")
@@ -320,13 +326,17 @@ fn request_for(cmd: Cmd) -> Result<Request> {
     })
 }
 
-struct HttpResponse {
-    /// Status code and reason phrase, such as `400 Bad Request`.
-    status: String,
-    body: String,
+/// Split a raw reply into its status (code and reason phrase, such as
+/// `400 Bad Request`) and body. Returns `None` when there is no status line.
+fn split_response(raw: &str) -> Option<(&str, &str)> {
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
+    let (_, status) = head.lines().next()?.split_once(' ')?;
+    Some((status, body))
 }
 
-fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> Result<HttpResponse> {
+/// Send one request and return the raw reply, which is empty when the
+/// service closes the connection without answering.
+fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> Result<String> {
     let mut s = TcpStream::connect(addr).with_context(|| format!("connect {addr}"))?;
     let extra = match body {
         Some(body) => format!(
@@ -342,17 +352,7 @@ fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> Result<Http
     )?;
     let mut out = String::new();
     s.read_to_string(&mut out)?;
-    let (head, body) = out.split_once("\r\n\r\n").unwrap_or((&out, ""));
-    let status = head
-        .lines()
-        .next()
-        .and_then(|line| line.split_once(' '))
-        .map(|(_, status)| status.to_string())
-        .with_context(|| format!("malformed HTTP response from {addr}"))?;
-    Ok(HttpResponse {
-        status,
-        body: body.to_string(),
-    })
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -406,15 +406,17 @@ mod tests {
             r#"{"props":{"0x500d":125000}}"#,
         ]);
         assert_eq!((patch.method, patch.path.as_str()), ("PATCH", "/state"));
-        let body: StateOverlay = serde_json::from_str(&patch.body.unwrap()).unwrap();
-        assert_eq!(body.props["0x500d"], 125000);
+        assert_eq!(
+            patch.body.as_deref(),
+            Some(r#"{"props":{"0x500d":125000}}"#),
+            "the user's JSON is sent unchanged"
+        );
 
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), r#"{"phase":"liveView"}"#).unwrap();
         let path = file.path().to_str().unwrap();
         let patch = request(&["camera-simctl", "state", "patch", "--spec-file", path]);
-        let body: StateOverlay = serde_json::from_str(&patch.body.unwrap()).unwrap();
-        assert_eq!(body.phase.as_deref(), Some("liveView"));
+        assert_eq!(patch.body.as_deref(), Some(r#"{"phase":"liveView"}"#));
 
         let list = request(&["camera-simctl", "actions", "list"]);
         assert_eq!((list.method, list.path.as_str()), ("GET", "/actions"));
@@ -431,8 +433,10 @@ mod tests {
             (run.method, run.path.as_str()),
             ("POST", "/actions/shutter")
         );
-        let body: ActionRunRequest = serde_json::from_str(&run.body.unwrap()).unwrap();
-        assert_eq!(body.catalog_revision, "r1");
+        assert_eq!(
+            run.body.as_deref(),
+            Some(r#"{"catalogRevision":"r1","mode":"shooting/stills","role":"responder"}"#)
+        );
 
         let advance = request(&["camera-simctl", "advance-property", "0x500D"]);
         assert_eq!(

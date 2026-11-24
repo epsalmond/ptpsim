@@ -240,3 +240,48 @@ fn callbacks_add_registers_an_observer_that_receives_state() {
         .expect("observer receives a state POST");
     assert!(request.starts_with("POST /state"), "{request}");
 }
+
+/// A listener that reads each request, then closes the connection without
+/// replying, as the service does when it is at its control-connection limit.
+fn silent_listener() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&chunk[..read]),
+                }
+            }
+        }
+    });
+    address
+}
+
+#[test]
+fn original_commands_exit_zero_when_the_connection_closes_without_a_reply() {
+    let control = silent_listener().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_camera-simctl"))
+        .args(["health", "--control", &control])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn new_commands_exit_nonzero_when_the_connection_closes_without_a_reply() {
+    let control = silent_listener().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_camera-simctl"))
+        .args(["state", "get", "--control", &control])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+}
