@@ -3986,6 +3986,50 @@ properties:
         ));
     }
 
+    #[test]
+    fn session_end_invalidates_pending_postview() {
+        let manifest = CameraManifest::from_yaml(include_str!(
+            "../../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml"
+        ))
+        .unwrap();
+        let close_session: fn(&mut Engine) = |engine| {
+            assert!(reply_is_ok(
+                &engine.on_operation(&req(op::CLOSE_SESSION, 5, vec![]), None)
+            ));
+        };
+        for (reason, end_session) in [
+            ("CloseSession", close_session),
+            ("transport loss", Engine::transport_lost),
+            (
+                "service transport end",
+                Engine::clear_session_after_transport_end,
+            ),
+        ] {
+            let mut engine = Engine::new(manifest.clone(), empty_store());
+            assert_ok_open(&mut engine);
+            assert!(reply_is_ok(&engine.on_operation(
+                &req(op::SET_DEVICE_PROP_VALUE, 2, vec![0xdf01]),
+                Some(&22u16.to_le_bytes()),
+            )));
+            assert!(reply_is_ok(
+                &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 3, vec![]), None)
+            ));
+            assert!(reply_is_ok(
+                &engine.on_operation(&req(op::INITIATE_CAPTURE, 4, vec![0, 0]), None)
+            ));
+            assert!(engine.postview_pending);
+            let generation = engine.event_generation();
+            let scheduled = engine.drain_events();
+            assert_eq!(scheduled.len(), 2);
+            assert!(scheduled.iter().all(|event| event.delay_ms > 0));
+
+            end_session(&mut engine);
+
+            assert_ne!(engine.event_generation(), generation, "{reason}");
+            assert!(!engine.postview_pending, "{reason}");
+        }
+    }
+
     /// #455 review: leaving the import workflow through a mode that declares
     /// no phase still resets the bootstrap gates — `state.phase` is sticky
     /// there, so keying the reset on the phase alone would skip it.

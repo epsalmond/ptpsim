@@ -1384,6 +1384,97 @@ fn service_delivers_gfx_stills_postview_and_autofocus_on_event_socket() {
     });
 }
 
+#[tokio::test(start_paused = true)]
+async fn service_terminates_gfx_app_postview() {
+    use ptp_core::codes::{op as code, resp};
+    use std::time::Duration;
+
+    let card = tmp_card();
+    let server = Server::bind(Config {
+        instance_id: "postview-cancellation".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "app".into(),
+        manifest_yaml: real_gfx_manifest(),
+        media_root: card.path().to_path_buf(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+        event_bind: Some("127.0.0.1:0".parse().unwrap()),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+        state_callback: None,
+    })
+    .await
+    .unwrap();
+    let command_addr = server.command_addr();
+    let event_addr = server.event_addr_opt().unwrap();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(server.run(shutdown_rx));
+
+    // Blocking TCP I/O keeps Tokio from auto-advancing between commands.
+    tokio::task::spawn_blocking(move || {
+        let clock = tokio::runtime::Handle::current();
+        let mut cmd = TcpStream::connect(command_addr).unwrap();
+        let timeout = Some(Duration::from_secs(2));
+        cmd.set_read_timeout(timeout).unwrap();
+        write_frame(&mut cmd, &app_init_frame(1, "postview-cancellation"));
+        assert!(matches!(
+            PtpIpPacket::decode(&read_frame(&mut cmd)).unwrap(),
+            PtpIpPacket::InitCommandAck(_)
+        ));
+        open_session(&mut cmd);
+        set_prop(&mut cmd, 2, 0xdf01, &0x16u16.to_le_bytes());
+        write_frame(&mut cmd, &op(code::INITIATE_OPEN_CAPTURE, 3, vec![]));
+        read_ok(&mut cmd);
+        let mut evt = TcpStream::connect(event_addr).unwrap();
+        evt.set_read_timeout(timeout).unwrap();
+        write_frame(&mut cmd, &op(code::GET_DEVICE_PROP_VALUE, 4, vec![0xd212]));
+        let _ = read_data_reply(&mut cmd);
+
+        // Confirm delivery before cancelling. The first take's ready event
+        // and both events from the next take are still scheduled.
+        write_frame(&mut cmd, &op(code::INITIATE_CAPTURE, 5, vec![0, 0]));
+        read_ok(&mut cmd);
+        // The next command reply confirms the shutter's timers were scheduled.
+        write_frame(&mut cmd, &op(code::GET_DEVICE_PROP_VALUE, 6, vec![0xd212]));
+        let _ = read_data_reply(&mut cmd);
+        clock.block_on(tokio::time::advance(Duration::from_millis(200)));
+        assert!(matches!(
+            usb_ptp::decode(&read_frame(&mut evt)).unwrap(),
+            PtpIpPacket::Event(event) if event.code == 0xc004 && event.params == [6, 6, 0, 0]
+        ));
+        write_frame(&mut cmd, &op(code::INITIATE_CAPTURE, 7, vec![0, 0]));
+        read_ok(&mut cmd);
+        write_frame(&mut cmd, &op(code::TERMINATE_OPEN_CAPTURE, 8, vec![3]));
+        read_ok(&mut cmd);
+
+        // Re-enter streaming to check the read with postview enabled again.
+        write_frame(&mut cmd, &op(code::INITIATE_OPEN_CAPTURE, 9, vec![]));
+        read_ok(&mut cmd);
+        write_frame(&mut cmd, &op(0x9022, 10, vec![]));
+        assert!(matches!(
+            fuji_framing::decode(&read_frame(&mut cmd)).unwrap(),
+            PtpIpPacket::OperationResponse(reply)
+                if reply.code == resp::OK && reply.transaction_id == 10 && reply.params.is_empty()
+        ));
+        clock.block_on(tokio::time::advance(Duration::from_secs(1)));
+        evt.set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        let error = evt.read(&mut [0]).expect_err("expected no event data");
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+    })
+    .await
+    .unwrap();
+
+    shutdown_tx.send(()).unwrap();
+    handle.await.unwrap();
+}
+
 #[test]
 fn service_serves_a_large_object_in_a_single_frame() {
     // A 2 MiB JPEG exceeds the sim's 1 MiB internal read chunk, so the body is

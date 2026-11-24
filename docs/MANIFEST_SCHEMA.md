@@ -849,6 +849,12 @@ timings and counters select a representative replay. The operation's
 parameterless completion emission remains the fallback outside the
 configured streaming capture path.
 
+An accepted `TerminateOpenCapture` during streaming clears the simulator's
+pending JPEG and cancels its delayed postview events. `CloseSession` and loss
+of the owning command transport also discard pending postview work. In the
+next matching stream, a parameterless `readOp` returns only OK until another
+take queues a JPEG.
+
 **Per-connection applicability.** The `app` (BLE→Wi-Fi-AP reference app, 55740/55741)
 connection is the hybrid push-then-read **happy path** — its event channel is
 wire-proven. `wireless-tether` (PCSS, 15740) has **no event channel** (wire-audit:
