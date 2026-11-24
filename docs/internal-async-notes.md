@@ -56,12 +56,19 @@ These sites exist in the current code and are not covered by the tables above.
 - `crates/camera-sim` `link.rs`: the cross-transport `SharedLink` holds a
   `std::sync::Mutex` around the registered device name, so the "no locks"
   statement above no longer holds.
-- `lib.rs` `handle_command_conn`: the `declared_aux_sync` mutex is held across
-  the engine and session-owner `.lock().await` calls and across
-  `DeclaredAuxListener::set_ready(...).await`; the session-owner mutex is
-  acquired while the engine guard is held; `set_ready` holds its `transition`
-  mutex across `deactivate().await`. These contradict the "no `Mutex` is held
-  across an `.await`" statement above.
+- `lib.rs` `handle_command_conn` and `control.rs` `apply_state_patch`: both
+  hold the `declared_aux_sync` mutex across `.await`. The command path takes
+  `declared_aux_sync`, then the engine, then the session owner; the state patch
+  takes `declared_aux_sync`, then the engine. Session teardown takes the engine,
+  then the session owner. No path acquires these in the reverse order, so they
+  cannot deadlock. The engine guard is dropped before
+  `DeclaredAuxListener::set_ready(...).await`, which takes the listener's
+  `transition` mutex and can wait for an in-flight accept while rebinding. The
+  cost is serialization: command operations and `PATCH /state` queue behind a
+  declared auxiliary listener rebind. Engine users that do not take
+  `declared_aux_sync` (control reads, delayed events, live view) are not
+  blocked by it. This contradicts the "no `Mutex` is held across an `.await`"
+  statement above.
 - `lib.rs` command accept loop: on shutdown the loop calls
   `JoinSet::shutdown().await`, which aborts its handlers and waits for them so
   lifecycle finalizers run before `run()` returns. The table row above

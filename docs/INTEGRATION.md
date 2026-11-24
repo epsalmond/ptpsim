@@ -192,9 +192,11 @@ canonical JSON leaves so foreign bindings do not invent a second value grammar.
 1. **Embed the data bundle.** Ship `camera-config-data/fuji/fuji.yaml` (manufacturer)
    plus the body manifest selected by recognition (for example
    `…/gfx100ii/gfx100ii.consolidated.yaml` or `…/xa7/xa7.yaml`) as app resources; pass their
-   contents to `from_bundle`. When a `main` push changes
-   `packages/camera-config-data/` (or its commit message contains `[ALL]`), CI
-   attaches `camera-config-data-<sha8>.tar.gz` and a `.checksum` to that
+   contents to `from_bundle`. When `ci/github-linux-changes.py` selects the
+   manifest-data job for a `main` push (a change under
+   `packages/camera-config-data/`, a CI workflow, selector, or release-helper
+   change, or a commit message containing `[ALL]`), CI attaches
+   `camera-config-data-<sha8>.tar.gz` and a `.checksum` to that
    commit's `sha-<sha8>` release; extract it to vendor the bundle without
    cloning the source tree. Other releases, including Apple promotions, attach
    no data tarball. Take the data for such an FFI release from the source tree

@@ -13,10 +13,12 @@ packaging.
 
 ## What's in the release
 
-A push to `main` that changes the Rust crates, the Cargo manifests or
-lockfile, or the Kotlin/Android build scripts (or whose commit message contains
-`[ALL]`) builds three Android cdylib ABIs, compiles the uniffi
-Kotlin bindings, and publishes a real **Android Archive (`.aar`)**:
+A push to `main` builds three Android cdylib ABIs, compiles the uniffi
+Kotlin bindings, and publishes a real **Android Archive (`.aar`)** when
+`ci/github-linux-changes.py` selects its `android` job. That selector is the
+source of truth. It selects the job for Rust FFI sources, the root Cargo files,
+or the Rust toolchain; the Kotlin/Android build; CI workflow, selector, or
+release-helper files; and any commit message containing `[ALL]`:
 
 | asset | role |
 |---|---|
@@ -102,8 +104,10 @@ val store = ConfigStore.fromManufacturerIndex(
 )
 ```
 
-The manifest YAMLs are shipped as a separate release artifact
-(`camera-config-data-<sha8>.tar.gz` — see `docs/INTEGRATION.md §5`).
+The manifest YAMLs are not in the AAR. CI attaches
+`camera-config-data-<sha8>.tar.gz` only to the releases of `main` commits that
+select the manifest-data job (conditions in `docs/INTEGRATION.md` §5), not to
+every release.
 Extract it into `assets/` for `readAsset(...)` to find at runtime.
 
 ## Bumping to a new release

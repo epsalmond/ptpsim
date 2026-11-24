@@ -180,7 +180,10 @@ TCP socket
 ```
 
 The event and live-view sockets are not side channels hidden inside command
-handling. Each has its own accept loop in `Server::run`.
+handling. A separate event or live-view listener has its own accept loop in
+`Server::run`. When a `standardPtpIp` connection uses one port for its command
+and event sockets, the command listener accepts both and routes each
+connection by its first packet (`InitCommandRequest` or `InitEventRequest`).
 
 ## Public Contract Sketch
 
@@ -275,7 +278,7 @@ ptpsim is its own standalone repo, published open source. client application con
 crates as dependencies; its placeholder `camera-protocol-{core,fuji,ffi}` crates
 are deleted in favor of these. A monorepo home was rejected because a generic,
 community-contributable simulator should not carry client application's App Review backend
-or app sources. Captured manifests, redacted golden packets, and fixtures are public — they are
+or app sources. Captured manifests, redacted golden packets, and fixtures are public. They are
 the community camera-behavior database, not private client application data.
 
 ```text
@@ -1659,7 +1662,7 @@ The tethered-shooting product target is higher:
 - Open-source boundary: the whole simulator is public — engine, schema, probe,
   service, CLI, and captured manifests, redacted golden packets, and fixtures.
   Only a consumer's app, backend, and management sidecar stay private. Evidence
-  is provenance only — manifests must load and run with it unresolved; golden
+  is provenance only: manifests must load and run with it unresolved; golden
   packets and fixtures pass redaction/redistribution hygiene before landing.
 - Manifest format: YAML source with generated JSON Schema.
 - Swift boundary: generated Swift tables first; Rust FFI only for logic that
