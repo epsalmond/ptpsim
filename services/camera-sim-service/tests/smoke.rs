@@ -1162,7 +1162,12 @@ fn gfx_app_descriptor_snapshots_follow_the_stills_video_selector() {
         .set_read_timeout(Some(std::time::Duration::from_secs(2)))
         .unwrap();
     open_session(&mut stream);
-    set_prop(&mut stream, 2, 0xdf01, &0x16u16.to_le_bytes());
+    write_frame(&mut stream, &op(0x902b, 2, vec![0]));
+    assert_eq!(
+        read_response_code(&mut stream),
+        ptp_core::codes::resp::INVALID_PARAMETER
+    );
+    set_prop(&mut stream, 3, 0xdf01, &0x16u16.to_le_bytes());
 
     let assert_snapshot = |stream: &mut TcpStream, tid, expected: &[u8]| {
         write_frame(stream, &op(0x902b, tid, vec![]));
@@ -1183,17 +1188,17 @@ fn gfx_app_descriptor_snapshots_follow_the_stills_video_selector() {
         assert!(response.params.is_empty());
     };
 
-    assert_snapshot(&mut stream, 3, &stills);
     assert_snapshot(&mut stream, 4, &stills);
-    write_frame(&mut stream, &op(0x101c, 5, vec![]));
+    assert_snapshot(&mut stream, 5, &stills);
+    write_frame(&mut stream, &op(0x101c, 6, vec![]));
     read_ok(&mut stream);
-    assert_snapshot(&mut stream, 6, &stills);
-    set_prop(&mut stream, 7, 0xd246, &[1]);
-    assert_snapshot(&mut stream, 8, &video);
+    assert_snapshot(&mut stream, 7, &stills);
+    set_prop(&mut stream, 8, 0xd246, &[1]);
     assert_snapshot(&mut stream, 9, &video);
-    set_prop(&mut stream, 10, 0xd246, &[0]);
-    assert_snapshot(&mut stream, 11, &stills);
-    write_frame(&mut stream, &op(0x902b, 12, vec![0]));
+    assert_snapshot(&mut stream, 10, &video);
+    set_prop(&mut stream, 11, 0xd246, &[0]);
+    assert_snapshot(&mut stream, 12, &stills);
+    write_frame(&mut stream, &op(0x902b, 13, vec![0]));
     assert_eq!(
         read_response_code(&mut stream),
         ptp_core::codes::resp::INVALID_PARAMETER

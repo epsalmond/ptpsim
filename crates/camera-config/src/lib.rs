@@ -459,7 +459,7 @@ impl CameraManifest {
             }
         }
         for (code, operation) in &self.operations {
-            require_valid_operation_handler(operation, code)?;
+            require_valid_operation_handler(self, operation, code)?;
         }
         for (code, property) in &self.properties {
             require_valid_descriptor(property, code)?;
@@ -626,7 +626,11 @@ impl CameraManifest {
     }
 }
 
-fn require_valid_operation_handler(operation: &Operation, code: &str) -> Result<(), ManifestError> {
+fn require_valid_operation_handler(
+    manifest: &CameraManifest,
+    operation: &Operation,
+    code: &str,
+) -> Result<(), ManifestError> {
     match operation.handler {
         Some(OperationHandler::PropertyStep) => {
             let property = operation.property.as_deref().ok_or_else(|| {
@@ -653,7 +657,7 @@ fn require_valid_operation_handler(operation: &Operation, code: &str) -> Result<
                     "operation '{code}' handler 'property.descriptorList' requires 'propertyDescriptorList'"
                 ))
             })?;
-            require_valid_property_descriptor_list(operation, code, list)?;
+            require_valid_property_descriptor_list(manifest, operation, code, list)?;
         }
         None => {}
     }
@@ -673,6 +677,7 @@ fn require_valid_operation_handler(operation: &Operation, code: &str) -> Result<
 }
 
 fn require_valid_property_descriptor_list(
+    manifest: &CameraManifest,
     operation: &Operation,
     code: &str,
     list: &model::PropertyDescriptorListHandler,
@@ -687,6 +692,18 @@ fn require_valid_property_descriptor_list(
     }
     let selector =
         parse_hex_code(&list.selector).ok_or_else(|| invalid("has an invalid selector"))?;
+    if !manifest.property(selector).is_some_and(|property| {
+        property.kind != PropertyKind::CatalogOnly
+            && matches!(
+                property.ptype.as_deref(),
+                Some("i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64")
+            )
+    }) {
+        return Err(ManifestError::Contract(format!(
+            "operation '{code}' propertyDescriptorList selector '{}' must reference a declared numeric property",
+            list.selector
+        )));
+    }
     if list.snapshots.is_empty() {
         return Err(invalid("requires at least one snapshot"));
     }
@@ -2987,6 +3004,39 @@ operations:
             err.contains("handler 'property.step' requires a 'property' code"),
             "err: {err}"
         );
+    }
+
+    #[test]
+    fn property_descriptor_list_requires_a_declared_numeric_selector() {
+        let operation = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+operations:
+  "0x902b":
+    name: ReadDescriptors
+    handler: property.descriptorList
+    propertyDescriptorList:
+      selector: "0xd2ff"
+      snapshots:
+        0: ["ffd2020001000000"]
+"#;
+        for properties in [
+            "",
+            "properties: { '0xD2FF': { name: selector, type: str } }",
+            "properties: { '0xD2FF': { name: selector, type: u8a } }",
+            "properties: { '0xD2FF': { name: selector, type: u8, kind: catalogOnly } }",
+        ] {
+            let err = CameraManifest::from_yaml(&format!("{operation}{properties}"))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("propertyDescriptorList selector '0xd2ff' must reference a declared numeric property"),
+                "{err}"
+            );
+        }
+
+        let properties = "properties: { '0xD2FF': { name: selector, type: u8, initialValue: 0 } }";
+        CameraManifest::from_yaml(&format!("{operation}{properties}")).unwrap();
     }
 
     #[test]

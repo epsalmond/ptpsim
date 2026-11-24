@@ -2055,13 +2055,15 @@ fn apply_candidate(
             {
                 return Err(conflict("conflicts with an existing handler"));
             }
+            let selector_code =
+                parse_hex_code(selector).ok_or_else(|| conflict("has an invalid selector"))?;
             let list = operation.property_descriptor_list.get_or_insert_with(|| {
                 PropertyDescriptorListHandler {
                     selector: selector.clone(),
                     snapshots: BTreeMap::new(),
                 }
             });
-            if &list.selector != selector {
+            if parse_hex_code(&list.selector) != Some(selector_code) {
                 return Err(conflict("conflicts with the existing selector"));
             }
             if list
@@ -2573,13 +2575,15 @@ fn sha256(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    const APP_DESCRIPTOR_OBSERVATIONS: &str = include_str!(
+        "../../../packages/camera-config-data/fuji/gfx100ii/evidence/app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-1.jsonl"
+    );
+    const APP_STILLS_SNAPSHOT_RECORD: &str = "gfx100ii-app-descriptors-20260518-1:snapshot-13";
+
     #[test]
     fn descriptor_snapshot_intake_preserves_scope_and_rejects_inconsistent_records() {
-        let input = include_str!(
-            "../../../packages/camera-config-data/fuji/gfx100ii/evidence/app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-1.jsonl"
-        );
+        let input = APP_DESCRIPTOR_OBSERVATIONS;
         let proposal = propose(&[input]).unwrap();
-        let target = "gfx100ii-app-descriptors-20260518-1:snapshot-13";
         let candidate = proposal
             .candidates
             .iter()
@@ -2587,7 +2591,7 @@ mod tests {
                 candidate
                     .source_records
                     .iter()
-                    .any(|record| record == target)
+                    .any(|record| record == APP_STILLS_SNAPSHOT_RECORD)
             })
             .unwrap();
         assert!(matches!(&candidate.assertion,
@@ -2611,6 +2615,52 @@ mod tests {
             let error = propose(&[&input]).unwrap_err();
             assert!(error.dispositions.iter().any(|row| row.code == code));
         }
+    }
+
+    #[test]
+    fn descriptor_snapshot_apply_matches_selector_codes_across_case() {
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x902b":
+    name: ReadDescriptors
+    modes: [shooting/stills]
+    connections: [app]
+    handler: property.descriptorList
+    propertyDescriptorList:
+      selector: "0xD246"
+      snapshots:
+        1: ["46d2020001000100"]
+properties:
+  "0xd246": { name: selector, type: u8, initialValue: 0 }
+"#,
+        )
+        .unwrap();
+        let proposal = propose(&[APP_DESCRIPTOR_OBSERVATIONS]).unwrap();
+        let mut review = accept_all(&proposal);
+        for candidate in &proposal.candidates {
+            if !candidate
+                .source_records
+                .iter()
+                .any(|record| record == APP_STILLS_SNAPSHOT_RECORD)
+            {
+                review
+                    .decisions
+                    .insert(candidate.id.clone(), ReviewDisposition::Reject);
+            }
+        }
+
+        let applied = apply_review(&base, &proposal, &review).unwrap();
+        let list = applied
+            .operation(0x902b)
+            .unwrap()
+            .property_descriptor_list
+            .as_ref()
+            .unwrap();
+        assert_eq!(list.selector, "0xD246");
+        assert_eq!(list.snapshots.keys().copied().collect::<Vec<_>>(), [0, 1]);
     }
 
     fn canonical_header(run_id: &str, record_id: &str) -> serde_json::Value {

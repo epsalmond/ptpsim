@@ -2137,11 +2137,11 @@ impl Engine {
         opdef: &camera_config::model::Operation,
         params: &[u32],
     ) -> Reply {
-        if self.state.active_mode.is_none() && !opdef.modes.is_empty() {
-            return Self::ok(tid);
-        }
         if !params.is_empty() {
             return Self::err(tid, resp::INVALID_PARAMETER);
+        }
+        if self.state.active_mode.is_none() && !opdef.modes.is_empty() {
+            return Self::ok(tid);
         }
         let Some(records) = opdef.property_descriptor_list.as_ref().and_then(|list| {
             let selector = parse_hex_code(&list.selector)?;
