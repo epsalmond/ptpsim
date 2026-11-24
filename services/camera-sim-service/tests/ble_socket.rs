@@ -726,6 +726,88 @@ async fn each_accept_rebuilds_the_responder_from_the_scenario() {
 }
 
 #[tokio::test]
+async fn scenario_exposes_every_manifest_characteristic_and_quiet_subscribes_succeed() {
+    let running = start_server().await;
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let declared: std::collections::BTreeSet<String> = ble.gatt.values().cloned().collect();
+
+    let mut client = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut client).await;
+    let discovered = client.ok("discover", json!({})).await;
+    let served: std::collections::BTreeSet<String> =
+        serde_json::from_value(discovered["characteristics"].clone()).unwrap();
+    assert_eq!(
+        served, declared,
+        "discover reports exactly the model's manifest GATT catalog"
+    );
+
+    // Every declared characteristic accepts a subscription; none of them has
+    // a notification scripted before the fenced launch write, so all stay
+    // quiet.
+    for uuid in &declared {
+        client.ok("subscribe", json!({"uuid": uuid})).await;
+    }
+    client.ok("scan_stop", json!({})).await;
+    assert!(
+        client
+            .received
+            .iter()
+            .all(|m| m["event"] != json!("notification")),
+        "unscripted subscriptions stay quiet"
+    );
+    drop(client);
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_second_connect_on_one_connection_is_idempotent() {
+    let running = start_server().await;
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let ap_state = uuid(ble, "apState");
+
+    let mut client = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut client).await;
+    client.ok("discover", json!({})).await;
+    client.ok("subscribe", json!({"uuid": ap_state})).await;
+    let again = client
+        .ok("connect", json!({"peripheral": PERIPHERAL}))
+        .await;
+    assert_eq!(again["mtu"], json!(247));
+    assert_eq!(again["peripheral_name"], Value::Null);
+
+    // Discovery and the subscription survive the repeated connect: a read
+    // needs no second discover, and the fenced launch still notifies.
+    let read = client.ok("read", json!({"uuid": ap_state})).await;
+    assert_eq!(read["value"], json!("0080"));
+    client
+        .ok(
+            "write_fenced",
+            json!({
+                "uuid": uuid(ble, "functionLaunchRequest"),
+                "value": "0400",
+                "notify_uuid": ap_state,
+            }),
+        )
+        .await;
+    client.ok("scan_stop", json!({})).await;
+    assert_eq!(client.notifications(&ap_state), vec!["0280", "0180"]);
+    let connects = running
+        .socket
+        .log()
+        .iter()
+        .filter(|e| **e == BleEvent::Connect)
+        .count();
+    assert_eq!(
+        connects, 1,
+        "the repeated connect does not reach the responder"
+    );
+    drop(client);
+    running.stop().await;
+}
+
+#[tokio::test]
 async fn a_second_concurrent_client_is_refused_as_busy() {
     let running = start_server().await;
     let mut first = Client::connect(running.ble_addr).await;
