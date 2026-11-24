@@ -10,12 +10,18 @@ GitHub Actions runs public build and test work on hosted runners. Workflow
 files live in [`.github/workflows/`](../.github/workflows/):
 
 - `linux.yml` runs smoke, public-content, commit-message, documentation,
-  workspace, and Kotlin binding checks on pull requests and `main` pushes.
-  Android libraries, the Python wheel, and manifest data publish from `main`.
+  workspace, FFI surface, and Kotlin binding checks on pull requests and `main`
+  pushes. Android libraries, the Python wheel, and manifest data publish from
+  `main`. The FFI surface job and its baseline are described in
+  [APPLE_FFI_RELEASES.md](APPLE_FFI_RELEASES.md#ffi-surface-baseline).
 - `xcframework.yml` promotes `apple-ffi-<sha8>` tags on hosted Apple Silicon
   macOS. The tag must identify a commit already merged to `main`.
 - `oci-image.yml` builds the service image without pushing it on pull requests
   and `main` pushes. A default-branch build populates the shared BuildKit cache.
+
+Branch protection on `main` lists the required status checks. A job that its
+path filter skips reports `skipped`, which satisfies a required check, so
+path-filtered jobs can be required.
 
 Fork pull requests use read-only repository access. Build and test jobs need
 no repository secrets. Release jobs use the workflow's `GITHUB_TOKEN` with

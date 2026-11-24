@@ -75,6 +75,10 @@ generate_bindings() {
         echo "FATAL: build ${IOS_DEVICE_TARGET} before generating bindings." >&2
         exit 1
     }
+    # Fail the release when the library the Swift bindings come from differs
+    # from the committed FFI surface baseline (docs/APPLE_FFI_RELEASES.md).
+    "${ROOT}/ci/ffi-surface.sh" check --library "${library}"
+
     rm -rf "${swift_dir}"
     mkdir -p "${swift_dir}"
 

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
@@ -20,13 +20,23 @@ use camera_protocol_ffi::{ConfigStore, KeyValue};
 use ptp_core::{DeviceInfo, OperationResponse, PtpIpPacket, Writer};
 use serde_json::Value;
 
+const GET_DEVICE_INFO_READS: &str = "            - usbBulkOut: { data: { literal: '0c0000000100011001000000' } }\n            - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }\n            - usbBulkIn: { maxLength: 512, encoding: bytes, captureAs: deviceInfoResponse }";
+
 fn store(ownership: &str, operation: &str, establishment_inventory: bool) -> Arc<ConfigStore> {
-    let extra = if establishment_inventory {
-        "            - usbBulkOut: { data: { literal: '0c0000000100011001000000' } }\n            - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }"
+    if establishment_inventory {
+        store_with_establishment(ownership, operation, GET_DEVICE_INFO_READS, 6)
     } else {
-        ""
-    };
-    let step_count = if establishment_inventory { 5 } else { 3 };
+        store_with_establishment(ownership, operation, "", 3)
+    }
+}
+
+/// `extra` follows the claim and OpenSession steps verbatim.
+fn store_with_establishment(
+    ownership: &str,
+    operation: &str,
+    extra: &str,
+    step_count: usize,
+) -> Arc<ConfigStore> {
     let index = format!(
         r#"
 manufacturer: TESTCO
@@ -219,24 +229,23 @@ impl UsbInventoryIo for FinalizationFailureIo {
     }
 }
 
-struct TempDir(PathBuf);
+/// A directory that belongs to one test. `tempfile` creates it exclusively
+/// under a random name and removes it when the guard drops.
+struct TempDir(tempfile::TempDir);
 impl TempDir {
     fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("ptpsim-usb-{}-{nonce}", std::process::id()));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
+        Self(
+            tempfile::Builder::new()
+                .prefix("ptpsim-usb-")
+                .tempdir()
+                .unwrap(),
+        )
+    }
+    fn path(&self) -> &Path {
+        self.0.path()
     }
     fn output(&self) -> PathBuf {
-        self.0.join("inventory")
-    }
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        self.path().join("inventory")
     }
 }
 
@@ -277,7 +286,8 @@ fn trace(directory: &TempDir) -> (Arc<TraceWriter>, ObservationRecorder) {
         epistemic: direct_epistemic(),
     };
     let recorder =
-        ObservationRecorder::open(Some(directory.0.join("observation.jsonl")), header).unwrap();
+        ObservationRecorder::open(Some(directory.path().join("observation.jsonl")), header)
+            .unwrap();
     (
         Arc::new(
             TraceWriter::with_observations(
@@ -448,7 +458,7 @@ async fn inventory_reuses_establishment_action_pipeline_and_usb_provenance() {
         payload.len()
     );
     // Export parses through the canonical schema, including the USB header and record provenance.
-    let retained = std::fs::read_to_string(directory.0.join("observation.jsonl")).unwrap();
+    let retained = std::fs::read_to_string(directory.path().join("observation.jsonl")).unwrap();
     camera_config::validate_bundles(&[&retained]).unwrap();
     assert!(
         retained.contains("\"type\":\"usb\"") || retained.contains("\"interfaceType\":\"usb\"")
@@ -586,11 +596,113 @@ fn preflight_rejects_incompatible_scope_before_io() {
 }
 
 #[test]
+fn preflight_rejects_get_device_info_without_its_response_read() {
+    // Each USB phase is one bulk IN read. Stopping after the data container
+    // would leave the response queued for the next transaction.
+    let data_only = store_with_establishment(
+        "initiatorOwned",
+        "0x1001",
+        "            - usbBulkOut: { data: { literal: '0c0000000100011001000000' } }\n            - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }",
+        5,
+    );
+    let error = UsbInventoryPlan::prepare(&data_only, "tu1", "usb", 65536)
+        .err()
+        .expect("a GetDeviceInfo without its response read is rejected");
+    assert!(
+        format!("{error:#}").contains("read every phase"),
+        "{error:#}"
+    );
+    UsbInventoryPlan::prepare(
+        &store("initiatorOwned", "0x1001", true),
+        "tu1",
+        "usb",
+        65536,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn establishment_reads_one_container_per_bulk_in_when_phases_share_a_transfer() {
+    let directory = TempDir::new();
+    let (trace, _) = trace(&directory);
+    let store = store("initiatorOwned", "0x1001", true);
+    let plan = UsbInventoryPlan::prepare(&store, "tu1", "usb", 65536).unwrap();
+    let payload = payload();
+    let mut establishment = data(1, &payload);
+    establishment.extend(response(0x2001, 1));
+    let mut action = data(2, &payload);
+    action.extend(response(0x2001, 2));
+    let script = Arc::new(Mutex::new(Script {
+        reads: VecDeque::from([
+            response(0x2001, 0),
+            establishment,
+            action,
+            response(0x2001, 3),
+        ]),
+        ..Script::default()
+    }));
+    let adapter = transport(&plan, script.clone(), trace.clone(), Duration::from_secs(1));
+    run_usb_inventory(plan, store, adapter, trace, &directory.output())
+        .await
+        .unwrap();
+    let script = script.lock().unwrap();
+    let calls = script
+        .calls
+        .iter()
+        .filter(|call| call.starts_with("out:") || call.starts_with("in:"))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    // The establishment's response read is served from the transfer that also
+    // carried the data container, without another bulk IN request.
+    assert_eq!(
+        &calls[..5],
+        [
+            "out:1002:0",
+            "in:512",
+            "out:1001:1",
+            "in:65536",
+            "out:1001:2"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn establishment_ending_inside_a_container_fails_before_the_next_command() {
+    let directory = TempDir::new();
+    let (trace, _) = trace(&directory);
+    // The OpenSession response arrives with the start of another container.
+    // The transport reports the unread bytes instead of reading on the plan's behalf.
+    let store = store("initiatorOwned", "0x1001", false);
+    let plan = UsbInventoryPlan::prepare(&store, "tu1", "usb", 65536).unwrap();
+    let mut joined = response(0x2001, 0);
+    joined.extend(&response(0x2001, 1)[..3]);
+    let script = Arc::new(Mutex::new(Script {
+        reads: VecDeque::from([joined]),
+        ..Script::default()
+    }));
+    let adapter = transport(&plan, script.clone(), trace.clone(), Duration::from_secs(1));
+    let error = run_usb_inventory(plan, store, adapter, trace, &directory.output())
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("ended before reading every container"),
+        "{error:#}"
+    );
+    let script = script.lock().unwrap();
+    assert_eq!(
+        script.writes.len(),
+        1,
+        "no command follows the unsynchronized plan"
+    );
+    assert_eq!(script.calls.last().unwrap(), "release");
+}
+
+#[test]
 fn artifact_preflight_rejects_overwrite_and_input_aliases() {
     let directory = TempDir::new();
-    let input = directory.0.join("body.yaml");
+    let input = directory.path().join("body.yaml");
     std::fs::write(&input, "manifest").unwrap();
-    let observation = directory.0.join("observation.jsonl");
+    let observation = directory.path().join("observation.jsonl");
     assert!(validate_usb_artifact_paths(
         std::slice::from_ref(&input),
         &directory.output(),
@@ -619,8 +731,8 @@ fn artifact_preflight_rejects_overwrite_and_input_aliases() {
 fn cli_rejects_daemon_owned_selection_before_creating_artifacts() {
     let directory = TempDir::new();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/camera-config-data/fuji");
-    let trace = directory.0.join("trace.jsonl");
-    let observation = directory.0.join("observation.jsonl");
+    let trace = directory.path().join("trace.jsonl");
+    let observation = directory.path().join("observation.jsonl");
     let result = std::process::Command::new(env!("CARGO_BIN_EXE_camera-initiator"))
         .args(["--manifest"])
         .arg(root.join("gfx100ii/gfx100ii.yaml"))
@@ -722,7 +834,7 @@ async fn final_observation_failure_preserves_inventory_retention_and_cleanup_err
                     script: script.clone(),
                     descriptors: descriptors(),
                 },
-                observation: directory.0.join("observation.jsonl"),
+                observation: directory.path().join("observation.jsonl"),
                 fail_release: failure != "none",
                 block_payload: (failure == "retention")
                     .then(|| directory.output().join("device-info.bin")),

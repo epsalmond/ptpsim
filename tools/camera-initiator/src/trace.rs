@@ -829,7 +829,6 @@ fn encode_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use camera_config::{
         direct_epistemic, no_loss, BundleHeader, CameraContext, CaptureClock, CaptureContext,
@@ -848,30 +847,22 @@ mod tests {
         }
     }
 
-    struct TempObservationDir(PathBuf);
+    /// A directory that belongs to one test. `tempfile` creates it exclusively
+    /// under a random name and removes it when the guard drops.
+    struct TempObservationDir(tempfile::TempDir);
 
     impl TempObservationDir {
         fn new() -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock after Unix epoch")
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "ptpsim-initiator-trace-{}-{nonce}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&path).expect("create temporary observation directory");
-            Self(path)
+            Self(
+                tempfile::Builder::new()
+                    .prefix("ptpsim-initiator-trace-")
+                    .tempdir()
+                    .expect("create temporary observation directory"),
+            )
         }
 
         fn observation_path(&self) -> PathBuf {
-            self.0.join("observations.jsonl")
-        }
-    }
-
-    impl Drop for TempObservationDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            self.0.path().join("observations.jsonl")
         }
     }
 

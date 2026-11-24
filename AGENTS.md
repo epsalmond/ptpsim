@@ -108,8 +108,9 @@ both labels.
    body. The *why* goes in the PR description — or a durable `docs/*.md` if
    it's load-bearing past the merge. Commits should not have "and."
 5. **Push the branch, mark the PR ready, then merge it directly.** GitHub
-   auto-merge is unavailable on this repository (free-plan private repo with no
-   branch protection). The owning agent merges only after the review-complete
+   auto-merge is disabled on this repository. Branch protection on `main`
+   requires status checks to pass on an up-to-date head; the branch protection
+   settings list them. The owning agent merges only after the review-complete
    gates below and required checks pass on the current head; do not bypass
    those gates.
 6. **Write the PR for a human:** what was done and why it matters, in prose
