@@ -1593,7 +1593,7 @@ fn xlv_models_protocol_shape_with_access_gate_kept_private() {
 
 #[test]
 fn generator_ingests_real_probe_evidence_into_a_proposal() {
-    // Load every committed camera-observation/v1 reduction bundle.
+    // Load the canonical inventory, label, and value-profile bundles.
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/camera-config-data/fuji/gfx100ii/evidence");
     let mut bundles = Vec::new();
@@ -1671,6 +1671,32 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
         serde_json::from_str(&data("fuji/catalog/tether-app-ff0018.review.json")).unwrap();
     let m = camera_config::apply_review(&m, &static_proposal, &static_review)
         .expect("reviewed static catalog applies after camera observations");
+
+    let descriptor_bundles = [1, 2, 3].map(|capture| {
+        std::fs::read_to_string(root.join(format!(
+            "app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-{capture}.jsonl"
+        )))
+        .unwrap()
+    });
+    let descriptor_proposal =
+        camera_config::propose(&descriptor_bundles.each_ref().map(String::as_str))
+            .expect("app descriptor corpus validates");
+    let committed_descriptor_proposal: camera_config::Proposal = serde_json::from_str(
+        &std::fs::read_to_string(root.join("app-descriptor-snapshots.proposal.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(descriptor_proposal, committed_descriptor_proposal);
+    let descriptor_review: camera_config::ProposalReview = serde_json::from_str(
+        &std::fs::read_to_string(root.join("app-descriptor-snapshots.review.json")).unwrap(),
+    )
+    .unwrap();
+    let mut m = m;
+    let descriptor_operation = m.operations.get_mut("0x902b").unwrap();
+    descriptor_operation.handler = None;
+    descriptor_operation.property_descriptor_list = None;
+    descriptor_operation.observed_scopes.clear();
+    let m = camera_config::apply_review(&m, &descriptor_proposal, &descriptor_review)
+        .expect("reviewed app descriptor snapshots apply");
 
     m.require_supported_schema()
         .expect("applied manifest uses the current schema");

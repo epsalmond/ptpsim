@@ -28,13 +28,14 @@ current values `0x8000EA60` in stills and `0x80007530` in video, with the enum
 `[0, 0xFFFFFFFF]` in both.
 
 The reduced transactions retain the exact camera data bodies and cover only
-`0x902B`. The [first capture](probe/2026-05-18-app-descriptor-snapshots-1.jsonl)
+`0x902B`. The [first capture](app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-1.jsonl)
 contains 20 exchanges. The
-[second](probe/2026-05-18-app-descriptor-snapshots-2.jsonl) and
-[third](probe/2026-05-18-app-descriptor-snapshots-3.jsonl) contain four each.
+[second](app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-2.jsonl) and
+[third](app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-3.jsonl) contain four each.
 
-The [proposal](app-descriptor-snapshots.proposal.json) groups byte-identical
-exchanges. The [digest-bound review](app-descriptor-snapshots.review.json)
+The [app descriptor proposal](app-descriptor-snapshots.proposal.json) groups
+byte-identical exchanges from these three bundles. The
+[digest-bound review](app-descriptor-snapshots.review.json)
 selects a stills and a video capture from the same command session, records
 `snapshot-13` and `snapshot-17` in the first capture. The simulator serves
 those two snapshots according to the current `0xD246` value. Other members

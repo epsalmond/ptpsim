@@ -1110,7 +1110,7 @@ fn service_times_out_d620_until_image_import_bootstrap_completes() {
 #[test]
 fn gfx_app_descriptor_snapshots_follow_the_stills_video_selector() {
     let evidence = include_str!(
-        "../../../packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-18-app-descriptor-snapshots-1.jsonl"
+        "../../../packages/camera-config-data/fuji/gfx100ii/evidence/app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-1.jsonl"
     );
     let observed_body = |record_id| {
         let row = evidence

@@ -3302,7 +3302,7 @@ fn parse_device_prop_desc_decodes_value_and_enum_form() {
 
 #[test]
 fn app_descriptor_snapshot_preserves_observed_values_across_ffi() {
-    let evidence = data("fuji/gfx100ii/evidence/probe/2026-05-18-app-descriptor-snapshots-1.jsonl");
+    let evidence = data("fuji/gfx100ii/evidence/app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-1.jsonl");
     let record = parse_observation_record(evidence.lines().nth(17).unwrap().to_owned()).unwrap();
     let ObservationValue::PtpTransaction { value } = record.value else {
         panic!("expected a descriptor transaction");

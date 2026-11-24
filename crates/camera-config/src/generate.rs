@@ -2576,7 +2576,7 @@ mod tests {
     #[test]
     fn descriptor_snapshot_intake_preserves_scope_and_rejects_inconsistent_records() {
         let input = include_str!(
-            "../../../packages/camera-config-data/fuji/gfx100ii/evidence/probe/2026-05-18-app-descriptor-snapshots-1.jsonl"
+            "../../../packages/camera-config-data/fuji/gfx100ii/evidence/app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-1.jsonl"
         );
         let proposal = propose(&[input]).unwrap();
         let target = "gfx100ii-app-descriptors-20260518-1:snapshot-13";
