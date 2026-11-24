@@ -138,7 +138,10 @@ LIB=target/release/libcamera_protocol_ffi.a   # .so on Linux; .a is canonical on
 
 Swift emits `CameraProtocolFFI.swift` + `CameraProtocolFFIFFI.{h,modulemap}` (the
 PascalCase names come from `crates/camera-protocol-ffi/uniffi.toml`). Kotlin emits
-`uniffi/camera_protocol_ffi/camera_protocol_ffi.kt`. Python emits
+`dev/ptpsim/cameraprotocol/camera_protocol_ffi.kt` in package
+`dev.ptpsim.cameraprotocol`, also set in `uniffi.toml`. A consumer that wants
+its own package passes a `--config` file with a `[bindings.kotlin]
+package_name` override to `generate`. Python emits
 `camera_protocol_ffi.py`. Optional formatters (`swiftformat`/`ktlint`/`ruff`) run
 automatically when on PATH; harmless warning if absent.
 
@@ -479,9 +482,20 @@ and its automatic-recognition platform list. Product ID matching applies only
 when the manifest declares an evidenced PID. The current GFX100 II row is a
 vendor-level candidate, so run its `readDeviceInfo` action and require
 `confirmDeviceInfo` before saving the model identity.
-| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, postExitReadiness: [Step], steps: [Step], activities: [ConnectionActivityDescriptor] }`. Activities contain the plan's executor spans followed by the selected connection's host activities (§11.23). A typed host establishment is executable contract: `networkIdentityExact` requires the observed identity to exactly match its runtime-scope key, and `retainedSessionOpen` opens and keeps the real session as reachability proof. Each descriptor's `optional` presentation marker distinguishes a conditionally inapplicable activity from one that is still upcoming; it never controls whether the executor runs that activity. `initialScope` is typically the `runtimeScope` from a `Candidate`. After an orderly feature exit, walk the optional `postExitReadiness` sequence before replaying `steps`; do not infer readiness by negating a launch predicate. |
+| `establishment(model, connection, initialScope)` | `EstablishmentPlan { planHandle, mechanism, prerequisite?, postExitReadiness: [Step], steps: [Step], activities: [ConnectionActivityDescriptor], wifiHandoff? }`. Activities contain the plan's executor spans followed by the selected connection's host activities (§11.23). A typed host establishment is executable contract: `networkIdentityExact` requires the observed identity to exactly match its runtime-scope key, and `retainedSessionOpen` opens and keeps the real session as reachability proof. Each descriptor's `optional` presentation marker distinguishes a conditionally inapplicable activity from one that is still upcoming; it never controls whether the executor runs that activity. `initialScope` is typically the `runtimeScope` from a `Candidate`. After an orderly feature exit, walk the optional `postExitReadiness` sequence before replaying `steps`; do not infer readiness by negating a launch predicate. |
 | `refineEstablishment(planHandle, firmware, scope, nextStepIndex)` | validates the plan handle and returns `NoChange` or `ReplaceTail{steps, activities}` per §11.5/§11.23; replacement activity spans are relative to the returned tail. Invalid handles/indices are errors. Current manifests return `NoChange` because no establishment overlays exist yet. |
 | `connectionEstablishment(connection)` | Single-body connection bring-up, including the connection's host-owned activity descriptors. Descriptive work uses `hostCheckpoint`; executable gates use typed `hostEstablishment` actions (§11.23). |
+
+A plan that launches a camera Wi-Fi access point can carry `wifiHandoff`, a
+`WifiHandoffPolicy { maxAttempts, retryDelayMs, join: { settleMs,
+associationTimeoutMs }, sessionOpen: { settleMs, maxAttempts, retryDelayMs } }`.
+After walking `steps`, the consumer uses it to join the returned network and
+open the PTP/IP session: settle, join, confirm association, settle, open with
+bounded retries, then retry the whole join and open on qualifying failures.
+The settles apply only to a fresh launch; a rejoin with held credentials skips
+them. MANIFEST_SCHEMA §11.31 defines the
+loop, the clock origins, and which failures are retried. `wifiHandoff` is nil
+when the plan declares no policy; the consumer then uses its own defaults.
 
 Saved-camera reconnect is a fresh-observation loop. For each advert, call
 `reconnectDecision` with the scope persisted from pairing. `Wake` means walk the

@@ -444,6 +444,7 @@ fn validate_bundle(lines: &mut [ParsedLine]) {
     let mut ordinals = BTreeMap::new();
     let mut transaction_correlations = BTreeMap::new();
     let mut transaction_ids = BTreeMap::new();
+    let mut push_frame_positions = BTreeMap::new();
     for (index, line) in lines.iter().enumerate() {
         let Some(value) = &line.value else {
             continue;
@@ -458,6 +459,16 @@ fn validate_bundle(lines: &mut [ParsedLine]) {
             .entry(value.ordinal())
             .or_insert_with(Vec::new)
             .push(index);
+        if let ObservationLine::PushFrame(frame) = value {
+            push_frame_positions
+                .entry((
+                    frame.connection_instance.clone(),
+                    frame.stream.clone(),
+                    frame.sequence,
+                ))
+                .or_insert_with(Vec::new)
+                .push(index);
+        }
         if let ObservationLine::PtpTransaction(transaction) = value {
             let key = (
                 transaction.connection_instance.clone(),
@@ -494,6 +505,14 @@ fn validate_bundle(lines: &mut [ParsedLine]) {
     {
         for index in duplicates {
             lines[*index].reject("O022", "duplicate PTP transaction correlation identity");
+        }
+    }
+    for duplicates in push_frame_positions
+        .values()
+        .filter(|indices| indices.len() > 1)
+    {
+        for index in duplicates {
+            lines[*index].reject("O145", "duplicate push-frame sequence within one stream");
         }
     }
 
@@ -828,6 +847,9 @@ fn validate_record(
             validate_identifier(&record.catalog_revision, "catalogRevision", line);
             validate_identifier(&record.action_id, "actionId", line);
         }
+        ObservationLine::PushFrame(record) => {
+            validate_push_frame(record, artifacts, clock_ids, clock_mappings, line);
+        }
     }
     let Some(common) = value.common() else {
         return;
@@ -850,6 +872,102 @@ fn validate_record(
                 "O032",
                 "readback clock differs from record clock without a declared mapping",
             );
+        }
+    }
+}
+
+/// Fixed header length of each push framing the validator accepts. The
+/// framing contracts live in protocol-primitives.
+fn push_framing_header_length(framing: &str) -> Option<u64> {
+    use protocol_primitives::liveview;
+    (framing == liveview::FRAMING_ID).then_some(liveview::HEADER_LEN as u64)
+}
+
+fn validate_push_frame(
+    record: &PushFrameRecord,
+    artifacts: &BTreeMap<&str, u64>,
+    clock_ids: &BTreeSet<&str>,
+    clock_mappings: &BTreeSet<(&str, &str)>,
+    line: &mut ParsedLine,
+) {
+    validate_identifier(&record.connection_instance, "connectionInstance", line);
+    validate_identifier(&record.stream, "stream", line);
+    validate_identifier(&record.envelope.framing, "envelope.framing", line);
+    validate_sanitized(&record.body.media_type, "body.mediaType", line);
+    let envelope = &record.envelope;
+    validate_payload(&envelope.header, artifacts, line);
+    validate_payload(&record.body.payload, artifacts, line);
+    if record.body.payload.inline_hex.is_some() {
+        line.reject(
+            "O140",
+            "push-frame body must not carry inline bytes; retain image bytes outside the bundle",
+        );
+    }
+    if envelope.header.inline_hex.is_none() || envelope.header.length > envelope.body_offset {
+        line.reject(
+            "O141",
+            "push-frame envelope header must be inline and end at or before bodyOffset",
+        );
+    }
+    match push_framing_header_length(&envelope.framing) {
+        None => line.reject(
+            "O148",
+            format!("unknown push-frame framing {:?}", envelope.framing),
+        ),
+        Some(length) if envelope.header.length != length => line.reject(
+            "O147",
+            format!(
+                "push-frame header must be the {length}-byte {} header",
+                envelope.framing
+            ),
+        ),
+        Some(_) => {}
+    }
+    if record.body.payload.length == 0 {
+        line.reject("O149", "push-frame body must not be empty");
+    }
+    if let Some(gap_sha256) = &envelope.gap_sha256 {
+        validate_sha256(gap_sha256, line);
+    }
+    if envelope.gap_sha256.is_some() != (envelope.body_offset > envelope.header.length) {
+        line.reject(
+            "O150",
+            "push-frame gapSha256 must be present exactly when bytes separate the header from the body",
+        );
+    }
+    if envelope
+        .body_offset
+        .checked_add(record.body.payload.length)
+        .is_none_or(|end| end != envelope.declared_length)
+    {
+        line.reject(
+            "O142",
+            "push-frame body must end at the envelope's declaredLength",
+        );
+    }
+    let time_clock = record.common.time.clock.as_str();
+    let reads = std::iter::once(&record.host_read.first_read).chain(&record.host_read.last_read);
+    for point in reads {
+        let clock = point.clock.as_str();
+        if !clock_ids.contains(clock)
+            || (clock != time_clock && !clock_mappings.contains(&(time_clock, clock)))
+        {
+            line.reject(
+                "O143",
+                format!("push-frame host read uses undeclared or unmapped clock {clock:?}"),
+            );
+        }
+    }
+    if let Some(last) = &record.host_read.last_read {
+        if last.clock == record.host_read.first_read.clock
+            && last.value < record.host_read.first_read.value
+        {
+            line.reject("O144", "push-frame lastRead precedes firstRead");
+        }
+    }
+    if let Some(image) = &record.body.image {
+        if image.width == 0 || image.height == 0 || image.precision == 0 || image.components == 0 {
+            line.reject("O146", "push-frame image geometry must be nonzero");
         }
     }
 }
