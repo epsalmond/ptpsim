@@ -370,7 +370,13 @@ name = "camera-simctl"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "camera-sim",
+ "camera-sim-service",
  "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

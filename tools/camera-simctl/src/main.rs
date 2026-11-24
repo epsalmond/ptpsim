@@ -1,12 +1,17 @@
-//! `camera-simctl` — CLI over the simulator's control HTTP. Std-only and
-//! synchronous: it is a thin operator/test tool, not a service.
+//! `camera-simctl`: CLI over the simulator's control HTTP. Synchronous, with
+//! hand-written HTTP over std networking: it is a thin operator/test tool, not
+//! a service. JSON request bodies are checked against the service's own
+//! request types in `camera-sim`, so the CLI and the service share one
+//! definition of each shape.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
+use camera_sim::{ActionRunRequest, AdvancePropertyRequest, StateOverlay};
 use clap::{Parser, Subcommand};
+use serde::de::DeserializeOwned;
 
 #[derive(Parser)]
 #[command(
@@ -73,6 +78,16 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         after: u64,
     },
+    /// GET /connection-lifecycles.
+    ConnectionLifecycles {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        control: String,
+    },
+    /// Manage observers that receive camera-state snapshots.
+    Callbacks {
+        #[command(subcommand)]
+        command: CallbacksCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -86,8 +101,17 @@ enum StateCmd {
     Patch {
         #[arg(long, default_value = "127.0.0.1:8080")]
         control: String,
-        #[arg(long)]
-        overlay: String,
+        /// Inline JSON state overlay.
+        #[arg(
+            long,
+            value_parser = json_text::<StateOverlay>,
+            required_unless_present = "overlay_file",
+            conflicts_with = "overlay_file"
+        )]
+        overlay: Option<String>,
+        /// Path to a JSON state overlay file.
+        #[arg(long, value_name = "PATH", value_parser = json_file::<StateOverlay>)]
+        overlay_file: Option<String>,
     },
 }
 
@@ -104,9 +128,43 @@ enum ActionsCmd {
         #[arg(long, default_value = "127.0.0.1:8080")]
         control: String,
         /// Request body with catalogRevision, mode, role, and optional parameters.
-        #[arg(long)]
-        request: String,
+        #[arg(
+            long,
+            value_parser = json_text::<ActionRunRequest>,
+            required_unless_present = "request_file",
+            conflicts_with = "request_file"
+        )]
+        request: Option<String>,
+        /// Path to a file containing the request body.
+        #[arg(long, value_name = "PATH", value_parser = json_file::<ActionRunRequest>)]
+        request_file: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum CallbacksCmd {
+    /// POST /callbacks: register an http:// URL that receives a JSON
+    /// camera-state snapshot on every change.
+    Add {
+        #[arg(long)]
+        url: String,
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        control: String,
+    },
+}
+
+/// Check that inline JSON has the shape of the service's request type `T`,
+/// then keep the original text so it is sent unchanged. A shape error is a
+/// usage error; the service performs every semantic check.
+fn json_text<T: DeserializeOwned>(text: &str) -> Result<String, String> {
+    serde_json::from_str::<T>(text).map_err(|error| error.to_string())?;
+    Ok(text.to_string())
+}
+
+/// Read a JSON file and check it as `json_text` does.
+fn json_file<T: DeserializeOwned>(path: &str) -> Result<String, String> {
+    let text = std::fs::read_to_string(path).map_err(|error| format!("read {path}: {error}"))?;
+    json_text::<T>(&text).map_err(|error| format!("{path}: {error}"))
 }
 
 fn parse_property_code(value: &str) -> Result<u16, String> {
@@ -260,11 +318,16 @@ fn request_for(cmd: Cmd) -> Request {
                 path: "/state".into(),
                 body: None,
             },
-            StateCmd::Patch { control, overlay } => Request {
+            StateCmd::Patch {
+                control,
+                overlay,
+                overlay_file,
+            } => Request {
                 control,
                 method: "PATCH",
                 path: "/state".into(),
-                body: Some(overlay),
+                // Clap requires exactly one of the two.
+                body: overlay.or(overlay_file),
             },
         },
         Cmd::Actions { command } => match command {
@@ -278,24 +341,47 @@ fn request_for(cmd: Cmd) -> Request {
                 id,
                 control,
                 request,
+                request_file,
             } => Request {
                 control,
                 method: "POST",
                 path: format!("/actions/{id}"),
-                body: Some(request),
+                // Clap requires exactly one of the two.
+                body: request.or(request_file),
             },
         },
-        Cmd::AdvanceProperty { code, control } => Request {
-            control,
-            method: "POST",
-            path: "/control/advance-property".into(),
-            body: Some(format!(r#"{{"code":"{code:#06x}"}}"#)),
-        },
+        Cmd::AdvanceProperty { code, control } => {
+            let request = AdvancePropertyRequest {
+                code: format!("{code:#06x}"),
+            };
+            Request {
+                control,
+                method: "POST",
+                path: "/control/advance-property".into(),
+                body: Some(serde_json::json!(request).to_string()),
+            }
+        }
         Cmd::Observations { control, after } => Request {
             control,
             method: "GET",
             path: format!("/observations?after={after}"),
             body: None,
+        },
+        Cmd::ConnectionLifecycles { control } => Request {
+            control,
+            method: "GET",
+            path: "/connection-lifecycles".into(),
+            body: None,
+        },
+        Cmd::Callbacks { command } => match command {
+            // The service reads this body untyped, so there is no shared type
+            // to reuse for its single `url` field.
+            CallbacksCmd::Add { url, control } => Request {
+                control,
+                method: "POST",
+                path: "/callbacks".into(),
+                body: Some(serde_json::json!({ "url": url }).to_string()),
+            },
         },
     }
 }
@@ -379,6 +465,71 @@ mod tests {
         assert_eq!(
             (patch.method, patch.path.as_str(), patch.body.as_deref()),
             ("PATCH", "/state", Some(overlay))
+        );
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), r#"{"phase":"liveView"}"#).unwrap();
+        let path = file.path().to_str().unwrap();
+        let patch = request(&["camera-simctl", "state", "patch", "--overlay-file", path]);
+        assert_eq!(patch.body.as_deref(), Some(r#"{"phase":"liveView"}"#));
+    }
+
+    #[test]
+    fn json_bodies_need_exactly_one_source_with_the_service_shape() {
+        for args in [
+            &["camera-simctl", "state", "patch"][..],
+            &[
+                "camera-simctl",
+                "state",
+                "patch",
+                "--overlay",
+                "{}",
+                "--overlay-file",
+                "overlay.json",
+            ],
+            &["camera-simctl", "actions", "run", "shutter"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
+        let error = Cli::try_parse_from([
+            "camera-simctl",
+            "state",
+            "patch",
+            "--overlay",
+            r#"{"unknownField":1}"#,
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(error.to_string().contains("unknown field `unknownField`"));
+    }
+
+    #[test]
+    fn lifecycle_and_callback_commands_map_to_http_requests() {
+        let lifecycles = request(&["camera-simctl", "connection-lifecycles"]);
+        assert_eq!(
+            (lifecycles.method, lifecycles.path.as_str(), lifecycles.body),
+            ("GET", "/connection-lifecycles", None)
+        );
+
+        let callback = request(&[
+            "camera-simctl",
+            "callbacks",
+            "add",
+            "--url",
+            "http://127.0.0.1:9/state",
+        ]);
+        assert_eq!(
+            (
+                callback.method,
+                callback.path.as_str(),
+                callback.body.as_deref()
+            ),
+            (
+                "POST",
+                "/callbacks",
+                Some(r#"{"url":"http://127.0.0.1:9/state"}"#)
+            )
         );
     }
 
