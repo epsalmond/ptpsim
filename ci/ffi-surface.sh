@@ -3,12 +3,14 @@
 # Check or update the committed snapshot of the camera-protocol-ffi public
 # UniFFI surface (the items the generated Swift and Kotlin bindings expose).
 #
-#     ci/ffi-surface.sh          # check: fail when a baseline item was removed or changed
+#     ci/ffi-surface.sh          # check: fail when the baseline differs from the current surface
 #     ci/ffi-surface.sh update   # rewrite the baseline from the current surface
 #
 # The snapshot is read from the metadata UniFFI embeds in a host dev-profile
-# staticlib, the same input ci/build-android.sh and ci/build-xcframework.sh
-# give the binding generator. Release cdylibs are stripped of that metadata.
+# staticlib. ci/build-android.sh generates Kotlin from the same kind of build;
+# ci/build-xcframework.sh generates Swift from the iOS device release build.
+# The two agree only while the FFI crate has no target- or profile-dependent
+# cfg, so both modes first run `ffi-surface cfg-scan` and fail if it finds one.
 # Policy and workflow: docs/APPLE_FFI_RELEASES.md, "FFI surface baseline".
 
 set -euo pipefail
@@ -37,8 +39,19 @@ test -f "${LIBRARY}" || {
     exit 1
 }
 
+TOOL="${TARGET_DIR}/debug/ffi-surface"
+scan=0
+"${TOOL}" cfg-scan --crate-dir crates/camera-protocol-ffi || scan=$?
+
 inputs=(--library "${LIBRARY}" --config "${CONFIG}" --lockfile Cargo.lock)
 if [[ "${MODE}" == update ]]; then
-    exec "${TARGET_DIR}/debug/ffi-surface" snapshot "${inputs[@]}" --output "${BASELINE}"
+    if [[ "${scan}" != 0 ]]; then
+        echo "FATAL: not updating the baseline while the FFI crate has a build-dependent cfg" >&2
+        exit "${scan}"
+    fi
+    exec "${TOOL}" snapshot "${inputs[@]}" --output "${BASELINE}"
 fi
-exec "${TARGET_DIR}/debug/ffi-surface" check "${inputs[@]}" --baseline "${BASELINE}"
+check=0
+"${TOOL}" check "${inputs[@]}" --baseline "${BASELINE}" || check=$?
+# Report both results; fail with the more severe status.
+exit $((scan > check ? scan : check))
