@@ -20,13 +20,23 @@ use camera_protocol_ffi::{ConfigStore, KeyValue};
 use ptp_core::{DeviceInfo, OperationResponse, PtpIpPacket, Writer};
 use serde_json::Value;
 
+const GET_DEVICE_INFO_READS: &str = "            - usbBulkOut: { data: { literal: '0c0000000100011001000000' } }\n            - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }\n            - usbBulkIn: { maxLength: 512, encoding: bytes, captureAs: deviceInfoResponse }";
+
 fn store(ownership: &str, operation: &str, establishment_inventory: bool) -> Arc<ConfigStore> {
-    let extra = if establishment_inventory {
-        "            - usbBulkOut: { data: { literal: '0c0000000100011001000000' } }\n            - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }"
+    if establishment_inventory {
+        store_with_establishment(ownership, operation, GET_DEVICE_INFO_READS, 6)
     } else {
-        ""
-    };
-    let step_count = if establishment_inventory { 5 } else { 3 };
+        store_with_establishment(ownership, operation, "", 3)
+    }
+}
+
+/// `extra` follows the claim and OpenSession steps verbatim.
+fn store_with_establishment(
+    ownership: &str,
+    operation: &str,
+    extra: &str,
+    step_count: usize,
+) -> Arc<ConfigStore> {
     let index = format!(
         r#"
 manufacturer: TESTCO
@@ -583,6 +593,108 @@ fn preflight_rejects_incompatible_scope_before_io() {
     .unwrap();
     assert!(UsbInventoryPlan::prepare(&shipping, "gfx100ii", "usb-passthrough", 65536).is_err());
     UsbInventoryPlan::prepare(&shipping, "gfx100ii", "usb", 65536).unwrap();
+}
+
+#[test]
+fn preflight_rejects_get_device_info_without_its_response_read() {
+    // Each USB phase is one bulk IN read. Stopping after the data container
+    // would leave the response queued for the next transaction.
+    let data_only = store_with_establishment(
+        "initiatorOwned",
+        "0x1001",
+        "            - usbBulkOut: { data: { literal: '0c0000000100011001000000' } }\n            - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }",
+        5,
+    );
+    let error = UsbInventoryPlan::prepare(&data_only, "tu1", "usb", 65536)
+        .err()
+        .expect("a GetDeviceInfo without its response read is rejected");
+    assert!(
+        format!("{error:#}").contains("read every phase"),
+        "{error:#}"
+    );
+    UsbInventoryPlan::prepare(
+        &store("initiatorOwned", "0x1001", true),
+        "tu1",
+        "usb",
+        65536,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn establishment_reads_one_container_per_bulk_in_when_phases_share_a_transfer() {
+    let directory = TempDir::new();
+    let (trace, _) = trace(&directory);
+    let store = store("initiatorOwned", "0x1001", true);
+    let plan = UsbInventoryPlan::prepare(&store, "tu1", "usb", 65536).unwrap();
+    let payload = payload();
+    let mut establishment = data(1, &payload);
+    establishment.extend(response(0x2001, 1));
+    let mut action = data(2, &payload);
+    action.extend(response(0x2001, 2));
+    let script = Arc::new(Mutex::new(Script {
+        reads: VecDeque::from([
+            response(0x2001, 0),
+            establishment,
+            action,
+            response(0x2001, 3),
+        ]),
+        ..Script::default()
+    }));
+    let adapter = transport(&plan, script.clone(), trace.clone(), Duration::from_secs(1));
+    run_usb_inventory(plan, store, adapter, trace, &directory.output())
+        .await
+        .unwrap();
+    let script = script.lock().unwrap();
+    let calls = script
+        .calls
+        .iter()
+        .filter(|call| call.starts_with("out:") || call.starts_with("in:"))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    // The establishment's response read is served from the transfer that also
+    // carried the data container, without another bulk IN request.
+    assert_eq!(
+        &calls[..5],
+        [
+            "out:1002:0",
+            "in:512",
+            "out:1001:1",
+            "in:65536",
+            "out:1001:2"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn establishment_ending_inside_a_container_fails_before_the_next_command() {
+    let directory = TempDir::new();
+    let (trace, _) = trace(&directory);
+    // The OpenSession response arrives with the start of another container.
+    // The transport reports the unread bytes instead of reading on the plan's behalf.
+    let store = store("initiatorOwned", "0x1001", false);
+    let plan = UsbInventoryPlan::prepare(&store, "tu1", "usb", 65536).unwrap();
+    let mut joined = response(0x2001, 0);
+    joined.extend(&response(0x2001, 1)[..3]);
+    let script = Arc::new(Mutex::new(Script {
+        reads: VecDeque::from([joined]),
+        ..Script::default()
+    }));
+    let adapter = transport(&plan, script.clone(), trace.clone(), Duration::from_secs(1));
+    let error = run_usb_inventory(plan, store, adapter, trace, &directory.output())
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("ended before reading every container"),
+        "{error:#}"
+    );
+    let script = script.lock().unwrap();
+    assert_eq!(
+        script.writes.len(),
+        1,
+        "no command follows the unsynchronized plan"
+    );
+    assert_eq!(script.calls.last().unwrap(), "release");
 }
 
 #[test]
