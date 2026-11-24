@@ -106,7 +106,9 @@ a `results.json` summary after the run.
 `--startup-state <file>` on the service applies a YAML/JSON state overlay
 (schema `ptpsim-startup-state/v1`) before listeners serve. The fixture at
 `packages/fixtures/startup-state/gfx100ii-iso-2000.yaml` is a runnable
-example.
+example. `packages/fixtures/startup-state/gfx100ii-memory-card-slot1-empty.yaml`
+starts the GFX100 II in its manifest-declared `memoryCardSlot1Empty` state, in
+which App image import answers `0x2019`.
 
 For CI, build the container image:
 

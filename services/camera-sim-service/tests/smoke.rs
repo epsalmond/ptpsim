@@ -4707,3 +4707,153 @@ fn live_exposure_property_changes_mid_session() {
     let _ = shutdown_tx.send(());
     rt.block_on(handle).unwrap();
 }
+
+/// A synthetic body with one simulator state (#164, #352): while `slotEmpty`
+/// is active, vendor operation `0x9001` answers Device Busy on `app`.
+const STATES_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: State Camera, firmware: "1" }
+evidence:
+  docCondition: { kind: doc, path: "evidence/CONDITION.md" }
+connections:
+  app:
+    kind: ptpip-app
+    initShape: app82
+    liveViewDelivery: { kind: stream }
+    commandFraming: compressed
+    eventFraming: usb
+    bindings: { command: 15740, event: 15741, liveView: 15742 }
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+  "0x1003": { name: CloseSession, connections: [app] }
+  "0x9001": { name: VendorBegin, connections: [app] }
+properties:
+  "0x5007": { name: aperture, type: u16, access: readWrite }
+states:
+  slotEmpty:
+    summary: The card slot holds no card. Nothing else is modeled.
+    responses:
+      - { operation: "0x9001", response: "0x2019", connections: [app] }
+    evidence: [docCondition]
+"#;
+
+fn states_server_config(root: &std::path::Path) -> Config {
+    Config {
+        instance_id: "state-test".into(),
+        profile: "test/state".into(),
+        connection: "app".into(),
+        manifest_yaml: STATES_MANIFEST.into(),
+        media_root: root.to_path_buf(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+        event_bind: Some("127.0.0.1:0".parse().unwrap()),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: None,
+        state_callback: None,
+    }
+}
+
+fn with_states_service(
+    startup: Option<camera_sim::StateOverlay>,
+    test: impl FnOnce(std::net::SocketAddr, std::net::SocketAddr),
+) {
+    let card = tmp_card();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (command, control, shutdown, handle) = runtime.block_on(async {
+        let server = Server::bind(states_server_config(card.path()))
+            .await
+            .unwrap();
+        if let Some(overlay) = startup.as_ref() {
+            server
+                .apply_startup_state(overlay)
+                .await
+                .expect("startup state applies");
+        }
+        let command = server.command_addr();
+        let control = server.control_addr();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(server.run(rx));
+        (command, control, tx, handle)
+    });
+    test(command, control);
+    shutdown.send(()).ok();
+    runtime.block_on(handle).unwrap();
+}
+
+fn active_states(control: std::net::SocketAddr) -> serde_json::Value {
+    let state: serde_json::Value =
+        serde_json::from_str(http_body(&http_get(control, "/state"))).unwrap();
+    state["states"].clone()
+}
+
+/// Open a session on a fresh connection, send `0x9001`, then close the session.
+fn vendor_begin_response(command: std::net::SocketAddr, name: &str) -> u16 {
+    let mut stream = connect_ptpip(command, name);
+    open_session(&mut stream);
+    write_frame(&mut stream, &op(0x9001, 2, vec![]));
+    let code = read_response_code(&mut stream);
+    write_frame(&mut stream, &op(0x1003, 3, vec![]));
+    read_ok(&mut stream);
+    code
+}
+
+#[test]
+fn control_patch_enters_and_leaves_a_declared_state() {
+    with_states_service(None, |command, control| {
+        assert_eq!(active_states(control), serde_json::json!([]));
+        assert_eq!(vendor_begin_response(command, "before"), 0x2001);
+
+        let response = http_patch(control, "/state", r#"{"states":{"slotEmpty":true}}"#);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body: serde_json::Value = serde_json::from_str(http_body(&response)).unwrap();
+        assert_eq!(body["applied"]["states"], 1);
+        assert_eq!(active_states(control), serde_json::json!(["slotEmpty"]));
+
+        // The state answers on every connection and session until it is left.
+        assert_eq!(vendor_begin_response(command, "first"), 0x2019);
+        assert_eq!(vendor_begin_response(command, "second"), 0x2019);
+
+        let response = http_patch(control, "/state", r#"{"states":{"slotEmpty":false}}"#);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(active_states(control), serde_json::json!([]));
+        assert_eq!(vendor_begin_response(command, "after"), 0x2001);
+    });
+}
+
+#[test]
+fn control_patch_rejects_an_unknown_state_atomically() {
+    with_states_service(None, |_command, control| {
+        let before: serde_json::Value =
+            serde_json::from_str(http_body(&http_get(control, "/state"))).unwrap();
+        let response = http_patch(
+            control,
+            "/state",
+            r#"{"props":{"0x5007":5},"states":{"slotEmpty":true,"notDeclared":true}}"#,
+        );
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(
+            response.contains("unknown state 'notDeclared'")
+                && response.contains("declared states: slotEmpty"),
+            "{response}"
+        );
+        let after: serde_json::Value =
+            serde_json::from_str(http_body(&http_get(control, "/state"))).unwrap();
+        assert_eq!(after, before, "a rejected overlay changes nothing");
+        assert_eq!(after["states"], serde_json::json!([]));
+    });
+}
+
+#[test]
+fn startup_state_file_enters_a_declared_state() {
+    let overlay: camera_sim::StateOverlay = serde_yaml::from_str(
+        "schema: ptpsim-startup-state/v1\nprofile: test/state\nconnection: app\nstates:\n  slotEmpty: true\n",
+    )
+    .unwrap();
+    with_states_service(Some(overlay), |command, control| {
+        assert_eq!(active_states(control), serde_json::json!(["slotEmpty"]));
+        assert_eq!(vendor_begin_response(command, "startup"), 0x2019);
+    });
+}

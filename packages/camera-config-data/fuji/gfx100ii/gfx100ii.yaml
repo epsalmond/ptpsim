@@ -39,6 +39,7 @@ evidence:
   wirePcssAutofocus20260718: { kind: wire-capture, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-18" }
   sdkPcssAutofocus20260718: { kind: vendor-sdk, path: "evidence/PCSS_PARITY_20260714.md", date: "2026-07-18" }
   wireD212Heterogeneous20260719: { kind: wire-capture, path: "evidence/D212_HETEROGENEOUS_RECORDS_20260719.md", date: "2026-07-19" }
+  fieldImageImportSlot1Empty20260718: { kind: doc, path: "evidence/IMAGE_IMPORT_EMPTY_SLOT_20260718.md" }
   docXlv: { kind: doc, path: "docs/TRANSPORTS.md#xlv" }
   captureXlv: { kind: wire-capture, path: "docs/TRANSPORTS.md#xlv" }
 
@@ -53,6 +54,20 @@ sequenceGates:
   # a final D212 after it; D22B's value remains semantically opaque (#181).
   imageImportBootstrap:
     evidence: [docFujiPtpPropReference, docImageTransfer]
+
+# Physical conditions the simulator can be placed in through the state overlay
+# (MANIFEST_SCHEMA 11.32). Curated from the reduced evidence: the generator has
+# no candidate kind for them.
+states:
+  memoryCardSlot1Empty:
+    summary: >-
+      Memory card slot 1 holds no card and slot 2 holds one. This is the only
+      observed configuration, from one field session; the body's firmware was
+      not recorded. App image import 0x9050 answers 0x2019 on every attempt,
+      across fresh PTP/IP sessions. Nothing else is modeled.
+    responses:
+      - { operation: "0x9050", response: "0x2019", connections: [app], modes: [image-transfer] }
+    evidence: [fieldImageImportSlot1Empty20260718]
 
 cameraInitiatedTransfer:
   trigger:
@@ -81,11 +96,11 @@ cameraInitiatedTransfer:
   evidence: [wireAutoImageTransfer, wireAutoImageTransferQueued, wireBleAutoTransfer]
 
 # Connection-name convention:
-#   `app`             = reference-app PTP/IP on :55740 (BLE -> camera Wi-Fi AP -> 82B WMB-tail init).
+#   `app`             = reference-app PTP/IP on :55740 (BLE -> camera Wi-Fi AP -> 82B App init).
 #   `wireless-tether` = PCSS/infrastructure-mode PTP/IP on :15740 (camera joins LAN,
 #                       then the host reaches it through the PCSS knock/notify path).
 # These ride Wi-Fi but are different PTP/IP personas with different supported-op sets,
-# different InitCmdReq tails, and different live-view paths (`0x101C`+stream vs
+# different InitCmdReq shapes, and different live-view paths (`0x101C`+stream vs
 # `0x9018` polled).
 connections:
   app:

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use camera_config::{parse_hex_code, CameraManifest};
 use ptp_core::dataset::PropValue;
@@ -38,6 +38,10 @@ pub struct StateOverlay {
     /// Reset auxiliary descriptor exhaustion state (#375).
     #[serde(default)]
     pub aux_reset: Option<bool>,
+    /// Enter (`true`) or leave (`false`) manifest-declared simulator states by
+    /// name. An undeclared name rejects the whole overlay.
+    #[serde(default)]
+    pub states: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -50,6 +54,8 @@ pub struct AppliedStateOverlay {
     pub ap_held_term: bool,
     pub aux_descriptor_budget: bool,
     pub aux_reset: bool,
+    /// How many simulator-state entries the overlay set.
+    pub states: usize,
 }
 
 impl StateOverlay {
@@ -83,6 +89,7 @@ pub(crate) fn apply_overlay(
     manifest: &CameraManifest,
     state: &mut CameraState,
     camera_initiated_transfer_active: &mut bool,
+    active_states: &mut BTreeSet<String>,
     overlay: &StateOverlay,
 ) -> Result<AppliedStateOverlay, String> {
     let staged = StagedOverlay::from_overlay(manifest, overlay)?;
@@ -101,6 +108,13 @@ pub(crate) fn apply_overlay(
     for (code, value) in staged.props {
         state.props.insert(code, value);
     }
+    for (name, active) in staged.states {
+        if active {
+            active_states.insert(name);
+        } else {
+            active_states.remove(&name);
+        }
+    }
 
     Ok(staged.applied)
 }
@@ -110,6 +124,7 @@ struct StagedOverlay {
     session_open: Option<bool>,
     camera_initiated_transfer_active: Option<bool>,
     props: Vec<(u16, PropValue)>,
+    states: Vec<(String, bool)>,
     applied: AppliedStateOverlay,
 }
 
@@ -133,6 +148,13 @@ impl StagedOverlay {
                 .map_err(|e| format!("property '{code_key}': {e}"))?;
             props.push((code, value));
         }
+        let mut states = Vec::with_capacity(overlay.states.len());
+        for (name, active) in &overlay.states {
+            if !manifest.states.contains_key(name) {
+                return Err(unknown_state_error(manifest, name));
+            }
+            states.push((name.clone(), *active));
+        }
 
         Ok(Self {
             phase,
@@ -149,10 +171,25 @@ impl StagedOverlay {
                 ap_held_term: overlay.ap_held_term.is_some(),
                 aux_descriptor_budget: overlay.aux_descriptor_budget.is_some(),
                 aux_reset: overlay.aux_reset.is_some(),
+                states: states.len(),
             },
             props,
+            states,
         })
     }
+}
+
+fn unknown_state_error(manifest: &CameraManifest, name: &str) -> String {
+    if manifest.states.is_empty() {
+        return format!(
+            "unknown state '{name}' in state overlay; no states are declared in the loaded manifest"
+        );
+    }
+    let declared: Vec<&str> = manifest.states.keys().map(String::as_str).collect();
+    format!(
+        "unknown state '{name}' in state overlay; declared states: {}",
+        declared.join(", ")
+    )
 }
 
 fn prop_value_from_json(

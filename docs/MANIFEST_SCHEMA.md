@@ -2275,7 +2275,7 @@ transactions. Standard `GetObjectHandles` is the authoritative enumeration
 path, and its returned handle order is preserved. The row uses no ImageCapture
 catalog or download APIs. It does not claim USB live view.
 
-### 11.28 Value dispositions (#464, #465)
+### 11.29a Value dispositions (#464, #465)
 
 Some bodies expose a property that has no current value in certain modes or
 when a physical control owns it. The simulator must present absence instead of
@@ -2502,3 +2502,107 @@ the block, with nested `WifiJoinPolicy` (`settle_ms`, `association_timeout_ms`)
 and `SessionOpenPolicy` (`settle_ms`, `max_attempts`, `retry_delay_ms`)
 records. The field is the last one in the record and defaults to nil (Swift)
 or null (Kotlin) in generated initializers.
+
+### 11.32 Simulator states (#164, #352)
+
+A simulator state is a named physical condition of one camera body, such as an
+empty memory card slot. While a state is active, the simulator answers the
+operations the state lists with the PTP response code the state declares.
+States are simulator data. They are not exported through the FFI, and
+consumers do not read them.
+
+A state exists only as an evidence-backed manifest entry. The control surface
+can switch a declared state on or off. It cannot supply a response the
+manifest does not declare. Test-only response injection uses the separate
+fault registry described in `DESIGN.md`.
+
+```yaml
+evidence:
+  docEmptySlot: { kind: doc, path: "evidence/IMAGE_IMPORT_EMPTY_SLOT_20260718.md" }
+states:
+  memoryCardSlot1Empty:
+    summary: >-
+      Memory card slot 1 holds no card and slot 2 holds one. Image import
+      0x9050 answers 0x2019 on every attempt. Nothing else is modeled.
+    responses:
+      - { operation: "0x9050", response: "0x2019", connections: [app], modes: [image-transfer] }
+    evidence: [docEmptySlot]
+```
+
+**Fields.** `states` maps a state name to its declaration. `summary` describes
+the observed configuration and says what is not modeled. `responses` lists one
+or more overrides. Each override names an `operation`, the `response` to
+answer with, and optional `connections` and `modes` filters. `evidence` lists
+the evidence ids behind the state. Unknown fields are load errors.
+
+**Load-time contract errors.** The manifest fails to load when:
+
+- a state has an empty `summary`, `responses`, or `evidence`;
+- an `operation` is not a hexadecimal code declared under `operations`;
+- a `response` is not a PTP response code (standard `0x2000` to `0x2FFF`, or
+  vendor `0xA000` to `0xAFFF`), or is `0x2001` (OK);
+- a `connections` entry names no declared connection, or a `modes` entry
+  matches no declared mode (exactly or as an ancestor at a `/` boundary);
+- the simulator's dispatcher would refuse the operation on every declared
+  connection and mode in the response's scope, so the response could never be
+  reached. The check uses the same availability rule as the dispatcher
+  (`CameraManifest::dispatch_availability`). A `requires` predicate depends on
+  runtime values and is not part of this check;
+- two response entries for the same operation have overlapping scopes, in one
+  state or in two different states.
+
+Two scopes overlap when their connection lists share a connection (an empty
+list covers every connection) and their mode lists share a mode or an
+ancestor and descendant (an empty list covers every mode). Because overlaps
+are rejected, at most one active state can answer any request, and the result
+never depends on which states are active together.
+
+**Lints.** `CameraManifest::validate` warns about an undefined evidence id,
+naming the state.
+
+**Scope matching.** Filters follow the value-disposition rules: an empty
+`connections` or `modes` list means all, and a mode scope matches the declared
+path and its descendants. `modes` is matched against the detected mode only.
+Before the simulator has detected a mode, an override that names modes does
+not apply.
+
+**Precedence.** These replies outrank a state response, in order: an installed
+fault, the missing-session refusal (`0x2003`), the silence of an unsatisfied
+`requiresGate`, the shutter-busy reply, camera-initiated queue routing, and
+catalog availability. An operation outside its declared connections or modes
+therefore still answers `0x2005`. A state response outranks a `silentRefusal`
+disposition and every handler.
+
+**Dispatch availability.** The dispatcher never applies the catalog to
+`GetDeviceInfo`, `OpenSession`, or `CloseSession`. The property-access
+operations (`GetDevicePropDesc`, `GetDevicePropValue`, `SetDevicePropValue`)
+ignore the catalog's mode axis, because properties are scoped one by one. A
+state response on a property-access operation can still name `modes`; it then
+applies only while one of those modes is detected.
+
+**Session operations.** A state may answer a session operation. The engine
+lets `OpenSession` and `GetDeviceInfo` through without an open session, so a
+state response on either applies before any session exists. For
+`OpenSession` it also comes before the refusal of a second open (`0x201E`).
+`CloseSession` without a session still answers `0x2003` first. A state that
+answers `OpenSession` with an error leaves the simulator unable to open a
+session until the control surface leaves the state.
+
+**Side effects.** A state response is a failure reply with no parameters and no
+data phase. The operation runs no handler, applies no `effects`, queues no
+`emits`, and does not start or advance a sequence gate.
+
+**Lifetime.** An active state is a physical camera condition. It survives
+`CloseSession`, a new `OpenSession`, transport loss, and mode changes. Only the
+control surface enters or leaves it.
+
+**Entering and leaving.** The state overlay's `states` field maps a declared
+state name to `true` (enter) or `false` (leave). The same field works in
+`PATCH /state`, in a `--startup-state` file, and in
+`camera-simctl state patch --overlay`. An unknown name rejects the whole
+overlay, changes nothing, and the error lists the declared state names.
+`GET /state` reports the active state names, sorted, under `states`.
+
+**Not modeled yet.** A state has no `when` predicate, property values, events,
+entry trigger, or automatic clearing. Consumer-visible failure classification
+is a separate change.

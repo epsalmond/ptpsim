@@ -86,6 +86,14 @@ pub mod resp {
     pub const SESSION_ALREADY_OPEN: u16 = 0x201e;
     pub const ACCESS_DENIED: u16 = 0x200f;
     pub const DEVICE_BUSY: u16 = 0x2019;
+
+    /// Whether `code` lies in a PTP response-code range: standard responses
+    /// `0x2000..=0x2FFF` or vendor-extension responses `0xA000..=0xAFFF`. ISO
+    /// 15740 assigns code types by the top four bits (0x2 standard response,
+    /// 0xA vendor response).
+    pub fn is_response_code(code: u16) -> bool {
+        matches!(code >> 12, 0x2 | 0xA)
+    }
 }
 
 /// A subset of standard object-format codes; manifests can add vendor formats.
@@ -107,4 +115,21 @@ pub mod datatype_code {
     pub const INT64: u16 = 0x0007;
     pub const UINT64: u16 = 0x0008;
     pub const STR: u16 = 0xffff;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resp::is_response_code;
+
+    #[test]
+    fn response_ranges_are_standard_and_vendor_responses_only() {
+        for code in [0x2000, 0x2001, 0x2019, 0x2fff, 0xa000, 0xa001, 0xafff] {
+            assert!(is_response_code(code), "{code:#06x}");
+        }
+        for code in [
+            0x0000, 0x1001, 0x1fff, 0x3000, 0x5001, 0x9050, 0x9fff, 0xb000, 0xc001, 0xd212, 0xffff,
+        ] {
+            assert!(!is_response_code(code), "{code:#06x}");
+        }
+    }
 }

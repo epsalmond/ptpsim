@@ -57,6 +57,11 @@ Apply the digest-bound review to the consolidated manifest from the comparison
 base. Apply rejects an already-added property or a curated-name conflict.
 This prevents silently treating a stale static proposal as a new observation.
 
+The GFX100 II consolidated manifest applies this review as one step of its
+reviewed chain. Regenerate it with
+`scripts/regenerate-gfx100ii-consolidated.sh`, and use `--check` to confirm
+the committed file matches the chain byte for byte.
+
 Issue #549 owns camera validation of property identities, datatype conflicts
 and static write/action candidates. Selector-specific operation support is
 #540; live-view response contracts are #541; D212 record maintenance is #329.

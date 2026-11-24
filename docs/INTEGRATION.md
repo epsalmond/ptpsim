@@ -195,10 +195,15 @@ canonical JSON leaves so foreign bindings do not invent a second value grammar.
 1. **Embed the data bundle.** Ship `camera-config-data/fuji/fuji.yaml` (manufacturer)
    plus the body manifest selected by recognition (for example
    `…/gfx100ii/gfx100ii.consolidated.yaml` or `…/xa7/xa7.yaml`) as app resources; pass their
-   contents to `from_bundle`. Each release attaches a `camera-config-data-<sha8>.tar.gz`
-   sibling alongside the xcframework, so the FFI binary and the YAML data come
-   from the same commit and can't drift mid-integration; extract it to vendor
-   the bundle without cloning the source tree. (Co-shipped pre-data-repo-split;
+   contents to `from_bundle`. When `ci/github-linux-changes.py` selects the
+   manifest-data job for a `main` push (a change under
+   `packages/camera-config-data/`, a CI workflow, selector, or release-helper
+   change, or a commit message containing `[ALL]`), CI attaches
+   `camera-config-data-<sha8>.tar.gz` and a `.checksum` to that
+   commit's `sha-<sha8>` release; extract it to vendor the bundle without
+   cloning the source tree. Other releases, including Apple promotions, attach
+   no data tarball. Take the data for such an FFI release from the source tree
+   at the same commit so the binary and the YAML cannot drift. (Co-shipped pre-data-repo-split;
    the eventual Apache-licensed data repo will publish its own versioned
    releases.) OTA bundle loading lands later; bundled baseline for now.
 
@@ -392,6 +397,12 @@ A startup `StateOverlay` can pin property values before `Server::run`. A props-o
 overlay changes only the listed properties. It preserves the current phase, session
 state, active mode, and gate progress. The same overlay shape is available at runtime
 through `PATCH /state`.
+
+The overlay's `states` field enters or leaves a manifest-declared simulator state
+(`MANIFEST_SCHEMA.md` §11.32), such as the GFX100 II's empty memory card slot 1. A
+state changes only the simulator's responses to the operations the manifest lists for
+it. States are not part of the FFI surface, and the executor reports their failures
+the same way as any other PTP failure.
 
 `POST /control/advance-property` accepts a property code such as
 `{"code":"0x500D"}`. It advances the current value by one position in the loaded
