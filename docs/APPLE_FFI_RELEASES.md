@@ -72,12 +72,25 @@ consumers vendor these bindings, so a removed or changed item stops their code
 from compiling at the next update. Without this check, such a change passes
 ptpsim CI when no in-repo code uses the item.
 
-The snapshot comes from the metadata that UniFFI embeds in the library, the
-same input the binding generator reads for both languages. It also records
-every `crates/camera-protocol-ffi/uniffi.toml` setting and the
-`uniffi_bindgen` version from `Cargo.lock`. One snapshot covers Swift and
-Kotlin because both bindings derive their names from the Rust names by fixed
-case conversion.
+The snapshot comes from the metadata that UniFFI embeds in a host dev-profile
+staticlib. `ci/build-android.sh` generates the Kotlin bindings from the same
+kind of build, but `ci/build-xcframework.sh` generates the Swift bindings from
+the iOS device release build. The two builds export the same items only while
+the FFI crate is target-independent, so the FFI crate must not use a target- or
+profile-dependent `cfg` (`target_*`, `unix`, `windows`, `debug_assertions`,
+`panic`, and similar) anywhere in `src/`, and must not have a build script.
+`ci/ffi-surface.sh` runs `ffi-surface cfg-scan` before the comparison and fails
+when it finds one; the scan ignores comments and string literals and rejects
+the predicate even in test code. It does not inspect dependencies, which export
+no UniFFI items today.
+
+The snapshot also records every `crates/camera-protocol-ffi/uniffi.toml`
+setting, including empty tables, and the `uniffi_bindgen` version from
+`Cargo.lock`. One snapshot covers Swift and Kotlin because both bindings derive
+their names from the Rust names by fixed case conversion. Records and enums
+that reach an object through their fields are marked `contains_object`,
+because the Swift generator drops `Equatable`, `Hashable`, and `Codable` from
+them.
 
 Every difference fails the job. The report labels each difference so the
 author knows whether the pull request breaks consumers:
@@ -85,13 +98,15 @@ author knows whether the pull request breaks consumers:
 | Change | Label |
 | --- | --- |
 | Item removed or renamed | Breaking for consumers |
-| Function, constructor, or method signature changed (parameters, parameter names, defaults, return type, `async`, `throws`) | Breaking for consumers |
-| Record field removed, changed, or reordered; a field added without a default, or added before an existing field | Breaking for consumers |
+| Function, constructor, or method signature changed (parameter names or types, return type, `async`, `throws`); a parameter that loses its default; any change to a method | Breaking for consumers |
+| Record field removed, reordered, its type changed, or its default removed; a field added without a default, or added before an existing field | Breaking for consumers |
+| Record or enum starts or stops reaching an object (`contains_object`), directly or through another type | Breaking for consumers: Swift `Equatable` and `Hashable` conformance changes |
 | Enum case added, removed, reordered, or its fields changed (UniFFI generates exhaustive Swift and Kotlin enums even for `#[non_exhaustive]`) | Breaking for consumers |
 | Method added to a callback trait or callback interface | Breaking for consumers: foreign implementations must add it |
 | Object kind or enum shape changed | Breaking for consumers |
 | Binding setting or generator version added, removed, or changed | Breaking for consumers |
 | Method added to a Rust-implemented object | Breaking for implementers: consumer types that conform to the generated Swift protocol or Kotlin interface must add it |
+| Function or constructor default changed, a parameter gaining a default, or new trailing parameters that all have defaults; a record field default changed or added | Source-compatible behaviour change: existing Swift and Kotlin call sites compile, callers that omit the value get the new default, and code that refers to the function as a value may need updating |
 | New top-level item, new constructor, or a record field with a default appended after the existing fields | Additive |
 
 Update the baseline in the same pull request as the change, so reviewers see
