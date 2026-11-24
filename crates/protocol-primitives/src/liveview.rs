@@ -21,18 +21,47 @@ pub fn frame_packet(jpeg: &[u8], frame_counter: u32) -> Vec<u8> {
     out
 }
 
-/// Parse a length-prefixed frame back out (used by the smoke client/tests).
-pub fn parse_frame(bytes: &[u8]) -> Option<&[u8]> {
+/// Framing identifier recorded with observed packets of this format.
+pub const FRAMING_ID: &str = "fuji-liveview-v1";
+
+/// Envelope fields of one packet. The reserved `u16` at `0x10` is not
+/// interpreted; callers that need it keep the raw prefix `..body_offset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Envelope {
+    /// Inclusive packet length from `0x00`.
+    pub declared_length: usize,
+    /// Frame counter from `0x08`.
+    pub frame_counter: u32,
+    /// Offset of the JPEG body: the header plus the adjustment at `0x0c`.
+    pub body_offset: usize,
+}
+
+/// Parse the envelope of one complete packet. Returns `None` when the
+/// declared length or body offset does not fit the supplied bytes.
+pub fn parse_envelope(bytes: &[u8]) -> Option<Envelope> {
     if bytes.len() < HEADER_LEN {
         return None;
     }
-    let total_len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-    if !(HEADER_LEN..=bytes.len()).contains(&total_len) {
+    let declared_length = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    if !(HEADER_LEN..=bytes.len()).contains(&declared_length) {
         return None;
     }
     let offset_adjust = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
-    let jpeg_start = HEADER_LEN.checked_add(offset_adjust)?;
-    bytes.get(jpeg_start..total_len)
+    let body_offset = HEADER_LEN.checked_add(offset_adjust)?;
+    if body_offset > declared_length {
+        return None;
+    }
+    Some(Envelope {
+        declared_length,
+        frame_counter: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+        body_offset,
+    })
+}
+
+/// Parse a length-prefixed frame back out (used by the smoke client/tests).
+pub fn parse_frame(bytes: &[u8]) -> Option<&[u8]> {
+    let envelope = parse_envelope(bytes)?;
+    bytes.get(envelope.body_offset..envelope.declared_length)
 }
 
 #[cfg(test)]
@@ -49,6 +78,34 @@ mod tests {
         assert_eq!(pkt[8..12], [42, 0, 0, 0]);
         assert_eq!(pkt[12..18], [0, 0, 0, 0, 0, 0]);
         assert_eq!(parse_frame(&pkt).unwrap(), &jpeg);
+    }
+
+    #[test]
+    fn envelope_reports_counter_length_and_adjusted_body_offset() {
+        let jpeg = [0xff, 0xd8, 0xff, 0xd9];
+        let mut pkt = frame_packet(&jpeg, 0x0102_0304);
+        pkt[16..18].copy_from_slice(&0x8082u16.to_le_bytes());
+        assert_eq!(
+            parse_envelope(&pkt),
+            Some(Envelope {
+                declared_length: 22,
+                frame_counter: 0x0102_0304,
+                body_offset: 18,
+            })
+        );
+        let adjusted_len = pkt.len() as u32 + 2;
+        pkt[0..4].copy_from_slice(&adjusted_len.to_le_bytes());
+        pkt[12..16].copy_from_slice(&2u32.to_le_bytes());
+        pkt.splice(HEADER_LEN..HEADER_LEN, [0xaa, 0xbb]);
+        let envelope = parse_envelope(&pkt).unwrap();
+        assert_eq!((envelope.declared_length, envelope.body_offset), (24, 20));
+        pkt[12..16].copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(
+            parse_envelope(&pkt),
+            None,
+            "body offset past declared length"
+        );
+        assert_eq!(parse_frame(&pkt), None);
     }
 
     #[test]

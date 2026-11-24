@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use camera_config::PayloadMetadataBuilder;
+use camera_config::{PayloadMetadata, PayloadMetadataBuilder};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWriteExt};
 
@@ -74,10 +74,51 @@ impl PushFrameReport {
     }
 }
 
+/// Facts about one retained frame, recorded as a canonical `pushFrame`
+/// observation. Image bytes are summarized, never carried.
+#[derive(Debug, Clone)]
+pub struct PushFrameObservation {
+    /// Identifier of the framing contract that parsed the packet.
+    pub framing: &'static str,
+    /// Zero-based position among complete frames read from this socket.
+    pub sequence: u64,
+    pub frame_counter: u32,
+    /// End of the host read that returned the packet's first byte.
+    pub first_read: Instant,
+    /// End of the host read that returned the packet's final byte.
+    pub last_read: Instant,
+    pub declared_length: u64,
+    pub body_offset: u64,
+    /// Exact packet bytes before the body.
+    pub header: Vec<u8>,
+    /// Body hashes without inline bytes.
+    pub body: PayloadMetadata,
+    pub jpeg: JpegGeometry,
+}
+
+/// Receives each retained frame after its artifact is synced.
+pub trait PushFrameObserver: Send + Sync {
+    fn push_frame(&self, stream: &str, frame: &PushFrameObservation) -> std::io::Result<()>;
+}
+
 /// Create one handle per sampling step. Clones share completed-frame metadata.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct PushFrameProgress {
     state: Arc<Mutex<PushFrameProgressState>>,
+    observer: Option<(Arc<dyn PushFrameObserver>, String)>,
+}
+
+impl std::fmt::Debug for PushFrameProgress {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PushFrameProgress")
+            .field("state", &self.state)
+            .field(
+                "stream",
+                &self.observer.as_ref().map(|(_, stream)| stream.as_str()),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +128,14 @@ struct PushFrameProgressState {
 }
 
 impl PushFrameProgress {
+    /// Progress that also reports each retained frame of `stream` to `observer`.
+    pub fn observed(observer: Arc<dyn PushFrameObserver>, stream: impl Into<String>) -> Self {
+        Self {
+            state: Arc::default(),
+            observer: Some((observer, stream.into())),
+        }
+    }
+
     /// Snapshot after dropping the sampling future. Pending reads and writes
     /// cannot establish exact byte counts or completed artifact metadata.
     pub fn cancelled_report(&self) -> PushFrameReport {
@@ -106,12 +155,20 @@ impl PushFrameProgress {
             .wire_bytes = wire_bytes;
     }
 
-    fn record_frame(&self, frame: RetainedPushFrame) {
+    fn record_frame(
+        &self,
+        frame: RetainedPushFrame,
+        observation: &PushFrameObservation,
+    ) -> std::io::Result<()> {
         self.state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .frames
             .push(frame);
+        match &self.observer {
+            Some((observer, stream)) => observer.push_frame(stream, observation),
+            None => Ok(()),
+        }
     }
 }
 
@@ -251,7 +308,7 @@ pub(crate) async fn sample_push_frames<R: AsyncRead + Unpin>(
             break;
         }
         let max = max_frame.min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        let packet = match tokio::time::timeout_at(deadline, reader.read_frame(max)).await {
+        let timed = match tokio::time::timeout_at(deadline, reader.read_timed_frame(max)).await {
             Err(_) => {
                 report.wire_bytes += reader.buffered_len() as u64;
                 report.termination = End::HostTimeout;
@@ -291,8 +348,9 @@ pub(crate) async fn sample_push_frames<R: AsyncRead + Unpin>(
                 report.error = Some(error.to_string());
                 break;
             }
-            Ok(Ok(packet)) => packet,
+            Ok(Ok(timed)) => timed,
         };
+        let packet = &timed.bytes;
         report.wire_bytes += packet.len() as u64;
         progress.record_wire_bytes(report.wire_bytes);
         let received_elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -304,14 +362,12 @@ pub(crate) async fn sample_push_frames<R: AsyncRead + Unpin>(
                 break;
             }
         };
-        let jpeg = match protocol_primitives::liveview::parse_frame(&packet) {
-            Some(jpeg) => jpeg,
-            None => {
-                report.termination = End::MalformedFrame;
-                report.error = Some("invalid live-view framing".into());
-                break;
-            }
+        let Some(envelope) = protocol_primitives::liveview::parse_envelope(packet) else {
+            report.termination = End::MalformedFrame;
+            report.error = Some("invalid live-view framing".into());
+            break;
         };
+        let jpeg = &packet[envelope.body_offset..envelope.declared_length];
         let geometry = match jpeg_geometry(jpeg) {
             Ok(geometry) => geometry,
             Err(error) => {
@@ -354,17 +410,34 @@ pub(crate) async fn sample_push_frames<R: AsyncRead + Unpin>(
         }
         let mut metadata = PayloadMetadataBuilder::new();
         metadata.update(jpeg);
-        let metadata = metadata.metadata();
+        let body = metadata.metadata_without_inline();
         let retained = RetainedPushFrame {
             path: relative,
-            length: metadata.length,
-            sha256: metadata.sha256,
+            length: body.length,
+            sha256: body.sha256.clone(),
             received_unix_ms,
             received_elapsed_ms,
             jpeg: geometry,
         };
-        progress.record_frame(retained.clone());
+        let observation = PushFrameObservation {
+            framing: protocol_primitives::liveview::FRAMING_ID,
+            sequence: timed.sequence,
+            frame_counter: envelope.frame_counter,
+            first_read: timed.first_read,
+            last_read: timed.last_read,
+            declared_length: envelope.declared_length as u64,
+            body_offset: envelope.body_offset as u64,
+            header: packet[..envelope.body_offset].to_vec(),
+            body,
+            jpeg: geometry,
+        };
+        let recorded = progress.record_frame(retained.clone(), &observation);
         report.frames.push(retained);
+        if let Err(error) = recorded {
+            report.termination = End::IoError;
+            report.error = Some(format!("record push-frame observation: {error}"));
+            break;
+        }
     }
     progress.record_wire_bytes(report.wire_bytes);
     report
@@ -641,6 +714,94 @@ mod tests {
         assert!(retained.received_unix_ms > 0);
         assert_eq!((retained.jpeg.width, retained.jpeg.height), (640, 480));
         assert!(!artifacts.0.join("0001.jpg").exists());
+    }
+
+    #[derive(Default)]
+    struct CollectingObserver {
+        frames: Mutex<Vec<(String, PushFrameObservation)>>,
+        fail: bool,
+    }
+
+    impl PushFrameObserver for CollectingObserver {
+        fn push_frame(&self, stream: &str, frame: &PushFrameObservation) -> std::io::Result<()> {
+            self.frames
+                .lock()
+                .unwrap()
+                .push((stream.into(), frame.clone()));
+            if self.fail {
+                return Err(std::io::Error::other("bundle append failed"));
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn observed_samples_report_envelope_sequence_and_read_times() {
+        let artifacts = tempfile::tempdir().unwrap();
+        let (mut writer, mut reader) = socket().await;
+        let jpeg = jpeg();
+        let mut first = protocol_primitives::liveview::frame_packet(&jpeg, 7);
+        first[16..18].copy_from_slice(&0x8082u16.to_le_bytes());
+        let second = protocol_primitives::liveview::frame_packet(&jpeg, 9);
+        writer.write_all(&first).await.unwrap();
+        writer.write_all(&second).await.unwrap();
+        let observer = Arc::new(CollectingObserver::default());
+        let report = sample_push_frames(
+            &mut reader,
+            limits(2),
+            4096,
+            artifacts.path(),
+            artifacts.path(),
+            PushFrameProgress::observed(observer.clone(), "liveView"),
+        )
+        .await;
+        assert_eq!(report.termination, PushFrameTermination::FrameCount);
+        let frames = observer.frames.lock().unwrap();
+        assert_eq!(frames.len(), 2);
+        for (index, ((stream, frame), packet)) in frames.iter().zip([&first, &second]).enumerate() {
+            assert_eq!(stream, "liveView");
+            assert_eq!(frame.framing, protocol_primitives::liveview::FRAMING_ID);
+            assert_eq!(frame.sequence, index as u64);
+            assert_eq!(frame.header, packet[..18], "reserved bytes kept verbatim");
+            assert_eq!(frame.declared_length, packet.len() as u64);
+            assert_eq!(frame.body_offset, 18);
+            assert_eq!(frame.body.sha256, report.frames[index].sha256);
+            assert_eq!(frame.body.inline_hex, None, "image bytes stay out");
+            assert_eq!(frame.body.stream_ranges.len(), 1);
+            assert!(frame.first_read <= frame.last_read);
+            assert_eq!((frame.jpeg.width, frame.jpeg.height), (640, 480));
+        }
+        assert_eq!(
+            (frames[0].1.frame_counter, frames[1].1.frame_counter),
+            (7, 9)
+        );
+        assert!(frames[0].1.last_read <= frames[1].1.first_read);
+    }
+
+    #[tokio::test]
+    async fn failed_observation_keeps_the_retained_frame_and_stops_sampling() {
+        let artifacts = tempfile::tempdir().unwrap();
+        let (mut writer, mut reader) = socket().await;
+        let packet = protocol_primitives::liveview::frame_packet(&jpeg(), 0);
+        writer.write_all(&packet.repeat(2)).await.unwrap();
+        let observer = Arc::new(CollectingObserver {
+            fail: true,
+            ..Default::default()
+        });
+        let report = sample_push_frames(
+            &mut reader,
+            limits(2),
+            4096,
+            artifacts.path(),
+            artifacts.path(),
+            PushFrameProgress::observed(observer.clone(), "liveView"),
+        )
+        .await;
+        assert_eq!(report.termination, PushFrameTermination::IoError);
+        assert!(report.error.unwrap().contains("bundle append failed"));
+        assert_eq!(report.frames.len(), 1);
+        assert!(artifacts.path().join(&report.frames[0].path).is_file());
+        assert_eq!(observer.frames.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

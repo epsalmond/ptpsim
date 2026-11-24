@@ -1120,7 +1120,7 @@ where
         let mut failed_payloads = Vec::new();
         let mut failed_transaction_ids = None;
         let mut cleanup_attempt = None;
-        let frame_progress = PushFrameProgress::default();
+        let frame_progress = PushFrameProgress::observed(trace.clone(), "liveView");
         let step_started_elapsed_ns = trace.monotonic_elapsed_ns();
         let result = tokio::select! {
             biased;

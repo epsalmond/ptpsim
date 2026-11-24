@@ -5,9 +5,10 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use camera_config::{
-    ActionOutcome, ActionRole, DataDirection, ExecutionContext, LifecycleMarker, ObservationLine,
-    ObservationRecorder, PayloadMetadataBuilder, PtpDataPhase, PtpEventRecord, PtpRequest,
-    PtpResponse, PtpTransactionRecord, PtpTransport, TransactionOutcome,
+    ActionOutcome, ActionRole, DataDirection, ExecutionContext, ImageGeometry, LifecycleMarker,
+    ObservationLine, ObservationRecorder, PayloadMetadataBuilder, PtpDataPhase, PtpEventRecord,
+    PtpRequest, PtpResponse, PtpTransactionRecord, PtpTransport, PushFrameBody, PushFrameEnvelope,
+    PushFrameHostRead, PushFrameRecord, TransactionOutcome,
 };
 use camera_protocol_ffi::{
     CameraEvent, ConnectionActivityEvent, PtpFraming, StepOutcome, StepReport,
@@ -697,6 +698,63 @@ impl TraceWriter {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
         }
         result
+    }
+}
+
+impl crate::push_frames::PushFrameObserver for TraceWriter {
+    /// Append one canonical `pushFrame` record on the current connection
+    /// instance. Host read instants map onto the recorder's own clock.
+    fn push_frame(
+        &self,
+        stream: &str,
+        frame: &crate::push_frames::PushFrameObservation,
+    ) -> io::Result<()> {
+        let Some(observations) = &self.observations else {
+            return Ok(());
+        };
+        let connection_instance = self
+            .ptp
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .connection_instance
+            .clone();
+        let mut header = PayloadMetadataBuilder::new();
+        header.update(&frame.header);
+        let host_read = PushFrameHostRead {
+            first_read: observations.clock_point(frame.first_read),
+            last_read: Some(observations.clock_point(frame.last_read)),
+        };
+        let envelope = PushFrameEnvelope {
+            framing: frame.framing.into(),
+            declared_length: frame.declared_length,
+            body_offset: frame.body_offset,
+            header: header.metadata(),
+        };
+        let body = PushFrameBody {
+            media_type: "image/jpeg".into(),
+            payload: frame.body.clone(),
+            image: Some(ImageGeometry {
+                width: frame.jpeg.width.into(),
+                height: frame.jpeg.height.into(),
+                precision: frame.jpeg.precision,
+                components: frame.jpeg.components,
+            }),
+        };
+        observations
+            .append(self.context("pushFrame"), |common| {
+                ObservationLine::PushFrame(Box::new(PushFrameRecord {
+                    common,
+                    connection_instance,
+                    stream: stream.into(),
+                    sequence: frame.sequence,
+                    frame_counter: Some(u64::from(frame.frame_counter)),
+                    host_read,
+                    envelope,
+                    body,
+                }))
+            })
+            .map(|_| ())
+            .map_err(|error| io::Error::other(error.to_string()))
     }
 }
 
