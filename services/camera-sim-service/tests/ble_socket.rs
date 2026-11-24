@@ -132,7 +132,10 @@ async fn golden_transcript_replays_through_the_connection_handler() {
     // Nothing follows the last scripted message: the server only answers EOF
     // by ending the connection.
     write.shutdown().await.unwrap();
-    let tail = timeout(IO_TIMEOUT, lines.next_line()).await.unwrap().unwrap();
+    let tail = timeout(IO_TIMEOUT, lines.next_line())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(tail, None, "no message after the transcript");
     timeout(IO_TIMEOUT, serve).await.unwrap().unwrap().unwrap();
 
@@ -182,7 +185,10 @@ fn scenario_advert_is_the_first_manifest_signature_match() {
     let (company, payload) = advert.manufacturer_data.split_at(2);
     let facts = BleAdvertFacts {
         service_uuids: advert.service_uuids.clone(),
-        manufacturer_data: Some((u16::from_le_bytes([company[0], company[1]]), payload.to_vec())),
+        manufacturer_data: Some((
+            u16::from_le_bytes([company[0], company[1]]),
+            payload.to_vec(),
+        )),
         ..Default::default()
     };
     assert_eq!(
@@ -273,7 +279,10 @@ async fn start_server() -> Running {
         state_callback: None,
     };
     let mut server = Server::bind(config).await.unwrap();
-    assert!(server.ble_addr_opt().is_none(), "no BLE listener by default");
+    assert!(
+        server.ble_addr_opt().is_none(),
+        "no BLE listener by default"
+    );
     server
         .enable_ble_socket(loopback, &scenario_path())
         .await
@@ -434,7 +443,9 @@ async fn walk_over_socket(
                     .await;
             }
             Step::BleSubscribe(subscribe) => {
-                client.ok("subscribe", json!({"uuid": subscribe.gatt})).await;
+                client
+                    .ok("subscribe", json!({"uuid": subscribe.gatt}))
+                    .await;
             }
             Step::If(_) => {
                 assert_eq!(scope.get("style").map(String::as_str), Some("legacy"));
@@ -495,7 +506,10 @@ fn expected_pair_log(ble: &FamilyBleBlock) -> Vec<BleEvent> {
     expected
 }
 
-fn legacy_scope(view: &ModelView, scenario: &BleScenario) -> (BTreeMap<String, String>, BTreeMap<String, Encoding>) {
+fn legacy_scope(
+    view: &ModelView,
+    scenario: &BleScenario,
+) -> (BTreeMap<String, String>, BTreeMap<String, Encoding>) {
     let advert = &scenario.peripherals()[0].advert;
     let facts = BleAdvertFacts {
         service_uuids: advert.service_uuids.clone(),
@@ -624,7 +638,10 @@ async fn launch_without_the_prep_write_leaves_the_link_unarmed() {
     let running = start_server().await;
     let view = gfx100ii();
     let ble = view.ble.as_ref().unwrap();
-    assert!(running.link.is_armed(), "a fresh service is armed by default");
+    assert!(
+        running.link.is_armed(),
+        "a fresh service is armed by default"
+    );
 
     let mut client = Client::connect(running.ble_addr).await;
     scan_and_connect(&mut client).await;
@@ -643,7 +660,10 @@ async fn launch_without_the_prep_write_leaves_the_link_unarmed() {
         )
         .await;
 
-    assert!(!running.link.is_armed(), "launch without prep refuses the init");
+    assert!(
+        !running.link.is_armed(),
+        "launch without prep refuses the init"
+    );
     assert_eq!(running.link.device_name(), None);
     drop(client);
     running.stop().await;

@@ -67,6 +67,14 @@ struct Args {
     /// the responder. e.g. the client application dev panel: http://127.0.0.1:8770/state
     #[arg(long)]
     state_callback: Option<String>,
+    /// Opt-in BLE socket bind (e.g. 127.0.0.1:55750). Requires --ble-scenario.
+    /// Serves the in-memory GATT responder over newline-delimited JSON
+    /// (docs/TRANSPORTS.md "BLE socket").
+    #[arg(long, requires = "ble_scenario")]
+    ble_bind: Option<SocketAddr>,
+    /// `ptpsim-ble-scenario/v1` YAML the BLE socket serves. Requires --ble-bind.
+    #[arg(long, requires = "ble_bind")]
+    ble_scenario: Option<PathBuf>,
     /// Log format. `auto` uses compact human logs on a terminal and JSON
     /// otherwise.
     #[arg(long, value_enum, default_value_t = logging::LogFormat::Auto)]
@@ -103,7 +111,14 @@ async fn main() -> anyhow::Result<()> {
         state_callback: args.state_callback,
     };
 
-    let server = Server::bind(config).await?;
+    let mut server = Server::bind(config).await?;
+    if let (Some(bind), Some(scenario)) = (args.ble_bind, args.ble_scenario.as_deref()) {
+        server
+            .enable_ble_socket(bind, scenario)
+            .await
+            .map_err(|e| anyhow::anyhow!("BLE socket {}: {e}", scenario.display()))?;
+        tracing::info!(ble = ?server.ble_addr_opt(), scenario = %scenario.display(), "BLE socket listening");
+    }
     if let Some(overlay) = startup_state.as_ref() {
         let applied = server
             .apply_startup_state(overlay)
@@ -141,4 +156,32 @@ fn load_startup_state(path: &std::path::Path) -> anyhow::Result<StateOverlay> {
     let raw = std::fs::read_to_string(path)?;
     serde_yaml::from_str(&raw)
         .map_err(|e| anyhow::anyhow!("parse startup state {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REQUIRED: [&str; 5] = [
+        "camera-sim-service",
+        "--manifest",
+        "m.yaml",
+        "--media-root",
+        "card",
+    ];
+
+    fn parse(extra: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(REQUIRED.iter().chain(extra))
+    }
+
+    #[test]
+    fn ble_flags_are_both_or_neither() {
+        let none = parse(&[]).expect("no BLE flags");
+        assert!(none.ble_bind.is_none() && none.ble_scenario.is_none());
+        let both = parse(&["--ble-bind", "127.0.0.1:55750", "--ble-scenario", "s.yaml"])
+            .expect("both BLE flags");
+        assert_eq!(both.ble_bind, Some("127.0.0.1:55750".parse().unwrap()));
+        assert!(parse(&["--ble-bind", "127.0.0.1:55750"]).is_err());
+        assert!(parse(&["--ble-scenario", "s.yaml"]).is_err());
+    }
 }

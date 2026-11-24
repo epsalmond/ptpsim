@@ -542,6 +542,12 @@ impl BleResponder {
             .collect()
     }
 
+    /// The exposed characteristic UUIDs in sorted order: what a transport
+    /// adapter reports as the discovered GATT table.
+    pub fn characteristics(&self) -> impl Iterator<Item = &str> {
+        self.catalog.iter().map(String::as_str)
+    }
+
     /// Convenience: the CCCD-subscribed UUIDs, in order.
     pub fn subscribed(&self) -> Vec<&str> {
         self.log
