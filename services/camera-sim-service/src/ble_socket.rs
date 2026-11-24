@@ -772,6 +772,8 @@ mod tests {
         assert_eq!(encode_hex(&[0x0a, 0x0b]), "0a0b");
         assert_eq!(decode_hex("abc"), None);
         assert_eq!(decode_hex("zz"), None);
+        assert_eq!(decode_hex("+1"), None);
+        assert_eq!(decode_hex("-1"), None);
         assert_eq!(decode_hex(""), Some(Vec::new()));
     }
 

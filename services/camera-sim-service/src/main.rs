@@ -184,4 +184,19 @@ mod tests {
         assert!(parse(&["--ble-bind", "127.0.0.1:55750"]).is_err());
         assert!(parse(&["--ble-scenario", "s.yaml"]).is_err());
     }
+
+    #[test]
+    fn ble_non_loopback_opt_in_needs_the_ble_flags() {
+        assert!(!parse(&[]).unwrap().ble_allow_non_loopback);
+        assert!(parse(&["--ble-allow-non-loopback"]).is_err());
+        let opted = parse(&[
+            "--ble-bind",
+            "0.0.0.0:55750",
+            "--ble-scenario",
+            "s.yaml",
+            "--ble-allow-non-loopback",
+        ])
+        .expect("opt-in with both BLE flags");
+        assert!(opted.ble_allow_non_loopback);
+    }
 }

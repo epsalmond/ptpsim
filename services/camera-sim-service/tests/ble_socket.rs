@@ -284,7 +284,7 @@ async fn start_server() -> Running {
         "no BLE listener by default"
     );
     server
-        .enable_ble_socket(loopback, &scenario_path())
+        .enable_ble_socket(loopback, &scenario_path(), false)
         .await
         .expect("BLE socket binds with the committed scenario");
     let ble_addr = server.ble_addr_opt().expect("BLE listener bound");
@@ -813,12 +813,24 @@ async fn a_second_concurrent_client_is_refused_as_busy() {
     let mut first = Client::connect(running.ble_addr).await;
     first.ok("scan_start", json!({})).await;
 
-    let mut second = Client::connect(running.ble_addr).await;
+    // A refused client gets `busy` instead of `hello`, so `hello` always
+    // means the connection holds the slot.
+    let stream = TcpStream::connect(running.ble_addr).await.unwrap();
+    let mut second = BufReader::new(stream).lines();
+    let first_line = timeout(IO_TIMEOUT, second.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("busy line");
     assert_eq!(
-        second.next_message().await,
-        Some(json!({"event": "error", "code": "busy"}))
+        serde_json::from_str::<Value>(&first_line).unwrap(),
+        json!({"event": "error", "code": "busy"})
     );
-    assert_eq!(second.next_message().await, None, "busy client is closed");
+    let closed = timeout(IO_TIMEOUT, second.next_line())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(closed, None, "busy client is closed");
 
     // The first client is unaffected.
     first.ok("scan_stop", json!({})).await;
@@ -831,12 +843,23 @@ async fn responder_errors_and_bad_requests_map_to_wire_codes() {
     let running = start_server().await;
     let mut client = Client::connect(running.ble_addr).await;
 
-    let not_connected = client.call("read", json!({"uuid": FFF1})).await;
-    assert_eq!(
-        not_connected["error"]["code"],
-        json!("not_connected"),
-        "{not_connected}"
-    );
+    for (op, args) in [
+        ("discover", json!({})),
+        ("read", json!({"uuid": FFF1})),
+        ("write", json!({"uuid": FFF1, "value": "01"})),
+        (
+            "write_fenced",
+            json!({"uuid": FFF1, "value": "01", "notify_uuid": FFF2}),
+        ),
+        ("subscribe", json!({"uuid": FFF1})),
+    ] {
+        let response = client.call(op, args).await;
+        assert_eq!(
+            response["error"]["code"],
+            json!("not_connected"),
+            "{op} before connect: {response}"
+        );
+    }
     let unknown = client.call("connect", json!({"peripheral": FFF1})).await;
     assert_eq!(unknown["error"]["code"], json!("unknown_peripheral"));
     let bad_op = client.call("frobnicate", json!({})).await;
@@ -853,11 +876,175 @@ async fn responder_errors_and_bad_requests_map_to_wire_codes() {
         .call("write", json!({"uuid": FFF1, "value": "zz"}))
         .await;
     assert_eq!(bad_hex["error"]["code"], json!("bad_request"));
-    let no_peer_drop = client.call("await_disconnect", json!({})).await;
+    let signed_hex = client
+        .call("write", json!({"uuid": FFF1, "value": "+1"}))
+        .await;
     assert_eq!(
-        no_peer_drop["error"]["code"],
-        json!("peer_disconnect_not_observed")
+        signed_hex["error"]["code"],
+        json!("bad_request"),
+        "{signed_hex}"
+    );
+    let unsupported = client.call("await_disconnect", json!({})).await;
+    assert_eq!(
+        unsupported["error"]["code"],
+        json!("bad_request"),
+        "scripted peer disconnect is not part of this version"
     );
     drop(client);
     running.stop().await;
+}
+
+#[tokio::test]
+async fn notifications_released_while_unsubscribed_are_dropped() {
+    let running = start_server().await;
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let ap_state = uuid(ble, "apState");
+
+    let mut client = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut client).await;
+    client.ok("discover", json!({})).await;
+    client
+        .ok(
+            "write",
+            json!({"uuid": uuid(ble, "imageTransferSetting"), "value": "01"}),
+        )
+        .await;
+    // The launch releases the scripted AP-state transitions while AP state
+    // has no enabled notifications, so a GATT server never sends them.
+    client
+        .ok(
+            "write_fenced",
+            json!({
+                "uuid": uuid(ble, "functionLaunchRequest"),
+                "value": "0400",
+                "notify_uuid": ap_state,
+            }),
+        )
+        .await;
+    client.ok("subscribe", json!({"uuid": ap_state})).await;
+    client.ok("scan_stop", json!({})).await;
+    assert_eq!(
+        client.notifications(&ap_state),
+        Vec::<String>::new(),
+        "a late subscribe receives nothing released before it"
+    );
+    drop(client);
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn disconnect_responds_then_closes_the_connection() {
+    let running = start_server().await;
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+
+    let mut client = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut client).await;
+    client.ok("discover", json!({})).await;
+    client.ok("disconnect", json!({})).await;
+    // A request sent after the disconnect gets no answer: the server has
+    // closed the connection.
+    let mut bytes =
+        serde_json::to_vec(&json!({"id": 99, "op": "read", "uuid": uuid(ble, "transferState")}))
+            .unwrap();
+    bytes.push(b'\n');
+    let _ = client.write.write_all(&bytes).await;
+    assert_eq!(client.next_message().await, None, "connection closed");
+    assert!(
+        !running
+            .socket
+            .log()
+            .iter()
+            .any(|e| matches!(e, BleEvent::Read { .. })),
+        "nothing reaches the responder after disconnect"
+    );
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_new_connection_resets_the_link_handoff_state() {
+    let running = start_server().await;
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+
+    let mut first = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut first).await;
+    first.ok("discover", json!({})).await;
+    first
+        .ok(
+            "write",
+            json!({"uuid": uuid(ble, "deviceNameString"), "value": hex(TERMINAL_NAME.as_bytes())}),
+        )
+        .await;
+    handoff(&mut first, ble).await;
+    assert!(running.link.is_armed());
+    assert_eq!(running.link.device_name().as_deref(), Some(TERMINAL_NAME));
+    first.ok("disconnect", json!({})).await;
+    drop(first);
+
+    // The second connection skips both the prep write and the name write.
+    let mut second = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut second).await;
+    second.ok("discover", json!({})).await;
+    second
+        .ok("subscribe", json!({"uuid": uuid(ble, "apState")}))
+        .await;
+    second
+        .ok(
+            "write_fenced",
+            json!({
+                "uuid": uuid(ble, "functionLaunchRequest"),
+                "value": "0400",
+                "notify_uuid": uuid(ble, "apState"),
+            }),
+        )
+        .await;
+    assert!(
+        !running.link.is_armed(),
+        "an earlier connection's prep write must not arm this launch"
+    );
+    assert_eq!(
+        running.link.device_name(),
+        None,
+        "an earlier connection's registered name must not gate this session"
+    );
+    drop(second);
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_non_loopback_ble_bind_is_refused_without_the_opt_in() {
+    let card = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(card.path().join("DCIM/100_FUJI")).unwrap();
+    let loopback: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let config = Config {
+        instance_id: "ble-socket-bind-test".into(),
+        profile: "fuji/gfx100ii".into(),
+        connection: "app".into(),
+        manifest_yaml: std::fs::read_to_string(repo(
+            "packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml",
+        ))
+        .unwrap(),
+        media_root: card.path().to_path_buf(),
+        command_bind: Some(loopback),
+        liveview_bind: Some(loopback),
+        event_bind: Some(loopback),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: loopback,
+        liveview_dir: None,
+        state_callback: None,
+    };
+    let mut server = Server::bind(config).await.unwrap();
+    for addr in ["0.0.0.0:0", "[::]:0"] {
+        let error = server
+            .enable_ble_socket(addr.parse().unwrap(), &scenario_path(), false)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{addr} is refused"));
+        assert!(error.to_string().contains("loopback"), "{error}");
+    }
+    assert!(server.ble_addr_opt().is_none());
 }
