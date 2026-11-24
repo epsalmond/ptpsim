@@ -364,9 +364,10 @@ fn disposition_scope_matches(
 impl CameraManifest {
     /// The response a simulator state declares for operation `code`, or `None`
     /// when no active state covers this request (MANIFEST_SCHEMA §11.32).
-    /// `active` holds the names of the active states. When several match, the
-    /// state whose name sorts first answers. `mode` is the detected mode, or
-    /// `None` before detection, using the same scope rules as dispositions.
+    /// `active` holds the names of the active states. The loader rejects
+    /// overlapping responses for one operation, so at most one entry matches.
+    /// `mode` is the detected mode, or `None` before detection, using the same
+    /// scope rules as dispositions.
     pub fn state_response(
         &self,
         active: &std::collections::BTreeSet<String>,

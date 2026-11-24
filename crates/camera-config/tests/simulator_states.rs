@@ -28,6 +28,7 @@ connections:
 operations:
   "0x9001": { name: VendorBegin, modes: [browse], connections: [app] }
   "0x9002": { name: VendorPage, modes: [browse], connections: [app] }
+  "0x9006": { name: VendorAnywhere }
 properties:
   "0xd001": { name: selector, type: u16, access: readWrite }
 "#;
@@ -125,30 +126,89 @@ fn unscoped_response_applies_on_every_connection_and_before_detection() {
     }
 }
 
+fn two_entries(first: &str, second: &str) -> String {
+    with_states(&format!(
+        "  slotEmpty:\n    summary: s\n    responses:\n      - {first}\n      - {second}\n    evidence: [docCondition]\n"
+    ))
+}
+
+fn two_states(first: &str, second: &str) -> String {
+    with_states(&format!(
+        "  aState:\n    summary: s\n    responses:\n      - {first}\n    evidence: [docCondition]\n  bState:\n    summary: s\n    responses:\n      - {second}\n    evidence: [docCondition]\n"
+    ))
+}
+
+const OVERLAPPING: [(&str, &str); 4] = [
+    (
+        r#"{ operation: "0x9006", response: "0x2019" }"#,
+        r#"{ operation: "0x9006", response: "0x2002", connections: [app] }"#,
+    ),
+    (
+        r#"{ operation: "0x9006", response: "0x2019", connections: [app, tether] }"#,
+        r#"{ operation: "0x9006", response: "0x2002", connections: [tether] }"#,
+    ),
+    (
+        r#"{ operation: "0x9006", response: "0x2019", modes: [browse] }"#,
+        r#"{ operation: "0x9006", response: "0x2002", modes: [browse/list] }"#,
+    ),
+    (
+        r#"{ operation: "0x9006", response: "0x2019", connections: [app], modes: [browse] }"#,
+        r#"{ operation: "0x9006", response: "0x2019", connections: [app], modes: [browse] }"#,
+    ),
+];
+
+const DISJOINT: [(&str, &str); 3] = [
+    (
+        r#"{ operation: "0x9006", response: "0x2019", connections: [app] }"#,
+        r#"{ operation: "0x9006", response: "0x2002", connections: [tether] }"#,
+    ),
+    (
+        r#"{ operation: "0x9006", response: "0x2019", modes: [browse] }"#,
+        r#"{ operation: "0x9006", response: "0x2002", modes: [shoot] }"#,
+    ),
+    (
+        r#"{ operation: "0x9006", response: "0x2019" }"#,
+        r#"{ operation: "0x9001", response: "0x2019" }"#,
+    ),
+];
+
 #[test]
-fn first_active_state_by_name_answers_when_several_match() {
-    let manifest = load(&with_states(
-        r#"
-  bState:
-    summary: Second by name.
-    responses:
-      - { operation: "0x9001", response: "0x2019" }
-    evidence: [docCondition]
-  aState:
-    summary: First by name.
-    responses:
-      - { operation: "0x9001", response: "0x2002" }
-    evidence: [docCondition]
-"#,
-    ));
-    assert_eq!(
-        manifest.state_response(&active(&["aState", "bState"]), "app", None, 0x9001),
-        Some(0x2002)
-    );
-    assert_eq!(
-        manifest.state_response(&active(&["bState"]), "app", None, 0x9001),
-        Some(0x2019)
-    );
+fn overlapping_entries_in_one_state_fail_to_load() {
+    for (first, second) in OVERLAPPING {
+        let message = contract_error(&two_entries(first, second));
+        assert!(
+            message.contains(
+                "states.slotEmpty.responses[1] overlaps states.slotEmpty.responses[0] for operation '0x9006'"
+            ),
+            "{first} / {second}: {message}"
+        );
+    }
+    for (first, second) in DISJOINT {
+        load(&two_entries(first, second));
+    }
+}
+
+#[test]
+fn overlapping_entries_in_two_states_fail_to_load() {
+    for (first, second) in OVERLAPPING {
+        let message = contract_error(&two_states(first, second));
+        assert!(
+            message.contains(
+                "states.bState.responses[0] overlaps states.aState.responses[0] for operation '0x9006'"
+            ),
+            "{first} / {second}: {message}"
+        );
+    }
+    // Disjoint scopes in two states can both be active: each request has at
+    // most one answer.
+    for (first, second) in DISJOINT {
+        let manifest = load(&two_states(first, second));
+        let both = active(&["aState", "bState"]);
+        assert_eq!(
+            manifest.state_response(&both, "app", Some("browse"), 0x9006),
+            Some(0x2019)
+        );
+    }
 }
 
 #[test]

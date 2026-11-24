@@ -468,6 +468,7 @@ impl CameraManifest {
         for (name, state) in &self.states {
             require_valid_simulator_state(self, state, name)?;
         }
+        require_disjoint_state_responses(self)?;
         for (code, property) in &self.properties {
             require_valid_property(self, property, code)?;
         }
@@ -722,6 +723,55 @@ fn require_valid_simulator_state(
         }
     }
     Ok(())
+}
+
+/// No two state responses may answer the same operation in overlapping
+/// scopes, within one state or across states, so at most one active state can
+/// answer any request (MANIFEST_SCHEMA §11.32).
+fn require_disjoint_state_responses(manifest: &CameraManifest) -> Result<(), ManifestError> {
+    let entries: Vec<(String, &model::StateResponse, Option<u16>)> = manifest
+        .states
+        .iter()
+        .flat_map(|(name, state)| {
+            state
+                .responses
+                .iter()
+                .enumerate()
+                .map(move |(index, response)| {
+                    (
+                        format!("states.{name}.responses[{index}]"),
+                        response,
+                        parse_hex_code(&response.operation),
+                    )
+                })
+        })
+        .collect();
+    for (later, (path, response, operation)) in entries.iter().enumerate() {
+        for (earlier_path, earlier, earlier_operation) in &entries[..later] {
+            if operation == earlier_operation
+                && scopes_overlap(&response.connections, &earlier.connections, |a, b| a == b)
+                && scopes_overlap(&response.modes, &earlier.modes, modes_nest)
+            {
+                return Err(ManifestError::Contract(format!(
+                    "{path} overlaps {earlier_path} for operation '{}'",
+                    response.operation
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Two scope lists overlap when either is empty (it covers everything) or
+/// some pair of entries is related.
+fn scopes_overlap(a: &[String], b: &[String], related: impl Fn(&str, &str) -> bool) -> bool {
+    a.is_empty() || b.is_empty() || a.iter().any(|x| b.iter().any(|y| related(x, y)))
+}
+
+/// Mode paths share territory when they are equal or one is an ancestor of
+/// the other at a `/` boundary.
+fn modes_nest(a: &str, b: &str) -> bool {
+    a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
 }
 
 /// Whether the operation's catalog entry lets the engine dispatch it on at
