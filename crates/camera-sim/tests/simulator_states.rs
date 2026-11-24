@@ -3,16 +3,14 @@
 //! generic tests use a small synthetic manifest; the GFX100 II test replays the
 //! real image-transfer choreography with the state declared in the test.
 
-use camera_config::{
-    ActionVerb, CameraManifest, ModeEntryExecution, SimulatorState, StateResponse,
-};
+use camera_config::{parse_hex_code, ActionVerb, CameraManifest, ModeEntryExecution, Step};
 use camera_media_store::MediaStore;
 use camera_sim::{
     walk_ptpip_in, Engine, FaultMutation, FaultSelector, FaultSpec, Reply, StateOverlay,
 };
 use ptp_core::dataset::PropValue;
 use ptp_core::{OperationRequest, Writer};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 const OPEN_SESSION: u16 = 0x1002;
@@ -435,27 +433,16 @@ fn unsatisfied_gate_session_and_fault_outrank_the_state() {
     assert_eq!(wire.code(&mut engine, 0x9001, vec![]), Some(DEVICE_BUSY));
 }
 
-// GFX100 II image-transfer choreography with the state declared in the test.
+// GFX100 II image-transfer choreography against the shipped manifest data.
+// These name the shipped state, so renaming it in gfx100ii.yaml fails here.
 
+const SHIPPED_STATE: &str = "memoryCardSlot1Empty";
+
+/// The shipped GFX100 II consolidated manifest, with its declared states.
 fn gfx_manifest() -> CameraManifest {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/camera-config-data/fuji/gfx100ii/gfx100ii.consolidated.yaml");
-    let mut manifest = CameraManifest::from_yaml(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    // The same shape the GFX100 II manifest data declares.
-    let state = SimulatorState {
-        summary: "Memory card slot 1 holds no card and slot 2 holds one.".to_string(),
-        responses: vec![StateResponse {
-            operation: "0x9050".to_string(),
-            response: "0x2019".to_string(),
-            connections: vec!["app".to_string()],
-            modes: vec!["image-transfer".to_string()],
-        }],
-        evidence: vec!["docImageTransfer".to_string()],
-    };
-    manifest
-        .states
-        .insert("memoryCardSlot1Empty".to_string(), state);
-    manifest
+    CameraManifest::from_yaml(&std::fs::read_to_string(&path).unwrap()).unwrap()
 }
 
 fn gfx_engine() -> (Engine, tempfile::TempDir) {
@@ -468,7 +455,7 @@ fn gfx_engine() -> (Engine, tempfile::TempDir) {
     (Engine::new(gfx_manifest(), store), dir)
 }
 
-fn gfx_cold_entry_steps(manifest: &CameraManifest) -> Vec<camera_config::Step> {
+fn gfx_cold_entry_steps(manifest: &CameraManifest) -> Vec<Step> {
     let entry = manifest.connections["app"]
         .entries
         .iter()
@@ -480,7 +467,7 @@ fn gfx_cold_entry_steps(manifest: &CameraManifest) -> Vec<camera_config::Step> {
     }
 }
 
-fn gfx_enumerate_steps(manifest: &CameraManifest) -> Vec<camera_config::Step> {
+fn gfx_enumerate_steps(manifest: &CameraManifest) -> Vec<Step> {
     manifest.connections["app"].actions[&ActionVerb::EnumerateObjects]
         .initiator()
         .expect("enumerateObjects initiator")
@@ -514,7 +501,7 @@ fn image_import_begin_count(engine: &Engine) -> u32 {
 fn gfx_enumeration_fails_at_image_import_while_slot_one_is_empty() {
     let (mut engine, _dir) = gfx_engine();
     let manifest = engine.manifest().clone();
-    enter(&mut engine, "memoryCardSlot1Empty");
+    enter(&mut engine, SHIPPED_STATE);
     count_image_import_begin(&mut engine);
 
     walk_ptpip_in(
@@ -573,7 +560,7 @@ fn gfx_enumeration_fails_at_image_import_while_slot_one_is_empty() {
 
     // Leaving the state lets the same enumeration succeed.
     engine
-        .apply_state_overlay(&states(&[("memoryCardSlot1Empty", false)]))
+        .apply_state_overlay(&states(&[(SHIPPED_STATE, false)]))
         .unwrap();
     let outcome = walk_ptpip_in(&mut engine, &enumerate, &BTreeMap::new(), Some("app"))
         .expect("enumeration succeeds once slot 1 holds a card");
@@ -583,7 +570,7 @@ fn gfx_enumeration_fails_at_image_import_while_slot_one_is_empty() {
 #[test]
 fn gfx_state_does_not_change_other_connections() {
     let (mut engine, _dir) = gfx_engine();
-    enter(&mut engine, "memoryCardSlot1Empty");
+    enter(&mut engine, SHIPPED_STATE);
     engine.bind_connection("wireless-tether");
     let mut wire = Wire::new();
     wire.open(&mut engine);
@@ -595,4 +582,106 @@ fn gfx_state_does_not_change_other_connections() {
         wire.code(&mut engine, 0x9050, vec![]),
         baseline_wire.code(&mut baseline, 0x9050, vec![])
     );
+}
+
+/// Every operation code the steps can send, including inside retry blocks.
+fn sent_operations(steps: &[Step], out: &mut BTreeSet<u16>) {
+    for step in steps {
+        if let Some(code) = step.send_op.as_deref().and_then(parse_hex_code) {
+            out.insert(code);
+        }
+        if step.get_prop.is_some() {
+            out.insert(GET_DEVICE_PROP_VALUE);
+        }
+        if step.set_prop.is_some() {
+            out.insert(SET_DEVICE_PROP_VALUE);
+        }
+        if let Some(retry) = &step.retry {
+            sent_operations(&retry.steps, out);
+            if let Some(fallback) = &retry.fallback {
+                sent_operations(fallback, out);
+            }
+        }
+    }
+}
+
+/// Install a counting fault for each code. The faults never reach their skip
+/// window, so replies are unchanged; `seen` records every matching request.
+fn count_requests(engine: &mut Engine, codes: &BTreeSet<u16>) {
+    for &operation in codes {
+        engine
+            .install_fault(FaultSpec {
+                selector: FaultSelector {
+                    operation,
+                    params: None,
+                    skip: 1000,
+                    count: Some(1),
+                },
+                mutation: FaultMutation::FailResponse {
+                    response: GENERAL_ERROR,
+                },
+            })
+            .unwrap();
+    }
+}
+
+fn request_counts(engine: &Engine) -> BTreeMap<u16, u32> {
+    engine
+        .faults()
+        .into_iter()
+        .map(|fault| (fault.selector.operation, fault.seen))
+        .collect()
+}
+
+fn gfx_image_transfer_engine(state_active: bool) -> (Engine, tempfile::TempDir, Vec<Step>) {
+    let (mut engine, dir) = gfx_engine();
+    let manifest = engine.manifest().clone();
+    assert!(
+        manifest.states.contains_key(SHIPPED_STATE),
+        "the shipped manifest declares {SHIPPED_STATE}"
+    );
+    if state_active {
+        enter(&mut engine, SHIPPED_STATE);
+    }
+    walk_ptpip_in(
+        &mut engine,
+        &gfx_cold_entry_steps(&manifest),
+        &BTreeMap::new(),
+        Some("app"),
+    )
+    .expect("image-transfer mode entry");
+    let steps = gfx_enumerate_steps(&manifest);
+    let mut codes = BTreeSet::new();
+    sent_operations(&steps, &mut codes);
+    assert!(codes.contains(&0x9050) && codes.len() > 1, "{codes:?}");
+    count_requests(&mut engine, &codes);
+    (engine, dir, steps)
+}
+
+#[test]
+fn shipped_state_answers_five_image_import_requests_then_nothing_more() {
+    let (mut engine, _dir, steps) = gfx_image_transfer_engine(true);
+    let error = walk_ptpip_in(&mut engine, &steps, &BTreeMap::new(), Some("app"))
+        .expect_err("enumeration fails at the prime");
+    // The state answers every 0x9050 the same way, and the walk ends on the
+    // last of them with that response.
+    assert_eq!(error.response_code, Some(DEVICE_BUSY), "{error}");
+    assert!(error.step.starts_with("steps[0].retry"), "{error}");
+    let counts = request_counts(&engine);
+    for (code, seen) in &counts {
+        let expected = if *code == 0x9050 { 5 } else { 0 };
+        assert_eq!(*seen, expected, "requests for {code:#06x}: {counts:?}");
+    }
+}
+
+#[test]
+fn without_the_shipped_state_enumeration_proceeds_past_the_prime() {
+    let (mut engine, _dir, steps) = gfx_image_transfer_engine(false);
+    let outcome = walk_ptpip_in(&mut engine, &steps, &BTreeMap::new(), Some("app"))
+        .expect("enumeration succeeds");
+    assert_eq!(outcome.observed.get(0xd620), Some(1));
+    let counts = request_counts(&engine);
+    assert_eq!(counts[&0x9050], 1, "{counts:?}");
+    assert_eq!(counts[&0x9053], 1, "{counts:?}");
+    assert!(counts[&GET_DEVICE_PROP_VALUE] >= 2, "{counts:?}");
 }
