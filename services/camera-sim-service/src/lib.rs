@@ -18,9 +18,10 @@ use camera_config::{
     CaptureInterfaceType, ClientContext, ClockType, ClockUnit, ConnectionLifecycleSnapshot,
     ConnectionLifecycleTraceEvent, ConnectionLifecycleTracker, ConnectionLifecycleTransition,
     DataDirection, ExecutionContext, FeatureState, LifecycleEvidence, LifecycleMarker,
-    LiveViewDeliveryKind, ObservationLine, ObservationRecorder, PayloadMetadata,
-    PayloadMetadataBuilder, PcssKnock, PtpDataPhase, PtpEventRecord, PtpRequest, PtpResponse,
-    PtpSessionState, PtpTransactionRecord, PtpTransport, TransactionOutcome, ValuePolicy,
+    LiveViewDeliveryKind, LiveViewSimulationTiming, ObservationLine, ObservationRecorder,
+    PayloadMetadata, PayloadMetadataBuilder, PcssKnock, PtpDataPhase, PtpEventRecord, PtpRequest,
+    PtpResponse, PtpSessionState, PtpTransactionRecord, PtpTransport, TransactionOutcome,
+    ValuePolicy,
 };
 use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
@@ -414,7 +415,7 @@ pub struct Config {
 }
 
 /// Live-view frame pacing (~30 fps).
-const FRAME_INTERVAL_MS: u64 = 33;
+const DEFAULT_FRAME_INTERVAL_MS: u64 = 33;
 
 /// Read every `.jpg` from a directory (sorted by filename) into memory once at
 /// bind. Returning an empty Vec on no-dir / empty-dir is fine; the frame loop
@@ -506,6 +507,7 @@ pub struct Server {
     config: Config,
     command: TcpListener,
     liveview: Option<AuxListener>,
+    liveview_timing: Option<LiveViewSimulationTiming>,
     event: Option<AuxListener>,
     shared_standard_event_listener: bool,
     knock: Option<UdpSocket>,
@@ -1101,6 +1103,10 @@ impl Server {
             .as_ref()
             .and_then(|retries| retries.when_reasons.first())
             .and_then(|reason| parse_hex_u32(reason));
+        let liveview_timing = connection
+            .live_view_delivery
+            .as_ref()
+            .and_then(|delivery| delivery.simulation_timing);
         let poll_live_view_op = connection
             .live_view_delivery
             .as_ref()
@@ -1196,6 +1202,7 @@ impl Server {
             config,
             command,
             liveview,
+            liveview_timing,
             event,
             shared_standard_event_listener,
             knock,
@@ -1268,6 +1275,7 @@ impl Server {
             config,
             command,
             liveview,
+            liveview_timing,
             event,
             shared_standard_event_listener,
             knock,
@@ -1463,9 +1471,8 @@ impl Server {
             }
         };
 
-        // Live-view: emit length-prefixed JPEG frames at ~30 fps, BUT only while
-        // the engine is in Phase::Streaming (after InitiateOpenCapture). Connection
-        // stays open and idle when not streaming — matches a real camera.
+        // The push socket emits length-prefixed JPEGs while the engine streams.
+        // It stays open and idle between capture cycles.
         let liveview_loop = {
             let engine = engine.clone();
             let frames = frames.clone();
@@ -1494,7 +1501,7 @@ impl Server {
                                     let metrics = metrics.clone();
                                     conns.spawn(async move {
                                         let _permit = permit;
-                                        stream_liveview(stream, engine, frames, metrics).await;
+                                        stream_liveview(stream, engine, frames, metrics, liveview_timing).await;
                                     });
                                 }
                                 Ok(AuxAccepted::Rearmed) => conns.shutdown().await,
@@ -1635,16 +1642,51 @@ async fn stream_liveview(
     engine: Arc<Mutex<Engine>>,
     frames: Arc<Mutex<LoopingFrameSource>>,
     metrics: Metrics,
+    timing: Option<LiveViewSimulationTiming>,
 ) {
+    use tokio::time::{Duration, Instant, MissedTickBehavior};
+
     let (mut rd, mut wr) = stream.split();
-    let mut tick = tokio::time::interval(std::time::Duration::from_millis(FRAME_INTERVAL_MS));
+    let interval_ms = timing.map_or(DEFAULT_FRAME_INTERVAL_MS, |timing| {
+        u64::from(timing.frame_interval_ms.get())
+    });
+    let pause = timing
+        .and_then(|timing| timing.periodic_pause)
+        .map(|pause| {
+            let period_ms = u64::from(pause.every_ms.get()).div_ceil(interval_ms) * interval_ms;
+            (
+                Duration::from_millis(period_ms),
+                Duration::from_millis(u64::from(pause.duration_ms.get())),
+            )
+        });
+    let mut pause_window = None;
+    let mut tick = tokio::time::interval(Duration::from_millis(interval_ms));
+    if timing.is_some() {
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    }
     let mut probe = [0u8; 64];
     let mut frame_counter = 0u32;
     loop {
         tokio::select! {
-            _ = tick.tick() => {
+            tick_at = tick.tick() => {
                 if !matches!(engine.lock().await.phase(), Phase::Streaming) {
+                    pause_window = None;
                     continue;
+                }
+                if let Some((period, duration)) = pause {
+                    let (next_pause_at, resume_at) = pause_window.get_or_insert((tick_at + period, None));
+                    if resume_at.is_some_and(|deadline| tick_at < deadline) {
+                        continue;
+                    }
+                    // Skip can return a tick scheduled before the current pause boundary.
+                    let overdue = tick_at < *next_pause_at && Instant::now() >= *next_pause_at;
+                    if overdue || (resume_at.is_none() && tick_at >= *next_pause_at) {
+                        let pause_at = tick_at.max(*next_pause_at);
+                        *resume_at = Some(pause_at + duration);
+                        *next_pause_at = pause_at + period;
+                        continue;
+                    }
+                    *resume_at = None;
                 }
                 // Lock → pull frame → guard drops at end of statement; the
                 // network write below never executes under either mutex.

@@ -49,13 +49,21 @@ offset 0x00  uint32  inclusive frame length
 offset 0x04  uint32  reserved, observed as zero
 offset 0x08  uint32  frame counter
 offset 0x0c  uint32  JPEG offset adjustment
-offset 0x10  uint16  reserved, observed as zero
+offset 0x10  uint16  reserved
 offset 0x12  bytes   JPEG when offset adjustment is zero
 ```
 
 The JPEG begins after `18 + jpeg_offset_adjustment` bytes. Firmware 2.30 emitted a zero adjustment in the captured sessions. Frames began with JPEG SOI and ended with EOI. Captured baseline frames were 640 by 480 pixels.
 
-The observed stream was approximately 60 frames per second. Gaps of about 1.2 seconds occurred roughly every 13 seconds without an event or error response. A receiver must not treat those captured gaps as immediate connection failure.
+The reserved field at `0x10` was zero in two streams. The other three streams
+carried values from the sets `0x60A5`, `0x62A5`, `0x66A6` and `0x8082`,
+`0x8180`. Its meaning is unknown. The JPEG offset is independent of this field.
+
+Across five retained streams, the client's mean delivery rates were 25 to 53
+frames per second. The two longest streams had median intervals of 16 ms.
+All five had pauses over 500 ms, with variable duration and spacing. These
+intervals measure the timing of client socket reads. Camera pacing and the
+cause of the pauses remain unknown.
 
 ## Common response codes
 

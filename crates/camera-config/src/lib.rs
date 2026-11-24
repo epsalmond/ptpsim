@@ -62,24 +62,25 @@ pub use model::{
     ConnectionDiscovery, ConnectionTransition, Control, ControlOwner, ControlReadSource,
     ControlRole, ControlSurfaceEntry, Descriptor, DescriptorValue, EmitParam, EventDelivery,
     EventDeliveryContract, GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape,
-    LiveViewDelivery, LiveViewDeliveryKind, LiveViewStream, Loop, ManufacturerDefaults, Media,
-    MediaFormat, MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution,
-    ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
-    ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
-    ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationDisposition,
-    OperationDispositionKind, OperationEmit, OperationHandler, OperationKind, Payload, PayloadForm,
-    PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyAccess,
-    PropertyDisposition, PropertyDispositionKind, PropertyKind, PropertySemanticAssertions,
-    PropertyTransitionTerminal, PropertyValueDecoder, PropertyValueEncoding, PropertyValueProfile,
-    PropertyValueProfileRow, PropertyValueRow, ProvenancedName, ProvenancedPropertyValueProfile,
-    ProvenancedPropertyValueRow, RecordLayout, RecordMember, RecordMemberDetail, RecordMemberRef,
-    RecordValueEncoding, RecordValueLiteral, ReestablishConnection, ResponderMutation,
-    RetryFailureClass, RuntimeSetPropValue, SemanticAssertionLedger, SentinelFrame, SentinelMask,
-    SequenceGate, SessionContract, SessionOwnership, SetPropValue, ShutterRecipe,
-    SocketAvailability, SocketBinding, SocketBindingDescriptor, SocketBindings, SocketRole, Step,
-    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
-    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
-    WireFraming, Workflow, WorkflowPhase,
+    LiveViewDelivery, LiveViewDeliveryKind, LiveViewPeriodicPause, LiveViewSimulationTiming,
+    LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, MissingRuntimeValue, Mode,
+    ModeEntry, ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
+    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
+    ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect, Operation,
+    OperationDisposition, OperationDispositionKind, OperationEmit, OperationHandler, OperationKind,
+    Payload, PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent,
+    Property, PropertyAccess, PropertyDisposition, PropertyDispositionKind, PropertyKind,
+    PropertySemanticAssertions, PropertyTransitionTerminal, PropertyValueDecoder,
+    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
+    ProvenancedName, ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout,
+    RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
+    ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
+    SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SessionContract,
+    SessionOwnership, SetPropValue, ShutterRecipe, SocketAvailability, SocketBinding,
+    SocketBindingDescriptor, SocketBindings, SocketRole, Step, StepParam, StepRetry,
+    StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
+    TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
+    WorkflowPhase,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -478,6 +479,25 @@ impl CameraManifest {
             require_valid_platforms(connection, connection_id)?;
             require_valid_discovery(connection, connection_id)?;
             require_valid_event_delivery(connection, connection_id)?;
+            if let Some(delivery) = &connection.live_view_delivery {
+                if let Some(timing) = delivery.simulation_timing {
+                    let path =
+                        format!("connections.{connection_id}.liveViewDelivery.simulationTiming");
+                    if delivery.kind != LiveViewDeliveryKind::Stream {
+                        return Err(ManifestError::Contract(format!(
+                            "{path} requires stream delivery"
+                        )));
+                    }
+                    if timing
+                        .periodic_pause
+                        .is_some_and(|pause| pause.duration_ms >= pause.every_ms)
+                    {
+                        return Err(ManifestError::Contract(format!(
+                            "{path}.periodicPause durationMs must be shorter than everyMs"
+                        )));
+                    }
+                }
+            }
             for descriptor in &connection.activities {
                 let key = (descriptor.id.clone(), descriptor.version);
                 let value = (
@@ -3109,6 +3129,35 @@ operations:
 
         let properties = "properties: { '0xD2FF': { name: selector, type: u8, initialValue: 0 } }";
         CameraManifest::from_yaml(&format!("{operation}{properties}")).unwrap();
+    }
+
+    #[test]
+    fn liveview_timing_rejects_invalid_declarations() {
+        let valid = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    kind: ptpip
+    liveViewDelivery:
+      kind: stream
+      simulationTiming:
+        frameIntervalMs: 16
+        periodicPause: { everyMs: 64, durationMs: 48 }
+"#;
+        CameraManifest::from_yaml(valid).unwrap();
+        for (old, new) in [
+            ("kind: stream", "kind: poll"),
+            ("frameIntervalMs: 16", "frameIntervalMs: 0"),
+            ("everyMs: 64", "everyMs: 0"),
+            ("durationMs: 48", "durationMs: 0"),
+            ("durationMs: 48", "durationMs: 64"),
+        ] {
+            assert!(
+                CameraManifest::from_yaml(&valid.replace(old, new)).is_err(),
+                "expected to reject {new}"
+            );
+        }
     }
 
     #[test]

@@ -2625,6 +2625,17 @@ fn connection_info_carries_per_connection_traits() {
         Some(LiveViewDeliveryKind::Stream)
     ));
 
+    let timing = app
+        .live_view_delivery
+        .as_ref()
+        .unwrap()
+        .simulation_timing
+        .as_ref()
+        .unwrap();
+    assert_eq!(timing.frame_interval_ms, 16);
+    let pause = timing.periodic_pause.as_ref().unwrap();
+    assert_eq!((pause.every_ms, pause.duration_ms), (13000, 1200));
+
     let postview = app.postview.as_ref().expect("app postview capture");
     assert_eq!(postview.mode, "shooting/stills");
     assert_eq!(
@@ -2659,6 +2670,7 @@ fn connection_info_carries_per_connection_traits() {
         .expect("tether polls live view");
     assert!(matches!(lv.kind, LiveViewDeliveryKind::Poll));
     assert_eq!(lv.poll_op, Some(0x9018)); // hex string → u16 across the FFI
+    assert!(lv.simulation_timing.is_none());
     assert!(matches!(
         wt.shutter_recipe,
         Some(ShutterRecipe::WirelessTether3Beat)

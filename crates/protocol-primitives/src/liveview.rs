@@ -52,6 +52,14 @@ mod tests {
     }
 
     #[test]
+    fn parser_accepts_nonzero_reserved_field() {
+        let jpeg = [0xff, 0xd8, 0xff, 0xd9];
+        let mut pkt = frame_packet(&jpeg, 0);
+        pkt[16..18].copy_from_slice(&0x8082u16.to_le_bytes());
+        assert_eq!(parse_frame(&pkt).unwrap(), &jpeg);
+    }
+
+    #[test]
     fn parser_applies_jpeg_body_offset_adjustment() {
         let jpeg = [0xff, 0xd8, 0xff, 0xd9];
         let mut pkt = frame_packet(&jpeg, 0);
