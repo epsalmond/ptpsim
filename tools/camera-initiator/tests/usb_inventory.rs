@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
@@ -230,30 +229,23 @@ impl UsbInventoryIo for FinalizationFailureIo {
     }
 }
 
-struct TempDir(PathBuf);
+/// A directory that belongs to one test. `tempfile` creates it exclusively
+/// under a random name and removes it when the guard drops.
+struct TempDir(tempfile::TempDir);
 impl TempDir {
     fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        // The clock alone can repeat across tests that start together.
-        static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ptpsim-usb-{}-{nonce}-{sequence}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
+        Self(
+            tempfile::Builder::new()
+                .prefix("ptpsim-usb-")
+                .tempdir()
+                .unwrap(),
+        )
+    }
+    fn path(&self) -> &Path {
+        self.0.path()
     }
     fn output(&self) -> PathBuf {
-        self.0.join("inventory")
-    }
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        self.path().join("inventory")
     }
 }
 
@@ -294,7 +286,8 @@ fn trace(directory: &TempDir) -> (Arc<TraceWriter>, ObservationRecorder) {
         epistemic: direct_epistemic(),
     };
     let recorder =
-        ObservationRecorder::open(Some(directory.0.join("observation.jsonl")), header).unwrap();
+        ObservationRecorder::open(Some(directory.path().join("observation.jsonl")), header)
+            .unwrap();
     (
         Arc::new(
             TraceWriter::with_observations(
@@ -465,7 +458,7 @@ async fn inventory_reuses_establishment_action_pipeline_and_usb_provenance() {
         payload.len()
     );
     // Export parses through the canonical schema, including the USB header and record provenance.
-    let retained = std::fs::read_to_string(directory.0.join("observation.jsonl")).unwrap();
+    let retained = std::fs::read_to_string(directory.path().join("observation.jsonl")).unwrap();
     camera_config::validate_bundles(&[&retained]).unwrap();
     assert!(
         retained.contains("\"type\":\"usb\"") || retained.contains("\"interfaceType\":\"usb\"")
@@ -707,9 +700,9 @@ async fn establishment_ending_inside_a_container_fails_before_the_next_command()
 #[test]
 fn artifact_preflight_rejects_overwrite_and_input_aliases() {
     let directory = TempDir::new();
-    let input = directory.0.join("body.yaml");
+    let input = directory.path().join("body.yaml");
     std::fs::write(&input, "manifest").unwrap();
-    let observation = directory.0.join("observation.jsonl");
+    let observation = directory.path().join("observation.jsonl");
     assert!(validate_usb_artifact_paths(
         std::slice::from_ref(&input),
         &directory.output(),
@@ -738,8 +731,8 @@ fn artifact_preflight_rejects_overwrite_and_input_aliases() {
 fn cli_rejects_daemon_owned_selection_before_creating_artifacts() {
     let directory = TempDir::new();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/camera-config-data/fuji");
-    let trace = directory.0.join("trace.jsonl");
-    let observation = directory.0.join("observation.jsonl");
+    let trace = directory.path().join("trace.jsonl");
+    let observation = directory.path().join("observation.jsonl");
     let result = std::process::Command::new(env!("CARGO_BIN_EXE_camera-initiator"))
         .args(["--manifest"])
         .arg(root.join("gfx100ii/gfx100ii.yaml"))
@@ -841,7 +834,7 @@ async fn final_observation_failure_preserves_inventory_retention_and_cleanup_err
                     script: script.clone(),
                     descriptors: descriptors(),
                 },
-                observation: directory.0.join("observation.jsonl"),
+                observation: directory.path().join("observation.jsonl"),
                 fail_release: failure != "none",
                 block_payload: (failure == "retention")
                     .then(|| directory.output().join("device-info.bin")),
