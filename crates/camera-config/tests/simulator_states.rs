@@ -351,3 +351,26 @@ fn misspelled_or_unreachable_scopes_fail_to_load() {
         "{message}"
     );
 }
+
+#[test]
+fn state_responses_must_be_ptp_response_codes() {
+    let state = |response: &str| {
+        with_states(&format!(
+            "  slotEmpty:\n    summary: s\n    responses:\n      - {{ operation: \"0x9001\", response: \"{response}\", connections: [app], modes: [browse] }}\n    evidence: [docCondition]\n"
+        ))
+    };
+    for rejected in [
+        "0x0019", "0x1001", "0x9050", "0xc001", "0xd212", "0xffff", "0x3000",
+    ] {
+        let message = contract_error(&state(rejected));
+        assert!(
+            message.contains(&format!(
+                "states.slotEmpty.responses[0] response '{rejected}' is not a PTP response code"
+            )),
+            "{rejected}: {message}"
+        );
+    }
+    for accepted in ["0x2000", "0x2019", "0x2fff", "0xa000", "0xA001", "0xafff"] {
+        load(&state(accepted));
+    }
+}

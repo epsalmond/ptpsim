@@ -683,7 +683,13 @@ fn require_valid_simulator_state(
                 response.response
             ));
         };
-        if code == 0x2001 {
+        if !ptp_core::codes::resp::is_response_code(code) {
+            return contract(format!(
+                "{path} response '{}' is not a PTP response code",
+                response.response
+            ));
+        }
+        if code == ptp_core::codes::resp::OK {
             return contract(format!("{path} response must not be 0x2001 (OK)"));
         }
         if manifest.operation(operation).is_none() {
