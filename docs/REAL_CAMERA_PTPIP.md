@@ -208,8 +208,9 @@ The record keeps the exact 18 header bytes, the envelope frame counter, the
 JPEG length, SHA-256, and geometry, and the times of the first and last host
 reads of the packet on the bundle's `process-monotonic` clock. Those times are
 whole milliseconds, so frames read less than 1 ms apart can share a value. Bytes
-inserted by a nonzero JPEG offset adjustment are counted in `bodyOffset` but not
-kept, so every header fits inline whatever the adjustment. The record never
+inserted by a nonzero JPEG offset adjustment are counted in `bodyOffset` and
+recorded only as `gapSha256`, so every header fits inline whatever the
+adjustment. The record never
 contains JPEG bytes. The SHA-256 links it to the retained file listed in the
 step report.
 A frame whose artifact write fails gets no record. A failed observation append

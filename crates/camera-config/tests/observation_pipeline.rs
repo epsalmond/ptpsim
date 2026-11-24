@@ -359,11 +359,12 @@ fn multi_stream_push_frames_validate_and_reach_the_proposal_as_evidence() {
     assert_eq!(streams.len(), 2, "fixture spans two streams");
     for frame in &frames {
         assert!(frame.body.payload.inline_hex.is_none());
+        assert_eq!(frame.envelope.header.length, 18);
         assert_eq!(
-            frame.envelope.header.length, frame.envelope.body_offset,
-            "fixture packets have no offset adjustment"
+            frame.envelope.gap_sha256.is_some(),
+            frame.envelope.body_offset > frame.envelope.header.length,
+            "a gap is hashed exactly when it exists"
         );
-        assert_eq!(frame.frame_counter, Some(frame.sequence));
         let last = frame.host_read.last_read.as_ref().expect("last read");
         assert_eq!(last.clock, frame.host_read.first_read.clock);
         assert!(last.value >= frame.host_read.first_read.value);
@@ -376,6 +377,25 @@ fn multi_stream_push_frames_validate_and_reach_the_proposal_as_evidence() {
             Some((640, 480))
         );
     }
+
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.frame_counter)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 0, 1, 3].map(Some),
+        "the second stream skips one counter value"
+    );
+    let gapped = frames
+        .iter()
+        .filter(|frame| frame.envelope.gap_sha256.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(gapped.len(), 1);
+    assert_eq!(gapped[0].envelope.body_offset, 22);
+    assert_eq!(
+        gapped[0].envelope.gap_sha256.as_deref(),
+        Some(sha256_hex(&[0, 1, 2, 3]).as_str())
+    );
 
     let proposal = propose(&[&fixture]).expect("push frames reach generator intake");
     let frame_identities = frames
@@ -468,7 +488,8 @@ fn push_frame_validation_rejects_retained_bytes_and_incoherent_frames() {
                 "inlineHex": short,
             });
         }),
-        ["O147"]
+        // The shortened header also leaves ten unhashed bytes before the body.
+        ["O147", "O150"]
     );
     // An unknown framing has no checkable header contract.
     assert_eq!(
@@ -507,6 +528,28 @@ fn push_frame_validation_rejects_retained_bytes_and_incoherent_frames() {
             });
         }),
         ["O147", "O149"]
+    );
+    // The gap between header and body is hashed exactly when it is nonempty.
+    assert_eq!(
+        push_frame_rejections(6, |record| {
+            record["envelope"]
+                .as_object_mut()
+                .unwrap()
+                .remove("gapSha256");
+        }),
+        ["O150"]
+    );
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["gapSha256"] = serde_json::json!(sha256_hex(&[]));
+        }),
+        ["O150"]
+    );
+    assert_eq!(
+        push_frame_rejections(6, |record| {
+            record["envelope"]["gapSha256"] = serde_json::json!("not-a-hash");
+        }),
+        ["O061"]
     );
     // Stream identity is a stable identifier.
     assert_eq!(

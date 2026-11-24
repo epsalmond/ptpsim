@@ -1794,7 +1794,7 @@
       ]
     },
     "PushFrameEnvelope": {
-      "description": "The stream framing around one body. `header` is the framing's fixed\nheader, the first packet bytes, so fields with unknown meaning survive\nuninterpreted. Bytes between the header and `body_offset` are not kept.",
+      "description": "The stream framing around one body. `header` is the framing's fixed\nheader, the first packet bytes, so fields with unknown meaning survive\nuninterpreted. Bytes between the header and `body_offset` are kept only as\n`gap_sha256`.",
       "type": "object",
       "properties": {
         "bodyOffset": {
@@ -1812,6 +1812,13 @@
         "framing": {
           "description": "Identifier of the framing contract that parsed the packet.",
           "type": "string"
+        },
+        "gapSha256": {
+          "description": "SHA-256 of the packet bytes between the header and `body_offset`.\nPresent exactly when that gap is nonempty.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "header": {
           "description": "The framing's fixed header bytes, always carried inline.",

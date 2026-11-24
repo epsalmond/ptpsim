@@ -616,6 +616,7 @@ record ObservationPushFrameEnvelope
   field declared_length: u64
   field body_offset: u64
   field header: ObservationPayloadMetadata
+  field gap_sha256: Option<String>
 
 record ObservationPushFrameHostRead
   field first_read: ObservationClockPoint

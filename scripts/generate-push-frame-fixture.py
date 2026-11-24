@@ -41,6 +41,12 @@ STREAMS = [
     ("fixture-connection-a", [100, 116, 133]),
     ("fixture-connection-b", [500, 507, 525]),
 ]
+# The last frame of the second stream carries a counter that skips one value and
+# a nonzero body offset adjustment, so the gap between the header and the body
+# is described by its SHA-256 only.
+LAST = (1, 2)
+SKIPPED_COUNTER = 3
+GAP = bytes([0x00, 0x01, 0x02, 0x03])
 
 
 def sha256(data):
@@ -84,7 +90,10 @@ def header_line():
 
 def frame_line(ordinal, stream_index, instance, sequence, first_read):
     body = jpeg(16 * stream_index + sequence + 1)
-    envelope = struct.pack("<IIIIH", 18 + len(body), 0, sequence, 0, 0)
+    last = (stream_index, sequence) == LAST
+    counter = SKIPPED_COUNTER if last else sequence
+    gap = GAP if last else b""
+    envelope = struct.pack("<IIIIH", 18 + len(gap) + len(body), 0, counter, len(gap), 0)
     last_read = first_read + 1
     return {
         "kind": "pushFrame",
@@ -100,15 +109,15 @@ def frame_line(ordinal, stream_index, instance, sequence, first_read):
         "connectionInstance": instance,
         "stream": "liveView",
         "sequence": sequence,
-        "frameCounter": sequence,
+        "frameCounter": counter,
         "hostRead": {
             "firstRead": {"clock": "mono", "value": first_read},
             "lastRead": {"clock": "mono", "value": last_read},
         },
         "envelope": {
             "framing": FRAMING,
-            "declaredLength": len(envelope) + len(body),
-            "bodyOffset": len(envelope),
+            "declaredLength": len(envelope) + len(gap) + len(body),
+            "bodyOffset": len(envelope) + len(gap),
             "header": {
                 "length": len(envelope),
                 "sha256": sha256(envelope),
@@ -116,6 +125,7 @@ def frame_line(ordinal, stream_index, instance, sequence, first_read):
                 "streamRanges": [],
                 "ranges": [],
             },
+            **({"gapSha256": sha256(gap)} if gap else {}),
         },
         "body": {
             "mediaType": "image/jpeg",

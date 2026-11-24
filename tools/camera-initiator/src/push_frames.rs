@@ -89,9 +89,11 @@ pub struct PushFrameObservation {
     pub last_read: Instant,
     pub declared_length: u64,
     pub body_offset: u64,
-    /// The framing's fixed header bytes. Adjustment bytes before the body
-    /// are counted by `body_offset` but not kept.
+    /// The framing's fixed header bytes.
     pub header: Vec<u8>,
+    /// SHA-256 of adjustment bytes between the header and the body, when
+    /// there are any. The bytes themselves are not kept.
+    pub gap_sha256: Option<String>,
     /// Body hashes without inline bytes.
     pub body: PayloadMetadata,
     pub jpeg: JpegGeometry,
@@ -429,6 +431,14 @@ pub(crate) async fn sample_push_frames<R: AsyncRead + Unpin>(
             declared_length: envelope.declared_length as u64,
             body_offset: envelope.body_offset as u64,
             header: packet[..protocol_primitives::liveview::HEADER_LEN].to_vec(),
+            gap_sha256: (envelope.body_offset > protocol_primitives::liveview::HEADER_LEN).then(
+                || {
+                    camera_config::payload_metadata(
+                        &packet[protocol_primitives::liveview::HEADER_LEN..envelope.body_offset],
+                    )
+                    .sha256
+                },
+            ),
             body,
             jpeg: geometry,
         };

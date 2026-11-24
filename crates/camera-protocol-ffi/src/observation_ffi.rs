@@ -417,6 +417,7 @@ pub struct ObservationPushFrameEnvelope {
     pub declared_length: u64,
     pub body_offset: u64,
     pub header: ObservationPayloadMetadata,
+    pub gap_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -1195,6 +1196,7 @@ impl From<&cc::PushFrameRecord> for ObservationPushFrame {
                 declared_length: value.envelope.declared_length,
                 body_offset: value.envelope.body_offset,
                 header: (&value.envelope.header).into(),
+                gap_sha256: value.envelope.gap_sha256.clone(),
             },
             body: ObservationPushFrameBody {
                 media_type: value.body.media_type.clone(),

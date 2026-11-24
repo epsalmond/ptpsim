@@ -729,6 +729,7 @@ impl crate::push_frames::PushFrameObserver for TraceWriter {
             declared_length: frame.declared_length,
             body_offset: frame.body_offset,
             header: header.metadata(),
+            gap_sha256: frame.gap_sha256.clone(),
         };
         let body = PushFrameBody {
             media_type: "image/jpeg".into(),
@@ -1133,6 +1134,11 @@ mod push_frame_tests {
         assert_eq!(
             frame.envelope.header.inline_hex.as_deref(),
             Some(super::encode_hex(&packet[..18]).as_str())
+        );
+        assert_eq!(
+            frame.envelope.gap_sha256,
+            Some(camera_config::payload_metadata(&packet[18..18 + adjustment]).sha256),
+            "the adjustment gap is hashed, not kept"
         );
     }
 }

@@ -1405,6 +1405,7 @@ steps:
         assert_eq!(frame.envelope.framing, "fuji-liveview-v1");
         assert_eq!(frame.envelope.body_offset, 18);
         assert_eq!(frame.envelope.header.length, 18);
+        assert_eq!(frame.envelope.gap_sha256, None);
         assert_eq!(
             frame.envelope.declared_length,
             18 + frame.body.payload.length

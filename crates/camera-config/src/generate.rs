@@ -926,6 +926,15 @@ fn validate_push_frame(
     if record.body.payload.length == 0 {
         line.reject("O149", "push-frame body must not be empty");
     }
+    if let Some(gap_sha256) = &envelope.gap_sha256 {
+        validate_sha256(gap_sha256, line);
+    }
+    if envelope.gap_sha256.is_some() != (envelope.body_offset > envelope.header.length) {
+        line.reject(
+            "O150",
+            "push-frame gapSha256 must be present exactly when bytes separate the header from the body",
+        );
+    }
     if envelope
         .body_offset
         .checked_add(record.body.payload.length)

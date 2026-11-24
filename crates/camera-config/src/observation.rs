@@ -852,7 +852,8 @@ pub struct PushFrameHostRead {
 
 /// The stream framing around one body. `header` is the framing's fixed
 /// header, the first packet bytes, so fields with unknown meaning survive
-/// uninterpreted. Bytes between the header and `body_offset` are not kept.
+/// uninterpreted. Bytes between the header and `body_offset` are kept only as
+/// `gap_sha256`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PushFrameEnvelope {
@@ -864,6 +865,10 @@ pub struct PushFrameEnvelope {
     pub body_offset: u64,
     /// The framing's fixed header bytes, always carried inline.
     pub header: PayloadMetadata,
+    /// SHA-256 of the packet bytes between the header and `body_offset`.
+    /// Present exactly when that gap is nonempty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_sha256: Option<String>,
 }
 
 /// Bounded evidence about the frame body: length, hashes, and structure.

@@ -1925,7 +1925,8 @@ framing's fixed header, the first packet bytes, and must carry inline bytes, so
 envelope fields with unknown meaning are preserved without interpretation.
 `bodyOffset` cannot precede the end of the header. Bytes between the header and
 `bodyOffset`, which a framing's offset adjustment can insert, are counted by
-`bodyOffset` but not retained. The header length must equal the framing's
+`bodyOffset` and described only by `envelope.gapSha256`, their SHA-256, which is
+present exactly when that gap is nonempty. The header length must equal the framing's
 header length. `body.payload` is nonempty, starts at `bodyOffset`, and ends at
 `declaredLength`. `body.mediaType` names the
 body format, and optional `body.image` records `width`, `height`, `precision`,
