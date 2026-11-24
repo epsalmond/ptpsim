@@ -135,7 +135,10 @@ fn digest_review_and_model_gate_prevent_unreviewed_or_wrong_body_changes() {
     let (proposal, review) = reviewed(&doc);
     let mut wrong_body = base();
     wrong_body.camera.model = "X-T5".into();
-    assert!(apply_review(&wrong_body, &proposal, &review).is_err());
+    let error = apply_review(&wrong_body, &proposal, &review)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&proposal.candidates[0].id), "{error}");
     let (proposal, review) = reviewed(&document("FF0021"));
     let original = base();
     assert_eq!(

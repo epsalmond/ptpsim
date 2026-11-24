@@ -463,9 +463,7 @@ impl CameraManifest {
             require_valid_operation_handler(self, operation, code)?;
         }
         for (code, property) in &self.properties {
-            require_valid_descriptor(property, code)?;
-            require_valid_structured_text(property, code)?;
-            require_valid_payload(self, property, code)?;
+            require_valid_property(self, property, code)?;
         }
         for (connection_id, connection) in &self.connections {
             require_valid_host_activities(connection, connection_id)?;
@@ -815,6 +813,19 @@ fn require_valid_property_descriptor_list(
         }
     }
     Ok(())
+}
+
+/// The checks `require_valid_mode_entries` runs for one property entry. The
+/// generator also runs them on the entries an accepted candidate changed, so it
+/// can name that candidate when the check fails.
+fn require_valid_property(
+    manifest: &CameraManifest,
+    property: &Property,
+    code: &str,
+) -> Result<(), ManifestError> {
+    require_valid_descriptor(property, code)?;
+    require_valid_structured_text(property, code)?;
+    require_valid_payload(manifest, property, code)
 }
 
 fn require_valid_descriptor(property: &Property, code: &str) -> Result<(), ManifestError> {

@@ -107,8 +107,12 @@ impl Drop for Service {
 fn state_patch_applies_inline_json_and_json_files() {
     let service = Service::start("app");
 
-    let patched =
-        service.simctl_json(&["state", "patch", "--spec", r#"{"props":{"0x500d":125000}}"#]);
+    let patched = service.simctl_json(&[
+        "state",
+        "patch",
+        "--overlay",
+        r#"{"props":{"0x500d":125000}}"#,
+    ]);
     assert_eq!(patched["ok"], true, "{patched}");
     let state = service.simctl_json(&["state", "get"]);
     assert_eq!(state["props"]["0x500d"], 125000, "{state}");
@@ -116,7 +120,7 @@ fn state_patch_applies_inline_json_and_json_files() {
     let overlay = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(overlay.path(), r#"{"phase":"liveView"}"#).unwrap();
     let path = overlay.path().to_str().unwrap();
-    let patched = service.simctl_json(&["state", "patch", "--spec-file", path]);
+    let patched = service.simctl_json(&["state", "patch", "--overlay-file", path]);
     assert_eq!(patched["applied"]["phase"], true, "{patched}");
     let state = service.simctl_json(&["state", "get"]);
     assert_eq!(state["phase"], "liveView", "{state}");
@@ -126,11 +130,12 @@ fn state_patch_applies_inline_json_and_json_files() {
 fn state_patch_surfaces_service_validation_errors_with_nonzero_exit() {
     let service = Service::start("app");
 
-    let output = service.simctl(&["state", "patch", "--spec", r#"{"profile":"other/body"}"#]);
+    let output = service.simctl(&["state", "patch", "--overlay", r#"{"profile":"other/body"}"#]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !output.status.success(),
-        "rejected patch must fail: {stdout}"
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "rejected patch exits 3: {stdout}"
     );
     assert!(
         stdout.contains(&format!(
@@ -147,17 +152,21 @@ fn state_patch_surfaces_service_validation_errors_with_nonzero_exit() {
 #[test]
 fn advance_property_moves_to_the_next_enum_value() {
     let service = Service::start("app");
-    service.simctl_json(&["state", "patch", "--spec", r#"{"props":{"0x500d":125000}}"#]);
+    service.simctl_json(&[
+        "state",
+        "patch",
+        "--overlay",
+        r#"{"props":{"0x500d":125000}}"#,
+    ]);
 
     let advanced = service.simctl_json(&["advance-property", "0x500D"]);
     assert_eq!(advanced["code"], "0x500d", "{advanced}");
     let state = service.simctl_json(&["state", "get"]);
     assert_eq!(state["props"]["0x500d"], 157490, "{state}");
 
+    // Malformed codes are rejected as usage errors before any request.
     let output = service.simctl(&["advance-property", "not-a-code"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout)
-        .contains("invalid property code 'not-a-code' in advance-property request"));
+    assert_eq!(output.status.code(), Some(2));
 }
 
 #[test]
@@ -182,7 +191,7 @@ fn actions_list_run_and_observations_round_trip() {
         "parameters": [],
     })
     .to_string();
-    let ran = service.simctl_json(&["actions", "run", "shutter", "--spec", &request]);
+    let ran = service.simctl_json(&["actions", "run", "shutter", "--request", &request]);
     assert_eq!(ran["affectedObjects"], 1, "{ran}");
 
     let wrong_mode = serde_json::json!({
@@ -191,8 +200,8 @@ fn actions_list_run_and_observations_round_trip() {
         "role": "responder",
     })
     .to_string();
-    let rejected = service.simctl(&["actions", "run", "shutter", "--spec", &wrong_mode]);
-    assert!(!rejected.status.success());
+    let rejected = service.simctl(&["actions", "run", "shutter", "--request", &wrong_mode]);
+    assert_eq!(rejected.status.code(), Some(3), "non-2xx exits 3");
     assert!(String::from_utf8_lossy(&rejected.stdout).contains("wrongMode"));
 
     let export = service.simctl_json(&["observations"]);
@@ -263,25 +272,14 @@ fn silent_listener() -> SocketAddr {
 }
 
 #[test]
-fn original_commands_exit_zero_when_the_connection_closes_without_a_reply() {
+fn every_command_exits_one_when_the_connection_closes_without_a_reply() {
     let control = silent_listener().to_string();
-    let output = Command::new(env!("CARGO_BIN_EXE_camera-simctl"))
-        .args(["health", "--control", &control])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-fn new_commands_exit_nonzero_when_the_connection_closes_without_a_reply() {
-    let control = silent_listener().to_string();
-    let output = Command::new(env!("CARGO_BIN_EXE_camera-simctl"))
-        .args(["state", "get", "--control", &control])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
+    for command in [&["health"][..], &["state", "get"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_camera-simctl"))
+            .args(command)
+            .args(["--control", &control])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{command:?}");
+    }
 }

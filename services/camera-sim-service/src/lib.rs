@@ -592,13 +592,19 @@ enum DeclaredAuxListenerState {
     Rebinding,
 }
 
+/// Holds an accept's listener reference and signals completion on drop.
+/// Owning the listener here lets drop release it before waking a waiting
+/// deactivation, however the accept future ends. Otherwise the woken rebind
+/// could find the port still held and fail with `EADDRINUSE`.
 struct DeclaredAcceptGuard<'a> {
     owner: &'a DeclaredAuxListener,
+    listener: Option<Arc<TcpListener>>,
     completed: Arc<Notify>,
 }
 
 impl Drop for DeclaredAcceptGuard<'_> {
     fn drop(&mut self) {
+        drop(self.listener.take());
         let mut state = self.owner.state.lock().expect("declared listener state");
         if let DeclaredAuxListenerState::Listening { pending_accept, .. } = &mut *state {
             if pending_accept
@@ -761,16 +767,17 @@ impl DeclaredAuxListener {
                 notified.await;
                 continue;
             };
-            let _accept_guard = DeclaredAcceptGuard {
+            let accept_guard = DeclaredAcceptGuard {
                 owner: self,
+                listener: Some(listener),
                 completed,
             };
+            let listener = accept_guard.listener.as_deref().expect("accept listener");
             let accepted = tokio::select! {
                 biased;
                 _ = cancel.notified() => None,
                 accepted = listener.accept() => Some(accepted),
             };
-            drop(listener);
             match accepted {
                 Some(accepted) => {
                     return accepted.map(|(stream, _)| AuxAccepted::Connection(stream));
@@ -1666,9 +1673,14 @@ async fn stream_liveview(
         .and_then(|timing| timing.periodic_pause)
         .map(|pause| {
             let period_ms = u64::from(pause.every_ms.get()).div_ceil(interval_ms) * interval_ms;
+            // Pauses start on a frame tick, and emission resumes on the first
+            // tick at or after the pause has elapsed. Rounding the duration up
+            // to whole ticks puts every resume deadline on that tick.
+            let duration_ms =
+                u64::from(pause.duration_ms.get()).div_ceil(interval_ms) * interval_ms;
             (
                 Duration::from_millis(period_ms),
-                Duration::from_millis(u64::from(pause.duration_ms.get())),
+                Duration::from_millis(duration_ms),
             )
         });
     let mut pause_window = None;
@@ -1687,11 +1699,15 @@ async fn stream_liveview(
                 }
                 if let Some((period, duration)) = pause {
                     let (next_pause_at, resume_at) = pause_window.get_or_insert((tick_at + period, None));
-                    if resume_at.is_some_and(|deadline| tick_at < deadline) {
+                    // Compare the wake time, not the tick's scheduled instant.
+                    // Skip returns the scheduled instant of a missed tick, which
+                    // can precede a resume deadline the clock has already reached.
+                    let now = Instant::now();
+                    if resume_at.is_some_and(|deadline| now < deadline) {
                         continue;
                     }
                     // Skip can return a tick scheduled before the current pause boundary.
-                    let overdue = tick_at < *next_pause_at && Instant::now() >= *next_pause_at;
+                    let overdue = tick_at < *next_pause_at && now >= *next_pause_at;
                     if overdue || (resume_at.is_none() && tick_at >= *next_pause_at) {
                         let pause_at = tick_at.max(*next_pause_at);
                         *resume_at = Some(pause_at + duration);
@@ -4685,6 +4701,68 @@ properties:
         let socket = bind_declared_socket("127.0.0.1:0".parse().unwrap()).unwrap();
 
         assert!(socket.reuseaddr().unwrap());
+    }
+
+    /// Waker that tries to bind the declared address the moment it is woken.
+    /// It stands in for a deactivation running on another worker thread that
+    /// rebinds as soon as the pending accept signals completion.
+    struct RebindOnWake {
+        addr: SocketAddr,
+        result: StdMutex<Option<std::io::Result<()>>>,
+    }
+
+    impl std::task::Wake for RebindOnWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let mut result = self.result.lock().unwrap();
+            if result.is_none() {
+                *result = Some(bind_declared_socket(self.addr).map(drop));
+            }
+        }
+    }
+
+    /// An outer select can drop a pending declared accept without going
+    /// through the cancel notification. The accept must release its listener
+    /// before it wakes the waiting deactivation, so the rebind finds the
+    /// port free.
+    #[tokio::test]
+    async fn dropped_declared_accept_releases_listener_before_waking_rebind() {
+        use std::future::Future;
+
+        let socket = bind_declared_socket("127.0.0.1:0".parse().unwrap()).unwrap();
+        let listener = DeclaredAuxListener::new(socket).unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_ready(true).await.unwrap();
+
+        let mut accept = Box::pin(listener.accept());
+        let mut noop = Context::from_waker(std::task::Waker::noop());
+        assert!(accept.as_mut().poll(&mut noop).is_pending());
+
+        let rebind = Arc::new(RebindOnWake {
+            addr,
+            result: StdMutex::new(None),
+        });
+        let waker = std::task::Waker::from(Arc::clone(&rebind));
+        let mut deactivate = Box::pin(listener.set_ready(false));
+        assert!(
+            deactivate
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending(),
+            "deactivation waits for the pending accept"
+        );
+
+        drop(accept);
+
+        let woken_rebind = rebind.result.lock().unwrap().take();
+        assert!(
+            matches!(woken_rebind, Some(Ok(()))),
+            "rebind at wake time must succeed, got {woken_rebind:?}"
+        );
+        deactivate.await.unwrap();
     }
 
     #[tokio::test]

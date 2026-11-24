@@ -1,19 +1,27 @@
 //! `camera-simctl`: CLI over the simulator's control HTTP. Synchronous, with
 //! hand-written HTTP over std networking: it is a thin operator/test tool, not
-//! a service. Request bodies are built from the service's own request types in
-//! `camera-sim`, so the CLI and the service share one definition of each shape.
+//! a service. JSON request bodies are checked against the service's own
+//! request types in `camera-sim`, so the CLI and the service share one
+//! definition of each shape.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::process::ExitCode;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use camera_sim::{ActionRunRequest, AdvancePropertyRequest, StateOverlay};
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use serde::de::DeserializeOwned;
 
 #[derive(Parser)]
-#[command(name = "camera-simctl", about = "Control a ptpsim instance")]
+#[command(
+    name = "camera-simctl",
+    about = "Control a ptpsim instance",
+    after_help = "Exit status: 0 for a 2xx response, 1 when the request cannot be \
+                  sent or the response cannot be read, 2 for invalid arguments, and \
+                  3 when the control server returns a non-2xx status. The response \
+                  body is printed in every case where one is received."
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -49,24 +57,24 @@ enum Cmd {
         #[command(subcommand)]
         command: StateCmd,
     },
-    /// List or run the manifest's control actions.
+    /// List or run manifest-backed camera actions.
     Actions {
         #[command(subcommand)]
         command: ActionsCmd,
     },
-    /// POST /control/advance-property: step one property to its next
-    /// enumerated value.
+    /// POST /control/advance-property: step a property to its next enum value.
     AdvanceProperty {
-        /// Hex property code, such as 0x500D.
-        code: String,
+        /// Property code in hex, with or without a 0x prefix (for example 0x500D).
+        #[arg(value_parser = parse_property_code)]
+        code: u16,
         #[arg(long, default_value = "127.0.0.1:8080")]
         control: String,
     },
-    /// GET the camera-observation/v1 export from the control endpoint.
+    /// GET canonical observation records from the control endpoint.
     Observations {
         #[arg(long, default_value = "127.0.0.1:8080")]
         control: String,
-        /// Return only records with an ordinal greater than this cursor.
+        /// Return only records with a cursor greater than this value.
         #[arg(long, default_value_t = 0)]
         after: u64,
     },
@@ -80,6 +88,95 @@ enum Cmd {
         #[command(subcommand)]
         command: CallbacksCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum StateCmd {
+    /// GET /state.
+    Get {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        control: String,
+    },
+    /// PATCH /state with a JSON state overlay.
+    Patch {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        control: String,
+        /// Inline JSON state overlay.
+        #[arg(
+            long,
+            value_parser = json_text::<StateOverlay>,
+            required_unless_present = "overlay_file",
+            conflicts_with = "overlay_file"
+        )]
+        overlay: Option<String>,
+        /// Path to a JSON state overlay file.
+        #[arg(long, value_name = "PATH", value_parser = json_file::<StateOverlay>)]
+        overlay_file: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ActionsCmd {
+    /// GET /actions.
+    List {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        control: String,
+    },
+    /// POST a JSON action request to /actions/<id>.
+    Run {
+        id: String,
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        control: String,
+        /// Request body with catalogRevision, mode, role, and optional parameters.
+        #[arg(
+            long,
+            value_parser = json_text::<ActionRunRequest>,
+            required_unless_present = "request_file",
+            conflicts_with = "request_file"
+        )]
+        request: Option<String>,
+        /// Path to a file containing the request body.
+        #[arg(long, value_name = "PATH", value_parser = json_file::<ActionRunRequest>)]
+        request_file: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum CallbacksCmd {
+    /// POST /callbacks: register an http:// URL that receives a JSON
+    /// camera-state snapshot on every change.
+    Add {
+        #[arg(long)]
+        url: String,
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        control: String,
+    },
+}
+
+/// Check that inline JSON has the shape of the service's request type `T`,
+/// then keep the original text so it is sent unchanged. A shape error is a
+/// usage error; the service performs every semantic check.
+fn json_text<T: DeserializeOwned>(text: &str) -> Result<String, String> {
+    serde_json::from_str::<T>(text).map_err(|error| error.to_string())?;
+    Ok(text.to_string())
+}
+
+/// Read a JSON file and check it as `json_text` does.
+fn json_file<T: DeserializeOwned>(path: &str) -> Result<String, String> {
+    let text = std::fs::read_to_string(path).map_err(|error| format!("read {path}: {error}"))?;
+    json_text::<T>(&text).map_err(|error| format!("{path}: {error}"))
+}
+
+fn parse_property_code(value: &str) -> Result<u16, String> {
+    let hex = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    // from_str_radix accepts a leading '+', which is not a hex digit.
+    if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("'{value}' is not a hexadecimal property code"));
+    }
+    u16::from_str_radix(hex, 16).map_err(|_| format!("'{value}' does not fit in 16 bits"))
 }
 
 #[derive(Subcommand)]
@@ -109,107 +206,56 @@ enum FaultCmd {
     },
 }
 
-#[derive(Subcommand)]
-enum StateCmd {
-    /// GET /state.
-    Get {
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        control: String,
-    },
-    /// PATCH /state with a state overlay JSON document.
-    Patch {
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        control: String,
-        #[command(flatten)]
-        overlay: JsonInput,
-    },
-}
+/// Exit status when the control server answers with a non-2xx status. Clap
+/// uses 2 for usage errors and a returned error exits 1.
+const EXIT_HTTP_STATUS: u8 = 3;
 
-#[derive(Subcommand)]
-enum ActionsCmd {
-    /// GET /actions: the action catalog and its revision.
-    List {
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        control: String,
-    },
-    /// POST /actions/<ID> with a JSON action request (catalogRevision, mode,
-    /// role, parameters).
-    Run {
-        id: String,
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        control: String,
-        #[command(flatten)]
-        request: JsonInput,
-    },
-}
-
-#[derive(Subcommand)]
-enum CallbacksCmd {
-    /// POST /callbacks: register an http:// URL that receives a JSON
-    /// camera-state snapshot on every change.
-    Add {
-        #[arg(long)]
-        url: String,
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        control: String,
-    },
-}
-
-/// A JSON request body given inline or as a file. Exactly one is required.
-#[derive(Args)]
-#[group(required = true, multiple = false)]
-struct JsonInput {
-    /// Inline JSON.
-    #[arg(long)]
-    spec: Option<String>,
-    /// Path to a file containing the JSON.
-    #[arg(long, value_name = "PATH")]
-    spec_file: Option<PathBuf>,
-}
-
-impl JsonInput {
-    /// Check that the JSON has the shape of the service's request type `T`,
-    /// then return the original text so it is sent unchanged. The service
-    /// performs every semantic check.
-    fn validated<T: DeserializeOwned>(self, what: &str) -> Result<String> {
-        let (text, source) = match (self.spec, self.spec_file) {
-            (Some(spec), None) => (spec, "--spec".to_string()),
-            (None, Some(path)) => (
-                std::fs::read_to_string(&path)
-                    .with_context(|| format!("read {}", path.display()))?,
-                path.display().to_string(),
-            ),
-            _ => bail!("pass exactly one of --spec or --spec-file"),
-        };
-        serde_json::from_str::<T>(&text)
-            .with_context(|| format!("{source} is not a valid {what}"))?;
-        Ok(text)
-    }
-}
-
-fn main() -> Result<()> {
-    let request = request_for(Cli::parse().cmd)?;
-    let raw = http(
+fn main() -> Result<ExitCode> {
+    let request = request_for(Cli::parse().cmd);
+    let response = parse_response(&http(
         &request.control,
         request.method,
         &request.path,
         request.body.as_deref(),
-    )?;
-    if !request.fail_on_http_error {
-        // The original commands print whatever came back, even an empty or
-        // header-only reply, and exit zero.
-        println!("{}", raw.rsplit("\r\n\r\n").next().unwrap_or(""));
-        return Ok(());
+    )?)?;
+    println!("{}", response.body);
+    let code = exit_code_for(response.status);
+    if code != 0 {
+        eprintln!(
+            "camera-simctl: control server returned HTTP {}",
+            response.status
+        );
     }
-    let (status, body) = split_response(&raw)
-        .with_context(|| format!("no HTTP response from {}", request.control))?;
-    // The response body goes to stdout unchanged, including a service error
-    // body, so callers see the service's own message.
-    println!("{body}");
-    if !status.starts_with('2') {
-        bail!("control endpoint answered HTTP {status}");
+    Ok(ExitCode::from(code))
+}
+
+fn exit_code_for(status: u16) -> u8 {
+    if (200..300).contains(&status) {
+        0
+    } else {
+        EXIT_HTTP_STATUS
     }
-    Ok(())
+}
+
+struct Response {
+    status: u16,
+    body: String,
+}
+
+fn parse_response(raw: &str) -> Result<Response> {
+    let (head, body) = raw
+        .split_once("\r\n\r\n")
+        .context("control response has no header terminator")?;
+    let status_line = head.lines().next().unwrap_or("");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .with_context(|| format!("control response has invalid status line {status_line:?}"))?;
+    Ok(Response {
+        status,
+        body: body.to_string(),
+    })
 }
 
 struct Request {
@@ -217,51 +263,27 @@ struct Request {
     method: &'static str,
     path: String,
     body: Option<String>,
-    /// Exit nonzero when the service answers with a non-2xx status or closes
-    /// without a reply. The original health, trace, shutdown, and fault
-    /// commands keep their historical exit status of zero in both cases.
-    fail_on_http_error: bool,
 }
 
-impl Request {
-    fn new(control: String, method: &'static str, path: impl Into<String>) -> Self {
-        Self {
-            control,
-            method,
-            path: path.into(),
-            body: None,
-            fail_on_http_error: true,
-        }
-    }
-
-    fn with_body(mut self, body: String) -> Self {
-        self.body = Some(body);
-        self
-    }
-}
-
-fn request_for(cmd: Cmd) -> Result<Request> {
-    Ok(match cmd {
+fn request_for(cmd: Cmd) -> Request {
+    match cmd {
         Cmd::Health { control } => Request {
             control,
             method: "GET",
             path: "/healthz".into(),
             body: None,
-            fail_on_http_error: false,
         },
         Cmd::Trace { control, after } => Request {
             control,
             method: "GET",
             path: format!("/trace?after={after}"),
             body: None,
-            fail_on_http_error: false,
         },
         Cmd::Shutdown { control } => Request {
             control,
             method: "POST",
             path: "/shutdown".into(),
             body: Some(String::new()),
-            fail_on_http_error: false,
         },
         Cmd::Fault { command } => match command {
             FaultCmd::List { control } => Request {
@@ -269,87 +291,120 @@ fn request_for(cmd: Cmd) -> Result<Request> {
                 method: "GET",
                 path: "/faults".into(),
                 body: None,
-                fail_on_http_error: false,
             },
             FaultCmd::Add { control, spec } => Request {
                 control,
                 method: "POST",
                 path: "/faults".into(),
                 body: Some(spec),
-                fail_on_http_error: false,
             },
             FaultCmd::Delete { id, control } => Request {
                 control,
                 method: "DELETE",
                 path: format!("/faults/{id}"),
                 body: None,
-                fail_on_http_error: false,
             },
             FaultCmd::Clear { control } => Request {
                 control,
                 method: "DELETE",
                 path: "/faults".into(),
                 body: None,
-                fail_on_http_error: false,
             },
         },
         Cmd::State { command } => match command {
-            StateCmd::Get { control } => Request::new(control, "GET", "/state"),
-            StateCmd::Patch { control, overlay } => Request::new(control, "PATCH", "/state")
-                .with_body(overlay.validated::<StateOverlay>("state overlay")?),
+            StateCmd::Get { control } => Request {
+                control,
+                method: "GET",
+                path: "/state".into(),
+                body: None,
+            },
+            StateCmd::Patch {
+                control,
+                overlay,
+                overlay_file,
+            } => Request {
+                control,
+                method: "PATCH",
+                path: "/state".into(),
+                // Clap requires exactly one of the two.
+                body: overlay.or(overlay_file),
+            },
         },
         Cmd::Actions { command } => match command {
-            ActionsCmd::List { control } => Request::new(control, "GET", "/actions"),
+            ActionsCmd::List { control } => Request {
+                control,
+                method: "GET",
+                path: "/actions".into(),
+                body: None,
+            },
             ActionsCmd::Run {
                 id,
                 control,
                 request,
-            } => Request::new(control, "POST", format!("/actions/{id}"))
-                .with_body(request.validated::<ActionRunRequest>("action request")?),
+                request_file,
+            } => Request {
+                control,
+                method: "POST",
+                path: format!("/actions/{id}"),
+                // Clap requires exactly one of the two.
+                body: request.or(request_file),
+            },
         },
         Cmd::AdvanceProperty { code, control } => {
-            Request::new(control, "POST", "/control/advance-property")
-                .with_body(serde_json::to_string(&AdvancePropertyRequest { code })?)
+            let request = AdvancePropertyRequest {
+                code: format!("{code:#06x}"),
+            };
+            Request {
+                control,
+                method: "POST",
+                path: "/control/advance-property".into(),
+                body: Some(serde_json::json!(request).to_string()),
+            }
         }
-        Cmd::Observations { control, after } => {
-            Request::new(control, "GET", format!("/observations?after={after}"))
-        }
-        Cmd::ConnectionLifecycles { control } => {
-            Request::new(control, "GET", "/connection-lifecycles")
-        }
+        Cmd::Observations { control, after } => Request {
+            control,
+            method: "GET",
+            path: format!("/observations?after={after}"),
+            body: None,
+        },
+        Cmd::ConnectionLifecycles { control } => Request {
+            control,
+            method: "GET",
+            path: "/connection-lifecycles".into(),
+            body: None,
+        },
         Cmd::Callbacks { command } => match command {
             // The service reads this body untyped, so there is no shared type
             // to reuse for its single `url` field.
-            CallbacksCmd::Add { url, control } => Request::new(control, "POST", "/callbacks")
-                .with_body(serde_json::json!({ "url": url }).to_string()),
+            CallbacksCmd::Add { url, control } => Request {
+                control,
+                method: "POST",
+                path: "/callbacks".into(),
+                body: Some(serde_json::json!({ "url": url }).to_string()),
+            },
         },
-    })
+    }
 }
 
-/// Split a raw reply into its status (code and reason phrase, such as
-/// `400 Bad Request`) and body. Returns `None` when there is no status line.
-fn split_response(raw: &str) -> Option<(&str, &str)> {
-    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
-    let (_, status) = head.lines().next()?.split_once(' ')?;
-    Some((status, body))
+/// The control server reads a request body only when Content-Length is
+/// present, so every request that carries a body declares it.
+fn render_request(method: &str, path: &str, body: Option<&str>) -> String {
+    let (headers, body) = match body {
+        Some(body) => (
+            format!(
+                "Content-Type: application/json\r\nContent-Length: {}\r\n",
+                body.len()
+            ),
+            body,
+        ),
+        None => (String::new(), ""),
+    };
+    format!("{method} {path} HTTP/1.1\r\nHost: x\r\n{headers}Connection: close\r\n\r\n{body}")
 }
 
-/// Send one request and return the raw reply, which is empty when the
-/// service closes the connection without answering.
 fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> Result<String> {
     let mut s = TcpStream::connect(addr).with_context(|| format!("connect {addr}"))?;
-    let extra = match body {
-        Some(body) => format!(
-            "Content-Type: application/json\r\nContent-Length: {}\r\n",
-            body.len()
-        ),
-        None => String::new(),
-    };
-    let body = body.unwrap_or("");
-    write!(
-        s,
-        "{method} {path} HTTP/1.1\r\nHost: x\r\n{extra}Connection: close\r\n\r\n{body}"
-    )?;
+    s.write_all(render_request(method, path, body).as_bytes())?;
     let mut out = String::new();
     s.read_to_string(&mut out)?;
     Ok(out)
@@ -360,7 +415,7 @@ mod tests {
     use super::*;
 
     fn request(args: &[&str]) -> Request {
-        request_for(Cli::try_parse_from(args).unwrap().cmd).unwrap()
+        request_for(Cli::try_parse_from(args).unwrap().cmd)
     }
 
     #[test]
@@ -393,75 +448,68 @@ mod tests {
     }
 
     #[test]
-    fn control_commands_map_to_http_requests() {
-        let get = request(&["camera-simctl", "state", "get"]);
-        assert_eq!((get.method, get.path.as_str()), ("GET", "/state"));
-        assert!(get.fail_on_http_error);
-
-        let patch = request(&[
-            "camera-simctl",
-            "state",
-            "patch",
-            "--spec",
-            r#"{"props":{"0x500d":125000}}"#,
-        ]);
-        assert_eq!((patch.method, patch.path.as_str()), ("PATCH", "/state"));
+    fn state_commands_map_to_http_requests() {
+        let get = request(&["camera-simctl", "state", "get", "--control", "host:1"]);
         assert_eq!(
-            patch.body.as_deref(),
-            Some(r#"{"props":{"0x500d":125000}}"#),
-            "the user's JSON is sent unchanged"
+            (
+                get.control.as_str(),
+                get.method,
+                get.path.as_str(),
+                get.body
+            ),
+            ("host:1", "GET", "/state", None)
+        );
+
+        let overlay = r#"{"props":{"0x500F":2000}}"#;
+        let patch = request(&["camera-simctl", "state", "patch", "--overlay", overlay]);
+        assert_eq!(
+            (patch.method, patch.path.as_str(), patch.body.as_deref()),
+            ("PATCH", "/state", Some(overlay))
         );
 
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), r#"{"phase":"liveView"}"#).unwrap();
         let path = file.path().to_str().unwrap();
-        let patch = request(&["camera-simctl", "state", "patch", "--spec-file", path]);
+        let patch = request(&["camera-simctl", "state", "patch", "--overlay-file", path]);
         assert_eq!(patch.body.as_deref(), Some(r#"{"phase":"liveView"}"#));
+    }
 
-        let list = request(&["camera-simctl", "actions", "list"]);
-        assert_eq!((list.method, list.path.as_str()), ("GET", "/actions"));
-
-        let run = request(&[
+    #[test]
+    fn json_bodies_need_exactly_one_source_with_the_service_shape() {
+        for args in [
+            &["camera-simctl", "state", "patch"][..],
+            &[
+                "camera-simctl",
+                "state",
+                "patch",
+                "--overlay",
+                "{}",
+                "--overlay-file",
+                "overlay.json",
+            ],
+            &["camera-simctl", "actions", "run", "shutter"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
+        let error = Cli::try_parse_from([
             "camera-simctl",
-            "actions",
-            "run",
-            "shutter",
-            "--spec",
-            r#"{"catalogRevision":"r1","mode":"shooting/stills","role":"responder"}"#,
-        ]);
-        assert_eq!(
-            (run.method, run.path.as_str()),
-            ("POST", "/actions/shutter")
-        );
-        assert_eq!(
-            run.body.as_deref(),
-            Some(r#"{"catalogRevision":"r1","mode":"shooting/stills","role":"responder"}"#)
-        );
+            "state",
+            "patch",
+            "--overlay",
+            r#"{"unknownField":1}"#,
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(error.to_string().contains("unknown field `unknownField`"));
+    }
 
-        let advance = request(&["camera-simctl", "advance-property", "0x500D"]);
-        assert_eq!(
-            (
-                advance.method,
-                advance.path.as_str(),
-                advance.body.as_deref()
-            ),
-            (
-                "POST",
-                "/control/advance-property",
-                Some(r#"{"code":"0x500D"}"#)
-            )
-        );
-
-        let observations = request(&["camera-simctl", "observations", "--after", "7"]);
-        assert_eq!(
-            (observations.method, observations.path.as_str()),
-            ("GET", "/observations?after=7")
-        );
-
+    #[test]
+    fn lifecycle_and_callback_commands_map_to_http_requests() {
         let lifecycles = request(&["camera-simctl", "connection-lifecycles"]);
         assert_eq!(
-            (lifecycles.method, lifecycles.path.as_str()),
-            ("GET", "/connection-lifecycles")
+            (lifecycles.method, lifecycles.path.as_str(), lifecycles.body),
+            ("GET", "/connection-lifecycles", None)
         );
 
         let callback = request(&[
@@ -486,31 +534,133 @@ mod tests {
     }
 
     #[test]
-    fn json_input_requires_exactly_one_source() {
-        assert!(Cli::try_parse_from(["camera-simctl", "state", "patch"]).is_err());
-        assert!(Cli::try_parse_from([
+    fn action_commands_map_to_http_requests() {
+        let list = request(&["camera-simctl", "actions", "list"]);
+        assert_eq!(
+            (list.method, list.path.as_str(), list.body),
+            ("GET", "/actions", None)
+        );
+
+        let body = r#"{"catalogRevision":"r1","mode":"shooting/stills","role":"responder"}"#;
+        let run = request(&[
             "camera-simctl",
-            "state",
-            "patch",
-            "--spec",
-            "{}",
-            "--spec-file",
-            "overlay.json",
-        ])
-        .is_err());
+            "actions",
+            "run",
+            "shutter",
+            "--request",
+            body,
+            "--control",
+            "host:1",
+        ]);
+        assert_eq!(
+            (
+                run.control.as_str(),
+                run.method,
+                run.path.as_str(),
+                run.body.as_deref()
+            ),
+            ("host:1", "POST", "/actions/shutter", Some(body))
+        );
     }
 
     #[test]
-    fn malformed_state_overlay_is_reported_before_sending() {
-        let cli = Cli::try_parse_from([
-            "camera-simctl",
-            "state",
-            "patch",
-            "--spec",
-            r#"{"unknownField":1}"#,
-        ])
-        .unwrap();
-        let error = request_for(cli.cmd).err().unwrap();
-        assert!(format!("{error:#}").contains("unknown field `unknownField`"));
+    fn advance_property_maps_to_http_request() {
+        let advance = request(&["camera-simctl", "advance-property", "500D"]);
+        assert_eq!(
+            (
+                advance.method,
+                advance.path.as_str(),
+                advance.body.as_deref()
+            ),
+            (
+                "POST",
+                "/control/advance-property",
+                Some(r#"{"code":"0x500d"}"#)
+            )
+        );
+
+        let prefixed = request(&["camera-simctl", "advance-property", "0xD209"]);
+        assert_eq!(prefixed.body.as_deref(), Some(r#"{"code":"0xd209"}"#));
+
+        for invalid in ["0x10000", "+500D", "iso", "", "0x", "0x\"5005"] {
+            assert!(
+                Cli::try_parse_from(["camera-simctl", "advance-property", invalid]).is_err(),
+                "{invalid:?} must be rejected before a request is sent"
+            );
+        }
+    }
+
+    #[test]
+    fn observations_command_maps_to_cursor_request() {
+        let first = request(&["camera-simctl", "observations"]);
+        assert_eq!(
+            (first.method, first.path.as_str(), first.body),
+            ("GET", "/observations?after=0", None)
+        );
+
+        let next = request(&["camera-simctl", "observations", "--after", "17"]);
+        assert_eq!(next.path, "/observations?after=17");
+    }
+
+    #[test]
+    fn non_success_status_fails_and_keeps_the_body() {
+        let ok =
+            parse_response("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}").unwrap();
+        assert_eq!((ok.status, ok.body.as_str()), (200, r#"{"ok":true}"#));
+        assert_eq!(exit_code_for(ok.status), 0);
+
+        for (raw, status) in [
+            (
+                "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\n{\"error\":\"bad\"}",
+                400,
+            ),
+            ("HTTP/1.1 404 Not Found\r\n\r\n", 404),
+            (
+                "HTTP/1.1 500 Internal Server Error\r\n\r\n{\"error\":\"x\"}",
+                500,
+            ),
+        ] {
+            let response = parse_response(raw).unwrap();
+            assert_eq!(response.status, status);
+            assert_eq!(exit_code_for(response.status), EXIT_HTTP_STATUS, "{raw}");
+        }
+        assert_eq!(
+            parse_response("HTTP/1.1 400 Bad Request\r\n\r\n{\"error\":\"bad\"}")
+                .unwrap()
+                .body,
+            r#"{"error":"bad"}"#
+        );
+        assert_ne!(EXIT_HTTP_STATUS, 2, "2 is clap's usage-error status");
+    }
+
+    #[test]
+    fn response_body_starts_after_the_first_blank_line() {
+        let response = parse_response("HTTP/1.1 200 OK\r\n\r\nline\r\n\r\nmore").unwrap();
+        assert_eq!(response.body, "line\r\n\r\nmore");
+    }
+
+    #[test]
+    fn malformed_response_is_an_error() {
+        for raw in ["", "garbage", "HTTP/1.1 abc\r\n\r\n", "HTTP/1.1 200 OK"] {
+            assert!(parse_response(raw).is_err(), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn request_bodies_carry_content_length_for_every_method() {
+        let patch = render_request("PATCH", "/state", Some(r#"{"a":1}"#));
+        assert!(patch.starts_with("PATCH /state HTTP/1.1\r\n"), "{patch}");
+        assert!(
+            patch.contains("Content-Type: application/json\r\n"),
+            "{patch}"
+        );
+        assert!(patch.contains("Content-Length: 7\r\n"), "{patch}");
+        assert!(patch.ends_with("\r\n\r\n{\"a\":1}"), "{patch}");
+
+        let shutdown = render_request("POST", "/shutdown", Some(""));
+        assert!(shutdown.contains("Content-Length: 0\r\n"), "{shutdown}");
+
+        let get = render_request("GET", "/state", None);
+        assert!(!get.contains("Content-Length"), "{get}");
     }
 }

@@ -65,18 +65,21 @@ More: [tools/camera-sim-tui/README.md](tools/camera-sim-tui/README.md) and
 127.0.0.1:8080). It covers health checks, a sequence-numbered lifecycle trace
 with a cursor, shutdown, and occurrence-scoped command-channel fault injection
 (list, add, delete, clear) for testing failure handling. It also reads and
-patches camera state, lists and runs manifest actions, advances a property to
-its next enumerated value, exports observations with a cursor, reads
-connection lifecycles, and registers state-change callbacks. Commands that take
-a JSON body accept it inline with `--spec` or from a file with `--spec-file`.
-The response body is printed unchanged. Except for the original health, trace,
-shutdown, and fault commands, a non-2xx response also exits nonzero.
+patches the simulated camera state, lists and runs manifest-backed actions,
+advances a property to its next enumerated value, reads canonical observation
+records with a cursor, reads connection lifecycles, and registers state-change
+callbacks. State overlays and action requests are given inline (`--overlay`,
+`--request`) or from a file (`--overlay-file`, `--request-file`). It prints the
+response body and exits 3 when the control server returns a non-2xx status
+(`--help` lists every exit status).
 
 ```sh
 cargo run -p camera-simctl -- health
 cargo run -p camera-simctl -- trace --after 0
 cargo run -p camera-simctl -- fault list
-cargo run -p camera-simctl -- state patch --spec '{"props":{"0x500d":125000}}'
+cargo run -p camera-simctl -- state get
+cargo run -p camera-simctl -- state patch --overlay '{"props":{"0x500d":125000}}'
+cargo run -p camera-simctl -- advance-property 0x500D
 cargo run -p camera-simctl -- actions list
 cargo run -p camera-simctl -- observations --after 0
 ```
