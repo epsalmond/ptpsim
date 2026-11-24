@@ -4,6 +4,7 @@
 //! come from `protocol-primitives`, referenced by manifest id.
 
 pub mod ble;
+pub mod control_request;
 pub mod engine;
 pub mod fault;
 pub mod framesource;
@@ -22,6 +23,7 @@ pub use camera_config::{
     ConnectionLifecycleTransition, FeatureMode, FeatureState, LifecycleEvidence,
     NetworkPersonaState, ProxyTransportState, PtpSessionState,
 };
+pub use control_request::{ActionRunRequest, AdvancePropertyRequest};
 pub use engine::{
     Engine, PreparedPropertyTransition, PreparedResponderMutation, QueueStats, Reply,
     StreamCompletion, TransferQueueStats,

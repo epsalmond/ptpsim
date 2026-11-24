@@ -70,7 +70,19 @@ class SelectionTests(unittest.TestCase):
 
     def test_ffi_change_runs_workspace_seams_and_release_build_selection(self):
         self.add("crates/camera-protocol-ffi/src/lib.rs")
-        self.assert_jobs(self.select(), "workspace", "kotlin", "android", "python")
+        self.assert_jobs(self.select(), "workspace", "kotlin", "android", "python",
+                         "ffi_surface")
+
+    def test_ffi_surface_script_change_runs_surface_check(self):
+        self.add("ci/ffi-surface.sh")
+        self.assert_jobs(self.select(), "ffi_surface")
+
+    def test_build_configuration_change_runs_workspace_and_surface_check(self):
+        for path in (".cargo/config.toml", "scripts/rustc-wrapper"):
+            with self.subTest(path=path):
+                self.git("checkout", "--quiet", "--detach", self.base)
+                self.add(path)
+                self.assert_jobs(self.select(), "workspace", "ffi_surface")
 
     def test_manifest_change_runs_workspace_and_data_publication_selection(self):
         self.add("packages/camera-config-data/example/index.yaml")
@@ -117,7 +129,8 @@ class SelectionTests(unittest.TestCase):
         self.add("crates/ptp-core/src/lib.rs")
         head = self.add("docs/reference.md")
         result = CHANGES.selection("push", {"before": self.base, "after": head})
-        self.assert_jobs(result, "docs", "workspace", "kotlin", "android", "python")
+        self.assert_jobs(result, "docs", "workspace", "kotlin", "android", "python",
+                         "ffi_surface")
         self.assertEqual(result["lint_range"], f"{self.base}..{head}")
 
     def test_renamed_source_runs_builds_for_pr_and_push(self):
@@ -133,7 +146,8 @@ class SelectionTests(unittest.TestCase):
         ):
             with self.subTest(event_name=event_name):
                 result = CHANGES.selection(event_name, event)
-                self.assert_jobs(result, "workspace", "kotlin", "android", "python")
+                self.assert_jobs(result, "workspace", "kotlin", "android", "python",
+                                 "ffi_surface")
 
     def test_main_push_all_marker(self):
         head = self.add("README.md", "Exercise all jobs [ALL]")

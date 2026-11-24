@@ -27,6 +27,7 @@ jobs:
       android: ${{ steps.select.outputs.android }}
       python: ${{ steps.select.outputs.python }}
       manifest: ${{ steps.select.outputs.manifest }}
+      ffi_surface: ${{ steps.select.outputs.ffi_surface }}
       lint_range: ${{ steps.select.outputs.lint_range }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -98,6 +99,31 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+
+  # Compares the public UniFFI surface with the committed baseline; see
+  # docs/APPLE_FFI_RELEASES.md "FFI surface baseline".
+  ffi-surface:
+    needs: changes
+    if: needs.changes.outputs.ffi_surface == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: ci/github-linux-setup.sh rust
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          shared-key: linux-workspace
+          key: ${{ hashFiles('Cargo.lock') }}
+          # Restore the workspace cache; the workspace job owns saving it.
+          save-if: false
+      - name: Compare the host build (Kotlin input)
+        run: ci/ffi-surface.sh
+      # Swift bindings are generated from the iOS device release build. A
+      # staticlib needs no Apple linker or SDK, so it builds here.
+      - name: Compare the iOS device build (Swift input)
+        if: ${{ !cancelled() }}
+        run: ci/ffi-surface.sh check --target aarch64-apple-ios
 
   kotlin-bindings:
     needs: [changes, workspace]

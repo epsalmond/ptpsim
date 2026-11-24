@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use camera_config::{
     direct_epistemic, no_loss, validate_bundles, BundleHeader, CameraContext, CaptureClock,
@@ -72,31 +72,14 @@ impl Write for TraceBuffer {
     }
 }
 
-struct TempMediaRoot(PathBuf);
-
-impl TempMediaRoot {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock after Unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "ptpsim-camera-initiator-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).expect("create temporary media root");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempMediaRoot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+/// Creates a media root that belongs to one test. `tempfile` creates the
+/// directory exclusively under a random name, so parallel tests never share a
+/// root and each test removes only its own root when the guard drops.
+fn temp_media_root() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("ptpsim-camera-initiator-")
+        .tempdir()
+        .expect("create temporary media root")
 }
 
 fn data(relative: &str) -> String {
@@ -240,7 +223,7 @@ operations:
 properties: {{}}
 "#
     );
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let server = Server::bind(Config {
         instance_id: "standard-initiator-loopback".into(),
         profile: "test/standard".into(),
@@ -941,7 +924,7 @@ async fn read_declared_frame(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
 #[tokio::test]
 async fn native_transport_runs_real_gfx_entry_over_tcp() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let live_view = media.path().join("liveview");
     std::fs::create_dir_all(&live_view).expect("create live-view fixture directory");
     std::fs::write(
@@ -1040,7 +1023,7 @@ async fn native_transport_runs_real_gfx_entry_over_tcp() {
 #[tokio::test]
 async fn session_runner_retains_gfx_entry_and_autofocus_actions() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let live_view = media.path().join("session-liveview");
     std::fs::create_dir_all(&live_view).expect("create session live-view fixtures");
     std::fs::write(
@@ -1288,7 +1271,7 @@ steps:
 #[tokio::test]
 async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
     // Keep the OS-selected callback port reserved until immediately before the
@@ -1476,7 +1459,7 @@ async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
 #[tokio::test]
 async fn session_runner_retains_ordinary_and_streaming_payload_metadata() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let object = b"\xFF\xD8SESSION-PAYLOAD\xFF\xD9";
     let dcim = media.path().join("DCIM/100_FUJI");
     std::fs::create_dir_all(&dcim).expect("create session media directory");
@@ -1649,7 +1632,7 @@ steps:
 #[tokio::test]
 async fn native_transport_recovers_broadcast_discovery_with_unicast() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let any_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let (loopback_name, loopback_broadcast) = get_if_addrs()
@@ -1833,7 +1816,7 @@ async fn native_transport_recovers_broadcast_discovery_with_unicast() {
 #[tokio::test]
 async fn native_transport_uses_first_broadcast_callback_without_rediscovery() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let any_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let (loopback_name, loopback_broadcast) = linux_loopback_interface();
@@ -1965,7 +1948,7 @@ async fn native_transport_uses_first_broadcast_callback_without_rediscovery() {
 #[tokio::test]
 async fn native_transport_ignores_wrong_camera_name_then_accepts_selected_body() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let any_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let (loopback_name, _) = linux_loopback_interface();
@@ -2241,7 +2224,7 @@ async fn native_transport_explicit_unicast_rejects_wrong_camera_name_until_timeo
 #[tokio::test]
 async fn native_transport_recovers_first_init_eof_with_learned_unicast() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let any_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let (loopback_name, _) = linux_loopback_interface();
@@ -2488,7 +2471,7 @@ async fn capability_verification_retains_native_observations_without_promoting_r
         run_capability_verification, CandidateLedger, CapabilityOptions,
     };
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
-    let media = TempMediaRoot::new();
+    let media = temp_media_root();
     let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     let server = Server::bind(Config {
         instance_id: "capability-verification-loopback".into(),
