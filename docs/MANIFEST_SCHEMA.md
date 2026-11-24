@@ -1833,8 +1833,8 @@ u32. A zero `max` requires both companions to be empty or zero.
 is an exact validation token, not a compatibility promise. A JSONL bundle begins
 with exactly one `bundleHeader` and contains only the closed record kinds
 `lifecycle`, `bleGatt`, `ptpTransaction`, `ptpEvent`, `httpExchange`,
-`capability`, and `actionInvocation`. Unknown schemas, fields, and kinds fail the
-bundle.
+`capability`, `actionInvocation`, and `pushFrame`. Unknown schemas, fields, and
+kinds fail the bundle.
 
 The header carries the stable run id; exact sanitized manufacturer, body
 pseudonym, model and firmware; client artifact and platform; capture interfaces;
@@ -1896,6 +1896,36 @@ Absence from a partial inventory has no negative meaning. A `supported: false`
 assertion is valid and reviewable only when its exact record declares
 `inventoryCompleteness: complete`; a negative from a partial inventory is a
 validation error. Completeness in one context never transfers to another.
+
+A `pushFrame` record describes one complete frame that the host read from a
+camera-initiated stream, such as a live-view socket. `connectionInstance` and
+`stream` identify the stream. `sequence` is the zero-based position of the frame
+among all complete frames the host read from that stream, and appears at most
+once per stream in a run. `frameCounter` is the counter decoded from the
+envelope, when the framing has one; it is recorded as sent and may skip or
+repeat.
+
+`hostRead.firstRead` is the time of the host read that returned the frame's
+first byte. The optional `hostRead.lastRead` is the time of the read that
+returned its final byte. Both name declared clocks, so the clock and its origin
+stay explicit. A clock that differs from the record clock requires a declared
+mapping, and `lastRead` cannot precede `firstRead` on the same clock. These
+times describe reads at the client. They combine camera delivery, transport,
+and client scheduling, and are not camera timestamps.
+
+`envelope.framing` names the framing contract that parsed the packet.
+`envelope.declaredLength` is the whole packet length the envelope declares, and
+`envelope.bodyOffset` is where the body begins. `envelope.header` is the exact
+packet prefix before the body and must carry inline bytes, so envelope fields
+with unknown meaning are preserved without interpretation. `body.payload`
+starts at `bodyOffset` and ends at `declaredLength`. `body.mediaType` names the
+body format, and optional `body.image` records `width`, `height`, `precision`,
+and `components` from structural checks, all nonzero. A body payload never
+carries inline bytes: the record holds length, SHA-256, and structure, while
+image bytes stay in separately retained artifacts. Public fixtures do not carry
+raw camera images unless separately cleared. The generator validates
+`pushFrame` records and links them as evidence only; it proposes no manifest
+candidate from them.
 
 ### 11.27 Shared action identity and roles
 

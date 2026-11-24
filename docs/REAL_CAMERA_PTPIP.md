@@ -199,6 +199,18 @@ includes partial packet bytes read before a timeout or framing error. The step
 has a null `outcome` and no PTP transaction identifiers. No quality label is
 inferred.
 
+Each retained frame also produces one `pushFrame` record in the observation
+bundle (see MANIFEST_SCHEMA.md §11.26), written after its artifact is synced.
+The record names the current connection instance and stream `liveView`.
+`sequence` counts every complete frame the host read from that socket,
+including a first-frame readiness check, so it continues across sampling steps.
+The record keeps the exact envelope bytes, the envelope frame counter, the
+JPEG length, SHA-256, and geometry, and the times of the first and last host
+reads of the packet on the bundle's `process-monotonic` clock. It never contains
+JPEG bytes. The SHA-256 links it to the retained file listed in the step report.
+A frame whose artifact write fails gets no record. A failed observation append
+keeps the retained frame in the report and ends the step with `ioError`.
+
 The `frames` report retains completed frames on failure and distinguishes
 `hostTimeout`, `peerClosed`, `truncatedFrame`, `oversizedFrame`, `byteLimit`,
 `malformedFrame`, `ioError`, and `cancelled`. Only `frameCount` is successful.
@@ -592,8 +604,10 @@ action-invocation records make outer stalls distinguishable from command stalls.
 
 The live-view socket is the one deliberate exception to full payload logging:
 the trace records frame length and first-frame readiness, not high-rate JPEG
-bytes. Packet capture remains the right tool when TCP-level timing or live-view
-payload inspection is required.
+bytes. A `samplePushFrames` session step adds one `pushFrame` record per
+retained frame, with host read timing, envelope bytes, and image metadata but
+no image bytes. Packet capture remains the right tool when TCP-level timing or
+live-view payload inspection is required.
 
 The last PTP transaction and terminal lifecycle record answer the first
 debugging questions: which operation was sent, whether a data/reply frame
