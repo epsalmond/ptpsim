@@ -23,7 +23,7 @@ use super::types::{
     AwaitSource, BleAdvertSignature, BleRequestMtuStep, EstablishmentBlock, FamilyBleBlock,
     FamilyPcssBlock, FamilyUsbBlock, IndexedModel, ManufacturerIndex, ModelView,
     PcssNotifySignature, Predicate, PredicateOp, Signature, SignatureKind, Step, StepValue,
-    MAX_PAD_RIGHT_LENGTH,
+    WifiHandoffPolicy, MAX_PAD_RIGHT_LENGTH,
 };
 use crate::error::ConfigError;
 
@@ -420,6 +420,12 @@ fn build_usb_block(
             message: format!("typed usb decode: {e}"),
         })?;
     for (mech, est) in &usb.establishments {
+        if est.wifi_handoff.is_some() {
+            return Err(ConfigError::Validation {
+                path: format!("models.{}.usb.establishments.{mech}.wifiHandoff", model.id),
+                message: "a USB establishment plan has no Wi-Fi handoff (schema §11.31)".into(),
+            });
+        }
         validate_establishment(est, &BTreeMap::new(), &model.id, mech)?;
     }
     Ok(Some(usb))
@@ -817,6 +823,9 @@ fn validate_establishment(
     mechanism: &str,
 ) -> Result<(), ConfigError> {
     validate_establishment_activities(est, model_id, mechanism)?;
+    if let Some(policy) = &est.wifi_handoff {
+        validate_wifi_handoff(policy, model_id, mechanism)?;
+    }
     for (i, step) in est.post_exit_readiness.iter().enumerate() {
         let path = format!("models.{model_id}.establishments.{mechanism}.postExitReadiness[{i}]");
         validate_step(step, &path)?;
@@ -829,6 +838,32 @@ fn validate_establishment(
             &format!("models.{model_id}.establishments.{mechanism}.steps[{i}]"),
             &mut confirmation_path,
         )?;
+    }
+    Ok(())
+}
+
+/// The Wi-Fi handoff policy's counts and its association bound must be
+/// greater than zero (schema §11.31). Settles and retry delays may be zero.
+fn validate_wifi_handoff(
+    policy: &WifiHandoffPolicy,
+    model_id: &str,
+    mechanism: &str,
+) -> Result<(), ConfigError> {
+    let nonzero = [
+        ("maxAttempts", policy.max_attempts),
+        (
+            "join.associationTimeoutMs",
+            policy.join.association_timeout_ms,
+        ),
+        ("sessionOpen.maxAttempts", policy.session_open.max_attempts),
+    ];
+    for (field, value) in nonzero {
+        if value == 0 {
+            return Err(ConfigError::Validation {
+                path: format!("models.{model_id}.establishments.{mechanism}.wifiHandoff.{field}"),
+                message: "must be greater than zero".into(),
+            });
+        }
     }
     Ok(())
 }

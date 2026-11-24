@@ -3176,7 +3176,6 @@ fn media_format_table_classifies_objects_through_ffi() {
     assert!(mov.is_photos_compatible);
     // The reported-size sentinel is data, not a hardcoded 0xFFFFFFFF in Swift.
     assert_eq!(s.object_info_size_sentinel(), Some(0xffff_ffff));
-    assert_eq!(s.wireless_transfer_ceiling(), Some(0xffff_ffff));
 
     // An unknown / unlisted format code → None.
     assert!(s.media_format(0x9999).is_none());

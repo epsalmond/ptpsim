@@ -5,6 +5,8 @@
 
 generator uniffi 0.31.1
 
+config bindings.kotlin.package_name = "dev.ptpsim.cameraprotocol"
+
 config bindings.swift.ffi_module_name = "CameraProtocolFFIFFI"
 
 config bindings.swift.module_name = "CameraProtocolFFI"
@@ -260,6 +262,7 @@ record EstablishmentPlan
   field activities: Vec<ConnectionActivityDescriptor>
   field post_exit_readiness: Vec<Step>
   field steps: Vec<Step>
+  field wifi_handoff: Option<WifiHandoffPolicy> = default
 
 record EstablishmentWalkSummary
   field confirm_outcome: EstablishmentConfirmOutcome
@@ -964,6 +967,11 @@ record SentinelMaskInfo
   field meaning: Option<String>
   field label_prefix: String
 
+record SessionOpenPolicy
+  field settle_ms: u32
+  field max_attempts: u32
+  field retry_delay_ms: u32
+
 record SocketBindingInfo
   field role: SocketRole
   field host: Option<String>
@@ -1002,6 +1010,16 @@ record StructuredTextLayoutInfo
 record TransportCloseInfo
   field packet: Bytes
   field when: Option<String>
+
+record WifiHandoffPolicy
+  field max_attempts: u32
+  field retry_delay_ms: u32
+  field join: WifiJoinPolicy
+  field session_open: SessionOpenPolicy
+
+record WifiJoinPolicy
+  field settle_ms: u32
+  field association_timeout_ms: u32
 
 enum AcquireSource
   case BleAdvert(offset: u32, length: u32, encoding: String)
@@ -1830,7 +1848,6 @@ object ConfigStore
   method transport_close(connection: String) throws(TransportCloseError) -> Option<TransportCloseInfo>
   method value(key: String) -> Option<ResolvedValue>
   method value_label(prop: u16, value: i64) -> Option<String>
-  method wireless_transfer_ceiling() -> Option<u64>
 
 object ConnectionActivityObserver callback_trait
   method on_activity(event: ConnectionActivityEvent)

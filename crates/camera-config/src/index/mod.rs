@@ -39,7 +39,8 @@ pub use types::{
     IfStep, IndexedModel, LocalNamePredicate, ManufacturerIndex, MfgDataPredicate, ModelView,
     NikonLssAuthenticateStep, NikonLssReadConnectionConfigurationStep, NotifyCapture,
     PayloadPredicate, PcssDiscoveryPolicy, PcssNotifyPredicate, PcssNotifySignature, Predicate,
-    PredicateOp, ReconnectDisposition, ReconnectSuggestion, RetryFailureKind, RetryStep, Signature,
-    SignatureKind, Step, StepConfirmation, StepOptions, StepValue, SuggestsBlock, Transform,
-    UsbAwaitInterruptStep, UsbBulkInStep, UsbBulkOutStep, UsbClaimStep, UsbInterfaceTriple,
+    PredicateOp, ReconnectDisposition, ReconnectSuggestion, RetryFailureKind, RetryStep,
+    SessionOpenPolicy, Signature, SignatureKind, Step, StepConfirmation, StepOptions, StepValue,
+    SuggestsBlock, Transform, UsbAwaitInterruptStep, UsbBulkInStep, UsbBulkOutStep, UsbClaimStep,
+    UsbInterfaceTriple, WifiHandoffPolicy, WifiJoinPolicy,
 };

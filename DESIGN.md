@@ -1158,25 +1158,30 @@ fetches and proxies the service's manifest action catalog instead of defining a
 camera-action registry of its own. Process-local phase patches and quit use a
 reserved `operator.*` namespace and never masquerade as camera actions.
 
-- The TUI is an app-state injector and the BLE/Wi-Fi boundary. It is how a test
-  asserts states like "already Bluetooth-paired" without real wireless, and a
-  shortcut for setting up app states for screenshots and user-flow automation.
-  It is moving out of the camera/PTP interface entirely. Dev/test only.
-- ptpsim is the PTP/IP wire — a believable camera responder. Dev, test, and
-  production verification (it is the binary client application leases for App Review).
+- The TUI is an app-state injector. It is how a test asserts states like
+  "already Bluetooth-paired" without real wireless, and a shortcut for setting
+  up app states for screenshots and user-flow automation. It is moving out of
+  the camera/PTP interface entirely. Dev/test only.
+- ptpsim is the camera responder: the PTP/IP wire, and optionally the BLE GATT
+  side over a loopback socket. Dev, test, and production verification (it is
+  the binary a client application leases for App Review).
 
-In review and production the app's `connectToDevCameraHost()` skips BLE/Wi-Fi
-and opens PTP/IP directly, so ptpsim stands alone with no TUI involved. In local
-development the TUI injects the "paired" state and the app then talks to ptpsim
-over PTP/IP. The seam is BLE: the TUI owns everything up to and including
-pairing; ptpsim owns everything on the PTP/IP transport.
+In review and production the app's direct-connect path skips BLE and Wi-Fi and
+opens PTP/IP directly, so ptpsim stands alone with no TUI involved. Local
+development has two ways to reach a paired state. The TUI can inject the
+"paired" state, after which the app talks to ptpsim over PTP/IP only. Or the
+app can run its real discovery, pairing and AP handoff against ptpsim's BLE
+socket, after which the same service answers its PTP/IP session.
 
-BLE itself is a plausible future ptpsim component — per-model BLE variance is
-device behavior the app should not need to know, which is the same
-manifest-as-data argument that justifies ptpsim for PTP. It is explicitly out of
-scope now; client application's script-driven BLE plus the TUI's "already-paired" shortcut
-cover the need. The transport model leaves room for a `ble` transport kind so
-this can be added later without restructuring.
+BLE emulation is in scope as a data-driven transport. Per-model BLE variance
+is device behavior the app should not need to know, which is the same
+manifest-as-data argument that justifies ptpsim for PTP. `camera-sim-service`
+serves the in-memory GATT responder over an opt-in loopback socket
+(`--ble-bind`, `--ble-scenario`), so a client with no Bluetooth radio can run
+its discovery, pairing and AP-handoff flows against the simulator. Served
+values come from manifest data or from labelled test scripts. The protocol and
+scenario format are in [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md) "BLE socket".
+The TUI's "already-paired" shortcut remains for flows that skip BLE.
 
 ## App Review Runtime
 
@@ -1258,11 +1263,11 @@ Paper designs for the next transports (PTP/USB + modes, XLV HTTP/HTTPS, wireless
 tether) live in [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md) — each lands as an
 adapter + manifest data, with the core crates unchanged.
 
-Out of scope for now (candidate later transport): a `ble` transport kind for
-discovery/pairing emulation. The shipping initiator plus the TUI's
-"already-paired" shortcut cover the current need. If emulation becomes
-necessary, BLE belongs in ptpsim as a data-driven transport for the same reason
-as PTP — per-model variance the app should not have to know.
+BLE discovery and pairing emulation is in scope as a data-driven transport,
+for the same reason as PTP: per-model variance the app should not have to know.
+`camera-sim-service` serves it over a loopback socket, with served values from
+manifest data or labelled test scripts ([`docs/TRANSPORTS.md`](docs/TRANSPORTS.md)
+"BLE socket").
 
 ## Transport And Mode Matrix
 
@@ -1668,7 +1673,8 @@ The tethered-shooting product target is higher:
 - Manufacturer order: Fuji, then Nikon (and RED, Nikon-owned), then Canon.
 - PCSS: start as a sibling transport module under Fuji, not inside reference app AP
   workflow code.
-- BLE emulation: out of scope now; candidate future ptpsim transport.
+- BLE emulation: in scope as a data-driven transport, served by
+  `camera-sim-service` over an opt-in loopback socket.
 
 ## Remaining Design Risks
 
