@@ -1,13 +1,13 @@
 ---
-description: PTP/USB, XLV (HTTP/HTTPS), and wireless-tether transports as manifest-driven adapters over the one generic engine. The initiator-side USB model is specified in MANIFEST_SCHEMA §11.29; the USB responder, XLV, and wireless tether remain paper design.
+description: PTP/USB, XLV (HTTP/HTTPS), wireless-tether, and BLE socket transports as manifest-driven adapters over the one generic engine. The initiator-side USB model is specified in MANIFEST_SCHEMA §11.29 and the BLE socket listener is implemented; the USB responder, XLV, and wireless tether remain paper design.
 status: plan
 read-when: Planning or implementing a new transport, or checking the transport-adapter invariant before touching the engine/transport boundary.
 ---
 
 # ptpsim Transport Designs
 
-Covers PTP/USB, XLV (HTTP/HTTPS), and wireless tether, for the Fuji GFX100 II
-first. These extend the design in [`../DESIGN.md`](../DESIGN.md); read its
+Covers PTP/USB, XLV (HTTP/HTTPS), wireless tether, and the BLE socket, for the
+Fuji GFX100 II first. These extend the design in [`../DESIGN.md`](../DESIGN.md); read its
 "Transport And Mode Matrix" and "Architecture: generic engine" sections first.
 NB: the YAML sketches below predate the `connections` schema that superseded
 the draft `transports:` block (#162); on implementation, this material lands
@@ -216,6 +216,152 @@ transports:
 
 If the probe shows it is *not* PTP/IP-shaped, it becomes a third protocol family
 like XLV; assume PTP/IP until a capture says otherwise.
+
+---
+
+## 4. BLE socket (implemented, opt-in)
+
+`camera-sim-service` can serve the in-memory GATT responder
+(`camera_sim::BleResponder`) over a loopback TCP socket. A client application
+in an environment with no Bluetooth radio (for example an app in the iOS
+Simulator) implements its BLE transport seam over this socket and runs its
+discovery, pairing and AP-handoff flows against the simulator. The PTP/IP
+session that follows uses the service's ordinary listeners.
+
+The listener is off unless both flags are given:
+
+```sh
+camera-sim-service ... --ble-bind 127.0.0.1:55750 \
+  --ble-scenario packages/fixtures/ble/gfx100ii-pair-handoff.yaml
+```
+
+`./run` passes `PTPSIM_BLE_BIND` and `PTPSIM_BLE_SCENARIO` through when both
+are set. It starts no BLE listener by default. `127.0.0.1:55750` is the
+suggested local address.
+
+### Protocol `ptpsim-ble/1`
+
+- Newline-delimited JSON: one compact UTF-8 object per line, ended by `\n`.
+- Wire field names are `snake_case`. Bytes are lowercase hex strings. UUIDs
+  are uppercase canonical strings; the server uppercases UUID input before
+  lookup.
+- Request (client to server): `{"id": <u64>, "op": "<name>", ...args}`. Client
+  ids start at 1 and increase by 1.
+- Response (server to client): exactly one per request, in request order:
+  `{"id": n, "ok": true, ...result}` or
+  `{"id": n, "ok": false, "error": {"code": "...", "detail": "..."}}`. A line
+  with no readable `id` gets a `bad_request` response with `"id": null`.
+- Event (server to client): `{"event": "<name>", ...}`, with no `id`.
+
+The server handles one request at a time per connection. After it writes a
+response it pushes the events that request made eligible, then reads the next
+request. Notification fencing depends on this order.
+
+On accept the server builds a fresh responder from the scenario, wired to the
+engine's shared `CameraLink`, and sends
+`{"event":"hello","protocol":"ptpsim-ble","version":1}`. A client fails the
+connection on any other version. A fresh responder per accept means a client
+that closes and reconnects starts from an unspent script. The service serves
+one client at a time: a second concurrent client receives the hello, then
+`{"event":"error","code":"busy"}`, and is closed. The server waits up to
+500 ms for an earlier connection to finish before it answers `busy`.
+
+| op | args | result | responder call |
+|---|---|---|---|
+| `scan_start` | none | none | none; then one `advert` event per scenario peripheral |
+| `scan_stop` | none | none | none |
+| `connect` | `peripheral` | `mtu`, `peripheral_name` (nullable) | `connect()` |
+| `discover` | none | `characteristics: [uuid]` | `discover_services()` |
+| `read` | `uuid` | `value` | `read(uuid)` |
+| `write` | `uuid`, `value` | none | `write(uuid, value)` |
+| `write_fenced` | `uuid`, `value`, `notify_uuid` | none | `write_with_notification_fence(uuid, value, notify_uuid)` |
+| `subscribe` | `uuid` | none | `subscribe(uuid, notify)`; adds `uuid` to the connection's subscribed set |
+| `await_disconnect` | none | none | `await_disconnect()`; on success clears the subscribed set and sends `disconnected` |
+| `disconnect` | none | none | none; clears the subscribed set |
+
+`mtu` and `peripheral_name` come from the scenario. The server does not call
+the responder's MTU or peripheral-name methods, so the responder log holds only
+operations the client requested.
+
+Events:
+
+- `advert`: `{"event":"advert","peripheral":"<uuid>","service_uuids":[...],"manufacturer_data":"<hex>","local_name":null,"service_data":{},"tx_power":null}`.
+  `manufacturer_data` is the raw advertised field: the 2-byte little-endian
+  company ID, then the payload.
+- `notification`: `{"event":"notification","uuid":"...","value":"<hex>"}`.
+  After every request the server takes each subscribed characteristic's
+  eligible notifications from the responder and pushes them in order.
+- `disconnected`: `{"event":"disconnected","peripheral":"<uuid>","reason":"peer_disconnect"}`,
+  after a scripted peer disconnect is observed.
+- `error`: only `busy`.
+
+Responder errors map to wire codes:
+
+| Responder error | Wire code | `detail` |
+|---|---|---|
+| `NotConnected` | `not_connected` | |
+| `ServicesNotDiscovered` | `services_not_discovered` | |
+| `NotExposed(uuid)` | `not_exposed` | the UUID |
+| `NoPeripheralName` | `no_peripheral_name` | |
+| `MtuRequestFailed` | `mtu_request_failed` | |
+| `UnexpectedWrite`, `ScriptOutOfOrder` | `script_violation` | the error text |
+| `PeerDisconnectNotObserved` | `peer_disconnect_not_observed` | |
+
+Protocol-level codes are `bad_request`, `unknown_peripheral` and `busy`.
+
+The protocol carries opaque UUIDs, hex bytes, a peripheral id and an MTU. It
+never names a manufacturer, model, characteristic meaning or launch mode.
+
+The golden transcript
+`services/camera-sim-service/tests/fixtures/ble-socket-v1.transcript.ndjson`
+pins the wire format with synthetic UUIDs and bytes. Each line wraps one
+message as `{"dir":"c2s"|"s2c","msg":{...}}`; messages compare by JSON value.
+`tests/ble_socket.rs` replays it through the connection handler. A client
+implementation can replay the same file against its own fake server.
+
+### Scenario `ptpsim-ble-scenario/v1`
+
+The scenario is YAML in the manifest's `camelCase` convention, not wire
+format. Symbolic GATT names resolve through `models[id].ble.gatt` in the named
+manufacturer index; an unknown name fails startup.
+
+```yaml
+schema: ptpsim-ble-scenario/v1
+provenance: test-scripted          # the only accepted value today
+index: ../../camera-config-data/fuji/index.yaml   # relative to the scenario file
+model: gfx100ii
+mtu: 247
+peripheralName: null               # optional
+arming: { prep: imageTransferSetting, launch: functionLaunchRequest, deviceName: deviceNameString }
+peripherals:
+  - id: "<RFC 4122 UUID>"
+    advert: { serviceUuids: ["<uuid>"], manufacturerData: "<hex>" }
+reads:
+  <gattName>: { hex: "<hex>" }     # or { utf8: "<text>" }
+notifications:
+  - { gatt: <gattName>, afterFencedWrite: { gatt: <gattName>, ordinal: 1 }, hex: "<hex>" }
+  - { gatt: <gattName>, utf8: "<text>" }   # no afterFencedWrite: buffered at connect
+```
+
+The catalog served is the model's whole GATT map. `arming` wires the
+responder's prep, launch and device-name writes to the engine's `CameraLink`,
+so the PTP/IP init gates apply to a handoff that arrives over the socket.
+
+`packages/fixtures/ble/gfx100ii-pair-handoff.yaml` serves the GFX100 II legacy
+pairing advert, the `ble-pair` plan and the `ble-establish-wifi-ap` handoff.
+Each value carries a comment naming its source: manifest data where the
+manifest describes it, otherwise a value already used by a ptpsim test.
+`tests/ble_socket.rs` asserts that its advert is the first discoverable
+signature match in the manifest.
+
+Limits:
+
+- Advert fields are literal scenario values. They are not generated from
+  signature data or connection state.
+- The responder answers immediately. AP-launch timing is not modeled.
+- `CameraLink` never clears its prep flag, so once any pass has written the
+  prep characteristic, a later launch without it still arms the engine.
+- One client per service.
 
 ---
 
