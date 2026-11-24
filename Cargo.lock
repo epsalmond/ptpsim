@@ -1576,7 +1576,10 @@ dependencies = [
 name = "ptpsim-uniffi-bindgen"
 version = "0.0.0"
 dependencies = [
+ "toml",
  "uniffi",
+ "uniffi_bindgen",
+ "uniffi_meta",
 ]
 
 [[package]]
