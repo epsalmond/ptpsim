@@ -30,6 +30,7 @@ self_test() {
     git config user.email 'docs-lint@example.invalid'
     git config core.hooksPath /dev/null
     git config commit.gpgsign false
+    git config core.autocrlf false
 
     printf '%s\n' '# Guide' '' "Older prose $em_dash grandfathered." \
         "Removable prose $em_dash line." 'Plain prose.' >guide.md
@@ -41,10 +42,12 @@ self_test() {
     st_failed=0
 
     # Each case edits the working tree, runs the lint against the seed commit,
-    # then restores the seed. Expected failures must name the em dash.
+    # then restores the seed. An expected failure must report the em dash, or
+    # the optional third argument when given.
     run_case() {
         expect=$1
         name=$2
+        want=${3:-em dash}
         git add -A
         if output=$("$script" --base "$base" 2>&1); then status=0; else status=$?; fi
         case "$expect:$status" in
@@ -58,7 +61,7 @@ self_test() {
             st_failed=1
             ;;
         fail:*)
-            if ! printf '%s\n' "$output" | grep -q 'em dash'; then
+            if ! printf '%s\n' "$output" | grep -q -F "$want"; then
                 echo "lint-docs self-test: $name failed for another reason: $output" >&2
                 st_failed=1
             fi
@@ -104,6 +107,24 @@ self_test() {
     printf '%s\n' "Unclosed \`span $em_dash prose." >>guide.md
     run_case fail 'unmatched backtick'
 
+    # shellcheck disable=SC2016 # literal backticks are fixture Markdown
+    printf '```\r\ncode\r\n```\r\nAfter a CRLF fence %s prose.\r\n' "$em_dash" >>guide.md
+    run_case fail 'prose after a closed CRLF fence'
+
+    # shellcheck disable=SC2016 # literal backticks are fixture Markdown
+    printf '%s\n' '```x```' "After inline code $em_dash prose." >>guide.md
+    run_case fail 'prose after a one-line backtick span'
+
+    # Git quotes this name in diff headers. The line added to guide.md first
+    # checks that the quoted file's lines are not credited to guide.md.
+    printf '%s\n' 'Plain added prose.' >>guide.md
+    printf '%s\n' "Quoted path $em_dash prose." >'q"uo\te.md'
+    run_case fail 'quoted path' 'q"uo\te.md:1: em dash'
+
+    tab_name=$(printf 't\tab.md')
+    printf '%s\n' "Escaped path $em_dash prose." >"$tab_name"
+    run_case fail 'path with a control character' "$tab_name:1: em dash"
+
     if "$script" --base refs/heads/missing >/dev/null 2>&1; then
         echo "lint-docs self-test: unresolvable base passed unexpectedly" >&2
         st_failed=1
@@ -120,9 +141,19 @@ self_test() {
         echo "lint-docs self-test: missing origin/main failed: $output" >&2
         st_failed=1
     fi
+    # HEAD is on origin/main, as in CI after a push to main whose previous
+    # commit is unavailable: only uncommitted edits are compared, with a notice.
     git update-ref refs/remotes/origin/main "$base"
     if "$script" >/dev/null 2>&1; then
         echo "lint-docs self-test: origin/main merge base was not used" >&2
+        st_failed=1
+    fi
+    git reset -q --hard "$base"
+    if ! output=$("$script" 2>&1); then
+        echo "lint-docs self-test: clean HEAD on origin/main failed: $output" >&2
+        st_failed=1
+    elif ! printf '%s\n' "$output" | grep -q 'uncommitted changes only'; then
+        echo "lint-docs self-test: HEAD on origin/main gave no notice" >&2
         st_failed=1
     fi
 
@@ -204,6 +235,9 @@ if [ -z "$base" ]; then
     base=$(git merge-base HEAD origin/main 2>/dev/null || true)
     if [ -z "$base" ]; then
         echo "lint-docs: no origin/main merge base; em dash check skipped (pass --base <revision>)" >&2
+    elif [ "$base" = "$(git rev-parse HEAD)" ]; then
+        # CI reaches this after a main push whose previous commit is missing.
+        echo "lint-docs: HEAD is on origin/main; em dash check covers uncommitted changes only (pass --base <revision>)" >&2
     fi
 fi
 if [ -n "$base" ] && ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
@@ -247,14 +281,43 @@ if [ -n "$base" ]; then
                     }
                     return out s
                 }
+                # Undo the C-style quoting git applies to unusual file names.
+                function unquote(s,    out, i, c) {
+                    out = ""
+                    for (i = 2; i < length(s); i++) {
+                        c = substr(s, i, 1)
+                        if (c == "\\") {
+                            c = substr(s, ++i, 1)
+                            if (c ~ /[0-7]/) {
+                                c = sprintf("%c", c * 64 + substr(s, i + 1, 1) * 8 + substr(s, i + 2, 1))
+                                i += 2
+                            } else if (c == "a") c = "\007"
+                            else if (c == "b") c = "\010"
+                            else if (c == "t") c = "\011"
+                            else if (c == "n") c = "\012"
+                            else if (c == "v") c = "\013"
+                            else if (c == "f") c = "\014"
+                            else if (c == "r") c = "\015"
+                        }
+                        out = out c
+                    }
+                    return out
+                }
                 function scan(path,    text, ln, fenced, fence_char, fence_len, marker, ch, len) {
                     ln = 0
                     fenced = 0
                     while ((getline text < path) > 0) {
                         ln++
+                        sub(/\r$/, "", text)
                         # A fence is three or more backticks or tildes after at
                         # most three spaces; it closes on a longer-or-equal run
-                        # of the same character with nothing after it.
+                        # of the same character with nothing after it. A
+                        # backtick fence cannot open on a line with another
+                        # backtick after the run (that line is inline code).
+                        # Not handled, so flagged as prose: indented code
+                        # blocks, fences inside blockquotes, and fences
+                        # indented four or more spaces in list items. Move the
+                        # block to a fence at the left margin, or reword.
                         if (match(text, /^ ? ? ?(```|~~~)/)) {
                             marker = substr(text, RSTART)
                             sub(/^ +/, "", marker)
@@ -262,12 +325,13 @@ if [ -n "$base" ]; then
                             len = 0
                             while (substr(marker, len + 1, 1) == ch) len++
                             if (!fenced) {
-                                fenced = 1
-                                fence_char = ch
-                                fence_len = len
-                                continue
-                            }
-                            if (ch == fence_char && len >= fence_len &&
+                                if (!(ch == "`" && index(substr(marker, len + 1), "`"))) {
+                                    fenced = 1
+                                    fence_char = ch
+                                    fence_len = len
+                                    continue
+                                }
+                            } else if (ch == fence_char && len >= fence_len &&
                                 substr(marker, len + 1) ~ /^[ \t]*$/) {
                                 fenced = 0
                                 continue
@@ -280,10 +344,16 @@ if [ -n "$base" ]; then
                     }
                     close(path)
                 }
-                /^diff --git / { in_hunk = 0; next }
-                !in_hunk && /^\+\+\+ b\// {
-                    path = substr($0, 7)
-                    sub(/\t$/, "", path)
+                /^diff --git / { in_hunk = 0; path = ""; next }
+                !in_hunk && /^\+\+\+ / {
+                    path = substr($0, 5)
+                    if (substr(path, 1, 1) == "\"") {
+                        path = unquote(path)
+                    } else {
+                        sub(/\t$/, "", path)
+                    }
+                    if (substr(path, 1, 2) != "b/") { path = ""; next }
+                    path = substr(path, 3)
                     files[++count] = path
                     next
                 }
@@ -293,7 +363,7 @@ if [ -n "$base" ]; then
                     line = substr(start[1], 2) + 0
                     next
                 }
-                in_hunk && /^\+/ { added[path SUBSEP line] = 1; line++ }
+                in_hunk && path != "" && /^\+/ { added[path SUBSEP line] = 1; line++ }
                 END { for (i = 1; i <= count; i++) scan(files[i]) }
             '
     )
