@@ -1,25 +1,25 @@
 package ptpsim.ci
 
-import uniffi.camera_protocol_ffi.BleExecutorTransport
-import uniffi.camera_protocol_ffi.CccdMode
-import uniffi.camera_protocol_ffi.ConnectionActivityEvent
-import uniffi.camera_protocol_ffi.ConnectionActivityFailure
-import uniffi.camera_protocol_ffi.ConnectionActivityObserver
-import uniffi.camera_protocol_ffi.ConnectionActivityRetry
-import uniffi.camera_protocol_ffi.KeyValue
-import uniffi.camera_protocol_ffi.ReadyReconnectRecognition
-import uniffi.camera_protocol_ffi.ScanObservation
-import uniffi.camera_protocol_ffi.ConfigStore
-import uniffi.camera_protocol_ffi.ExecutorException
-import uniffi.camera_protocol_ffi.ExecutorStepFailureKind
-import uniffi.camera_protocol_ffi.Predicate
-import uniffi.camera_protocol_ffi.PredicateOp
-import uniffi.camera_protocol_ffi.PtpExecutorTransport
-import uniffi.camera_protocol_ffi.PtpSessionOpenResult
-import uniffi.camera_protocol_ffi.SocketRole
-import uniffi.camera_protocol_ffi.Step
-import uniffi.camera_protocol_ffi.StepObserver
-import uniffi.camera_protocol_ffi.StepReport
+import dev.ptpsim.cameraprotocol.BleExecutorTransport
+import dev.ptpsim.cameraprotocol.CccdMode
+import dev.ptpsim.cameraprotocol.ConnectionActivityEvent
+import dev.ptpsim.cameraprotocol.ConnectionActivityFailure
+import dev.ptpsim.cameraprotocol.ConnectionActivityObserver
+import dev.ptpsim.cameraprotocol.ConnectionActivityRetry
+import dev.ptpsim.cameraprotocol.KeyValue
+import dev.ptpsim.cameraprotocol.ReadyReconnectRecognition
+import dev.ptpsim.cameraprotocol.ScanObservation
+import dev.ptpsim.cameraprotocol.ConfigStore
+import dev.ptpsim.cameraprotocol.ExecutorException
+import dev.ptpsim.cameraprotocol.ExecutorStepFailureKind
+import dev.ptpsim.cameraprotocol.Predicate
+import dev.ptpsim.cameraprotocol.PredicateOp
+import dev.ptpsim.cameraprotocol.PtpExecutorTransport
+import dev.ptpsim.cameraprotocol.PtpSessionOpenResult
+import dev.ptpsim.cameraprotocol.SocketRole
+import dev.ptpsim.cameraprotocol.Step
+import dev.ptpsim.cameraprotocol.StepObserver
+import dev.ptpsim.cameraprotocol.StepReport
 
 fun fallbackModelBindingShape(store: ConfigStore, model: String): String {
     val fallback: Boolean? = store.isFallbackModel(model)
