@@ -526,6 +526,23 @@ impl BleResponder {
         eligible.then(|| queue.remove(0).payload)
     }
 
+    /// Drop the notifications on `uuid` that fenced writes have already
+    /// released. Entries queued without a fenced-write cause, and entries
+    /// still waiting for their write, are kept. A transport calls this for a
+    /// characteristic whose notifications the client has not enabled, since a
+    /// GATT server sends notifications only while they are enabled.
+    pub fn discard_released_notifications(&mut self, uuid: &str) {
+        let fenced_write_counts = &self.fenced_write_counts;
+        if let Some(queue) = self.notify_queues.get_mut(uuid) {
+            queue.retain(|entry| match &entry.after_fenced_write {
+                None => true,
+                Some((write_uuid, ordinal)) => !fenced_write_counts
+                    .get(write_uuid)
+                    .is_some_and(|count| count >= ordinal),
+            });
+        }
+    }
+
     /// Every interaction, in order.
     pub fn log(&self) -> &[BleEvent] {
         &self.log
@@ -1355,5 +1372,35 @@ fn bind_nikon_connection_configuration(
     {
         ctx.scope.insert(name.clone(), length.to_string());
         ctx.encodings.insert(name.clone(), Encoding::U32Le);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discard_released_notifications_keeps_unreleased_and_uncaused_entries() {
+        let mut responder = BleResponder::new(["N".to_string(), "W".to_string()])
+            .queue_notification("M", &[0xaa])
+            .queue_notification("N", &[0xee])
+            .queue_notification_after_fenced_write("N", "W", 1, &[0x01])
+            .queue_notification_after_fenced_write("N", "W", 2, &[0x02]);
+        responder.connect();
+        responder.discover_services().unwrap();
+        responder
+            .write_with_notification_fence("W", &[0x00], "N")
+            .unwrap();
+        responder.discard_released_notifications("N");
+        // The fence already dropped the uncaused 0xee; ordinal 1 is released
+        // and discarded; ordinal 2 still waits for its write.
+        assert_eq!(responder.take_notification("N"), None);
+        responder
+            .write_with_notification_fence("W", &[0x00], "N")
+            .unwrap();
+        assert_eq!(responder.take_notification("N"), Some(vec![0x02]));
+        // An entry with no fenced-write cause is never discarded.
+        responder.discard_released_notifications("M");
+        assert_eq!(responder.take_notification("M"), Some(vec![0xaa]));
     }
 }

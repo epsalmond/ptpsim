@@ -71,7 +71,36 @@ impl CameraLink {
     pub fn device_name(&self) -> Option<String> {
         self.device_name.lock().unwrap().clone()
     }
+
+    /// Return to the standalone default: no prep write, armed, no registered
+    /// name. A transport that starts a new BLE session calls this so an
+    /// earlier session's writes cannot satisfy the next session's gates.
+    /// Simulator session policy, not camera behavior.
+    pub fn reset(&self) {
+        self.prep_written.store(false, Ordering::SeqCst);
+        self.armed.store(true, Ordering::SeqCst);
+        *self.device_name.lock().unwrap() = None;
+    }
 }
 
 /// A `CameraLink` shared (cloned) between the BLE responder and the engine.
 pub type SharedLink = Arc<CameraLink>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_restores_the_standalone_default() {
+        let link = CameraLink::default();
+        link.note_prep_write();
+        link.launch_ap();
+        link.note_device_name("host".into());
+        link.reset();
+        assert!(link.is_armed());
+        assert_eq!(link.device_name(), None);
+        // The prep flag is cleared too: a launch now leaves the link unarmed.
+        link.launch_ap();
+        assert!(!link.is_armed());
+    }
+}
