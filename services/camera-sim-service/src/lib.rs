@@ -1255,11 +1255,20 @@ impl Server {
     /// accepted connection gets a fresh responder wired to this server's
     /// [`Self::camera_link`], so its arming and device-name writes gate the
     /// PTP/IP init exactly as an in-process responder's would.
+    ///
+    /// The protocol is unauthenticated and can arm the PTP/IP init gate, so a
+    /// non-loopback `bind` is refused unless `allow_non_loopback` is set.
     pub async fn enable_ble_socket(
         &mut self,
         bind: SocketAddr,
         scenario: &std::path::Path,
+        allow_non_loopback: bool,
     ) -> std::io::Result<()> {
+        if !allow_non_loopback && !bind.ip().is_loopback() {
+            return Err(invalid_config(format!(
+                "BLE socket bind {bind} is not a loopback address; the protocol is unauthenticated (--ble-allow-non-loopback overrides)"
+            )));
+        }
         let link = self.camera_link().await;
         let scenario = ble_socket::BleScenario::load(scenario, link)
             .map_err(|error| invalid_config(error.to_string()))?;

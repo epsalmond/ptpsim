@@ -75,6 +75,10 @@ struct Args {
     /// `ptpsim-ble-scenario/v1` YAML the BLE socket serves. Requires --ble-bind.
     #[arg(long, requires = "ble_bind")]
     ble_scenario: Option<PathBuf>,
+    /// Allow a non-loopback --ble-bind. The BLE socket protocol has no
+    /// authentication and can arm the PTP/IP init gate.
+    #[arg(long, requires = "ble_bind")]
+    ble_allow_non_loopback: bool,
     /// Log format. `auto` uses compact human logs on a terminal and JSON
     /// otherwise.
     #[arg(long, value_enum, default_value_t = logging::LogFormat::Auto)]
@@ -114,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
     let mut server = Server::bind(config).await?;
     if let (Some(bind), Some(scenario)) = (args.ble_bind, args.ble_scenario.as_deref()) {
         server
-            .enable_ble_socket(bind, scenario)
+            .enable_ble_socket(bind, scenario, args.ble_allow_non_loopback)
             .await
             .map_err(|e| anyhow::anyhow!("BLE socket {}: {e}", scenario.display()))?;
         tracing::info!(ble = ?server.ble_addr_opt(), scenario = %scenario.display(), "BLE socket listening");
