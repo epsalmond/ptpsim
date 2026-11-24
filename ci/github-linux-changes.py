@@ -86,7 +86,7 @@ def selection(event_name, event):
                 "packages/camera-protocol-python/", "packages/fixtures/", ".cargo/",
             ))
             or path in ("Dockerfile", "scripts/rustc-wrapper", "scripts/test-rustc-wrapper.sh",
-                        "ci/build-python-wheel.sh")
+                        "scripts/generate-push-frame-fixture.py", "ci/build-python-wheel.sh")
         )
     if all_jobs:
         selected = dict.fromkeys(JOBS, True)
