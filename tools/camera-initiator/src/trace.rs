@@ -5,9 +5,10 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use camera_config::{
-    ActionOutcome, ActionRole, DataDirection, ExecutionContext, LifecycleMarker, ObservationLine,
-    ObservationRecorder, PayloadMetadataBuilder, PtpDataPhase, PtpEventRecord, PtpRequest,
-    PtpResponse, PtpTransactionRecord, PtpTransport, TransactionOutcome,
+    ActionOutcome, ActionRole, DataDirection, ExecutionContext, ImageGeometry, LifecycleMarker,
+    ObservationLine, ObservationRecorder, PayloadMetadataBuilder, PtpDataPhase, PtpEventRecord,
+    PtpRequest, PtpResponse, PtpTransactionRecord, PtpTransport, PushFrameBody, PushFrameEnvelope,
+    PushFrameHostRead, PushFrameRecord, TransactionOutcome,
 };
 use camera_protocol_ffi::{
     CameraEvent, ConnectionActivityEvent, PtpFraming, StepOutcome, StepReport,
@@ -700,6 +701,64 @@ impl TraceWriter {
     }
 }
 
+impl crate::push_frames::PushFrameObserver for TraceWriter {
+    /// Append one canonical `pushFrame` record on the current connection
+    /// instance. Host read instants map onto the recorder's own clock.
+    fn push_frame(
+        &self,
+        stream: &str,
+        frame: &crate::push_frames::PushFrameObservation,
+    ) -> io::Result<()> {
+        let Some(observations) = &self.observations else {
+            return Ok(());
+        };
+        let connection_instance = self
+            .ptp
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .connection_instance
+            .clone();
+        let mut header = PayloadMetadataBuilder::new();
+        header.update(&frame.header);
+        let host_read = PushFrameHostRead {
+            first_read: observations.clock_point(frame.first_read),
+            last_read: Some(observations.clock_point(frame.last_read)),
+        };
+        let envelope = PushFrameEnvelope {
+            framing: frame.framing.into(),
+            declared_length: frame.declared_length,
+            body_offset: frame.body_offset,
+            header: header.metadata(),
+            gap_sha256: frame.gap_sha256.clone(),
+        };
+        let body = PushFrameBody {
+            media_type: "image/jpeg".into(),
+            payload: frame.body.clone(),
+            image: Some(ImageGeometry {
+                width: frame.jpeg.width.into(),
+                height: frame.jpeg.height.into(),
+                precision: frame.jpeg.precision,
+                components: frame.jpeg.components,
+            }),
+        };
+        observations
+            .append(self.context("pushFrame"), |common| {
+                ObservationLine::PushFrame(Box::new(PushFrameRecord {
+                    common,
+                    connection_instance,
+                    stream: stream.into(),
+                    sequence: frame.sequence,
+                    frame_counter: Some(u64::from(frame.frame_counter)),
+                    host_read,
+                    envelope,
+                    body,
+                }))
+            })
+            .map(|_| ())
+            .map_err(|error| io::Error::other(error.to_string()))
+    }
+}
+
 fn payload_side<'a>(
     pending: &'a mut PendingTransaction,
     direction: &str,
@@ -962,5 +1021,124 @@ mod tests {
         assert_ne!(after_restart, first);
         assert_ne!(after_restart, second);
         assert_eq!(after_restart, "initiator-connection-0000000000000003");
+    }
+}
+
+#[cfg(test)]
+mod push_frame_tests {
+    use super::*;
+    use crate::push_frames::{
+        sample_push_frames, PushFrameLimits, PushFrameProgress, PushFrameTermination,
+    };
+    use camera_config::{
+        direct_epistemic, no_loss, validate_bundles, BundleHeader, CameraContext, CaptureClock,
+        CaptureContext, CaptureInterface, CaptureInterfaceType, ClientContext, ClockType,
+        ClockUnit,
+    };
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+
+    fn header() -> BundleHeader {
+        BundleHeader {
+            schema: camera_config::OBSERVATION_SCHEMA_VERSION.into(),
+            run_id: "push-run".into(),
+            record_id: "header".into(),
+            ordinal: 0,
+            camera: CameraContext {
+                manufacturer: "EXAMPLE".into(),
+                model: "TEST".into(),
+                body_id: "body".into(),
+                firmware: "1".into(),
+            },
+            client: ClientContext {
+                artifact: "camera-initiator-test".into(),
+                version: "1".into(),
+                platform: "test".into(),
+            },
+            capture: CaptureContext {
+                interfaces: vec![CaptureInterface {
+                    id: "live-view".into(),
+                    interface_type: CaptureInterfaceType::Tcp,
+                    role: "initiator".into(),
+                }],
+                clocks: vec![CaptureClock {
+                    id: "process-monotonic".into(),
+                    clock_type: ClockType::Monotonic,
+                    unit: ClockUnit::Milliseconds,
+                }],
+                clock_mappings: Vec::new(),
+                loss: no_loss(),
+                redactions: Vec::new(),
+                tool_versions: BTreeMap::from([("camera-initiator-test".into(), "1".into())]),
+                artifacts: Vec::new(),
+            },
+            epistemic: direct_epistemic(),
+        }
+    }
+
+    /// A JPEG body offset adjustment larger than the inline payload bound must
+    /// still produce a record that the bundle validator accepts.
+    #[tokio::test]
+    async fn sampled_frame_with_large_body_offset_records_a_valid_observation() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("observations.jsonl");
+        let recorder = ObservationRecorder::open(Some(bundle.clone()), header()).unwrap();
+        let trace = Arc::new(TraceWriter::with_observations(
+            TraceFormat::Jsonl,
+            Box::new(Vec::<u8>::new()),
+            recorder,
+            "app".into(),
+            "shooting/stills".into(),
+        ));
+        let jpeg = [
+            0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 1, 224, 2, 128, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8, 1,
+            1, 0, 0, 63, 0, 1, 2, 3, 0xff, 0xd9,
+        ];
+        let adjustment = camera_config::MAX_INLINE_PAYLOAD_BYTES as usize + 1;
+        let mut packet = protocol_primitives::liveview::frame_packet(&jpeg, 0);
+        packet.splice(18..18, std::iter::repeat_n(0xaa, adjustment));
+        packet[12..16].copy_from_slice(&(adjustment as u32).to_le_bytes());
+        let length = packet.len() as u32;
+        packet[..4].copy_from_slice(&length.to_le_bytes());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut writer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        writer.write_all(&packet).await.unwrap();
+        let mut reader = crate::transport::FrameReader::new(stream);
+        let report = sample_push_frames(
+            &mut reader,
+            PushFrameLimits {
+                frame_count: 1,
+                max_frame_bytes: 16 * 1024,
+                max_total_bytes: 16 * 1024,
+                timeout_ms: 2000,
+            },
+            16 * 1024,
+            directory.path(),
+            directory.path(),
+            PushFrameProgress::observed(trace, "liveView"),
+        )
+        .await;
+        assert_eq!(report.termination, PushFrameTermination::FrameCount);
+
+        let text = std::fs::read_to_string(bundle).unwrap();
+        let validated = validate_bundles(&[&text]).unwrap_or_else(|report| panic!("{report:?}"));
+        let Some(ObservationLine::PushFrame(frame)) = validated.records.last() else {
+            panic!("expected a pushFrame record");
+        };
+        assert_eq!(frame.envelope.body_offset, 18 + adjustment as u64);
+        assert_eq!(frame.envelope.header.length, 18);
+        assert_eq!(
+            frame.envelope.header.inline_hex.as_deref(),
+            Some(super::encode_hex(&packet[..18]).as_str())
+        );
+        assert_eq!(
+            frame.envelope.gap_sha256,
+            Some(camera_config::payload_metadata(&packet[18..18 + adjustment]).sha256),
+            "the adjustment gap is hashed, not kept"
+        );
     }
 }

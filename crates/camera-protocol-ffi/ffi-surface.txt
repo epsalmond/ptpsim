@@ -521,6 +521,12 @@ record ObservationHttpResponse
   field headers: Vec<ObservationStringField>
   field body: Option<ObservationPayloadMetadata>
 
+record ObservationImageGeometry
+  field width: u32
+  field height: u32
+  field precision: u8
+  field components: u8
+
 record ObservationJsonField
   field key: String
   field value: ObservationJsonValue
@@ -592,6 +598,32 @@ record ObservationPtpTransaction
   field evidence_basis: Option<ControlEvidenceBasis>
   field observed_effect: Option<ControlObservedEffect>
   field readback: Option<ObservationReadback>
+
+record ObservationPushFrame
+  field common: ObservationCommon
+  field connection_instance: String
+  field stream: String
+  field sequence: u64
+  field frame_counter: Option<u64>
+  field host_read: ObservationPushFrameHostRead
+  field envelope: ObservationPushFrameEnvelope
+  field body: ObservationPushFrameBody
+
+record ObservationPushFrameBody
+  field media_type: String
+  field payload: ObservationPayloadMetadata
+  field image: Option<ObservationImageGeometry>
+
+record ObservationPushFrameEnvelope
+  field framing: String
+  field declared_length: u64
+  field body_offset: u64
+  field header: ObservationPayloadMetadata
+  field gap_sha256: Option<String>
+
+record ObservationPushFrameHostRead
+  field first_read: ObservationClockPoint
+  field last_read: Option<ObservationClockPoint>
 
 record ObservationRecord
   field schema: String
@@ -1414,6 +1446,7 @@ enum ObservationKind
   case HttpExchange
   case Capability
   case ActionInvocation
+  case PushFrame
 
 enum ObservationLifecycleMarker
   case Discovery
@@ -1481,6 +1514,7 @@ enum ObservationValue
   case HttpExchange(value: ObservationHttpExchange)
   case Capability(value: ObservationCapability)
   case ActionInvocation(value: ObservationActionInvocation)
+  case PushFrame(value: ObservationPushFrame)
 
 enum OperationDispositionKind
   case SilentRefusal

@@ -36,6 +36,7 @@ pub enum ObservationKind {
     HttpExchange,
     Capability,
     ActionInvocation,
+    PushFrame,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -52,6 +53,7 @@ pub enum ObservationValue {
     HttpExchange { value: ObservationHttpExchange },
     Capability { value: ObservationCapability },
     ActionInvocation { value: ObservationActionInvocation },
+    PushFrame { value: ObservationPushFrame },
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -389,6 +391,50 @@ pub enum ObservationReadbackSource {
     HttpResponse,
 }
 
+/// Mirror of `PushFrameRecord`: one complete frame the host read from a
+/// camera-initiated push stream.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ObservationPushFrame {
+    pub common: ObservationCommon,
+    pub connection_instance: String,
+    pub stream: String,
+    pub sequence: u64,
+    pub frame_counter: Option<u64>,
+    pub host_read: ObservationPushFrameHostRead,
+    pub envelope: ObservationPushFrameEnvelope,
+    pub body: ObservationPushFrameBody,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ObservationPushFrameHostRead {
+    pub first_read: ObservationClockPoint,
+    pub last_read: Option<ObservationClockPoint>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ObservationPushFrameEnvelope {
+    pub framing: String,
+    pub declared_length: u64,
+    pub body_offset: u64,
+    pub header: ObservationPayloadMetadata,
+    pub gap_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ObservationPushFrameBody {
+    pub media_type: String,
+    pub payload: ObservationPayloadMetadata,
+    pub image: Option<ObservationImageGeometry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct ObservationImageGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub precision: u8,
+    pub components: u8,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ObservationPtpEvent {
     pub common: ObservationCommon,
@@ -594,6 +640,7 @@ pub fn parse_observation_record(json: String) -> Result<ObservationRecord, Obser
         cc::ObservationLine::HttpExchange(_) => ObservationKind::HttpExchange,
         cc::ObservationLine::Capability(_) => ObservationKind::Capability,
         cc::ObservationLine::ActionInvocation(_) => ObservationKind::ActionInvocation,
+        cc::ObservationLine::PushFrame(_) => ObservationKind::PushFrame,
     };
     let canonical_json =
         serde_json::to_string(&line).map_err(|error| ObservationError::Invalid {
@@ -636,6 +683,9 @@ impl From<&cc::ObservationLine> for ObservationValue {
             },
             cc::ObservationLine::ActionInvocation(value) => Self::ActionInvocation {
                 value: value.into(),
+            },
+            cc::ObservationLine::PushFrame(value) => Self::PushFrame {
+                value: value.as_ref().into(),
             },
         }
     }
@@ -1125,6 +1175,39 @@ impl From<&cc::PayloadRange> for ObservationPayloadRange {
             offset: value.offset,
             length: value.length,
             sha256: value.sha256.clone(),
+        }
+    }
+}
+
+impl From<&cc::PushFrameRecord> for ObservationPushFrame {
+    fn from(value: &cc::PushFrameRecord) -> Self {
+        Self {
+            common: (&value.common).into(),
+            connection_instance: value.connection_instance.clone(),
+            stream: value.stream.clone(),
+            sequence: value.sequence,
+            frame_counter: value.frame_counter,
+            host_read: ObservationPushFrameHostRead {
+                first_read: (&value.host_read.first_read).into(),
+                last_read: value.host_read.last_read.as_ref().map(Into::into),
+            },
+            envelope: ObservationPushFrameEnvelope {
+                framing: value.envelope.framing.clone(),
+                declared_length: value.envelope.declared_length,
+                body_offset: value.envelope.body_offset,
+                header: (&value.envelope.header).into(),
+                gap_sha256: value.envelope.gap_sha256.clone(),
+            },
+            body: ObservationPushFrameBody {
+                media_type: value.body.media_type.clone(),
+                payload: (&value.body.payload).into(),
+                image: value.body.image.map(|image| ObservationImageGeometry {
+                    width: image.width,
+                    height: image.height,
+                    precision: image.precision,
+                    components: image.components,
+                }),
+            },
         }
     }
 }
