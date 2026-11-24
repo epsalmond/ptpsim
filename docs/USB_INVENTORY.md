@@ -32,10 +32,13 @@ cargo run -p camera-initiator -- \
 The command executes the manifest USB establishment with
 `run_usb_establishment`, then the manifest `readDeviceInfo` action through the
 shared action executor. It permits only OpenSession and parameter-free
-GetDeviceInfo during establishment. It validates responses, retains transaction
-IDs, and uses CloseSession before releasing its interface. CloseSession is
-attempted only after a successful OpenSession response and while the command
-stream remains synchronized. A session reported as already open is released
+GetDeviceInfo during establishment. Each establishment `usbBulkIn` step reads
+one container, so an establishment GetDeviceInfo needs a data read and a
+response read. Preflight rejects a plan that omits either read, and the command
+stops before its action if the plan ends with a container unread. It validates
+responses, retains transaction IDs, and uses CloseSession before releasing its
+interface. CloseSession is attempted only after a successful OpenSession
+response and while the command stream remains synchronized. A session reported as already open is released
 without sending CloseSession. A failed run retains its primary error and reports
 any cleanup failure. Each transfer and complete container is bounded by the
 configured timeout and byte limit.

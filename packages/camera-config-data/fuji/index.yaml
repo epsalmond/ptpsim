@@ -38,7 +38,10 @@ families:
         # Raw-USB bring-up on the PIMA containers alone: claim the still-image
         # interface, OpenSession, GetDeviceInfo. No manufacturer data and no
         # camera-conditional content; response verification is the conformance
-        # layer's assertion point over the captureAs slots.
+        # layer's assertion point over the captureAs slots. Each USB phase is
+        # its own bulk IN transfer, so GetDeviceInfo takes two reads (data
+        # container, then response container). The plan ends with the bulk IN
+        # pipe at a transaction boundary.
         usb-claim-open:
           mechanism: usb-claim-open
           activities:
@@ -47,13 +50,14 @@ families:
               displayRole: openingSession
               defaultExpectedDurationMs: 2000
               interactionRequired: false
-              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 5 }
+              executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 6 }
           steps:
             - usbClaim: { interface: stillImage }
             - usbBulkOut: { data: { literal: "10000000010002100000000001000000" } }  # OpenSession(1), tid 0, USB container
             - usbBulkIn: { maxLength: 512, encoding: bytes, captureAs: openSessionResponse }
             - usbBulkOut: { data: { literal: "0c0000000100011001000000" } }          # GetDeviceInfo, tid 1
             - usbBulkIn: { maxLength: 65536, encoding: bytes, captureAs: deviceInfo }
+            - usbBulkIn: { maxLength: 512, encoding: bytes, captureAs: deviceInfoResponse }
     ble:
       # Universal GATT catalog. Every Fuji BLE camera, every firmware.
       # The same UUIDs are used for both LEGACY and RED styles (observed in
