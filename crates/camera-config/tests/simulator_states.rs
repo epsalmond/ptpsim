@@ -273,13 +273,13 @@ fn incomplete_or_invalid_states_fail_to_load() {
 }
 
 #[test]
-fn state_scope_and_evidence_problems_are_lints() {
+fn undefined_state_evidence_is_a_lint() {
     let manifest = load(&with_states(
         r#"
   slotEmpty:
     summary: s
     responses:
-      - { operation: "0x9001", response: "0x2019", connections: [usb], modes: [video] }
+      - { operation: "0x9001", response: "0x2019", connections: [app], modes: [browse] }
     evidence: [docMissing]
 "#,
     ));
@@ -288,16 +288,12 @@ fn state_scope_and_evidence_problems_are_lints() {
         .into_iter()
         .map(|lint| lint.message)
         .collect();
-    for expected in [
-        "state slotEmpty references evidence id 'docMissing'",
-        "state slotEmpty response 0 references unknown connection 'usb'",
-        "state slotEmpty response 0 mode scope 'video' matches no declared mode",
-    ] {
-        assert!(
-            messages.iter().any(|message| message.contains(expected)),
-            "expected {expected:?} in {messages:#?}"
-        );
-    }
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("state slotEmpty references evidence id 'docMissing'")),
+        "{messages:#?}"
+    );
 
     let clean = load(&with_states(ONE_STATE));
     assert!(
@@ -307,5 +303,51 @@ fn state_scope_and_evidence_problems_are_lints() {
             .all(|lint| !lint.message.contains("state slotEmpty")),
         "{:#?}",
         clean.validate()
+    );
+}
+
+#[test]
+fn misspelled_or_unreachable_scopes_fail_to_load() {
+    let cases = [
+        (
+            r#"{ operation: "0x9001", response: "0x2019", connections: [ap], modes: [browse] }"#,
+            "states.slotEmpty.responses[0] connection 'ap' is not a declared connection",
+        ),
+        (
+            r#"{ operation: "0x9001", response: "0x2019", connections: [app], modes: [brows] }"#,
+            "states.slotEmpty.responses[0] mode 'brows' matches no declared mode",
+        ),
+        (
+            r#"{ operation: "0x9001", response: "0x2019", connections: [tether] }"#,
+            "states.slotEmpty.responses[0] operation '0x9001' is unavailable on every connection and mode in its scope",
+        ),
+        (
+            r#"{ operation: "0x9001", response: "0x2019", modes: [shoot] }"#,
+            "states.slotEmpty.responses[0] operation '0x9001' is unavailable on every connection and mode in its scope",
+        ),
+    ];
+    for (response, expected) in cases {
+        let states = format!(
+            "  slotEmpty:\n    summary: s\n    responses:\n      - {response}\n    evidence: [docCondition]\n"
+        );
+        let message = contract_error(&with_states(&states));
+        assert!(
+            message.contains(expected),
+            "expected {expected:?} in {message:?}"
+        );
+    }
+
+    // An advertised-only operation can never be dispatched.
+    let advertised = BASE.replace(
+        r#"  "0x9002": { name: VendorPage, modes: [browse], connections: [app] }"#,
+        r#"  "0x9002": { name: VendorPage, modes: [browse], connections: [app] }
+  "0x9005": { name: VendorAdvertised, kind: advertisedOnly }"#,
+    );
+    let message = contract_error(&format!(
+        "{advertised}states:\n  slotEmpty:\n    summary: s\n    responses:\n      - {{ operation: \"0x9005\", response: \"0x2019\" }}\n    evidence: [docCondition]\n"
+    ));
+    assert!(
+        message.contains("operation '0x9005' is unavailable"),
+        "{message}"
     );
 }

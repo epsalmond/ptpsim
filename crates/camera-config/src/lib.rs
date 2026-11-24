@@ -303,15 +303,6 @@ impl CameraManifest {
         }
         for (name, state) in &self.states {
             check(&state.evidence, &format!("state {name}"), &mut lints);
-            for (index, response) in state.responses.iter().enumerate() {
-                self.check_disposition_scope(
-                    &response.connections,
-                    &response.modes,
-                    None,
-                    &format!("state {name} response {index}"),
-                    &mut lints,
-                );
-            }
         }
         for (id, sentinel) in &self.sentinels {
             check(&sentinel.evidence, &format!("sentinel {id}"), &mut lints);
@@ -701,8 +692,84 @@ fn require_valid_simulator_state(
                 response.operation
             ));
         }
+        for connection in &response.connections {
+            if !manifest.connections.contains_key(connection) {
+                return contract(format!(
+                    "{path} connection '{connection}' is not a declared connection"
+                ));
+            }
+        }
+        for mode in &response.modes {
+            if !manifest
+                .modes
+                .keys()
+                .any(|declared| query::mode_matches(std::slice::from_ref(mode), declared))
+            {
+                return contract(format!("{path} mode '{mode}' matches no declared mode"));
+            }
+        }
+        if !state_response_reachable(manifest, response, operation) {
+            return contract(format!(
+                "{path} operation '{}' is unavailable on every connection and mode in its scope",
+                response.operation
+            ));
+        }
     }
     Ok(())
+}
+
+/// Whether the operation's catalog entry lets the engine dispatch it on at
+/// least one declared connection and mode the response covers. A `requires`
+/// predicate is runtime state, so `Blocked` still counts as reachable. A
+/// response without `modes` also applies before mode detection.
+fn state_response_reachable(
+    manifest: &CameraManifest,
+    response: &model::StateResponse,
+    operation: u16,
+) -> bool {
+    // A manifest that declares no connections still runs on the engine's
+    // bound connection, so fall back to the operation's own list (or any).
+    let catalog_connections = manifest
+        .operation(operation)
+        .map(|op| op.connections.clone())
+        .unwrap_or_default();
+    let connections: Vec<&str> = if !response.connections.is_empty() {
+        response.connections.iter().map(String::as_str).collect()
+    } else if !manifest.connections.is_empty() {
+        manifest.connections.keys().map(String::as_str).collect()
+    } else if !catalog_connections.is_empty() {
+        catalog_connections.iter().map(String::as_str).collect()
+    } else {
+        vec![""]
+    };
+    let no_observed_values = PropView::new();
+    let dispatchable = |availability: Availability| {
+        matches!(
+            availability,
+            Availability::Available | Availability::Blocked
+        )
+    };
+    connections.iter().any(|connection| {
+        let in_any_mode = manifest
+            .modes
+            .keys()
+            .filter(|mode| query::mode_matches(&response.modes, mode))
+            .any(|mode| {
+                dispatchable(manifest.operation_available(
+                    connection,
+                    mode,
+                    operation,
+                    &no_observed_values,
+                ))
+            });
+        in_any_mode
+            || (response.modes.is_empty()
+                && dispatchable(manifest.operation_available_predetect(
+                    connection,
+                    operation,
+                    &no_observed_values,
+                )))
+    })
 }
 
 fn is_scalar_numeric_property(property: &model::Property) -> bool {
