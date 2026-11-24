@@ -356,7 +356,7 @@ fn multi_stream_push_frames_validate_and_reach_the_proposal_as_evidence() {
         assert!(frame.body.payload.inline_hex.is_none());
         assert_eq!(
             frame.envelope.header.length, frame.envelope.body_offset,
-            "header is the packet prefix before the body"
+            "fixture packets have no offset adjustment"
         );
         assert_eq!(frame.frame_counter, Some(frame.sequence));
         let last = frame.host_read.last_read.as_ref().expect("last read");
@@ -411,8 +411,8 @@ fn push_frame_validation_rejects_retained_bytes_and_incoherent_frames() {
     );
     assert_eq!(
         push_frame_rejections(1, |record| {
-            record["envelope"]["bodyOffset"] = serde_json::json!(9);
-            record["envelope"]["declaredLength"] = serde_json::json!(39);
+            record["envelope"]["bodyOffset"] = serde_json::json!(7);
+            record["envelope"]["declaredLength"] = serde_json::json!(37);
         }),
         ["O141"]
     );

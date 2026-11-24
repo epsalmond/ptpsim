@@ -850,8 +850,9 @@ pub struct PushFrameHostRead {
     pub last_read: Option<ClockPoint>,
 }
 
-/// The stream framing around one body. `header` is the exact packet prefix
-/// before the body, so fields with unknown meaning survive uninterpreted.
+/// The stream framing around one body. `header` is the framing's fixed
+/// header, the first packet bytes, so fields with unknown meaning survive
+/// uninterpreted. Bytes between the header and `body_offset` are not kept.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PushFrameEnvelope {
@@ -861,7 +862,7 @@ pub struct PushFrameEnvelope {
     pub declared_length: u64,
     /// Packet offset where the body begins.
     pub body_offset: u64,
-    /// Packet bytes `0..bodyOffset`, always carried inline.
+    /// The framing's fixed header bytes, always carried inline.
     pub header: PayloadMetadata,
 }
 

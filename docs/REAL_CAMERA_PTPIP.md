@@ -204,12 +204,14 @@ bundle (see MANIFEST_SCHEMA.md §11.26), written after its artifact is synced.
 The record names the current connection instance and stream `liveView`.
 `sequence` counts every complete frame the host read from that socket,
 including a first-frame readiness check, so it continues across sampling steps.
-The record keeps the exact envelope bytes, the envelope frame counter, the
+The record keeps the exact 18 header bytes, the envelope frame counter, the
 JPEG length, SHA-256, and geometry, and the times of the first and last host
 reads of the packet on the bundle's `process-monotonic` clock. Those times are
-whole milliseconds, so frames read less than 1 ms apart can share a value. It
-never contains
-JPEG bytes. The SHA-256 links it to the retained file listed in the step report.
+whole milliseconds, so frames read less than 1 ms apart can share a value. Bytes
+inserted by a nonzero JPEG offset adjustment are counted in `bodyOffset` but not
+kept, so every header fits inline whatever the adjustment. The record never
+contains JPEG bytes. The SHA-256 links it to the retained file listed in the
+step report.
 A frame whose artifact write fails gets no record. A failed observation append
 keeps the retained frame in the report and ends the step with `ioError`.
 

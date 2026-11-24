@@ -896,10 +896,10 @@ fn validate_push_frame(
             "push-frame body must not carry inline bytes; retain image bytes outside the bundle",
         );
     }
-    if envelope.header.inline_hex.is_none() || envelope.header.length != envelope.body_offset {
+    if envelope.header.inline_hex.is_none() || envelope.header.length > envelope.body_offset {
         line.reject(
             "O141",
-            "push-frame envelope header must be the inline packet prefix before bodyOffset",
+            "push-frame envelope header must be inline and end at or before bodyOffset",
         );
     }
     if envelope

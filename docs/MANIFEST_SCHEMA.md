@@ -1917,10 +1917,13 @@ share a value.
 
 `envelope.framing` names the framing contract that parsed the packet.
 `envelope.declaredLength` is the whole packet length the envelope declares, and
-`envelope.bodyOffset` is where the body begins. `envelope.header` is the exact
-packet prefix before the body and must carry inline bytes, so envelope fields
-with unknown meaning are preserved without interpretation. `body.payload`
-starts at `bodyOffset` and ends at `declaredLength`. `body.mediaType` names the
+`envelope.bodyOffset` is where the body begins. `envelope.header` is the
+framing's fixed header, the first packet bytes, and must carry inline bytes, so
+envelope fields with unknown meaning are preserved without interpretation.
+`bodyOffset` cannot precede the end of the header. Bytes between the header and
+`bodyOffset`, which a framing's offset adjustment can insert, are counted by
+`bodyOffset` but not retained. `body.payload` starts at `bodyOffset` and ends at
+`declaredLength`. `body.mediaType` names the
 body format, and optional `body.image` records `width`, `height`, `precision`,
 and `components` from structural checks, all nonzero. A body payload never
 carries inline bytes: the record holds length, SHA-256, and structure, while

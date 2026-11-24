@@ -1794,7 +1794,7 @@
       ]
     },
     "PushFrameEnvelope": {
-      "description": "The stream framing around one body. `header` is the exact packet prefix\nbefore the body, so fields with unknown meaning survive uninterpreted.",
+      "description": "The stream framing around one body. `header` is the framing's fixed\nheader, the first packet bytes, so fields with unknown meaning survive\nuninterpreted. Bytes between the header and `body_offset` are not kept.",
       "type": "object",
       "properties": {
         "bodyOffset": {
@@ -1814,7 +1814,7 @@
           "type": "string"
         },
         "header": {
-          "description": "Packet bytes `0..bodyOffset`, always carried inline.",
+          "description": "The framing's fixed header bytes, always carried inline.",
           "$ref": "#/$defs/PayloadMetadata"
         }
       },
