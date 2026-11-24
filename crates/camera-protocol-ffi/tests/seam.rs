@@ -299,8 +299,14 @@ fn every_observation_variant_has_a_complete_hand_written_ffi_mirror() {
 #[test]
 fn push_frame_observations_cross_the_hand_written_ffi_seam() {
     let fixture = data("observations/fixtures/positive/push-frames-multi-stream.jsonl");
-    let line = fixture.lines().nth(1).unwrap();
+    // The last frame has distinct nonzero sequence and counter values and a
+    // hashed gap, so a mapper that ignored a field cannot pass by accident.
+    let line = fixture.lines().nth(6).unwrap();
     let json: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        (&json["sequence"], &json["frameCounter"]),
+        (&2.into(), &3.into())
+    );
     let mapped = parse_observation_record(line.into()).unwrap();
     assert!(matches!(mapped.kind, ObservationKind::PushFrame));
     let ObservationValue::PushFrame { value } = mapped.value else {
@@ -326,6 +332,10 @@ fn push_frame_observations_cross_the_hand_written_ffi_seam() {
     assert_eq!(value.envelope.framing, envelope["framing"]);
     assert_eq!(value.envelope.declared_length, envelope["declaredLength"]);
     assert_eq!(value.envelope.body_offset, envelope["bodyOffset"]);
+    assert_eq!(
+        value.envelope.gap_sha256.as_deref(),
+        Some(envelope["gapSha256"].as_str().unwrap())
+    );
     assert_eq!(value.envelope.header.length, envelope["header"]["length"]);
     assert_eq!(value.envelope.header.sha256, envelope["header"]["sha256"]);
     assert_eq!(
@@ -355,6 +365,10 @@ fn push_frame_observations_cross_the_hand_written_ffi_seam() {
     let mut sparse = json.clone();
     let object = sparse.as_object_mut().unwrap();
     object.remove("frameCounter");
+    object["envelope"]
+        .as_object_mut()
+        .unwrap()
+        .remove("gapSha256");
     object["hostRead"]
         .as_object_mut()
         .unwrap()
@@ -365,6 +379,7 @@ fn push_frame_observations_cross_the_hand_written_ffi_seam() {
         panic!("expected typed push frame")
     };
     assert_eq!(value.frame_counter, None);
+    assert_eq!(value.envelope.gap_sha256, None);
     assert!(value.host_read.last_read.is_none());
     assert!(value.body.image.is_none());
 }
