@@ -10,5 +10,15 @@ rust-version.workspace = true
 name = "uniffi-bindgen"
 path = "src/main.rs"
 
+# Snapshot and compare the public FFI surface (ci/ffi-surface.sh).
+[[bin]]
+name = "ffi-surface"
+path = "src/ffi_surface/main.rs"
+
 [dependencies]
 uniffi = { version = "0.31", features = ["cli"] }
+# The surface snapshot reads the same library metadata the binding generator
+# reads. These versions must match the `uniffi` version above.
+uniffi_bindgen = { version = "0.31", default-features = false }
+uniffi_meta = "0.31"
+toml = "0.9"

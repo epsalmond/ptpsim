@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 
-JOBS = ("docs", "workspace", "kotlin", "android", "python", "manifest")
+JOBS = ("docs", "workspace", "kotlin", "android", "python", "manifest", "ffi_surface")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
@@ -73,6 +73,11 @@ def selection(event_name, event):
             or path == "ci/build-python-wheel.sh"
         )
         selected["manifest"] |= path.startswith("packages/camera-config-data/")
+        # Build configuration can change which items the library exports.
+        selected["ffi_surface"] |= (
+            common or ffi or path.startswith(".cargo/")
+            or path in ("ci/ffi-surface.sh", "scripts/rustc-wrapper")
+        )
         selected["workspace"] |= (
             common or ffi or kotlin
             or path.startswith((
