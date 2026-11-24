@@ -1,25 +1,25 @@
 package ptpsim.ci
 
-import io.fujikage.ptpsim.cameraprotocol.BleExecutorTransport
-import io.fujikage.ptpsim.cameraprotocol.CccdMode
-import io.fujikage.ptpsim.cameraprotocol.ConnectionActivityEvent
-import io.fujikage.ptpsim.cameraprotocol.ConnectionActivityFailure
-import io.fujikage.ptpsim.cameraprotocol.ConnectionActivityObserver
-import io.fujikage.ptpsim.cameraprotocol.ConnectionActivityRetry
-import io.fujikage.ptpsim.cameraprotocol.KeyValue
-import io.fujikage.ptpsim.cameraprotocol.ReadyReconnectRecognition
-import io.fujikage.ptpsim.cameraprotocol.ScanObservation
-import io.fujikage.ptpsim.cameraprotocol.ConfigStore
-import io.fujikage.ptpsim.cameraprotocol.ExecutorException
-import io.fujikage.ptpsim.cameraprotocol.ExecutorStepFailureKind
-import io.fujikage.ptpsim.cameraprotocol.Predicate
-import io.fujikage.ptpsim.cameraprotocol.PredicateOp
-import io.fujikage.ptpsim.cameraprotocol.PtpExecutorTransport
-import io.fujikage.ptpsim.cameraprotocol.PtpSessionOpenResult
-import io.fujikage.ptpsim.cameraprotocol.SocketRole
-import io.fujikage.ptpsim.cameraprotocol.Step
-import io.fujikage.ptpsim.cameraprotocol.StepObserver
-import io.fujikage.ptpsim.cameraprotocol.StepReport
+import dev.ptpsim.cameraprotocol.BleExecutorTransport
+import dev.ptpsim.cameraprotocol.CccdMode
+import dev.ptpsim.cameraprotocol.ConnectionActivityEvent
+import dev.ptpsim.cameraprotocol.ConnectionActivityFailure
+import dev.ptpsim.cameraprotocol.ConnectionActivityObserver
+import dev.ptpsim.cameraprotocol.ConnectionActivityRetry
+import dev.ptpsim.cameraprotocol.KeyValue
+import dev.ptpsim.cameraprotocol.ReadyReconnectRecognition
+import dev.ptpsim.cameraprotocol.ScanObservation
+import dev.ptpsim.cameraprotocol.ConfigStore
+import dev.ptpsim.cameraprotocol.ExecutorException
+import dev.ptpsim.cameraprotocol.ExecutorStepFailureKind
+import dev.ptpsim.cameraprotocol.Predicate
+import dev.ptpsim.cameraprotocol.PredicateOp
+import dev.ptpsim.cameraprotocol.PtpExecutorTransport
+import dev.ptpsim.cameraprotocol.PtpSessionOpenResult
+import dev.ptpsim.cameraprotocol.SocketRole
+import dev.ptpsim.cameraprotocol.Step
+import dev.ptpsim.cameraprotocol.StepObserver
+import dev.ptpsim.cameraprotocol.StepReport
 
 fun fallbackModelBindingShape(store: ConfigStore, model: String): String {
     val fallback: Boolean? = store.isFallbackModel(model)

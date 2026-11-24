@@ -13,9 +13,9 @@ ffi_module_name = "CameraProtocolFFIFFI"
 #
 # The default would be `uniffi.camera_protocol_ffi`. ptpsim owns this name so
 # every consumer imports the same package. The generated file lands at
-# `io/fujikage/ptpsim/cameraprotocol/camera_protocol_ffi.kt` under the output
+# `dev/ptpsim/cameraprotocol/camera_protocol_ffi.kt` under the output
 # directory. `ci/build-android.sh` repeats the name in `KOTLIN_PACKAGE`, and
 # `ci/test-build-android.sh` checks that the two match. A consumer that needs
 # a different package passes its own `--config` to uniffi-bindgen.
 [bindings.kotlin]
-package_name = "io.fujikage.ptpsim.cameraprotocol"
+package_name = "dev.ptpsim.cameraprotocol"

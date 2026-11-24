@@ -7,7 +7,7 @@
 # Outputs (under $OUT_DIR, default `out/`):
 #
 #     android/jniLibs/<abi>/libcamera_protocol_ffi.so                (intermediate)
-#     android/kotlin/io/fujikage/ptpsim/cameraprotocol/camera_protocol_ffi.kt (intermediate)
+#     android/kotlin/dev/ptpsim/cameraprotocol/camera_protocol_ffi.kt (intermediate)
 #     android/classes.jar                                            (intermediate)
 #     dist/CameraProtocolFFI-<sha8>.aar              (the publishable artifact)
 #     dist/CameraProtocolFFI-android-<sha8>.checksum         (SHA-256 of the .aar)
@@ -46,7 +46,7 @@ XCF_NAME="CameraProtocolFFI"
 # Kotlin package of the generated bindings. It must equal `package_name` under
 # `[bindings.kotlin]` in crates/camera-protocol-ffi/uniffi.toml;
 # ci/test-build-android.sh checks that they match.
-KOTLIN_PACKAGE="io.fujikage.ptpsim.cameraprotocol"
+KOTLIN_PACKAGE="dev.ptpsim.cameraprotocol"
 
 # Rust target → Android ABI directory name (what jniLibs/<abi> expects).
 declare -A ABIS=(

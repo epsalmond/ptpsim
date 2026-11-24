@@ -5,7 +5,7 @@
 
 generator uniffi 0.31.1
 
-config bindings.kotlin.package_name = "io.fujikage.ptpsim.cameraprotocol"
+config bindings.kotlin.package_name = "dev.ptpsim.cameraprotocol"
 
 config bindings.swift.ffi_module_name = "CameraProtocolFFIFFI"
 
