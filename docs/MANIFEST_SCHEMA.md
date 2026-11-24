@@ -1382,7 +1382,9 @@ bounded policy that is more reliable than a reference client when field evidence
 shows a nominally terminal failure is transient. Such a deviation stays exact,
 finite, and data-authored; consumers never string-match an error description.
 The FFI mirrors the shape as `EntryStep::Retry`, and the reference simulator
-executes the same selection and attempt rules.
+executes the same selection and attempt rules. An action's failure conditions
+(§11.33) can classify the failure that remains after the budget is exhausted.
+They never change which failures the retry selects.
 
 ### 11.22 Captured PTP collections and `forEach`
 
@@ -2604,5 +2606,103 @@ overlay, changes nothing, and the error lists the declared state names.
 `GET /state` reports the active state names, sorted, under `states`.
 
 **Not modeled yet.** A state has no `when` predicate, property values, events,
-entry trigger, or automatic clearing. Consumer-visible failure classification
-is a separate change.
+entry trigger, or automatic clearing.
+
+**What the consumer sees.** A state never reaches the consumer directly. An
+action that can meet the state's response declares a failure condition for it
+(§11.33), and the executor reports a matching failure with that condition.
+
+### 11.33 Action failure conditions (#352)
+
+An action initiator may declare `failureConditions`. Each rule classifies a
+PTP response failure that ends the action, so the consumer can show specific,
+cautious guidance instead of a raw response code. A rule changes only how the
+final failure is reported. It never changes which failures a `retry` replays,
+which failures `tolerant` accepts, or whether a `fallback` runs.
+
+```yaml
+actions:
+  enumerateObjects:
+    mode: image-transfer
+    initiator:
+      steps: [ ... ]
+      failureConditions:
+        - operation: "0x9050"
+          whenResponseCodes: ["0x2019"]
+          condition: mediaSlotUnavailable
+          context: { slot: "1" }
+          evidence: [fieldImageImportSlot1Empty20260718]
+```
+
+**Fields.** `operation` is the hexadecimal code of an operation that a
+`sendOp` step in this initiator sends. The step may be nested in a `retry`
+(including its `fallback`), an `if`, a `loop` body, or an `awaitUntil`
+`onEach`. `whenResponseCodes` lists the non-OK responses the rule matches.
+`condition` names one member of the closed vocabulary below. `context` maps
+string keys to string values and holds exactly the keys the condition
+requires. `evidence` lists the evidence ids behind the rule. Unknown fields
+are load errors.
+
+**Conditions.** The vocabulary is closed. Adding a member is a schema change.
+
+| condition | required context | meaning |
+|---|---|---|
+| `mediaSlotUnavailable` | `slot`: the 1-based memory card slot number, a decimal string such as `"1"` | The camera refused the operation in a way the evidence links to the card in `slot`. The slot may be empty, or its card may not have been ready. Consumer copy should stay cautious, such as "Check the card in slot 1". It should not state that no card is present. |
+
+**Load-time contract errors.** The manifest fails to load when:
+
+- `operation` is not a hexadecimal code, or no `sendOp` step in the initiator
+  sends it;
+- `whenResponseCodes` is empty, contains a code that is not a PTP response
+  code (standard `0x2000` to `0x2FFF`, or vendor `0xA000` to `0xAFFF`),
+  contains `0x2001` (OK), or repeats a code;
+- `context` is missing a key the condition requires or has any other key, or
+  a value is malformed (`slot` must be a positive decimal integer with no
+  sign, spaces, or leading zero);
+- `evidence` is empty;
+- two rules in one initiator name the same operation and share a response
+  code, so at most one rule can match a failure.
+
+Because `context` may hold only the condition's required keys, a declared key
+can never replace the executor's own `operation`, `response`,
+`transactionId`, or `condition` entries.
+
+**Lints.** `CameraManifest::validate` warns about an undefined evidence id,
+naming the action.
+
+**Matching.** A rule applies only to the failure that the executor returns for
+the action. That failure must be a non-OK PTP response whose operation equals
+`operation` and whose response code is listed. Transport failures, deadlines,
+payload decode failures, and plan errors are never classified. A failure that
+a `retry` replays, that `tolerant` accepts, or that a successful `fallback`
+replaces does not leave the action, so it is never classified either. When a
+`retry` exhausts its budget on a listed response, the final attempt's failure
+is the one that leaves the action.
+
+**Report.** A matching failure is `StepFailed` with kind `ConditionRejected`.
+`step` and `detail` are unchanged. `context` lists `operation`, `response`, and
+`transactionId` as for every PTP response failure, then `condition` with the
+condition name, then the declared context keys in sorted order. An unmatched
+failure keeps kind `Other` and the three response entries only.
+
+If a semantic activity (§11.23) is active when the failure leaves the action,
+it fails with the same kind. Its context holds `condition` and the declared
+context keys. It leaves out `operation`, `response`, and `transactionId`,
+because activity context carries only manifest-selected values. Retry
+transitions before the final failure keep kind `Other`. Step reports are
+unchanged.
+
+**Scope.** Only action initiators declare failure conditions. Mode entries,
+re-establishment exits, and the selected-object preparation projection report
+failures without classification.
+
+**FFI.** The rules do not cross the FFI as a type. The `Action` and
+`ActionInitiator` records do not carry them. The executor reads them from the
+loaded manifest, so the consumer sees only the kind and context strings on the
+existing error. A consumer should treat a `condition` value it does not
+recognize as an unclassified failure.
+
+**Compatibility.** `ActionInitiator` rejects unknown fields, so a loader that
+predates this section cannot load a manifest that declares
+`failureConditions`. Consumers vendor the FFI and the manifests from the same
+revision.
