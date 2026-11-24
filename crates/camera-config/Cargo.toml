@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 protocol-primitives = { workspace = true }
+ptp-core = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

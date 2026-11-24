@@ -1,0 +1,460 @@
+{
+  "schema": "camera-config-proposal/v1",
+  "observationSchema": "camera-observation/v1",
+  "candidates": [
+    {
+      "id": "a2ad115ceacfb5371d13cbe17be50403f1e9a20f453d0330f7436ffd0dbafd0b",
+      "assertion": {
+        "kind": "cameraIdentity",
+        "manufacturer": "FUJIFILM",
+        "model": "GFX100 II",
+        "firmware": "2.30"
+      },
+      "sourceRecords": [
+        "gfx100ii-app-descriptors-20260518-1:header",
+        "gfx100ii-app-descriptors-20260518-2:header",
+        "gfx100ii-app-descriptors-20260518-3:header"
+      ]
+    },
+    {
+      "id": "a8a0ccb0a6b6c55036778b3cecc4b47dda43b709ab61cc34505e60c686539b8d",
+      "assertion": {
+        "kind": "propertyDescriptorSnapshot",
+        "code": "0x902b",
+        "manufacturer": "FUJIFILM",
+        "model": "GFX100 II",
+        "firmware": "2.30",
+        "connection": "app",
+        "mode": "shooting/video",
+        "selector": "0xd246",
+        "value": 1,
+        "records": [
+          "055004000102000200020c0002000400068001800280038006000a800b800c800d800e80",
+          "01d0040001010001000214000100020003000400050006000700080009000a000b000c000d000e000f0010001100120013001400",
+          "2bd0060001ffffffffffffffff021800ffffffff640000007d000000a0000000c8000000fa0000004001000090010000f40100008002000020030000e8030000e204000040060000d0070000c4090000800c0000a00f00008813000000190000401f0000102700000032000000640040",
+          "45d2020001000602070000010203040506",
+          "07500400015e0118010207005e011202c602e8034c044006ffff",
+          "40d2060001ffffffff3075008002020000000000ffffffff",
+          "19d00400010000010002020000000100",
+          "46d202000100010202000000"
+        ]
+      },
+      "sourceRecords": [
+        "gfx100ii-app-descriptors-20260518-1:snapshot-17",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-18"
+      ],
+      "observedScopes": [
+        {
+          "connection": "app",
+          "mode": "shooting/video",
+          "state": "open-capture"
+        }
+      ]
+    },
+    {
+      "id": "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9",
+      "assertion": {
+        "kind": "propertyDescriptorSnapshot",
+        "code": "0x902b",
+        "manufacturer": "FUJIFILM",
+        "model": "GFX100 II",
+        "firmware": "2.30",
+        "connection": "app",
+        "mode": "shooting/stills",
+        "selector": "0xd246",
+        "value": 0,
+        "records": [
+          "125004000100000000020300000002000400",
+          "0c500400010200098002020009800a80",
+          "055004000102000200020c0002000400068001800280038006000a800b800c800d800e80",
+          "01d0040001010001000214000100020003000400050006000700080009000a000b000c000d000e000f0010001100120013001400",
+          "2ad0060001ffffffffffffffff022200c8000080900100802003008040060080800c008000190080003200802800004050000000640000007d000000a0000000c8000000fa0000004001000090010000f40100008002000020030000e8030000e204000040060000d0070000c4090000800c0000a00f00008813000000190000401f000010270000003200000064004000c8004000900140",
+          "7cd106000100000000020103040100000000090d184101000000",
+          "45d2020001000602070000010203040506",
+          "07500400015e0118010207005e011202c602e8034c044006ffff",
+          "40d2060001ffffffff60ea008002020000000000ffffffff",
+          "19d00400010000010002020000000100",
+          "46d202000100000202000000"
+        ]
+      },
+      "sourceRecords": [
+        "gfx100ii-app-descriptors-20260518-1:snapshot-01",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-02",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-03",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-04",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-09",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-10",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-11",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-12"
+      ],
+      "observedScopes": [
+        {
+          "connection": "app",
+          "mode": "shooting/stills",
+          "state": "before-open-capture"
+        },
+        {
+          "connection": "app",
+          "mode": "shooting/stills",
+          "state": "open-capture"
+        }
+      ]
+    },
+    {
+      "id": "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9",
+      "assertion": {
+        "kind": "propertyDescriptorSnapshot",
+        "code": "0x902b",
+        "manufacturer": "FUJIFILM",
+        "model": "GFX100 II",
+        "firmware": "2.30",
+        "connection": "app",
+        "mode": "shooting/stills",
+        "selector": "0xd246",
+        "value": 0,
+        "records": [
+          "125004000100000000020300000002000400",
+          "0c500400010200098002020009800a80",
+          "055004000102000200020c0002000400068001800280038006000a800b800c800d800e80",
+          "01d0040001010001000214000100020003000400050006000700080009000a000b000c000d000e000f0010001100120013001400",
+          "2ad0060001ffffffffffffffff022200c8000080900100802003008040060080800c008000190080003200802800004050000000640000007d000000a0000000c8000000fa0000004001000090010000f40100008002000020030000e8030000e204000040060000d0070000c4090000800c0000a00f00008813000000190000401f000010270000003200000064004000c8004000900140",
+          "7cd106000100000000060603040100000000090d184101000000",
+          "45d2020001000602070000010203040506",
+          "07500400015e0118010207005e011202c602e8034c044006ffff",
+          "40d2060001ffffffff60ea008002020000000000ffffffff",
+          "19d00400010000010002020000000100",
+          "46d202000100000202000000"
+        ]
+      },
+      "sourceRecords": [
+        "gfx100ii-app-descriptors-20260518-1:snapshot-19",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-20",
+        "gfx100ii-app-descriptors-20260518-2:snapshot-01",
+        "gfx100ii-app-descriptors-20260518-2:snapshot-02",
+        "gfx100ii-app-descriptors-20260518-2:snapshot-03",
+        "gfx100ii-app-descriptors-20260518-2:snapshot-04",
+        "gfx100ii-app-descriptors-20260518-3:snapshot-01",
+        "gfx100ii-app-descriptors-20260518-3:snapshot-02",
+        "gfx100ii-app-descriptors-20260518-3:snapshot-03",
+        "gfx100ii-app-descriptors-20260518-3:snapshot-04"
+      ],
+      "observedScopes": [
+        {
+          "connection": "app",
+          "mode": "shooting/stills",
+          "state": "before-open-capture"
+        },
+        {
+          "connection": "app",
+          "mode": "shooting/stills",
+          "state": "open-capture"
+        }
+      ]
+    },
+    {
+      "id": "d3c7a585a06225b184383b36c3f1cd6275abd981ac38c5fe3f2e278999e5e925",
+      "assertion": {
+        "kind": "propertyDescriptorSnapshot",
+        "code": "0x902b",
+        "manufacturer": "FUJIFILM",
+        "model": "GFX100 II",
+        "firmware": "2.30",
+        "connection": "app",
+        "mode": "shooting/stills",
+        "selector": "0xd246",
+        "value": 0,
+        "records": [
+          "125004000100000000020300000002000400",
+          "0c500400010200098002020009800a80",
+          "055004000102000200020c0002000400068001800280038006000a800b800c800d800e80",
+          "01d0040001010001000214000100020003000400050006000700080009000a000b000c000d000e000f0010001100120013001400",
+          "2ad0060001ffffffffffffffff022200c8000080900100802003008040060080800c008000190080003200802800004050000000640000007d000000a0000000c8000000fa0000004001000090010000f40100008002000020030000e8030000e204000040060000d0070000c4090000800c0000a00f00008813000000190000401f000010270000003200000064004000c8004000900140",
+          "7cd106000100000000020103040100000000090d184101000000",
+          "45d2020001000602070000010203040506",
+          "07500400015e0168010207005e011202c602e8034c044006ffff",
+          "40d2060001ffffffff60ea008002020000000000ffffffff",
+          "19d00400010000010002020000000100",
+          "46d202000100000202000000"
+        ]
+      },
+      "sourceRecords": [
+        "gfx100ii-app-descriptors-20260518-1:snapshot-05",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-06",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-07",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-08"
+      ],
+      "observedScopes": [
+        {
+          "connection": "app",
+          "mode": "shooting/stills",
+          "state": "open-capture"
+        }
+      ]
+    },
+    {
+      "id": "f53dc448634cfbd25be19629d1c187bfcee628fce6237e186ef256d439e15411",
+      "assertion": {
+        "kind": "propertyDescriptorSnapshot",
+        "code": "0x902b",
+        "manufacturer": "FUJIFILM",
+        "model": "GFX100 II",
+        "firmware": "2.30",
+        "connection": "app",
+        "mode": "shooting/stills",
+        "selector": "0xd246",
+        "value": 0,
+        "records": [
+          "125004000100000000020300000002000400",
+          "0c500400010200098002020009800a80",
+          "055004000102000200020c0002000400068001800280038006000a800b800c800d800e80",
+          "01d0040001010001000214000100020003000400050006000700080009000a000b000c000d000e000f0010001100120013001400",
+          "2ad0060001ffffffffffffffff022200c8000080900100802003008040060080800c008000190080003200802800004050000000640000007d000000a0000000c8000000fa0000004001000090010000f40100008002000020030000e8030000e204000040060000d0070000c4090000800c0000a00f00008813000000190000401f000010270000003200000064004000c8004000900140",
+          "7cd106000100000000040503040100000000090d184101000000",
+          "45d2020001000602070000010203040506",
+          "07500400015e0118010207005e011202c602e8034c044006ffff",
+          "40d2060001ffffffff60ea008002020000000000ffffffff",
+          "19d00400010000010002020000000100",
+          "46d202000100000202000000"
+        ]
+      },
+      "sourceRecords": [
+        "gfx100ii-app-descriptors-20260518-1:snapshot-13",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-14",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-15",
+        "gfx100ii-app-descriptors-20260518-1:snapshot-16"
+      ],
+      "observedScopes": [
+        {
+          "connection": "app",
+          "mode": "shooting/stills",
+          "state": "before-open-capture"
+        },
+        {
+          "connection": "app",
+          "mode": "shooting/stills",
+          "state": "open-capture"
+        }
+      ]
+    }
+  ],
+  "recordDispositions": [
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:header",
+      "status": "proposed",
+      "candidateIds": [
+        "a2ad115ceacfb5371d13cbe17be50403f1e9a20f453d0330f7436ffd0dbafd0b"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-01",
+      "status": "proposed",
+      "candidateIds": [
+        "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-02",
+      "status": "proposed",
+      "candidateIds": [
+        "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-03",
+      "status": "proposed",
+      "candidateIds": [
+        "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-04",
+      "status": "proposed",
+      "candidateIds": [
+        "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-05",
+      "status": "proposed",
+      "candidateIds": [
+        "d3c7a585a06225b184383b36c3f1cd6275abd981ac38c5fe3f2e278999e5e925"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-06",
+      "status": "proposed",
+      "candidateIds": [
+        "d3c7a585a06225b184383b36c3f1cd6275abd981ac38c5fe3f2e278999e5e925"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-07",
+      "status": "proposed",
+      "candidateIds": [
+        "d3c7a585a06225b184383b36c3f1cd6275abd981ac38c5fe3f2e278999e5e925"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-08",
+      "status": "proposed",
+      "candidateIds": [
+        "d3c7a585a06225b184383b36c3f1cd6275abd981ac38c5fe3f2e278999e5e925"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-09",
+      "status": "proposed",
+      "candidateIds": [
+        "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-10",
+      "status": "proposed",
+      "candidateIds": [
+        "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-11",
+      "status": "proposed",
+      "candidateIds": [
+        "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-12",
+      "status": "proposed",
+      "candidateIds": [
+        "b45711806e05ff603b55a456d8dd8b6f78ae3d3c99eccfb2ddf5bd17e8ff9fd9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-13",
+      "status": "proposed",
+      "candidateIds": [
+        "f53dc448634cfbd25be19629d1c187bfcee628fce6237e186ef256d439e15411"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-14",
+      "status": "proposed",
+      "candidateIds": [
+        "f53dc448634cfbd25be19629d1c187bfcee628fce6237e186ef256d439e15411"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-15",
+      "status": "proposed",
+      "candidateIds": [
+        "f53dc448634cfbd25be19629d1c187bfcee628fce6237e186ef256d439e15411"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-16",
+      "status": "proposed",
+      "candidateIds": [
+        "f53dc448634cfbd25be19629d1c187bfcee628fce6237e186ef256d439e15411"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-17",
+      "status": "proposed",
+      "candidateIds": [
+        "a8a0ccb0a6b6c55036778b3cecc4b47dda43b709ab61cc34505e60c686539b8d"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-18",
+      "status": "proposed",
+      "candidateIds": [
+        "a8a0ccb0a6b6c55036778b3cecc4b47dda43b709ab61cc34505e60c686539b8d"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-19",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-1:snapshot-20",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-2:header",
+      "status": "proposed",
+      "candidateIds": [
+        "a2ad115ceacfb5371d13cbe17be50403f1e9a20f453d0330f7436ffd0dbafd0b"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-2:snapshot-01",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-2:snapshot-02",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-2:snapshot-03",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-2:snapshot-04",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-3:header",
+      "status": "proposed",
+      "candidateIds": [
+        "a2ad115ceacfb5371d13cbe17be50403f1e9a20f453d0330f7436ffd0dbafd0b"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-3:snapshot-01",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-3:snapshot-02",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-3:snapshot-03",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    },
+    {
+      "identity": "gfx100ii-app-descriptors-20260518-3:snapshot-04",
+      "status": "proposed",
+      "candidateIds": [
+        "ce83bb321fbcc341990cdbcdf1e3fc8ea98f85902ff376d6e3e30905f68199a9"
+      ]
+    }
+  ],
+  "digest": "d5b372815a91264e0911ed89a7c6054400d8f6fec3d8805121230aa068895d1e"
+}

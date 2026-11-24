@@ -3301,6 +3301,44 @@ fn parse_device_prop_desc_decodes_value_and_enum_form() {
 }
 
 #[test]
+fn app_descriptor_snapshot_preserves_observed_values_across_ffi() {
+    let evidence = data("fuji/gfx100ii/evidence/app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-1.jsonl");
+    let record = parse_observation_record(evidence.lines().nth(17).unwrap().to_owned()).unwrap();
+    let ObservationValue::PtpTransaction { value } = record.value else {
+        panic!("expected a descriptor transaction");
+    };
+    let response_data = value.response.unwrap().data.unwrap();
+    assert_eq!(
+        response_data.property_descriptor_list_selector.as_deref(),
+        Some("0xd246")
+    );
+    let payload =
+        camera_config::parse_hex_bytes(response_data.payload.inline_hex.as_deref().unwrap())
+            .unwrap();
+    let descriptors = parse_device_prop_desc_list(payload).unwrap();
+    assert_eq!(
+        descriptors
+            .iter()
+            .map(|descriptor| descriptor.code)
+            .collect::<Vec<_>>(),
+        [0x5005, 0xd001, 0xd02b, 0xd245, 0x5007, 0xd240, 0xd019, 0xd246]
+    );
+    let selector = &descriptors[7];
+    assert!(matches!(selector.current, PtpValue::U8 { value: 1 }));
+    let PtpPropForm::Enum { values } = &selector.form else {
+        panic!("expected the captured D246 enum");
+    };
+    assert_eq!(
+        values,
+        &[PtpValue::U8 { value: 0 }, PtpValue::U8 { value: 0 }]
+    );
+    assert!(matches!(
+        descriptors[5].current,
+        PtpValue::U32 { value: 0x8000_7530 }
+    ));
+}
+
+#[test]
 fn parse_record_stream_preserves_member_types_and_absence() {
     let info = store()
         .property_payload(0xd212)

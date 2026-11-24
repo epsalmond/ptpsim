@@ -21,6 +21,7 @@ evidence:
   docFujiPtpPropReference: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
   docIsoModel20260707: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
   docLargeMovObjectInfo: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW230.md" }
+  wireAppPropertyDescriptorSnapshots: { kind: wire-capture, path: "evidence/APP_PROPERTY_DESCRIPTOR_SNAPSHOTS.md", date: "2026-05-18" }
   wireReopenTrace: { kind: wire-capture, path: "evidence/APP_PTPIP_OBSERVATIONS.md", date: "2026-07-31" }
   # Restored from prior manifest work. The linked uncertainty section marks
   # these startup steps pending hardware confirmation.
@@ -1005,7 +1006,47 @@ operations:
     effects:
       - { setProp: "0xd209", value: 0 }
     evidence: [docLiveControls]
-  "0x902b": { name: FujiVendor902B,       owner: fuji-vendor,  modes: [shooting/stills, shooting/video], connections: [app], evidence: [restoredStartupPendingHardware] }
+  "0x902b":
+    name: FujiVendor902B
+    owner: fuji-vendor
+    modes: [shooting/stills, shooting/video]
+    connections: [app]
+    evidence: [wireAppPropertyDescriptorSnapshots]
+    handler: property.descriptorList
+    propertyDescriptorList:
+      selector: '0xd246'
+      snapshots:
+        0:
+        - '125004000100000000020300000002000400'
+        - 0c500400010200098002020009800a80
+        - 055004000102000200020c0002000400068001800280038006000a800b800c800d800e80
+        - 01d0040001010001000214000100020003000400050006000700080009000a000b000c000d000e000f0010001100120013001400
+        - 2ad0060001ffffffffffffffff022200c8000080900100802003008040060080800c008000190080003200802800004050000000640000007d000000a0000000c8000000fa0000004001000090010000f40100008002000020030000e8030000e204000040060000d0070000c4090000800c0000a00f00008813000000190000401f000010270000003200000064004000c8004000900140
+        - 7cd106000100000000040503040100000000090d184101000000
+        - 45d2020001000602070000010203040506
+        - 07500400015e0118010207005e011202c602e8034c044006ffff
+        - 40d2060001ffffffff60ea008002020000000000ffffffff
+        - 19d00400010000010002020000000100
+        - 46d202000100000202000000
+        1:
+        - 055004000102000200020c0002000400068001800280038006000a800b800c800d800e80
+        - 01d0040001010001000214000100020003000400050006000700080009000a000b000c000d000e000f0010001100120013001400
+        - 2bd0060001ffffffffffffffff021800ffffffff640000007d000000a0000000c8000000fa0000004001000090010000f40100008002000020030000e8030000e204000040060000d0070000c4090000800c0000a00f00008813000000190000401f0000102700000032000000640040
+        - 45d2020001000602070000010203040506
+        - 07500400015e0118010207005e011202c602e8034c044006ffff
+        - 40d2060001ffffffff3075008002020000000000ffffffff
+        - 19d00400010000010002020000000100
+        - 46d202000100010202000000
+    observedScopes:
+    - connection: app
+      mode: shooting/stills
+      state: before-open-capture
+    - connection: app
+      mode: shooting/stills
+      state: open-capture
+    - connection: app
+      mode: shooting/video
+      state: open-capture
   "0x902c": { name: StepShutterspeed,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0xd240", evidence: [docLiveControls] }
   "0x902d": { name: StepFnumber,          owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5007", evidence: [docLiveControls] }
   "0x902e": { name: StepExposureBias,     owner: fuji-vendor,  modes: [shooting/stills], connections: [app], handler: property.step, property: "0x5010", evidence: [docLiveControls] }

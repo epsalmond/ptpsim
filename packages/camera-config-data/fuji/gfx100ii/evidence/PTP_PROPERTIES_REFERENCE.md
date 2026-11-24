@@ -126,9 +126,11 @@ TerminateOpenCapture
 CloseSession
 ```
 
-The retained public wire capture independently confirms the `0xDF01` mode
-write, successful `0x101C`, and the auxiliary channel ordering. It does not
-independently reproduce the restored `0xDF00`, `0xDF2A`, or `0x902B` steps.
+The retained wire captures confirm the `0xDF01` mode write, successful
+`0x101C`, and the auxiliary channel ordering. The
+[descriptor snapshot captures](APP_PROPERTY_DESCRIPTOR_SNAPSHOTS.md) show
+`0x902B` replies before and after `0x101C`. The full restored preamble,
+including the `0xDF00` and `0xDF2A` sequence, remains under review.
 
 A direct `SetDevicePropValue` can return OK without changing camera behavior. Callers must confirm a visible or wire-level state transition when the manifest requires confirmation.
 

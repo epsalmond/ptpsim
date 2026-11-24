@@ -256,6 +256,7 @@ name = "camera-config"
 version = "0.0.0"
 dependencies = [
  "protocol-primitives",
+ "ptp-core",
  "schemars",
  "serde",
  "serde_json",

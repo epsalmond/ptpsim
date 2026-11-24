@@ -201,6 +201,20 @@ pub enum PropValue {
 }
 
 impl PropValue {
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::I8(value) => Some(i64::from(*value)),
+            Self::U8(value) => Some(i64::from(*value)),
+            Self::I16(value) => Some(i64::from(*value)),
+            Self::U16(value) => Some(i64::from(*value)),
+            Self::I32(value) => Some(i64::from(*value)),
+            Self::U32(value) => Some(i64::from(*value)),
+            Self::I64(value) => Some(*value),
+            Self::U64(value) => i64::try_from(*value).ok(),
+            Self::Str(_) => None,
+        }
+    }
+
     pub fn datatype_code(&self) -> u16 {
         use crate::codes::datatype_code as dt;
         match self {
@@ -267,6 +281,61 @@ pub struct DevicePropDesc {
     pub factory_default: PropValue,
     pub current: PropValue,
     pub form: PropForm,
+}
+
+/// A counted list of length-prefixed [`DevicePropDesc`] records.
+///
+/// Each record length includes its own four-byte prefix. This is the payload
+/// shape used by bulk property-descriptor operations such as Fuji `0x902b`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DevicePropDescList {
+    pub descriptors: Vec<DevicePropDesc>,
+}
+
+impl DevicePropDescList {
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut r = Reader::new(bytes);
+        let descriptors = r.ptp_array(|r| {
+            let declared = r.u32()? as usize;
+            let payload_len = declared
+                .checked_sub(4)
+                .ok_or(DecodeError::InvalidRecordLength {
+                    declared,
+                    minimum: 4,
+                })?;
+            let payload = r.bytes(payload_len)?;
+            DevicePropDesc::decode(&payload)
+        })?;
+        r.finish()?;
+        Ok(Self { descriptors })
+    }
+
+    pub fn encode(&self, w: &mut Writer) -> Result<(), EncodeError> {
+        w.u32(self.descriptors.len() as u32);
+        for descriptor in &self.descriptors {
+            let mut record = Writer::new();
+            descriptor.encode(&mut record)?;
+            w.u32((record.len() + 4) as u32);
+            w.bytes(record.as_slice());
+        }
+        Ok(())
+    }
+
+    /// Read the current value of a unique numeric descriptor by code.
+    pub fn selector_value(&self, code: u16) -> Option<i64> {
+        let mut descriptors = self
+            .descriptors
+            .iter()
+            .filter(|descriptor| descriptor.code == code);
+        let value = descriptors.next()?.current.as_i64()?;
+        descriptors.next().is_none().then_some(value)
+    }
+
+    pub fn descriptor(&self, code: u16) -> Option<&DevicePropDesc> {
+        self.descriptors
+            .iter()
+            .find(|descriptor| descriptor.code == code)
+    }
 }
 
 impl DevicePropDesc {
@@ -406,6 +475,88 @@ mod tests {
             desc.encode(&mut w).unwrap();
             reject_dataset_suffix(w.as_slice(), DevicePropDesc::decode);
         }
+    }
+
+    #[test]
+    fn prop_desc_list_wraps_the_verified_d240_record_exactly() {
+        // GFX100 II 2.30 video-mode GetDevicePropDesc(0xd240), observed over
+        // both USB and wireless tether. The bulk-list fixture reuses these
+        // bytes for structure only; it does not claim an app-persona value.
+        let record = hex_bytes("40d2040001780018010201001801");
+        let descriptor = DevicePropDesc::decode(&record).unwrap();
+        let list = DevicePropDescList {
+            descriptors: vec![descriptor.clone()],
+        };
+        let mut w = Writer::new();
+        list.encode(&mut w).unwrap();
+        assert_eq!(
+            w.as_slice(),
+            hex_bytes("010000001200000040d2040001780018010201001801")
+        );
+
+        let decoded = DevicePropDescList::decode(w.as_slice()).unwrap();
+        assert_eq!(decoded.descriptor(0xd240), Some(&descriptor));
+        assert_eq!(decoded.descriptor(0xd241), None);
+    }
+
+    #[test]
+    fn prop_desc_list_round_trips_multiple_records_in_order() {
+        let d240 = DevicePropDesc::decode(&hex_bytes("40d2040001780018010201001801")).unwrap();
+        let aperture = DevicePropDesc {
+            code: 0x5007,
+            datatype: datatype_code::UINT16,
+            get_set: 1,
+            factory_default: PropValue::U16(400),
+            current: PropValue::U16(560),
+            form: PropForm::None,
+        };
+        let list = DevicePropDescList {
+            descriptors: vec![d240, aperture],
+        };
+        let mut writer = Writer::new();
+        list.encode(&mut writer).unwrap();
+        assert_eq!(DevicePropDescList::decode(writer.as_slice()).unwrap(), list);
+    }
+
+    #[test]
+    fn prop_desc_list_rejects_bad_record_lengths_and_suffixes() {
+        let too_short = hex_bytes("0100000003000000");
+        assert!(matches!(
+            DevicePropDescList::decode(&too_short),
+            Err(DecodeError::InvalidRecordLength {
+                declared: 3,
+                minimum: 4
+            })
+        ));
+
+        let valid = hex_bytes("010000001200000040d2040001780018010201001801");
+        let mut overlong = valid.clone();
+        overlong[4..8].copy_from_slice(&19u32.to_le_bytes());
+        assert!(matches!(
+            DevicePropDescList::decode(&overlong),
+            Err(DecodeError::UnexpectedEof { .. })
+        ));
+
+        let mut missing_second = valid.clone();
+        missing_second[..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(matches!(
+            DevicePropDescList::decode(&missing_second),
+            Err(DecodeError::UnexpectedEof { .. })
+        ));
+
+        let mut trailing = valid.clone();
+        trailing.push(0xff);
+        assert!(matches!(
+            DevicePropDescList::decode(&trailing),
+            Err(DecodeError::TrailingBytes { remaining: 1 })
+        ));
+    }
+
+    fn hex_bytes(input: &str) -> Vec<u8> {
+        (0..input.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&input[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     fn rt_objectinfo(oi: &ObjectInfo) {

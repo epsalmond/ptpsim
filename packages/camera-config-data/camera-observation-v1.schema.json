@@ -1542,6 +1542,13 @@
         },
         "payload": {
           "$ref": "#/$defs/PayloadMetadata"
+        },
+        "propertyDescriptorListSelector": {
+          "description": "Opt-in interpretation of a complete camera-to-host descriptor-list payload.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,

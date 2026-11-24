@@ -546,18 +546,35 @@ pub struct PtpDevicePropDesc {
     pub form: PtpPropForm,
 }
 
+impl From<&ptp_core::DevicePropDesc> for PtpDevicePropDesc {
+    fn from(d: &ptp_core::DevicePropDesc) -> Self {
+        Self {
+            code: d.code,
+            datatype: d.datatype,
+            get_set: d.get_set,
+            factory_default: (&d.factory_default).into(),
+            current: (&d.current).into(),
+            form: (&d.form).into(),
+        }
+    }
+}
+
 /// Parse a `GetDevicePropDesc` data payload.
 #[uniffi::export]
 pub fn parse_device_prop_desc(payload: Vec<u8>) -> Result<PtpDevicePropDesc, CodecError> {
     let d = ptp_core::DevicePropDesc::decode(&payload).map_err(codec_decode)?;
-    Ok(PtpDevicePropDesc {
-        code: d.code,
-        datatype: d.datatype,
-        get_set: d.get_set,
-        factory_default: (&d.factory_default).into(),
-        current: (&d.current).into(),
-        form: (&d.form).into(),
-    })
+    Ok((&d).into())
+}
+
+/// Parse one complete counted, length-prefixed `DevicePropDesc` list payload.
+///
+/// Record lengths include their own four-byte prefix. The payload has no
+/// paging or repeat semantics; callers receive every descriptor in this data
+/// phase and may select one by its `code` field.
+#[uniffi::export]
+pub fn parse_device_prop_desc_list(payload: Vec<u8>) -> Result<Vec<PtpDevicePropDesc>, CodecError> {
+    let list = ptp_core::DevicePropDescList::decode(&payload).map_err(codec_decode)?;
+    Ok(list.descriptors.iter().map(Into::into).collect())
 }
 
 /// A decoded `ObjectInfo` (generic ISO-15740 fields only; media classification —

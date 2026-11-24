@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ptp_core::{DevicePropDescList, Writer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -118,6 +119,17 @@ pub enum CandidateAssertion {
         #[serde(default, skip_serializing_if = "InventoryCompleteness::is_partial")]
         inventory_completeness: InventoryCompleteness,
         scopes: Vec<ExecutionContext>,
+    },
+    PropertyDescriptorSnapshot {
+        code: String,
+        manufacturer: String,
+        model: String,
+        firmware: String,
+        connection: String,
+        mode: String,
+        selector: String,
+        value: i64,
+        records: Vec<String>,
     },
     OperationName {
         code: String,
@@ -623,11 +635,31 @@ fn validate_record(
             validate_ptp_code(&record.request.operation, "operation", line);
             if let Some(data) = &record.request.data {
                 validate_payload(&data.payload, artifacts, line);
+                if data.property_descriptor_list_selector.is_some() {
+                    line.reject(
+                        "O105",
+                        "descriptor-list selector requires a response data phase",
+                    );
+                }
             }
             if let Some(response) = &record.response {
                 validate_ptp_code(&response.code, "response", line);
                 if let Some(data) = &response.data {
                     validate_payload(&data.payload, artifacts, line);
+                    if let Some(selector) = &data.property_descriptor_list_selector {
+                        validate_ptp_code(selector, "descriptor-list selector", line);
+                        if record.outcome != TransactionOutcome::Ok
+                            || record.request.data.is_some()
+                            || !record.request.parameters.is_empty()
+                            || !response.parameters.is_empty()
+                            || data.direction != DataDirection::CameraToHost
+                        {
+                            line.reject("O105", "descriptor-list selector requires a successful, parameterless camera-to-host transaction");
+                        }
+                        if decode_descriptor_snapshot(data, selector).is_none() {
+                            line.reject("O106", "inline descriptor list must round-trip exactly and contain one numeric selector record");
+                        }
+                    }
                 }
             }
             match record.outcome {
@@ -1252,6 +1284,64 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+fn decode_descriptor_snapshot(
+    data: &PtpDataPhase,
+    selector: &str,
+) -> Option<(i64, DevicePropDescList)> {
+    let code = parse_hex_code(selector)?;
+    let payload = decode_hex(data.payload.inline_hex.as_deref()?)?;
+    let list = DevicePropDescList::decode(&payload).ok()?;
+    let mut writer = Writer::new();
+    list.encode(&mut writer).ok()?;
+    (writer.as_slice() == payload).then_some((list.selector_value(code)?, list))
+}
+
+fn descriptor_snapshot_candidate(
+    record: &PtpTransactionRecord,
+    camera: &CameraContext,
+) -> Option<ProposalCandidate> {
+    let data = record.response.as_ref()?.data.as_ref()?;
+    let selector = data.property_descriptor_list_selector.as_ref()?;
+    let (value, list) =
+        decode_descriptor_snapshot(data, selector).expect("validated descriptor snapshot");
+    let records = list
+        .descriptors
+        .iter()
+        .map(|descriptor| {
+            let mut writer = Writer::new();
+            descriptor
+                .encode(&mut writer)
+                .expect("decoded descriptor encodes");
+            writer
+                .as_slice()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        })
+        .collect();
+    let context = &record.common.context;
+    let mut result = candidate(
+        CandidateAssertion::PropertyDescriptorSnapshot {
+            code: record.request.operation.clone(),
+            manufacturer: camera.manufacturer.clone(),
+            model: camera.model.clone(),
+            firmware: camera.firmware.clone(),
+            connection: context.connection.clone(),
+            mode: context.mode.clone(),
+            selector: selector.clone(),
+            value,
+            records,
+        },
+        vec![format!(
+            "{}:{}",
+            record.common.run_id, record.common.record_id
+        )],
+        Vec::new(),
+    );
+    result.observed_scopes.push(context.clone());
+    Some(result)
+}
+
 /// Produce a deterministic proposal. Validation rejection prevents any
 /// candidate output, rather than generating from an accepted subset.
 pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
@@ -1306,7 +1396,18 @@ pub fn propose(inputs: &[&str]) -> Result<Proposal, ValidationReport> {
         BTreeMap::new();
     let mut properties: BTreeMap<(String, bool, InventoryCompleteness), PropertyAggregate> =
         BTreeMap::new();
+    let cameras = validated
+        .headers
+        .iter()
+        .map(|header| (header.run_id.as_str(), &header.camera))
+        .collect::<BTreeMap<_, _>>();
     for line in &validated.records {
+        if let ObservationLine::PtpTransaction(record) = line {
+            candidates.extend(descriptor_snapshot_candidate(
+                record,
+                cameras[record.common.run_id.as_str()],
+            ));
+        }
         let ObservationLine::Capability(record) = line else {
             continue;
         };
@@ -1689,6 +1790,7 @@ fn is_semantic_candidate(assertion: &CandidateAssertion) -> bool {
     matches!(
         assertion,
         CandidateAssertion::OperationName { .. }
+            | CandidateAssertion::PropertyDescriptorSnapshot { .. }
             | CandidateAssertion::PropertyName { .. }
             | CandidateAssertion::PropertySourceNativeName { .. }
             | CandidateAssertion::PropertyValueRow { .. }
@@ -1900,6 +2002,7 @@ fn apply_candidate(
                     handler: None,
                     property: None,
                     object_size: None,
+                    property_descriptor_list: None,
                     modes: observed_modes,
                     connections: observed_connections,
                     requires: None,
@@ -1911,6 +2014,73 @@ fn apply_candidate(
                     observed_scopes: Vec::new(),
                 });
             merge_scopes(&mut operation.observed_scopes, observed_scopes);
+        }
+        CandidateAssertion::PropertyDescriptorSnapshot {
+            code,
+            manufacturer,
+            model,
+            firmware,
+            connection,
+            mode,
+            selector,
+            value,
+            records,
+        } => {
+            let conflict = |detail| {
+                GenerationError::ApplyConflict(format!(
+                    "operation {code} descriptor snapshot {detail}"
+                ))
+            };
+            if &manifest.camera.manufacturer != manufacturer
+                || &manifest.camera.model != model
+                || &manifest.camera.firmware != firmware
+            {
+                return Err(conflict("camera identity does not match the manifest"));
+            }
+            let operation = manifest
+                .operations
+                .get_mut(code)
+                .ok_or_else(|| conflict("requires an existing operation"))?;
+            if operation.kind != OperationKind::Executable
+                || operation.connections.as_slice() != std::slice::from_ref(connection)
+                || !operation.modes.contains(mode)
+            {
+                return Err(conflict(
+                    "requires an executable operation scoped to its connection and mode",
+                ));
+            }
+            if operation
+                .handler
+                .is_some_and(|handler| handler != OperationHandler::PropertyDescriptorList)
+            {
+                return Err(conflict("conflicts with an existing handler"));
+            }
+            let selector_code =
+                parse_hex_code(selector).ok_or_else(|| conflict("has an invalid selector"))?;
+            let list = operation.property_descriptor_list.get_or_insert_with(|| {
+                PropertyDescriptorListHandler {
+                    selector: selector.clone(),
+                    snapshots: BTreeMap::new(),
+                }
+            });
+            if parse_hex_code(&list.selector) != Some(selector_code) {
+                return Err(conflict("conflicts with the existing selector"));
+            }
+            if list
+                .snapshots
+                .get(value)
+                .is_some_and(|existing| existing != records)
+            {
+                return Err(conflict(
+                    "conflicts with another snapshot for the same selector value",
+                ));
+            }
+            operation.handler = Some(OperationHandler::PropertyDescriptorList);
+            list.snapshots.insert(*value, records.clone());
+            merge_scopes(
+                &mut operation.observed_scopes,
+                candidate.observed_scopes.iter().map(model_scope).collect(),
+            );
         }
         CandidateAssertion::OperationName { code, name } => {
             let operation = manifest.operations.get_mut(code).ok_or_else(|| {
@@ -2404,6 +2574,94 @@ fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const APP_DESCRIPTOR_OBSERVATIONS: &str = include_str!(
+        "../../../packages/camera-config-data/fuji/gfx100ii/evidence/app-descriptor-snapshots/2026-05-18-app-descriptor-snapshots-1.jsonl"
+    );
+    const APP_STILLS_SNAPSHOT_RECORD: &str = "gfx100ii-app-descriptors-20260518-1:snapshot-13";
+
+    #[test]
+    fn descriptor_snapshot_intake_preserves_scope_and_rejects_inconsistent_records() {
+        let input = APP_DESCRIPTOR_OBSERVATIONS;
+        let proposal = propose(&[input]).unwrap();
+        let candidate = proposal
+            .candidates
+            .iter()
+            .find(|candidate| {
+                candidate
+                    .source_records
+                    .iter()
+                    .any(|record| record == APP_STILLS_SNAPSHOT_RECORD)
+            })
+            .unwrap();
+        assert!(matches!(&candidate.assertion,
+            CandidateAssertion::PropertyDescriptorSnapshot { value: 0, records, .. }
+                if records.len() == 11));
+        assert_eq!(candidate.observed_scopes.len(), 2);
+
+        for (input, code) in [
+            (
+                input.replace("\"parameters\":[]", "\"parameters\":[1]"),
+                "O105",
+            ),
+            (
+                input.replace(
+                    "\"propertyDescriptorListSelector\":\"0xd246\"",
+                    "\"propertyDescriptorListSelector\":\"0xffff\"",
+                ),
+                "O106",
+            ),
+        ] {
+            let error = propose(&[&input]).unwrap_err();
+            assert!(error.dispositions.iter().any(|row| row.code == code));
+        }
+    }
+
+    #[test]
+    fn descriptor_snapshot_apply_matches_selector_codes_across_case() {
+        let base = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: FUJIFILM, model: GFX100 II, firmware: "2.30" }
+operations:
+  "0x902b":
+    name: ReadDescriptors
+    modes: [shooting/stills]
+    connections: [app]
+    handler: property.descriptorList
+    propertyDescriptorList:
+      selector: "0xD246"
+      snapshots:
+        1: ["46d2020001000100"]
+properties:
+  "0xd246": { name: selector, type: u8, initialValue: 0 }
+"#,
+        )
+        .unwrap();
+        let proposal = propose(&[APP_DESCRIPTOR_OBSERVATIONS]).unwrap();
+        let mut review = accept_all(&proposal);
+        for candidate in &proposal.candidates {
+            if !candidate
+                .source_records
+                .iter()
+                .any(|record| record == APP_STILLS_SNAPSHOT_RECORD)
+            {
+                review
+                    .decisions
+                    .insert(candidate.id.clone(), ReviewDisposition::Reject);
+            }
+        }
+
+        let applied = apply_review(&base, &proposal, &review).unwrap();
+        let list = applied
+            .operation(0x902b)
+            .unwrap()
+            .property_descriptor_list
+            .as_ref()
+            .unwrap();
+        assert_eq!(list.selector, "0xD246");
+        assert_eq!(list.snapshots.keys().copied().collect::<Vec<_>>(), [0, 1]);
+    }
 
     fn canonical_header(run_id: &str, record_id: &str) -> serde_json::Value {
         serde_json::json!({

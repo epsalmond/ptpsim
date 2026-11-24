@@ -341,6 +341,7 @@ pub struct ObservationPtpResponse {
 pub struct ObservationPtpDataPhase {
     pub direction: ObservationDataDirection,
     pub payload: ObservationPayloadMetadata,
+    pub property_descriptor_list_selector: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -1034,6 +1035,7 @@ impl From<&cc::PtpDataPhase> for ObservationPtpDataPhase {
         Self {
             direction: value.direction.into(),
             payload: (&value.payload).into(),
+            property_descriptor_list_selector: value.property_descriptor_list_selector.clone(),
         }
     }
 }

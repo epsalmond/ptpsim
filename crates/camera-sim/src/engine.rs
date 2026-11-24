@@ -7,15 +7,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use camera_config::model::{Action, ScalarEncoding, SetPropValue, Step, StepParam};
 use camera_config::{
-    parse_hex_code, ActionArgumentValue, ActionVerb, CameraInitiatedMetadataPhase, CameraManifest,
-    ConnectionLifecycleSnapshot, ConnectionLifecycleTraceEvent, ConnectionLifecycleTracker,
-    ConnectionLifecycleTransition, FeatureMode, FeatureState, LifecycleEvidence,
-    PropertyTransitionTerminal, ResponderMutation,
+    parse_hex_bytes, parse_hex_code, ActionArgumentValue, ActionVerb, CameraInitiatedMetadataPhase,
+    CameraManifest, ConnectionLifecycleSnapshot, ConnectionLifecycleTraceEvent,
+    ConnectionLifecycleTracker, ConnectionLifecycleTransition, FeatureMode, FeatureState,
+    LifecycleEvidence, PropertyTransitionTerminal, ResponderMutation,
 };
 use camera_media_store::{ByteSource, MediaStore, ObjectQuery, SIZE_CEILING};
 use ptp_core::codes::{op, resp};
 use ptp_core::dataset::PropValue;
-use ptp_core::{DeviceInfo, OperationRequest, OperationResponse, Reader, Writer};
+use ptp_core::{
+    DeviceInfo, DevicePropDesc, DevicePropDescList, OperationRequest, OperationResponse, Reader,
+    Writer,
+};
 use serde::Serialize;
 
 use crate::fault::{
@@ -2121,8 +2124,50 @@ impl Engine {
             Some(camera_config::OperationHandler::ObjectSize) => {
                 self.object_size_op(tid, opdef, params)
             }
+            Some(camera_config::OperationHandler::PropertyDescriptorList) => {
+                self.property_descriptor_list_op(tid, opdef, params)
+            }
             None => Self::ok(tid),
         }
+    }
+
+    fn property_descriptor_list_op(
+        &self,
+        tid: u32,
+        opdef: &camera_config::model::Operation,
+        params: &[u32],
+    ) -> Reply {
+        if !params.is_empty() {
+            return Self::err(tid, resp::INVALID_PARAMETER);
+        }
+        if self.state.active_mode.is_none() && !opdef.modes.is_empty() {
+            return Self::ok(tid);
+        }
+        let Some(records) = opdef.property_descriptor_list.as_ref().and_then(|list| {
+            let selector = parse_hex_code(&list.selector)?;
+            let current = self.state.props.get(&selector)?.as_i64()?;
+            list.snapshots.get(&current)
+        }) else {
+            return Self::err(tid, resp::GENERAL_ERROR);
+        };
+        let descriptors = records
+            .iter()
+            .map(|record| {
+                let bytes = parse_hex_bytes(record)?;
+                DevicePropDesc::decode(&bytes).ok()
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(descriptors) = descriptors else {
+            return Self::err(tid, resp::GENERAL_ERROR);
+        };
+        let mut writer = Writer::new();
+        if (DevicePropDescList { descriptors })
+            .encode(&mut writer)
+            .is_err()
+        {
+            return Self::err(tid, resp::GENERAL_ERROR);
+        }
+        Self::data(tid, writer.into_vec())
     }
 
     fn object_size_op(
