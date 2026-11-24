@@ -12,8 +12,8 @@ use camera_config::error::ConfigError;
 use camera_config::index::eval::{advert_matches, BleAdvertFacts};
 use camera_config::index::{
     AdvertByteSource, AdvertPredicate, AwaitSource, BleNotifyUntil, CccdMode, Confidence, Encoding,
-    PredicateOp, ReconnectDisposition, ResolvedManufacturerIndex, Signature, Step,
-    StepConfirmation, StepValue, Transform,
+    PredicateOp, ReconnectDisposition, ResolvedManufacturerIndex, SessionOpenPolicy, Signature,
+    Step, StepConfirmation, StepValue, Transform, WifiHandoffPolicy, WifiJoinPolicy,
 };
 use camera_config::ConfigStore;
 
@@ -2965,4 +2965,276 @@ connections:
     assert!(error
         .to_string()
         .contains("duplicates an activity in referenced establishment 'test'"));
+}
+
+// ---------------------------------------------------------------------------
+// Wi-Fi handoff policy (§11.31)
+// ---------------------------------------------------------------------------
+
+/// The policy the Fuji index declares on both Wi-Fi AP plans. The values equal
+/// the constants the shipped iOS consumer hard-codes today.
+fn fuji_seed_wifi_handoff() -> WifiHandoffPolicy {
+    WifiHandoffPolicy {
+        max_attempts: 2,
+        retry_delay_ms: 2000,
+        join: WifiJoinPolicy {
+            settle_ms: 4000,
+            association_timeout_ms: 20000,
+        },
+        session_open: SessionOpenPolicy {
+            settle_ms: 3000,
+            max_attempts: 2,
+            retry_delay_ms: 2000,
+        },
+    }
+}
+
+#[test]
+fn fuji_wifi_establishments_declare_wifi_handoff_policy() {
+    let index = real_index();
+    for model_id in ["gfx100ii", "xa7", "fuji-generic"] {
+        let model = index
+            .models
+            .iter()
+            .find(|m| m.id == model_id)
+            .unwrap_or_else(|| panic!("{model_id} is indexed"));
+        let ble = model
+            .ble
+            .as_ref()
+            .expect("Fuji bodies inherit the BLE block");
+        for mechanism in ["ble-establish-wifi-ap", "legacy-app-establish-wifi-ap"] {
+            let plan = ble
+                .establishment(mechanism)
+                .unwrap_or_else(|| panic!("{model_id} resolves {mechanism}"));
+            assert_eq!(
+                plan.wifi_handoff,
+                Some(fuji_seed_wifi_handoff()),
+                "{model_id} {mechanism}"
+            );
+        }
+        for mechanism in [
+            "ble-pair",
+            "ble-wake",
+            "ble-reconnect",
+            "legacy-app-pair",
+            "legacy-app-reconnect",
+        ] {
+            let plan = ble
+                .establishment(mechanism)
+                .unwrap_or_else(|| panic!("{model_id} resolves {mechanism}"));
+            assert_eq!(plan.wifi_handoff, None, "{model_id} {mechanism}");
+        }
+        let usb = model
+            .usb
+            .as_ref()
+            .expect("Fuji bodies inherit the USB block");
+        let plan = usb
+            .establishment("usb-claim-open")
+            .expect("usb-claim-open resolves");
+        assert_eq!(plan.wifi_handoff, None, "{model_id} usb-claim-open");
+    }
+}
+
+/// A one-family index whose only plan carries the given `wifiHandoff` lines.
+/// `handoff` is indented to sit under the plan (10 spaces).
+fn wifi_handoff_index(handoff: &str) -> String {
+    format!(
+        r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {{}}
+      advert: {{}}
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - {{ id: camera.test.connect, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: {{ sequence: steps, startStep: 0, endStepExclusive: 1 }} }}
+          steps:
+            - bleConnect: {{}}
+{handoff}
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#
+    )
+}
+
+const VALID_WIFI_HANDOFF: &str = "          wifiHandoff:
+            maxAttempts: 2
+            retryDelayMs: 2000
+            join: { settleMs: 4000, associationTimeoutMs: 20000 }
+            sessionOpen: { settleMs: 3000, maxAttempts: 2, retryDelayMs: 2000 }";
+
+fn tm1_wifi_handoff(index: &ResolvedManufacturerIndex) -> Option<WifiHandoffPolicy> {
+    index.models[0]
+        .ble
+        .as_ref()
+        .unwrap()
+        .establishment("test")
+        .unwrap()
+        .wifi_handoff
+        .clone()
+}
+
+#[test]
+fn wifi_handoff_accepts_zero_settles_and_delays() {
+    let index = ResolvedManufacturerIndex::from_yaml(&wifi_handoff_index(
+        "          wifiHandoff:
+            maxAttempts: 1
+            retryDelayMs: 0
+            join: { settleMs: 0, associationTimeoutMs: 1 }
+            sessionOpen: { settleMs: 0, maxAttempts: 1, retryDelayMs: 0 }",
+    ))
+    .expect("zero settles and delays are valid");
+    assert_eq!(
+        tm1_wifi_handoff(&index),
+        Some(WifiHandoffPolicy {
+            max_attempts: 1,
+            retry_delay_ms: 0,
+            join: WifiJoinPolicy {
+                settle_ms: 0,
+                association_timeout_ms: 1,
+            },
+            session_open: SessionOpenPolicy {
+                settle_ms: 0,
+                max_attempts: 1,
+                retry_delay_ms: 0,
+            },
+        })
+    );
+}
+
+#[test]
+fn wifi_handoff_rejects_zero_bounds() {
+    let cases = [
+        (
+            "maxAttempts: 2\n",
+            "maxAttempts: 0\n",
+            "wifiHandoff.maxAttempts",
+        ),
+        (
+            "associationTimeoutMs: 20000",
+            "associationTimeoutMs: 0",
+            "wifiHandoff.join.associationTimeoutMs",
+        ),
+        (
+            "settleMs: 3000, maxAttempts: 2",
+            "settleMs: 3000, maxAttempts: 0",
+            "wifiHandoff.sessionOpen.maxAttempts",
+        ),
+    ];
+    for (from, to, field) in cases {
+        let handoff = VALID_WIFI_HANDOFF.replacen(from, to, 1);
+        assert_ne!(handoff, VALID_WIFI_HANDOFF, "fixture must contain {from:?}");
+        let error = ResolvedManufacturerIndex::from_yaml(&wifi_handoff_index(&handoff))
+            .expect_err("a zero bound must fail");
+        assert!(
+            matches!(
+                &error,
+                ConfigError::Validation { path, message }
+                    if path == &format!("models.tm1.establishments.test.{field}")
+                        && message.contains("greater than zero")
+            ),
+            "{field}: got {error}"
+        );
+    }
+}
+
+#[test]
+fn wifi_handoff_rejects_unknown_and_missing_fields() {
+    let cases = [
+        // A misspelled field inside each record.
+        VALID_WIFI_HANDOFF.replacen("retryDelayMs: 2000\n", "retryDelay: 2000\n", 1),
+        VALID_WIFI_HANDOFF.replacen("settleMs: 4000", "settleMs: 4000, pollMs: 1000", 1),
+        VALID_WIFI_HANDOFF.replacen("settleMs: 3000", "settleMs: 3000, timeoutMs: 1", 1),
+        // A missing required value in each record.
+        VALID_WIFI_HANDOFF.replacen("            maxAttempts: 2\n", "", 1),
+        VALID_WIFI_HANDOFF.replacen(", associationTimeoutMs: 20000", "", 1),
+        VALID_WIFI_HANDOFF.replacen(", retryDelayMs: 2000 }", " }", 1),
+        // A missing nested record.
+        VALID_WIFI_HANDOFF.replacen(
+            "\n            sessionOpen: { settleMs: 3000, maxAttempts: 2, retryDelayMs: 2000 }",
+            "",
+            1,
+        ),
+    ];
+    for handoff in cases {
+        assert_ne!(
+            handoff, VALID_WIFI_HANDOFF,
+            "each case must change the fixture"
+        );
+        let error = ResolvedManufacturerIndex::from_yaml(&wifi_handoff_index(&handoff))
+            .expect_err("unknown or missing fields must fail");
+        assert!(
+            error.to_string().contains("typed ble decode"),
+            "{handoff}\ngot: {error}"
+        );
+    }
+}
+
+#[test]
+fn establishment_block_rejects_unknown_keys() {
+    // A misspelled block name must fail at load, not drop the policy.
+    let handoff = VALID_WIFI_HANDOFF.replacen("wifiHandoff:", "wifihandoff:", 1);
+    let error = ResolvedManufacturerIndex::from_yaml(&wifi_handoff_index(&handoff))
+        .expect_err("an unknown establishment key must fail");
+    assert!(
+        error.to_string().contains("unknown field `wifihandoff`"),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn wifi_handoff_on_usb_establishment_is_rejected() {
+    let original = data("fuji/index.yaml");
+    let yaml = original.replacen(
+        "          mechanism: usb-claim-open\n",
+        "          mechanism: usb-claim-open
+          wifiHandoff:
+            maxAttempts: 2
+            retryDelayMs: 2000
+            join: { settleMs: 4000, associationTimeoutMs: 20000 }
+            sessionOpen: { settleMs: 3000, maxAttempts: 2, retryDelayMs: 2000 }
+",
+        1,
+    );
+    assert_ne!(yaml, original, "fixture replacement must find the USB plan");
+    let error =
+        ResolvedManufacturerIndex::from_yaml(&yaml).expect_err("a USB plan has no Wi-Fi handoff");
+    assert!(
+        matches!(
+            &error,
+            ConfigError::Validation { path, message }
+                if path.ends_with("usb.establishments.usb-claim-open.wifiHandoff")
+                    && message.contains("USB")
+        ),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn wifi_handoff_family_layer_overrides_scalar() {
+    // A per-body value is an extra family layer: later families in
+    // `inherits` override scalars and keep the rest of the block.
+    let yaml = wifi_handoff_index(VALID_WIFI_HANDOFF).replacen(
+        "models:\n",
+        "  slowJoin:
+    ble:
+      establishments:
+        test:
+          wifiHandoff:
+            join: { settleMs: 9000 }
+models:
+",
+        1,
+    );
+    let yaml = yaml.replacen("inherits: [test]", "inherits: [test, slowJoin]", 1);
+    let index = ResolvedManufacturerIndex::from_yaml(&yaml).expect("override layer loads");
+    let mut expected = fuji_seed_wifi_handoff();
+    expected.join.settle_ms = 9000;
+    assert_eq!(tm1_wifi_handoff(&index), Some(expected));
 }

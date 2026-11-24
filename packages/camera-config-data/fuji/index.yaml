@@ -480,6 +480,26 @@ families:
             # `passphrase` unbound and the consumer joins an open network (#85,
             # operators APP_AP_HANDOVER_HANDSHAKE_2026-05-13). SSID stays required.
             - bleRead: { gatt: cameraWiFiPassphraseString, encoding: utf8-cstring, captureAs: passphrase, tolerant: true }
+          # Wi-Fi handoff policy for the network this plan returns (schema
+          # §11.31). The values are carried from the shipped iOS consumer's
+          # constants and are unverified on the wire. join.settleMs covers the
+          # camera reporting its access point as launched before the radio is
+          # beaconing; the launched-to-beaconing time has not been measured. A
+          # consumer field run on one GFX100 II (2026-08-16) joined on the first
+          # attempt in 7 of 7 clean cycles with a 4000 ms settle.
+          # sessionOpen.settleMs covers the PTP/IP responder starting after the
+          # network is up. The attempt counts, retry delays, and association
+          # timeout are client policy, not firmware timing bounds.
+          wifiHandoff: &fujiWifiHandoff
+            maxAttempts: 2
+            retryDelayMs: 2000
+            join:
+              settleMs: 4000
+              associationTimeoutMs: 20000
+            sessionOpen:
+              settleMs: 3000
+              maxAttempts: 2
+              retryDelayMs: 2000
 
         # Warm resume for an ALREADY-paired camera (#91): reconnect without
         # re-entering pairing mode. A bonded camera no longer advertises the
@@ -639,6 +659,10 @@ families:
                 timeoutMs: 45000
                 intervalMs: 1000
             - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
+          # The same Wi-Fi handoff policy as ble-establish-wifi-ap (schema
+          # §11.31). No X-A7 join or session-open timing has been observed;
+          # the values are applied unchanged and are unverified for this body.
+          wifiHandoff: *fujiWifiHandoff
 
       actions:
         auto-transfer-size-original:

@@ -55,7 +55,8 @@ pub use mfg_index::{
     ConnectionActivitySequence, EstablishmentPlan, EstablishmentRefinement, HostEstablishment,
     ModelMatch, NotifyCapture, Predicate, PredicateOp, ReadyReconnectCandidate,
     ReadyReconnectRecognition, Recognition, ReconnectDecision, ReconnectPolicy, ScanObservation,
-    Step, StepConfirmation, StepOptions, StepValue, Transform,
+    SessionOpenPolicy, Step, StepConfirmation, StepOptions, StepValue, Transform,
+    WifiHandoffPolicy, WifiJoinPolicy,
 };
 mod observation_ffi;
 pub use observation_ffi::*;

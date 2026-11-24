@@ -2914,3 +2914,150 @@ models:
         other => panic!("expected Nikon config FFI step, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wi-Fi handoff policy (§11.31) carried on EstablishmentPlan
+// ---------------------------------------------------------------------------
+
+#[test]
+fn establishment_carries_wifi_handoff_policy_through_ffi() {
+    let s = store();
+    let expected = WifiHandoffPolicy {
+        max_attempts: 2,
+        retry_delay_ms: 2000,
+        join: WifiJoinPolicy {
+            settle_ms: 4000,
+            association_timeout_ms: 20000,
+        },
+        session_open: SessionOpenPolicy {
+            settle_ms: 3000,
+            max_attempts: 2,
+            retry_delay_ms: 2000,
+        },
+    };
+    for (model, connection, mechanism) in [
+        ("gfx100ii", "app", "ble-establish-wifi-ap"),
+        ("fuji-generic", "app", "ble-establish-wifi-ap"),
+        ("xa7", "legacy-app", "legacy-app-establish-wifi-ap"),
+    ] {
+        let plan = s
+            .establishment(model.into(), connection.into(), vec![])
+            .unwrap_or_else(|| panic!("{model}:{connection} resolves"));
+        assert_eq!(plan.mechanism, mechanism);
+        let policy = plan
+            .wifi_handoff
+            .unwrap_or_else(|| panic!("{model}:{connection} declares a Wi-Fi handoff"));
+        // Field by field, so a mapper that drops or swaps one value fails here.
+        assert_eq!(policy.max_attempts, 2, "{model}:{connection}");
+        assert_eq!(policy.retry_delay_ms, 2000, "{model}:{connection}");
+        assert_eq!(policy.join.settle_ms, 4000, "{model}:{connection}");
+        assert_eq!(
+            policy.join.association_timeout_ms, 20000,
+            "{model}:{connection}"
+        );
+        assert_eq!(policy.session_open.settle_ms, 3000, "{model}:{connection}");
+        assert_eq!(policy.session_open.max_attempts, 2, "{model}:{connection}");
+        assert_eq!(
+            policy.session_open.retry_delay_ms, 2000,
+            "{model}:{connection}"
+        );
+        assert_eq!(policy, expected, "{model}:{connection}");
+    }
+}
+
+#[test]
+fn wifi_handoff_overrides_reach_the_ffi_unswapped() {
+    // Distinct values in every field, so a mapper that swaps two fields of the
+    // same type fails here even though the Fuji seed repeats 2 and 2000.
+    let index_yaml = r#"
+manufacturer: TESTCO
+families:
+  test:
+    ble:
+      gatt: {}
+      establishments:
+        test:
+          mechanism: test
+          activities:
+            - { id: camera.test.connect, version: 1, displayRole: connecting, defaultExpectedDurationMs: 1, interactionRequired: false, executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 1 } }
+          steps:
+            - bleConnect: {}
+          wifiHandoff:
+            maxAttempts: 3
+            retryDelayMs: 11
+            join: { settleMs: 13, associationTimeoutMs: 17 }
+            sessionOpen: { settleMs: 19, maxAttempts: 5, retryDelayMs: 23 }
+models:
+  - id: tm1
+    displayName: Test
+    inherits: [test]
+    manifest: tm1.yaml
+"#;
+    let s = ConfigStore::from_manufacturer_index(
+        index_yaml.to_string(),
+        vec![KeyValue {
+            key: "tm1".into(),
+            value: tm1_body(),
+        }],
+    )
+    .expect("synthetic index loads");
+    let plan = s
+        .establishment("tm1".into(), "ble".into(), vec![])
+        .expect("tm1 plan resolves");
+    assert_eq!(
+        plan.wifi_handoff,
+        Some(WifiHandoffPolicy {
+            max_attempts: 3,
+            retry_delay_ms: 11,
+            join: WifiJoinPolicy {
+                settle_ms: 13,
+                association_timeout_ms: 17,
+            },
+            session_open: SessionOpenPolicy {
+                settle_ms: 19,
+                max_attempts: 5,
+                retry_delay_ms: 23,
+            },
+        })
+    );
+}
+
+#[test]
+fn establishment_without_wifi_handoff_returns_none() {
+    let s = store();
+    let pairing = s
+        .establishment("gfx100ii".into(), "ble".into(), vec![])
+        .expect("BLE pairing plan resolves");
+    assert_eq!(pairing.mechanism, "ble-pair");
+    assert_eq!(pairing.wifi_handoff, None);
+    let usb = s
+        .establishment("gfx100ii".into(), "usb".into(), vec![])
+        .expect("USB plan resolves");
+    assert_eq!(usb.wifi_handoff, None);
+
+    let legacy_scope = vec![
+        KeyValue {
+            key: "pairingKeyBytes".into(),
+            value: "44732a80".into(),
+        },
+        KeyValue {
+            key: "style".into(),
+            value: "legacy".into(),
+        },
+        KeyValue {
+            key: "shortSerial".into(),
+            value: "0C3E".into(),
+        },
+    ];
+    match s.reconnect_decision(
+        "gfx100ii".into(),
+        synthetic_legacy_startup_advert(),
+        legacy_scope,
+    ) {
+        ReconnectDecision::Wake { plan, .. } => {
+            assert_eq!(plan.mechanism, "ble-wake");
+            assert_eq!(plan.wifi_handoff, None);
+        }
+        other => panic!("expected wake, got {other:?}"),
+    }
+}

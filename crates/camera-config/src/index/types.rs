@@ -221,7 +221,7 @@ pub struct UsbInterfaceTriple {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EstablishmentBlock {
     pub mechanism: String,
     /// Mechanism that must complete before this plan runs (e.g.
@@ -255,6 +255,53 @@ pub struct EstablishmentBlock {
     pub post_exit_readiness: Vec<Step>,
     #[serde(default)]
     pub steps: Vec<Step>,
+    /// Timing and retry values the consumer uses to join the Wi-Fi network
+    /// this plan returns and open the PTP/IP session on it (schema §11.31).
+    /// `None` means the plan declares no policy. USB plans reject it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi_handoff: Option<WifiHandoffPolicy>,
+}
+
+/// Wi-Fi handoff policy (schema §11.31). One handoff attempt is one join
+/// followed by one session-open sequence. The consumer runs the loop; the
+/// manifest only supplies the values. Every field is required.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WifiHandoffPolicy {
+    /// Handoff attempts, counting the first. Must be greater than zero.
+    pub max_attempts: u32,
+    /// Wait before each handoff retry, from the failure of the previous attempt.
+    pub retry_delay_ms: u32,
+    pub join: WifiJoinPolicy,
+    pub session_open: SessionOpenPolicy,
+}
+
+/// The join half of a [`WifiHandoffPolicy`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WifiJoinPolicy {
+    /// Wait before the first join request of a fresh launch, from the end of
+    /// the plan's `steps`. Not applied on retries or when joining with
+    /// credentials kept from an earlier launch.
+    pub settle_ms: u32,
+    /// Bound on confirming the phone is on the returned network, from when
+    /// the join request resolves. Restarts on each attempt. Must be greater
+    /// than zero.
+    pub association_timeout_ms: u32,
+}
+
+/// The session-open half of a [`WifiHandoffPolicy`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionOpenPolicy {
+    /// Wait before the first session open of a fresh launch, from when
+    /// association is confirmed. Not applied on handoff retries.
+    pub settle_ms: u32,
+    /// Session opens within one handoff attempt, counting the first. Each
+    /// open uses a new socket. Must be greater than zero.
+    pub max_attempts: u32,
+    /// Wait before each session-open retry, from the previous failed open.
+    pub retry_delay_ms: u32,
 }
 
 /// A named, runnable BLE-native control action over an already-established link
