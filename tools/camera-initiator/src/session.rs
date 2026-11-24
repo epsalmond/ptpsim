@@ -2398,7 +2398,7 @@ connections:
         steps: [{ sendOp: "0x9001" }]
 "#;
         let store = ConfigStore::from_bundle(manifest.into(), None).unwrap();
-        let (result, root, _observation, calls, _temp) = run_fake_session_with_store(store,
+        let (result, root, observation, calls, _temp) = run_fake_session_with_store(store,
             r#"schema: camera-initiator-session/v1
 steps:
   - { id: entry, kind: entry, to: source }
@@ -2412,6 +2412,7 @@ steps:
         assert_eq!(report["steps"][1]["frames"]["termination"], "ioError");
         assert_eq!(report["steps"][1]["transactionIds"], json!([]));
         assert_eq!(calls.lock().unwrap().last().unwrap(), "cleanup");
+        assert!(observation.is_file());
     }
 
     #[test]
@@ -3650,7 +3651,7 @@ steps:
             IdleEnd::PeerReset,
             IdleEnd::HostDeadlinePartialFrame,
         ] {
-            let (result, root, _observation, calls, _temp) = run_fake_session_with_idle(
+            let (result, root, observation, calls, _temp) = run_fake_session_with_idle(
                 fake_switch_store(),
                 "schema: camera-initiator-session/v1\nsteps:\n  - { id: first, kind: action, action: shutter }\n  - { id: wait, kind: hold, durationMs: 0 }\n  - { id: later, kind: action, action: shutter }",
                 &[], &[], idle_end,
@@ -3672,6 +3673,7 @@ steps:
             );
             assert_eq!(calls.last().map(String::as_str), Some("cleanup"));
             drop(calls);
+            assert!(observation.is_file());
         }
     }
     #[tokio::test]
