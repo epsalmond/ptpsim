@@ -1208,11 +1208,8 @@ fn gfx_app_descriptor_snapshots_follow_the_stills_video_selector() {
     rt.block_on(handle).unwrap();
 }
 
-/// Completion events from the production GFX100 II manifest reach the real
-/// app-persona event socket instead of leaving shutter/AF await steps at their
-/// timeout ceilings.
 #[test]
-fn service_pushes_gfx_shutter_and_autofocus_events_on_event_socket() {
+fn service_delivers_gfx_stills_postview_and_autofocus_on_event_socket() {
     let _tmp_card = tmp_card();
     let root = _tmp_card.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1264,14 +1261,64 @@ fn service_pushes_gfx_shutter_and_autofocus_events_on_event_socket() {
     // sibling task; let that bounded setup finish before emitting the event.
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    // Shutter: 0x100E emits the 0xC001 postview-complete event awaited by the
-    // manifest action before its cleanup operation.
+    let receive_event =
+        |stream: &mut TcpStream| match protocol_primitives::usb_ptp::decode(&read_frame(stream))
+            .unwrap()
+        {
+            PtpIpPacket::Event(event) => event,
+            other => panic!("expected Event, got {other:?}"),
+        };
+    let shutter_sent = std::time::Instant::now();
     write_frame(&mut s, &op(0x100e, 12, vec![0, 0]));
     read_ok(&mut s);
-    match protocol_primitives::usb_ptp::decode(&read_frame(&mut evt)).unwrap() {
-        PtpIpPacket::Event(e) => assert_eq!(e.code, 0xc001),
-        other => panic!("expected shutter Event packet, got {other:?}"),
-    }
+    let pending = receive_event(&mut evt);
+    assert_eq!(pending.code, 0xc004);
+    assert_eq!(pending.transaction_id, 1);
+    assert_eq!(pending.params, vec![13, 13, 0, 0]);
+    assert!(shutter_sent.elapsed() >= std::time::Duration::from_millis(100));
+    let ready = receive_event(&mut evt);
+    assert_eq!(ready.code, 0xc001);
+    assert_eq!(ready.transaction_id, 1);
+    assert!(shutter_sent.elapsed() >= std::time::Duration::from_millis(450));
+
+    write_frame(&mut s, &op(0x9022, 16, vec![0]));
+    assert_eq!(
+        read_response_code(&mut s),
+        ptp_core::codes::resp::INVALID_PARAMETER
+    );
+    let read_sent = std::time::Instant::now();
+    write_frame(&mut s, &op(0x9022, 17, vec![]));
+    let data_frame = read_frame(&mut s);
+    assert_eq!(
+        u16::from_le_bytes(data_frame[6..8].try_into().unwrap()),
+        0x9022
+    );
+    let PtpIpPacket::Data(postview) = fuji_framing::decode(&data_frame).unwrap() else {
+        panic!("expected compact postview data frame");
+    };
+    assert_eq!(postview.transaction_id, 17);
+    let jpeg = postview.payload;
+    assert!(jpeg.starts_with(&[0xff, 0xd8]));
+    assert!(jpeg.ends_with(&[0xff, 0xd9]));
+    // SOF0, two-byte length, 8-bit precision, big-endian height and width.
+    let baseline_dimensions = [0xff, 0xc0, 0x00, 0x0b, 8, 0x01, 0xe0, 0x02, 0x80];
+    assert!(jpeg
+        .windows(baseline_dimensions.len())
+        .any(|part| part == baseline_dimensions));
+    assert_eq!(ready.params, vec![13, 13, jpeg.len() as u32, 0]);
+    let PtpIpPacket::OperationResponse(response) =
+        fuji_framing::decode(&read_frame(&mut s)).unwrap()
+    else {
+        panic!("expected compact postview response");
+    };
+    assert_eq!((response.code, response.transaction_id), (0x2001, 17));
+    let complete = receive_event(&mut evt);
+    assert_eq!(complete.code, 0x400d);
+    assert_eq!(complete.transaction_id, 1);
+    assert_eq!(complete.params, vec![18, 18, 0, 0]);
+    assert!(read_sent.elapsed() >= std::time::Duration::from_millis(300));
+    write_frame(&mut s, &op(0x9022, 18, vec![]));
+    read_ok(&mut s);
 
     // Tap-to-AF: the op emits 0xC005 and its D209 result settles through the
     // same command socket the app uses for the post-event await.
@@ -1303,6 +1350,18 @@ fn service_pushes_gfx_shutter_and_autofocus_events_on_event_socket() {
     )
     .unwrap();
     let records = export["records"].as_array().unwrap();
+    for (code, cause) in [("0xc004", 12), ("0xc001", 12), ("0x400d", 17)] {
+        let event = records
+            .iter()
+            .find(|record| record["event"] == code)
+            .unwrap();
+        let command = records
+            .iter()
+            .find(|record| record["kind"] == "ptpTransaction" && record["transactionId"] == cause)
+            .unwrap();
+        assert_eq!(event["transactionId"], 1);
+        assert_eq!(event["transactionRecordId"], command["recordId"]);
+    }
     let transaction = records
         .iter()
         .find(|record| record["kind"] == "ptpTransaction" && record["transactionId"] == 13)

@@ -21,6 +21,7 @@ evidence:
   docFujiPtpPropReference: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
   docIsoModel20260707: { kind: doc, path: "evidence/PTP_PROPERTIES_REFERENCE.md" }
   docLargeMovObjectInfo: { kind: doc, path: "evidence/IMAGE_TRANSFER_FW230.md" }
+  wireAppPostview: { kind: wire-capture, path: "evidence/APP_POSTVIEW_OBSERVATIONS.md", date: "2026-05-18" }
   wireAppPropertyDescriptorSnapshots: { kind: wire-capture, path: "evidence/APP_PROPERTY_DESCRIPTOR_SNAPSHOTS.md", date: "2026-05-18" }
   wireReopenTrace: { kind: wire-capture, path: "evidence/APP_PTPIP_OBSERVATIONS.md", date: "2026-07-31" }
   # Restored from prior manifest work. The linked uncertainty section marks
@@ -119,6 +120,17 @@ connections:
     initShape: app82                    # the 82-byte reference app InitCommandRequest (#82)
     liveViewDelivery: { kind: stream }   # reference app delivers frames as a continuous stream
     shutterRecipe: appPostview           # 0x100E + 0x9022 postview take-cycle
+    postview:
+      mode: shooting/stills
+      selector: { property: "0xd246", value: 0 }
+      captureOp: "0x100e"
+      captureParams: [0, 0]
+      readOp: "0x9022"
+      fixture: jpeg640x480
+      eventTransactionId: 1
+      pending: { code: "0xc004", delayMs: 145, counterOffset: 1 }
+      ready: { code: "0xc001", delayMs: 538, counterOffset: 1 }
+      complete: { code: "0x400d", delayMs: 359, counterOffset: 1 }
     # Wire framing per channel (#133) so the app picks the codec from data, not by
     # mapping the connection kind in Swift. Command = the byte-exact fw0230 compressed
     # channel; the event socket carries PIMA type-4 containers (Swift parsePTPEvent).
@@ -229,25 +241,11 @@ connections:
             # declared close frame on 55740, then cleanly close the command socket.
             - { closeSession: { transportClose: true } }
     actions:
-      # reference-app shutter cycle. Wire-confirmed by MODE_CHANGES.md §3 (the 0x100E
-      # trace) + §6b (the 0x9022 pairing): every 0x100E InitiateCapture in v6
-      # is followed within ~458-746ms by an empty-params 0x9022 cleanup,
-      # paired 1:1 with the shutter. Between the two, reference-app polls 0xD212
-      # (event state) several times waiting for the camera-side
-      # "JPEG-saved" flag to clear; the poll loop is the client's
-      # responsibility (no scripting hook in the Step grammar). triggers
-      # postviewEvent declares the post-shutter state-change the client
-      # polls for / awaits.
       shutter:
         mode: shooting/stills
         initiator:
           steps:
             - { sendOp: "0x100e", params: [0, 0] }
-            # Wait for the camera's PostviewComplete event (JPEG saved to card,
-            # fires ~400-750ms after 0x100E) before reading the postview — the
-            # event IS the readiness signal, the 0x9022 below is the data read.
-            # Makes the take cycle manifest-scripted, not client responsibility
-            # (#29). Evidence: operators FUJI_PTP_PROP_REFERENCE §6 + MODE_CHANGES §6b.
             - awaitUntil:
                 source: { event: { code: "0xc001" } }
                 until: { all: [] }          # event arrival alone satisfies (no value to check)
@@ -255,7 +253,7 @@ connections:
             - { sendOp: "0x9022" }
         triggers:
           - postviewEvent: {}
-        evidence: [wireReopenTrace, docLiveControls]
+        evidence: [wireAppPostview, wireReopenTrace, docLiveControls]
       # Tap-to-AF (#35, §5.5): lock S1 on a packed focus-area, await the AF
       # completion event (0xC005), then read the lock result. The packed area
       # u32 is an app-supplied runtime slot — the app owns cursor→cell packing
@@ -952,19 +950,14 @@ operations:
   "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, wirePCSSShootDownload20260523] }
   "0x100a": { name: GetThumb,             owner: standard-ptp, modes: [image-transfer], connections: [app, wireless-tether], evidence: [docImageTransfer, wirePCSSShootDownload20260523] }
   "0x100b": { name: DeleteObject,         owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
-  # 0x100e is advertised by wireless-tether (PCSS/15740) too — see the 05-27 capability
-  # snapshot. The actual shutter cycle on that connection (params, completion signal,
-  # whether 0x9022 fires) is not yet wire-captured; authorizing the op here unblocks
-  # the app-side shutter call. wireless-tether entries: filled in once the wire
-  # capture lands (see 2026-06-02 consult).
-  "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], emits: ["0xc001"], evidence: [docLiveControls, wireTetherCaps20260527] }   # 0xC001 PostviewComplete (delivered on the app event socket; wireless-tether has no event channel)
+  "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], emits: ["0xc001"], evidence: [wireAppPostview, docLiveControls, wireTetherCaps20260527] }
   "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [wireTetherCaps20260527] }
   "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }
   "0x1016": { name: SetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, wireTether] }
   "0x101b": { name: GetPartialObject,     owner: standard-ptp, modes: [image-transfer, reserved-photo-receive], connections: [app], evidence: [docImageTransfer, wireAutoImageTransfer] }
   "0x101c": { name: InitiateOpenCapture,  owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [wirePCSSShootDownload20260523] }
   "0x1018": { name: TerminateOpenCapture, owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [wirePCSSShootDownload20260523] }
-  "0x9022": { name: FujiVendor9022,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [docLiveControls] }
+  "0x9022": { name: FujiVendor9022,       owner: fuji-vendor,  modes: [shooting/stills], connections: [app], evidence: [wireAppPostview, docLiveControls] }
   # Tap-to-AF (S1 lock). PTP_PROPERTIES_REFERENCE.md §5.1/§5.2: param is a 4-byte
   # LE u32 packing the AF area, built by the reference app as the hex
   # string "WWHHIIJJ". As wire bytes (LE) it unpacks: byte15=W=asp_w (aspect-ratio
@@ -1487,14 +1480,14 @@ events:
   # payload includes the new object's size. Referenced from the curated shutter
   # action's `triggers.postviewEvent` — landing the wire code here grounds the
   # declared trigger so consumers know which event to await.
-  "0xc001": { name: PostviewComplete,         destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
+  "0xc001": { name: PostviewComplete,         destination: app, evidence: [wireAppPostview, docFujiPtpPropReference, wireReopenTrace] }
   # Fires when the shutter is pressed but the image isn't yet saved.
-  "0xc004": { name: CapturePending,           destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
+  "0xc004": { name: CapturePending,           destination: app, evidence: [wireAppPostview, docFujiPtpPropReference, wireReopenTrace] }
   # Fires when AF (0x9026 LockS1Lock) finishes; params are job counters, not AF
   # coordinates. The app's AF await keys on this then reads 0xD209 (§5.5).
   "0xc005": { name: AFCAPTUER,                destination: app, evidence: [docFujiPtpPropReference] }
   # Standard PTP "image saved" event. Closes the capture cycle on the wire.
-  "0x400d": { name: CaptureComplete,          destination: app, evidence: [docFujiPtpPropReference, wireReopenTrace] }
+  "0x400d": { name: CaptureComplete,          destination: app, evidence: [wireAppPostview, docFujiPtpPropReference, wireReopenTrace] }
   # HYPOTHESIS — single-source. Appears during the firmware-update flow per the
   # wire-doc cross-ref; not yet wire-confirmed in the shoot/download captures
   # we have. Park until a fw-update capture lands.

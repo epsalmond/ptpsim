@@ -2625,6 +2625,30 @@ fn connection_info_carries_per_connection_traits() {
         Some(LiveViewDeliveryKind::Stream)
     ));
 
+    let postview = app.postview.as_ref().expect("app postview capture");
+    assert_eq!(postview.mode, "shooting/stills");
+    assert_eq!(
+        (postview.selector_property, postview.selector_value),
+        (0xd246, 0)
+    );
+    assert_eq!((postview.capture_op, postview.read_op), (0x100e, 0x9022));
+    assert_eq!(postview.capture_params, vec![0, 0]);
+    assert!(matches!(postview.fixture, PostviewFixture::Jpeg640x480));
+    assert_eq!(postview.event_transaction_id, 1);
+    assert_eq!(
+        (postview.pending.code, postview.pending.delay_ms),
+        (0xc004, 145)
+    );
+    assert_eq!(
+        (postview.ready.code, postview.ready.delay_ms),
+        (0xc001, 538)
+    );
+    assert_eq!(
+        (postview.complete.code, postview.complete.delay_ms),
+        (0x400d, 359)
+    );
+    assert_eq!(postview.ready.counter_offset, 1);
+
     let wt = conns
         .iter()
         .find(|c| c.id == "wireless-tether")
@@ -2639,6 +2663,7 @@ fn connection_info_carries_per_connection_traits() {
         wt.shutter_recipe,
         Some(ShutterRecipe::WirelessTether3Beat)
     ));
+    assert!(wt.postview.is_none());
     assert!(!wt.command_listener_volatile);
 }
 

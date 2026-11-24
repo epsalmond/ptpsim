@@ -473,6 +473,7 @@ impl CameraManifest {
             require_valid_connection_transitions(self, connection, connection_id)?;
             require_valid_pcss_rendezvous(connection, connection_id)?;
             require_valid_object_transfer(self, connection, connection_id)?;
+            require_valid_postview(self, connection, connection_id)?;
             require_valid_control_surfaces(self, connection, connection_id)?;
             require_valid_platforms(connection, connection_id)?;
             require_valid_discovery(connection, connection_id)?;
@@ -626,6 +627,80 @@ impl CameraManifest {
     }
 }
 
+fn is_scalar_numeric_property(property: &model::Property) -> bool {
+    property.kind != PropertyKind::CatalogOnly
+        && matches!(
+            property.ptype.as_deref(),
+            Some("i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64")
+        )
+}
+
+fn require_valid_postview(
+    manifest: &CameraManifest,
+    connection: &Connection,
+    connection_id: &str,
+) -> Result<(), ManifestError> {
+    let Some(spec) = &connection.postview else {
+        return Ok(());
+    };
+    let invalid = |detail: &str| {
+        ManifestError::Contract(format!("connections.{connection_id}.postview {detail}"))
+    };
+    if !connection.modes.contains(&spec.mode) {
+        return Err(invalid("requires a declared connection mode"));
+    }
+    if !parse_hex_code(&spec.selector.property)
+        .and_then(|code| manifest.property(code))
+        .is_some_and(is_scalar_numeric_property)
+    {
+        return Err(invalid(
+            "requires a declared scalar numeric selector property",
+        ));
+    }
+    let capture = parse_hex_code(&spec.capture_op);
+    let read = parse_hex_code(&spec.read_op);
+    if capture == read
+        || ![capture, read].into_iter().all(|code| {
+            code.and_then(|code| manifest.operation(code))
+                .is_some_and(|op| {
+                    op.kind == OperationKind::Executable
+                        && (op.connections.is_empty()
+                            || op.connections.iter().any(|id| id == connection_id))
+                        && query::mode_matches(&op.modes, &spec.mode)
+                })
+        })
+    {
+        return Err(invalid(
+            "requires distinct executable capture and read operations",
+        ));
+    }
+    if !read.is_some_and(|code| {
+        (0x9000..=0x9fff).contains(&code)
+            && manifest
+                .operation(code)
+                .is_some_and(|operation| operation.handler.is_none() && operation.params.is_empty())
+    }) {
+        return Err(invalid(
+            "requires a parameterless vendor read without another handler",
+        ));
+    }
+    if spec.pending.delay_ms >= spec.ready.delay_ms {
+        return Err(invalid("requires pending.delayMs to precede ready.delayMs"));
+    }
+    for event in [&spec.pending, &spec.ready, &spec.complete] {
+        let code =
+            parse_hex_code(&event.code).ok_or_else(|| invalid("has an invalid event code"))?;
+        if !manifest
+            .events
+            .keys()
+            .any(|candidate| parse_hex_code(candidate) == Some(code))
+        {
+            return Err(invalid("requires each event to be declared"));
+        }
+    }
+    Ok(())
+}
+
 fn require_valid_operation_handler(
     manifest: &CameraManifest,
     operation: &Operation,
@@ -692,13 +767,10 @@ fn require_valid_property_descriptor_list(
     }
     let selector =
         parse_hex_code(&list.selector).ok_or_else(|| invalid("has an invalid selector"))?;
-    if !manifest.property(selector).is_some_and(|property| {
-        property.kind != PropertyKind::CatalogOnly
-            && matches!(
-                property.ptype.as_deref(),
-                Some("i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64")
-            )
-    }) {
+    if !manifest
+        .property(selector)
+        .is_some_and(is_scalar_numeric_property)
+    {
         return Err(ManifestError::Contract(format!(
             "operation '{code}' propertyDescriptorList selector '{}' must reference a declared numeric property",
             list.selector

@@ -58,7 +58,7 @@ fn unique_temp_root(prefix: &str) -> std::path::PathBuf {
 use inbound::{Admission, FrameReadPolicy, FrameReader};
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{timeout_at, Instant};
+use tokio::time::{timeout_at, Duration, Instant};
 
 pub const SERVICE_CONNECTION_LIFECYCLES_SCHEMA_VERSION: &str =
     "ptpsim-service-connection-lifecycles/v1";
@@ -1844,7 +1844,7 @@ async fn handle_standard_event_conn(
                 let Ok(event) = event else { break };
                 let packet = PtpIpPacket::Event(EventPacket {
                     code: event.code,
-                    transaction_id: 0,
+                    transaction_id: event.transaction_id,
                     params: event.params.clone(),
                 });
                 let bytes = ptp_core::encode(&packet).map_err(to_io)?;
@@ -2182,7 +2182,9 @@ async fn handle_command_conn_inner(
     // 2. Manifest-framed operation loop.
     let mut command_trace = CommandTraceGuard::new(trace.clone(), endpoints.clone());
     let mut first_operation_traced = false;
+    let mut delayed_events = tokio::task::JoinSet::new();
     let terminal_reason = loop {
+        while delayed_events.try_join_next().is_some() {}
         let mut server_cancelled = false;
         let next_result = if let Some(cancel) = standard_cancel.as_mut() {
             tokio::select! {
@@ -2304,7 +2306,15 @@ async fn handle_command_conn_inner(
             None
         };
         let _declared_aux_sync = declared_aux_sync.lock().await;
-        let (reply, applied_fault, events, is_poll_live_view, observation_context, aux_readiness) = {
+        let (
+            reply,
+            applied_fault,
+            events,
+            is_poll_live_view,
+            observation_context,
+            aux_readiness,
+            event_generation,
+        ) = {
             let mut e = engine.lock().await;
             let is_poll_live_view = context.poll_live_view_op == Some(req.code);
             let mut owner = session_owner.lock().await;
@@ -2336,8 +2346,13 @@ async fn handle_command_conn_inner(
                     .iter()
                     .map(|(role, listener)| (Arc::clone(listener), e.channel_ready(*role)))
                     .collect::<Vec<_>>(),
+                e.event_generation(),
             )
         };
+        if reply_is_ok(&reply) && matches!(req.code, op::CLOSE_SESSION | op::TERMINATE_OPEN_CAPTURE)
+        {
+            delayed_events.abort_all();
+        }
         for (listener, ready) in aux_readiness {
             listener
                 .set_ready(ready)
@@ -2373,6 +2388,7 @@ async fn handle_command_conn_inner(
             &metrics,
         )
         .await;
+        let reply_written_at = Instant::now();
         if let Some(fault) = &applied_fault {
             trace.record_fault(FaultTraceEvidence {
                 endpoints: endpoints.clone(),
@@ -2451,34 +2467,55 @@ async fn handle_command_conn_inner(
             })
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let transaction_record_id = format!("record-{transaction_record:016x}");
-        for event in &events {
-            observations
-                .append(observation_context.clone(), |common| {
-                    ObservationLine::PtpEvent(PtpEventRecord {
-                        common,
-                        connection_instance: connection_instance.clone(),
-                        session: session.clone(),
-                        endpoint_set: "event".into(),
-                        // Event packets are emitted with the protocol-defined
-                        // zero transaction ID. The record link carries the
-                        // independently known causal transaction.
-                        transaction_id: 0,
-                        transaction_record_id: Some(transaction_record_id.clone()),
-                        event: format!("0x{:04x}", event.code),
-                        parameters: event.params.clone(),
-                        payload: None,
-                    })
-                })
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-        }
-        // #126: the one hook — nudge the state-callback task that the camera
-        // state may have changed. Cheap; a no-op when no push task is running.
-        state_dirty.notify_one();
+        let mut scheduled = Vec::new();
         for event in events {
-            // Err = no event-socket client connected; the push is dropped (the
-            // completion is only meaningful to a listening client).
-            let _ = event_tx.send(event);
+            if event.delay_ms == 0 {
+                publish_operation_event(
+                    &observations,
+                    &event_tx,
+                    observation_context.clone(),
+                    &connection_instance,
+                    &session,
+                    &transaction_record_id,
+                    event,
+                )?;
+            } else {
+                scheduled.push(event);
+            }
         }
+        if !scheduled.is_empty() && outcome == TransactionOutcome::Ok && !closed {
+            let observations = observations.clone();
+            let event_tx = event_tx.clone();
+            let engine = engine.clone();
+            let connection_instance = connection_instance.clone();
+            let session = session.clone();
+            delayed_events.spawn(async move {
+                for event in scheduled {
+                    tokio::time::sleep_until(
+                        reply_written_at + Duration::from_millis(event.delay_ms.into()),
+                    )
+                    .await;
+                    let engine = engine.lock().await;
+                    if engine.event_generation() != event_generation {
+                        break;
+                    }
+                    if let Err(error) = publish_operation_event(
+                        &observations,
+                        &event_tx,
+                        observation_context.clone(),
+                        &connection_instance,
+                        &session,
+                        &transaction_record_id,
+                        event,
+                    ) {
+                        tracing::warn!(%error, "could not record the scheduled PTP event");
+                        break;
+                    }
+                }
+            });
+        }
+        // Wake the state callback after each dispatched operation (#126).
+        state_dirty.notify_one();
         if let Some(error) = write_error {
             command_trace.mark_terminal("transportAbort");
             return Err(error);
@@ -2495,6 +2532,34 @@ async fn handle_command_conn_inner(
     };
     drop(standard_guard);
     Ok(terminal_reason)
+}
+
+fn publish_operation_event(
+    observations: &ObservationRecorder,
+    event_tx: &broadcast::Sender<camera_sim::QueuedEvent>,
+    context: ExecutionContext,
+    connection_instance: &str,
+    session: &str,
+    transaction_record_id: &str,
+    event: camera_sim::QueuedEvent,
+) -> std::io::Result<()> {
+    observations
+        .append(context, |common| {
+            ObservationLine::PtpEvent(PtpEventRecord {
+                common,
+                connection_instance: connection_instance.into(),
+                session: session.into(),
+                endpoint_set: "event".into(),
+                transaction_id: event.transaction_id,
+                transaction_record_id: Some(transaction_record_id.into()),
+                event: format!("0x{:04x}", event.code),
+                parameters: event.params.clone(),
+                payload: None,
+            })
+        })
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let _ = event_tx.send(event);
+    Ok(())
 }
 
 async fn run_knock_loop(
@@ -2762,7 +2827,7 @@ async fn handle_event_conn(
                     Ok(event) => {
                         let packet = PtpIpPacket::Event(EventPacket {
                             code: event.code,
-                            transaction_id: 0,
+                            transaction_id: event.transaction_id,
                             params: event.params.clone(),
                         });
                         let bytes = match framing {
@@ -4358,7 +4423,9 @@ properties:
             events
                 .send(camera_sim::QueuedEvent {
                     code: 0x4002,
+                    transaction_id: 0,
                     params: Vec::new(),
+                    delay_ms: 0,
                 })
                 .unwrap();
             let event = reader

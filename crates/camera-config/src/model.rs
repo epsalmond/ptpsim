@@ -1255,6 +1255,9 @@ pub struct Connection {
     /// in `actions.shutter`.
     #[serde(default)]
     pub shutter_recipe: Option<ShutterRecipe>,
+    /// Simulated postview exchange after one live-view capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub postview: Option<PostviewCapture>,
     /// Who owns the PTP session on this connection (§11.29): the executor
     /// selects session behavior from this trait, never from the `kind` string.
     /// `None` → not modeled for this connection; the consumer falls back.
@@ -1326,6 +1329,42 @@ pub struct Connection {
     /// UUIDs) until those are modeled / split to a private overlay.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_yaml::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostviewCapture {
+    pub mode: String,
+    pub selector: PostviewSelector,
+    pub capture_op: HexCode,
+    pub capture_params: Vec<u32>,
+    pub read_op: HexCode,
+    pub fixture: PostviewFixture,
+    pub event_transaction_id: u32,
+    pub pending: PostviewEventSpec,
+    pub ready: PostviewEventSpec,
+    pub complete: PostviewEventSpec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostviewSelector {
+    pub property: HexCode,
+    pub value: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PostviewFixture {
+    Jpeg640x480,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostviewEventSpec {
+    pub code: HexCode,
+    pub delay_ms: u32,
+    pub counter_offset: u32,
 }
 
 /// Host discovery facts for one connection. `platforms` is the automatic

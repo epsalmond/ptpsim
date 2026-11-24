@@ -65,6 +65,10 @@ evidence:
     kind: semantic-assertion
     path: ''
     date: ''
+  wireAppPostview:
+    kind: wire-capture
+    path: evidence/APP_POSTVIEW_OBSERVATIONS.md
+    date: 2026-05-18
   wireAppPropertyDescriptorSnapshots:
     kind: wire-capture
     path: evidence/APP_PROPERTY_DESCRIPTOR_SNAPSHOTS.md
@@ -2454,6 +2458,7 @@ operations:
     emits:
     - '0xc001'
     evidence:
+    - wireAppPostview
     - docLiveControls
     - wireTetherCaps20260527
     observedScopes:
@@ -3005,6 +3010,7 @@ operations:
     effects: []
     emits: []
     evidence:
+    - wireAppPostview
     - docLiveControls
   '0x9026':
     name: LockS1Lock
@@ -16516,6 +16522,7 @@ events:
     name: CaptureComplete
     destination: app
     evidence:
+    - wireAppPostview
     - docFujiPtpPropReference
     - wireReopenTrace
   '0x80f8':
@@ -16527,12 +16534,14 @@ events:
     name: PostviewComplete
     destination: app
     evidence:
+    - wireAppPostview
     - docFujiPtpPropReference
     - wireReopenTrace
   '0xc004':
     name: CapturePending
     destination: app
     evidence:
+    - wireAppPostview
     - docFujiPtpPropReference
     - wireReopenTrace
   '0xc005':
@@ -16647,6 +16656,30 @@ connections:
       kind: stream
       pollOp: null
     shutterRecipe: appPostview
+    postview:
+      mode: shooting/stills
+      selector:
+        property: '0xd246'
+        value: 0
+      captureOp: '0x100e'
+      captureParams:
+      - 0
+      - 0
+      readOp: '0x9022'
+      fixture: jpeg640x480
+      eventTransactionId: 1
+      pending:
+        code: '0xc004'
+        delayMs: 145
+        counterOffset: 1
+      ready:
+        code: '0xc001'
+        delayMs: 538
+        counterOffset: 1
+      complete:
+        code: '0x400d'
+        delayMs: 359
+        counterOffset: 1
     session: null
     events: null
     commandFraming: compressed
@@ -17102,6 +17135,7 @@ connections:
         triggers:
         - postviewEvent: {}
         evidence:
+        - wireAppPostview
         - wireReopenTrace
         - docLiveControls
       enumerateObjects:

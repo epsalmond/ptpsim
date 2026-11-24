@@ -877,6 +877,7 @@ pub struct ConnectionInfo {
     pub init_shape: Option<String>,
     pub live_view_delivery: Option<FfiLiveViewDelivery>,
     pub shutter_recipe: Option<ShutterRecipe>,
+    pub postview: Option<PostviewCaptureInfo>,
     /// The wire framing to pass the codecs for this connection's command channel
     /// (#133) — declared in the manifest so the app never maps `kind` to a framing
     /// itself. `None` → not modeled for this connection yet.
@@ -890,6 +891,71 @@ pub struct ConnectionInfo {
     /// How pushed events arrive on this connection (§11.29). `None` → not
     /// modeled; the consumer falls back to the §11.16.1 default (`reliable`).
     pub event_delivery: Option<FfiEventDelivery>,
+}
+
+#[derive(uniffi::Enum)]
+pub enum PostviewFixture {
+    Jpeg640x480,
+}
+
+impl From<cc::model::PostviewFixture> for PostviewFixture {
+    fn from(fixture: cc::model::PostviewFixture) -> Self {
+        match fixture {
+            cc::model::PostviewFixture::Jpeg640x480 => Self::Jpeg640x480,
+        }
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct PostviewEventInfo {
+    pub code: u16,
+    pub delay_ms: u32,
+    pub counter_offset: u32,
+}
+
+impl From<&cc::model::PostviewEventSpec> for PostviewEventInfo {
+    fn from(event: &cc::model::PostviewEventSpec) -> Self {
+        Self {
+            code: parse_hex_code(&event.code).expect("postview event code is validated"),
+            delay_ms: event.delay_ms,
+            counter_offset: event.counter_offset,
+        }
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct PostviewCaptureInfo {
+    pub mode: String,
+    pub selector_property: u16,
+    pub selector_value: i64,
+    pub capture_op: u16,
+    pub capture_params: Vec<u32>,
+    pub read_op: u16,
+    pub fixture: PostviewFixture,
+    pub event_transaction_id: u32,
+    pub pending: PostviewEventInfo,
+    pub ready: PostviewEventInfo,
+    pub complete: PostviewEventInfo,
+}
+
+impl From<&cc::model::PostviewCapture> for PostviewCaptureInfo {
+    fn from(spec: &cc::model::PostviewCapture) -> Self {
+        Self {
+            mode: spec.mode.clone(),
+            selector_property: parse_hex_code(&spec.selector.property)
+                .expect("postview selector code is validated"),
+            selector_value: spec.selector.value,
+            capture_op: parse_hex_code(&spec.capture_op)
+                .expect("postview capture code is validated"),
+            capture_params: spec.capture_params.clone(),
+            read_op: parse_hex_code(&spec.read_op).expect("postview read code is validated"),
+            fixture: spec.fixture.into(),
+            event_transaction_id: spec.event_transaction_id,
+            pending: (&spec.pending).into(),
+            ready: (&spec.ready).into(),
+            complete: (&spec.complete).into(),
+        }
+    }
 }
 
 impl From<cc::WireFraming> for PtpFraming {
@@ -2888,6 +2954,7 @@ impl ConfigStore {
                 init_shape: c.init_shape.clone(),
                 live_view_delivery: c.live_view_delivery.as_ref().map(Into::into),
                 shutter_recipe: c.shutter_recipe.map(Into::into),
+                postview: c.postview.as_ref().map(Into::into),
                 command_framing: c.command_framing.map(Into::into),
                 event_framing: c.event_framing.map(Into::into),
                 session_ownership: c.session.map(|s| s.ownership.into()),

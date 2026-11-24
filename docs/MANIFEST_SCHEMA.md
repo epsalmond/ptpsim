@@ -825,11 +825,29 @@ the same behavior.
 **Live event socket.** `camera-sim-service` pushes these for real: the command
 loop drains the engine's queued events after each operation and broadcasts the
 code plus parameters. Each connected event-socket client writes them with the
-connection's
-declared `eventFraming` (`standard` PTP/IP or USB/PIMA) and a zero transaction
-ID. Fire-and-forget to currently-connected clients — the real app opens the
-event socket during session setup, before triggering a capture. Reference test:
-`service_pushes_completion_event_on_event_socket`.
+connection's declared `eventFraming` (`standard` PTP/IP or USB/PIMA). An
+ordinary `emits` entry uses transaction ID zero. The service sends events to
+currently connected clients. See `service_pushes_completion_event_on_event_socket`.
+
+`connections.<id>.postview` configures a simulated stills capture on a
+streaming connection. `mode`, `selector` (`property` and scalar `value`),
+`captureOp`, and `captureParams` identify the observed capture request.
+`readOp` takes no parameters and returns the configured `fixture` once per
+take. It refers to a parameterless vendor operation with no other handler.
+The `jpeg640x480` fixture is a synthetic baseline JPEG. The simulator
+queues `pending` and `ready` on capture and `complete` on the successful
+postview read. Each contains `code`, `delayMs`, and `counterOffset`. The TCP
+service starts each delay when it finishes writing the corresponding OK
+reply. `pending.delayMs` precedes `ready.delayMs`. The in-memory executor
+consumes the events immediately.
+
+All three events have the declared `eventTransactionId`. Their first two
+parameters equal the triggering request's transaction ID plus the event's
+`counterOffset`, wrapping at 32 bits. The final two parameters are zero
+except that `ready` carries the fixture byte length in the third slot. The
+timings and counters select a representative replay. The operation's
+parameterless completion emission remains the fallback outside the
+configured streaming capture path.
 
 **Per-connection applicability.** The `app` (BLE→Wi-Fi-AP reference app, 55740/55741)
 connection is the hybrid push-then-read **happy path** — its event channel is

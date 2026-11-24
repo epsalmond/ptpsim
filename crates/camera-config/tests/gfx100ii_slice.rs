@@ -1596,6 +1596,28 @@ fn generator_ingests_real_probe_evidence_into_a_proposal() {
     // Load the canonical inventory, label, and value-profile bundles.
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/camera-config-data/fuji/gfx100ii/evidence");
+    let app_postview =
+        std::fs::read_to_string(root.join("app-postview/2026-05-18-app-take-cycles.jsonl"))
+            .unwrap();
+    let postview = camera_config::validate_bundles(&[&app_postview])
+        .expect("app stills postview corpus validates");
+    assert_eq!(
+        postview
+            .records
+            .iter()
+            .filter(|record| matches!(record, ObservationLine::PtpTransaction(_)))
+            .count(),
+        6,
+    );
+    assert_eq!(
+        postview
+            .records
+            .iter()
+            .filter(|record| matches!(record, ObservationLine::PtpEvent(_)))
+            .count(),
+        9,
+    );
+
     let mut bundles = Vec::new();
     let mut files = 0;
     for directory in ["probe", "labels", "value-profiles"] {

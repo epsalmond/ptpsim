@@ -296,6 +296,16 @@ pub struct Engine {
     aux_descriptor_budget: Option<u32>,
     aux_descriptor_used: u32,
     aux_managed_used: u32,
+    postview_pending: bool,
+    event_generation: u64,
+}
+
+fn postview_fixture(fixture: camera_config::model::PostviewFixture) -> &'static [u8] {
+    match fixture {
+        camera_config::model::PostviewFixture::Jpeg640x480 => {
+            include_bytes!("../fixtures/postview-640x480.jpg")
+        }
+    }
 }
 
 impl Engine {
@@ -325,6 +335,8 @@ impl Engine {
             aux_descriptor_budget: None,
             aux_descriptor_used: 0,
             aux_managed_used: 0,
+            postview_pending: false,
+            event_generation: 0,
         };
         let handles = engine.camera_initiated_media_handles();
         if engine.manifest.camera_initiated_transfer.is_some() {
@@ -338,6 +350,9 @@ impl Engine {
     /// connection/mode-specific value profiles. The default standalone engine
     /// context is the app PTP/IP command channel.
     pub fn bind_connection(&mut self, connection: &str) {
+        if self.connection != connection {
+            self.cancel_postview();
+        }
         self.connection.clear();
         self.connection.push_str(connection);
     }
@@ -396,6 +411,7 @@ impl Engine {
     }
 
     fn clear_session(&mut self) {
+        self.cancel_postview();
         self.state.reset_gates();
         self.state.active_mode = None;
         self.camera_initiated_pre_mode_probe_armed = false;
@@ -1348,6 +1364,13 @@ impl Engine {
             }
             op::SET_DEVICE_PROP_VALUE => self.set_prop(tid, p(0) as u16, data_in),
             op::TERMINATE_OPEN_CAPTURE
+                if self.connection_has_postview() && self.state.phase == Phase::Streaming =>
+            {
+                self.state.phase = Phase::LiveView;
+                self.cancel_postview();
+                Self::ok(tid)
+            }
+            op::TERMINATE_OPEN_CAPTURE
                 if self.connection_models_live_view_stream(&self.connection) =>
             {
                 if self.live_view_stream_connection.as_deref() == Some(self.connection.as_str()) {
@@ -1393,7 +1416,8 @@ impl Engine {
         self.advance_sequence_gates(req, data_in);
         if !silent {
             self.apply_op_effects(req.code, &req.params);
-            self.apply_op_emits(req.code, &req.params);
+            let replaced_event = self.apply_postview(req);
+            self.apply_op_emits(req.code, &req.params, replaced_event);
         }
         self.advance_transfer_queue(req, data_in);
     }
@@ -2030,7 +2054,7 @@ impl Engine {
     /// sibling to [`apply_op_effects`](Self::apply_op_effects) — kept separate
     /// because an event is a signal, not a value mutation, and an op may emit
     /// without arming any effect. Both fire only on an OK response.
-    fn apply_op_emits(&mut self, code: u16, params: &[u32]) {
+    fn apply_op_emits(&mut self, code: u16, params: &[u32], replaced: Option<u16>) {
         let Some(opdef) = self.manifest.operation(code) else {
             return;
         };
@@ -2040,7 +2064,7 @@ impl Engine {
         for emit in &opdef.emits {
             match emit {
                 camera_config::OperationEmit::Bare(hex) => {
-                    if let Some(c) = parse_hex_code(hex) {
+                    if let Some(c) = parse_hex_code(hex).filter(|code| Some(*code) != replaced) {
                         self.state.push_event(c);
                     }
                 }
@@ -2048,7 +2072,8 @@ impl Engine {
                     code,
                     params: emit_params,
                 } => {
-                    let Some(c) = parse_hex_code(code) else {
+                    let Some(c) = parse_hex_code(code).filter(|code| Some(*code) != replaced)
+                    else {
                         continue;
                     };
                     let mut resolved = Vec::new();
@@ -2081,6 +2106,69 @@ impl Engine {
         }
     }
 
+    fn connection_has_postview(&self) -> bool {
+        self.manifest
+            .connections
+            .get(&self.connection)
+            .is_some_and(|connection| connection.postview.is_some())
+    }
+
+    fn cancel_postview(&mut self) {
+        self.postview_pending = false;
+        self.event_generation = self.event_generation.wrapping_add(1);
+    }
+
+    /// Identifies the lifetime of delayed events after they leave the queue.
+    pub fn event_generation(&self) -> u64 {
+        self.event_generation
+    }
+
+    fn active_postview(&self) -> Option<&camera_config::model::PostviewCapture> {
+        let spec = self
+            .manifest
+            .connections
+            .get(&self.connection)?
+            .postview
+            .as_ref()?;
+        let property = parse_hex_code(&spec.selector.property)?;
+        (self.state.phase == Phase::Streaming
+            && self.state.active_mode.as_deref() == Some(spec.mode.as_str())
+            && self.state.props.get(&property)?.as_i64() == Some(spec.selector.value))
+        .then_some(spec)
+    }
+
+    fn apply_postview(&mut self, req: &OperationRequest) -> Option<u16> {
+        let Some(spec) = self.active_postview() else {
+            self.postview_pending = false;
+            return None;
+        };
+        let prepare = |event: &camera_config::model::PostviewEventSpec, length| {
+            let code = parse_hex_code(&event.code).expect("validated postview event");
+            let counter = req.transaction_id.wrapping_add(event.counter_offset);
+            crate::state::QueuedEvent {
+                code,
+                transaction_id: spec.event_transaction_id,
+                params: vec![counter, counter, length, 0],
+                delay_ms: event.delay_ms,
+            }
+        };
+        if parse_hex_code(&spec.capture_op) == Some(req.code) && req.params == spec.capture_params {
+            let pending = prepare(&spec.pending, 0);
+            let ready = prepare(&spec.ready, postview_fixture(spec.fixture).len() as u32);
+            let replaced = ready.code;
+            self.postview_pending = true;
+            self.state.queue_event(pending);
+            self.state.queue_event(ready);
+            return Some(replaced);
+        }
+        if self.postview_pending && parse_hex_code(&spec.read_op) == Some(req.code) {
+            let complete = prepare(&spec.complete, 0);
+            self.postview_pending = false;
+            self.state.queue_event(complete);
+        }
+        None
+    }
+
     /// Take a queued completion event by code — the reference executor's
     /// event-source `awaitUntil` drains here (see [`CameraState::take_event`]).
     pub fn take_event(&mut self, code: u16) -> bool {
@@ -2104,6 +2192,16 @@ impl Engine {
         let Some(opdef) = self.manifest.operation(code) else {
             return Self::err(tid, resp::OPERATION_NOT_SUPPORTED);
         };
+        if let Some(spec) = self
+            .active_postview()
+            .filter(|spec| self.postview_pending && parse_hex_code(&spec.read_op) == Some(code))
+        {
+            return if params.is_empty() {
+                Self::data(tid, postview_fixture(spec.fixture).to_vec())
+            } else {
+                Self::err(tid, resp::INVALID_PARAMETER)
+            };
+        }
         match opdef.handler {
             Some(camera_config::OperationHandler::PropertyStep) => {
                 let Some(prop_code) = opdef.property.as_deref().and_then(parse_hex_code) else {
