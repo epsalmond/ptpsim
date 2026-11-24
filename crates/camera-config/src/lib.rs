@@ -76,11 +76,11 @@ pub use model::{
     RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
     ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
     SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SessionContract,
-    SessionOwnership, SetPropValue, ShutterRecipe, SocketAvailability, SocketBinding,
-    SocketBindingDescriptor, SocketBindings, SocketRole, Step, StepParam, StepRetry,
-    StructuredTextField, StructuredTextLayout, StructuredTextScalar, TransferCompletion,
-    TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond, WireFraming, Workflow,
-    WorkflowPhase,
+    SessionOwnership, SetPropValue, ShutterRecipe, SimulatorState, SocketAvailability,
+    SocketBinding, SocketBindingDescriptor, SocketBindings, SocketRole, StateResponse, Step,
+    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
+    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
+    WireFraming, Workflow, WorkflowPhase,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -301,6 +301,18 @@ impl CameraManifest {
         for (id, gate) in &self.sequence_gates {
             check(&gate.evidence, &format!("sequenceGate {id}"), &mut lints);
         }
+        for (name, state) in &self.states {
+            check(&state.evidence, &format!("state {name}"), &mut lints);
+            for (index, response) in state.responses.iter().enumerate() {
+                self.check_disposition_scope(
+                    &response.connections,
+                    &response.modes,
+                    None,
+                    &format!("state {name} response {index}"),
+                    &mut lints,
+                );
+            }
+        }
         for (id, sentinel) in &self.sentinels {
             check(&sentinel.evidence, &format!("sentinel {id}"), &mut lints);
             if parse_hex_bytes(&sentinel.bytes).is_none() {
@@ -461,6 +473,9 @@ impl CameraManifest {
         }
         for (code, operation) in &self.operations {
             require_valid_operation_handler(self, operation, code)?;
+        }
+        for (name, state) in &self.states {
+            require_valid_simulator_state(self, state, name)?;
         }
         for (code, property) in &self.properties {
             require_valid_property(self, property, code)?;
@@ -643,6 +658,51 @@ impl CameraManifest {
         }
         Ok(())
     }
+}
+
+/// A simulator state must say what it models, answer at least one cataloged
+/// operation with a non-OK response, and cite evidence (MANIFEST_SCHEMA §11.32).
+fn require_valid_simulator_state(
+    manifest: &CameraManifest,
+    state: &model::SimulatorState,
+    name: &str,
+) -> Result<(), ManifestError> {
+    let path = format!("states.{name}");
+    let contract = |detail: String| Err(ManifestError::Contract(detail));
+    if state.summary.trim().is_empty() {
+        return contract(format!("{path} summary must not be empty"));
+    }
+    if state.responses.is_empty() {
+        return contract(format!("{path} responses must not be empty"));
+    }
+    if state.evidence.is_empty() {
+        return contract(format!("{path} evidence must not be empty"));
+    }
+    for (index, response) in state.responses.iter().enumerate() {
+        let path = format!("{path}.responses[{index}]");
+        let Some(operation) = parse_hex_code(&response.operation) else {
+            return contract(format!(
+                "{path} operation '{}' is not a hex operation code",
+                response.operation
+            ));
+        };
+        let Some(code) = parse_hex_code(&response.response) else {
+            return contract(format!(
+                "{path} response '{}' is not a hex response code",
+                response.response
+            ));
+        };
+        if code == 0x2001 {
+            return contract(format!("{path} response must not be 0x2001 (OK)"));
+        }
+        if manifest.operation(operation).is_none() {
+            return contract(format!(
+                "{path} operation '{}' is not declared under operations",
+                response.operation
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn is_scalar_numeric_property(property: &model::Property) -> bool {

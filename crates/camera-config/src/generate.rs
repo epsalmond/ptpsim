@@ -4513,6 +4513,7 @@ camera: { manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }
             semantic_assertions: SemanticAssertionLedger::default(),
             sentinels: BTreeMap::new(),
             sequence_gates: BTreeMap::new(),
+            states: BTreeMap::new(),
             camera_initiated_transfer: None,
             operations: BTreeMap::new(),
             properties: BTreeMap::new(),
