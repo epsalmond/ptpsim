@@ -252,6 +252,8 @@ impl UsbInventoryIo for NativeUsbIo {
 pub struct UsbInventoryPlan {
     connection: String,
     establishment: EstablishmentPlan,
+    /// Transaction ids below this value belong to the establishment plan.
+    establishment_transactions: u32,
     request: ActionInvocationRequest,
     triple: (u8, u8, u8),
 }
@@ -294,7 +296,6 @@ impl UsbInventoryPlan {
         if establishment.prerequisite.is_some()
             || !establishment.params.is_empty()
             || !establishment.post_exit_readiness.is_empty()
-            || establishment.steps.len() > 5
         {
             bail!("USB inventory does not support conditional or parameterized establishment")
         }
@@ -312,46 +313,58 @@ impl UsbInventoryPlan {
         }
         let triple = (*class, *subclass, *protocol);
         // Initial support is claim + OpenSession, optionally followed by GetDeviceInfo.
-        if establishment.steps.len() != 3 && establishment.steps.len() != 5 {
-            bail!("USB establishment must claim then open, with optional GetDeviceInfo")
-        }
-        for (index, pair) in establishment.steps[1..].chunks_exact(2).enumerate() {
-            let [Step::UsbBulkOut {
-                data: StepValue::Literal { bytes },
-                opts: out_opts,
-            }, Step::UsbBulkIn {
-                max_length,
-                opts: in_opts,
-                ..
-            }] = pair
-            else {
-                bail!("USB inventory establishment permits literal command/read pairs only")
+        // Each USB phase is one bulk IN read: OpenSession reads its response, and
+        // GetDeviceInfo reads its data container and then its response container.
+        let mut rest = &establishment.steps[1..];
+        let mut establishment_transactions = 0u32;
+        while let [Step::UsbBulkOut { data, opts }, tail @ ..] = rest {
+            let StepValue::Literal { bytes } = data else {
+                bail!("USB inventory establishment permits literal command writes only")
             };
-            if out_opts.tolerant
-                || out_opts.retries != 0
-                || in_opts.tolerant
-                || in_opts.retries != 0
-                || *max_length == 0
-                || *max_length as usize > TRANSFER_LIMIT
-            {
-                bail!("USB establishment requires bounded, non-tolerant commands without retries")
+            if opts.tolerant || opts.retries != 0 {
+                bail!("USB establishment requires non-tolerant commands without retries")
             }
             let PtpIpPacket::OperationRequest(command) = decode(bytes)? else {
                 bail!("USB establishment contains a non-command write")
             };
-            if command.transaction_id != index as u32
-                || match index {
-                    0 => {
-                        command.code != 0x1002
-                            || command.params.len() != 1
-                            || command.params[0] == 0
-                    }
-                    1 => command.code != 0x1001 || !command.params.is_empty(),
-                    _ => true,
+            let reads = match establishment_transactions {
+                0 if command.code == 0x1002
+                    && command.params.len() == 1
+                    && command.params[0] != 0 =>
+                {
+                    1
                 }
-            {
+                1 if command.code == 0x1001 && command.params.is_empty() => 2,
+                _ => {
+                    bail!("USB establishment exceeds the OpenSession/GetDeviceInfo inventory scope")
+                }
+            };
+            if command.transaction_id != establishment_transactions {
                 bail!("USB establishment exceeds the OpenSession/GetDeviceInfo inventory scope")
             }
+            if tail.len() < reads {
+                bail!("USB establishment must read every phase of each command")
+            }
+            for step in &tail[..reads] {
+                let Step::UsbBulkIn {
+                    max_length, opts, ..
+                } = step
+                else {
+                    bail!("USB establishment must read every phase of each command")
+                };
+                if opts.tolerant
+                    || opts.retries != 0
+                    || *max_length == 0
+                    || *max_length as usize > TRANSFER_LIMIT
+                {
+                    bail!("USB establishment requires bounded, non-tolerant reads without retries")
+                }
+            }
+            rest = &tail[reads..];
+            establishment_transactions += 1;
+        }
+        if establishment_transactions == 0 || !rest.is_empty() {
+            bail!("USB establishment must claim then open, with optional GetDeviceInfo")
         }
         let action = store
             .action(connection.into(), ActionVerb::ReadDeviceInfo)
@@ -376,6 +389,7 @@ impl UsbInventoryPlan {
         Ok(Self {
             connection: connection.into(),
             establishment,
+            establishment_transactions,
             request,
             triple,
         })
@@ -501,7 +515,6 @@ struct ProtocolState {
     cleanup_failure: Option<String>,
     session_open: bool,
     next_transaction: u32,
-    last_response: Option<u16>,
     pending: Option<Pending>,
     partial: Vec<u8>,
     frames: VecDeque<Vec<u8>>,
@@ -657,7 +670,6 @@ impl UsbInventoryTransport {
             PtpIpPacket::OperationResponse(response)
                 if response.transaction_id == pending.transaction =>
             {
-                state.last_response = Some(response.code);
                 let pending = state.pending.take().unwrap();
                 if response.code == 0x2001 {
                     match pending.operation {
@@ -682,24 +694,17 @@ impl UsbInventoryTransport {
         Ok(())
     }
 
+    /// The plan itself must read every container it caused. Draining here would
+    /// hide a plan that leaves a response queued for the next transaction.
     async fn finish_establishment(&self) -> Result<()> {
-        tokio::time::timeout(self.timeout, async {
-            loop {
-                let state = self.state.lock().await;
-                if state.pending.is_none() && state.partial.is_empty() {
-                    break;
-                }
-                drop(state);
-                self.read_transfer(TRANSFER_LIMIT, false).await?;
-            }
-            let state = self.state.lock().await;
-            if !state.session_open {
-                bail!("USB OpenSession did not return OK; no session ownership acquired")
-            }
-            Ok(())
-        })
-        .await
-        .context("USB establishment completion timed out")?
+        let state = self.state.lock().await;
+        if state.pending.is_some() || !state.partial.is_empty() || !state.frames.is_empty() {
+            bail!("USB establishment plan ended before reading every container of its transactions")
+        }
+        if !state.session_open {
+            bail!("USB OpenSession did not return OK; no session ownership acquired")
+        }
+        Ok(())
     }
 
     async fn close_session(&self) -> Result<()> {
@@ -789,26 +794,28 @@ impl UsbExecutorTransport for UsbInventoryTransport {
         if max_length == 0 || max_length as usize > TRANSFER_LIMIT {
             return Err(usb_error("USB read exceeds transfer bound"));
         }
+        let max_length = max_length as usize;
+        // One call yields one container: each USB phase is its own bulk transfer.
+        // Containers that arrive together stay queued for the plan's next read.
         let result = tokio::time::timeout(self.timeout, async {
-            let mut bytes = Vec::new();
             loop {
-                if bytes.len() == max_length as usize {
-                    bail!("USB establishment response exceeds its read bound")
+                let frame = self.state.lock().await.frames.pop_front();
+                let Some(frame) = frame else {
+                    self.read_transfer(max_length, true).await?;
+                    continue;
+                };
+                if frame.len() > max_length {
+                    bail!("USB establishment container exceeds its read bound")
                 }
-                bytes.extend(
-                    self.read_transfer(max_length as usize - bytes.len(), false)
-                        .await?,
-                );
-                let state = self.state.lock().await;
-                if state.pending.is_none() && state.partial.is_empty() {
-                    if state.last_response != Some(0x2001) {
+                if let PtpIpPacket::OperationResponse(response) = decode(&frame)? {
+                    if response.code != 0x2001 {
                         bail!(
-                            "USB establishment returned non-OK response {:?}",
-                            state.last_response
+                            "USB establishment returned non-OK response {:#06x}",
+                            response.code
                         )
                     }
-                    return Ok(bytes);
                 }
+                return Ok(frame);
             }
         })
         .await
@@ -914,7 +921,7 @@ pub async fn run_usb_inventory(
         )
     }
     std::fs::create_dir(output_dir).context("create USB inventory output directory")?;
-    let action_transaction = ((plan.establishment.steps.len() - 1) / 2) as u32;
+    let action_transaction = plan.establishment_transactions;
     let observer = Arc::new(UsbTraceObserver(Arc::clone(&trace)));
     let result = async {
         run_usb_establishment(
