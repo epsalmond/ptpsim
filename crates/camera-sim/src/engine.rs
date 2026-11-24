@@ -1363,20 +1363,22 @@ impl Engine {
                 }
             }
             op::SET_DEVICE_PROP_VALUE => self.set_prop(tid, p(0) as u16, data_in),
-            op::TERMINATE_OPEN_CAPTURE
-                if self.connection_has_postview() && self.state.phase == Phase::Streaming =>
-            {
-                self.state.phase = Phase::LiveView;
-                self.cancel_postview();
-                Self::ok(tid)
-            }
-            op::TERMINATE_OPEN_CAPTURE
-                if self.connection_models_live_view_stream(&self.connection) =>
-            {
-                if self.live_view_stream_connection.as_deref() == Some(self.connection.as_str()) {
-                    self.live_view_stream_connection = None;
+            op::TERMINATE_OPEN_CAPTURE => {
+                let ends_postview =
+                    self.connection_has_postview() && self.state.phase == Phase::Streaming;
+                if !ends_postview && !self.connection_models_live_view_stream(&self.connection) {
+                    self.dispatch_manifest_op(tid, req.code, &req.params)
+                } else {
+                    if ends_postview {
+                        self.state.phase = Phase::LiveView;
+                        self.cancel_postview();
+                    }
+                    if self.live_view_stream_connection.as_deref() == Some(self.connection.as_str())
+                    {
+                        self.live_view_stream_connection = None;
+                    }
+                    Self::ok(tid)
                 }
-                Self::ok(tid)
             }
             op::INITIATE_OPEN_CAPTURE => {
                 if matches!(self.state.phase, Phase::LiveView | Phase::Streaming) {
@@ -3720,6 +3722,76 @@ properties:
             Reply::DataStream { response, .. } => response.code,
             other => panic!("expected a coded response, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn terminate_open_capture_allows_rearming_with_postview() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    kind: ptpip
+    modes: [stills]
+    actions:
+      startLiveView:
+        mode: stills
+        initiator:
+          steps:
+            - { setProp: "0xd001", value: 1 }
+            - { sendOp: "0x101c" }
+    postview:
+      mode: stills
+      selector: { property: "0xd001", value: 1 }
+      captureOp: "0x100e"
+      captureParams: [0, 0]
+      readOp: "0x9022"
+      fixture: jpeg640x480
+      eventTransactionId: 1
+      pending: { code: "0xc004", delayMs: 1, counterOffset: 1 }
+      ready: { code: "0xc001", delayMs: 2, counterOffset: 1 }
+      complete: { code: "0x400d", delayMs: 1, counterOffset: 1 }
+modes:
+  stills: { detect: { prop: "0xd001", eq: 1 }, phase: liveView }
+properties:
+  "0xd001": { name: selector, type: u16, access: readWrite }
+operations:
+  "0x100e": { name: Capture }
+  "0x1018": { name: TerminateOpenCapture }
+  "0x101c": { name: InitiateOpenCapture }
+  "0x9022": { name: ReadPreview }
+events:
+  "0xc004": { name: Pending }
+  "0xc001": { name: Ready }
+  "0x400d": { name: Complete }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        let arm = |engine: &mut Engine, tid| {
+            response_code_of(engine.on_operation(
+                &req(op::SET_DEVICE_PROP_VALUE, tid, vec![0xd001]),
+                Some(&1u16.to_le_bytes()),
+            ))
+        };
+        assert_ok_open(&mut engine);
+        assert_eq!(arm(&mut engine, 2), resp::OK);
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 3, vec![]), None)
+        ));
+        assert_eq!(arm(&mut engine, 4), LIVE_VIEW_ARMING_BLOCKED);
+
+        assert!(reply_is_ok(&engine.on_operation(
+            &req(op::TERMINATE_OPEN_CAPTURE, 5, vec![1]),
+            None
+        )));
+        assert_eq!(engine.phase(), Phase::LiveView);
+        assert_eq!(arm(&mut engine, 6), resp::OK);
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 7, vec![]), None)
+        ));
+        assert_eq!(engine.phase(), Phase::Streaming);
     }
 
     /// #407: cataloged ops resolve connection × mode × kind × `requires`

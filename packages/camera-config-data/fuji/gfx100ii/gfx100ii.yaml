@@ -950,6 +950,7 @@ operations:
   "0x1008": { name: GetObjectInfo,        owner: standard-ptp, modes: [image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, wirePCSSShootDownload20260523] }
   "0x100a": { name: GetThumb,             owner: standard-ptp, modes: [image-transfer], connections: [app, wireless-tether], evidence: [docImageTransfer, wirePCSSShootDownload20260523] }
   "0x100b": { name: DeleteObject,         owner: standard-ptp, modes: [image-transfer], connections: [wireless-tether], evidence: [wirePCSSShootDownload20260523] }
+  # wireAppPostview describes the postview sequence on the app connection only.
   "0x100e": { name: InitiateCapture,      owner: standard-ptp, modes: [shooting/stills], connections: [app, wireless-tether], emits: ["0xc001"], evidence: [wireAppPostview, docLiveControls, wireTetherCaps20260527] }
   "0x1014": { name: GetDevicePropDesc,    owner: standard-ptp, modes: [shooting], connections: [app, wireless-tether], evidence: [wireTetherCaps20260527] }
   "0x1015": { name: GetDevicePropValue,   owner: standard-ptp, modes: [shooting, image-transfer, reserved-photo-receive], connections: [app, wireless-tether], evidence: [docImageTransfer, wireAutoImageTransfer, wireTetherCaps20260527, wirePCSSShootDownload20260523] }

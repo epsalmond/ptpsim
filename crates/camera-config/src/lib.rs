@@ -3112,6 +3112,123 @@ operations:
     }
 
     #[test]
+    fn postview_contract_rejects_invalid_declarations() {
+        let valid = r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app:
+    kind: ptpip
+    modes: [stills]
+    postview:
+      mode: stills
+      selector: { property: "0xd001", value: 1 }
+      captureOp: "0x100e"
+      captureParams: [0, 0]
+      readOp: "0x9022"
+      fixture: jpeg640x480
+      eventTransactionId: 1
+      pending: { code: "0xc004", delayMs: 1, counterOffset: 1 }
+      ready: { code: "0xc001", delayMs: 2, counterOffset: 1 }
+      complete: { code: "0x400d", delayMs: 1, counterOffset: 1 }
+modes:
+  stills: {}
+  video: {}
+properties:
+  "0xd001": { name: selector, type: u16 }
+operations:
+  "0x100e": { name: Capture }
+  "0x1009": { name: GetObject }
+  "0x9022": { name: ReadPreview }
+events:
+  "0xc004": { name: Pending }
+  "0xc001": { name: Ready }
+  "0x400d": { name: Complete }
+"#;
+        CameraManifest::from_yaml(valid).unwrap();
+
+        let selector_error = "requires a declared scalar numeric selector property";
+        let operation_error = "requires distinct executable capture and read operations";
+        let read_error = "requires a parameterless vendor read without another handler";
+        let cases = [
+            (
+                "mode: stills",
+                "mode: video",
+                "requires a declared connection mode",
+            ),
+            (
+                r#"property: "0xd001""#,
+                r#"property: "0xd002""#,
+                selector_error,
+            ),
+            ("type: u16", "type: str", selector_error),
+            (
+                r#"readOp: "0x9022""#,
+                r#"readOp: "0x100e""#,
+                operation_error,
+            ),
+            (
+                r#"readOp: "0x9022""#,
+                r#"readOp: "0x9023""#,
+                operation_error,
+            ),
+            (
+                "name: ReadPreview",
+                "name: ReadPreview, kind: advertisedOnly",
+                operation_error,
+            ),
+            (
+                "name: ReadPreview",
+                "name: ReadPreview, connections: [tether]",
+                operation_error,
+            ),
+            (
+                "name: ReadPreview",
+                "name: ReadPreview, modes: [video]",
+                operation_error,
+            ),
+            (r#"readOp: "0x9022""#, r#"readOp: "0x1009""#, read_error),
+            (
+                "name: ReadPreview",
+                "name: ReadPreview, params: [0]",
+                read_error,
+            ),
+            (
+                "name: ReadPreview",
+                r#"name: ReadPreview, handler: property.step, property: "0xd001""#,
+                read_error,
+            ),
+            (
+                "delayMs: 2",
+                "delayMs: 1",
+                "requires pending.delayMs to precede ready.delayMs",
+            ),
+            (
+                r#"code: "0x400d""#,
+                r#"code: "not-hex""#,
+                "has an invalid event code",
+            ),
+            (
+                r#"code: "0x400d""#,
+                r#"code: "0x400e""#,
+                "requires each event to be declared",
+            ),
+        ];
+        for (original, replacement, detail) in cases {
+            let invalid = valid.replacen(original, replacement, 1);
+            let err = CameraManifest::from_yaml(&invalid).expect_err(replacement);
+            let ManifestError::Contract(message) = err else {
+                panic!("{replacement}: expected a contract error, got {err}");
+            };
+            assert_eq!(
+                message,
+                format!("connections.app.postview {detail}"),
+                "{replacement}"
+            );
+        }
+    }
+
+    #[test]
     fn object_size_handler_requires_its_block_and_vice_versa() {
         let missing_block = r#"
 schema: camera-config/v1

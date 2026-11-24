@@ -22,9 +22,12 @@ trailing parameters were zero. The relation between the counters and
 command transaction IDs varied across takes.
 
 Host timestamps include transport and recording latency. One `0xC004`
-arrived before the shutter acknowledgment. The simulator uses the first
-take's representative 145 ms and 538 ms delays after the shutter reply, and
-359 ms after the postview read reply. It serves a synthetic grayscale
+arrived before the shutter acknowledgment. In the first take, the shutter
+reply arrived 50 ms after the shutter request. The postview read reply arrived
+24 ms after the read request, 625 ms after the shutter request. The
+simulator uses that take's 145 ms and 538 ms delays after the shutter reply,
+and the 359 ms from the postview read reply to the completion event at 984 ms
+after the shutter request. The simulator serves a synthetic grayscale
 fixture and reports that fixture's byte length. The synthetic counters use
 the causative request transaction ID plus one. The source of the camera's
 postview pixels remains unknown.
