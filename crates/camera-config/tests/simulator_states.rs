@@ -434,3 +434,57 @@ fn state_responses_must_be_ptp_response_codes() {
         load(&state(accepted));
     }
 }
+
+#[test]
+fn reachability_follows_the_dispatch_availability_rule() {
+    // The catalog limits GetDevicePropValue to `shoot` and OpenSession to
+    // `tether`, but the dispatcher ignores the mode axis for property access
+    // and never gates session operations, so both states are reachable.
+    let manifest = BASE.replace(
+        r#"  "0x9006": { name: VendorAnywhere }"#,
+        r#"  "0x9006": { name: VendorAnywhere }
+  "0x1015": { name: GetDevicePropValue, modes: [shoot], connections: [app] }
+  "0x1002": { name: OpenSession, connections: [tether] }"#,
+    );
+    let loaded = load(&format!(
+        "{manifest}states:
+  readRefused:
+    summary: s
+    responses:
+      - {{ operation: \"0x1015\", response: \"0x2019\", connections: [app], modes: [browse] }}
+    evidence: [docCondition]
+  cameraOff:
+    summary: s
+    responses:
+      - {{ operation: \"0x1002\", response: \"0x2019\", connections: [app] }}
+    evidence: [docCondition]
+"
+    ));
+    let none = camera_config::PropView::new();
+    assert_eq!(
+        loaded.dispatch_availability("app", Some("browse"), 0x1015, &none),
+        camera_config::Availability::Available
+    );
+    assert_eq!(
+        loaded.dispatch_availability("app", None, 0x1002, &none),
+        camera_config::Availability::Available
+    );
+    assert_eq!(
+        loaded.dispatch_availability("app", Some("shoot"), 0x9001, &none),
+        camera_config::Availability::WrongMode
+    );
+    // The property-access exemption covers only the mode axis.
+    let message = contract_error(&format!(
+        "{manifest}states:
+  readRefused:
+    summary: s
+    responses:
+      - {{ operation: \"0x1015\", response: \"0x2019\", connections: [tether] }}
+    evidence: [docCondition]
+"
+    ));
+    assert!(
+        message.contains("operation '0x1015' is unavailable"),
+        "{message}"
+    );
+}

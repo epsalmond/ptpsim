@@ -685,3 +685,73 @@ fn without_the_shipped_state_enumeration_proceeds_past_the_prime() {
     assert_eq!(counts[&0x9053], 1, "{counts:?}");
     assert!(counts[&GET_DEVICE_PROP_VALUE] >= 2, "{counts:?}");
 }
+
+/// Property-access and session operations follow the dispatcher's own
+/// availability rule (MANIFEST_SCHEMA §11.32).
+const DISPATCH_RULE_MANIFEST: &str = r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TEST }
+evidence:
+  docCondition: { kind: doc, path: "evidence/CONDITION.md" }
+modes:
+  browse:
+    detect: { prop: "0xd001", eq: 1 }
+  shoot:
+    detect: { prop: "0xd001", eq: 2 }
+connections:
+  app:
+    kind: ptpip-app
+    bindings: { command: 55740 }
+operations:
+  "0x1002": { name: OpenSession, connections: [app] }
+  "0x1015": { name: GetDevicePropValue, modes: [shoot], connections: [app] }
+properties:
+  "0xd001": { name: selector, type: u16, access: readWrite }
+states:
+  readRefused:
+    summary: Property reads are refused in browse.
+    responses:
+      - { operation: "0x1015", response: "0x2019", connections: [app], modes: [browse] }
+    evidence: [docCondition]
+  cameraOff:
+    summary: The camera refuses to open a session.
+    responses:
+      - { operation: "0x1002", response: "0x2019" }
+    evidence: [docCondition]
+"#;
+
+#[test]
+fn mode_scoped_state_on_a_property_read_answers_in_its_mode() {
+    let manifest = CameraManifest::from_yaml(DISPATCH_RULE_MANIFEST).expect("manifest loads");
+    let (mut engine, _dir) = engine_for(manifest);
+    enter(&mut engine, "readRefused");
+    let mut wire = Wire::new();
+    wire.open(&mut engine);
+    wire.select(&mut engine, 1);
+    assert_eq!(
+        wire.code(&mut engine, GET_DEVICE_PROP_VALUE, vec![0xd001]),
+        Some(DEVICE_BUSY)
+    );
+    wire.select(&mut engine, 2);
+    assert_eq!(
+        wire.code(&mut engine, GET_DEVICE_PROP_VALUE, vec![0xd001]),
+        Some(OK)
+    );
+}
+
+#[test]
+fn state_on_open_session_applies_before_any_session_exists() {
+    let manifest = CameraManifest::from_yaml(DISPATCH_RULE_MANIFEST).expect("manifest loads");
+    let (mut engine, _dir) = engine_for(manifest);
+    enter(&mut engine, "cameraOff");
+    let mut wire = Wire::new();
+    assert_eq!(
+        wire.code(&mut engine, OPEN_SESSION, vec![1]),
+        Some(DEVICE_BUSY)
+    );
+    assert!(!engine.state().session_open);
+    engine
+        .apply_state_overlay(&states(&[("cameraOff", false)]))
+        .unwrap();
+    wire.open(&mut engine);
+}

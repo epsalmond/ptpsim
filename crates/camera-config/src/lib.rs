@@ -774,8 +774,9 @@ fn modes_nest(a: &str, b: &str) -> bool {
     a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
 }
 
-/// Whether the operation's catalog entry lets the engine dispatch it on at
-/// least one declared connection and mode the response covers. A `requires`
+/// Whether the engine's dispatch rule ([`CameraManifest::dispatch_availability`])
+/// lets the operation through on at least one declared connection and mode
+/// the response covers. A `requires`
 /// predicate is runtime state, so `Blocked` still counts as reachable. A
 /// response without `modes` also applies before mode detection.
 fn state_response_reachable(
@@ -805,26 +806,21 @@ fn state_response_reachable(
             Availability::Available | Availability::Blocked
         )
     };
+    let available = |connection: &str, mode: Option<&str>| {
+        dispatchable(manifest.dispatch_availability(
+            connection,
+            mode,
+            operation,
+            &no_observed_values,
+        ))
+    };
     connections.iter().any(|connection| {
-        let in_any_mode = manifest
+        manifest
             .modes
             .keys()
             .filter(|mode| query::mode_matches(&response.modes, mode))
-            .any(|mode| {
-                dispatchable(manifest.operation_available(
-                    connection,
-                    mode,
-                    operation,
-                    &no_observed_values,
-                ))
-            });
-        in_any_mode
-            || (response.modes.is_empty()
-                && dispatchable(manifest.operation_available_predetect(
-                    connection,
-                    operation,
-                    &no_observed_values,
-                )))
+            .any(|mode| available(connection, Some(mode)))
+            || (response.modes.is_empty() && available(connection, None))
     })
 }
 

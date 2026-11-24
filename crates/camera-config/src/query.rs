@@ -435,6 +435,43 @@ impl CameraManifest {
         self.evaluate_availability(connection, Some(mode_path), code, observed)
     }
 
+    /// Availability exactly as the simulator's dispatcher applies the catalog
+    /// (#407). `mode` is the detected mode, or `None` before detection. An
+    /// operation absent from the catalog is not gated. `GetDeviceInfo`,
+    /// `OpenSession`, and `CloseSession` are session bootstrap operations a
+    /// camera answers regardless of catalog context. The three property-access
+    /// operations skip the mode axis: the property surface is modeled per
+    /// property (`access`, `requiresGate`), and the catalog's mode rows for
+    /// those standard operations are transport observations, not refusals.
+    /// The engine and the load-time simulator-state check both use this rule.
+    pub fn dispatch_availability(
+        &self,
+        connection: &str,
+        mode: Option<&str>,
+        code: u16,
+        observed: &PropView,
+    ) -> Availability {
+        use ptp_core::codes::op;
+        if self.operation(code).is_none()
+            || matches!(
+                code,
+                op::GET_DEVICE_INFO | op::OPEN_SESSION | op::CLOSE_SESSION
+            )
+        {
+            return Availability::Available;
+        }
+        let property_access = matches!(
+            code,
+            op::GET_DEVICE_PROP_DESC | op::GET_DEVICE_PROP_VALUE | op::SET_DEVICE_PROP_VALUE
+        );
+        match mode {
+            Some(mode) if !property_access => {
+                self.operation_available(connection, mode, code, observed)
+            }
+            _ => self.operation_available_predetect(connection, code, observed),
+        }
+    }
+
     /// Availability before any workflow mode is detected: the connection,
     /// kind, and `requires` axes still gate, but the mode axis is
     /// unconstrained (#407). Some transports never flip a mode selector at

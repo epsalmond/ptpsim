@@ -1151,14 +1151,9 @@ impl Engine {
         // and `requires` resolve before any handler runs, so the sim refuses
         // out-of-context ops like the persona-gated real camera. Session
         // lifecycle and device identity are bootstrap ops a camera answers
-        // regardless of catalog context.
-        if !matches!(
-            req.code,
-            op::OPEN_SESSION | op::CLOSE_SESSION | op::GET_DEVICE_INFO
-        ) {
-            if let Some(response) = self.operation_availability_error(req.code) {
-                return Self::err(tid, response);
-            }
+        // regardless of catalog context; the shared rule exempts them.
+        if let Some(response) = self.operation_availability_error(req.code) {
+            return Self::err(tid, response);
         }
 
         // An active simulator state answers with its declared response, as a
@@ -1976,33 +1971,18 @@ impl Engine {
         op.is_silent_refusal(&self.connection, self.disposition_mode(), &observed)
     }
 
-    /// The response refusing a cataloged operation that is unavailable in the
-    /// current connection/mode/state, or `None` when it may proceed (#407).
-    /// Operations absent from the catalog are not gated. The mode axis applies
-    /// only once a mode is detected; before that, connection, kind, and
-    /// `requires` still gate, but the sim doesn't refuse ops off a guessed
-    /// fallback mode (PCSS never flips a selector at all). The three
-    /// property-access ops skip the mode axis entirely: the property surface
-    /// is modeled per property (`access`, `requiresGate`), and the catalog's
-    /// mode rows for those standard ops are transport observations, not
-    /// camera refusals.
+    /// The response refusing an operation the catalog makes unavailable in the
+    /// current connection, detected mode, and state, or `None` when it may
+    /// proceed (#407). The rule itself is shared with the manifest loader:
+    /// see [`CameraManifest::dispatch_availability`].
     fn operation_availability_error(&self, code: u16) -> Option<u16> {
-        self.manifest.operation(code)?;
         let observed = self.observed_view();
-        let property_access_op = matches!(
+        match self.manifest.dispatch_availability(
+            &self.connection,
+            self.state.active_mode.as_deref(),
             code,
-            op::GET_DEVICE_PROP_DESC | op::GET_DEVICE_PROP_VALUE | op::SET_DEVICE_PROP_VALUE
-        );
-        let availability = match self.state.active_mode.as_deref() {
-            Some(mode) if !property_access_op => {
-                self.manifest
-                    .operation_available(&self.connection, mode, code, &observed)
-            }
-            _ => self
-                .manifest
-                .operation_available_predetect(&self.connection, code, &observed),
-        };
-        match availability {
+            &observed,
+        ) {
             camera_config::Availability::Available => None,
             // A failed `requires` prerequisite is a runtime refusal, not an
             // out-of-catalog one.
