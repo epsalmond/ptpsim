@@ -3227,8 +3227,6 @@ properties:
     });
 }
 
-/// Live-view smoke: the declared operation controls TCP availability, then
-/// frames flow once the initiator reaches Phase::Streaming.
 #[tokio::test(start_paused = true)]
 async fn service_applies_manifest_push_stream_timing() {
     use ptp_core::codes::op as code;
@@ -3239,7 +3237,7 @@ async fn service_applies_manifest_push_stream_timing() {
     let jpeg = b"\xff\xd8\xff\xe0FRAME\xff\xd9";
     std::fs::write(liveview.path().join("frame.jpg"), jpeg).unwrap();
     let manifest_yaml = real_gfx_manifest()
-        .replace("everyMs: 13000", "everyMs: 64")
+        .replace("everyMs: 13000", "everyMs: 80")
         .replace("durationMs: 1200", "durationMs: 48");
     let server = Server::bind(Config {
         instance_id: "push-timing".into(),
@@ -3264,7 +3262,7 @@ async fn service_applies_manifest_push_stream_timing() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(server.run(shutdown_rx));
 
-    // Blocking socket I/O prevents Tokio from advancing the clock implicitly.
+    // Tokio inhibits automatic clock advancement while the spawn_blocking task runs.
     tokio::task::spawn_blocking(move || {
         let clock = tokio::runtime::Handle::current();
         let advance = |ms| clock.block_on(tokio::time::advance(Duration::from_millis(ms)));
@@ -3280,30 +3278,34 @@ async fn service_applies_manifest_push_stream_timing() {
         let frame = read_frame_lv(&mut stream);
         assert_eq!(frame.frame_counter, 0);
         assert_eq!(frame.jpeg, jpeg);
-        for counter in 1..4 {
+        for counter in 1..5 {
             advance(16);
             assert_eq!(read_frame_lv(&mut stream).frame_counter, counter);
         }
 
-        advance(16);
+        // Wake 2 ms after the 80 ms pause starts.
+        advance(18);
         stream
             .set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
         assert_read_timeout(&mut stream);
-        advance(32);
+        advance(30);
         assert_read_timeout(&mut stream);
 
         advance(16);
         stream.set_read_timeout(read_timeout).unwrap();
-        assert_eq!(read_frame_lv(&mut stream).frame_counter, 4);
-        advance(16);
+        assert_eq!(read_frame_lv(&mut stream).frame_counter, 5);
+        // The overdue 144 ms tick arrives after the second pause starts at 160 ms.
+        advance(33);
         stream
             .set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
         assert_read_timeout(&mut stream);
-        advance(48);
+        advance(31);
+        assert_read_timeout(&mut stream);
+        advance(16);
         stream.set_read_timeout(read_timeout).unwrap();
-        assert_eq!(read_frame_lv(&mut stream).frame_counter, 5);
+        assert_eq!(read_frame_lv(&mut stream).frame_counter, 6);
     })
     .await
     .unwrap();
@@ -3312,6 +3314,8 @@ async fn service_applies_manifest_push_stream_timing() {
     handle.await.unwrap();
 }
 
+/// Live-view smoke: the declared operation controls TCP availability, then
+/// frames flow once the initiator reaches Phase::Streaming.
 #[test]
 fn service_streams_liveview_after_open_capture() {
     let _tmp_card = tmp_card();

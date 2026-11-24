@@ -1650,7 +1650,15 @@ async fn stream_liveview(
     let interval_ms = timing.map_or(DEFAULT_FRAME_INTERVAL_MS, |timing| {
         u64::from(timing.frame_interval_ms.get())
     });
-    let pause = timing.and_then(|timing| timing.periodic_pause);
+    let pause = timing
+        .and_then(|timing| timing.periodic_pause)
+        .map(|pause| {
+            let period_ms = u64::from(pause.every_ms.get()).div_ceil(interval_ms) * interval_ms;
+            (
+                Duration::from_millis(period_ms),
+                Duration::from_millis(u64::from(pause.duration_ms.get())),
+            )
+        });
     let mut pause_window = None;
     let mut tick = tokio::time::interval(Duration::from_millis(interval_ms));
     if timing.is_some() {
@@ -1660,25 +1668,25 @@ async fn stream_liveview(
     let mut frame_counter = 0u32;
     loop {
         tokio::select! {
-            _ = tick.tick() => {
+            tick_at = tick.tick() => {
                 if !matches!(engine.lock().await.phase(), Phase::Streaming) {
                     pause_window = None;
                     continue;
                 }
-                if let Some(pause) = pause {
-                    let now = Instant::now();
-                    let period = Duration::from_millis(u64::from(pause.every_ms.get()));
-                    let (next_pause_at, resume_at) = pause_window.get_or_insert((now + period, None));
-                    if let Some(deadline) = *resume_at {
-                        if now < deadline {
-                            continue;
-                        }
-                        *resume_at = None;
-                    } else if now >= *next_pause_at {
-                        *resume_at = Some(now + Duration::from_millis(u64::from(pause.duration_ms.get())));
-                        *next_pause_at = now + period;
+                if let Some((period, duration)) = pause {
+                    let (next_pause_at, resume_at) = pause_window.get_or_insert((tick_at + period, None));
+                    if resume_at.is_some_and(|deadline| tick_at < deadline) {
                         continue;
                     }
+                    // Skip can return a tick scheduled before the current pause boundary.
+                    let overdue = tick_at < *next_pause_at && Instant::now() >= *next_pause_at;
+                    if overdue || (resume_at.is_none() && tick_at >= *next_pause_at) {
+                        let pause_at = tick_at.max(*next_pause_at);
+                        *resume_at = Some(pause_at + duration);
+                        *next_pause_at = pause_at + period;
+                        continue;
+                    }
+                    *resume_at = None;
                 }
                 // Lock → pull frame → guard drops at end of statement; the
                 // network write below never executes under either mutex.
