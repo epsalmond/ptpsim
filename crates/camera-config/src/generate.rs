@@ -1776,10 +1776,12 @@ pub fn apply_review(
     // when it loaded, so a failing written entry points at its writers.
     for ((kind, code), writers) in &entry_writers {
         if let Err(error) = require_valid_entry(&manifest, *kind, code) {
-            let responsible = responsible_writers(base, proposal, review, (*kind, code), writers);
+            let error = error.to_string();
+            let responsible =
+                responsible_writers(base, proposal, review, (*kind, code), writers, &error);
             return Err(name_candidates(
                 &responsible,
-                GenerationError::ApplyConflict(error.to_string()),
+                GenerationError::ApplyConflict(error),
             ));
         }
     }
@@ -1883,18 +1885,29 @@ fn require_valid_entry(
     }
 }
 
-/// The writers of a failing entry that caused its failure. A writer counts
-/// when rejecting it, with every other decision unchanged, leaves the entry
-/// valid. It also counts when the review then fails to apply, because another
-/// accepted candidate depends on it and its part cannot be ruled out. If no
-/// single rejection clears the failure, for example when two writers each
-/// break the entry on their own, every writer is named.
+/// The writers of a failing entry that caused the reported error. Each writer
+/// is rejected in turn, with every other decision unchanged, and the review is
+/// applied again: one re-apply per writer, run only on this failure path. A
+/// writer is named when its rejection clears the entry's error or changes it.
+/// When two writers each break the entry on their own, only the one behind the
+/// reported error is named. A rejection that stops the review from applying
+/// (another accepted candidate depends on the writer) tells nothing, so that
+/// writer is left out.
+///
+/// When no rejection clears or changes the error, every writer is named, and
+/// that list can include writers that did not contribute. This happens when
+/// two writers set the same field to the same breaking value, or when the
+/// only responsible writers are ones other candidates depend on. A writer
+/// that did not contribute can also be named when its rejection exposes a
+/// different error in the same entry, for example a base descriptor that no
+/// longer matches an accepted type.
 fn responsible_writers<'a>(
     base: &CameraManifest,
     proposal: &Proposal,
     review: &ProposalReview,
     (kind, code): (EntryKind, &str),
     writers: &BTreeSet<&'a str>,
+    error: &str,
 ) -> Vec<&'a str> {
     if writers.len() > 1 {
         let responsible = writers
@@ -1905,10 +1918,12 @@ fn responsible_writers<'a>(
                 without
                     .decisions
                     .insert((*id).to_string(), ReviewDisposition::Reject);
-                match apply_accepted(base, proposal, &without) {
-                    Ok((manifest, _)) => require_valid_entry(&manifest, kind, code).is_ok(),
-                    Err(_) => true,
-                }
+                apply_accepted(base, proposal, &without).is_ok_and(|(manifest, _)| {
+                    match require_valid_entry(&manifest, kind, code) {
+                        Ok(()) => true,
+                        Err(remaining) => remaining.to_string() != error,
+                    }
+                })
             })
             .collect::<Vec<_>>();
         if !responsible.is_empty() {
@@ -3940,6 +3955,99 @@ properties:
             "{error}"
         );
         assert!(error.contains(member_type_change), "{error}");
+        assert!(!error.contains(payload_writer), "{error}");
+    }
+
+    /// A base with payload property 0xd212 whose members are `members`, plus
+    /// the type of each base member property.
+    fn payload_base(members: &str, member_properties: &str) -> CameraManifest {
+        CameraManifest::from_yaml(&format!(
+            r#"
+schema: camera-config/v1
+camera: {{ manufacturer: EXAMPLE, model: MODEL 1, firmware: "1.0" }}
+properties:
+  "0xd212":
+    name: liveStatus
+    type: u8a
+    access: readOnly
+    payload:
+      form: recordStream
+      countWidth: 2
+      record: {{ codeWidth: 2, valueWidth: 4 }}
+      members: {members}
+{member_properties}
+"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn writer_that_others_depend_on_is_not_named_without_evidence() {
+        // 0xd230 is a fixed-width member, so its new type cannot break the
+        // payload. Rejecting it stops its value row from applying, which says
+        // nothing about the payload failure.
+        let base = payload_base(
+            r#"[{ code: "0xd22f", encoding: { kind: ptpString } },
+                { code: "0xd230", encoding: { kind: fixed, width: 4 } }]"#,
+            r#"  "0xd22f": { name: statusText, type: str }"#,
+        );
+        let unaffected_member = semantic_capability(
+            "unaffected",
+            2,
+            serde_json::json!({
+                "type": "property", "code": "0xd230", "supported": true,
+                "propertyType": "u16", "access": "readOnly",
+                "valueRows": [{
+                    "value": {"type": "u16", "value": 1}, "label": "one",
+                    "provenance": assertion_provenance("publicValueOne", "inference", "medium")
+                }]
+            }),
+        );
+        let proposal = propose(&[&canonical_bundle(&[
+            property_type_capability("member", 1, "0xd22f", "u16"),
+            unaffected_member,
+        ])])
+        .unwrap();
+        let member_type_change = type_candidate_id(&proposal, "0xd22f", "u16");
+        let unaffected_writer = type_candidate_id(&proposal, "0xd230", "u16");
+
+        let error = apply_review(&base, &proposal, &accept_all(&proposal))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("ptpString requires simulatorValue"),
+            "{error}"
+        );
+        assert!(error.contains(member_type_change), "{error}");
+        assert!(!error.contains(unaffected_writer), "{error}");
+    }
+
+    #[test]
+    fn independent_breaks_name_the_writer_behind_the_reported_error() {
+        // Each member type change breaks the payload on its own. The error
+        // reports the first member, so only that member's writer is named.
+        let base = payload_base(
+            r#"[{ code: "0xd22f", encoding: { kind: ptpString } },
+                { code: "0xd230", encoding: { kind: ptpString } }]"#,
+            r#"  "0xd22f": { name: statusText, type: str }
+  "0xd230": { name: otherText, type: str }"#,
+        );
+        let proposal = propose(&[&canonical_bundle(&[
+            property_type_capability("payload", 1, "0xd212", "u8a"),
+            property_type_capability("first", 2, "0xd22f", "u16"),
+            property_type_capability("second", 3, "0xd230", "u16"),
+        ])])
+        .unwrap();
+        let payload_writer = type_candidate_id(&proposal, "0xd212", "u8a");
+        let first_member = type_candidate_id(&proposal, "0xd22f", "u16");
+        let second_member = type_candidate_id(&proposal, "0xd230", "u16");
+
+        let error = apply_review(&base, &proposal, &accept_all(&proposal))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("members[0] ptpString"), "{error}");
+        assert!(error.contains(first_member), "{error}");
+        assert!(!error.contains(second_member), "{error}");
         assert!(!error.contains(payload_writer), "{error}");
     }
 
