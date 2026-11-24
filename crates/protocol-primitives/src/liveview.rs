@@ -25,7 +25,8 @@ pub fn frame_packet(jpeg: &[u8], frame_counter: u32) -> Vec<u8> {
 pub const FRAMING_ID: &str = "fuji-liveview-v1";
 
 /// Envelope fields of one packet. The reserved `u16` at `0x10` is not
-/// interpreted; callers that need it keep the raw prefix `..body_offset`.
+/// interpreted; callers that need it keep the first `HEADER_LEN` packet
+/// bytes, which contain every envelope field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Envelope {
     /// Inclusive packet length from `0x00`.
