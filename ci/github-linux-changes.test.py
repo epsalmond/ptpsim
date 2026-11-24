@@ -92,6 +92,10 @@ class SelectionTests(unittest.TestCase):
         self.add("packages/fixtures/capture.json")
         self.assert_jobs(self.select(), "workspace")
 
+    def test_fixture_generator_change_runs_workspace_fixture_check(self):
+        self.add("scripts/generate-push-frame-fixture.py")
+        self.assert_jobs(self.select(), "workspace")
+
     def test_kotlin_stub_change_runs_workspace_and_android(self):
         self.add("ci/kotlin/ExecutorBindingsStub.kt")
         self.assert_jobs(self.select(), "workspace", "kotlin", "android")

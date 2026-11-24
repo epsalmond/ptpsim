@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use camera_config::{
     generated_json_schema, proposal_json, propose, validate_bundles, CandidateAssertion,
+    ObservationLine, ProposalRecordStatus,
 };
 
 fn data(path: impl AsRef<Path>) -> String {
@@ -311,4 +312,250 @@ fn proposal_preserves_scope_tuples_without_a_cartesian_product() {
     assert!(!scopes
         .iter()
         .any(|scope| { scope.connection == "wireless-tether" && scope.mode == "shooting/stills" }));
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
+const PUSH_FIXTURE: &str =
+    "packages/camera-config-data/observations/fixtures/positive/push-frames-multi-stream.jsonl";
+
+/// Apply `edit` to one push-frame line of the multi-stream fixture and return
+/// the diagnostic codes that reject the bundle.
+fn push_frame_rejections(line: usize, edit: impl FnOnce(&mut serde_json::Value)) -> Vec<String> {
+    let fixture = data(PUSH_FIXTURE);
+    let mut lines = fixture.lines().map(str::to_string).collect::<Vec<_>>();
+    let mut record: serde_json::Value = serde_json::from_str(&lines[line]).unwrap();
+    edit(&mut record);
+    lines[line] = serde_json::to_string(&record).unwrap();
+    let report = validate_bundles(&[&lines.join("\n")]).expect_err("edited bundle validated");
+    report
+        .dispositions
+        .into_iter()
+        .filter(|disposition| disposition.code != "O000")
+        .map(|disposition| disposition.code)
+        .collect()
+}
+
+#[test]
+fn multi_stream_push_frames_validate_and_reach_the_proposal_as_evidence() {
+    let fixture = data(PUSH_FIXTURE);
+    let validated = validate_bundles(&[&fixture]).expect("push-frame fixture validates");
+    let frames = validated
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::PushFrame(frame) => Some(frame),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(frames.len(), 6);
+    let streams = frames
+        .iter()
+        .map(|frame| (frame.connection_instance.as_str(), frame.stream.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(streams.len(), 2, "fixture spans two streams");
+    for frame in &frames {
+        assert!(frame.body.payload.inline_hex.is_none());
+        assert_eq!(frame.envelope.header.length, 18);
+        assert_eq!(
+            frame.envelope.gap_sha256.is_some(),
+            frame.envelope.body_offset > frame.envelope.header.length,
+            "a gap is hashed exactly when it exists"
+        );
+        let last = frame.host_read.last_read.as_ref().expect("last read");
+        assert_eq!(last.clock, frame.host_read.first_read.clock);
+        assert!(last.value >= frame.host_read.first_read.value);
+        assert_eq!(
+            frame
+                .body
+                .image
+                .as_ref()
+                .map(|image| (image.width, image.height)),
+            Some((640, 480))
+        );
+    }
+
+    assert_eq!(
+        frames
+            .iter()
+            .map(|frame| frame.frame_counter)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 0, 1, 3].map(Some),
+        "the second stream skips one counter value"
+    );
+    let gapped = frames
+        .iter()
+        .filter(|frame| frame.envelope.gap_sha256.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(gapped.len(), 1);
+    assert_eq!(gapped[0].envelope.body_offset, 22);
+    assert_eq!(
+        gapped[0].envelope.gap_sha256.as_deref(),
+        Some(sha256_hex(&[0, 1, 2, 3]).as_str())
+    );
+
+    let proposal = propose(&[&fixture]).expect("push frames reach generator intake");
+    let frame_identities = frames
+        .iter()
+        .map(|frame| format!("{}:{}", frame.common.run_id, frame.common.record_id))
+        .collect::<std::collections::BTreeSet<_>>();
+    let dispositions = proposal
+        .record_dispositions
+        .iter()
+        .filter(|disposition| frame_identities.contains(&disposition.identity))
+        .collect::<Vec<_>>();
+    assert_eq!(dispositions.len(), 6);
+    assert!(dispositions.iter().all(|disposition| {
+        disposition.status == ProposalRecordStatus::EvidenceOnly
+            && disposition.candidate_ids.is_empty()
+    }));
+}
+
+#[test]
+fn push_frame_validation_rejects_retained_bytes_and_incoherent_frames() {
+    // Image bytes stay outside the bundle.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            let body = [0u8; 30];
+            record["body"]["payload"]["inlineHex"] = serde_json::json!(body
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>());
+        }),
+        ["O083", "O140"]
+    );
+    // The envelope header must be the exact inline packet prefix.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["header"]["inlineHex"] = serde_json::Value::Null;
+        }),
+        ["O084", "O141"]
+    );
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["bodyOffset"] = serde_json::json!(17);
+            record["envelope"]["declaredLength"] = serde_json::json!(47);
+        }),
+        ["O141"]
+    );
+    // The body ends exactly at the declared packet length.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["declaredLength"] = serde_json::json!(40);
+        }),
+        ["O142"]
+    );
+    // Host read times name declared clocks and cannot run backward.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["hostRead"]["firstRead"]["clock"] = serde_json::json!("wall");
+        }),
+        ["O143"]
+    );
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["hostRead"]["lastRead"]["value"] = serde_json::json!(1);
+        }),
+        ["O144"]
+    );
+    // One sequence position per stream.
+    assert_eq!(
+        push_frame_rejections(2, |record| {
+            record["sequence"] = serde_json::json!(0);
+        }),
+        ["O145", "O145"]
+    );
+    // Structural geometry is nonzero.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["body"]["image"]["width"] = serde_json::json!(0);
+        }),
+        ["O146"]
+    );
+    // The header length is fixed by the named framing.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            let short = &record["envelope"]["header"]["inlineHex"].as_str().unwrap()[..16];
+            let bytes = (0..8)
+                .map(|index| u8::from_str_radix(&short[2 * index..2 * index + 2], 16).unwrap())
+                .collect::<Vec<_>>();
+            record["envelope"]["header"] = serde_json::json!({
+                "length": 8,
+                "sha256": sha256_hex(&bytes),
+                "inlineHex": short,
+            });
+        }),
+        // The shortened header also leaves ten unhashed bytes before the body.
+        ["O147", "O150"]
+    );
+    // An unknown framing has no checkable header contract.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["framing"] = serde_json::json!("example-framing-v1");
+        }),
+        ["O148"]
+    );
+    // A record must describe a body; image bytes cannot move into the header.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["declaredLength"] = serde_json::json!(18);
+            record["body"]["payload"] = serde_json::json!({
+                "length": 0,
+                "sha256": sha256_hex(&[]),
+            });
+        }),
+        ["O149"]
+    );
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            let packet = [0u8; 48];
+            let hex = packet
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            record["envelope"]["bodyOffset"] = serde_json::json!(48);
+            record["envelope"]["header"] = serde_json::json!({
+                "length": 48,
+                "sha256": sha256_hex(&packet),
+                "inlineHex": hex,
+            });
+            record["body"]["payload"] = serde_json::json!({
+                "length": 0,
+                "sha256": sha256_hex(&[]),
+            });
+        }),
+        ["O147", "O149"]
+    );
+    // The gap between header and body is hashed exactly when it is nonempty.
+    assert_eq!(
+        push_frame_rejections(6, |record| {
+            record["envelope"]
+                .as_object_mut()
+                .unwrap()
+                .remove("gapSha256");
+        }),
+        ["O150"]
+    );
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["envelope"]["gapSha256"] = serde_json::json!(sha256_hex(&[]));
+        }),
+        ["O150"]
+    );
+    assert_eq!(
+        push_frame_rejections(6, |record| {
+            record["envelope"]["gapSha256"] = serde_json::json!("not-a-hash");
+        }),
+        ["O061"]
+    );
+    // Stream identity is a stable identifier.
+    assert_eq!(
+        push_frame_rejections(1, |record| {
+            record["stream"] = serde_json::json!("live view");
+        }),
+        ["O050"]
+    );
 }

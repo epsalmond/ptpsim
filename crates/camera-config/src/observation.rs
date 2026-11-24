@@ -23,6 +23,7 @@ pub enum ObservationLine {
     HttpExchange(HttpExchangeRecord),
     Capability(Box<CapabilityRecord>),
     ActionInvocation(ActionInvocationRecord),
+    PushFrame(Box<PushFrameRecord>),
 }
 
 impl ObservationLine {
@@ -36,6 +37,7 @@ impl ObservationLine {
             Self::HttpExchange(value) => &value.common.schema,
             Self::Capability(value) => &value.common.schema,
             Self::ActionInvocation(value) => &value.common.schema,
+            Self::PushFrame(value) => &value.common.schema,
         }
     }
 
@@ -75,6 +77,7 @@ impl ObservationLine {
             Self::HttpExchange(value) => Some(&value.common),
             Self::Capability(value) => Some(&value.common),
             Self::ActionInvocation(value) => Some(&value.common),
+            Self::PushFrame(value) => Some(&value.common),
         }
     }
 }
@@ -810,6 +813,85 @@ pub enum ActionOutcome {
     Succeeded,
     Failed,
     Rejected,
+}
+
+/// One complete frame the host read from a camera-initiated push stream, such
+/// as a live-view socket. The record keeps envelope bytes, image structure, and
+/// host read timing. It never keeps image bytes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushFrameRecord {
+    #[serde(flatten)]
+    pub common: ObservationCommon,
+    pub connection_instance: String,
+    /// Stream identity within the connection instance, such as a socket role.
+    pub stream: String,
+    /// Zero-based position among all complete frames the host read from this
+    /// stream. Unique per stream within a run.
+    pub sequence: u64,
+    /// Counter decoded from the envelope, when the framing carries one. It is
+    /// recorded as sent and may skip or repeat.
+    #[serde(default)]
+    pub frame_counter: Option<u64>,
+    pub host_read: PushFrameHostRead,
+    pub envelope: PushFrameEnvelope,
+    pub body: PushFrameBody,
+}
+
+/// When the client read the frame. These are host read times, not camera
+/// timestamps: they combine camera delivery, transport, and client scheduling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushFrameHostRead {
+    /// The host read that returned the first byte of the frame packet.
+    pub first_read: ClockPoint,
+    /// The host read that returned the final byte of the frame packet.
+    #[serde(default)]
+    pub last_read: Option<ClockPoint>,
+}
+
+/// The stream framing around one body. `header` is the framing's fixed
+/// header, the first packet bytes, so fields with unknown meaning survive
+/// uninterpreted. Bytes between the header and `body_offset` are kept only as
+/// `gap_sha256`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushFrameEnvelope {
+    /// Identifier of the framing contract that parsed the packet.
+    pub framing: String,
+    /// Whole packet length declared by the envelope, envelope included.
+    pub declared_length: u64,
+    /// Packet offset where the body begins.
+    pub body_offset: u64,
+    /// The framing's fixed header bytes, always carried inline.
+    pub header: PayloadMetadata,
+    /// SHA-256 of the packet bytes between the header and `body_offset`.
+    /// Present exactly when that gap is nonempty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_sha256: Option<String>,
+}
+
+/// Bounded evidence about the frame body: length, hashes, and structure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PushFrameBody {
+    pub media_type: String,
+    /// Body metadata without inline bytes. Image bytes stay in separately
+    /// retained artifacts.
+    pub payload: PayloadMetadata,
+    #[serde(default)]
+    pub image: Option<ImageGeometry>,
+}
+
+/// Image geometry read from structural checks, without decoding samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageGeometry {
+    pub width: u32,
+    pub height: u32,
+    /// Bits per sample.
+    pub precision: u8,
+    pub components: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -368,6 +368,7 @@ impl ConnectionLifecycles {
     }
 }
 
+pub mod ble_socket;
 pub mod control;
 #[doc(hidden)]
 pub mod inbound;
@@ -535,6 +536,14 @@ pub struct Server {
     /// harmless if a smoke client connects alongside the real one).
     frames: Arc<Mutex<LoopingFrameSource>>,
     observations: ObservationRecorder,
+    /// Opt-in BLE socket (`docs/TRANSPORTS.md` "BLE socket"). Absent unless
+    /// [`Server::enable_ble_socket`] ran.
+    ble: Option<BleListener>,
+}
+
+struct BleListener {
+    listener: TcpListener,
+    socket: ble_socket::BleSocket,
 }
 
 enum AuxListener {
@@ -1238,7 +1247,56 @@ impl Server {
             metrics,
             frames,
             observations,
+            ble: None,
         })
+    }
+
+    /// Serve the BLE socket on `bind` from the scenario at `scenario`. Each
+    /// accepted connection gets a fresh responder wired to this server's
+    /// [`Self::camera_link`], so its arming and device-name writes gate the
+    /// PTP/IP init exactly as an in-process responder's would.
+    ///
+    /// The protocol is unauthenticated and can arm the PTP/IP init gate, so a
+    /// non-loopback `bind` is refused unless `allow_non_loopback` is set.
+    pub async fn enable_ble_socket(
+        &mut self,
+        bind: SocketAddr,
+        scenario: &std::path::Path,
+        allow_non_loopback: bool,
+    ) -> std::io::Result<()> {
+        if !allow_non_loopback && !bind.ip().is_loopback() {
+            return Err(invalid_config(format!(
+                "BLE socket bind {bind} is not a loopback address; the protocol is unauthenticated (--ble-allow-non-loopback overrides)"
+            )));
+        }
+        let link = self.camera_link().await;
+        let scenario = ble_socket::BleScenario::load(scenario, link)
+            .map_err(|error| invalid_config(error.to_string()))?;
+        let listener = TcpListener::bind(bind).await?;
+        self.ble = Some(BleListener {
+            listener,
+            socket: ble_socket::BleSocket::new(scenario),
+        });
+        Ok(())
+    }
+
+    pub fn ble_addr_opt(&self) -> Option<SocketAddr> {
+        self.ble
+            .as_ref()
+            .map(|ble| ble.listener.local_addr().unwrap())
+    }
+
+    /// A handle on the BLE socket's state that outlives [`Self::run`].
+    pub fn ble_socket(&self) -> Option<ble_socket::BleSocket> {
+        self.ble.as_ref().map(|ble| ble.socket.clone())
+    }
+
+    /// The BLE responder log across every connection so far, oldest first.
+    pub fn ble_log(&self) -> Vec<camera_sim::BleEvent> {
+        self.ble
+            .as_ref()
+            .map(|ble| ble.socket.log())
+            .unwrap_or_default()
     }
 
     pub fn command_addr(&self) -> SocketAddr {
@@ -1311,6 +1369,7 @@ impl Server {
             metrics,
             frames,
             observations,
+            ble,
         } = self;
         let health = control::Health {
             instance_id: config.instance_id.clone(),
@@ -1613,6 +1672,47 @@ impl Server {
             }
         };
 
+        // One BLE client at a time is served; `BleSocket::serve` answers a
+        // concurrent one with `busy`.
+        let ble_loop = {
+            let mut sub = shutdown_tx.subscribe();
+            async move {
+                let Some(BleListener { listener, socket }) = ble else {
+                    let _ = sub.recv().await;
+                    return;
+                };
+                let mut conns = tokio::task::JoinSet::new();
+                loop {
+                    tokio::select! {
+                        accepted = listener.accept() => {
+                            if let Ok((stream, peer)) = accepted {
+                                tracing::info!(target: "ble", %peer, "accepted");
+                                // The slot is held for as long as the peer is
+                                // alive, however quiet: a client may hold its
+                                // BLE link idle for a whole session. Keepalive
+                                // turns a vanished peer into a read error.
+                                let keepalive = socket2::TcpKeepalive::new()
+                                    .with_time(Duration::from_secs(30))
+                                    .with_interval(Duration::from_secs(10));
+                                if let Err(error) = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive) {
+                                    tracing::warn!(target: "ble", %peer, %error, "TCP keepalive not set");
+                                }
+                                let socket = socket.clone();
+                                let peer = peer.to_string();
+                                conns.spawn(async move {
+                                    if let Err(error) = socket.serve(stream, &peer).await {
+                                        tracing::info!(target: "ble", %error, "connection ended");
+                                    }
+                                });
+                            }
+                        }
+                        Some(_) = conns.join_next(), if !conns.is_empty() => {}
+                        _ = sub.recv() => break,
+                    }
+                }
+            }
+        };
+
         // #126/#214: spawn one state-callback push task. Startup callbacks are
         // registered up front; runtime callbacks join via POST /callbacks.
         tokio::spawn(state_callback::state_callback_loop(
@@ -1637,6 +1737,7 @@ impl Server {
             _ = liveview_loop => false,
             _ = event_loop => false,
             _ = knock_loop => false,
+            _ = ble_loop => false,
         };
         let _ = shutdown_tx.send(());
         if !command_finished {

@@ -1269,6 +1269,196 @@ steps:
 }
 
 #[tokio::test]
+async fn session_runner_records_pushed_frames_in_the_observation_bundle() {
+    let body = data("fuji/gfx100ii/gfx100ii.yaml");
+    let media = tempfile::tempdir().expect("create temporary media root");
+    let live_view = media.path().join("push-liveview");
+    std::fs::create_dir_all(&live_view).expect("create push live-view fixtures");
+    std::fs::write(
+        live_view.join("frame.jpg"),
+        [
+            0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 1, 224, 2, 128, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8, 1,
+            1, 0, 0, 63, 0, 1, 2, 3, 0xff, 0xd9,
+        ],
+    )
+    .expect("write push live-view fixture");
+    let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let server = Server::bind(Config {
+        instance_id: "camera-initiator-push-observation".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "app".into(),
+        manifest_yaml: body.clone(),
+        media_root: media.path().to_path_buf(),
+        command_bind: Some(loopback),
+        liveview_bind: Some(loopback),
+        event_bind: Some(loopback),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: loopback,
+        liveview_dir: Some(live_view),
+        state_callback: None,
+    })
+    .await
+    .expect("bind push observation simulator");
+    let body = with_loopback_ports(
+        body,
+        server.command_addr(),
+        server.event_addr_opt().expect("push event listener"),
+        server.liveview_addr_opt().expect("push live-view listener"),
+    );
+    let store = ConfigStore::from_tiers(body, Some(data("fuji/fuji.yaml")), Vec::new())
+        .expect("load push manifest tiers");
+    let plan = SessionPlan::from_yaml(
+        r#"
+schema: camera-initiator-session/v1
+steps:
+  - { id: enter-stills, kind: entry, to: shooting/stills }
+  - { id: first, kind: samplePushFrames, frameCount: 2, maxFrameBytes: 4096, maxTotalBytes: 8192, timeoutMs: 2000 }
+  - { id: second, kind: samplePushFrames, frameCount: 1, maxFrameBytes: 4096, maxTotalBytes: 4096, timeoutMs: 2000 }
+"#,
+    )
+    .expect("parse push session plan");
+    let prepared = prepare_session_plan(plan, &store, "app").expect("prepare push session plan");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+    let observation_path = media.path().join("push-observation.jsonl");
+    let trace = Arc::new(TraceWriter::with_observations(
+        TraceFormat::Jsonl,
+        Box::new(io::sink()),
+        observation_recorder(observation_path.clone(), "push-observation"),
+        "app".into(),
+        "session".into(),
+    ));
+    let transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::clone(&trace),
+    )
+    .expect("construct push transport");
+    let report = run_session_plan(
+        &prepared,
+        Arc::clone(&store),
+        NativeSessionLifecycle::new(transport),
+        trace,
+        SessionRunOptions {
+            output_dir: media.path().join("push-output"),
+            run_id: "push-observation".into(),
+            connection: "app".into(),
+            trace_path: "-".into(),
+            observation_path: observation_path.clone(),
+            runtime_params: Vec::new(),
+            handoff_timeout: Duration::from_secs(2),
+        },
+    )
+    .await
+    .expect("run push session plan");
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("join push simulator");
+
+    let retained = report.steps[1..]
+        .iter()
+        .flat_map(|step| &step.frames.as_ref().expect("push frame report").frames)
+        .collect::<Vec<_>>();
+    assert_eq!(retained.len(), 3);
+
+    let bundle = std::fs::read_to_string(observation_path).expect("read push bundle");
+    let validated = validate_bundles(&[&bundle]).expect("push bundle validates");
+    let frames = validated
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::PushFrame(frame) => Some(frame),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(frames.len(), 3, "one record per retained frame");
+    let transaction_instances = validated
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::PtpTransaction(transaction) => {
+                Some(transaction.connection_instance.as_str())
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(transaction_instances.len(), 1);
+    for (index, (frame, retained)) in frames.iter().zip(&retained).enumerate() {
+        assert!(transaction_instances.contains(frame.connection_instance.as_str()));
+        assert_eq!(frame.stream, "liveView");
+        assert_eq!(
+            frame.sequence, index as u64,
+            "sequence continues across steps"
+        );
+        assert_eq!(frame.frame_counter, Some(index as u64));
+        assert_eq!(frame.common.context.connection, "app");
+        assert_eq!(frame.common.context.mode, "shooting/stills");
+        assert_eq!(frame.envelope.framing, "fuji-liveview-v1");
+        assert_eq!(frame.envelope.body_offset, 18);
+        assert_eq!(frame.envelope.header.length, 18);
+        assert_eq!(frame.envelope.gap_sha256, None);
+        assert_eq!(
+            frame.envelope.declared_length,
+            18 + frame.body.payload.length
+        );
+        let header = frame
+            .envelope
+            .header
+            .inline_hex
+            .as_deref()
+            .expect("header bytes");
+        assert_eq!(
+            &header[16..24],
+            format!("{:08x}", (index as u32).swap_bytes())
+        );
+        assert_eq!(frame.body.media_type, "image/jpeg");
+        assert!(
+            frame.body.payload.inline_hex.is_none(),
+            "no image bytes in bundle"
+        );
+        assert_eq!(frame.body.payload.sha256, retained.sha256);
+        assert_eq!(frame.body.payload.length, retained.length);
+        let image = frame.body.image.expect("image geometry");
+        assert_eq!((image.width, image.height), (640, 480));
+        assert_eq!((image.precision, image.components), (8, 1));
+        let first = &frame.host_read.first_read;
+        let last = frame.host_read.last_read.as_ref().expect("last read");
+        assert_eq!(first.clock, "process-monotonic");
+        assert_eq!(last.clock, "process-monotonic");
+        assert!(first.value <= last.value);
+        assert!(last.value <= frame.common.time.value);
+    }
+    assert!(frames
+        .windows(2)
+        .all(|pair| pair[0].host_read.first_read.value <= pair[1].host_read.first_read.value));
+
+    let proposal =
+        camera_config::propose(&[&bundle]).expect("push bundle reaches generator intake");
+    let identities = frames
+        .iter()
+        .map(|frame| format!("{}:{}", frame.common.run_id, frame.common.record_id))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        proposal
+            .record_dispositions
+            .iter()
+            .filter(|disposition| identities.contains(&disposition.identity)
+                && disposition.status == camera_config::ProposalRecordStatus::EvidenceOnly)
+            .count(),
+        3
+    );
+}
+
+#[tokio::test]
 async fn native_transport_runs_pcss_rendezvous_retry_and_action() {
     let body = data("fuji/gfx100ii/gfx100ii.yaml");
     let media = temp_media_root();

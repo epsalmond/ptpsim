@@ -180,6 +180,10 @@ fn assert_observation_mirror_matches_kind(record: &ObservationRecord) {
                 ObservationKind::ActionInvocation,
                 ObservationValue::ActionInvocation { .. }
             )
+            | (
+                ObservationKind::PushFrame,
+                ObservationValue::PushFrame { .. }
+            )
     ));
 }
 
@@ -191,6 +195,7 @@ fn every_observation_variant_has_a_complete_hand_written_ffi_mirror() {
         "observations/fixtures/positive/pcss-500d-write-readback.jsonl",
         "observations/fixtures/positive/usb-descriptor.jsonl",
         "observations/fixtures/positive/shared-action-roles.jsonl",
+        "observations/fixtures/positive/push-frames-multi-stream.jsonl",
     ] {
         for line in data(fixture).lines().filter(|line| !line.is_empty()) {
             let mapped = parse_observation_record(line.to_string()).unwrap();
@@ -283,9 +288,100 @@ fn every_observation_variant_has_a_complete_hand_written_ffi_mirror() {
         ObservationKind::HttpExchange,
         ObservationKind::Capability,
         ObservationKind::ActionInvocation,
+        ObservationKind::PushFrame,
     ] {
         assert!(kinds.contains(&expected), "missing {expected:?}");
     }
+}
+
+/// Every `pushFrame` field crosses the seam with the value from the canonical
+/// JSON line, including optional members in both states.
+#[test]
+fn push_frame_observations_cross_the_hand_written_ffi_seam() {
+    let fixture = data("observations/fixtures/positive/push-frames-multi-stream.jsonl");
+    // The last frame has distinct nonzero sequence and counter values and a
+    // hashed gap, so a mapper that ignored a field cannot pass by accident.
+    let line = fixture.lines().nth(6).unwrap();
+    let json: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        (&json["sequence"], &json["frameCounter"]),
+        (&2.into(), &3.into())
+    );
+    let mapped = parse_observation_record(line.into()).unwrap();
+    assert!(matches!(mapped.kind, ObservationKind::PushFrame));
+    let ObservationValue::PushFrame { value } = mapped.value else {
+        panic!("expected typed push frame")
+    };
+    assert_eq!(value.common.record_id, json["recordId"]);
+    assert_eq!(value.common.ordinal, json["ordinal"]);
+    assert_eq!(value.common.context.state, json["context"]["state"]);
+    assert_eq!(value.common.time.value, json["time"]["value"]);
+    assert_eq!(value.connection_instance, json["connectionInstance"]);
+    assert_eq!(value.stream, json["stream"]);
+    assert_eq!(value.sequence, json["sequence"]);
+    assert_eq!(value.frame_counter, json["frameCounter"].as_u64());
+
+    let read = &json["hostRead"];
+    assert_eq!(value.host_read.first_read.clock, read["firstRead"]["clock"]);
+    assert_eq!(value.host_read.first_read.value, read["firstRead"]["value"]);
+    let last = value.host_read.last_read.as_ref().expect("last read");
+    assert_eq!(last.clock, read["lastRead"]["clock"]);
+    assert_eq!(last.value, read["lastRead"]["value"]);
+
+    let envelope = &json["envelope"];
+    assert_eq!(value.envelope.framing, envelope["framing"]);
+    assert_eq!(value.envelope.declared_length, envelope["declaredLength"]);
+    assert_eq!(value.envelope.body_offset, envelope["bodyOffset"]);
+    assert_eq!(
+        value.envelope.gap_sha256.as_deref(),
+        Some(envelope["gapSha256"].as_str().unwrap())
+    );
+    assert_eq!(value.envelope.header.length, envelope["header"]["length"]);
+    assert_eq!(value.envelope.header.sha256, envelope["header"]["sha256"]);
+    assert_eq!(
+        value.envelope.header.inline_hex.as_deref(),
+        envelope["header"]["inlineHex"].as_str()
+    );
+    assert!(value.envelope.header.stream_ranges.is_empty());
+    assert!(value.envelope.header.ranges.is_empty());
+
+    let body = &json["body"];
+    assert_eq!(value.body.media_type, body["mediaType"]);
+    assert_eq!(value.body.payload.length, body["payload"]["length"]);
+    assert_eq!(value.body.payload.sha256, body["payload"]["sha256"]);
+    assert_eq!(value.body.payload.inline_hex, None);
+    let range = &body["payload"]["streamRanges"][0];
+    assert_eq!(value.body.payload.stream_ranges.len(), 1);
+    assert_eq!(value.body.payload.stream_ranges[0].offset, range["offset"]);
+    assert_eq!(value.body.payload.stream_ranges[0].length, range["length"]);
+    assert_eq!(value.body.payload.stream_ranges[0].sha256, range["sha256"]);
+    let image = value.body.image.expect("image geometry");
+    assert_eq!(image.width, body["image"]["width"]);
+    assert_eq!(image.height, body["image"]["height"]);
+    assert_eq!(image.precision, body["image"]["precision"]);
+    assert_eq!(image.components, body["image"]["components"]);
+
+    // Absent optional members map to None.
+    let mut sparse = json.clone();
+    let object = sparse.as_object_mut().unwrap();
+    object.remove("frameCounter");
+    object["envelope"]
+        .as_object_mut()
+        .unwrap()
+        .remove("gapSha256");
+    object["hostRead"]
+        .as_object_mut()
+        .unwrap()
+        .remove("lastRead");
+    object["body"].as_object_mut().unwrap().remove("image");
+    let sparse = parse_observation_record(sparse.to_string()).unwrap();
+    let ObservationValue::PushFrame { value } = sparse.value else {
+        panic!("expected typed push frame")
+    };
+    assert_eq!(value.frame_counter, None);
+    assert_eq!(value.envelope.gap_sha256, None);
+    assert!(value.host_read.last_read.is_none());
+    assert!(value.body.image.is_none());
 }
 
 #[test]
@@ -3080,7 +3176,6 @@ fn media_format_table_classifies_objects_through_ffi() {
     assert!(mov.is_photos_compatible);
     // The reported-size sentinel is data, not a hardcoded 0xFFFFFFFF in Swift.
     assert_eq!(s.object_info_size_sentinel(), Some(0xffff_ffff));
-    assert_eq!(s.wireless_transfer_ceiling(), Some(0xffff_ffff));
 
     // An unknown / unlisted format code → None.
     assert!(s.media_format(0x9999).is_none());

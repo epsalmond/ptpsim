@@ -96,6 +96,7 @@ jobs:
           shared-key: linux-workspace
           key: ${{ hashFiles('Cargo.lock') }}
       - run: scripts/test-rustc-wrapper.sh
+      - run: python3 scripts/generate-push-frame-fixture.py --check
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked
       - run: cargo test --workspace --locked

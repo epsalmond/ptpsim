@@ -695,6 +695,102 @@
         "parameters",
         "outcome"
       ]
+    },
+    {
+      "description": "One complete frame the host read from a camera-initiated push stream, such\nas a live-view socket. The record keeps envelope bytes, image structure, and\nhost read timing. It never keeps image bytes.",
+      "type": "object",
+      "properties": {
+        "artifactRanges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRange"
+          }
+        },
+        "body": {
+          "$ref": "#/$defs/PushFrameBody"
+        },
+        "connectionInstance": {
+          "type": "string"
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionContext"
+        },
+        "envelope": {
+          "$ref": "#/$defs/PushFrameEnvelope"
+        },
+        "epistemic": {
+          "$ref": "#/$defs/EpistemicMetadata"
+        },
+        "frameCounter": {
+          "description": "Counter decoded from the envelope, when the framing carries one. It is\nrecorded as sent and may skip or repeat.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "hostRead": {
+          "$ref": "#/$defs/PushFrameHostRead"
+        },
+        "kind": {
+          "type": "string",
+          "const": "pushFrame"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "physicalContext": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "recordId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Zero-based position among all complete frames the host read from this\nstream. Unique per stream within a run.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stream": {
+          "description": "Stream identity within the connection instance, such as a socket role.",
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/ClockPoint"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "schema",
+        "runId",
+        "recordId",
+        "ordinal",
+        "context",
+        "time",
+        "epistemic",
+        "connectionInstance",
+        "stream",
+        "sequence",
+        "hostRead",
+        "envelope",
+        "body"
+      ]
     }
   ],
   "$defs": {
@@ -1421,6 +1517,42 @@
         "status"
       ]
     },
+    "ImageGeometry": {
+      "description": "Image geometry read from structural checks, without decoding samples.",
+      "type": "object",
+      "properties": {
+        "components": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "precision": {
+          "description": "Bits per sample.",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "precision",
+        "components"
+      ]
+    },
     "InventoryCompleteness": {
       "type": "string",
       "enum": [
@@ -1630,6 +1762,101 @@
       "enum": [
         "ptpIp",
         "usb"
+      ]
+    },
+    "PushFrameBody": {
+      "description": "Bounded evidence about the frame body: length, hashes, and structure.",
+      "type": "object",
+      "properties": {
+        "image": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageGeometry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "payload": {
+          "description": "Body metadata without inline bytes. Image bytes stay in separately\nretained artifacts.",
+          "$ref": "#/$defs/PayloadMetadata"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mediaType",
+        "payload"
+      ]
+    },
+    "PushFrameEnvelope": {
+      "description": "The stream framing around one body. `header` is the framing's fixed\nheader, the first packet bytes, so fields with unknown meaning survive\nuninterpreted. Bytes between the header and `body_offset` are kept only as\n`gap_sha256`.",
+      "type": "object",
+      "properties": {
+        "bodyOffset": {
+          "description": "Packet offset where the body begins.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "declaredLength": {
+          "description": "Whole packet length declared by the envelope, envelope included.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "framing": {
+          "description": "Identifier of the framing contract that parsed the packet.",
+          "type": "string"
+        },
+        "gapSha256": {
+          "description": "SHA-256 of the packet bytes between the header and `body_offset`.\nPresent exactly when that gap is nonempty.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "header": {
+          "description": "The framing's fixed header bytes, always carried inline.",
+          "$ref": "#/$defs/PayloadMetadata"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "framing",
+        "declaredLength",
+        "bodyOffset",
+        "header"
+      ]
+    },
+    "PushFrameHostRead": {
+      "description": "When the client read the frame. These are host read times, not camera\ntimestamps: they combine camera delivery, transport, and client scheduling.",
+      "type": "object",
+      "properties": {
+        "firstRead": {
+          "description": "The host read that returned the first byte of the frame packet.",
+          "$ref": "#/$defs/ClockPoint"
+        },
+        "lastRead": {
+          "description": "The host read that returned the final byte of the frame packet.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClockPoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "firstRead"
       ]
     },
     "Readback": {

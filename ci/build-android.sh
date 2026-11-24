@@ -7,7 +7,7 @@
 # Outputs (under $OUT_DIR, default `out/`):
 #
 #     android/jniLibs/<abi>/libcamera_protocol_ffi.so                (intermediate)
-#     android/kotlin/uniffi/camera_protocol_ffi/camera_protocol_ffi.kt (intermediate)
+#     android/kotlin/dev/ptpsim/cameraprotocol/camera_protocol_ffi.kt (intermediate)
 #     android/classes.jar                                            (intermediate)
 #     dist/CameraProtocolFFI-<sha8>.aar              (the publishable artifact)
 #     dist/CameraProtocolFFI-android-<sha8>.checksum         (SHA-256 of the .aar)
@@ -43,6 +43,10 @@ SHA8="$(cd "${ROOT}" && git rev-parse --short=8 HEAD 2>/dev/null || echo dev)"
 CRATE="camera-protocol-ffi"
 SO_NAME="libcamera_protocol_ffi.so"
 XCF_NAME="CameraProtocolFFI"
+# Kotlin package of the generated bindings. It must equal `package_name` under
+# `[bindings.kotlin]` in crates/camera-protocol-ffi/uniffi.toml;
+# ci/test-build-android.sh checks that they match.
+KOTLIN_PACKAGE="dev.ptpsim.cameraprotocol"
 
 # Rust target → Android ABI directory name (what jniLibs/<abi> expects).
 declare -A ABIS=(
@@ -183,8 +187,8 @@ cargo run --bin uniffi-bindgen -- generate \
     -o "${KOTLIN_DIR}" \
     "${HOST_LIB}"
 
-# uniffi writes to <out>/uniffi/<crate>/<crate>.kt. Sanity-check it landed.
-KOTLIN_FILE="${KOTLIN_DIR}/uniffi/camera_protocol_ffi/camera_protocol_ffi.kt"
+# uniffi writes to <out>/<package path>/<crate>.kt. Sanity-check it landed.
+KOTLIN_FILE="${KOTLIN_DIR}/${KOTLIN_PACKAGE//.//}/camera_protocol_ffi.kt"
 test -f "${KOTLIN_FILE}" || {
     echo "FATAL: expected ${KOTLIN_FILE}; got:" >&2
     find "${KOTLIN_DIR}" -type f >&2
@@ -232,10 +236,10 @@ for abi in "${ABIS[@]}"; do
     cp "${JNILIBS_DIR}/${abi}/${SO_NAME}" "${AAR_STAGE}/jni/${abi}/${SO_NAME}"
 done
 : > "${AAR_STAGE}/R.txt"
-cat > "${AAR_STAGE}/AndroidManifest.xml" <<'MANIFEST'
+cat > "${AAR_STAGE}/AndroidManifest.xml" <<MANIFEST
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="uniffi.camera_protocol_ffi">
+    package="${KOTLIN_PACKAGE}">
     <uses-sdk android:minSdkVersion="21" />
 </manifest>
 MANIFEST
