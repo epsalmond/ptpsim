@@ -55,7 +55,8 @@ pub use mfg_index::{
     ConnectionActivitySequence, EstablishmentPlan, EstablishmentRefinement, HostEstablishment,
     ModelMatch, NotifyCapture, Predicate, PredicateOp, ReadyReconnectCandidate,
     ReadyReconnectRecognition, Recognition, ReconnectDecision, ReconnectPolicy, ScanObservation,
-    Step, StepConfirmation, StepOptions, StepValue, Transform,
+    SessionOpenPolicy, Step, StepConfirmation, StepOptions, StepValue, Transform,
+    WifiHandoffPolicy, WifiJoinPolicy,
 };
 mod observation_ffi;
 pub use observation_ffi::*;
@@ -4105,12 +4106,6 @@ impl ConfigStore {
             .media
             .as_ref()?
             .object_info_size_sentinel
-    }
-
-    /// Deprecated compatibility alias for the former name. The value is a
-    /// reported-size sentinel, not a transfer prohibition.
-    pub fn wireless_transfer_ceiling(&self) -> Option<u64> {
-        self.object_info_size_sentinel()
     }
 }
 

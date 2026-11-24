@@ -1906,6 +1906,22 @@ struct PassiveChannel {
 pub(crate) struct FrameReader<R> {
     reader: R,
     buffered: BytesMut,
+    /// When the read that returned the first currently buffered byte ended.
+    first_buffered_read: Option<Instant>,
+    /// When the most recent read into the buffer ended.
+    last_read: Option<Instant>,
+    completed_frames: u64,
+}
+
+/// One complete frame with the host reads that delivered it.
+pub(crate) struct TimedFrame {
+    pub(crate) bytes: Vec<u8>,
+    /// Zero-based position among complete frames read by this reader.
+    pub(crate) sequence: u64,
+    /// End of the read that returned the frame's first byte.
+    pub(crate) first_read: Instant,
+    /// End of the read that returned the frame's final byte.
+    pub(crate) last_read: Instant,
 }
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
@@ -1913,9 +1929,16 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         Self {
             reader,
             buffered: BytesMut::new(),
+            first_buffered_read: None,
+            last_read: None,
+            completed_frames: 0,
         }
     }
     pub(crate) async fn read_frame(&mut self, max: usize) -> io::Result<Vec<u8>> {
+        self.read_timed_frame(max).await.map(|frame| frame.bytes)
+    }
+
+    pub(crate) async fn read_timed_frame(&mut self, max: usize) -> io::Result<TimedFrame> {
         self.fill(4).await?;
         let length = u32::from_le_bytes(self.buffered[0..4].try_into().unwrap()) as usize;
         if !(8..=max).contains(&length) {
@@ -1925,13 +1948,34 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
             ));
         }
         self.fill(length).await?;
-        Ok(self.buffered.split_to(length).to_vec())
+        let first_read = self
+            .first_buffered_read
+            .expect("a filled buffer records its first read");
+        let last_read = self
+            .last_read
+            .expect("a filled buffer records its last read");
+        let bytes = self.buffered.split_to(length).to_vec();
+        // Reads never cross a declared frame boundary, so remaining bytes can
+        // only exist after cancellation; they arrived by the latest read.
+        self.first_buffered_read = (!self.buffered.is_empty()).then_some(last_read);
+        let sequence = self.completed_frames;
+        self.completed_frames += 1;
+        Ok(TimedFrame {
+            bytes,
+            sequence,
+            first_read,
+            last_read,
+        })
     }
 
     async fn read_some(&mut self, max: usize) -> io::Result<Vec<u8>> {
         if !self.buffered.is_empty() {
             let take = max.min(self.buffered.len());
-            return Ok(self.buffered.split_to(take).to_vec());
+            let bytes = self.buffered.split_to(take).to_vec();
+            if self.buffered.is_empty() {
+                self.first_buffered_read = None;
+            }
+            return Ok(bytes);
         }
         let mut chunk = vec![0; max.min(64 * 1024)];
         let count = self.reader.read(&mut chunk).await?;
@@ -1955,6 +1999,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 
     async fn fill(&mut self, target: usize) -> io::Result<()> {
         while self.buffered.len() < target {
+            let was_empty = self.buffered.is_empty();
             let count = (&mut self.reader)
                 .take((target - self.buffered.len()) as u64)
                 .read_buf(&mut self.buffered)
@@ -1964,6 +2009,11 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                     io::ErrorKind::UnexpectedEof,
                     "socket closed during frame",
                 ));
+            }
+            let now = Instant::now();
+            self.last_read = Some(now);
+            if was_empty {
+                self.first_buffered_read = Some(now);
             }
         }
         Ok(())

@@ -87,7 +87,7 @@ Same `ConfigStore` API as iOS — the FFI surface is platform-neutral. See
 the Swift one:
 
 ```kotlin
-import uniffi.camera_protocol_ffi.ConfigStore
+import dev.ptpsim.cameraprotocol.ConfigStore
 
 val store = ConfigStore.fromManufacturerIndex(
     indexYaml = readAsset("fuji/index.yaml"),

@@ -59,6 +59,17 @@ CARGO_PROFILE="${PTPSIM_CARGO_PROFILE:-debug}"  # debug | release
 # The client application dev panel hosts the receiver at .../state; unset = no callback.
 STATE_CALLBACK="${PTPSIM_STATE_CALLBACK:-}"
 
+# Opt-in BLE socket (docs/TRANSPORTS.md "BLE socket"). Set both, e.g.
+# PTPSIM_BLE_BIND=127.0.0.1:55750
+# PTPSIM_BLE_SCENARIO=packages/fixtures/ble/gfx100ii-pair-handoff.yaml
+# Unset = no BLE listener.
+BLE_BIND="${PTPSIM_BLE_BIND:-}"
+BLE_SCENARIO="${PTPSIM_BLE_SCENARIO:-}"
+if [[ -n "$BLE_BIND" && -z "$BLE_SCENARIO" ]] || [[ -z "$BLE_BIND" && -n "$BLE_SCENARIO" ]]; then
+  echo "PTPSIM_BLE_BIND and PTPSIM_BLE_SCENARIO must be set together." >&2
+  exit 1
+fi
+
 # host:port of the command socket — what a PTP/IP client connects to.
 COMMAND_HOST="${COMMAND_BIND%:*}"
 COMMAND_PORT="${COMMAND_BIND##*:}"
@@ -129,6 +140,9 @@ fi
 if [[ -n "$STATE_CALLBACK" ]]; then
   run_args+=(--state-callback "$STATE_CALLBACK")
 fi
+if [[ -n "$BLE_BIND" ]]; then
+  run_args+=(--ble-bind "$BLE_BIND" --ble-scenario "$BLE_SCENARIO")
+fi
 
 echo
 echo "Starting ptpsim camera simulator"
@@ -141,6 +155,7 @@ echo "  control:    $HEALTH_URL"
 [[ "$PCSS_INIT_FAILS" != "0" ]] && echo "  init fails: $PCSS_INIT_FAILS"
 [[ "$PCSS_SHUTTER_ENQUEUE_COUNT" != "0" ]] && echo "  pcss queue: $PCSS_SHUTTER_ENQUEUE_COUNT per shutter"
 [[ -n "$STATE_CALLBACK" ]] && echo "  state →     $STATE_CALLBACK"
+[[ -n "$BLE_BIND" ]] && echo "  ble socket: $BLE_BIND ($BLE_SCENARIO)"
 echo "  >> Connect a PTP/IP network camera to ${COMMAND_HOST}:${COMMAND_PORT} <<"
 echo
 exec "$BIN" "${run_args[@]}"

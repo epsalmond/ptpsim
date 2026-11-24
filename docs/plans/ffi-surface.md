@@ -184,6 +184,9 @@ pub struct EstablishmentPlan {
     pub user_instruction: Option<String>,
     pub params: Vec<KeyValue>,             // knock ports, GATT char uuids, etc. (app drives I/O)
 }
+// The shipped record differs from this sketch; docs/INTEGRATION.md is current.
+// It now also carries `wifi_handoff: Option<WifiHandoffPolicy>`, the join and
+// session-open timing for Wi-Fi access-point plans (MANIFEST_SCHEMA §11.31).
 
 #[derive(uniffi::Record)]
 pub struct KeyValue { pub key: String, pub value: String }
