@@ -10,12 +10,12 @@
 //! per-property silent-refusal or valueless logic — the codecs remain
 //! generic and data-driven.
 
+pub mod app_init;
 pub mod chunk_frame;
 pub mod client_identity;
 pub mod error;
 pub mod focus_area;
 pub mod fuji_framing;
-pub mod fuji_init;
 pub mod legacy_app_init;
 pub mod liveview;
 pub mod nikon_lss;
@@ -24,10 +24,10 @@ pub mod quirk;
 pub mod usb_ptp;
 pub mod value_codec;
 
+pub use app_init::{build_app_init, parse_app_init, validate_init_ack, AppInit};
 pub use client_identity::normalize_client_name;
 pub use error::FramingError;
 pub use focus_area::pack_af_area;
-pub use fuji_init::{build_app_init, parse_app_init, validate_init_ack, AppInit};
 pub use legacy_app_init::{
     build_legacy_app_init, parse_legacy_app_init, validate_legacy_app_init_ack, LegacyAppInit,
 };
