@@ -117,7 +117,13 @@ jobs:
           key: ${{ hashFiles('Cargo.lock') }}
           # Restore the workspace cache; the workspace job owns saving it.
           save-if: false
-      - run: ci/ffi-surface.sh
+      - name: Compare the host build (Kotlin input)
+        run: ci/ffi-surface.sh
+      # Swift bindings are generated from the iOS device release build. A
+      # staticlib needs no Apple linker or SDK, so it builds here.
+      - name: Compare the iOS device build (Swift input)
+        if: ${{ !cancelled() }}
+        run: ci/ffi-surface.sh check --target aarch64-apple-ios
 
   kotlin-bindings:
     needs: [changes, workspace]
