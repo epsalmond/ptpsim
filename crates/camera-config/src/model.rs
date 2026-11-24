@@ -11,6 +11,7 @@ use crate::predicate::Predicate;
 use crate::version::{compare, VersionScheme};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 
 /// A PTP code written in the manifest as a hex string (e.g. `"0x101b"`).
 pub type HexCode = String;
@@ -1968,6 +1969,24 @@ pub struct LiveViewDelivery {
     /// The op the app polls when `kind = poll` (e.g. `0x9018`).
     #[serde(default)]
     pub poll_op: Option<HexCode>,
+    /// Optional simulator scheduling policy for pushed frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation_timing: Option<LiveViewSimulationTiming>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LiveViewSimulationTiming {
+    pub frame_interval_ms: NonZeroU32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub periodic_pause: Option<LiveViewPeriodicPause>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LiveViewPeriodicPause {
+    pub every_ms: NonZeroU32,
+    pub duration_ms: NonZeroU32,
 }
 
 /// Live-view delivery mode (closed vocabulary — a new value needs a schema PR).

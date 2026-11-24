@@ -3229,6 +3229,89 @@ properties:
 
 /// Live-view smoke: the declared operation controls TCP availability, then
 /// frames flow once the initiator reaches Phase::Streaming.
+#[tokio::test(start_paused = true)]
+async fn service_applies_manifest_push_stream_timing() {
+    use ptp_core::codes::op as code;
+    use std::time::Duration;
+
+    let card = tmp_card();
+    let liveview = tempfile::tempdir().unwrap();
+    let jpeg = b"\xff\xd8\xff\xe0FRAME\xff\xd9";
+    std::fs::write(liveview.path().join("frame.jpg"), jpeg).unwrap();
+    let manifest_yaml = real_gfx_manifest()
+        .replace("everyMs: 13000", "everyMs: 64")
+        .replace("durationMs: 1200", "durationMs: 48");
+    let server = Server::bind(Config {
+        instance_id: "push-timing".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "app".into(),
+        manifest_yaml,
+        media_root: card.path().to_path_buf(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: Some("127.0.0.1:0".parse().unwrap()),
+        event_bind: Some("127.0.0.1:0".parse().unwrap()),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: Some(liveview.path().to_path_buf()),
+        state_callback: None,
+    })
+    .await
+    .unwrap();
+    let command_addr = server.command_addr();
+    let liveview_addr = server.liveview_addr_opt().unwrap();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(server.run(shutdown_rx));
+
+    // Blocking socket I/O prevents Tokio from advancing the clock implicitly.
+    tokio::task::spawn_blocking(move || {
+        let clock = tokio::runtime::Handle::current();
+        let advance = |ms| clock.block_on(tokio::time::advance(Duration::from_millis(ms)));
+        let mut cmd = connect_ptpip(command_addr, "push-timing");
+        open_session(&mut cmd);
+        set_prop(&mut cmd, 2, 0xdf01, &0x16u16.to_le_bytes());
+        write_frame(&mut cmd, &op(code::INITIATE_OPEN_CAPTURE, 3, vec![]));
+        read_ok(&mut cmd);
+
+        let mut stream = TcpStream::connect(liveview_addr).unwrap();
+        let read_timeout = Some(Duration::from_secs(2));
+        stream.set_read_timeout(read_timeout).unwrap();
+        let frame = read_frame_lv(&mut stream);
+        assert_eq!(frame.frame_counter, 0);
+        assert_eq!(frame.jpeg, jpeg);
+        for counter in 1..4 {
+            advance(16);
+            assert_eq!(read_frame_lv(&mut stream).frame_counter, counter);
+        }
+
+        advance(16);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        assert_read_timeout(&mut stream);
+        advance(32);
+        assert_read_timeout(&mut stream);
+
+        advance(16);
+        stream.set_read_timeout(read_timeout).unwrap();
+        assert_eq!(read_frame_lv(&mut stream).frame_counter, 4);
+        advance(16);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        assert_read_timeout(&mut stream);
+        advance(48);
+        stream.set_read_timeout(read_timeout).unwrap();
+        assert_eq!(read_frame_lv(&mut stream).frame_counter, 5);
+    })
+    .await
+    .unwrap();
+
+    shutdown_tx.send(()).unwrap();
+    handle.await.unwrap();
+}
+
 #[test]
 fn service_streams_liveview_after_open_capture() {
     let _tmp_card = tmp_card();

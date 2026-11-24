@@ -974,6 +974,19 @@ impl From<cc::WireFraming> for PtpFraming {
 pub struct FfiLiveViewDelivery {
     pub kind: LiveViewDeliveryKind,
     pub poll_op: Option<u16>,
+    pub simulation_timing: Option<FfiLiveViewSimulationTiming>,
+}
+
+#[derive(uniffi::Record)]
+pub struct FfiLiveViewSimulationTiming {
+    pub frame_interval_ms: u32,
+    pub periodic_pause: Option<FfiLiveViewPeriodicPause>,
+}
+
+#[derive(uniffi::Record)]
+pub struct FfiLiveViewPeriodicPause {
+    pub every_ms: u32,
+    pub duration_ms: u32,
 }
 
 #[derive(uniffi::Enum)]
@@ -998,6 +1011,15 @@ impl From<&cc::LiveViewDelivery> for FfiLiveViewDelivery {
                 cc::LiveViewDeliveryKind::Poll => LiveViewDeliveryKind::Poll,
             },
             poll_op: d.poll_op.as_deref().and_then(parse_hex_code),
+            simulation_timing: d
+                .simulation_timing
+                .map(|timing| FfiLiveViewSimulationTiming {
+                    frame_interval_ms: timing.frame_interval_ms.get(),
+                    periodic_pause: timing.periodic_pause.map(|pause| FfiLiveViewPeriodicPause {
+                        every_ms: pause.every_ms.get(),
+                        duration_ms: pause.duration_ms.get(),
+                    }),
+                }),
         }
     }
 }

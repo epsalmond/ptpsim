@@ -1508,6 +1508,30 @@ per-object transfer actions remain image-transfer scoped. No `DF01` mode flip
 occurs on this connection. The FFI mirrors all three live-view action verbs;
 spelling and casing other than exact lower-camel-case names fail action parsing.
 
+#### 11.22c Simulated push-stream timing
+
+A connection with `liveViewDelivery.kind: stream` can set
+`liveViewDelivery.simulationTiming` to configure its simulator push socket.
+
+```yaml
+liveViewDelivery:
+  kind: stream
+  simulationTiming:
+    frameIntervalMs: 16
+    periodicPause:
+      everyMs: 13000
+      durationMs: 1200
+```
+
+Durations are positive integers in milliseconds. `periodicPause` is optional
+and its duration must be shorter than its period. The first pause starts at
+the first frame tick at or past the period after streaming begins on a socket.
+Subsequent pauses use the same period from the start of the last pause.
+Emission resumes on the next frame tick after the pause has elapsed. Frame
+counters advance only for emitted frames. Streams without this configuration
+use a 33 ms interval with no periodic pause. Poll timing is controlled by
+the caller's requests. These settings are simulator parameters.
+
 ### 11.23 Semantic connection activities
 
 Connection setup exposes a small, stable activity vocabulary alongside the raw

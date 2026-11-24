@@ -118,7 +118,11 @@ connections:
     # Per-connection traits (#81): the app selects behavior from these, not by
     # branching on the connection id.
     initShape: app82                    # the 82-byte reference app InitCommandRequest (#82)
-    liveViewDelivery: { kind: stream }   # reference app delivers frames as a continuous stream
+    liveViewDelivery:
+      kind: stream
+      simulationTiming:
+        frameIntervalMs: 16
+        periodicPause: { everyMs: 13000, durationMs: 1200 }
     shutterRecipe: appPostview           # 0x100E + 0x9022 postview take-cycle
     postview:
       mode: shooting/stills

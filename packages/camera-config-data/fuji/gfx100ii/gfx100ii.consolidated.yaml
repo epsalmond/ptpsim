@@ -16655,6 +16655,11 @@ connections:
     liveViewDelivery:
       kind: stream
       pollOp: null
+      simulationTiming:
+        frameIntervalMs: 16
+        periodicPause:
+          everyMs: 13000
+          durationMs: 1200
     shutterRecipe: appPostview
     postview:
       mode: shooting/stills
