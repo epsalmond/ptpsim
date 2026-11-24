@@ -9,3 +9,11 @@ rust-version.workspace = true
 [dependencies]
 clap = { workspace = true }
 anyhow = { workspace = true }
+camera-sim = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+camera-sim-service = { path = "../../services/camera-sim-service" }
+tempfile = "3"
+tokio = { workspace = true }

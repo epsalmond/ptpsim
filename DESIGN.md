@@ -961,6 +961,18 @@ camera-simctl fault delete 3 --control 127.0.0.1:8080
 camera-simctl fault clear --control 127.0.0.1:8080
 camera-simctl shutdown --control 127.0.0.1:8080
 
+# Camera state, actions, and observations:
+camera-simctl state get --control 127.0.0.1:8080
+camera-simctl state patch --control 127.0.0.1:8080 --spec '{"props":{"0x500d":125000}}'
+camera-simctl state patch --control 127.0.0.1:8080 --spec-file overlay.json
+camera-simctl advance-property 0x500D --control 127.0.0.1:8080
+camera-simctl actions list --control 127.0.0.1:8080
+camera-simctl actions run shutter --control 127.0.0.1:8080 \
+  --spec '{"catalogRevision":"<revision from actions list>","mode":"shooting/stills","role":"responder"}'
+camera-simctl observations --control 127.0.0.1:8080 --after 0
+camera-simctl connection-lifecycles --control 127.0.0.1:8080
+camera-simctl callbacks add --control 127.0.0.1:8080 --url http://127.0.0.1:8770/state
+
 # Drive the same manifest-backed protocol path used against real cameras:
 camera-initiator \
   --camera 127.0.0.1 \
