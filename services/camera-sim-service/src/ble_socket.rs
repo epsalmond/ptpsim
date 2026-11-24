@@ -59,8 +59,8 @@ pub struct BleScenario {
     mtu: u16,
     peripheral_name: Option<String>,
     factory: ResponderFactory,
-    /// The engine link the scenario's arming writes reach. Reset at the start
-    /// of every BLE connection.
+    /// The engine link the scenario's arming writes reach. Each BLE
+    /// connection clears its prep flag when it starts.
     link: Option<SharedLink>,
 }
 
@@ -548,8 +548,9 @@ impl BleSocket {
     }
 
     /// Take the single-client slot, waiting up to [`BUSY_GRACE`] for an
-    /// earlier connection to finish. A new session starts from the
-    /// standalone link state and an unspent responder script.
+    /// earlier connection to finish. A new session gets an unspent responder
+    /// script, and an earlier session's prep write no longer counts. The
+    /// armed state and the registered device name carry over.
     async fn claim(&self, peer: &str) -> Option<ActiveClient> {
         let deadline = Instant::now() + BUSY_GRACE;
         loop {
@@ -563,7 +564,7 @@ impl BleSocket {
                 .is_ok()
             {
                 if let Some(link) = &self.inner.scenario.link {
-                    link.reset();
+                    link.clear_prep_write();
                 }
                 *lock(&self.inner.active) = Some((self.inner.scenario.factory)());
                 *lock(&self.inner.holder) = Some((peer.to_string(), Instant::now()));
@@ -594,7 +595,7 @@ impl BleSocket {
             send(&mut write, &[json!({"event": "error", "code": "busy"})]).await?;
             return write.shutdown().await;
         };
-        tracing::info!(target: "ble", %peer, "client connected; link reset, responder built from the scenario");
+        tracing::info!(target: "ble", %peer, "client connected; prep flag cleared, responder built from the scenario");
         let hello = json!({"event": "hello", "protocol": PROTOCOL, "version": PROTOCOL_VERSION});
         send(&mut write, &[hello]).await?;
 

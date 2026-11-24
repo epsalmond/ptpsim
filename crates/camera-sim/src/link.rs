@@ -72,14 +72,12 @@ impl CameraLink {
         self.device_name.lock().unwrap().clone()
     }
 
-    /// Return to the standalone default: no prep write, armed, no registered
-    /// name. A transport that starts a new BLE session calls this so an
-    /// earlier session's writes cannot satisfy the next session's gates.
-    /// Simulator session policy, not camera behavior.
-    pub fn reset(&self) {
+    /// Forget an earlier prep write, so the next launch arms only if a new
+    /// prep write precedes it. The armed state and the registered name are
+    /// left as they are. A transport calls this when a new BLE session starts;
+    /// this is a simulator modelling choice, not observed camera behavior.
+    pub fn clear_prep_write(&self) {
         self.prep_written.store(false, Ordering::SeqCst);
-        self.armed.store(true, Ordering::SeqCst);
-        *self.device_name.lock().unwrap() = None;
     }
 }
 

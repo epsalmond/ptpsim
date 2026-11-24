@@ -274,12 +274,26 @@ Notification fencing depends on this order.
   does not get the slot receives `{"event":"error","code":"busy"}` instead of
   `hello`, and is closed. `hello` therefore always means the connection holds
   the slot.
-- Each connection that gets the slot starts a fresh session: a new responder
-  built from the scenario, with an unspent notification script, and the
-  engine's `CameraLink` reset to its standalone default (no prep write, armed,
-  no registered device name). An earlier connection's writes cannot satisfy
-  the next connection's gates. This is simulator session policy, not camera
-  behavior.
+- Each connection that gets the slot starts a new session with a new
+  responder built from the scenario and an unspent notification script.
+  On the engine's `CameraLink`, the session start clears only the prep flag:
+  - The prep flag is cleared, so a launch arms the engine only if this
+    connection wrote the prep characteristic before it.
+  - The armed state carries over as the last launch left it. A connection
+    that opens and closes without a launch changes nothing, so an unarmed
+    engine stays unarmed.
+  - The registered device name carries over until a connection writes a new
+    one.
+
+  These are simulator modelling choices, not observed camera behavior. The
+  per-session prep flag follows the `ble-establish-wifi-ap` plan, which writes
+  the prep characteristic immediately before every launch; clearing it makes
+  a client that skips that write in a later session fail. The armed state is
+  latched at launch, as the in-process link model and `ble_arms_init.rs`
+  already define. Keeping the registered name is a simulator convention: the
+  manifest's `ble-reconnect` plan rewrites the name on every reconnect, and no
+  manifest data or test establishes whether a camera keeps it across BLE
+  connections.
 - `disconnect` answers, then the server closes the connection. A fresh script
   needs a new TCP connection.
 - A connection holds the slot for as long as it is open, however quiet, since
@@ -311,8 +325,9 @@ or `null`.
 
 Notifications:
 
-- Scripted notifications are released only by `write_fenced`. A plain `write`
-  to the same characteristic releases nothing.
+- Notifications scripted with `afterFencedWrite` are released only by a
+  `write_fenced` to the named characteristic. A plain `write` releases
+  nothing.
 - `write_fenced` requires `notify_uuid` to be in the catalog; it need not be
   subscribed. The fence discards the notifications buffered on `notify_uuid`
   before the write.
@@ -320,9 +335,14 @@ Notifications:
   Notifications that a `write_fenced` releases on a characteristic the
   connection has not subscribed are dropped. A later `subscribe` does not
   deliver them.
-- Notifications scripted with no `afterFencedWrite` are buffered when the
-  session starts and delivered after `subscribe` to their characteristic,
-  unless a fence on that characteristic discarded them first.
+- Simulator convention, not a GATT rule or a camera fact: a notification
+  scripted with no `afterFencedWrite` is queued when the session's responder
+  is built and is delivered after the response to the first `subscribe` to
+  its characteristic, whenever that `subscribe` is sent. A `write_fenced`
+  whose `notify_uuid` is that characteristic discards it first if it is still
+  queued. This keeps the in-process responder's queue model, and it is how a
+  scenario models a value the client receives as soon as it enables
+  notifications. The golden transcript's first notification is one of these.
 - After every request the server pushes the eligible notifications of each
   subscribed characteristic: per characteristic in script order, and across
   characteristics in subscription order.
@@ -384,7 +404,7 @@ reads:
   <gattName>: { hex: "<hex>" }     # or { utf8: "<text>" }
 notifications:
   - { gatt: <gattName>, afterFencedWrite: { gatt: <gattName>, ordinal: 1 }, hex: "<hex>" }
-  - { gatt: <gattName>, utf8: "<text>" }   # no afterFencedWrite: buffered at session start
+  - { gatt: <gattName>, utf8: "<text>" }   # no afterFencedWrite: delivered on subscribe (simulator convention)
 ```
 
 The catalog served is the model's whole GATT map, with every UUID in
@@ -406,7 +426,7 @@ Limits:
 - The responder answers immediately. AP-launch timing is not modeled.
 - Within one connection the prep flag is never cleared, so after a prep write
   every later launch on that connection arms the engine. A new connection
-  starts from the standalone link state.
+  clears it.
 - One client per service.
 
 ---
