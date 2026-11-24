@@ -299,6 +299,10 @@ pub struct Engine {
     aux_managed_used: u32,
     postview_pending: bool,
     event_generation: u64,
+    /// Manifest-declared simulator states currently active. These are physical
+    /// conditions, so session close, a new session, and transport loss keep
+    /// them; only a state overlay changes them.
+    active_states: BTreeSet<String>,
 }
 
 fn postview_fixture(fixture: camera_config::model::PostviewFixture) -> &'static [u8] {
@@ -339,6 +343,7 @@ impl Engine {
             aux_managed_used: 0,
             postview_pending: false,
             event_generation: 0,
+            active_states: BTreeSet::new(),
         };
         let handles = engine.camera_initiated_media_handles();
         if engine.manifest.camera_initiated_transfer.is_some() {
@@ -517,6 +522,11 @@ impl Engine {
         &self.manifest
     }
 
+    /// Names of the active simulator states, sorted.
+    pub fn active_states(&self) -> &BTreeSet<String> {
+        &self.active_states
+    }
+
     pub fn store(&self) -> &MediaStore {
         &self.store
     }
@@ -529,6 +539,7 @@ impl Engine {
             &self.manifest,
             &mut self.state,
             &mut self.camera_initiated_transfer_active,
+            &mut self.active_states,
             overlay,
         )?;
         if !self.camera_initiated_transfer_active {
@@ -1148,6 +1159,17 @@ impl Engine {
             if let Some(response) = self.operation_availability_error(req.code) {
                 return Self::err(tid, response);
             }
+        }
+
+        // An active simulator state answers with its declared response, as a
+        // failure reply: no handler, effects, emits, or gate progress.
+        if let Some(response) = self.manifest.state_response(
+            &self.active_states,
+            &self.connection,
+            self.disposition_mode(),
+            req.code,
+        ) {
+            return Self::err(tid, response);
         }
 
         // Applied above the whole match so standard ops are refused the same way
