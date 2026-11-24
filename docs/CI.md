@@ -10,8 +10,10 @@ GitHub Actions runs public build and test work on hosted runners. Workflow
 files live in [`.github/workflows/`](../.github/workflows/):
 
 - `linux.yml` runs smoke, public-content, commit-message, documentation,
-  workspace, and Kotlin binding checks on pull requests and `main` pushes.
-  Android libraries, the Python wheel, and manifest data publish from `main`.
+  workspace, FFI surface, and Kotlin binding checks on pull requests and `main`
+  pushes. Android libraries, the Python wheel, and manifest data publish from
+  `main`. The FFI surface job and its baseline are described in
+  [APPLE_FFI_RELEASES.md](APPLE_FFI_RELEASES.md#ffi-surface-baseline).
 - `xcframework.yml` promotes `apple-ffi-<sha8>` tags on hosted Apple Silicon
   macOS. The tag must identify a commit already merged to `main`.
 - `oci-image.yml` builds the service image without pushing it on pull requests
