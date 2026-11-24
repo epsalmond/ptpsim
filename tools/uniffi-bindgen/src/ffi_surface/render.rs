@@ -9,7 +9,7 @@
 //! The matches below are exhaustive on purpose: a UniFFI upgrade that adds
 //! metadata stops this tool from compiling until the new shape is rendered.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use uniffi_meta::{
     DefaultValueMetadata, EnumShape, FieldMetadata, FnParamMetadata, LiteralMetadata, Metadata,
@@ -60,6 +60,15 @@ pub fn items(
         Ok(())
     };
 
+    let graph = field_types(&metadata);
+    let object_qualifier = |name: &str| {
+        if contains_object(name, &graph) {
+            " contains_object"
+        } else {
+            ""
+        }
+    };
+
     add(format!("generator uniffi {generator_version}"), Vec::new())?;
     for (name, value) in config {
         add(format!("config {name} = {value}"), Vec::new())?;
@@ -104,7 +113,10 @@ pub fn items(
                     .iter()
                     .map(|f| format!("field {}", field(f)))
                     .collect();
-                add(format!("record {}", meta.name), fields)?;
+                add(
+                    format!("record {}{}", meta.name, object_qualifier(&meta.name)),
+                    fields,
+                )?;
             }
             Metadata::Enum(meta) => {
                 let mut header = format!("enum {}", meta.name);
@@ -120,6 +132,7 @@ pub fn items(
                 if meta.non_exhaustive {
                     header.push_str(" non_exhaustive");
                 }
+                header.push_str(object_qualifier(&meta.name));
                 let cases = meta
                     .variants
                     .iter()
@@ -231,6 +244,61 @@ pub fn items(
         .collect();
     items.sort_by_key(|item| (rank(&item.header), key(&item.header)));
     Ok(items)
+}
+
+/// Field types of every record and enum, by name.
+fn field_types(metadata: &[Metadata]) -> BTreeMap<String, Vec<Type>> {
+    metadata
+        .iter()
+        .filter_map(|item| match item {
+            Metadata::Record(meta) => Some((
+                meta.name.clone(),
+                meta.fields.iter().map(|f| f.ty.clone()).collect(),
+            )),
+            Metadata::Enum(meta) => Some((
+                meta.name.clone(),
+                meta.variants
+                    .iter()
+                    .flat_map(|v| v.fields.iter().map(|f| f.ty.clone()))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a record or enum reaches an object through its fields, directly
+/// or through other records, enums and containers. UniFFI's Swift generator
+/// drops `Equatable`, `Hashable` and `Codable` from such types.
+fn contains_object(name: &str, graph: &BTreeMap<String, Vec<Type>>) -> bool {
+    fn reaches(
+        ty: &Type,
+        graph: &BTreeMap<String, Vec<Type>>,
+        seen: &mut BTreeSet<String>,
+    ) -> bool {
+        match ty {
+            Type::Object { .. } => true,
+            Type::Optional { inner_type } | Type::Sequence { inner_type } => {
+                reaches(inner_type, graph, seen)
+            }
+            Type::Map {
+                key_type,
+                value_type,
+            } => reaches(key_type, graph, seen) || reaches(value_type, graph, seen),
+            Type::Custom { builtin, .. } => reaches(builtin, graph, seen),
+            Type::Record { name, .. } | Type::Enum { name, .. } => {
+                seen.insert(name.clone())
+                    && graph
+                        .get(name)
+                        .is_some_and(|types| types.iter().any(|t| reaches(t, graph, seen)))
+            }
+            _ => false,
+        }
+    }
+    let mut seen = BTreeSet::from([name.to_string()]);
+    graph
+        .get(name)
+        .is_some_and(|types| types.iter().any(|t| reaches(t, graph, &mut seen)))
 }
 
 /// Snapshot file text: the preamble followed by every item.
@@ -359,6 +427,9 @@ pub fn config_entries(table: &toml::Table) -> Vec<(String, String)> {
                 format!("{prefix}.{segment}")
             };
             match value {
+                // An empty table is a setting in its own right: for example an
+                // empty `custom_types.<Name>` table changes the Swift output.
+                toml::Value::Table(inner) if inner.is_empty() => out.push((path, "{}".into())),
                 toml::Value::Table(inner) => walk(&path, inner, out),
                 other => out.push((path, config_value(other))),
             }
@@ -692,6 +763,163 @@ mod tests {
         assert_update_then_check_passes(&entries);
     }
 
+    #[test]
+    fn empty_config_table_is_rendered() {
+        let table: toml::Table = toml::from_str("[bindings.swift.custom_types.Foo]\n").unwrap();
+        assert_eq!(
+            config_entries(&table),
+            [(
+                "bindings.swift.custom_types.Foo".to_string(),
+                "{}".to_string()
+            )]
+        );
+        let absent: toml::Table = toml::from_str("[bindings.swift]\n").unwrap();
+        assert_ne!(config_entries(&table), config_entries(&absent));
+    }
+
+    fn object_type(name: &str) -> Type {
+        Type::Object {
+            module_path: MODULE.into(),
+            name: name.into(),
+            imp: ObjectImpl::Struct,
+        }
+    }
+
+    fn record_of(name: &str, fields: Vec<FieldMetadata>) -> Metadata {
+        Metadata::Record(RecordMetadata {
+            module_path: MODULE.into(),
+            name: name.into(),
+            remote: false,
+            fields,
+            docstring: None,
+        })
+    }
+
+    #[test]
+    fn records_and_enums_reaching_an_object_are_marked_transitively() {
+        let out = render(vec![
+            Metadata::Object(ObjectMetadata {
+                module_path: MODULE.into(),
+                name: "Store".into(),
+                remote: false,
+                imp: ObjectImpl::Struct,
+                docstring: None,
+            }),
+            record_of(
+                "Inner",
+                vec![field_of(
+                    "store",
+                    Type::Optional {
+                        inner_type: Box::new(object_type("Store")),
+                    },
+                )],
+            ),
+            record_of("Outer", vec![field_of("inner", record_type("Inner"))]),
+            record_of("Plain", vec![field_of("id", Type::String)]),
+            // A cycle without an object must terminate and stay unmarked.
+            record_of(
+                "Loop",
+                vec![field_of(
+                    "next",
+                    Type::Optional {
+                        inner_type: Box::new(record_type("Loop")),
+                    },
+                )],
+            ),
+            enum_of(
+                "Event",
+                EnumShape::Enum,
+                vec![variant(
+                    "Batch",
+                    vec![field_of(
+                        "items",
+                        Type::Sequence {
+                            inner_type: Box::new(record_type("Outer")),
+                        },
+                    )],
+                )],
+            ),
+        ]);
+        assert!(out.contains("\nrecord Inner contains_object\n"));
+        assert!(out.contains("\nrecord Outer contains_object\n"));
+        assert!(out.contains("\nrecord Plain\n"));
+        assert!(out.contains("\nrecord Loop\n"));
+        assert!(out.contains("\nenum Event contains_object\n"));
+    }
+
+    /// Structural equality that tells apart values `==` conflates or
+    /// separates incorrectly for this purpose (`NaN`, `-0.0`).
+    fn same(a: &toml::Value, b: &toml::Value) -> bool {
+        use toml::Value::*;
+        match (a, b) {
+            (Float(x), Float(y)) => x.to_bits() == y.to_bits(),
+            (Array(x), Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same(x, y)),
+            (Table(x), Table(y)) => same_table(x, y),
+            (Datetime(x), Datetime(y)) => x == y,
+            _ => std::mem::discriminant(a) == std::mem::discriminant(b) && a == b,
+        }
+    }
+
+    fn same_table(a: &toml::Table, b: &toml::Table) -> bool {
+        a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| same(v, w)))
+    }
+
+    #[test]
+    fn distinct_configs_render_distinct_snapshots() {
+        let render_config = |config: &toml::Table| {
+            text(
+                "",
+                &items(Vec::new(), &config_entries(config), "0.31.1").unwrap(),
+            )
+        };
+        // Explicit near-collisions.
+        let cases = [
+            "[a.b]\n",
+            "[a]\n",
+            "a = []\n",
+            "a = [[]]\n",
+            "a = {}\n",
+            "a = [{}]\n",
+            "a = 1\n",
+            "a = 1.0\n",
+            "a = \"1\"\n",
+            "a = \"1.0\"\n",
+            "a = true\n",
+            "a = \"true\"\n",
+            "a = 1979-05-27T07:32:00Z\n",
+            "a = 1979-05-27T07:32:00+00:00\n",
+            "a = 1979-05-27T07:32:00\n",
+            "a = 1979-05-27\n",
+            "a = 07:32:00\n",
+            "a = \"1979-05-27\"\n",
+            "\"a.b\" = 1\n",
+            "a.b = 1\n",
+            "\"\" = 1\n",
+            "a = \"x\\ny\"\n",
+            "a = \"x\\\\ny\"\n",
+        ];
+        let mut seen: Vec<(String, toml::Table)> = Vec::new();
+        let mut check = |config: toml::Table| {
+            let rendered = render_config(&config);
+            for (other_text, other) in &seen {
+                if *other_text == rendered {
+                    assert!(
+                        same_table(other, &config),
+                        "{other:?} and {config:?} render to\n{rendered}"
+                    );
+                }
+            }
+            seen.push((rendered, config));
+        };
+        for case in cases {
+            check(toml::from_str(case).unwrap());
+        }
+        for seed in 1..=500_u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            check(table(&mut rng, 2));
+        }
+    }
+
     /// Small deterministic generator for the round-trip property.
     struct Rng(u64);
 
@@ -739,16 +967,30 @@ mod tests {
     fn value(rng: &mut Rng, depth: u32) -> toml::Value {
         match rng.next() % if depth == 0 { 6 } else { 8 } {
             0 => toml::Value::String(rng.pick(&STRINGS).to_string()),
-            1 => toml::Value::Integer(rng.next() as i64),
+            1 => toml::Value::Integer((rng.next() % 3) as i64),
             2 => toml::Value::Float(match rng.next() % 4 {
                 0 => f64::NAN,
                 1 => f64::INFINITY,
                 2 => -0.0,
-                _ => (rng.next() % 1000) as f64 / 7.0,
+                _ => (rng.next() % 3) as f64,
             }),
             3 => toml::Value::Boolean(rng.next().is_multiple_of(2)),
-            4 => toml::Value::Datetime("1979-05-27T07:32:00Z".parse().unwrap()),
-            5 => toml::Value::Array(Vec::new()),
+            4 => toml::Value::Datetime(
+                rng.pick(&[
+                    "1979-05-27T07:32:00Z",
+                    "1979-05-27T07:32:00+00:00",
+                    "1979-05-27T07:32:00",
+                    "1979-05-27",
+                    "07:32:00",
+                ])
+                .parse()
+                .unwrap(),
+            ),
+            5 => match rng.next() % 3 {
+                0 => toml::Value::Array(Vec::new()),
+                1 => toml::Value::Table(toml::Table::new()),
+                _ => toml::Value::String(rng.pick(&["1", "1.0", "true", "{}", "[]"]).to_string()),
+            },
             6 => toml::Value::Array((0..3).map(|_| value(rng, depth - 1)).collect()),
             _ => toml::Value::Table(table(rng, depth - 1)),
         }

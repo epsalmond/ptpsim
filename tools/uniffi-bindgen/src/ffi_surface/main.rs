@@ -4,6 +4,7 @@
 //! Exit status: 0 when the baseline equals the current surface, 1 on any
 //! difference (labelled breaking or additive), 2 on a usage or input error.
 
+mod build_cfg;
 mod compare;
 mod render;
 
@@ -24,7 +25,8 @@ const PREAMBLE: &str = "\
 
 const USAGE: &str = "\
 usage: ffi-surface snapshot --library <lib> --config <uniffi.toml> --lockfile <Cargo.lock> --output <file>
-       ffi-surface check    --library <lib> --config <uniffi.toml> --lockfile <Cargo.lock> --baseline <file>";
+       ffi-surface check    --library <lib> --config <uniffi.toml> --lockfile <Cargo.lock> --baseline <file>
+       ffi-surface cfg-scan --crate-dir <dir>";
 
 struct Args {
     command: String,
@@ -109,18 +111,39 @@ fn report(baseline: &str, findings: &[Finding]) -> String {
         "Breaking for consumer types that implement a generated Swift protocol or Kotlin interface",
         Severity::BreaksImplementers,
     );
+    section(
+        &mut out,
+        "Source-compatible behaviour changes",
+        Severity::SourceCompatible,
+    );
     section(&mut out, "Additive", Severity::Additive);
-    let breaking = findings.iter().any(|f| f.severity != Severity::Additive);
+    let breaking = findings.iter().any(|f| {
+        matches!(
+            f.severity,
+            Severity::Breaking | Severity::BreaksImplementers
+        )
+    });
     if breaking {
         let _ = writeln!(
             out,
             "\nThis pull request breaks code that vendors the generated Swift or Kotlin\n\
-             bindings. If the break is not intended, restore the items above."
+             bindings. If a break is not intended, restore the items listed under a\n\
+             \"Breaking\" heading."
         );
     } else {
         let _ = writeln!(
             out,
-            "\nThese changes are additive: existing consumer code keeps compiling."
+            "\nNo change above stops existing consumer code from compiling."
+        );
+    }
+    if findings
+        .iter()
+        .any(|f| f.severity == Severity::SourceCompatible)
+    {
+        let _ = writeln!(
+            out,
+            "Source-compatible changes alter default values, which changes runtime\n\
+             behaviour for callers that rely on them."
         );
     }
     let _ = writeln!(
@@ -156,6 +179,7 @@ fn github_annotations(findings: &[Finding], text: &str) {
         let title = match finding.severity {
             Severity::Breaking => "FFI surface break",
             Severity::BreaksImplementers => "FFI surface break for implementers",
+            Severity::SourceCompatible => "FFI surface default change missing from baseline",
             Severity::Additive => "FFI surface addition missing from baseline",
         };
         println!("::error title={title}::{}", escape(&message));
@@ -173,7 +197,41 @@ fn github_annotations(findings: &[Finding], text: &str) {
     }
 }
 
+/// Fail when the FFI crate uses a target- or profile-dependent `cfg`, which
+/// would make the host snapshot differ from the shipped bindings.
+fn cfg_scan() -> Result<ExitCode, String> {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let [flag, dir] = args.as_slice() else {
+        return Err(USAGE.into());
+    };
+    if flag != "--crate-dir" {
+        return Err(USAGE.into());
+    }
+    let findings = build_cfg::scan_crate(std::path::Path::new(dir))?;
+    if findings.is_empty() {
+        println!("No build-dependent cfg in {dir}.");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let github = std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true");
+    for finding in &findings {
+        println!("{finding}");
+        if github {
+            println!("::error title=Build-dependent cfg in the FFI crate::{finding}");
+        }
+    }
+    println!(
+        "\nThe FFI surface check reads a host dev build, while Swift bindings come from\n\
+         the iOS release build. Items gated on the target or build profile would differ\n\
+         between the two, so the FFI crate must not use such cfg predicates. See\n\
+         docs/APPLE_FFI_RELEASES.md, \"FFI surface baseline\"."
+    );
+    Ok(ExitCode::from(1))
+}
+
 fn run() -> Result<ExitCode, String> {
+    if std::env::args().nth(1).as_deref() == Some("cfg-scan") {
+        return cfg_scan();
+    }
     let args = parse_args()?;
     let current = current_surface(&args)?;
     if args.command == "snapshot" {
@@ -229,9 +287,25 @@ mod tests {
         assert_eq!(exit_status(&findings), 1);
         let text = report("b.txt", &findings);
         assert!(text.contains("Additive (1):"));
-        assert!(text.contains("additive: existing consumer code keeps compiling"));
+        assert!(text.contains("No change above stops existing consumer code from compiling."));
+        assert!(!text.contains("restore"));
         assert!(text.contains("ci/ffi-surface.sh update"));
         assert!(text.contains("git add b.txt"));
+    }
+
+    #[test]
+    fn source_compatible_difference_fails_without_restore_advice() {
+        let findings = [
+            finding(Severity::SourceCompatible, "changed `fn scan`"),
+            finding(Severity::Additive, "added `fn version() -> String`"),
+        ];
+        assert_eq!(exit_status(&findings), 1);
+        let text = report("b.txt", &findings);
+        assert!(text.contains("Source-compatible behaviour changes (1):"));
+        assert!(text.contains("No change above stops existing consumer code from compiling."));
+        assert!(text.contains("changes runtime"));
+        assert!(!text.contains("restore"));
+        assert!(text.contains("ci/ffi-surface.sh update"));
     }
 
     #[test]

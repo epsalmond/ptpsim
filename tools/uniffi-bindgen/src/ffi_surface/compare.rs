@@ -26,6 +26,9 @@ pub enum Severity {
     /// Consumer types that conform to a generated Swift protocol or Kotlin
     /// interface (test doubles, for example) stop compiling.
     BreaksImplementers,
+    /// Existing consumer code keeps compiling, but callers that rely on a
+    /// default value may see different runtime behaviour.
+    SourceCompatible,
     /// Existing consumer code keeps compiling.
     Additive,
 }
@@ -167,6 +170,118 @@ fn added_member(header: &str, member: &str, appended_default: bool) -> (Severity
     }
 }
 
+const OBJECT_REASON: &str = "Swift records and enums that contain an object, directly or through another type, are generated without `Equatable` and `Hashable` (unless the type exports `Eq` or `Hash`), so consumer code that compares them or uses them in a `Set` or as a dictionary key changes.";
+
+const DEFAULT_REASON: &str = "Only default values or trailing defaulted parameters changed. Existing Swift and Kotlin call sites keep compiling, and callers that omit the argument get the new default. Code that refers to the function as a value (a typed Swift function reference or a Kotlin `::name` reference) may need updating.";
+
+const FIELD_DEFAULT_REASON: &str = "Only the field default changed. Existing Swift initializer and Kotlin constructor calls keep compiling, and callers that omit the field get the new default.";
+
+/// What changing a line with the same key means for consumers.
+fn changed_line(old: &str, new: &str) -> (Severity, Option<&'static str>) {
+    let qualifiers = |line: &str| -> BTreeSet<String> {
+        line.split_whitespace()
+            .skip(2)
+            .map(str::to_string)
+            .collect()
+    };
+    match kind(new) {
+        "record" | "enum"
+            if qualifiers(old)
+                .symmetric_difference(&qualifiers(new))
+                .any(|q| q == "contains_object") =>
+        {
+            (Severity::Breaking, Some(OBJECT_REASON))
+        }
+        "fn" | "constructor" if defaults_only_change(old, new) => {
+            (Severity::SourceCompatible, Some(DEFAULT_REASON))
+        }
+        "field" if field_default_only_change(old, new) => {
+            (Severity::SourceCompatible, Some(FIELD_DEFAULT_REASON))
+        }
+        _ => (Severity::Breaking, None),
+    }
+}
+
+/// `field name: Type` or `field name: Type = default`.
+fn split_default(text: &str) -> (&str, Option<&str>) {
+    match text.split_once(" = ") {
+        Some((declaration, default)) => (declaration, Some(default)),
+        None => (text, None),
+    }
+}
+
+fn field_default_only_change(old: &str, new: &str) -> bool {
+    let (old_decl, _) = split_default(old);
+    let (new_decl, new_default) = split_default(new);
+    old_decl == new_decl && new_default.is_some()
+}
+
+/// A rendered callable: `kind name(params) suffix`.
+struct Callable<'a> {
+    params: Vec<(&'a str, Option<&'a str>)>,
+    suffix: &'a str,
+}
+
+/// Split a callable line into its parameters and the text after them,
+/// honouring string literals and nested brackets inside defaults and types.
+fn parse_callable(line: &str) -> Option<Callable<'_>> {
+    let open = line.find('(')?;
+    let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
+    let mut params = Vec::new();
+    let mut start = open + 1;
+    for (index, c) in line.char_indices().skip_while(|(i, _)| *i < open) {
+        if quoted {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => quoted = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => quoted = true,
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' if depth > 1 => depth -= 1,
+            ')' if depth == 1 => {
+                let last = line[start..index].trim();
+                if !last.is_empty() {
+                    params.push(split_default(last));
+                }
+                return Some(Callable {
+                    params,
+                    suffix: &line[index + 1..],
+                });
+            }
+            ',' if depth == 1 => {
+                params.push(split_default(line[start..index].trim()));
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// True when two callable lines differ only in parameter defaults, in
+/// parameters that gained a default, or in new trailing parameters that all
+/// have defaults.
+fn defaults_only_change(old: &str, new: &str) -> bool {
+    let (Some(old), Some(new)) = (parse_callable(old), parse_callable(new)) else {
+        return false;
+    };
+    old.suffix == new.suffix
+        && new.params.len() >= old.params.len()
+        && old.params.iter().zip(&new.params).all(
+            |((old_decl, old_default), (new_decl, new_default))| {
+                old_decl == new_decl && (old_default.is_none() || new_default.is_some())
+            },
+        )
+        && new.params[old.params.len()..]
+            .iter()
+            .all(|(_, default)| default.is_some())
+}
+
 /// Compare a baseline snapshot with the current snapshot.
 pub fn compare(baseline: &[Item], current: &[Item]) -> Vec<Finding> {
     let current_by_key: BTreeMap<String, &Item> = current
@@ -187,10 +302,14 @@ pub fn compare(baseline: &[Item], current: &[Item]) -> Vec<Finding> {
             continue;
         };
         if old.header != new.header {
+            let (severity, reason) = changed_line(&old.header, &new.header);
             findings.push(Finding {
-                severity: Severity::Breaking,
+                severity,
                 summary: format!("changed `{item_key}`"),
-                detail: vec![format!("- {}", old.header), format!("+ {}", new.header)],
+                detail: [format!("- {}", old.header), format!("+ {}", new.header)]
+                    .into_iter()
+                    .chain(reason.map(str::to_string))
+                    .collect(),
             });
         }
         compare_members(&item_key, old, new, &mut findings);
@@ -229,11 +348,17 @@ fn compare_members(item_key: &str, old: &Item, new: &Item, findings: &mut Vec<Fi
                 summary: format!("`{item_key}`: removed `{member}`"),
                 detail: Vec::new(),
             }),
-            Some(updated) if *updated != member => findings.push(Finding {
-                severity: Severity::Breaking,
-                summary: format!("`{item_key}`: changed `{}`", key(member)),
-                detail: vec![format!("- {member}"), format!("+ {updated}")],
-            }),
+            Some(updated) if *updated != member => {
+                let (severity, reason) = changed_line(member, updated);
+                findings.push(Finding {
+                    severity,
+                    summary: format!("`{item_key}`: changed `{}`", key(member)),
+                    detail: [format!("- {member}"), format!("+ {updated}")]
+                        .into_iter()
+                        .chain(reason.map(str::to_string))
+                        .collect(),
+                });
+            }
             Some(_) => {}
         }
     }
@@ -566,6 +691,121 @@ object Transport callback_trait
         let baseline = parse(&removed).unwrap();
         let findings = compare(&baseline, &parse(BASELINE).unwrap());
         assert_eq!(breaking(&findings), ["added `generator uniffi 0.31.1`"]);
+    }
+
+    fn source_compatible(findings: &[Finding]) -> Vec<&str> {
+        with(findings, Severity::SourceCompatible)
+    }
+
+    fn pair(baseline: &str, current: &str) -> Vec<Finding> {
+        compare(&parse(baseline).unwrap(), &parse(current).unwrap())
+    }
+
+    #[test]
+    fn record_gaining_an_object_reference_is_breaking() {
+        let findings = pair(
+            "record Descriptor\n  field id: String\n",
+            "record Descriptor contains_object\n  field id: String\n  field store: Option<Store> = None\n",
+        );
+        assert_eq!(breaking(&findings), ["changed `record Descriptor`"]);
+        assert!(findings[0].detail.iter().any(|d| d.contains("Equatable")));
+    }
+
+    #[test]
+    fn enum_losing_an_object_reference_is_breaking() {
+        let findings = pair(
+            "enum Event error contains_object\n  case A\n",
+            "enum Event error\n  case A\n",
+        );
+        assert_eq!(breaking(&findings), ["changed `enum Event`"]);
+    }
+
+    #[test]
+    fn changed_parameter_default_is_source_compatible() {
+        let findings = pair(
+            "fn scan(timeout_ms: u32 = 100, name: String = \"a, b)\")\n",
+            "fn scan(timeout_ms: u32 = 200, name: String = \"c, d)\")\n",
+        );
+        assert!(breaking(&findings).is_empty());
+        assert_eq!(source_compatible(&findings), ["changed `fn scan`"]);
+    }
+
+    #[test]
+    fn parameter_gaining_a_default_is_source_compatible() {
+        let findings = pair(
+            "fn scan(timeout_ms: u32)\n",
+            "fn scan(timeout_ms: u32 = 100)\n",
+        );
+        assert_eq!(source_compatible(&findings), ["changed `fn scan`"]);
+    }
+
+    #[test]
+    fn parameter_losing_a_default_is_breaking() {
+        let findings = pair(
+            "fn scan(timeout_ms: u32 = 100)\n",
+            "fn scan(timeout_ms: u32)\n",
+        );
+        assert_eq!(breaking(&findings), ["changed `fn scan`"]);
+    }
+
+    #[test]
+    fn trailing_defaulted_parameter_is_source_compatible() {
+        let findings = pair(
+            "fn scan(timeout_ms: u32) -> Map<String, u8>\n",
+            "fn scan(timeout_ms: u32, retries: Option<u8> = None) -> Map<String, u8>\n",
+        );
+        assert_eq!(source_compatible(&findings), ["changed `fn scan`"]);
+
+        let findings = pair(
+            "object Store\n  constructor new(path: String)\n",
+            "object Store\n  constructor new(path: String, mode: Mode = Mode.Read)\n",
+        );
+        assert_eq!(
+            source_compatible(&findings),
+            ["`object Store`: changed `constructor new`"]
+        );
+    }
+
+    #[test]
+    fn trailing_parameter_without_default_or_new_return_is_breaking() {
+        let findings = pair("fn scan(a: u32)\n", "fn scan(a: u32, b: u8)\n");
+        assert_eq!(breaking(&findings), ["changed `fn scan`"]);
+        let findings = pair("fn scan(a: u32 = 1)\n", "fn scan(a: u32 = 2) -> u8\n");
+        assert_eq!(breaking(&findings), ["changed `fn scan`"]);
+        let findings = pair("fn scan(a: u32 = 1)\n", "fn scan(a: u64 = 1)\n");
+        assert_eq!(breaking(&findings), ["changed `fn scan`"]);
+    }
+
+    #[test]
+    fn method_default_change_is_breaking() {
+        // Kotlin method declarations carry no defaults, and Swift protocol
+        // requirements change with the parameter list.
+        let findings = pair(
+            "object Store\n  method lookup(model: String = \"a\")\n",
+            "object Store\n  method lookup(model: String = \"b\")\n",
+        );
+        assert_eq!(
+            breaking(&findings),
+            ["`object Store`: changed `method lookup`"]
+        );
+    }
+
+    #[test]
+    fn field_default_change_is_source_compatible() {
+        let findings = pair(
+            "record R\n  field a: u8 = 1\n  field b: u8\n",
+            "record R\n  field a: u8 = 2\n  field b: u8 = 0\n",
+        );
+        assert!(breaking(&findings).is_empty());
+        assert_eq!(
+            source_compatible(&findings),
+            [
+                "`record R`: changed `field a`",
+                "`record R`: changed `field b`"
+            ]
+        );
+        let findings = pair("record R\n  field a: u8 = 1\n", "record R\n  field a: u8\n");
+        assert_eq!(breaking(&findings), ["`record R`: changed `field a`"]);
     }
 
     #[test]
