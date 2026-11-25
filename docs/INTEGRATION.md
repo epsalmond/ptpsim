@@ -1,5 +1,5 @@
 ---
-description: How a client app consumes camera-protocol-ffi — the platform-neutral seam, binding generation, both query surfaces (single-body and manufacturer-index pull model), and the action catalog.
+description: How a client app consumes camera-protocol-ffi: the platform-neutral seam, binding generation, both query surfaces (single-body and manufacturer-index pull model), and the action catalog.
 status: reference
 read-when: Wiring an iOS/macOS/Android/Linux app to the FFI, or changing the FFI surface consumers depend on.
 ---
@@ -7,7 +7,7 @@ read-when: Wiring an iOS/macOS/Android/Linux app to the FFI, or changing the FFI
 # Integrating `camera-protocol-ffi` (iOS / macOS / Android / Linux)
 
 How a client app adopts ptpsim as its camera-protocol brain. **Platform-neutral on
-purpose** — the seam is identical across languages; only binding generation + native
+purpose**: the seam is identical across languages; only binding generation + native
 packaging differ. iOS/macOS get Swift, Android gets Kotlin, from the *same* crate and
 the *same* command.
 
@@ -24,7 +24,7 @@ Two seams ship from this crate:
   carries zero camera knowledge and the manifest tells it what each scanned advert /
   enumerated device means. Used by the iOS rewrite for BLE pairing and forward.
 
-Both seams coexist on `ConfigStore` — different constructors choose which one you
+Both seams coexist on `ConfigStore`; different constructors choose which one you
 get.
 
 Both also expose the same deterministic action catalog. A catalog record carries
@@ -37,20 +37,20 @@ simulator mutation. Unknown action or connection, wrong mode or role, stale
 revision, duplicate, missing required, extra, or wrong-typed parameters are
 typed failures with zero side effects. Omitting an optional parameter is valid.
 
-## 1. Mental model — ptpsim is the brain, you are the hands (sans-io)
+## 1. Mental model: ptpsim is the brain, you are the hands (sans-io)
 
 ptpsim does **no I/O**. It never opens a socket, USB endpoint, BLE GATT, or Wi-Fi
 join. **Your app owns every byte on the wire and every OS API.** ptpsim:
 
-- answers `(connection, mode)` questions — *which connections exist here, which modes,
+- answers `(connection, mode)` questions (*which connections exist here, which modes,
   is this operation valid now, how do I set this property, how do I enter this mode,
-  how do I bring this connection up* — over manifest **data** + values you observed;
+  how do I bring this connection up*) over manifest **data** + values you observed;
 - turns intents ↔ bytes (the codec functions).
 
-The payoff: **adding a transport or a camera is a data change + your own I/O code —
+The payoff: **adding a transport or a camera is a data change + your own I/O code,
 never a change to this binding surface.** That is the whole reason the seam is
 `(connection, mode)`-keyed. Corollary (anti-vcam): **no PTP opcodes, prop codes, mode
-constants, or ports as literals in app source** — ask the manifest.
+constants, or ports as literals in app source**; ask the manifest.
 
 ## 2. The seam (what you call)
 
@@ -64,8 +64,8 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connections(platform)` | connections valid on this platform and firmware. iOS exposes daemon-owned USB pass-through while raw USB stays hidden. |
 | `ConnectionInfo.command_listener_volatile` | whether closing the active PTP/IP transport may remove the command listener, so a consumer must not assume it can immediately redial the same endpoint as generic recovery. A manifest-authored outer connection re-establishment may create a new listener. |
 | `ConnectionInfo.postview` | optional simulator postview contract with the capture and read operations, mode selector, fixture, and event parameters. |
-| `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data — you drive the I/O** *(renamed from `establishment(connection)` — the bare name now belongs to the pull-model flow §9)* |
-| `connection_transition(fromConnection, targetConnection, targetMode?)` | a mode-qualified connection edge plus fixed establishment bindings. legacy manufacturer app uses this to expose each feature's `launchMode` without app-side vendor literals. When the manifest gates the edge, `ConnectionEstablishmentInfo.requires` carries the predicate; evaluate it with `await_until_satisfied` over props you observed and take the edge only when it holds. `connection_establishment(connection)` returns the same record with `requires` empty — only mode-qualified transitions are gated. |
+| `connection_establishment(connection)` | how to bring a connection up (PCSS knock ports, BLE→Wi-Fi handover) **as data; you drive the I/O** *(renamed from `establishment(connection)`; the bare name now belongs to the pull-model flow §9)* |
+| `connection_transition(fromConnection, targetConnection, targetMode?)` | a mode-qualified connection edge plus fixed establishment bindings. legacy manufacturer app uses this to expose each feature's `launchMode` without app-side vendor literals. When the manifest gates the edge, `ConnectionEstablishmentInfo.requires` carries the predicate; evaluate it with `await_until_satisfied` over props you observed and take the edge only when it holds. `connection_establishment(connection)` returns the same record with `requires` empty; only mode-qualified transitions are gated. |
 | `connection_init_with_runtime(connection, runtimeScope)` / `connection_init_identity_with_runtime(connection, runtimeScope)` | resolve a manifest-owned reference app, legacy manufacturer app, or canonical `standardPtpIp` InitCommandRequest, or the shape-independent initiator GUID/friendly name. legacy manufacturer app additionally consumes the route-selected local IPv4 runtime value. Normalize the raw host name once with `normalize_client_name`, store that result in the shared `terminalName` runtime slot used during pairing, and use the identity query for PCSS and other layouts; do not reinterpret a returned packet. |
 | `connection_expected_responder_guid(connection)` | fixed responder identity required by init shapes that authenticate the camera acknowledgment. Pass it to `validate_legacy_app_init_ack`; an empty or mismatched GUID is a hard init failure. |
 | `connection_init_retry_policy(connection)` | typed InitFail retry limit, backoff, and selected u32 reason codes. Retry only listed reasons on the same socket; transport failures and unlisted reasons escape that retry loop. On auto PCSS only, first-Init transport unavailability may separately select the one manifest-authorized outer rendezvous recovery. |
@@ -73,18 +73,18 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `run_pcss_auto_establishment` / `run_pcss_known_address_establishment` | Rust-owned PCSS discovery and establishment. Auto-discovery uses the first recognized broadcast callback directly; when manifest policy permits, an unavailable command endpoint or first Init transport attempt triggers one fresh rendezvous to the learned address by unicast. Known-address establishment starts with explicit unicast. The host implements raw socket I/O through `PcssExecutorTransport`; `next_callback` returns a typed `PcssCallback` containing the TCP peer IPv4 and payload. |
 | `decode_init_command_response(packet)` | a typed response for canonical standard PTP/IP Ack/InitFail packets and the fixed-width 68-byte PCSS Ack. `Acknowledged.protocol_version` is `Some(version)` for standard Ack and `None` for PCSS, whose wire shape omits that field. The InitFail reason drives manifest-owned retry policy; consumers do not inspect packet-type literals or offsets. |
 | `validate_legacy_app_init_ack(packet, expectedResponderGuid)` | legacy manufacturer app's APK-compatible 68-byte Ack check: exact length/type plus the fixed responder GUID. Bytes after the GUID are intentionally opaque rather than forced through PCSS's camera-name/padding grammar. |
-| `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`) — bind by role, not by the Fuji command port + `+1`/`+2` offsets. Equal command/event ports mean both roles share one listener and are demultiplexed by their first standard PTP/IP init packet; do not bind the address twice. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
+| `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`); bind by role, not by the Fuji command port + `+1`/`+2` offsets. Equal command/event ports mean both roles share one listener and are demultiplexed by their first standard PTP/IP init packet; do not bind the address twice. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
 | `camera_initiated_transfer(model)` | BLE trigger states, optional/cached handoff, resolved endpoint, reserved count/head, metadata/data operations, chunk limit, and completion policy for the camera-controlled pull queue. Requires a manufacturer-index store so symbolic GATT names resolve. |
 | `transport_close(connection)` | the manifest-resolved frame plus its declared `when` context (Fuji `app`: the 8-byte sentinel before image-transfer re-establishment), `None` when absent; malformed sentinel data is an error. Use it only in the declared context; sending it does not by itself guarantee that the endpoint is immediately redialable. |
 | `modes(connection)` / `capabilities(connection, mode)` | the modes + what they can do |
 | `detect_mode(connection, observed)` | which mode the camera is in, from props you read |
 | `mode_entry(connection, from, to)` | a closed execution plan: PTP wire steps, a manual instruction, or an outer connection re-establishment that exits the old session and reuses the target mode's cold entry. `ModeEntryPlan.requires` is the manifest's precondition predicate for the entry; when present, evaluate it with `await_until_satisfied` over observed props before executing, exactly like `detect_mode` gating. |
-| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`) — `Action.initiator.params` declares normalized `{ name, kind, required }` runtime slots, `Action.initiator.steps` is the wire sequence, and `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). A bare parameter name remains required `u64`; expanded declarations add `string` and optional values. A `PtpU32Array` capture binds a count-prefixed property reply as a collection; `TransactionId` binds the executor-allocated id of one unrepeated `sendOp`; `ForEach.collection` names a captured collection and performs no additional read. See schema §§11.22 and 11.27. |
+| `action(connection, verb)` | the parameterized recipe for a verb (e.g. `shutter`, `getObject`). `Action.initiator.params` declares normalized `{ name, kind, required }` runtime slots, `Action.initiator.steps` is the wire sequence, and `Action.triggers` declares post-conditions (e.g. `objectsAvailable { min, max }` for PCSS shutter queue growth). A bare parameter name remains required `u64`; expanded declarations add `string` and optional values. A `PtpU32Array` capture binds a count-prefixed property reply as a collection; `TransactionId` binds the executor-allocated id of one unrepeated `sendOp`; `ForEach.collection` names a captured collection and performs no additional read. See schema §§11.22 and 11.27. |
 | `selected_object_transfer(connection)` | typed lazy-gallery projection of the canonical `importObjects` per-handle preparation plus the existing chunk-read action; exposes the preparation-step index whose response is ObjectInfo and manifest-owned u64 transfer-size/u32 chunk-size slots without requiring consumers to inspect nested action ASTs; returns a contract error when a connection declares the actions with an invalid shape |
 | `object_transfer_contract(connection)` | transfer strategy (`chunked` or `wholeObject`), resume policy, read/completion actions, completion timing, and per-format confidence. A completion action is eligible only after the host has atomically committed the object locally. |
 | `operation_available(connection, mode, op, observed)` | `Available / WrongMode / WrongConnection / Blocked / Unavailable` |
 | `operations()` | the complete operation catalog: code, semantic or stable raw name, `executable`/`advertisedOnly` classification, atomic positive observed scopes, and evidence ids |
-| `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step — differs by connection) |
+| `control_for(connection, mode, prop)` | the set-mechanism (absolute vs vendor-step; differs by connection) |
 | `control_surface(connection, mode)` | semantic control roles mapped to manifest-owned properties, write effects/evidence state, effective owner, and the existing set/readback mechanism. `descriptorOnly` and other non-confirmed effects must be presented as experimental and verified by readback. |
 | `property_value_width(prop)` | the manifest property's generic scalar encoder width (`u8`, `u16`, `u32`, `i16`, or `i32`), or `None` for non-scalar/unknown types |
 | `properties()` | the complete property catalog: semantic and optional source-native/PTP names, `setting`/`scaffold`/`catalogOnly` classification, atomic positive observed scopes, descriptor form/source, evidence ids, a typed descriptor-value list (`int` or `string`, matching the property type), and value metadata |
@@ -97,9 +97,9 @@ therefore distinguish directly exercised values from accepted reference-defined
 rows even when both belong to one semantic property.
 
 Byte codecs (build/parse PTP packets, decode datasets, encode values) are exported
-functions — the **G1–G3 set is complete** (see §6).
+functions. The **G1–G3 set is complete** (see §6).
 
-## 3. Generate bindings (uniffi 0.31, library mode — no UDL)
+## 3. Generate bindings (uniffi 0.31, library mode, no UDL)
 
 Build the lib, then point the bundled generator at it. **One binary, four
 languages.** uniffi 0.31 dropped the `--library` flag (auto-detected); the
@@ -132,7 +132,7 @@ LIB=target/release/libcamera_protocol_ffi.a   # .so on Linux; .a is canonical on
 # Kotlin (Android)
 "$BINDGEN" generate -l kotlin -o generated/kotlin "$LIB"
 
-# Python (Linux — optional external adapters)
+# Python (Linux, optional external adapters)
 "$BINDGEN" generate -l python -o generated/python "$LIB"
 ```
 
@@ -150,7 +150,7 @@ automatically when on PATH; harmless warning if absent.
 | symptom | fix |
 |---|---|
 | `UDL file does not appear to be inside a crate` | You're running bindgen against a path it can't resolve to a crate. Confirm you're in the workspace root (not a subdirectory), the `--release` build actually produced `target/release/libcamera_protocol_ffi.{a,so,dylib}`, and you're passing the staticlib (`.a` on macOS) rather than the rlib. |
-| Swift file is `camera_protocol_ffi.swift` (snake_case) instead of `CameraProtocolFFI.swift` | Same root cause as above — bindgen didn't find `crates/camera-protocol-ffi/uniffi.toml`, so the PascalCase override didn't apply. Re-run from the workspace root after `cargo clean -p camera-protocol-ffi`. |
+| Swift file is `camera_protocol_ffi.swift` (snake_case) instead of `CameraProtocolFFI.swift` | Same root cause as above: bindgen didn't find `crates/camera-protocol-ffi/uniffi.toml`, so the PascalCase override didn't apply. Re-run from the workspace root after `cargo clean -p camera-protocol-ffi`. |
 | `Warning: Unable to auto-format … using swiftformat` | Harmless. Install `swiftformat` to suppress, or pass `-n` / `--no-format` to skip the attempt. The `.swift` file is still produced. |
 | `cargo run --bin uniffi-bindgen` hangs over non-interactive SSH | Cargo's stdin forwarding to the child process misbehaves over headless ssh. Build the binary once (`cargo build -p ptpsim-uniffi-bindgen --bin uniffi-bindgen`) and invoke `target/debug/uniffi-bindgen` directly. |
 
@@ -162,7 +162,7 @@ per-platform packaging:
 - **iOS:** build the **staticlib** (`.a`) for device arm64 plus arm64 and
   x86_64 simulators, `lipo`-combine the simulator archives, then
   `xcodebuild -create-xcframework`. **Verified end-to-end recipe in
-  `docs/APPLE_FFI_RELEASES.md` "Build recipe"** — that's the recipe
+  `docs/APPLE_FFI_RELEASES.md` "Build recipe"**; that's the recipe
   the explicit GitHub Actions promotion workflow ships; reuse it for local builds.
   Each promoted release
   publishes `CameraProtocolFFI-<sha8>.xcframework.zip` + a `.checksum`
@@ -242,7 +242,7 @@ canonical JSON leaves so foreign bindings do not invent a second value grammar.
    `ModeEntryExecution`: execute `Ptp.steps` with `run_mode_entry` over the
    current transport, surface `UserInstruction`, or orchestrate
    `ReestablishConnection` as described below. Each PTP step may be `tolerant` (a
-   non-OK PTP *response* is advisory — log + continue; only a transport failure
+   non-OK PTP *response* is advisory: log + continue; only a transport failure
    aborts). A `retry` step reruns its complete nested sequence only for the exact
    manifest-declared PTP response codes; transport failures and unselected
    responses escape immediately. `sendOp` `params` are literals **or** a named
@@ -272,7 +272,7 @@ canonical JSON leaves so foreign bindings do not invent a second value grammar.
 4. **Drive controls, gated.** Before any op: `operation_available(...)`. To set a
    value: `control_for(...)` tells you the mechanism; the codec encodes the bytes.
 5. **Detect state.** Feed observed prop values to `detect_mode` / `operation_available`
-   (the predicate `requires`) — you read them off the wire; the engine evaluates.
+   (the predicate `requires`). You read them off the wire; the engine evaluates.
 
 For a camera-initiated transfer, retain the latest values for every returned BLE
 trigger state and act only when its match rule holds. Open the resolved endpoint,
@@ -292,16 +292,16 @@ surface. Reserved routing is disabled until that state is true, so an ordinary
 count read cannot redirect public object lookup. A generic BLE adapter remains
 tracked by issue #164.
 
-## 6. Status — what's ready vs pending
+## 6. Status: what's ready vs pending
 
 - **Ready:** the §A query surface (above) + `operation_available_explained`
-  (`GateExplanation` — the resolution trace for telemetry); per-connection socket
+  (`GateExplanation`, the resolution trace for telemetry); per-connection socket
   bindings by role + wire framing (`port_for_role` / `transport_close` /
   `command_framing`, #133/#140); the GFX100 II manifest across **all five connections**
   (`app` WiFi-AP, `ble`, `wireless-tether` PCSS, `usb`, `xlv` HTTP); firmware-tier
   overlays via `ConfigStore.from_tiers(body, manufacturer, fw_overlays)` (e.g.
   `fw2.40.yaml` flips XLV to HTTPS).
-- **Codecs (§B) — G1–G3 landed + in the bindings.** G1: manifest-built reference app/Camera
+- **Codecs (§B): G1–G3 landed + in the bindings.** G1: manifest-built reference app/Camera
   Remote init packets plus `validate_init_ack` / `validate_legacy_app_init_ack`;
   transport-close frames come from `transport_close`. G2:
   `encode_value(raw, width)` (generic 8-, 16-, and 32-bit scalar
@@ -310,13 +310,13 @@ tracked by issue #164.
   sentinel/mask forms. Per-value semantics live in data, not app switch tables. G3: packet
   framing `build_command` / `build_data` / `parse_response` / `parse_data_payload` /
   `parse_data_phase` (standard framing streams `StartData`/`Data`/`EndData`; the Fuji
-  compressed and USB channels deliver the whole data phase in one type-2 `Data` frame —
+  compressed and USB channels deliver the whole data phase in one type-2 `Data` frame,
   reconciled byte-exact against the wire, #143) / `parse_event`, plus dataset codecs
   `parse_object_info` / `parse_device_prop_desc` / `parse_device_prop_desc_list` /
   `parse_record_stream` (manifest-declared composite properties) /
   `parse_object_handle_list` (0xd621). Framing is selected per call by
   `PtpFraming { Standard | Compressed | Usb }`, which you **read from the manifest**
-  (`ConnectionInfo.command_framing` / `event_framing`) — never a `kind→framing` map in app
+  (`ConnectionInfo.command_framing` / `event_framing`), never a `kind→framing` map in app
   source.
 - **Property value capabilities are scoped.** `PropertyInfo.value_profiles` carries
   connection/mode-specific legal rows when a camera path does not expose a useful
@@ -340,16 +340,16 @@ tracked by issue #164.
 - **Transport = data + your I/O.** Adding wireless-tether/USB/HTTP is: the manifest
   already has it (or add a row) + your platform's socket/USB/BLE code. The binding
   surface does not change. If you find yourself wanting to change the seam to add a
-  transport, stop — that's the thing we designed against.
+  transport, stop: that's the thing we designed against.
 - **No protocol literals in app source.** Opcodes, prop codes, mode values, ports → ask
   the manifest. A CI grep for PTP hex literals in app sources should stay empty.
 - **No shutter, live-view, or transfer sequences in app source either.** Verbs
   like startLiveView / pollLiveView / stopLiveView / shutter /
-  enumerateObjects / getObject are connection-specific recipes —
+  enumerateObjects / getObject are connection-specific recipes:
   the PCSS shutter is a 3-beat `0xD039 + 0x100E` dance, the reference app shutter is
   `0x100E + 0x9022` cleanup. Don't hardcode either; ask
   `action(connection, ActionVerb::<verb>)`. Read `.triggers` (e.g.
-  `[ObjectsAvailable]`) to plan UX side-effects without per-transport knowledge —
+  `[ObjectsAvailable]`) to plan UX side-effects without per-transport knowledge;
   the camera-knowledge that's coming next stays out of your code.
   See `docs/plans/action-verbs.md`.
 - **Collection reads and iteration are separate steps.** Execute a
@@ -380,8 +380,8 @@ tracked by issue #164.
   maintenance iteration. The manifest names the wire writes; it does not encode
   a fixed cadence.
 - **Secrets stay out of the bundle.** Access-gate material (the XLV bearer token, BLE
-  pairing secrets) is **not** in `camera-config-data` and never comes over this surface
-  — your app supplies it out-of-band (a private overlay). The manifest only says *that*
+  pairing secrets) is **not** in `camera-config-data` and never comes over this surface;
+  your app supplies it out-of-band (a private overlay). The manifest only says *that*
   a token is required, not how to mint it.
 
 ## 8. Validate against the simulator
@@ -437,11 +437,11 @@ closed-event outcomes are:
 The transport outcomes confirm simulator session cleanup and do not establish
 that a physical camera completed its own graceful shutdown.
 
-## 9. Pull-model surface — manufacturer index (BLE-MVP)
+## 9. Pull-model surface: manufacturer index (BLE-MVP)
 
 The seam the **greenfield iOS rewrite** consumes. Same `ConfigStore`, different
 constructor + a few new methods. The app pushes observations to the FFI and gets
-decisions back — **no UUIDs, byte literals, or model names in app source.**
+decisions back. **No UUIDs, byte literals, or model names in app source.**
 
 Authoritative spec: `docs/MANIFEST_SCHEMA.md` (the contract tiebreaker).
 
@@ -478,12 +478,12 @@ available for manufacturers whose indexed bodies are entirely self-contained.
 `ScanObservation::BleAdvert` carries `{ serviceUuids, manufacturerData?:
 { companyId, payload }, serviceData: [{uuid, payload}], localName?,
 txPower?, adRecords: [{adType, payload}] }`. Populate every field your
-platform exposes and leave the rest nil/empty — signature predicates over an
+platform exposes and leave the rest nil/empty; signature predicates over an
 absent field evaluate false, never error (plan §11.14). `manufacturerData.payload`
 is the bytes AFTER the 2-byte company id: split iOS
 `CBAdvertisementDataManufacturerDataKey` into `(companyId LE, payload)`;
 Android `getManufacturerSpecificData(id)` is already the payload.
-CoreBluetooth cannot supply `adRecords` — leave it empty on iOS.
+CoreBluetooth cannot supply `adRecords`; leave it empty on iOS.
 
 `ScanObservation::UsbAttachment` carries `{ platform, vendorId, productId }`.
 The engine matches the raw IDs against each connection's USB discovery data
@@ -541,14 +541,14 @@ the dedicated `xa7` model remain keyed as `fuji-generic`; persistence ids are
 never silently re-keyed. Delete the saved X-A7 and pair it again so recognition
 selects `xa7` and the legacy manufacturer app establishment/transport contract.
 
-### 9.3 Walking plans — the Rust executor
+### 9.3 Walking plans: the Rust executor
 
 The engine walks its own plans (#246). Implement two small foreign traits and
 hand them to the executor entry points; Rust owns plan walking,
 capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 `if`/`replaceTail`, and the per-step telemetry stream:
 
-- `BleExecutorTransport` (a `with_foreign` async trait) — raw I/O only:
+- `BleExecutorTransport` (a `with_foreign` async trait, raw I/O only):
   `connect` / `awaitDisconnect` / `requestMtu` / `ensureServicesDiscovered` /
   `read` / `peripheralName` / `write` / `writeWithNotificationFence` / `subscribe` /
   `nextNotification` / `sleep`.
@@ -568,12 +568,12 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
   the BLE trait. Every method fails with `UsbTransportError`
   (`NotConnected`, `DeviceGone`, `Stall`, `Timeout`, `NotAuthorized`,
   `ClaimFailed { owner }`, `OpenFailed`, `Failed`).
-- `StepObserver` — receives the `StepReport` outcome stream: `Started` plus
+- `StepObserver` receives the `StepReport` outcome stream: `Started` plus
   exactly one terminal (`Succeeded` / `Tolerated` / `Failed`) per step at every
   nesting level, with a `stepPath` position path (`steps[3].bleWrite`,
   `steps[5].if.then[0].bleRead`). Reports include optional activity id/version
   correlation. Map them onto your diagnostic telemetry bus.
-- `ConnectionActivityObserver` — receives the semantic activity stream from
+- `ConnectionActivityObserver` receives the semantic activity stream from
   manifest-declared executor spans: `Started`, `Retrying`, and one terminal
   `Succeeded`, `Failed`, or `Cancelled`. A retry carries its local attempt
   ordinal/limit plus a typed failure whose context contains only
@@ -586,7 +586,7 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
 
 | call | walks |
 |---|---|
-| `runEstablishment(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `steps`, including §11.5 `acquireFirmware` refinement. `initialScope` / `initialEncodings` are the `Candidate`'s `runtimeScope` / `runtimeScopeEncodings` — thread both verbatim so a `{ captured: … }` write-back re-encodes with the capture's true encoding instead of an app-side guess (#43). The returned `ExecutionOutcome.summary` carries the establishment confirmation verdict and tolerated-step aggregate described below. |
+| `runEstablishment(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `steps`, including §11.5 `acquireFirmware` refinement. `initialScope` / `initialEncodings` are the `Candidate`'s `runtimeScope` / `runtimeScopeEncodings`; thread both verbatim so a `{ captured: … }` write-back re-encodes with the capture's true encoding instead of an app-side guess (#43). The returned `ExecutionOutcome.summary` carries the establishment confirmation verdict and tolerated-step aggregate described below. |
 | `runBleAction(store, model, action, transport, observer, initialScope, runtimeParams)` | a named BLE-native control action (#91) over an already-established link; no refinement. |
 | `runPostExitReadiness(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | the plan's `postExitReadiness` gate. Run it after an orderly feature exit, before replaying `runEstablishment`. A plan whose establishment declares no gate returns immediately with `stepsRun == 0` and touches no I/O; a handle with no establishment at all is `UnknownPlan`, same as `runEstablishment`. |
 | `run_usb_establishment(store, planHandle, transport, observer, activityObserver, initialScope, initialEncodings, runtimeParams)` | a raw `usb` connection's establishment plan (§11.29): USB verbs over `UsbExecutorTransport`, with the same scope and encoding threading as `runEstablishment`. |
@@ -815,7 +815,7 @@ Two transport contracts carry the correctness load:
   ack, and from that moment the transport must buffer every notification on
   that characteristic (per-characteristic FIFO) until consumed via
   `nextNotification`. Acceptance logic (until-predicates, seed-read routing)
-  lives in the executor — a payload arriving between subscribe and the first
+  lives in the executor: a payload arriving between subscribe and the first
   `nextNotification` call must not be lost. `nextNotification` may stay pending
   indefinitely; the executor owns every deadline (including a backstop on each
   transport verb, so a silently-stalled transport cannot hang a walk). A
@@ -827,8 +827,8 @@ Two transport contracts carry the correctness load:
 - **The host clock.** `sleep(ms)` resolves after `ms` milliseconds of
   wall-clock time. The executor races I/O futures against it for timeouts and
   retry backoff, so the library carries no async runtime of its own.
-  Cancellation propagates both ways: when a deadline lapses — or your app
-  cancels the whole walk — the dropped Rust future cancels the corresponding
+  Cancellation propagates both ways: when a deadline lapses (or your app
+  cancels the whole walk), the dropped Rust future cancels the corresponding
   foreign task through the generated bindings, so make each transport method
   cancellation-safe.
 
@@ -879,29 +879,29 @@ only as these context strings.
 
 ### 9.4 The Step grammar (reference)
 
-The executor implements this grammar for you — read this section as the verb
+The executor implements this grammar for you. Read this section as the verb
 reference, not permission to create a second app-side protocol authority. Each
 verb carries
-`StepOptions { tolerant, retries, retryDelayMs, confirms }` — wrap each verb
+`StepOptions { tolerant, retries, retryDelayMs, confirms }`. Wrap each verb
 body in one retry loop and the same code handles all of them. `confirms` is
 normally absent; `registration` is legal only on the signal-bearing verbs
 called out above.
 
 | verb | what to do |
 |---|---|
-| `bleConnect` | connect to the peripheral your I/O primitive captured at recognize time. *No parameters* (§11.4 — peripheral binding is app-side). |
+| `bleConnect` | connect to the peripheral your I/O primitive captured at recognize time. *No parameters* (§11.4: peripheral binding is app-side). |
 | `bleDelay` | sleep for exactly `durationMs` using the transport clock. This is an authored inter-operation delay, distinct from retry backoff. |
 | `bleAwaitDisconnect` | wait up to `timeoutMs` for the connected peer to disconnect. A disconnect is success; expiry is a step failure. Used by wake plans where connecting to a startup advertisement triggers camera boot. |
 | `bleRequestMtu` | request ATT MTU `requestedMtu` before GATT traffic (no call where the platform has no request API; CoreBluetooth negotiates on its own). When the manifest declares `minimumMtu`, fail on any platform when the negotiated MTU is below it; with none declared, succeed at any negotiated MTU. |
-| `bleDiscoverServices` | explicit service-discovery state transition. If your stack auto-discovers, complete when discovery has completed — don't re-trigger. Discovery timeout is your policy. |
-| `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13 — empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
+| `bleDiscoverServices` | explicit service-discovery state transition. If your stack auto-discovers, complete when discovery has completed; don't re-trigger. Discovery timeout is your policy. |
+| `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13; empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
 | `blePeripheralName` | store the connected peripheral's platform name in scope under `captureAs` (UTF-8, any NUL terminator removed). Use `CBPeripheral.name` on CoreBluetooth, which filters the GAP service from discovery, so a GATT 0x2A00 read cannot succeed there; a 0x2A00 read is fine on stacks that expose it. An unavailable name is a step failure, never an empty string. |
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. Optional `notificationFence` names a subscribed GATT characteristic whose buffered prefix the transport atomically fences immediately before issuing this write; notifications caused by the write remain consumable. |
 | `bleWriteChunk` | frame and write one manifest-declared window from a runtime blob, using the captured chunk index, frame fields, size, sentinel index, and optional checksum policy (§11.2a). |
-| `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate — CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack — no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
+| `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate; CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack; no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
 | `bleNotify` | subscribe (`mode` as above) AND wait for `until` (Any / Equals / Matches); bind whole payload via `captureAs` and/or extract fields via `capture` (window → transform chain → encoding → scope; a failing capture is skipped, not a step failure). |
-| `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same captures and predicates, then remain notification-only. `seedRead` cannot be combined with `failWhen`, because callback transports cannot reliably distinguish a read response from a racing notification; use an explicit pre-command read plus a notification-only rejection await. Each observation applies `capture`/`captureAs`; `until` wins, otherwise a matching `failWhen` fails as `ConditionRejected`. When `failureEvidence` is present, its `steps` run inside the await budget and rejection is terminal only if its `when` predicate matches fresh evidence; otherwise observation continues. For a notify source, evidence steps cannot read that same characteristic, including through nested control flow; use a separate evidence characteristic so racing callbacks retain unambiguous provenance. If no rejection is confirmed, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). §11.15 — reference semantics in `camera_sim::ble::run_await_until`. |
-| `acquire` | run inner step (`from[0]` — `Vec<Step>` of length 1; uniffi 0.31 doesn't accept `Box<Step>` for recursive enums), bind result to `name`. |
+| `bleAwaitUntil` | observe `source` (poll a `read` characteristic, or consume its `notify` stream) until `until` (a `Predicate` over scope) holds, up to `timeoutMs`. A notify source may set `seedRead`: subscribe + arm notifications, issue one read through the same captures and predicates, then remain notification-only. `seedRead` cannot be combined with `failWhen`, because callback transports cannot reliably distinguish a read response from a racing notification; use an explicit pre-command read plus a notification-only rejection await. Each observation applies `capture`/`captureAs`; `until` wins, otherwise a matching `failWhen` fails as `ConditionRejected`. When `failureEvidence` is present, its `steps` run inside the await budget and rejection is terminal only if its `when` predicate matches fresh evidence; otherwise observation continues. For a notify source, evidence steps cannot read that same characteristic, including through nested control flow; use a separate evidence characteristic so racing callbacks retain unambiguous provenance. If no rejection is confirmed, run `onEach` and observe again. `intervalMs` is the read-poll cadence (ignored for notify). Reference semantics (§11.15) in `camera_sim::ble::run_await_until`. |
+| `acquire` | run inner step (`from[0]`, a `Vec<Step>` of length 1; uniffi 0.31 doesn't accept `Box<Step>` for recursive enums), bind result to `name`. |
 | `acquireFirmware` | read fw via `AcquireSource`, then call `refineEstablishment(...)`. Raw USB plans accept `userPrompt`; BLE-derived `bleRead` and `bleAdvert` sources are invalid there. |
 | `if` | evaluate `condition` (`Predicate{field, op, value}`) against scope; walk `thenBranch` or `elseBranch`. If `tolerant: true` and the predicate's `field` isn't in scope, evaluate `false` rather than erroring. |
 | `retry` | run `steps`; when a failure's stable kind equals `whenFailure`, run `onFailure` in the same scope and evaluate `retryWhen`. Retry only when it is true and `maxAttempts` is not exhausted, sleeping `retryDelayMs` first. Unselected failures escape unchanged. Terminal selected failures include only the named `failureContext` values. Repeated subscriptions to the same GATT characteristic and mode are reused within the walk. |
@@ -917,10 +917,10 @@ called out above.
 | `Runtime{slot, encoding?, transform}` | look up `slot` in runtimeParams, decode per encoding, apply the transform chain |
 | `Captured{name, transform}` | look up `name` in scope, apply the transform chain |
 
-`transform`: a `Vec<Transform>` chain from the closed vocabulary (plan §11.13 —
+`transform`: a `Vec<Transform>` chain from the closed vocabulary (plan §11.13:
 `bitOr`, `bitAnd`, `slice`, `dropPrefix`, `reverseBytes`, `appendNul`, `padRight`, `uuidFromBytes`,
 `bits`), applied in order; empty = no transform. Reference semantics live in
-`camera_config::index::eval::apply_transforms` — implement your dispatcher to
+`camera_config::index::eval::apply_transforms`; implement your dispatcher to
 match its unit tests; a failing chain counts as step failure under §11.6.
 `appendNul` appends exactly one zero byte and is used for peer-required C-string
 writes; it does not inspect or normalize an existing trailing byte.
@@ -930,7 +930,7 @@ finite protocol-field ceiling is 65,535 bytes; larger authored or
 programmatically constructed targets fail without allocating.
 Models e.g. the RED `F557D96B` echo (read 4 bytes → `value | 0x20000000` →
 write); not iOS-specific (reference app Android does the same OR). The transform lives
-in the schema, not in your dispatcher logic — you just honour it.
+in the schema, not in your dispatcher logic; you just honour it.
 
 `runtimeParams` is a separate map you populate at walk start (terminal name, host
 IP, anything app-supplied), distinct from `scope` (recognize-seed + step captures).
@@ -964,7 +964,7 @@ D850 validates exposure, persistence, reconnect, and returned DeviceInfo.
 ### 9.6 Zero camera knowledge in app source
 
 If you find yourself hardcoding a UUID, byte literal, or Fuji-specific behaviour
-in app source, something's wrong on the ptpsim side — flag it. The whole point of
+in app source, something's wrong on the ptpsim side: flag it. The whole point of
 the pull model is that the app source is identical with one manifest or fifty.
 
 ### 9.7 Out of scope (queued for P2+)
@@ -975,7 +975,7 @@ mDNS / UDP / WiFi-join verbs and their I/O primitives.
 layer / live-view socket. BLE plans can expose credentials and request camera
 AP establishment, but OS network association, DHCP, and AP management remain
 host-owned. Adding another I/O primitive is one schema verb + one dispatcher
-case — no other layer changes.
+case; no other layer changes.
 
 ### 9.8 Dynamic connection lifecycle contract
 
@@ -1101,9 +1101,9 @@ plugins are generic operator extensions.
 
 ### 10.3 Schemas
 
-* `tools/camera-sim-tui/schemas/plugin-manifest-v1.schema.json` — plugin
+* `tools/camera-sim-tui/schemas/plugin-manifest-v1.schema.json`: plugin
   identity, panels, actions, and endpoint/spawn.
-* `tools/camera-sim-tui/schemas/plugin-panel-v1.schema.json` — `GET /panels`
+* `tools/camera-sim-tui/schemas/plugin-panel-v1.schema.json`: `GET /panels`
   response shape.
 
 See also `tools/camera-sim-tui/fake-plugin/` for a minimal in-repo fake plugin

@@ -1,5 +1,5 @@
 ---
-description: The camera-sim-service container image — supported platforms, runtime port contract, and publication guidance.
+description: The camera-sim-service container image: supported platforms, runtime port contract, and publication guidance.
 status: reference
 read-when: Building, publishing, or running the simulator container, or wiring it into integration tests.
 ---

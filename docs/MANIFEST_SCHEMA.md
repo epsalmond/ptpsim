@@ -1,10 +1,10 @@
 ---
-description: The manifest schema contract — template grammar, step/observation vocabulary, predicates, control flow, and wire conventions. When code or any other doc disagrees, this document wins.
+description: The manifest schema contract (template grammar, step/observation vocabulary, predicates, control flow, and wire conventions). When code or any other doc disagrees, this document wins.
 status: reference
 read-when: Authoring or reviewing camera-config manifests, schema changes, FFI variants, or anything that parses/emits manifest data.
 ---
 
-# Manifest schema — precise contracts and conventions (§11)
+# Manifest schema: precise contracts and conventions (§11)
 
 Extracted verbatim from the iOS rewrite P0/P1 plan, whose §11 served as the
 schema authority ("contract tiebreaker") while the plan shipped; section
@@ -23,10 +23,10 @@ distinct so the parser can route them at deserialization time.
 
 | Form | Where it appears | Resolved at | Resolution source |
 |---|---|---|---|
-| `"{family.path.dotted}"` — bare braces, dotted path | any string field in YAML | **FFI load** | the model's resolved family-merged tree (e.g. `{ble.advert.manufacturerCompanyId}` → `1240`; nested-map paths like `{ble.advert.serviceUuids.fileTransfer}` dot-walk). Unresolved → load-time error. |
-| `{ captured: <name> }` — structured StepValue | `bleWrite.value`, `udpSend.payload`, similar value-typed fields | **dispatcher walk** | `scope[<name>]` (populated by recognize-seed, `bleRead.capture_as`, `acquire`, `tcpExpect ?<name>`). Unresolved → tolerant-aware error (see §11.6). |
-| `{ runtime: <slot>, encoding: <name> }` — structured StepValue | same places as `captured` | **dispatcher walk** | `runtime_params[<slot>]` (a separate map the app populates at walk start: terminal name, host IP, etc.). Unresolved → tolerant-aware error. |
-| `{ template: <string> }` — inline byte/string template with bare `{name}` interpolations | `udpSend.payload`, anywhere a Vec<u8> is expected from a string | **dispatcher walk** | each `{name}` in the string resolves against scope ∪ runtime_params (scope wins on collision). Unresolved → tolerant-aware error. |
+| `"{family.path.dotted}"` (bare braces, dotted path) | any string field in YAML | **FFI load** | the model's resolved family-merged tree (e.g. `{ble.advert.manufacturerCompanyId}` → `1240`; nested-map paths like `{ble.advert.serviceUuids.fileTransfer}` dot-walk). Unresolved → load-time error. |
+| `{ captured: <name> }` (structured StepValue) | `bleWrite.value`, `udpSend.payload`, similar value-typed fields | **dispatcher walk** | `scope[<name>]` (populated by recognize-seed, `bleRead.capture_as`, `acquire`, `tcpExpect ?<name>`). Unresolved → tolerant-aware error (see §11.6). |
+| `{ runtime: <slot>, encoding: <name> }` (structured StepValue) | same places as `captured` | **dispatcher walk** | `runtime_params[<slot>]` (a separate map the app populates at walk start: terminal name, host IP, etc.). Unresolved → tolerant-aware error. |
+| `{ template: <string> }` (inline byte/string template with bare `{name}` interpolations) | `udpSend.payload`, anywhere a Vec<u8> is expected from a string | **dispatcher walk** | each `{name}` in the string resolves against scope ∪ runtime_params (scope wins on collision). Unresolved → tolerant-aware error. |
 
 **Phases:**
 - *FFI load*: family inheritance is merged into per-model resolved views. Every static path ref (`{ble.advert.manufacturerCompanyId}`) becomes a literal at this point. The plan returned by `establishment()` has only structured `Captured` / `Runtime` / `Template` / `Literal` step values, never raw path refs.
@@ -119,7 +119,7 @@ The FFI never sees a `CBPeripheral`. The app holds it.
 3. App calls `store.establishment(model, "ble", initial_scope: candidate.runtime_scope)` → gets `Plan`.
 4. App calls `dispatcher.walk(plan)`. The `BleConnect` step in the plan carries no parameters; the dispatcher's BLE primitive calls `connect()` on its bound peripheral.
 
-`BleConnect` therefore has **no fields** in the Step enum (just `StepOptions`). Earlier draft showed `service_uuid: StepValue` — drop that.
+`BleConnect` therefore has **no fields** in the Step enum (just `StepOptions`). Earlier draft showed `service_uuid: StepValue`; drop that.
 
 ### 11.4a `bleDelay` / `bleRequestMtu` / `bleDiscoverServices`
 
@@ -127,10 +127,10 @@ Sony pairing and Wi-Fi flows request MTU 158 before GATT traffic; Sony,
 Canon, and Nikon all make service discovery an explicit state transition.
 Three setup verbs make those expressible:
 
-- `bleDelay: { durationMs: <u32> }` — wait for one nonzero, manifest-authored
+- `bleDelay: { durationMs: <u32> }`: wait for one nonzero, manifest-authored
   interval using the transport clock. legacy manufacturer app uses it between connect and
   MTU request; it is not folded into `bleConnect` or retry policy.
-- `bleRequestMtu: { requestedMtu: <u16>, minimumMtu: <u16>? }` —
+- `bleRequestMtu: { requestedMtu: <u16>, minimumMtu: <u16>? }`:
   `requestedMtu` is the request target the reference app asks the stack for
   (the Android `requestMtu` argument); a platform without a request API
   (CoreBluetooth negotiates automatically) makes no call. `minimumMtu` is a
@@ -141,7 +141,7 @@ Three setup verbs make those expressible:
   (tolerant-aware per §11.6) below it; with no floor declared it succeeds at
   any negotiated MTU. `minimumMtu` greater than `requestedMtu` is a
   load-time error.
-- `bleDiscoverServices: {}` — on auto-discovering stacks this is a
+- `bleDiscoverServices: {}`: on auto-discovering stacks this is a
   completion checkpoint, not a re-trigger. Discovery timeout is dispatcher
   policy.
 
@@ -289,7 +289,7 @@ for attempt in 0...retries {
 **Errors that count as "step failed":**
 - Wire-level failure (BLE GATT error, write timeout, read returned error code).
 - Capture decode failure (e.g. `encoding: ascii` on a non-ASCII byte).
-- Transform-chain failure (out-of-range `slice`, integer op on > 8 bytes — §11.13).
+- Transform-chain failure (out-of-range `slice`, integer op on > 8 bytes; §11.13).
 - Template ref unresolved (`{captured: name}` where name isn't in scope).
 - `bleRead.capture_as` of a GATT char absent from the camera's exposed catalog.
 
@@ -336,7 +336,7 @@ already-successful subscription is reused rather than rewriting its CCCD.
 - `false` (default): predicate references an unbound scope key → hard dispatcher error.
 - `true`: predicate references an unbound scope key → predicate evaluates as `false` → else branch (or skip if no else).
 
-This is the second-class case of tolerance — useful for "if the body exposed this characteristic, do the extra dance; otherwise skip."
+This is the second-class case of tolerance, useful for "if the body exposed this characteristic, do the extra dance; otherwise skip."
 
 ### 11.7 Signature match precedence
 
@@ -348,7 +348,7 @@ The FFI does NOT auto-pick a model from a Disambiguate. The app prompts the user
 
 ### 11.8 `bleNotify` acceptance condition
 
-One field — `until` — a tagged union of acceptance conditions. No `expect` field (drop it from earlier sections).
+One field: `until`, a tagged union of acceptance conditions. No `expect` field (drop it from earlier sections).
 
 ```rust
 pub enum BleNotifyUntil {
@@ -363,7 +363,7 @@ pub enum Step {
         until: BleNotifyUntil,
         capture_as: Option<String>,   // bind WHOLE matching payload to scope if set
         capture: Vec<NotifyCapture>,  // field captures: window → transform chain → encoding → scope
-        mode: CccdMode,               // notify (default) | indicate — which CCCD value to write
+        mode: CccdMode,               // notify (default) | indicate: which CCCD value to write
         timeout_ms: u32,
         opts: StepOptions,
     },
@@ -376,8 +376,8 @@ YAML form:
 - bleNotify:
     gatt: apState
     until: { equals: 0x8001, encoding: u16-le }
-    captureAs: apStatus              # optional — whole payload, for debugging/unknown records
-    capture:                         # optional — transformed field captures (§11.13 pipeline)
+    captureAs: apStatus              # optional: whole payload, for debugging/unknown records
+    capture:                         # optional: transformed field captures (§11.13 pipeline)
       - { at: 2, length: 1, encoding: u8, name: wifiStatus }
     mode: notify                     # default; `indicate` for indication CCCDs (Canon/Nikon)
     timeoutMs: 5000
@@ -387,11 +387,11 @@ YAML form:
 If `until.equals` value is supplied as a string with an `encoding:` field, the FFI decodes to bytes at load time. The Step over the wire carries the decoded `Vec<u8>`.
 
 A failing field capture (window out of range, chain failure, decode mismatch)
-is **skipped**, it does not fail the step — `until` alone gates step success.
+is **skipped**, it does not fail the step; `until` alone gates step success.
 
 For CCCD-only flows where the camera advances on the descriptor-write
 callback itself (no notification payload is emitted), use `bleSubscribe`
-instead — same `gatt` + `timeoutMs` + `mode`, no `until` / `captureAs` /
+instead, with the same `gatt` + `timeoutMs` + `mode`, no `until` / `captureAs` /
 `capture`. The Fuji `mFirstRegisterNotify` / `mSecondRegisterNotify` rounds in
 `fuji/index.yaml` are the canonical example.
 
@@ -432,7 +432,7 @@ The loader is fail-fast: any error aborts the entire load. There is no partial-s
 
 ### 11.11 uniffi packaging + iOS bundling
 
-Moved to [`APPLE_FFI_RELEASES.md`](APPLE_FFI_RELEASES.md) — packaging is
+Moved to [`APPLE_FFI_RELEASES.md`](APPLE_FFI_RELEASES.md): packaging is
 release engineering, not manifest schema.
 
 ### 11.12 What's still out of scope after §11
@@ -459,7 +459,7 @@ transform:
   - bits: { mask: 0x0C, shift: 2 }
 ```
 
-**Allowlist (closed — no arbitrary expressions):**
+**Allowlist (closed, no arbitrary expressions):**
 
 | primitive | operand | semantics |
 |---|---|---|
@@ -475,7 +475,7 @@ transform:
 Transforms are **bytes → bytes** and total: a chain either produces bytes or
 fails the step/capture (§11.6). Integer *decode* deliberately lives in the
 `encoding` allowlist (§11.2) applied after the chain, not in the transform
-vocabulary — this deviates from the risk-pass doc's literal list ("endian
+vocabulary. This deviates from the risk-pass doc's literal list ("endian
 integer decode as transform") to keep the vocabulary closed under
 composition.
 
@@ -486,14 +486,14 @@ composition.
 Statically-invalid operands (`slice.length: 0`, `bits.mask: 0`,
 `bits.shift ≥ 64`, `padRight.length: 0`, `padRight.length > 65535`, operands on `reverseBytes`/`appendNul`/`uuidFromBytes`) are load
 errors. Reference evaluation: `camera_config::index::eval::apply_transforms`
-— its unit tests are the executable spec a dispatcher must match.
+(its unit tests are the executable spec a dispatcher must match).
 
 `StepValue::Literal` takes no transform: anything a chain could do to a
 load-time literal belongs in the authored bytes.
 
 ### 11.14 BLE advert predicate model (multivendor pass, 2026-06)
 
-Added by the multivendor schema risk pass — Nikon recognizes by service UUID
+Added by the multivendor schema risk pass. Nikon recognizes by service UUID
 + local name (no manufacturer data), Canon by service UUID + manufacturer
 data, Sony by manufacturer-data bitfields. The old
 `require: { manufacturerCompanyId, advertContainsService }` +
@@ -517,13 +517,13 @@ signatures:
 | key | body | semantics |
 |---|---|---|
 | `all` / `any` | list of predicates (non-empty) | conjunction / disjunction |
-| `not` | one predicate | negation — see absent-field caveat below |
-| `manufacturerData` | `{ companyId?, length?/minLength?, assertByte, assertBits }` | over the manufacturer AD record; payload constraints apply to the **post-company-id payload**. `companyId` optional, but data SHOULD pin it whenever the vendor advertises one (false-positive window otherwise — #23) |
+| `not` | one predicate | negation (see absent-field caveat below) |
+| `manufacturerData` | `{ companyId?, length?/minLength?, assertByte, assertBits }` | over the manufacturer AD record; payload constraints apply to the **post-company-id payload**. `companyId` optional, but data SHOULD pin it whenever the vendor advertises one (false-positive window otherwise; #23) |
 | `serviceUuids` | `{ contains: <uuid> }` | advert's service-UUID list contains the UUID (case-insensitive) |
 | `serviceData` | `{ uuid, length?/minLength?, assertByte, assertBits }` | over the service-data payload advertised for `uuid` |
-| `localName` | exactly one of `{ equals \| prefix \| contains }` | plain string ops — regex is deliberately NOT in the engine vocabulary |
+| `localName` | exactly one of `{ equals \| prefix \| contains }` | plain string ops; regex is deliberately NOT in the engine vocabulary |
 | `txPower` | `{ min?, max? }` (at least one) | advertised TX power within bounds |
-| `rawAdRecord` | `{ adType, length?/minLength?, assertByte, assertBits }` | over a raw AD record **as seen on air** — for AD type 0xFF that INCLUDES the 2-byte LE company id |
+| `rawAdRecord` | `{ adType, length?/minLength?, assertByte, assertBits }` | over a raw AD record **as seen on air**; for AD type 0xFF that INCLUDES the 2-byte LE company id |
 
 `assertByte: { index, equals }`; `assertBits: { offset?, mask, equals }`
 reads the minimum LE width covering `mask` at byte `offset` and checks
@@ -532,21 +532,21 @@ reads the minimum LE width covering `mask` at byte `offset` and checks
 **Absent-field rule:** a predicate over a field the advert did not carry (no
 manufacturer data, no local name, no TX power, empty AD-record list)
 evaluates **false**, never an error. Consequently `not:` over an absent
-field evaluates **true** — authors beware. iOS CoreBluetooth never supplies
+field evaluates **true**; authors beware. iOS CoreBluetooth never supplies
 raw AD records, so `rawAdRecord` predicates never match observations from
 that platform; prefer `manufacturerData`/`serviceData`/`serviceUuids` forms
 unless the data is Android-only.
 
-**Captures:** `{ source, at?, length?, transform?, encoding, name }` —
+**Captures:** `{ source, at?, length?, transform?, encoding, name }`:
 source bytes → window `[at, at+length)` (length omitted = to end) →
 transform chain (§11.13) → `encoding` decode → runtime_scope under `name`.
 Sources: `manufacturerData` (post-company-id payload), `localName` (UTF-8
 bytes), `{ rawAdRecord: <adType> }` (as-on-air), `{ serviceData: "<uuid>" }`.
-A capture that fails anywhere is skipped — matching is decided by `require`
+A capture that fails anywhere is skipped; matching is decided by `require`
 alone.
 
 **Evaluation** lives in `camera_config::index::eval`
-(`BleAdvertFacts`, `advert_matches`, `advert_scope`) — signatures are never
+(`BleAdvertFacts`, `advert_matches`, `advert_scope`). Signatures are never
 exposed over uniffi; the FFI converts `ScanObservation::BleAdvert` into
 `BleAdvertFacts` and delegates. §11.7 precedence and Disambiguate semantics
 are unchanged; the Disambiguate-level runtime_scope still intersects
@@ -556,16 +556,16 @@ after the user picks).
 **Family constants** renamed in the same pass: `ble.advert.fujiCompanyId` →
 `ble.advert.manufacturerCompanyId` (now optional),
 `ble.advert.legacyServiceUuid` → `ble.advert.serviceUuids.fileTransfer`
-(named map). Hard migration — no aliases; pre-production per AGENTS.md.
+(named map). Hard migration with no aliases; pre-production per AGENTS.md.
 
-### 11.15 `bleAwaitUntil` — await / poll-until control flow (2026-06)
+### 11.15 `bleAwaitUntil`: await / poll-until control flow (2026-06)
 
 The control-flow primitive four camera flows converge on (ptpsim #32-V2 Sony
 Wi-Fi handoff, #29 postview-await, #42 AF poll, #46 transfer loop): observe a
 characteristic repeatedly until a condition holds, optionally acting each
 unsatisfied iteration. Lives in the BLE establishment grammar first (it has
 the scope/capture/`Predicate`/timeout machinery and the `ble.rs` reference
-walker); **the PTP-IP action/mode-entry grammar mirrors this contract** —
+walker); **the PTP-IP action/mode-entry grammar mirrors this contract**,
 now landed in §11.16 (#29/#42 land there), with its own scope (a `PropView`),
 a reference executor (`camera_sim::ptpip::walk_ptpip`), and a PTP-native
 condition vocabulary.
@@ -575,7 +575,7 @@ condition vocabulary.
     source: { notify: { gatt: launchState, mode: notify } }  # or: { read: <gatt> }
     capture: [ { at: 3, length: 1, encoding: u8, name: wifiStatus } ]  # §11.13 pipeline, per iteration
     captureAs: wholePayload         # optional whole value → scope (hex), per iteration
-    until: { wifiStatus: { eq: 1 } } # a Predicate over scope — the `if:` vocabulary
+    until: { wifiStatus: { eq: 1 } } # a Predicate over scope (the `if:` vocabulary)
     failWhen: { wifiStatus: { eq: 0 } } # optional terminal rejection
     failureEvidence:                  # optional compound rejection proof
       steps:
@@ -587,11 +587,11 @@ condition vocabulary.
     options: { tolerant: false, retries: 0 }
 ```
 
-**Semantics.** Each iteration: (1) observe one value — a fresh `read` of the
+**Semantics.** Each iteration: (1) observe one value: a fresh `read` of the
 characteristic, or the next `notify` payload (CCCD enabled once up front with
 `mode`); (2) apply `capture`/`captureAs` into runtime_scope (§11.13 pipeline,
-fail-soft — a window/transform/decode miss is skipped); (3) evaluate `until`
-(a [`Predicate`] over scope, §3.3 vocabulary) — if it holds, the step
+fail-soft: a window/transform/decode miss is skipped); (3) evaluate `until`
+(a [`Predicate`] over scope, §3.3 vocabulary); if it holds, the step
 succeeds; (4) otherwise run `onEach` and observe again. The condition is
 uniform across `read` and `notify` sources because captures bridge the
 observed bytes into scope first.
@@ -648,27 +648,27 @@ competing per-characteristic waiters.
 is the read-poll cadence (the dispatcher sleeps between reads); it's ignored
 for `notify`, including seeded notify (cadence is the camera's). The **reference walker** models the
 timeout deterministically as **source-exhaustion** (notify queue drained / read
-sequence consumed without satisfaction) plus a 256-iteration cap — the analogue
+sequence consumed without satisfaction) plus a 256-iteration cap, the analogue
 of "retries are first-try-or-never" for the deterministic oracle.
 
 **`onEach`** is a `Vec<Step>` (may be empty for a pure poll). It runs only when
 `until` is not yet satisfied, *after* an unsatisfied observation and *before*
-the next — so a launch-request write lands once per not-yet-launched status,
+the next, so a launch-request write lands once per not-yet-launched status,
 never after success. A pre-loop action goes in a `bleWrite` before the
 `bleAwaitUntil`, not in `onEach`.
 
 **Not this verb:** bounded-loop / for-each over a known collection (ptpsim #46,
-iterate object handles + chunk each) is a *distinct* construct — iteration over
-a set, not a condition-wait — and is a separate future addition. `bleAwaitUntil`
+iterate object handles + chunk each) is a *distinct* construct (iteration over
+a set, not a condition-wait) and is a separate future addition. `bleAwaitUntil`
 waits on an evolving condition; it does not enumerate.
 
-Reference semantics: `camera_sim::ble::run_await_until` — its tests are the
+Reference semantics: `camera_sim::ble::run_await_until`. Its tests are the
 executable spec a platform dispatcher must match.
 
-### 11.16 PTP-IP `awaitUntil` — poll-until for the action/mode-entry grammar (2026-06)
+### 11.16 PTP-IP `awaitUntil`: poll-until for the action/mode-entry grammar (2026-06)
 
 The PTP-IP step grammar (`camera_config::model::Step`) gains the await/poll-until
-verb, mirroring §11.15's **contract** — not its types. The two grammars share the
+verb, mirroring §11.15's **contract**, not its types. The two grammars share the
 control-flow semantics (observe until a condition holds, act each unsatisfied
 iteration, deterministic timeout); they do **not** share a scope type or a step
 enum (decision: two grammars, one contract). PTP-IP is PTP-native where BLE is
@@ -679,7 +679,7 @@ GATT/byte-window-native:
 | Source | `read` **or** `notify` over byte windows | `poll` a property (`GetDevicePropValue`, loop) **or** `event` push (single-shot, #54) |
 | Capture | `capture`/`captureAs` + transform/encoding pipeline | each property read populates the `PropView`; enclosing `captures` may bind the final successful poll without another read |
 | Scope | `BTreeMap<String,String>` runtime_scope + encodings | `camera_config::predicate::PropView` (`BTreeMap<u16,i64>`) |
-| `until` | `index::Predicate` over string scope | `camera_config::Predicate` over `PropView` (mask/eq/ne/lt/gt + all/any/not) — `mask` handles `0xd212` composite sub-fields |
+| `until` | `index::Predicate` over string scope | `camera_config::Predicate` over `PropView` (mask/eq/ne/lt/gt + all/any/not); `mask` handles `0xd212` composite sub-fields |
 | Reference | `camera_sim::ble::run_await_until` | `camera_sim::ptpip::walk_ptpip` |
 
 ```yaml
@@ -704,12 +704,12 @@ source valid on `awaitUntil`. It is valid for `poll` and for `event` with
 already obtained for the terminal predicate evaluation rather than issuing an
 extra read. The condition is uniform because every poll bridges the wire value
 into the typed view first. `awaitUntil` is a condition-wait, distinct from
-`repeat` (a bounded loop) and from a future for-each over a collection (#46 —
+`repeat` (a bounded loop) and from a future for-each over a collection (#46:
 iteration, not a wait).
 
 **Timeout.** `timeoutMs` is the dispatcher's wall-clock budget; the step fails
 (tolerant-aware) if `until` isn't met before it elapses. The reference executor
-models this deterministically as a 256-iteration cap (`MAX_AWAIT_ITERS`) — the
+models this deterministically as a 256-iteration cap (`MAX_AWAIT_ITERS`), the
 analogue of §11.15's source-exhaustion model.
 
 **Camera-side settle (sim).** An action's responder role may install a generic
@@ -731,21 +731,21 @@ would silently drop `all`/`any`/`not`); the dispatcher owns the loop and
 evaluates via the `await_until_satisfied(until, observed)` helper so Swift never
 re-implements the predicate logic.
 
-Reference semantics: `camera_sim::ptpip::walk_ptpip` — its tests
+Reference semantics: `camera_sim::ptpip::walk_ptpip`. Its tests
 (`af_lock_round_trips_via_op_effect_and_poll_until`,
 `af_capture_round_trips_via_event_source_then_single_read`) are the executable
 spec a platform dispatcher must match.
 
-#### 11.16.1 Source: poll vs. event — the hybrid push-then-read (#54)
+#### 11.16.1 Source: poll vs. event (the hybrid push-then-read, #54)
 
 The camera's Wi-Fi-AP `app` (reference app) path has a **wire-proven event push** on the
 PTP/IP event socket (55741): capture lifecycle (`0xC004`→`0xC001`→`0x400D`) and
 `0xC005` AFCAPTUER arrive unsolicited on fw 02.30. **The critical split:** events
-are **completion/lifecycle** signals, NOT value-change signals — the camera emits
+are **completion/lifecycle** signals, NOT value-change signals: the camera emits
 **no** `DevicePropChanged (0x4006)` for the `0xD2xx` range on fw 02.30. So the AF
 *result* (`0xD209` green/red) is poll-only even though `0xC005` says AF
 *finished*. The optimal pattern is therefore a **hybrid**: await the completion
-event (push), then do a **single** value read for the result — not a blind poll
+event (push), then do a **single** value read for the result, not a blind poll
 loop.
 
 ```yaml
@@ -757,18 +757,18 @@ loop.
     timeoutMs: 5000
 ```
 
-**Semantics (event source, re-poll — #185).** (1) await an event packet with
+**Semantics (event source, re-poll, #185).** (1) await an event packet with
 `code` on the event socket (single-shot: the push either arrives within the
 budget or never will); (2) if `thenPoll` is set, `GetDevicePropValue(thenPoll)`
-into the `PropView` and evaluate `until` — **re-polling at `intervalMs` cadence
+into the `PropView` and evaluate `until`, **re-polling at `intervalMs` cadence
 until it holds or `timeoutMs` elapses**; (3) when it holds, apply any enclosing
 `propValue` captures to that final `thenPoll` reply without another read. The
 event acknowledges the operation;
 it does NOT guarantee the polled value has settled: fw02.30 fires `0xC005`
 ~100ms after `0x9026` while `0xD209` still reads pre-settle (client application#157 wire
-capture — a fast consumer's single instantaneous read deterministically lost
+capture: a fast consumer's single instantaneous read deterministically lost
 the race). `thenPoll: null` = event arrival alone satisfies `until` over the
-existing scope (a prior `getProp`) — nothing to re-read, one evaluation. The
+existing scope (a prior `getProp`); nothing to re-read, one evaluation. The
 reference executor's `await_iterations` records the observation count on
 satisfaction (`1` = settled on the first read, `≥2` = re-polls absorbed settle
 latency) and `0` when a *tolerant* step bails on a missing event. A platform
@@ -816,7 +816,7 @@ The former "event-coupled effects MUST settle ≤1" invariant is **retired**
 (#185):
 it assumed the single post-event read, and the client application#157 wire capture showed
 real fw settles the value *after* the event. Author `settleAfterPolls` to the
-measured latency (gfx100ii `0x9026` → `0xD209` uses `settle: 2`) — the
+measured latency (gfx100ii `0x9026` → `0xD209` uses `settle: 2`); the
 re-polling event source absorbs it, and simulating the latency is what keeps
 consumers honest about pacing. Composite container reads (`0xD212`) tick member
 settles exactly like direct member reads, so container-observing consumers see
@@ -856,7 +856,7 @@ next matching stream, a parameterless `readOp` returns only OK until another
 take queues a JPEG.
 
 **Per-connection applicability.** The `app` (BLE→Wi-Fi-AP reference app, 55740/55741)
-connection is the hybrid push-then-read **happy path** — its event channel is
+connection is the hybrid push-then-read **happy path**: its event channel is
 wire-proven. `wireless-tether` (PCSS, 15740) has **no event channel** (wire-audit:
 zero event packets across active shooting) → poll-only. USB connections declare
 their event behavior per connection with the §11.29 `events.delivery` trait:
@@ -864,9 +864,9 @@ their event behavior per connection with the §11.29 `events.delivery` trait:
 keeps the happy path. The source is per-step manifest data, so poll-only
 connections simply keep authoring `{ poll: }` and the engine needs no branch.
 
-**Out of scope (deferred follow-ups).** The real gfx100ii data authoring —
-`0x9026 emits: ["0xc005"]` and switching the `app` AF/capture entry steps to
-`{ event: }` — is curated protocol-mapper/data-owner work; this change ships only
+**Out of scope (deferred follow-ups).** The real gfx100ii data authoring
+(`0x9026 emits: ["0xc005"]` and switching the `app` AF/capture entry steps to
+`{ event: }`) is curated protocol-mapper/data-owner work; this change ships only
 a synthetic round-trip fixture. Confirm `0xC005` parameter meanings and
 `apState` values against a rig capture (#52).
 
@@ -1334,8 +1334,8 @@ string records without pretending numeric predicates can evaluate them.
 ### 11.21 PTP failure-selected retry control flow
 
 The PTP mode-entry/action grammar has a closed `retry` step for a logical wire
-sequence that is safe to replay only after explicitly selected failures — named
-non-OK PTP responses, and optionally whole failure classes:
+sequence that is safe to replay only after explicitly selected failures (named
+non-OK PTP responses, and optionally whole failure classes):
 
 ```yaml
 - retry:
@@ -1367,7 +1367,7 @@ list with a standard `GetObjectHandles` fallback, without making later steps
 branch-aware.
 
 `whenFailureClasses` is a closed vocabulary with a single member today:
-`decode` — the step's PTP response was OK but its data payload failed to
+`decode`: the step's PTP response was OK but its data payload failed to
 decode (truncated record stream, short scalar, malformed array framing).
 Field evidence shows cameras can serve a framing-valid but short property
 payload while settling into a mode, so a manifest may declare bounded replay
@@ -1772,7 +1772,7 @@ observations, keeping composite polling generic and data-driven.
 Only non-OK PTP responses participate in `tolerant` semantics. Retry replays
 its nested sequence only for an exact declared response or a declared failure
 class (§11.21); an unselected failure escapes immediately, and exhausted retry
-may be tolerated only by the enclosing retry step — and only when the final
+may be tolerated only by the enclosing retry step, and only when the final
 failure is a non-OK response. A transport/framing/malformed-capture failure is
 always fatal, except that a manifest may select bounded replay of payload
 *decode* failures via `whenFailureClasses: ["decode"]`. Completed collection elements are
@@ -1955,7 +1955,7 @@ u64, required: true }`; the expanded form supports `u64` or `string` and may set
 omit the argument: absence is valid and does not synthesize a value.
 
 Each supplied invocation value is an `ActionArgument`. Its serde/HTTP form is
-untagged — a JSON unsigned number or JSON string, never a discriminator object —
+untagged (a JSON unsigned number or JSON string, never a discriminator object)
 and its UniFFI mirror is a closed enum with `U64` and `String` variants.
 Resolution checks each value against the declared kind. Wrong types, like all
 other invocation-shape failures, are rejected before transport I/O or simulator
@@ -2328,7 +2328,7 @@ operations:
 ```
 
 The `modes` filter is matched against the *detected* mode only. Before the
-simulator has detected one, a disposition that names modes does not apply — the
+simulator has detected one, a disposition that names modes does not apply: the
 same predetect split operation availability uses (§11.18). Absence or refusal
 scoped to a persona the session hasn't entered would be invented behavior, not
 observed behavior. A disposition with no `modes` still applies before detection.
@@ -2338,7 +2338,7 @@ returns `DevicePropNotSupported` for `GetDevicePropValue`, `GetDevicePropDesc`,
 and `SetDevicePropValue`, omits the code from `GetDeviceInfo`, and omits the
 member from the `0xD212` record stream. A write is refused rather than silently
 swallowed: there is no value there to change. An unsatisfied `requiresGate`
-outranks the disposition on both reads — the camera answers with silence,
+outranks the disposition on both reads. The camera answers with silence,
 having never reached the point of refusing.
 
 `silentRefusal` on a property means `SetDevicePropValue` returns OK without

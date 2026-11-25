@@ -1,6 +1,6 @@
 # Consults
 
-Paired Q&A between ptpsim and its **public-consumer peers** — the client application
+Paired Q&A between ptpsim and its **public-consumer peers**: the client application
 iOS app, the Android consumer, other open clients of the ptpsim manifest/FFI.
 **Both the request and the reply land here as siblings**, so it's clear that
 a question was asked AND answered.
@@ -107,7 +107,7 @@ durable_facts_lifted_into: [<file paths where reusable knowledge is encoded>]
 
 ## Hygiene rule
 
-**Lift the durable knowledge into the right artifact** — manifest comments,
-schema doc-strings, design docs — so the same question doesn't need to be
+**Lift the durable knowledge into the right artifact** (manifest comments,
+schema doc-strings, design docs) so the same question doesn't need to be
 re-asked. The consult is the trail; the manifest is the authoritative answer.
 `durable_facts_lifted_into:` in the reply frontmatter is the receipt.
