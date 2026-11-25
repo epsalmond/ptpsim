@@ -261,9 +261,8 @@ unless `--ble-allow-non-loopback` is also given.
 
 The server handles one request at a time per connection. After it writes a
 response it pushes the events that request made eligible, then reads the next
-request. It never sends an event spontaneously: every `advert` and
-`notification` follows the response to the request that produced it.
-Notification fencing depends on this order.
+request. Every `advert`, `notification` and `disconnected` follows the response
+to the request that produced it. Notification fencing depends on this order.
 
 #### Connection lifecycle
 
@@ -294,8 +293,15 @@ Notification fencing depends on this order.
   manifest's `ble-reconnect` plan rewrites the name on every reconnect, and no
   manifest data or test establishes whether a camera keeps it across BLE
   connections.
-- `disconnect` answers, then the server closes the connection. A fresh script
-  needs a new TCP connection.
+- `disconnect` answers, then the server closes the TCP connection. When
+  checking whether the port can be rebound after a restart, use `SO_REUSEADDR`
+  as the listener does. The server end of a closed connection can be in
+  `TIME_WAIT`.
+- A scripted peer disconnect ends the GATT link and leaves the TCP connection
+  open. The client can scan again and reconnect on the same TCP connection.
+  A new GATT link has fresh discovery, subscriptions, read and notification
+  scripts, and prep flag. The remaining peer-disconnect steps carry over
+  until the TCP connection ends.
 - A connection holds the slot for as long as it is open, however quiet, since
   a client may hold its BLE link idle for a whole session. The server enables
   TCP keepalive (30 s idle, 10 s interval), so a peer that vanishes without
@@ -313,6 +319,7 @@ Notification fencing depends on this order.
 | `write` | `uuid`, `value` | none | `write(uuid, value)` |
 | `write_fenced` | `uuid`, `value`, `notify_uuid` | none | `write_with_notification_fence(uuid, value, notify_uuid)` |
 | `subscribe` | `uuid` | none | `subscribe(uuid, notify)`; adds `uuid` to the connection's subscribed set |
+| `await_disconnect` | none | none | `await_disconnect()` when the next scripted peer disconnect is `awaitDisconnect` |
 | `disconnect` | none | none | none; the server then closes the connection |
 
 `discover`, `read`, `write`, `write_fenced` and `subscribe` before `connect`
@@ -353,6 +360,9 @@ Events:
   `manufacturer_data` is the raw advertised field: the 2-byte little-endian
   company ID, then the payload.
 - `notification`: `{"event":"notification","uuid":"...","value":"<hex>"}`.
+- `disconnected`: `{"event":"disconnected","peripheral":"<uuid>"}`. The
+  event immediately follows the successful response to the request that
+  triggered the scripted peer disconnect.
 - `error`: only `busy`, as the first and only line of a refused connection.
 
 Responder errors map to wire codes:
@@ -364,14 +374,16 @@ Responder errors map to wire codes:
 | `NotExposed(uuid)` | `not_exposed` | the UUID |
 | `UnexpectedWrite`, `ScriptOutOfOrder` | `script_violation` | the error text |
 
+`await_disconnect` answers `not_connected` without an active GATT link, and
+`script_violation` if the scenario's next peer-disconnect step is missing or
+has a different trigger.
+
 Protocol-level codes are `bad_request` (unknown op, missing or malformed
 argument, invalid line), `unknown_peripheral` (`detail` is the requested id)
 and `busy`.
 
-Not supported in this version: a scripted peer disconnect (and with it the
-`await_disconnect` operation and a `disconnected` event), a failing MTU
-request, and a scripted peripheral-name failure. A request for an op this
-table does not list answers `bad_request`.
+The socket does not support failed MTU requests or scripted peripheral-name
+failures. A request for an unlisted operation answers `bad_request`.
 
 The protocol carries opaque UUIDs, hex bytes, a peripheral id and an MTU. It
 never names a manufacturer, model, characteristic meaning or launch mode.
@@ -382,6 +394,9 @@ pins the wire format with synthetic UUIDs and bytes. Each line wraps one
 message as `{"dir":"c2s"|"s2c","msg":{...}}`; messages compare by JSON value.
 `tests/ble_socket.rs` replays it through the connection handler. A client
 implementation can replay the same file against its own fake server.
+`services/camera-sim-service/tests/fixtures/ble-socket-v1-peer-disconnect.transcript.ndjson`
+demonstrates `await_disconnect` and scanning again on the same TCP connection.
+The socket integration test also exercises the `afterRead` trigger.
 
 ### Scenario `ptpsim-ble-scenario/v1`
 
@@ -405,12 +420,21 @@ reads:
 notifications:
   - { gatt: <gattName>, afterFencedWrite: { gatt: <gattName>, ordinal: 1 }, hex: "<hex>" }
   - { gatt: <gattName>, utf8: "<text>" }   # no afterFencedWrite: delivered on subscribe (simulator convention)
+peerDisconnects:
+  - { afterRead: <gattName> }
+  - { awaitDisconnect: true }
 ```
 
 The catalog served is the model's whole GATT map, with every UUID in
 uppercase canonical form; a malformed UUID fails startup. `arming` wires the
 responder's prep, launch and device-name writes to the engine's `CameraLink`,
 so the PTP/IP init gates apply to a handoff that arrives over the socket.
+
+`peerDisconnects` is optional. Its steps are consumed in order once per TCP
+connection. Each step declares either a successful read of the named GATT
+characteristic or the client's `await_disconnect` request. This ordering
+lets a test script link loss after a baseline read and then exercise a wake
+plan whose next step is to wait for the camera to drop the link.
 
 `packages/fixtures/ble/gfx100ii-pair-handoff.yaml` serves the GFX100 II legacy
 pairing advert, the `ble-pair` plan and the `ble-establish-wifi-ap` handoff.

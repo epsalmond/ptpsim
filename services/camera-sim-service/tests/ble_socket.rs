@@ -93,12 +93,38 @@ fn golden_socket() -> BleSocket {
 
 #[tokio::test]
 async fn golden_transcript_replays_through_the_connection_handler() {
-    let transcript = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/ble-socket-v1.transcript.ndjson"),
-    )
-    .expect("read transcript");
     let socket = golden_socket();
+    replay_transcript(
+        &socket,
+        include_str!("fixtures/ble-socket-v1.transcript.ndjson"),
+    )
+    .await;
+
+    assert_eq!(
+        socket.log(),
+        vec![
+            BleEvent::Connect,
+            BleEvent::DiscoverServices,
+            BleEvent::Read { uuid: FFF1.into() },
+            BleEvent::Subscribe {
+                uuid: FFF2.into(),
+                mode: CccdMode::Notify
+            },
+            BleEvent::Write {
+                uuid: FFF3.into(),
+                value: vec![0x01]
+            },
+            BleEvent::NotificationFence { uuid: FFF2.into() },
+            BleEvent::Write {
+                uuid: FFF3.into(),
+                value: vec![0xaa, 0x55]
+            },
+        ],
+        "the finished responder's log moves to the service history"
+    );
+}
+
+async fn replay_transcript(socket: &BleSocket, transcript: &str) {
     let (client, server) = tokio::io::duplex(64 * 1024);
     let serve = tokio::spawn({
         let socket = socket.clone();
@@ -138,28 +164,38 @@ async fn golden_transcript_replays_through_the_connection_handler() {
         .unwrap();
     assert_eq!(tail, None, "no message after the transcript");
     timeout(IO_TIMEOUT, serve).await.unwrap().unwrap().unwrap();
+}
 
+fn scenario_with_script(dir: &tempfile::TempDir, script: &str) -> PathBuf {
+    let index = repo("packages/camera-config-data/fuji/index.yaml");
+    let path = dir.path().join("peer-disconnect.yaml");
+    let base = std::fs::read_to_string(scenario_path()).unwrap();
+    let base = base.replace(
+        "../../camera-config-data/fuji/index.yaml",
+        index.to_str().unwrap(),
+    );
+    std::fs::write(&path, format!("{base}\n{script}")).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn peer_disconnect_transcript_reconnects_over_the_same_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = scenario_with_script(&dir, "peerDisconnects:\n  - { awaitDisconnect: true }\n");
+    let scenario = BleScenario::load(&path, SharedLink::default()).unwrap();
+    let socket = BleSocket::new(scenario);
+    replay_transcript(
+        &socket,
+        include_str!("fixtures/ble-socket-v1-peer-disconnect.transcript.ndjson"),
+    )
+    .await;
     assert_eq!(
         socket.log(),
         vec![
             BleEvent::Connect,
-            BleEvent::DiscoverServices,
-            BleEvent::Read { uuid: FFF1.into() },
-            BleEvent::Subscribe {
-                uuid: FFF2.into(),
-                mode: CccdMode::Notify
-            },
-            BleEvent::Write {
-                uuid: FFF3.into(),
-                value: vec![0x01]
-            },
-            BleEvent::NotificationFence { uuid: FFF2.into() },
-            BleEvent::Write {
-                uuid: FFF3.into(),
-                value: vec![0xaa, 0x55]
-            },
-        ],
-        "the finished responder's log moves to the service history"
+            BleEvent::PeerDisconnect,
+            BleEvent::Connect
+        ]
     );
 }
 
@@ -255,6 +291,10 @@ impl Running {
 }
 
 async fn start_server() -> Running {
+    start_server_with_scenario(&scenario_path()).await
+}
+
+async fn start_server_with_scenario(scenario: &std::path::Path) -> Running {
     let card = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(card.path().join("DCIM/100_FUJI")).unwrap();
     let manifest_yaml = std::fs::read_to_string(repo(
@@ -284,7 +324,7 @@ async fn start_server() -> Running {
         "no BLE listener by default"
     );
     server
-        .enable_ble_socket(loopback, &scenario_path(), false)
+        .enable_ble_socket(loopback, scenario, false)
         .await
         .expect("BLE socket binds with the committed scenario");
     let ble_addr = server.ble_addr_opt().expect("BLE listener bound");
@@ -374,10 +414,10 @@ impl Client {
 
 /// Scan, then connect to the scenario's one peripheral.
 async fn scan_and_connect(client: &mut Client) {
+    let start = client.received.len();
     client.ok("scan_start", json!({})).await;
     client.ok("scan_stop", json!({})).await;
-    let adverts: Vec<_> = client
-        .received
+    let adverts: Vec<_> = client.received[start..]
         .iter()
         .filter(|m| m["event"] == json!("advert"))
         .collect();
@@ -884,11 +924,65 @@ async fn responder_errors_and_bad_requests_map_to_wire_codes() {
         json!("bad_request"),
         "{signed_hex}"
     );
-    let unsupported = client.call("await_disconnect", json!({})).await;
+    let unscripted = client.call("await_disconnect", json!({})).await;
+    assert_eq!(unscripted["error"]["code"], json!("script_violation"),);
+    drop(client);
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn scripted_peer_disconnect_follows_the_baseline_read_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = scenario_with_script(
+        &dir,
+        "peerDisconnects:\n  - { afterRead: transferState }\n  - { awaitDisconnect: true }\n",
+    );
+    let running = start_server_with_scenario(&path).await;
+    let view = gfx100ii();
+    let transfer_state = uuid(view.ble.as_ref().unwrap(), "transferState");
+    let disconnected = json!({"event": "disconnected", "peripheral": PERIPHERAL});
+    let mut client = Client::connect(running.ble_addr).await;
+    scan_and_connect(&mut client).await;
+    let pending_read = client.call("await_disconnect", json!({})).await;
+    assert_eq!(pending_read["error"]["code"], json!("script_violation"));
+    let failed_read = client.call("read", json!({"uuid": transfer_state})).await;
     assert_eq!(
-        unsupported["error"]["code"],
-        json!("bad_request"),
-        "scripted peer disconnect is not part of this version"
+        failed_read["error"]["code"],
+        json!("services_not_discovered")
+    );
+    client.ok("discover", json!({})).await;
+    client
+        .ok("subscribe", json!({"uuid": transfer_state}))
+        .await;
+    let baseline = client.ok("read", json!({"uuid": transfer_state})).await;
+    assert_eq!(baseline["value"], json!("00"));
+    assert_eq!(client.next_message().await, Some(disconnected.clone()));
+
+    scan_and_connect(&mut client).await;
+    let failed_read = client.call("read", json!({"uuid": transfer_state})).await;
+    assert_eq!(
+        failed_read["error"]["code"],
+        json!("services_not_discovered")
+    );
+    client.ok("await_disconnect", json!({})).await;
+    assert_eq!(client.next_message().await, Some(disconnected));
+
+    scan_and_connect(&mut client).await;
+    client.ok("discover", json!({})).await;
+    client.ok("read", json!({"uuid": transfer_state})).await;
+    client.ok("scan_stop", json!({})).await;
+    assert!(!client
+        .received
+        .iter()
+        .any(|message| message["event"] == "disconnected"));
+    assert_eq!(
+        running
+            .socket
+            .log()
+            .iter()
+            .filter(|event| **event == BleEvent::PeerDisconnect)
+            .count(),
+        2
     );
     drop(client);
     running.stop().await;

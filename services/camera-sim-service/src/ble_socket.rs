@@ -59,6 +59,7 @@ pub struct BleScenario {
     mtu: u16,
     peripheral_name: Option<String>,
     factory: ResponderFactory,
+    peer_disconnects: Vec<PeerDisconnectTrigger>,
     /// The engine link the scenario's arming writes reach. Each BLE
     /// connection clears its prep flag when it starts.
     link: Option<SharedLink>,
@@ -96,6 +97,8 @@ struct ScenarioFile {
     reads: BTreeMap<String, ValueFile>,
     #[serde(default)]
     notifications: Vec<NotificationFile>,
+    #[serde(default)]
+    peer_disconnects: Vec<PeerDisconnectFile>,
 }
 
 #[derive(Deserialize)]
@@ -153,6 +156,20 @@ struct FencedWriteFile {
     ordinal: u32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PeerDisconnectFile {
+    after_read: Option<String>,
+    #[serde(default)]
+    await_disconnect: bool,
+}
+
+#[derive(Clone)]
+enum PeerDisconnectTrigger {
+    AfterRead(String),
+    AwaitDisconnect,
+}
+
 struct ScriptedNotification {
     uuid: String,
     after_fenced_write: Option<(String, u32)>,
@@ -188,6 +205,7 @@ impl BleScenario {
             mtu,
             peripheral_name,
             factory: Arc::new(factory),
+            peer_disconnects: Vec::new(),
             link: None,
         }
     }
@@ -272,6 +290,17 @@ impl BleScenario {
                 })
             })
             .collect::<Result<Vec<_>, ScenarioError>>()?;
+        let peer_disconnects = file
+            .peer_disconnects
+            .iter()
+            .map(|entry| match (&entry.after_read, entry.await_disconnect) {
+                (Some(name), false) => resolve(name).map(PeerDisconnectTrigger::AfterRead),
+                (None, true) => Ok(PeerDisconnectTrigger::AwaitDisconnect),
+                _ => Err(scenario_error(
+                    "a peer disconnect needs exactly one of afterRead or awaitDisconnect: true",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let (arm, device_name) = match &file.arming {
             None => (None, None),
             Some(arming) => {
@@ -350,6 +379,7 @@ impl BleScenario {
             responder
         };
         let mut scenario = BleScenario::new(peripherals, mtu, file.peripheral_name, factory);
+        scenario.peer_disconnects = peer_disconnects;
         scenario.link = Some(session_link);
         Ok(scenario)
     }
@@ -457,6 +487,7 @@ struct Connection {
     /// Subscribed characteristics in subscription order.
     subscribed: Vec<String>,
     peripheral: Option<String>,
+    next_peer_disconnect: usize,
 }
 
 struct WireError {
@@ -480,9 +511,6 @@ impl From<BleError> for WireError {
             BleError::UnexpectedWrite { .. } | BleError::ScriptOutOfOrder { .. } => {
                 wire_error("script_violation", error.to_string())
             }
-            // The socket never calls the responder's MTU, peripheral-name or
-            // peer-disconnect methods, so these cannot occur. Named here so a
-            // new responder error is a compile error, not a silent mapping.
             BleError::NoPeripheralName
             | BleError::MtuRequestFailed
             | BleError::PeerDisconnectNotObserved => {
@@ -563,10 +591,7 @@ impl BleSocket {
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
-                if let Some(link) = &self.inner.scenario.link {
-                    link.clear_prep_write();
-                }
-                *lock(&self.inner.active) = Some((self.inner.scenario.factory)());
+                self.reset_responder(0);
                 *lock(&self.inner.holder) = Some((peer.to_string(), Instant::now()));
                 return Some(ActiveClient {
                     inner: self.inner.clone(),
@@ -673,6 +698,46 @@ impl BleSocket {
         call(responder).map_err(WireError::from)
     }
 
+    fn reset_responder(&self, next_peer_disconnect: usize) {
+        let scenario = &self.inner.scenario;
+        if let Some(link) = &scenario.link {
+            link.clear_prep_write();
+        }
+        let mut responder = (scenario.factory)();
+        if next_peer_disconnect < scenario.peer_disconnects.len() {
+            responder = responder.queue_peer_disconnect();
+        }
+        let mut active = lock(&self.inner.active);
+        if let Some(previous) = active.replace(responder) {
+            lock(&self.inner.history).extend_from_slice(previous.log());
+        }
+    }
+
+    fn next_peer_disconnect(&self, connection: &Connection) -> Option<&PeerDisconnectTrigger> {
+        self.inner
+            .scenario
+            .peer_disconnects
+            .get(connection.next_peer_disconnect)
+    }
+
+    fn peer_disconnect(
+        &self,
+        connection: &mut Connection,
+        events: &mut Vec<Value>,
+    ) -> Result<(), WireError> {
+        let peripheral = connection
+            .peripheral
+            .as_ref()
+            .ok_or_else(|| WireError::from(BleError::NotConnected))?;
+        self.with_responder(BleResponder::await_disconnect)?;
+        events.push(json!({"event": "disconnected", "peripheral": peripheral}));
+        connection.peripheral = None;
+        connection.subscribed.clear();
+        connection.next_peer_disconnect += 1;
+        self.reset_responder(connection.next_peer_disconnect);
+        Ok(())
+    }
+
     fn dispatch(
         &self,
         connection: &mut Connection,
@@ -704,7 +769,7 @@ impl BleSocket {
                 }
                 // A client reuses its link, so a repeated connect to the
                 // connected peripheral leaves discovery and subscriptions
-                // intact. A new TCP connection is what rebuilds the responder.
+                // intact. The responder is reset after a peer disconnect.
                 if connection.peripheral.as_deref() != Some(id.as_str()) {
                     self.with_responder(|responder| {
                         responder.connect();
@@ -733,6 +798,10 @@ impl BleSocket {
                 let uuid = uuid_arg(request, "uuid")?;
                 let value = self.with_responder(|responder| responder.read(&uuid))?;
                 result.insert("value".into(), encode_hex(&value).into());
+                if matches!(self.next_peer_disconnect(connection), Some(PeerDisconnectTrigger::AfterRead(gatt)) if gatt == &uuid)
+                {
+                    self.peer_disconnect(connection, events)?;
+                }
             }
             "write" => {
                 let uuid = uuid_arg(request, "uuid")?;
@@ -766,6 +835,18 @@ impl BleSocket {
                 if !connection.subscribed.contains(&uuid) {
                     connection.subscribed.push(uuid);
                 }
+            }
+            "await_disconnect" => {
+                if connection.peripheral.is_none() {
+                    return Err(BleError::NotConnected.into());
+                }
+                if !matches!(
+                    self.next_peer_disconnect(connection),
+                    Some(PeerDisconnectTrigger::AwaitDisconnect)
+                ) {
+                    return Err(BleError::PeerDisconnectNotObserved.into());
+                }
+                self.peer_disconnect(connection, events)?;
             }
             "disconnect" => {
                 connection.subscribed.clear();
