@@ -1,7 +1,13 @@
-//! Issue #452: executor walk for legacy-app-establish-wifi-ap launch await semantics.
-//! Synthetic plan mirroring the X-A7 (legacy manufacturer app) flow: subscribe AP state
-//! (indicate), write launchMode, then await indications. State 1 is launched,
-//! state 0 is failure, state 2 is transitional and ignored.
+//! Issue #452: the legacy vendor mobile app's function-launch semantics as an
+//! indication oracle. The synthetic plan subscribes to AP state (indicate),
+//! writes the launch mode, then awaits indications, as the app does. In the
+//! app, state 1 is launched and connectable, state 0 is not launched or
+//! failed, state 2 is launching and ignored, and state 3 is reserved or
+//! automatic transfer, which ends the launch as not connectable.
+//!
+//! The shipped X-A7 plan polls AP state by read instead, because indication
+//! waits on hardware received nothing (#412). Its tests are in
+//! `ble_xa7_establish_wifi_ap.rs`.
 
 use std::collections::BTreeMap;
 
@@ -54,7 +60,7 @@ families:
                 capture: {{ at: 0, length: 2, encoding: u16-le, name: apState }}
                 captureAs: apStateRaw
                 until: {{ apState: {{ eq: "1" }} }}
-                failWhen: {{ apState: {{ eq: "0" }} }}
+                failWhen: {{ apState: {{ in: "0, 3" }} }}
                 timeoutMs: 20000
             - bleRead: {{ gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }}
 models:
@@ -181,6 +187,36 @@ fn legacy_app_establish_state_0_yields_typed_failure() {
     assert_eq!(err.kind, RetryFailureKind::ConditionRejected);
     // Registration tail order is not exercised here, but ensure the legacy-app-pair
     // shape asserts transferState after apState (see manufacturer_index test).
+}
+
+#[test]
+fn legacy_app_establish_state_3_ends_the_launch_as_not_connectable() {
+    let (idx, ap_state, launch, ssid) = index_with_legacy_steps();
+    let steps = steps_of(&idx);
+    let mut responder = BleResponder::new([ap_state.clone(), launch.clone(), ssid.clone()])
+        .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x02, 0x00])
+        .queue_notification_after_fenced_write(&ap_state, &launch, 1, &[0x03, 0x00])
+        .serve_read(&ssid, b"MY-AP");
+    let mut runtime = BTreeMap::new();
+    runtime.insert("launchMode".to_string(), "4".to_string());
+    let err = match walk_establishment(
+        &mut responder,
+        &steps,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &runtime,
+    ) {
+        Ok(_) => panic!("03 must end the launch"),
+        Err(e) => e,
+    };
+    assert_eq!(err.kind, RetryFailureKind::ConditionRejected);
+    assert!(
+        responder
+            .log()
+            .iter()
+            .all(|e| !matches!(e, BleEvent::Read { uuid } if uuid == &ssid)),
+        "no SSID read after a not-connectable launch"
+    );
 }
 
 #[test]
